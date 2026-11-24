@@ -54,10 +54,7 @@ commands! {
             return Ok(None);
         };
         let text = utf8(path.clone())?;
-        tauri::async_runtime::spawn_blocking(move || write_owner_only(&path, &data))
-            .await
-            .map_err(|e| AppError::app(AppCode::FileWrite, e.to_string()))?
-            .map_err(|e| AppError::app(AppCode::FileWrite, e.to_string()))?;
+        write_chosen(path, data).await?;
         Ok(Some(text))
     }
 
@@ -83,6 +80,28 @@ pub(crate) async fn open(state: &AppState, purpose: FilePurpose) -> Result<Optio
     let (path, data) = data?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(Some(OpenedFile { name, data }))
+}
+
+/// The save dialog for a file dw-app writes itself (a standby dissolution):
+/// the chosen path, `None` when the user cancelled.
+pub(crate) async fn choose_save(
+    state: &AppState,
+    purpose: FilePurpose,
+    suggested_name: String,
+) -> Result<Option<PathBuf>, AppError> {
+    choose(state, purpose, true, Some(suggested_name)).await
+}
+
+/// Writes `data` whole to a path the save dialog returned, readable by its
+/// owner only.
+pub(crate) async fn write_chosen(
+    path: PathBuf,
+    data: impl AsRef<[u8]> + Send + 'static,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || write_owner_only(&path, data.as_ref()))
+        .await
+        .map_err(|e| AppError::app(AppCode::FileWrite, e.to_string()))?
+        .map_err(|e| AppError::app(AppCode::FileWrite, e.to_string()))
 }
 
 async fn choose(

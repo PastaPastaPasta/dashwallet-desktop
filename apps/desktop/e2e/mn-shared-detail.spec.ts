@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
-// A confirmed shared masternode in My masternodes (MG-10b S6 reads): the operator's share line only when
-// the registration carries one, and no send action for a standby, least of all one whose penalty is unknown.
+// A confirmed shared masternode in My masternodes (MG-10b S6): the operator's share line only when the
+// registration carries one, and a standby's one valid send, never one whose penalty is unknown.
 
 const SHOTS = process.env.DW_SHOTS;
 const SH_ROW = `mn-row-${"ec".repeat(32)}`;
@@ -25,7 +25,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-detail-operator-share")).toContainText("5%");
     await expect(page.getByTestId("mn-fact-operator-share")).toContainText("5%");
     await expect(page.getByTestId("mn-fact-operator-share")).not.toContainText("of each payout");
-    await expect(page.getByTestId("sh-detail").getByRole("button", { name: /send/i })).toHaveCount(0);
+    await expect(page.getByTestId("sh-detail").getByRole("button", { name: /send/i })).toHaveText(["Send now and pay the penalty"]);
     if (SHOTS && info.project.name === "chromium") await page.screenshot({ path: `${SHOTS}/after-sh-detail-full-${theme}.png`, fullPage: true });
     await page.goto(fixtureUrl("sh-detail-no-operator-share", theme));
     await page.getByTestId("toolbar").waitFor();

@@ -5,7 +5,9 @@
 // every exit and every validity; nothing here infers one.
 
 import { isAppError } from "../api/backend";
+import type { DissolvePreview } from "../api/generated/DissolvePreview";
 import type { MasternodeRow } from "../api/generated/MasternodeRow";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { SharedEligibilityName } from "../api/generated/SharedEligibilityName";
@@ -33,13 +35,29 @@ export const PERIOD_PRESETS = [
 /** What this build can act on. S5 in 0.4 renders start, join, lock and approve; signing, sending
  * and recovery come with EP 4 (S5b). A slice shows and badges nothing it can't act on (D14). */
 export interface SharedSlice {
+  /** A registration's funding signature. */
   sign: boolean;
+  /** A registration's send. */
   send: boolean;
+  /** Dissolve-together and key-change sessions render, with their approvals. */
+  maintenance?: boolean;
+  /** A complete dissolution together is sent from here (never a key change in S6). */
+  maintenanceSend?: boolean;
 }
 export const S5_SLICE: SharedSlice = { sign: false, send: false };
+/** S6: maintenance sessions and their approvals; a dissolution together sends where the network
+ * allows it; a key change never sends; registrations keep S5's rule. */
+export const S6_SLICE: SharedSlice = { sign: false, send: false, maintenance: true, maintenanceSend: true };
+
+/** MG's ruling: this version sends shared-masternode transactions everywhere but mainnet. Reads,
+ * approvals, standby create and export, and the maintenance starts stay on. */
+export const sharedSendsOn = (network: Pick<NetworkInfo, "kind">) => network.kind !== "mainnet";
+
+/** The slice the screens render under on `network`. */
+export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => ({ ...S6_SLICE, maintenanceSend: sharedSendsOn(network) });
 
 /** A session sheet's actions. `copy` is the message to copy or save; the rest are calls. */
-export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send";
+export type SharedAction = "join" | "copy" | "lock" | "approve" | "sign" | "send" | "approveMaintenance" | "sendMaintenance";
 
 /** One row of §2.3.1's registration table. */
 export type RowKey =
@@ -59,6 +77,20 @@ export type RowKey =
   | "confirmed"
   | "dead"
   | "conflicted"
+  | "togetherApprove"
+  | "togetherSendApproval"
+  | "togetherSend"
+  | "togetherSendOff"
+  | "dissolved"
+  | "keyApprove"
+  | "keyWaiting"
+  | "keySendApproval"
+  | "keySendSignatures"
+  | "keySendLater"
+  | "keyStale"
+  | "keyStaleOther"
+  | "keyConfirmed"
+  | "keyDead"
   | "unknown";
 
 export interface SessionRender {
@@ -75,47 +107,106 @@ export interface SessionRender {
 const isRegistration = (s: SharedSession) => s.kind === "registration";
 const coordinator = (s: SharedSession) => s.role === "coordinator";
 
+const row = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row, primary, copy, known });
+
 /** §2.3.1, registration rows: the render key is `next` (D2), read with the stage and role. */
 export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): SessionRender {
-  const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row, primary, copy, known });
-  if (!isRegistration(s)) return r("unknown", null, false, false);
+  if (s.kind === "dissolve_together" && slice.maintenance) return renderTogether(s, slice);
+  if (s.kind === "key_change" && slice.maintenance) return renderKeyChange(s);
+  if (!isRegistration(s)) return row("unknown", null, false, false);
   const stage = s.stage.kind;
   const c = coordinator(s);
   switch (s.next) {
     case "join":
-      return stage === "invited" && !c ? r("join", "join") : r("unknown", "join", false, false);
+      return stage === "invited" && !c ? row("join", "join") : row("unknown", "join", false, false);
     case "lock":
-      return stage === "draft" && c ? r("lock", "lock") : r("unknown", "lock", false, false);
+      return stage === "draft" && c ? row("lock", "lock") : row("unknown", "lock", false, false);
     case "approve":
-      return stage === "signing" && !c ? r("approve", "approve") : r("unknown", "approve", false, false);
+      return stage === "signing" && !c ? row("approve", "approve") : row("unknown", "approve", false, false);
     case "sign":
-      return stage === "combined" && !c ? r("sign", slice.sign ? "sign" : null) : r("unknown", slice.sign ? "sign" : null, false, false);
+      return stage === "combined" && !c ? row("sign", slice.sign ? "sign" : null) : row("unknown", slice.sign ? "sign" : null, false, false);
     case "send":
-      if (!slice.send) return (stage === "combined" || stage === "funding_signed") && c ? r("signLater", null) : r("unknown", null, false, false);
-      return (stage === "combined" || stage === "funding_signed") && c ? r("send", "send") : r("unknown", "send", false, false);
+      if (!slice.send) return (stage === "combined" || stage === "funding_signed") && c ? row("signLater", null) : row("unknown", null, false, false);
+      return (stage === "combined" || stage === "funding_signed") && c ? row("send", "send") : row("unknown", "send", false, false);
     case "copy":
-      if (stage === "draft") return r(c ? "waitingReplies" : "sendReply", null, true);
-      if (stage === "signing") return r(c ? "approvedCount" : "sendApproval", null, true);
-      if (stage === "funding_signed" && !c) return slice.sign ? r("sendSigned", null, true) : r("signLater", null);
-      if ((stage === "combined" || stage === "funding_signed") && c) return slice.sign ? r("waitingSigned", null, true) : r("signLater", null);
-      return r("unknown", null, true, false);
+      if (stage === "draft") return row(c ? "waitingReplies" : "sendReply", null, true);
+      if (stage === "signing") return row(c ? "approvedCount" : "sendApproval", null, true);
+      if (stage === "funding_signed" && !c) return slice.sign ? row("sendSigned", null, true) : row("signLater", null);
+      if ((stage === "combined" || stage === "funding_signed") && c) return slice.sign ? row("waitingSigned", null, true) : row("signLater", null);
+      return row("unknown", null, true, false);
     case "wait":
-      return stage === "sent" ? r("sent", null) : r("unknown", null, false, false);
+      return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
     case "create_standby":
     case "nothing":
-      if (stage === "confirmed") return r("confirmed", null);
-      if (stage === "dead") return r("dead", null);
-      if (stage === "conflicted") return r("conflicted", null);
-      return r("unknown", null, false, false);
+      if (stage === "confirmed") return row("confirmed", null);
+      if (stage === "dead") return row("dead", null);
+      if (stage === "conflicted") return row("conflicted", null);
+      return row("unknown", null, false, false);
     default:
-      return r("unknown", null, false, false);
+      return row("unknown", null, false, false);
   }
 }
 
-/** §3.6's S5 badge entries: registration sessions whose `next` this slice acts on. Never `copy`,
- * `wait` or `nothing`, and never a step whose screen the slice doesn't build. */
+/** §2.3.1, dissolve-together rows. The send is the one maintenance send S6 makes, and only where the
+ * network allows it. */
+function renderTogether(s: SharedSession, slice: SharedSlice): SessionRender {
+  const stage = s.stage.kind;
+  switch (s.next) {
+    case "approve":
+      return stage === "signing" ? row("togetherApprove", "approveMaintenance") : row("unknown", "approveMaintenance", false, false);
+    case "copy":
+      return stage === "signing" || stage === "combined" ? row("togetherSendApproval", null, true) : row("unknown", null, true, false);
+    case "send":
+      if (stage !== "combined") return row("unknown", null, false, false);
+      return slice.maintenanceSend ? row("togetherSend", "sendMaintenance") : row("togetherSendOff", null);
+    case "wait":
+      return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
+    case "nothing":
+    case "create_standby":
+      if (stage === "confirmed") return row("dissolved", null);
+      if (stage === "conflicted" || stage === "dead") return row("conflicted", null);
+      return row("unknown", null, false, false);
+    default:
+      return row("unknown", null, false, false);
+  }
+}
+
+/** Whether this wallet funds a key change: it alone may send it (D99). */
+export const isFunder = (s: SharedSession) => s.keyChange?.funder ?? s.role === "coordinator";
+
+/** §2.3.1 and §2.6, key-change rows. S6 never sends a key change: the funder's complete change
+ * reads "later", with Discard while the engine says it is discardable. */
+function renderKeyChange(s: SharedSession): SessionRender {
+  const stage = s.stage.kind;
+  const funder = isFunder(s);
+  switch (s.next) {
+    case "approve":
+      return stage === "signing" ? row("keyApprove", "approveMaintenance") : row("unknown", "approveMaintenance", false, false);
+    case "copy":
+      if (stage === "signing") return row(funder ? "keyWaiting" : "keySendApproval", null, true);
+      if (stage === "combined" && !funder) return row("keySendSignatures", null, true);
+      return row("unknown", null, true, false);
+    case "send":
+      return stage === "combined" && funder ? row("keySendLater", null) : row("unknown", null, false, false);
+    case "wait":
+      return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
+    case "abandon":
+      return stage === "stale" && funder ? row("keyStale", null) : row("unknown", null, false, false);
+    case "nothing":
+    case "create_standby":
+      if (stage === "stale") return row(funder ? "keyStale" : "keyStaleOther", null);
+      if (stage === "confirmed") return row("keyConfirmed", null);
+      if (stage === "dead") return row("keyDead", null);
+      if (stage === "conflicted") return row("conflicted", null);
+      return row("unknown", null, false, false);
+    default:
+      return row("unknown", null, false, false);
+  }
+}
+
+/** §3.6's badge entries: sessions whose `next` this slice acts on. Never `copy`, `wait` or
+ * `nothing`, and never a step whose screen the slice doesn't build. */
 export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = S5_SLICE): boolean {
-  if (!isRegistration(s)) return false;
   const v = renderSession(s, slice);
   return v.known && v.primary !== null;
 }
@@ -123,10 +214,17 @@ export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = S5_SLI
 export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE) =>
   (sessions ?? []).filter((s) => sessionNeedsAction(s, slice)).length;
 
-/** "Sessions in progress" (§2.1): not settled, newest first. Confirmed and conflicted sessions
- * leave the list; a dead one stays until it is discarded. */
-export function sessionsInProgress(sessions: readonly SharedSession[] | undefined): SharedSession[] {
-  return (sessions ?? []).filter((s) => isRegistration(s) && s.stage.kind !== "confirmed" && s.stage.kind !== "conflicted").sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+/** The final stages (F4): never offered Discard, and out of "Sessions in progress". The engine reads
+ * a dead session as discardable until something of it was sent; the UI doesn't offer it. */
+export const isFinal = (s: Pick<SharedSession, "stage">) => s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
+
+/** Discard is offered only while the engine says so, and never at a final stage. */
+export const canDiscard = (s: Pick<SharedSession, "stage" | "discardable">) => s.discardable && !isFinal(s);
+
+/** "Sessions in progress" (§2.1): not final, newest first. Registrations, and from S6 the
+ * maintenance sessions too. */
+export function sessionsInProgress(sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE): SharedSession[] {
+  return (sessions ?? []).filter((s) => (isRegistration(s) || slice.maintenance) && !isFinal(s)).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 /** The stage strip's current step, 1–6 (MG-00 D31 over MG-04b §2.3). */
@@ -297,6 +395,10 @@ export function warningText(w: SharedWarning, s: SharedSession | null): string |
       return t("masternodes.shared.warning.skipped_signatures", { count: w.count, labels: shareLabels(s, w.shares) });
     case "no_approvals":
       return t("masternodes.shared.warning.no_approvals");
+    case "operator_reset":
+      return `${t("masternodes.myMasternodes.changeKeys.poseWarning")} ${t("masternodes.myMasternodes.changeKeys.poseExplain")}`;
+    case "usable_by_funder":
+      return t("masternodes.shared.warning.usable_by_funder");
     default:
       return null;
   }
@@ -308,6 +410,7 @@ interface SharedErrorData {
   share?: number | null;
   stage?: string;
   needed?: number | null;
+  fee?: number;
 }
 
 /** A shared call's refusal as one sentence (§3.8), never echoing pasted text. */
@@ -322,7 +425,7 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
         const label = data.share != null ? ctx.session?.rows.find((r) => r.index === data.share)?.label : undefined;
         return label ? t("masternodes.shared.error.bad_signature", { label }) : t("masternodes.shared.error.bad_signature_unknown");
       }
-      const known = ["not_shared", "too_large", "parse", "other_session", "terms_changed", "older", "conflict", "not_participant", "labels"] as const;
+      const known = ["not_shared", "too_large", "parse", "other_session", "terms_changed", "older", "conflict", "not_participant", "labels", "stale", "not_key_change", "inputs_hash", "other_masternode"] as const;
       const k = known.find((x) => x === reason);
       return k ? t(`masternodes.shared.error.${k}`) : t("masternodes.shared.error.fallback", { code: `${e.code}{${reason}}` });
     }
@@ -338,6 +441,24 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
       return t("masternodes.shared.error.fileRead");
     case "app.file_too_large":
       return t("masternodes.shared.error.too_large");
+    case "app.shared_send_off":
+      return t("masternodes.shared.error.mainnet_send_off");
+    case "app.shared_send_unsupported":
+      return t("masternodes.shared.error.send_unsupported");
+    case "masternodes.shared_actor_fee":
+      return t("masternodes.shared.error.actor_fee", { fee: ctx.dash(data.fee ?? 0) });
+    case "masternodes.update_pending":
+      return t("masternodes.myMasternodes.errors.update_pending");
+    case "masternodes.in_flight":
+      return t("masternodes.myMasternodes.errors.in_flight");
+    case "masternodes.share_not_mine":
+      return t("masternodes.myMasternodes.errors.share_not_mine");
+    case "masternodes.shared_too_early":
+      return t("masternodes.myMasternodes.errors.shared_too_early");
+    case "masternodes.shared_registration_unknown":
+      return t("masternodes.myMasternodes.errors.shared_registration_unknown");
+    case "vault.locked":
+      return t("masternodes.myMasternodes.errors.vault_locked");
     default:
       return t("masternodes.shared.error.fallback", { code: e.code });
   }
@@ -372,6 +493,9 @@ export interface LegendEntry {
 }
 
 /** The share bar and its legend from EP 5's shares, labelled from the session's rows when present. */
+/** A share's label in the legend, "" when it has none. */
+export const labelOf = (legend: readonly LegendEntry[], index: number) => legend.find((l) => l.index === index)?.label ?? "";
+
 export function shareLegend(shares: SharedShares, session: SharedSession | null): LegendEntry[] {
   const total = shares.shares.reduce((a, s) => a + s.amount, 0);
   return shares.shares.map((s) => ({
@@ -431,3 +555,71 @@ export function standbyLines(s: Standby, fullValidNow: boolean, dash: (duffs: nu
 /** "Saved on this computer on Oct 15", or "Imported". */
 export const standbySource = (s: Standby, date: (secs: number) => string) =>
   s.source === "imported" ? t("masternodes.shared.detail.standby.imported") : t("masternodes.shared.detail.standby.saved", { date: date(s.createdAt) });
+
+// ---------------------------------------------------------------- maintenance (§2.6–§2.8, S6)
+
+/** The fee a dissolution alone and a standby pay (§2.7, Q7), duffs. */
+export const DISSOLVE_FEE = 1_000;
+export const STANDBY_FEE = 1_000;
+
+/** §2.7's together-fee default for `n` shares, duffs: the relay minimum of the combined size. */
+export const togetherFee = (n: number) => Math.max(1_000, 300 + 110 * n);
+
+/** Create standby's cap (§3.4): the penalty and the fee for each of this wallet's shares. */
+export function standbyCreateCap(shares: SharedShares, fee: number = STANDBY_FEE): number {
+  return shares.shares.filter((f) => f.mine).length * (shares.earlyPenalty + fee);
+}
+
+/** What a dissolution alone takes from the share, as the preview prints it and the grant caps it. */
+export const dissolveCap = (p: DissolvePreview) => p.totalDebit;
+
+/** The approve-maintenance cap (§3.4): a dissolution's actor fee once accepted, else 0. */
+export function approveMaintenanceCap(s: SharedSession, acceptActorFee: boolean): number {
+  return s.kind === "dissolve_together" && acceptActorFee ? (s.actorFee ?? 0) : 0;
+}
+
+/** What this wallet gets back from a dissolution together: its shares, less the fee its actor share pays. */
+export function togetherReturn(s: SharedSession): number {
+  const mine = s.rows.filter((r) => r.mine).reduce((a, r) => a + r.amount, 0);
+  const fee = s.role === "coordinator" ? (s.fee ?? 0) : (s.actorFee ?? 0);
+  return Math.max(0, mine - fee);
+}
+
+export interface StandbySend {
+  variant: "full" | "immediate";
+  /** The button's catalog key under `masternodes.shared.detail.standby`. */
+  label: "sendFull" | "sendImmediate" | "sendIt";
+  /** The grant's cap (§3.4): fee + penalty (immediate, own share), fee (full, own share), 0 (another's). */
+  cap: number;
+  /** What the actor pays the others. */
+  penalty: number;
+  /** Only the immediate variant is held though the full one would be valid (§2.8). */
+  stillPenalty: boolean;
+}
+
+/** §2.8 Validity: the one send a stored standby offers now, from EP 5's `full_valid_now`. Absent where
+ * the engine would refuse it or an amount is unknown (D14): an immediate variant whose penalty is null
+ * gets none. */
+export function standbySend(s: Standby, fullValidNow: boolean, mine: boolean): StandbySend | null {
+  if (s.full && fullValidNow) return { variant: "full", label: "sendFull", cap: mine ? s.fee : 0, penalty: 0, stillPenalty: false };
+  if (!s.immediate || s.penalty === null) return null;
+  const cap = mine ? s.fee + s.penalty : 0;
+  if (fullValidNow) return { variant: "immediate", label: "sendIt", cap, penalty: s.penalty, stillPenalty: true };
+  return { variant: "immediate", label: "sendImmediate", cap, penalty: s.penalty, stillPenalty: false };
+}
+
+export interface KeyLine {
+  field: "operator" | "voting";
+  from: string;
+  to: string;
+  changes: boolean;
+}
+
+/** A key change's keys, current → requested, against the list now (§2.6). */
+export function keyChangeLines(s: SharedSession): KeyLine[] {
+  const k = s.keyChange;
+  if (!k) return [];
+  const before = k.current ?? s.baseKeys;
+  const line = (field: KeyLine["field"], from: string, to: string): KeyLine => ({ field, from, to, changes: from !== to });
+  return [line("operator", before?.operatorPublicKey ?? "", k.requested.operatorPublicKey), line("voting", before?.votingAddress ?? "", k.requested.votingAddress)];
+}

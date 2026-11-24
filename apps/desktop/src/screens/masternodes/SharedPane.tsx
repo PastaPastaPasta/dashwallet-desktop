@@ -1,13 +1,14 @@
-// My masternodes ▸ a shared masternode's pane section (`sh-detail`, MG-10 §2.4, §2.8 Shown and
-// Validity, S6): the share bar and legend from EP 5, labelled from the registration session when the
-// wallet holds it, your payouts as far as this wallet knows, your refund, the early period, the
-// stored standbys and the eligibility line. Read-only: the maintenance actions come with a later
-// slice and are absent until then (D14).
+// My masternodes ▸ a shared masternode's pane section (`sh-detail`, MG-10 §2.4, §2.8, S6): the share
+// bar and legend from EP 5, labelled from the registration session when the wallet holds it, your
+// payouts as far as this wallet knows, your refund, the early period, the stored standbys and the
+// eligibility line. While EP 5 reads `ok`, the maintenance actions: Dissolve…, Change keys together…,
+// and each standby's Save a copy… and send. On mainnet no send shows; MG's line takes its place.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ShareFact } from "../../api/generated/ShareFact";
-import type { Standby } from "../../api/generated/Standby";
+import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { isAppError } from "../../api/backend";
 import { DashButton } from "../../components/basics";
 import type { Display } from "../../format/display";
@@ -23,17 +24,35 @@ import {
   percentText,
   registrationSession,
   shareLegend,
-  standbyLines,
-  standbySource,
+  sharedSendsOn,
+  labelOf,
   type LegendEntry,
 } from "../../masternodes/shared";
+import type { OpenSession } from "./Shared";
+import { MainnetDissolveNote, MaintenanceSheets, Standbys, type MaintenanceCtx, type MaintenanceSheet } from "./SharedMaintenance";
 
 const P = "masternodes.shared.detail";
 const strong = (c: ReactNode) => <strong>{c}</strong>;
 const mono = (a: string) => <span className="mono">{shortAddress(a)}</span>;
 
-export function SharedSection({ walletId, row, shown, operatorReward }: { walletId: string; row: MasternodeRow; shown: Display; operatorReward: number | null }) {
+export function SharedSection({
+  wallet,
+  network,
+  row,
+  shown,
+  operatorReward,
+  onOpenSession,
+}: {
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  row: MasternodeRow;
+  shown: Display;
+  operatorReward: number | null;
+  onOpenSession: (s: OpenSession) => void;
+}) {
   const t = useT();
+  const walletId = wallet.walletId;
+  const [sheet, setSheet] = useState<MaintenanceSheet | null>(null);
   const shares = useSharedShares(walletId, row.proTxHash);
   const sessions = useSharedSessions(walletId);
   const standby = useSharedStandby(walletId, row.proTxHash, shares.isSuccess);
@@ -61,6 +80,8 @@ export function SharedSection({ walletId, row, shown, operatorReward }: { wallet
   const line = eligibilityLine(s.eligibility);
   const end = earlyEnd(s);
   const operatorBp = operatorReward ?? session?.terms.operatorReward ?? 0;
+  const actions = s.eligibility === "ok" && !wallet.watchOnly && mine.length > 0;
+  const c: MaintenanceCtx = { wallet, network, hash: row.proTxHash, shares: s, legend, session, standbys: standby.data ?? [], onOpenSession };
   return (
     <div className="sh-detail" data-testid="sh-detail">
       <div>
@@ -90,7 +111,7 @@ export function SharedSection({ walletId, row, shown, operatorReward }: { wallet
         <dt>{t(`${P}.early`)}</dt>
         <dd data-testid="sh-detail-early">{end === null ? t(`${P}.earlyNone`) : t(`${P}.earlyEnds`, { height: end })}</dd>
       </dl>
-      <Standbys standbys={standby.data ?? []} fullValidNow={s.fullValidNow} legend={legend} shown={shown} />
+      <Standbys c={c} actions={actions} onSheet={setSheet} />
       <p className="mg-small mg-muted" data-testid="sh-detail-backups">
         {t(`${P}.backups`)}
       </p>
@@ -99,11 +120,23 @@ export function SharedSection({ walletId, row, shown, operatorReward }: { wallet
           {line}
         </p>
       )}
+      {actions && (
+        <>
+          {!sharedSendsOn(network) && <MainnetDissolveNote />}
+          <span className="mg-actions" data-testid="sh-detail-actions">
+            <DashButton variant="tintedBlue" size="small" data-testid="sh-dissolve-open" onClick={() => setSheet({ kind: "dissolve", segment: "alone" })}>
+              {t(`${P}.dissolveAction`)}
+            </DashButton>
+            <DashButton variant="tintedBlue" size="small" data-testid="sh-keychange-open" onClick={() => setSheet({ kind: "keyChange" })}>
+              {t(`${P}.changeKeysAction`)}
+            </DashButton>
+          </span>
+        </>
+      )}
+      <MaintenanceSheets c={c} sheet={sheet} onSheet={setSheet} />
     </div>
   );
 }
-
-const labelOf = (legend: LegendEntry[], index: number) => legend.find((l) => l.index === index)?.label ?? "";
 
 function ShareBar({ legend, shown }: { legend: LegendEntry[]; shown: Display }) {
   const t = useT();
@@ -144,29 +177,6 @@ function Payouts({ fact, legend, many }: { fact: ShareFact; legend: LegendEntry[
       <p className="mg-small mg-muted" data-testid="sh-detail-caveat">
         {t(`${P}.caveat`)}
       </p>
-    </div>
-  );
-}
-
-function Standbys({ standbys, fullValidNow, legend, shown }: { standbys: Standby[]; fullValidNow: boolean; legend: LegendEntry[]; shown: Display }) {
-  const t = useT();
-  if (standbys.length === 0) return null;
-  const own = new Set(legend.filter((l) => l.mine).map((l) => l.index));
-  const labelled = standbys.some((s) => !own.has(s.shareIndex));
-  return (
-    <div data-testid="sh-detail-standby">
-      <h3 className="mg-section-title">{t(`${P}.standby.title`)}</h3>
-      {standbys.map((s) => (
-        <ul key={`${s.shareIndex}-${s.fee}`} className="sh-lines mg-small" data-testid={`sh-standby-${s.shareIndex}-${s.fee}`}>
-          {labelled && <li className="sh-standby-share">{labelOf(legend, s.shareIndex)}</li>}
-          {standbyLines(s, fullValidNow, (d) => shown.withUnit(d)).map((l) => (
-            <li key={l.variant} data-testid={`sh-standby-${l.variant}`}>
-              {l.text}
-            </li>
-          ))}
-          <li className="mg-muted">{standbySource(s, (secs) => shortDate(secs))}</li>
-        </ul>
-      ))}
     </div>
   );
 }

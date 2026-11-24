@@ -204,6 +204,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 setFilter("needsVote");
                 setTab("governance");
               }}
+              onOpenSession={setShared}
             />
           ) : tab === "governance" ? (
             body

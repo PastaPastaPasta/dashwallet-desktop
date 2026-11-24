@@ -373,6 +373,15 @@ export class IpcBackend implements Backend {
   mnSharedDiscard = cmd.mnSharedDiscard;
   mnSharedImport = cmd.mnSharedImport;
   mnSharedImportFile = cmd.mnSharedImportFile;
+  mnSharedPreviewDissolve = cmd.mnSharedPreviewDissolve;
+  mnSharedDissolve = cmd.mnSharedDissolve;
+  mnSharedCreateStandby = cmd.mnSharedCreateStandby;
+  mnSharedExportStandby = cmd.mnSharedExportStandby;
+  mnSharedSendStandby = cmd.mnSharedSendStandby;
+  mnSharedStartDissolveTogether = cmd.mnSharedStartDissolveTogether;
+  mnSharedStartKeyChange = cmd.mnSharedStartKeyChange;
+  mnSharedApproveMaintenance = cmd.mnSharedApproveMaintenance;
+  mnSharedSendMaintenance = cmd.mnSharedSendMaintenance;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();

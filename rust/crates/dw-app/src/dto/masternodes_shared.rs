@@ -679,3 +679,97 @@ mirror_struct!(engine::SharedShares => SharedShares {
     registered_height, spend_height, early_period_blocks, early_penalty, full_valid_from,
     eligibility: into, full_valid_now, session, shares: vec,
 });
+
+/// A dissolution by one of this wallet's shares, the actor, paying `fee`
+/// (duffs, at most 1,000,000) and, in the early period, the penalty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DissolveRequest {
+    pub pro_tx_hash: String,
+    pub share_index: u16,
+    pub fee: u64,
+}
+
+impl From<DissolveRequest> for engine::DissolveRequest {
+    fn from(r: DissolveRequest) -> Self {
+        Self {
+            pro_tx_hash: r.pro_tx_hash,
+            share_index: r.share_index,
+            fee: r.fee,
+        }
+    }
+}
+
+/// What a dissolution alone would build now. Signs nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DissolvePreview {
+    /// Mined at the next height it pays the penalty.
+    pub early: bool,
+    /// Duffs.
+    pub penalty: u64,
+    /// Duffs.
+    pub fee: u64,
+    /// The first height a dissolution pays no penalty.
+    pub valid_from_height: u32,
+    /// Every share in share order.
+    pub returns: Vec<ShareReturn>,
+    pub warnings: Vec<SharedWarning>,
+    /// The penalty and the fee: what the grant must cover.
+    pub total_debit: u64,
+}
+
+mirror_struct!(engine::DissolvePreview => DissolvePreview {
+    early, penalty, fee, valid_from_height, returns: vec, warnings: vec, total_debit,
+});
+
+/// A change of a shared masternode's registrar keys together: each kept
+/// or set. The payout isn't part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyChangeRequest {
+    pub pro_tx_hash: String,
+    pub operator: super::OperatorUpdate,
+    pub voting: super::VotingUpdate,
+}
+
+impl From<KeyChangeRequest> for engine::KeyChangeRequest {
+    fn from(r: KeyChangeRequest) -> Self {
+        Self {
+            pro_tx_hash: r.pro_tx_hash,
+            operator: r.operator.into(),
+            voting: r.voting.into(),
+        }
+    }
+}
+
+/// What `mn_shared_send_maintenance` handed off: a dissolution as a ProTx
+/// operation of kind `dissolve`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum MaintenanceSent {
+    Operation {
+        operation: Box<super::ProTxOperation>,
+    },
+    Session {
+        session: Box<SharedSession>,
+    },
+}
+
+impl From<engine::MaintenanceSent> for MaintenanceSent {
+    fn from(m: engine::MaintenanceSent) -> Self {
+        use engine::MaintenanceSent as M;
+        match m {
+            M::Operation { operation } => Self::Operation {
+                operation: Box::new((*operation).into()),
+            },
+            M::Session { session } => Self::Session {
+                session: Box::new((*session).into()),
+            },
+        }
+    }
+}

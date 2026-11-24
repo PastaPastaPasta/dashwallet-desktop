@@ -855,6 +855,15 @@ export const masternodes = {
     savedReadOnly: "Saved in this wallet. This version can't open key changes or dissolutions yet.",
     standbySaved: "Saved in this wallet.",
     standbyHeld: "This wallet already holds it.",
+    /** MG's ruling: where the absent send actions would be on mainnet. */
+    mainnetSendNote:
+      "This version can't send shared-masternode transactions on mainnet yet. You can still follow this masternode, approve steps and save a standby dissolution here.",
+    /** MG's mainnet line beside Dissolve: names the export button's label, "Save a copy…", verbatim. */
+    mainnetDissolveNote:
+      "This version can't send shared-masternode transactions on mainnet yet. To leave now, create a standby dissolution and save it with Save a copy… Then run sendrawtransaction in Dash Core's console with the hex line under FULL PRINCIPAL. Before the early period ends, use the line under IMMEDIATE instead, which pays the early-exit penalty. You can still follow this masternode and approve steps here.",
+    /** A maintenance session's kind, as its sheet's title names it. */
+    kind: { dissolve_together: "Dissolve together", key_change: "Change keys together" },
+    maintenanceTitle: "{kind} · Session {code}",
     stages: {
       label: "Stages",
       invite: "Invite",
@@ -915,6 +924,7 @@ export const masternodes = {
       zero_penalty: "With an early period and no penalty, anyone can leave early for just the network fee.",
       skipped_signatures: { one: "{count} signature for {labels} didn't apply to this session and was skipped.", other: "{count} signatures for {labels} didn't apply to this session and were skipped." },
       no_approvals: "This message carries no approvals.",
+      usable_by_funder: "Once every owner signs, the owner who funds this change can send it until one of its fee coins is spent.",
     },
     row: {
       join: "Nothing is sent to the network now.",
@@ -942,6 +952,34 @@ export const masternodes = {
       sent: "Sent · waiting for 1 confirmation",
       confirmed: "The registration confirmed. The masternode stands.",
       dead: "One of your reserved coins was spent elsewhere, so this session can't continue.",
+      /** MG-10 §2.3.1, dissolve together. */
+      togetherApprove: "You get back {amount}; nobody pays a penalty.",
+      actorFee: "The network fee, {fee}, comes out of your share.",
+      acceptActorFee: "I accept paying the {fee} network fee from my share",
+      togetherSendApproval: "Send your signature to the others.",
+      togetherSend: "Everyone signed. Anyone holding every signature can send it.",
+      togetherSendButton: "Send dissolution",
+      dissolved: "Dissolved.",
+      maintenanceWaiting: "{signed} of {total} shares signed. Send the request to each owner.",
+      copyRequest: "Copy request",
+      copySignatures: "Copy signatures",
+      /** MG-10 §2.3.1 and §2.6, key change. */
+      keyApprove: "Approving signs this change of the masternode's keys with your share's owner key.",
+      keySendApproval: "Send your approval to the owner who started this change.",
+      keySendSignatures: "You hold every signature. Send them to the owner who started this change, who sends it.",
+      keySendLater:
+        "Every owner signed. Sending a key change comes in a later version of the wallet. Keep this session, or discard it to release the fee coins.",
+      keyStale: "The masternode's keys changed since this request was made, so it can't be sent.",
+      keyStaleOther: "Only the owner who started this change can cancel it.",
+      keyConfirmed: "Keys changed.",
+      keyDead: {
+        abandoned: "You cancelled this change; its fee coins were released.",
+        inputs_spent: "A coin reserved for the fee was spent elsewhere, so this change can't be sent.",
+        delisted: "The masternode left the list.",
+      },
+      keyOperator: "Operator key: {from} → {to}",
+      keyVoting: "Voting address: {from} → {to}",
+      keyUnchanged: "unchanged",
     },
     funding: {
       /** Before coins are picked: an estimate. */
@@ -1085,7 +1123,35 @@ export const masternodes = {
         immediateUnknown: "Immediate: valid now, you pay the early-exit penalty",
         saved: "Saved on this computer on {date}",
         imported: "Imported",
+        /** MG-10 §2.8 prompt. */
+        prompt: "Save a standby dissolution. It lets you leave later even if this wallet can't reach the others.",
+        createIt: "Create it",
+        createTitle: "Create a standby dissolution",
+        createText: "Signs a dissolution of your share now and keeps it in this wallet. Nothing is sent.",
+        createAsk: "Enter your passphrase to sign the standby dissolution.",
+        /** The export button: MG's mainnet line names it verbatim. */
+        saveCopy: "Save a copy…",
+        exportTitle: "Save a copy of the standby",
+        /** MG-approved, verbatim, shown before saving. */
+        exportAlert:
+          "Anyone who has this file can dissolve this masternode at any time. Every owner's share still goes back to its refund address, but the masternode stops earning. Keep the file private, and give it only to co-owners you trust.",
+        exportAsk: "Enter your passphrase to save the standby.",
+        exportSaved: "Saved as {name}.",
+        sendFull: "Send the full refund",
+        sendImmediate: "Send now and pay the penalty",
+        sendIt: "Send it",
+        onlyImmediate: "This standby still pays the {penalty} penalty. Create a full refund first to avoid it.",
+        createFull: "Create a full refund",
+        sendTitle: "Send the standby dissolution",
+        confirmPenalty: "You pay the {penalty} penalty to the others.",
+        leavesPenalty: "{total} leaves your share: the {penalty} penalty and the {fee} network fee.",
+        leavesFee: "{total} leaves your share: the network fee.",
+        leavesNothing: "This is another owner's standby: their share pays for it, and nothing leaves this wallet.",
+        sendAsk: "Enter your passphrase to send the standby dissolution.",
+        sent: "Standby dissolution sent. It applies once it's in a block.",
       },
+      dissolveAction: "Dissolve…",
+      changeKeysAction: "Change keys together…",
       backups: "Shared-masternode sessions and standbys aren't in wallet backups. Save a copy of the standby to keep a way out.",
       eligibility: {
         upgrade_unknown: "Available once the masternode list has synced.",
@@ -1093,6 +1159,44 @@ export const masternodes = {
         too_early: "Available once the masternode list includes the registration.",
         delisted: "This masternode has left the list, so there's nothing to dissolve or change.",
       },
+    },
+    /** Dissolve (MG-10 §2.7, UX-SPEC §4.25.8): Alone, now · Together · Standby. */
+    dissolve: {
+      title: "Dissolve",
+      segments: { alone: "Alone, now", together: "Together", standby: "Standby" },
+      aloneIntro: "Dissolving ends the masternode and returns every share to its owner's refund address. You can do it alone at any time.",
+      pickShare: "Which of your shares leaves?",
+      youGetBack: "You get back",
+      others: "The others",
+      fee: "Network fee",
+      feeValue: "{fee}, taken from your share",
+      early: "<strong>Early exit: you pay the {penalty} penalty.</strong> Leaving is free after block {height}, or at any time if everyone agrees: use Together.",
+      accept: "I accept paying the {penalty} early-exit penalty",
+      leavesPenalty: "{total} leaves your share: the {penalty} penalty and the {fee} network fee.",
+      leavesFee: "{total} leaves your share: the network fee.",
+      dust: "What you'd get back is too small to send. Use Together or the standby.",
+      checking: "Working out the figures…",
+      failed: "Couldn't work out this dissolution. {reason}",
+      button: "Dissolve now",
+      ask: "Enter your passphrase to sign and send the dissolution.",
+      sent: "Dissolution sent. It applies once it's in a block.",
+      noSession: "Leave now: create a standby, then send its immediate variant (you pay the {penalty} penalty).",
+      noSessionFull: "Leave now: create a standby, then send its full refund.",
+      togetherText: "Every owner signs one dissolution, and nobody pays a penalty. You pay the network fee from your share.",
+      togetherFee: "Network fee, in duffs",
+      togetherFeeHelp: "At least {min} duffs for {count} shares.",
+      togetherStart: "Start",
+      togetherAsk: "Enter your passphrase to sign your share of the dissolution.",
+      noStandby: "No standby dissolution is saved yet.",
+      done: "Done",
+    },
+    /** Change keys together (MG-10 §2.6). */
+    keyChange: {
+      title: "Change keys together",
+      intro: "Every owner signs. You pay the network fee.",
+      start: "Start",
+      ask: "Enter your passphrase to sign your share of the change.",
+      nothing: "Choose a new operator key or voting key.",
     },
     feeSheet: {
       title: "Change network fee",
@@ -1122,6 +1226,14 @@ export const masternodes = {
       fileNotMessage: "This file isn't a shared-masternode message.",
       grantExceeded: "The amount changed. Check the figures again.",
       notFound: "This session isn't in this wallet any more.",
+      /** MG's ruling: the binding's refusal of a send on mainnet. */
+      mainnet_send_off: "This version sends shared-masternode transactions on testnet only.",
+      send_unsupported: "This version can't send a key change yet.",
+      actor_fee: "This request takes the {fee} network fee from your share. Accept it, then approve again.",
+      stale: "The masternode's keys changed since this request was made, so it can't be signed or sent.",
+      not_key_change: "This isn't a key change.",
+      inputs_hash: "This request's fee coins don't match. Ask for it again.",
+      other_masternode: "This request is for another masternode.",
     },
   },
   withdraw: {

@@ -19,6 +19,8 @@ const SAMPLES: Samples = {
   sharedStage: { code: "masternodes.shared_stage", data: { kind: "sharedStage", stage: "replied" } },
   sharedFunding: { code: "masternodes.shared_funding_mismatch", data: { kind: "sharedFunding", reason: "fee_low", needed: 120_000 } },
   sharedActorFee: { code: "masternodes.shared_actor_fee", data: { kind: "sharedActorFee", fee: 1_000 } },
+  sharedSendNetwork: { code: "app.shared_send_off", data: { kind: "sharedSendNetwork", network: "mainnet" } },
+  sharedUnsupported: { code: "app.shared_send_unsupported", data: { kind: "sharedUnsupported", sessionKind: "key_change" } },
   retryAfter: { code: "vault.throttled", data: { kind: "retryAfter", secs: 90 } },
   wrongPassphrase: { code: "vault.wrong_passphrase", data: { kind: "wrongPassphrase", failedAttempts: 3, retryAfterSecs: 60 } },
   rpc: { code: "console.rpc_error", data: { kind: "rpc", rpcCode: -8, rpcMessage: "Block height out of range" } },

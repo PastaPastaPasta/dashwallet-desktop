@@ -1,6 +1,6 @@
 // Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the pane and the page's
 // states. The pane offers Change keys or payout (S3) and the operator explanation sheet; a shared
-// masternode's pane reads its shares instead of the 30-day payouts (§2.4, S6). Setting up, tracking,
+// masternode's pane reads its shares instead of the 30-day payouts, with its maintenance (§2.4, S6). Setting up, tracking,
 // keys, release and withdraw come with other slices.
 
 import { useState } from "react";
@@ -43,13 +43,14 @@ import { isSharedRow, percentText } from "../../masternodes/shared";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
+import type { OpenSession } from "./Shared";
 import { SharedSection } from "./SharedPane";
 
 const DAY = 86_400;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 const MAX_LABEL = 64;
 
-export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSummary; network: NetworkInfo; onVote: () => void }) {
+export function MyMasternodes({ wallet, network, onVote, onOpenSession }: { wallet: WalletSummary; network: NetworkInfo; onVote: () => void; onOpenSession: (s: OpenSession) => void }) {
   const list = useMasternodes(wallet.walletId);
   const refresh = useMasternodesRefresh();
   const t = useT();
@@ -171,13 +172,29 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
             </section>
           ))}
         </div>
-        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} />}
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} onOpenSession={onOpenSession} />}
       </div>
     </>
   );
 }
 
-function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; network: NetworkInfo; shown: Display; onVote: () => void }) {
+function Pane({
+  row,
+  rows,
+  wallet,
+  network,
+  shown,
+  onVote,
+  onOpenSession,
+}: {
+  row: MasternodeRow;
+  rows: MasternodeRow[];
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  shown: Display;
+  onVote: () => void;
+  onOpenSession: (s: OpenSession) => void;
+}) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const [renaming, setRenaming] = useState(false);
@@ -215,7 +232,7 @@ function Pane({ row, rows, wallet, network, shown, onVote }: { row: MasternodeRo
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
-        {isSharedRow(row) ? <SharedSection walletId={wallet.walletId} row={row} shown={shown} operatorReward={d?.registration?.operatorReward ?? null} /> : <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />}
+        {isSharedRow(row) ? <SharedSection wallet={wallet} network={network} row={row} shown={shown} operatorReward={d?.registration?.operatorReward ?? null} onOpenSession={onOpenSession} /> : <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />}
         <div>
           <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">
