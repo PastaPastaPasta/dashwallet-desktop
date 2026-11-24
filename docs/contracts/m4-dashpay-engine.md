@@ -966,7 +966,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 2e2331e9c4bb50183ae9e75699d85322ca0e43e2dcdfcd94303d4d16f8f5b9e1 version: 77 -->
+<!-- surface-sha256: 139343fc923a4042b1fe72be023c7a37977cb38ff1b6e9ebc8cc717ed5c90865 version: 78 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1259,7 +1259,7 @@ impl DashPay {
     pub async fn withdraw_to_platform_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawToPlatformQuote, CreditsError>;
     pub async fn withdraw_to_platform(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawToPlatformOutcome, CreditsError>;
     pub async fn top_up_from_platform_quote(&self, identity: String, amount: WithdrawAmount) -> Result<TopUpFromPlatformQuote, CreditsError>;
-    pub async fn top_up_from_platform(&self, identity: String, amount: WithdrawAmount, grant: String) -> Result<TopUpFromPlatformOutcome, CreditsError>;
+    pub async fn top_up_from_platform(&self, identity: String, amount: WithdrawAmount, fee_input: Option<PlatformAddressRow>, grant: String) -> Result<TopUpFromPlatformOutcome, CreditsError>;
     pub async fn withdrawals(&self, identity: String) -> Result<Vec<Withdrawal>, CreditsError>;
 }
 // src/platform/dashpay.rs
@@ -1964,6 +1964,7 @@ pub struct PlatformAddressBalance {
     pub addresses: Vec<PlatformAddressRow>,
     pub synced_at: Option<u64>,
     pub syncing: bool,
+    pub #[serde(default)] sends_active: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformAddressRow {
