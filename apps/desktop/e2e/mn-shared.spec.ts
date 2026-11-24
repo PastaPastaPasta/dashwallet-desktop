@@ -400,3 +400,16 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+test("a scrim press soon after a sheet opens keeps it; one later than 600 ms closes it", async ({ page }) => {
+  const errors = await open(page, "sh-capability-active", "light");
+  await page.getByTestId("mn-shared").click();
+  const sheet = page.getByTestId("sh-start");
+  // At once, on the scrim's top-left corner, outside the sheet: taken as the opening click's tail.
+  await page.mouse.click(5, 5);
+  await expect(sheet).toBeVisible();
+  await page.waitForTimeout(800);
+  await page.mouse.click(5, 5);
+  await expect(sheet).toBeHidden();
+  expect(errors).toEqual([]);
+});
