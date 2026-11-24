@@ -410,6 +410,9 @@ pub struct RegistrationStatus {
     pub profile_failure: Option<String>,
     /// Set on an invitation claim's row.
     pub invitation: Option<RegistrationInvitation>,
+    /// A row funded from the Platform addresses: like a claim's, its resume
+    /// takes the grant `registrationResumeGrant` sizes.
+    pub from_platform: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -461,6 +464,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation,
+            from_platform,
             created_at,
             updated_at,
         } = s;
@@ -480,6 +484,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation: invitation.map(Into::into),
+            from_platform,
             created_at,
             updated_at,
         }

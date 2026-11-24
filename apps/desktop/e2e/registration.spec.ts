@@ -284,6 +284,65 @@ test("D5: a shortfall against what the wallet can spend holds Confirm & pay", as
   await expect(page.getByTestId("registration-pay")).toBeDisabled();
 });
 
+/** The row of `draft` as a Platform-funded registration whose payment is held: it may still go
+ * through, and nothing runs it until Continue (#685). */
+async function holdPlatformPayment(page: Page, draft: string) {
+  await page.evaluate((d) => {
+    const f = window.__dwFixture!;
+    const dp = f.world.dashpay;
+    Object.assign(dp.registrations.find((r) => r.draft === d)!, { phase: "keysPrepared", waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true });
+    dp.runs = dp.runs.filter((x) => x !== d);
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "registration", draft: d } });
+  }, draft);
+}
+
+/** The held line names both actions, so it shows only beside both (MG). */
+const HELD_LINE =
+  "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.";
+
+const calls = (page: Page, name: string) => page.evaluate((n) => window.__dwFixture!.calls.filter((c) => c === n).length, name);
+
+test("#685: a held Platform payment offers Continue and Move to Dash wallet on the progress screen and the Home card", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  const draft = await register(page);
+  await holdPlatformPayment(page, draft);
+  const transfer = page.getByTestId("transfer-body");
+
+  // The progress screen: the line names both, and both are offered.
+  await expect(screen(page)).toHaveAttribute("data-kind", "held");
+  await expect(page.getByTestId("registration-lines")).toContainText(HELD_LINE);
+  await expect(page.getByTestId("registration-continue")).toHaveText("Continue");
+  await expect(page.getByTestId("registration-moveToCore")).toHaveText("Move to Dash wallet");
+  await page.getByTestId("registration-moveToCore").click();
+  await expect(page.getByTestId("page-home")).toBeVisible();
+  await expect(transfer).toHaveAttribute("data-route", "platformToCore");
+  await page.keyboard.press("Escape");
+  await expect(transfer).toHaveCount(0);
+
+  // The Home card: the same two.
+  await expect(card(page)).toHaveAttribute("data-state", "creatingHeld");
+  await expect(card(page)).toContainText(HELD_LINE);
+  await expect(card(page).getByTestId("dashpay-card-action")).toHaveText("Continue");
+  await expect(card(page).getByTestId("dashpay-card-secondary")).toHaveText("Move to Dash wallet");
+  await card(page).getByTestId("dashpay-card-secondary").click();
+  await expect(transfer).toHaveAttribute("data-route", "platformToCore");
+  await page.keyboard.press("Escape");
+  await expect(transfer).toHaveCount(0);
+
+  // Continue: into the Join page, then the row's own grant (no quote), then the same draft runs.
+  const quotes = await calls(page, "registration_quote");
+  await card(page).getByTestId("dashpay-card-action").click();
+  await expect(screen(page)).toHaveAttribute("data-kind", "held");
+  await page.getByTestId("registration-continue").click();
+  await authorize(page);
+  await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  expect(await calls(page, "registration_resume_grant")).toBe(1);
+  expect(await calls(page, "resume_registration")).toBe(1);
+  expect(await calls(page, "registration_quote")).toBe(quotes);
+  expect(await calls(page, "start_registration")).toBe(1);
+  expect(errors).toEqual([]);
+});
+
 test("R4 a failed registration whose funding is unknown goes to Repair, which resolves it (Sol r1 P2)", async ({ page }) => {
   await open(page, "dashpay-registration-failed-unknown");
   await expect(card(page)).toHaveAttribute("data-state", "creatingRepair");
@@ -346,6 +405,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
   { name: "progress", scenario: "dashpay-registering", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "progress")) },
   { name: "paused", scenario: "dashpay-registration-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "paused")) },
   { name: "retry", scenario: "dashpay-registering-paused", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "retry")) },
+  { name: "held", scenario: "dashpay-registering-held", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "held")) },
   { name: "repair", scenario: "dashpay-registration-needs-finish", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "repair-unknown", scenario: "dashpay-registration-failed-unknown", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "repair")) },
   { name: "stopped", scenario: "dashpay-registration-stopped", reach: async (page) => void (await expect(screen(page)).toHaveAttribute("data-kind", "stopped")) },

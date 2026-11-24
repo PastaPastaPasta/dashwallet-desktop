@@ -177,6 +177,7 @@ export const STATES: Record<string, State> = {
   paused: { scenario: "dashpay-registration-paused", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "paused") },
   unlock: { scenario: "dashpay-registering-unlock", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "unlock") },
   retry: { scenario: "dashpay-registering-paused", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "retry") },
+  held: { scenario: "dashpay-registering-held", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "held") },
   repair: { scenario: "dashpay-registration-needs-finish", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   "repair-unknown": { scenario: "dashpay-registration-failed-unknown", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   stopped: { scenario: "dashpay-registration-stopped", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "stopped") },
