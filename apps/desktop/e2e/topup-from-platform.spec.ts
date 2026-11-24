@@ -13,11 +13,17 @@ test.describe.configure({ timeout: 60_000 });
 const sheet = (page: Page) => page.getByTestId("topup-body");
 const shots = process.env.DW_SHOTS_DIR;
 
-async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending" | "failed") {
+async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending" | "failed", sendsActive = true) {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
   if (nextTopUp) await page.evaluate((n) => void (window.__dwFixture!.world.pending.platform!.nextTopUp = n), nextTopUp);
+  if (!sendsActive)
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      (f.world.pending.platform! as { sendsActive?: boolean }).sendsActive = false;
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
+    });
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "profile" }));
   await expect(page.getByTestId("page-profile")).toBeVisible();
   await page.getByTestId("profile-top-up").click();
@@ -66,6 +72,16 @@ const topUpLands = (page: Page) =>
   });
 
 for (const theme of THEMES) {
+  test(`Pay with: Platform is not offered on a network without address funds transitions yet (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme, undefined, false);
+    await expect(page.getByTestId("topup-source-platform")).toContainText("Not available on this network yet.");
+    await expect(page.getByTestId("topup-source-platform").locator("input")).toBeDisabled();
+    await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();
+    await shot(page, theme, "pay-with-platform-not-on-network");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   test(`Pay with: Dash wallet by default, Platform with Max, Shielded not offered (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme);
     await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();
@@ -127,6 +143,31 @@ for (const theme of THEMES) {
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("topup-source-move-to-core").click();
     await expect(page.getByTestId("transfer-sheet")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`a top-up whose fee input changed since Confirm adds nothing and offers Back (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme);
+    await page.getByTestId("topup-source-platform").click();
+    await page.getByTestId("topup-preset-5000000").click();
+    await page.getByTestId("topup-next").click();
+    await expect(page.getByTestId("topup-quote")).toBeVisible();
+    // An address before the quote's input 0 is funded since: the plan's fee input moves.
+    await page.evaluate(() => {
+      const p = window.__dwFixture!.world.pending.platform!;
+      p.addresses = [...p.addresses, { address: "tdash1" + "0".repeat(56), credits: "20000000000" }];
+    });
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(page.getByTestId("topup-refusal")).toHaveText("What you can pay from your Platform addresses changed since you reviewed this top-up. Review it again.");
+    await shot(page, theme, "platform-fee-input-changed");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await page.getByTestId("topup-refused-back").click();
+    await expect(sheet(page)).toHaveAttribute("data-step", "amount");
+    await page.getByTestId("topup-next").click();
+    await page.getByTestId("topup-pay").click();
+    await authorize(page);
+    await expect(page.getByTestId("topup-outcome-title")).toHaveText("Credits added");
     expect(errors).toEqual([]);
   });
 

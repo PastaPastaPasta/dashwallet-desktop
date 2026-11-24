@@ -446,7 +446,7 @@ impl From<dw_engine::EngineError> for CoinJoinError {
                 F::SpvNotRunning => Self::SpvNotRunning,
                 F::NoPeers => Self::NoPeers,
                 F::BroadcastRejected(reason) => Self::BroadcastRejected { reason },
-                F::MixingActive => Self::MixingActive,
+                F::MixingActive | F::InputsHeld => Self::MixingActive,
                 F::MoveRunning => Self::MoveRunning,
                 F::PlanChanged => Self::PlanChanged,
             },

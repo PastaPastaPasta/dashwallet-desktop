@@ -33,6 +33,7 @@ const TOOLS_DATA = [
   /^[0-9a-f]{16,}$/i,
   /^(main|test|regtest|devnet-\S+)$/,
   /^\/[\w .:-]+\/$/,
+  /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/,
   /^\p{Nd}+(\.\p{Nd}+)? (B|KB|MB|GB|ms)$/u,
   /^(\p{Nd}+ [dhms])( \p{Nd}+ [dhms])*$/u,
   /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \p{Nd}{1,2} \p{Nd}{2}:\p{Nd}{2}:\p{Nd}{2} \p{Nd}{4}$/u,

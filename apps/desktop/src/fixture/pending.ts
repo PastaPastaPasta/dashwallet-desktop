@@ -146,6 +146,8 @@ export interface PlatformWorld {
   syncedAt: number | null;
   /** Credits on addresses too small to move: in `credits`, not in `movableCredits`. */
   dust: string;
+  /** `false`: the network's protocol version has no address funds transitions yet (below 11). */
+  sendsActive?: boolean;
   /** What the next payment to a contact from this balance comes to (C-funding D-C5). */
   nextPayout: PayoutStateName;
   /** The next payment's reply is lost after the engine recorded it (an `internal` error). */
@@ -280,7 +282,7 @@ const movable = (p: PlatformWorld) => (total(p) > MOVE_FEE_CREDITS ? total(p) : 
 
 function balance(p: PlatformWorld): PlatformAddressBalance {
   const credits = total(p) + BigInt(p.dust);
-  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false };
+  return { credits: String(credits), movableCredits: String(movable(p)), duffs: Number(movable(p) / CREDITS_PER_DUFF), addresses: [...p.addresses].sort((a, b) => Number(BigInt(b.credits) - BigInt(a.credits))), syncedAt: p.syncedAt, syncing: false, sendsActive: p.sendsActive ?? true };
 }
 
 /** The platform state of `world`, or the absent-command rejection. */

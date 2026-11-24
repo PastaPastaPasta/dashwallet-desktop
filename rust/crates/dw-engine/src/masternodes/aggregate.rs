@@ -4,7 +4,7 @@
 //! resolved per Core with the internal output checked (MG-00 D43, MG-01
 //! §7), and the operator's share. Pure; not facade.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use dashcore::blockdata::transaction::special_transaction::provider_registration::ProviderMasternodeType;
 use dashcore::hashes::Hash;
@@ -141,18 +141,28 @@ fn pending_last(records: &mut [MasternodeRecord]) {
 }
 
 /// Adds the provider transactions among `history` that `txs` lacks, then
-/// orders `txs` by txid, as the library hands them over.
+/// orders `txs` by txid, as the library hands them over. A held one not
+/// yet in a block takes the history's block, if it has one (#729): the
+/// wallet that sent a transaction can hold its pre-block copy.
 pub(crate) fn add_history<'a>(
     txs: &mut Vec<(u32, u32, Transaction)>,
     history: impl IntoIterator<Item = (u32, u32, &'a Transaction)>,
 ) {
-    let held: HashSet<Txid> = txs.iter().map(|(_, _, tx)| tx.txid()).collect();
-    txs.extend(
-        history
-            .into_iter()
-            .filter(|(_, _, tx)| is_provider(tx) && !held.contains(&tx.txid()))
-            .map(|(h, p, tx)| (h, p, tx.clone())),
-    );
+    let held: HashMap<Txid, usize> = txs
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, tx))| (tx.txid(), i))
+        .collect();
+    for (h, p, tx) in history {
+        if !is_provider(tx) {
+            continue;
+        }
+        match held.get(&tx.txid()) {
+            Some(&i) if txs[i].0 == 0 && h > 0 => (txs[i].0, txs[i].1) = (h, p),
+            Some(_) => {}
+            None => txs.push((h, p, tx.clone())),
+        }
+    }
     txs.sort_by_cached_key(|(_, _, tx)| tx.txid());
 }
 
@@ -390,6 +400,30 @@ mod tests {
         let got: Vec<_> = txs.iter().map(|(h, p, tx)| (*h, *p, tx.txid())).collect();
         assert_eq!(got, want);
         assert_eq!(aggregate(&txs).len(), 2);
+    }
+
+    /// #729: the wallet that sent a registration holds its pre-block copy;
+    /// the history's mined copy gives the height.
+    #[test]
+    fn history_dates_a_held_registration_not_yet_in_a_block() {
+        let sent = registration(null(1), false, 0, coins(&[MASTERNODE_COLLATERAL]));
+        let mined = registration(null(2), false, 0, coins(&[MASTERNODE_COLLATERAL, 7]));
+        let mut txs = vec![(0, 0, sent.clone()), (100, 3, mined.clone())];
+        add_history(&mut txs, [(150, 4, &sent), (0, 0, &mined)]);
+        let height = |tx: &Transaction| {
+            let hash = tx.txid().to_byte_array();
+            aggregate(&txs)
+                .into_iter()
+                .find(|o| o.record.pro_tx_hash == hash)
+                .unwrap()
+                .registered_height()
+        };
+        assert_eq!((height(&sent), height(&mined)), (Some(150), Some(100)));
+        assert!(
+            txs.iter()
+                .any(|(h, p, tx)| (*h, *p) == (150, 4) && tx.txid() == sent.txid())
+        );
+        assert_eq!(txs.len(), 2);
     }
 
     /// #651: a registration not yet in a block is numbered after the mined

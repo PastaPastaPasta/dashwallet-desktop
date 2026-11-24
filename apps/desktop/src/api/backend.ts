@@ -25,6 +25,7 @@ import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { NetworkSwitch } from "./generated/NetworkSwitch";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
@@ -164,6 +165,7 @@ import type { UpdateRegistrarPreview } from "./generated/UpdateRegistrarPreview"
 import type { UpdateRegistrarRequest } from "./generated/UpdateRegistrarRequest";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
+import type { WalletHistoryGap } from "./generated/WalletHistoryGap";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
 import type { AccountXpub } from "./generated/AccountXpub";
 import type { BackupFileHeader } from "./generated/BackupFileHeader";
@@ -558,6 +560,8 @@ export interface Backend {
   startSpv(): Promise<null>;
   /** Deletes the headers and filters; SPV must be stopped (`spv_running`). */
   resetChainData(): Promise<null>;
+  /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
+  historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
   /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
    * schedules a rescan; returns how many. */
@@ -632,7 +636,7 @@ export interface Backend {
   /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
   creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
   /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
-  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
