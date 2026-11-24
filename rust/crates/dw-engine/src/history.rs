@@ -664,7 +664,9 @@ pub(crate) fn held_total(
             spent.extend(e.tx.input.iter().map(|i| i.previous_output));
         }
         for i in &e.tx.input {
-            if p2pkh_signer(&i.script_sig).is_some_and(|s| owns(&s)) {
+            if holds.contains(&i.previous_output)
+                && p2pkh_signer(&i.script_sig).is_some_and(|s| owns(&s))
+            {
                 signed_by_own.insert(i.previous_output);
             }
         }
@@ -3325,8 +3327,11 @@ mod tests {
         held.own_inputs.insert(1, (300, hash_addr(2)));
         add(held);
         let observed_coin = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
-        let owned: HashSet<ScriptBuf> = [1, 2].map(|n| hash_addr(n).script_pubkey()).into();
-        let owned: HashSet<ScriptBuf> = owned.into_iter().chain([key_script(4)]).collect();
+        let owned = HashSet::from([
+            hash_addr(1).script_pubkey(),
+            hash_addr(2).script_pubkey(),
+            key_script(4),
+        ]);
         let holds = BTreeSet::from([valued, foreign, settled, unknown, recorded, observed_coin]);
         let observed = BTreeMap::from([(observed_coin, 12)]);
 
@@ -3345,7 +3350,8 @@ mod tests {
 
     /// #749 (Q81 C2): the coins a beaten incoming payment, or the other
     /// inputs of a beaten mix, held are other people's: neither valued nor
-    /// counted. The mix's own input still counts by its record.
+    /// counted. The mix's own input still counts by its record, as does a
+    /// coin whose output in the history the wallet doesn't own.
     #[test]
     fn held_total_leaves_out_coins_others_spent() {
         let owned: HashSet<ScriptBuf> =
@@ -3376,11 +3382,24 @@ mod tests {
         );
         mix.own_inputs.insert(0, (100, hash_addr(1)));
         txs.insert(mix.tx.txid(), mix);
-        let holds = BTreeSet::from([theirs, unsigned, mine, other]);
+        let made = entry(
+            tx(vec![foreign_input(2)], vec![out(900, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        let recorded = OutPoint::new(made.tx.txid(), 0);
+        txs.insert(made.tx.txid(), made);
+        let mut spent = entry(
+            tx(vec![input(recorded.txid, 0)], vec![out(10, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        spent.own_inputs.insert(0, (250, hash_addr(1)));
+        txs.insert(spent.tx.txid(), spent);
+        let holds = BTreeSet::from([theirs, unsigned, mine, other, recorded]);
 
         assert_eq!(
             held_total(&holds, &txs, &BTreeMap::new(), |s| owned.contains(s)),
-            (100, 0)
+            (100 + 250, 0),
+            "an own-input record values a coin whose output isn't owned"
         );
     }
 

@@ -3386,6 +3386,8 @@ fn a_drop_key_wallet_refuses_holds_nothing() {
         .refuse_drops
         .store(true, std::sync::atomic::Ordering::SeqCst);
     swept_by_an_unknown_winner(&engine, &session, id, &paid, a, &p);
+    let refused = (session.hub.drops_refused).load(std::sync::atomic::Ordering::SeqCst);
+    assert!(refused > 0, "the drop of C reached key-wallet");
     assert!(live_in_history(&session, id, c.txid()), "C is kept");
     let appdb = session.live().unwrap().appdb;
     let noted = crate::tx_actions::dropped_holds(&appdb, id).unwrap();
@@ -3407,6 +3409,8 @@ fn a_refused_drop_keeps_what_an_earlier_drop_holds() {
         .refuse_drops
         .store(true, std::sync::atomic::Ordering::SeqCst);
     swept_by_an_unknown_winner(&engine, &session, id, &paid, a, &p);
+    let refused = (session.hub.drops_refused).load(std::sync::atomic::Ordering::SeqCst);
+    assert!(refused > 0, "the drop of C reached key-wallet");
     assert!(live_in_history(&session, id, c.txid()), "C is kept");
     let holds = session.hub.dropped_holds(id);
     assert!(holds.contains(&d), "D is still held: {holds:?}");

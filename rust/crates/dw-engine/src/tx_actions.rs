@@ -2186,6 +2186,10 @@ impl NetworkSession {
         let core = &mut info.core_wallet;
         #[cfg(test)]
         let refused = (self.hub.refuse_drops).load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(test)]
+        if refused {
+            (self.hub.drops_refused).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         #[cfg(not(test))]
         let refused = false;
         let abandoned = match refused {

@@ -660,6 +660,9 @@ pub(crate) struct SessionHub {
     /// confirm, as when it settled the root meanwhile.
     #[cfg(test)]
     pub(crate) refuse_drops: std::sync::atomic::AtomicBool,
+    /// Tests: how many drops [`Self::refuse_drops`] refused.
+    #[cfg(test)]
+    pub(crate) drops_refused: std::sync::atomic::AtomicUsize,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -894,6 +897,8 @@ impl SessionHub {
             skip_dead_hook: Default::default(),
             #[cfg(test)]
             refuse_drops: Default::default(),
+            #[cfg(test)]
+            drops_refused: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
