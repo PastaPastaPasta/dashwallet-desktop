@@ -879,14 +879,27 @@ fn a_pending_spend_this_app_did_not_send_claims_nothing() {
     assert_holds(&engine, &session, id, &want, "the spend mined");
 }
 
-/// A restored payment of A and B that a mined spend of B by another device
-/// beats keeps A out (the engine leaves conflicts to key-wallet, which
-/// holds no record of it) until the user abandons it. The abandon gives
-/// back A, never B, which the winner spent.
+/// A restored payment of A and B without change that a mined spend of B
+/// by another device beats keeps A out (key-wallet holds no record of it,
+/// and the engine drops only a beaten payment that pays the wallet, #170
+/// case 3) until the user abandons it. The abandon gives back A, never B,
+/// which the winner spent.
 #[test]
-fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
-    let (_dir, engine, session, id, (a, b), paid, payment) =
-        payment_claiming_two_coins_after_a_restart();
+fn a_beaten_payment_without_change_keeps_its_other_coin_out_until_it_is_abandoned() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        2 * COIN,
+        true,
+    );
+    assert_eq!(payment.output.len(), 1, "no change");
+    mempool(&engine, &session, id, &payment);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
     let rival = rival(&engine, &session, id, &paid, 1);
     mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
     let held: BTreeSet<OutPoint> = coins(&engine, &session, id)
@@ -1050,7 +1063,8 @@ fn stored_spent_at(db: &std::path::Path, id: WalletId, outpoint: OutPoint) -> Op
     .unwrap()
 }
 
-/// A payment of A and B beaten on A by another device's spend mined after
+/// A payment of A and B without change (one with change goes when it is
+/// beaten, #170 case 3) beaten on A by another device's spend mined after
 /// a restart, after the funding block; the next restart replays both
 /// blocks, which credit B, stored unspent. Returns B, the coins then held
 /// and the winner.
@@ -1070,8 +1084,8 @@ fn beaten_payment_with_its_other_coin_back() -> (
         &session,
         id,
         CoinSource::Outpoints(vec![a, b]),
-        COIN * 3 / 2,
-        false,
+        2 * COIN,
+        true,
     );
     mempool(&engine, &session, id, &payment);
     wait_stored(&session, id, &[payment.txid()]);
@@ -2315,4 +2329,439 @@ fn abandon_marked(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
         .unwrap()
         .iter()
         .any(|(k, _)| *k == key)
+}
+
+/// Runs the wallet's reconcile to its end, as a block event starts it:
+/// what can never confirm goes (#170 cases 3 and 4).
+fn reconciled(engine: &Engine, session: &NetworkSession, id: WalletId) {
+    engine.block_on(session.reconcile_duplicate_coins(id));
+}
+
+/// Whether the history shows `txid`, not abandoned.
+fn live_in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned())
+}
+
+/// Another device of the wallet spends `coins`, outputs of `paid`, paying
+/// only someone else.
+fn foreign_winner(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    paid: &Transaction,
+    coins: &[OutPoint],
+) -> Transaction {
+    let owners: Vec<Address> = (coins.iter())
+        .map(|c| {
+            let script = &paid.output[c.vout as usize].script_pubkey;
+            Address::from_script(script, dashcore::Network::Regtest).unwrap()
+        })
+        .collect();
+    let mut tx = super::spend_of(
+        coins[0],
+        vec![(super::elsewhere(), coins.len() as u64 * COIN - 1_000)],
+    );
+    tx.input = (coins.iter())
+        .map(|c| dashcore::TxIn {
+            previous_output: *c,
+            ..Default::default()
+        })
+        .collect();
+    super::signed_by_wallet_each(engine, session, id, &owners, tx)
+}
+
+/// The funding outputs but `spent`.
+fn funding_but(paid: &Transaction, spent: &[OutPoint]) -> BTreeSet<OutPoint> {
+    (0..paid.output.len() as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .filter(|o| !spent.contains(o))
+        .collect()
+}
+
+/// #170 case 3: a payment restored at load, of A and B with change, that a
+/// rival mined after the restart beat on A. The rival paying the wallet
+/// (`to_wallet`) or only someone else, its inputs are known (the history
+/// holds it, or key-wallet observed its block): the payment goes, its
+/// change no longer counts and cannot be selected, and B comes back with
+/// the rescan of its block, also after a restart. A is the rival's.
+fn a_restored_payment_beaten_by_a_mined_rival_drops_its_change(to_wallet: bool) {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    assert!(held(&engine, &session, id).contains(&change), "restored");
+    let winner = match to_wallet {
+        true => rival(&engine, &session, id, &paid, 0),
+        false => foreign_winner(&engine, &session, id, &paid, &[a]),
+    };
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "the beaten payment's change goes"
+    );
+    assert!(!live_in_history(&session, id, p.txid()));
+    assert!(!spendable(&engine, &session, id, change));
+
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    let mut want = funding_but(&paid, &[a]);
+    if to_wallet {
+        want.insert(OutPoint::new(winner.txid(), 1));
+    }
+    assert_holds(&engine, &session, id, &want, "rescanned");
+    assert!(spendable(&engine, &session, id, b), "B is free");
+    assert!(!spendable(&engine, &session, id, a), "A is the rival's");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "after a restart");
+    assert!(!spendable(&engine, &session, id, change));
+    assert!(!live_in_history(&session, id, p.txid()));
+}
+
+#[test]
+fn a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change() {
+    a_restored_payment_beaten_by_a_mined_rival_drops_its_change(true);
+}
+
+#[test]
+fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
+    a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
+}
+
+/// Payment P of A with change and its child C of P's change and D, both
+/// stored unmined, on twelve mined coins; restarted. Returns A, D, the
+/// funding, P, C and C's change.
+#[allow(clippy::type_complexity)]
+fn payment_and_child_after_a_restart() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    (OutPoint, OutPoint),
+    Transaction,
+    (Transaction, Transaction, OutPoint),
+) {
+    let (dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let p_change = change_of(&p, &own_scripts(&engine, &session, id));
+    let c = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![p_change, d]),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &c);
+    let c_change = change_of(&c, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid(), c.txid()]);
+
+    let session = reopen(&engine, session);
+    let held = held(&engine, &session, id);
+    assert!(held.contains(&c_change) && !held.contains(&d), "{held:?}");
+    (dir, engine, session, id, (a, d), paid, (p, c, c_change))
+}
+
+/// C is gone, its change neither counts nor can be selected, and D stays
+/// out of both: the winner spent it.
+fn assert_child_dropped(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    (c, c_change, d): (&Transaction, OutPoint, OutPoint),
+    state: &str,
+) {
+    let held = held(engine, session, id);
+    assert!(!held.contains(&c_change), "{state}: C's change: {held:?}");
+    assert!(!held.contains(&d), "{state}: D: {held:?}");
+    assert!(!live_in_history(session, id, c.txid()), "{state}: C");
+    assert!(
+        !spendable(engine, session, id, c_change),
+        "{state}: C's change"
+    );
+    assert!(!spendable(engine, session, id, d), "{state}: D");
+}
+
+/// #170 case 4: P relayed again after the restart, then a winner paying
+/// only someone else, mined, spends A and D: key-wallet sweeps P, and C,
+/// which it holds no record of, goes too. D stays out, after a restart and
+/// a rescan too.
+#[test]
+fn a_restored_child_of_a_swept_payment_goes_and_its_coin_the_winner_spent_stays_out() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    echo(&engine, &session, id, &p);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "P is swept");
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "swept");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &funding_but(&paid, &[a, d]),
+        "rescanned",
+    );
+}
+
+/// #170 case 4: as above, the winner spending only A. C goes with the
+/// sweep's winner, mined, so its inputs are known: D, which nothing else
+/// spends, comes back with the rescan of its block.
+#[test]
+fn a_restored_child_of_a_swept_payment_goes_and_its_other_coin_comes_back() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    echo(&engine, &session, id, &p);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, c.txid()), "C goes");
+    assert!(!held(&engine, &session, id).contains(&c_change));
+
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    let want = funding_but(&paid, &[a]);
+    assert_holds(&engine, &session, id, &want, "rescanned");
+    assert!(spendable(&engine, &session, id, d), "D is free");
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "after a restart");
+}
+
+/// #170 case 4, the safety rule: a sweep whose winner is only
+/// InstantSend-locked and that the history does not hold frees nothing,
+/// as its inputs are unknown: C goes, and D stays out even when its
+/// block is scanned again, and after a restart.
+#[test]
+fn a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "swept");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
+}
+
+/// #170 case 4: the app stops after key-wallet's sweep of P is stored and
+/// its marks dropped, before C goes. The next load finds C orphaned (no
+/// row of P, which spent its coin) and drops it with its winner unknown:
+/// D stays out, and so does C's change, also after another restart.
+#[test]
+fn a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            sweeps: vec![platform_wallet::changeset::changeset::SweepBatch {
+                txids: vec![p.txid()],
+                superseded_by: winner.txid(),
+                winner_mined_height: Some(TIP + 1),
+                released_outpoints: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    );
+    crate::tx_actions::forget_sent(&session.live().unwrap().appdb, id, &[p.txid()]).unwrap();
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "loaded");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
+}
+
+/// #170 case 4: C relayed between key-wallet's sweep of P and the
+/// reconcile that drops C: key-wallet records C this session, and C goes
+/// all the same.
+#[test]
+fn a_child_relayed_between_the_sweep_and_the_reconcile_goes() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    echo(&engine, &session, id, &p);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    {
+        let gate = engine.block_on(session.hub.drop_gate.lock());
+        mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+        echo(&engine, &session, id, &c);
+        drop(gate);
+    }
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+}
+
+/// #170 case 4 with no relay: P and C stored, a winner of A that pays the
+/// wallet mined after a restart, after the funding. P and C go, and D,
+/// which only C spent, counts once its funding block is scanned again, and
+/// after another restart.
+#[test]
+fn a_child_of_a_beaten_payment_frees_its_other_coin_after_the_funding_scan() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let p_change = change_of(&p, &own_scripts(&engine, &session, id));
+    let c = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![p_change, d]),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &c);
+    wait_stored(&session, id, &[p.txid(), c.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, a.vout);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "P goes");
+    assert!(!live_in_history(&session, id, c.txid()), "C goes");
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    let mut want = funding_but(&paid, &[a]);
+    want.insert(OutPoint::new(winner.txid(), 1));
+    assert_holds(&engine, &session, id, &want, "funding scanned");
+    assert!(spendable(&engine, &session, id, d), "D is free");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "after a restart");
+}
+
+/// A payment without change mined after a restart: key-wallet may hold no
+/// record of it, and its block is the spend it observed of its coin. It is
+/// not taken for beaten: it stays in the history.
+#[test]
+fn a_mined_payment_without_change_stays_in_the_history() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN,
+        true,
+    );
+    assert_eq!(p.output.len(), 1, "no change");
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(live_in_history(&session, id, p.txid()), "the payment stays");
+    assert!(!abandon_marked(&session, id, p.txid()));
+}
+
+/// #170 case 4 with the history's load incomplete: the sweep's winner is
+/// mined and spends only A, yet nothing proves that no record the load
+/// missed spends D, so C goes and D stays out, through a rescan too.
+#[test]
+fn a_child_dropped_while_the_history_load_is_incomplete_frees_nothing() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    echo(&engine, &session, id, &p);
+    (session.hub.history).with_wallet(id, |h| h.load_incomplete = true);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+}
+
+/// #170 case 4: the app stops after a drop of C wrote its marks, before
+/// its sweep. The open finishes the sweep without storing D unspent, and
+/// every load holds D as the drop did: a rescan of its block does not
+/// credit it, after another restart too.
+#[test]
+fn a_drop_cut_after_its_marks_keeps_its_held_coin_out_across_restarts() {
+    let (_dir, engine, session, id, (_, d), paid, (_, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let scope = id.to_string();
+    let rows = [
+        (
+            format!("abandoned:{}", c.txid()),
+            dashcore::consensus::encode::serialize_hex(&c),
+        ),
+        (format!("dropped:{}", c.txid()), d.to_string()),
+    ];
+    let writes: Vec<(&str, Option<&str>)> = (rows.iter())
+        .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+        .collect();
+    (session.live().unwrap().appdb)
+        .set_settings_durable(&scope, &writes)
+        .unwrap();
+
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "finished");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned");
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }

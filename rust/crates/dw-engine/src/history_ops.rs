@@ -477,6 +477,7 @@ impl NetworkSession {
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
                 h.load_incomplete = !complete;
+                h.loaded = true;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
@@ -498,12 +499,18 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, claims, settled));
+            sends.push((wallet, sent, complete, claims, settled, stored));
         }
         drop(wm);
-        for (wallet, sent, complete, claims, stored) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
-                .await;
+        for (wallet, sent, complete, claims, settled, stored) in sends {
+            self.restore_unmined_spends(
+                &live.manager,
+                wallet,
+                &sent,
+                (complete, claims),
+                (&settled, &stored),
+            )
+            .await;
         }
         Ok(())
     }
@@ -522,17 +529,21 @@ impl NetworkSession {
     /// block of this wallet's own applied ChainLock, which it holds too. A
     /// load that did not read every stored record and mark does neither,
     /// except that one whose sent marks read without their saved copies
-    /// still restores the claims.
+    /// still restores the claims. A complete load then drops what can never
+    /// confirm (`NetworkSession::drop_dead`), with `all`, every stored
+    /// transaction, for the orphans.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
         (complete, claims): (bool, bool),
-        stored: &HashSet<Txid>,
+        (stored, all): (&HashSet<Txid>, &HashSet<Txid>),
     ) {
         if !claims {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
+            self.apply_spend_claims(manager, wallet, |_, _| (Vec::new(), HashSet::new()))
+                .await;
             return;
         }
         let (mut candidates, mut own) = (Vec::new(), None);
@@ -558,6 +569,7 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no sent mark settled");
             return;
         }
+        self.drop_dead(manager, wallet, Some(all)).await;
         let settled = self.proven_settled(candidates, own).await;
         if !settled.is_empty() {
             let gone = settled.clone();
@@ -620,7 +632,9 @@ impl NetworkSession {
     /// opened later before its claims were set, or a store written while
     /// the claim was not restored) is spent by a live payment this app
     /// sent: it leaves the funds accounts, is stored as spent and the
-    /// balance is announced.
+    /// balance is announced. The coins dead transactions' drops hold for
+    /// good (`tx_actions::dropped_holds`) are claimed with no claimant, as
+    /// the drops left them.
     pub(crate) async fn apply_spend_claims(
         &self,
         manager: &Manager,
@@ -633,6 +647,13 @@ impl NetworkSession {
         let Ok(live) = self.live() else {
             return;
         };
+        let holds = self
+            .appdb_op(move |db| crate::tx_actions::dropped_holds(db, wallet))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(%wallet, error = %e, "could not read the coins dropped payments hold");
+                BTreeSet::new()
+            });
         #[cfg(test)]
         let pause = self.hub.pause_spend_claims.lock().unwrap().take();
         #[cfg(test)]
@@ -655,7 +676,7 @@ impl NetworkSession {
         let core = &mut info.core_wallet;
         let (claims, locked) = select(core, chainlock);
         let claims = claims.as_slice();
-        if claims.is_empty() {
+        if claims.is_empty() && holds.is_empty() {
             return;
         }
         (self.hub.history).with_wallet(wallet, |h| {
@@ -676,6 +697,7 @@ impl NetworkSession {
         let restore: Vec<(OutPoint, Option<Txid>)> = (claims.iter())
             .filter(|(_, t)| !beaten.contains(t))
             .map(|(o, t)| (*o, Some(*t)))
+            .chain(holds.iter().map(|o| (*o, None)))
             .collect();
         let held = core.restore_spent_outpoints(&restore);
         (self.hub.history).with_wallet(wallet, |h| {
