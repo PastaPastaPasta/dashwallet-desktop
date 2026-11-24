@@ -88,6 +88,12 @@ export function contestRow(rows: RegistrationStatus[] | undefined, identity: str
   );
 }
 
+/** The Join page's gate on registering at all: a wallet that holds its keys (the status's
+ * `watchOnly` reason). Never the network: registration from the Dash wallet is live on mainnet. */
+export function registrationOffered(wallet: { watchOnly: boolean } | undefined): boolean {
+  return wallet !== undefined && !wallet.watchOnly;
+}
+
 export interface AskedTemporary {
   label: string;
   outcome: TemporaryOutcome;

@@ -5,8 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
-import { registrationOffered } from "./queries";
-import { contestRow, INSTANT_COPY, instantOffer, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
+import { contestRow, INSTANT_COPY, instantOffer, registrationOffered, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
 
 const ROW_AT = 1_800_000_000;
 

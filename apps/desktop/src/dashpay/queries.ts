@@ -17,7 +17,7 @@ import { isSyncing, syncPercent } from "../format/sync";
 import type { PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
-import { contestRow, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
+import { contestRow, registrationOffered, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest } from "./wizard";
 
@@ -239,12 +239,6 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
     nameCredits: credits.data?.maxCredits ?? null,
     asked: row?.temporaryLabel ? { label: row.temporaryLabel, outcome: temporaryOutcome(row, read) } : null,
   };
-}
-
-/** The Join page's gate on registering at all: a wallet that holds its keys (the status's
- * `watchOnly` reason). Never the network: registration from the Dash wallet is live on mainnet. */
-export function registrationOffered(wallet: { watchOnly: boolean } | undefined): boolean {
-  return wallet !== undefined && !wallet.watchOnly;
 }
 
 /** Everything the Home card and the Join page derive from (`homeCard`, `joinModel`), under the
