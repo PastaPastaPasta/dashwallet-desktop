@@ -363,6 +363,7 @@ impl From<RegistrationError> for AppError {
             R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
+            R::Credits(e) => return e.into(),
             R::Platform(e) => return e.into(),
         };
         AppError {
@@ -615,6 +616,7 @@ mod tests {
             RegistrationError::QuoteChanged,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
+            RegistrationError::Credits(CreditsError::MovePending { id: s() }),
             RegistrationError::Platform(PlatformError::Timeout),
         ];
         for e in registration {
