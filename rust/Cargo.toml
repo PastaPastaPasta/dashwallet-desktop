@@ -259,6 +259,39 @@ tempfile = "3"
 # The platform pin asks for rs-tenderdash-abci v1.8.0, whose proto compiler builds with zip 8
 # (RUSTSEC-2026-0545..0548 and earlier). v1.8.1 is v1.8.0 with only the zip 9 bump. Drop this
 # when the platform pin moves to v1.8.1 or later. eebfc46c is the v1.8.1 tag.
+[patch."https://github.com/PastaPastaPasta/platform"]
+app-connect-contract = { path = "/work/scratch/fs4-268-platform/packages/app-connect-contract" }
+dapi-grpc = { path = "/work/scratch/fs4-268-platform/packages/dapi-grpc" }
+dash-async = { path = "/work/scratch/fs4-268-platform/packages/rs-dash-async" }
+dash-context-provider = { path = "/work/scratch/fs4-268-platform/packages/rs-context-provider" }
+dashpay-contract = { path = "/work/scratch/fs4-268-platform/packages/dashpay-contract" }
+dash-platform-macros = { path = "/work/scratch/fs4-268-platform/packages/rs-dash-platform-macros" }
+dash-platform-queries = { path = "/work/scratch/fs4-268-platform/packages/dash-platform-queries" }
+dash-sdk = { path = "/work/scratch/fs4-268-platform/packages/rs-sdk" }
+data-contracts = { path = "/work/scratch/fs4-268-platform/packages/data-contracts" }
+document-history-contract = { path = "/work/scratch/fs4-268-platform/packages/document-history-contract" }
+dpns-contract = { path = "/work/scratch/fs4-268-platform/packages/dpns-contract" }
+dpp = { path = "/work/scratch/fs4-268-platform/packages/rs-dpp" }
+dpp-json-convertible-derive = { path = "/work/scratch/fs4-268-platform/packages/rs-dpp-json-convertible-derive" }
+drive = { path = "/work/scratch/fs4-268-platform/packages/rs-drive" }
+drive-proof-verifier = { path = "/work/scratch/fs4-268-platform/packages/rs-drive-proof-verifier" }
+keyword-search-contract = { path = "/work/scratch/fs4-268-platform/packages/keyword-search-contract" }
+masternode-reward-shares-contract = { path = "/work/scratch/fs4-268-platform/packages/masternode-reward-shares-contract" }
+moderation-charters-contract = { path = "/work/scratch/fs4-268-platform/packages/moderation-charters-contract" }
+platform-encryption = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-encryption" }
+platform-serialization = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-serialization" }
+platform-serialization-derive = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-serialization-derive" }
+platform-value = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-value" }
+platform-version = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-version" }
+platform-versioning = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-versioning" }
+platform-wallet = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-wallet" }
+platform-wallet-storage = { path = "/work/scratch/fs4-268-platform/packages/rs-platform-wallet-storage" }
+rs-dapi-client = { path = "/work/scratch/fs4-268-platform/packages/rs-dapi-client" }
+rs-sdk-trusted-context-provider = { path = "/work/scratch/fs4-268-platform/packages/rs-sdk-trusted-context-provider" }
+token-history-contract = { path = "/work/scratch/fs4-268-platform/packages/token-history-contract" }
+wallet-utils-contract = { path = "/work/scratch/fs4-268-platform/packages/wallet-utils-contract" }
+withdrawals-contract = { path = "/work/scratch/fs4-268-platform/packages/withdrawals-contract" }
+
 [patch."https://github.com/dashpay/rs-tenderdash-abci"]
 tenderdash-abci = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
 tenderdash-proto = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
