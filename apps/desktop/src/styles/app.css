@@ -6188,6 +6188,12 @@ button.bell-row-open:focus-visible {
   grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
 }
 
+/* The masternode list's height line keeps its place while its read is out, failed or unsynced:
+ * nothing below it moves when the read answers. */
+.mg-list-height {
+  min-height: var(--dw-type-footnote-line);
+}
+
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
 .mg-menu-anchor {
   position: relative;

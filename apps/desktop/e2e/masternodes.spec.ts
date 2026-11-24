@@ -159,6 +159,29 @@ test("a failed pane re-read drops the detail facts and the unlock line", async (
   await expect(page.getByTestId("mn-unlock")).toHaveCount(0);
 });
 
+// The list height line comes from its own read, which the page starts when it opens. Until it
+// answers, its line keeps its place, so nothing below moves under a click when it lands.
+for (const [name, scenario, extra] of [
+  ["answers", "mn-list", ""],
+  ["fails", "mn-list", "&fail=mn_list_state:none"],
+  ["says the list is syncing", "mn-syncing", ""],
+] as const)
+  test(`nothing moves when the list height read ${name}`, async ({ page }) => {
+    const errors = await open(page, scenario, "light", `&hold=mn_list_state${extra}`);
+    await row(page, HOME).click();
+    const more = page.getByTestId("mn-more");
+    await more.scrollIntoViewIfNeeded();
+    const before = await more.boundingBox();
+    await page.evaluate(() => window.__dwFixture!.release("mn_list_state"));
+    await expect(page.getByTestId("mn-list-height")).toHaveCount(name === "answers" ? 1 : 0);
+    // A failed or unsynced answer shows nothing to wait for: give it time to land.
+    await page.waitForTimeout(300);
+    expect(await more.boundingBox()).toEqual(before);
+    await page.mouse.click(before!.x + before!.width / 2, before!.y + before!.height / 2);
+    await expect(page.getByTestId("mn-more-rename")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
 test("states: empty, collateral coin, syncing, failed, watch-only", async ({ page }) => {
   await open(page, "mn-empty");
   await expect(page.getByTestId("mn-empty")).toContainText("No masternodes yet");
