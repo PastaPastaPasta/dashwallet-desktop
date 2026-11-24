@@ -205,6 +205,9 @@ pub struct MoveToCoreQuote {
     /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
+    /// The held top-up from Platform this move is the exit of: pass it to
+    /// `platformMoveToCore`.
+    pub exit_of: Option<String>,
 }
 
 impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
@@ -215,6 +218,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant,
+            exit_of,
         } = q;
         MoveToCoreQuote {
             credits,
@@ -222,6 +226,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant: grant.into(),
+            exit_of,
         }
     }
 }

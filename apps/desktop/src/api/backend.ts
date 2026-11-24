@@ -307,8 +307,8 @@ export interface Backend {
   /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
   platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
   /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
-   * quote's), under `grant`. */
-  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
+   * quote's), under `grant`; `exitOf` is the quote's, the held top-up this move is the exit of. */
+  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome>;
   /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
   platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
   /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
