@@ -1031,6 +1031,9 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * refused (`settledDescendant`) when a later transaction spending from
  * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
  * spend of one of its inputs beat it and those are only locked (#446).
+ * One not under the ChainLock exception is refused (`recordUnreadable`)
+ * while a saved transaction of any loaded wallet didn't read at its
+ * load (#611).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1052,7 +1055,8 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * rescans once, from the lowest funding height of them all. One the
  * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
  * or that a settled later transaction holds (`settledDescendant`), is
- * skipped.
+ * skipped. One refused as `recordUnreadable` is kept too, and the call
+ * then fails with that refusal.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
