@@ -57,7 +57,8 @@ for (const theme of THEMES) {
     const text = page.getByTestId("held-way-out-text");
     await expect(text).toContainText("Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Main, and restore it with Add wallet… and its phrase.");
     await expect(text).toContainText("On Restore options, under Scan the blockchain from, choose The beginning.");
-    await expect(text).toContainText("You can remove the extra wallet afterwards.");
+    await expect(text).toContainText("Until then, coins Main has already spent can show as unspent, so don't send anything from it until syncing finishes");
+    await expect(text).toContainText("Spending it conflicts with that payment, and only one of the two goes through. You can remove the extra wallet afterwards.");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-single.png`) });
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("held-way-out")).toHaveCount(0);
@@ -70,6 +71,7 @@ for (const theme of THEMES) {
     const text = page.getByTestId("held-way-out-text");
     await expect(text).toContainText("you'll remove Main and add it again as a watch-only wallet.");
     await expect(text).toContainText("Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Main, and add it again with Add watch-only wallet… and that key.");
+    await expect(text).toContainText("so don't create a payment from it until syncing finishes");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-watch-only-single.png`) });
   });
 
