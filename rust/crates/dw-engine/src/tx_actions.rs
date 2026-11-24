@@ -52,6 +52,9 @@ pub enum TxActionRefusal {
     /// wallet: a restart (which no longer restores it) and a rescan give
     /// the evidence.
     RescanFirst,
+    /// A later transaction that spends from it is InstantSend-locked, in a
+    /// block or finalized: the network holds this one too (#446).
+    SettledDescendant,
 }
 
 impl TxActionRefusal {
@@ -549,6 +552,8 @@ struct Facts {
     /// [`chainlock_beaten`]: a block under the wallet's ChainLock spends
     /// one of its inputs.
     chainlock_beaten: bool,
+    /// Something settled descends from it (#446); read for the detail only.
+    settled_descendant: bool,
     coinbase: bool,
     abandoned: bool,
     from_me: usize,
@@ -618,40 +623,7 @@ fn override_blocked<'a>(
         c.block_info().is_some() || matches!(c, TransactionContext::InstantSend(_))
     };
     let accounts = core.accounts.all_accounts();
-    let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
-    let mut known: HashMap<Txid, (Vec<Txid>, bool)> = HashMap::new();
-    let mut add = |t: Txid, tx: &Transaction, settled: bool| {
-        let (_, s) = known.entry(t).or_insert_with(|| {
-            (
-                tx.input.iter().map(|i| i.previous_output.txid).collect(),
-                false,
-            )
-        });
-        *s |= settled || core.instant_send_locks().contains(&t) || finalized(&t);
-    };
-    for (t, e) in txs {
-        add(*t, &e.tx, locked(e) || settled(&e.context));
-    }
-    for account in &accounts {
-        for (t, r) in account.transactions() {
-            add(*t, &r.transaction, settled(&r.context));
-        }
-    }
-    let mut under = HashSet::new();
-    let mut parents: Vec<Txid> = (known.values())
-        .filter(|(_, settled)| *settled)
-        .flat_map(|(parents, _)| parents.iter().copied())
-        .collect();
-    while let Some(t) = parents.pop() {
-        if under.insert(t) {
-            parents.extend(
-                known
-                    .get(&t)
-                    .into_iter()
-                    .flat_map(|(p, _)| p.iter().copied()),
-            );
-        }
-    }
+    let (under, _) = settled_under(txs, core);
     move |root| {
         under.contains(root)
             || accounts.iter().any(|a| {
@@ -661,6 +633,85 @@ fn override_blocked<'a>(
                         .is_some_and(|r| settled(&r.context))
             })
     }
+}
+
+/// The transactions something settled descends from, by any of the
+/// history (abandoned entries too), key-wallet's records, its locks and the
+/// txids it keeps finalized: first under one InstantSend-locked, in a block
+/// or finalized, then under one in a block or finalized. Reads `txs` once.
+fn settled_under(
+    txs: &HashMap<Txid, TxEntry>,
+    core: &ManagedWalletInfo,
+) -> (HashSet<Txid>, HashSet<Txid>) {
+    #[derive(Default)]
+    struct Known {
+        parents: Vec<Txid>,
+        settled: bool,
+        mined: bool,
+    }
+    let accounts = core.accounts.all_accounts();
+    let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
+    let mut known: HashMap<Txid, Known> = HashMap::new();
+    let mut add = |t: Txid, tx: &Transaction, locked: bool, mined: bool| {
+        let k = known.entry(t).or_insert_with(|| Known {
+            parents: tx.input.iter().map(|i| i.previous_output.txid).collect(),
+            ..Known::default()
+        });
+        let mined = mined || finalized(&t);
+        k.settled |= locked || mined || core.instant_send_locks().contains(&t);
+        k.mined |= mined;
+    };
+    for (t, e) in txs {
+        add(*t, &e.tx, locked(e), e.context.block_info().is_some());
+    }
+    for account in &accounts {
+        for (t, r) in account.transactions() {
+            let instant = matches!(r.context, TransactionContext::InstantSend(_));
+            add(
+                *t,
+                &r.transaction,
+                instant,
+                r.context.block_info().is_some(),
+            );
+        }
+    }
+    let ancestors = |pick: fn(&Known) -> bool| {
+        let mut under = HashSet::new();
+        let mut parents: Vec<Txid> = (known.values())
+            .filter(|k| pick(k))
+            .flat_map(|k| k.parents.iter().copied())
+            .collect();
+        while let Some(t) = parents.pop() {
+            if under.insert(t) {
+                parents.extend(
+                    known
+                        .get(&t)
+                        .into_iter()
+                        .flat_map(|k| k.parents.iter().copied()),
+                );
+            }
+        }
+        under
+    };
+    (ancestors(|k| k.settled), ancestors(|k| k.mined))
+}
+
+/// Whether abandoning `root`, not InstantSend-locked itself, is refused
+/// because something settled descends from it (#446): Dash locks or mines
+/// a transaction only once its parents are, so the network holds `root`.
+/// Not when a ChainLocked spend of one of its inputs beat it (`proof`) and
+/// what descends from it is only InstantSend-locked: a ChainLock outranks
+/// an InstantSend lock.
+fn settled_descendant(
+    txs: &HashMap<Txid, TxEntry>,
+    core: &ManagedWalletInfo,
+    root: &Txid,
+    proof: &ChainProof,
+) -> bool {
+    let (under, under_mined) = settled_under(txs, core);
+    under.contains(root)
+        && (under_mined.contains(root)
+            || !chainlock_beaten(txs, root, proof.chainlock, &proof.active))
 }
 
 /// How key-wallet holds `t` in this wallet's own accounts when it is
@@ -759,6 +810,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>, proof: &ChainProof) -> Facts {
                 proof.chainlock,
                 &proof.active,
             ),
+        settled_descendant: false,
         coinbase: entry.tx.is_coin_base(),
         abandoned: entry.is_abandoned(),
         from_me,
@@ -788,6 +840,8 @@ impl Facts {
             Some(TxActionRefusal::Confirmed)
         } else if self.instant_locked && !self.chainlock_beaten {
             Some(TxActionRefusal::InstantLocked)
+        } else if self.settled_descendant {
+            Some(TxActionRefusal::SettledDescendant)
         } else if self.coinbase {
             Some(TxActionRefusal::Coinbase)
         } else {
@@ -836,6 +890,15 @@ impl NetworkSession {
             .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
         // The exception's evidence on the inputs, as the abandon checks it:
         // not offered when it would refuse as locked.
+        if offer && !f.instant_locked && f.abandon_refusal().is_none() {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            f.settled_descendant = (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
+                (self.hub.history).read(&wallet, |txs| {
+                    settled_descendant(txs, &i.core_wallet, &txid, &proof)
+                })
+            });
+        }
         if offer && f.chainlock_beaten && f.abandon_refusal().is_none() {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -1263,6 +1326,15 @@ impl NetworkSession {
         if held_locked || planned.iter().any(|t| locks.contains(t) && !exempt(t)) {
             return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
         }
+        // A descendant settled anywhere, which the walk passes over: the
+        // network holds the root too (#446).
+        if overridden.is_none()
+            && (self.hub.history).read(&wallet, |txs| settled_descendant(txs, core, &root, proof))
+        {
+            return Err(EngineError::TxActionRefused(
+                TxActionRefusal::SettledDescendant,
+            ));
+        }
         Ok((planned, overridden))
     }
 
@@ -1280,8 +1352,12 @@ impl NetworkSession {
             Some(false) => {
                 let wm = manager.wallet_manager_arc();
                 let wm = wm.read().await;
-                (wm.get_wallet_info(&wallet.0))
-                    .is_some_and(|i| i.core_wallet.instant_send_locks().contains(&root))
+                (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
+                    let core = &i.core_wallet;
+                    core.instant_send_locks().contains(&root)
+                        || (self.hub.history)
+                            .read(&wallet, |txs| settled_under(txs, core).0.contains(&root))
+                })
             }
         };
         match locked {
@@ -1831,6 +1907,7 @@ mod tests {
             chain_locked: false,
             instant_locked: false,
             chainlock_beaten: false,
+            settled_descendant: false,
             coinbase: false,
             abandoned: false,
             from_me: 1,
@@ -2042,6 +2119,14 @@ mod tests {
             ..is
         };
         assert_eq!(beaten.abandon_refusal(), None);
+        let under_settled = Facts {
+            settled_descendant: true,
+            ..f()
+        };
+        assert_eq!(
+            under_settled.abandon_refusal(),
+            Some(TxActionRefusal::SettledDescendant)
+        );
         assert_eq!(
             beaten.resend_refusal(),
             Some(TxActionRefusal::InstantLocked)

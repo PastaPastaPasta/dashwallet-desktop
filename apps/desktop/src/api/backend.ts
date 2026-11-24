@@ -194,6 +194,8 @@ import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import type { Withdrawal } from "./generated/Withdrawal";
 import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
 import type { WithdrawQuote } from "./generated/WithdrawQuote";
+import type { TopUpFromPlatformOutcome } from "./generated/TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./generated/TopUpFromPlatformQuote";
 import type { WithdrawToPlatformOutcome } from "./generated/WithdrawToPlatformOutcome";
 import type { WithdrawToPlatformQuote } from "./generated/WithdrawToPlatformQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
@@ -608,6 +610,10 @@ export interface Backend {
   creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote>;
   /** Moves credits to `to`, one of the wallet's own Platform addresses, under the quote's `platformOp` grant. */
   creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome>;
+  /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
+  creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
+  /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;

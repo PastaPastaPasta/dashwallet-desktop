@@ -140,9 +140,13 @@ struct Fx {
 }
 
 fn open(engine: &Engine) -> Arc<NetworkSession> {
+    open_on(engine, DashNetwork::Regtest)
+}
+
+fn open_on(engine: &Engine, network: DashNetwork) -> Arc<NetworkSession> {
     engine
         .block_on(engine.open_network(
-            DashNetwork::Regtest,
+            network,
             crate::SessionOptions {
                 dapi_addresses: vec!["http://127.0.0.1:1".into()],
                 quorum_url: Some("http://127.0.0.1:1".into()),
@@ -168,6 +172,11 @@ fn seam_for(session: &NetworkSession, net: &Arc<Net>) -> Arc<Seam> {
 
 /// A regtest session with `n` wallets; v24 seen when `v24`.
 fn fx(n: usize, v24: bool) -> Fx {
+    fx_on(DashNetwork::Regtest, n, v24)
+}
+
+/// [`fx`] on `network`.
+fn fx_on(network: DashNetwork, n: usize, v24: bool) -> Fx {
     let dir = dw_testutil::private_tempdir();
     let config = EngineConfig {
         data_root: dir.path().join("data"),
@@ -179,7 +188,7 @@ fn fx(n: usize, v24: bool) -> Fx {
         },
     };
     let engine = Engine::new(config, Arc::new(NoEvents)).unwrap();
-    let session = open(&engine);
+    let session = open_on(&engine, network);
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
@@ -3462,5 +3471,206 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                 false
             }));
         }
+    }
+}
+
+/// A stored key-change session of wallet `w`, its message never read.
+fn key_change_row(f: &Fx, w: usize) -> String {
+    let id = "c".repeat(64);
+    let row = dw_appdb::SharedSessionRow {
+        id: id.clone(),
+        kind: super::key_change::KIND.into(),
+        role: "coordinator".into(),
+        envelope: "{}".into(),
+        my_shares: "{}".into(),
+        contribution: None,
+        reserved: "[]".into(),
+        approved_terms: None,
+        base_keys: None,
+        signed_tx: None,
+        txid: None,
+        out_at: None,
+        abandon_txid: None,
+        created_at: 1,
+        updated_at: 1,
+        last_error: None,
+        abandon_tx: None,
+        abandon_log: None,
+        legacy_bound: false,
+        resend_marked: false,
+    };
+    f.db()
+        .insert_shared_session_durable(&f.wallets[w].to_string(), &row, 1)
+        .unwrap();
+    id
+}
+
+/// A saved, signed MG-04 operation of wallet `w` and `kind`, its bytes
+/// never read.
+fn operation_row(f: &Fx, w: usize, kind: crate::masternodes::ProTxOperationKind) -> String {
+    let id = super::super::protx::ops::new_id();
+    let row = dw_appdb::MasternodeOpRow {
+        id: id.clone(),
+        kind: super::super::protx::ops::kind_name(kind).into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: String::new(),
+        signed_tx: Some(vec![0]),
+        txid: Some(Txid::from_byte_array([7; 32]).to_string()),
+        pro_tx_hash: Some(Txid::from_byte_array([7; 32]).to_string()),
+        locked_collateral: false,
+        fee: 1_000,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: None,
+    };
+    f.db()
+        .insert_masternode_op_durable(&f.wallets[w].to_string(), &row, &[], 1)
+        .unwrap();
+    id
+}
+
+/// #438: on mainnet the shared registration (start, fee, join, lock,
+/// approve, sign, send), the reward change (and its resend) and the key
+/// change (start, approve, send) refuse first, sending, locking and writing
+/// nothing; the exits (discard, abandon, a dissolution's resend) still
+/// run. On testnet none is refused as mainnet.
+#[test]
+fn test_QT_126_mainnet_refuses_shared_registration_and_key_change_sends() {
+    use crate::masternodes::{JoinSharedRequest, KeepOr, KeyChangeRequest, ProTxOperationKind};
+    let refusal = |r: &Result<(), MasternodesError>| {
+        matches!(r, Err(MasternodesError::Unsupported { feature, field })
+            if feature == "protx_sending" && field.as_deref() == Some("mainnet"))
+    };
+    let calls = |f: &Fx| -> Vec<(&'static str, Result<(), MasternodesError>)> {
+        let mn = f.mn();
+        let (w0, w1) = (f.wallets[0], f.wallets[1]);
+        let sid = "ab".repeat(32);
+        let kc = key_change_row(f, 0);
+        let share = operation_row(f, 0, ProTxOperationKind::UpdateShare);
+        let g = |w| f.grant(w, 500 * COIN);
+        vec![
+            (
+                "start",
+                start(
+                    f,
+                    0,
+                    request(&[("a", 900 * COIN), ("b", 100 * COIN)], 1_000),
+                )
+                .map(drop),
+            ),
+            (
+                "set fee",
+                f.run(mn.set_shared_fee(w0, sid.clone(), 2_000)).map(drop),
+            ),
+            (
+                "join",
+                f.run(mn.join_shared(
+                    w1,
+                    sid.clone(),
+                    JoinSharedRequest {
+                        share_index: None,
+                        reward: RewardChoice::Refund,
+                    },
+                ))
+                .map(drop),
+            ),
+            (
+                "lock",
+                f.run(mn.lock_shared_terms(w0, sid.clone(), 1, g(0)))
+                    .map(drop),
+            ),
+            (
+                "approve",
+                f.run(mn.approve_shared(w1, sid.clone(), "ab".repeat(32), g(1)))
+                    .map(drop),
+            ),
+            (
+                "sign",
+                f.run(mn.sign_shared_funding(w1, sid.clone(), g(1)))
+                    .map(drop),
+            ),
+            (
+                "send",
+                f.run(mn.send_shared_registration(w0, sid.clone(), g(0)))
+                    .map(drop),
+            ),
+            (
+                "update share",
+                f.run(mn.update_share(
+                    w0,
+                    UpdateShareRequest {
+                        pro_tx_hash: sid.clone(),
+                        share_index: 0,
+                        reward: RewardChoice::Refund,
+                    },
+                    g(0),
+                ))
+                .map(drop),
+            ),
+            (
+                "resend update share",
+                f.run(mn.resend_operation(w0, share, g(0))).map(drop),
+            ),
+            (
+                "start key change",
+                f.run(mn.start_key_change(
+                    w0,
+                    KeyChangeRequest {
+                        pro_tx_hash: sid.clone(),
+                        operator: KeepOr::Keep,
+                        voting: KeepOr::Keep,
+                    },
+                    g(0),
+                ))
+                .map(drop),
+            ),
+            (
+                "approve key change",
+                f.run(mn.approve_maintenance(w0, kc.clone(), g(0), false))
+                    .map(drop),
+            ),
+            (
+                "send key change",
+                f.run(mn.send_maintenance(w0, kc, g(0))).map(drop),
+            ),
+        ]
+    };
+
+    let f = fx_on(DashNetwork::Mainnet, 2, true);
+    f.credit(0, 1, 1_000 * COIN);
+    f.credit(1, 2, 200 * COIN);
+    for (call, r) in calls(&f) {
+        assert!(refusal(&r), "mainnet {call}: {r:?}");
+    }
+    assert!(f.net.sent().is_empty(), "nothing handed off");
+    assert!(
+        f.locked(0).is_empty() && f.locked(1).is_empty(),
+        "no coin locked"
+    );
+    let (w0, kc) = (f.wallets[0], "c".repeat(64));
+    let abandon = f.run(
+        f.mn()
+            .abandon_shared_session(w0, kc.clone(), f.grant(0, COIN)),
+    );
+    assert!(!refusal(&abandon.map(drop)), "abandon refused on mainnet");
+    let dissolve = operation_row(&f, 0, ProTxOperationKind::Dissolve);
+    let resend = f.run(f.mn().resend_operation(w0, dissolve, f.grant(0, COIN)));
+    assert!(
+        !refusal(&resend.map(drop)),
+        "a dissolution's resend refused on mainnet"
+    );
+    f.run(f.mn().discard_shared_session(w0, kc))
+        .expect("discard runs on mainnet");
+
+    let f = fx_on(DashNetwork::Testnet, 2, true);
+    f.credit(0, 1, 1_000 * COIN);
+    f.credit(1, 2, 200 * COIN);
+    for (call, r) in calls(&f) {
+        assert!(!refusal(&r), "testnet {call} refused as mainnet: {r:?}");
     }
 }

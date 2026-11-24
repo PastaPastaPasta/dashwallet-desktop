@@ -1574,11 +1574,9 @@ fn exit_possible(
 /// A read behind one this wallet already settled on: an input's nonce
 /// below one a done record signed. Planning on it would sign a nonce
 /// Platform already took, and the next read would show it "reached".
-/// `every`: any done record counts; else only a top-up from Platform's.
-fn behind(moves: &[MoveRecord], seen: &Seen, every: bool) -> Result<(), PlatformError> {
+fn behind(moves: &[MoveRecord], seen: &Seen) -> Result<(), PlatformError> {
     let stale = (moves.iter())
         .filter(|m| m.state == PlatformActivityState::Done)
-        .filter(|m| every || m.kind.credits_identity())
         .flat_map(|m| &m.inputs)
         .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
     if stale {
@@ -2857,7 +2855,7 @@ pub(crate) async fn top_up_quote(
     if let Some(h) = moves.iter().find(|m| m.holds()) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    behind(&moves, &seen, true)?;
+    behind(&moves, &seen)?;
     let limits = Limits::top_up_at(version);
     let balances = proved_balances(&pool, &seen, network);
     let planned = top_up_plan(&balances, amount, &limits)?;
@@ -3057,7 +3055,8 @@ async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    behind(&moves, &seen, matches!(target, Target::Identity(_)))?;
+    // Every spend, before anything is planned (#533).
+    behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
     // only its exact retry, and a retry of one that landed pays nothing.

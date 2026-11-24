@@ -1027,7 +1027,10 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * and a rescan give that evidence.
  * Any transaction is refused (`instantLocked`, or `confirmed`) when
  * abandoning it would also take one the history holds as InstantSend-
- * locked (or in a block).
+ * locked (or in a block). One that is not InstantSend-locked itself is
+ * refused (`settledDescendant`) when a later transaction spending from
+ * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+ * spend of one of its inputs beat it and those are only locked (#446).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1047,8 +1050,9 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * wallet (every wallet when `walletId` is `null`) that Abandon would,
  * InstantSend-locked ones only under its ChainLock exception, then
  * rescans once, from the lowest funding height of them all. One the
- * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says)
- * is skipped.
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+ * or that a settled later transaction holds (`settledDescendant`), is
+ * skipped.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {

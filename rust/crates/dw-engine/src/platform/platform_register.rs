@@ -251,7 +251,7 @@ fn new_plan(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    behind(moves, seen, true)?;
+    behind(moves, seen)?;
     let balances = proved_balances(pool, seen, network);
     let nonces = (pool.keys())
         .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))

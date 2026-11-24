@@ -39,6 +39,8 @@ extension L10n {
             case .notSentByWallet: "This transaction was not sent by this wallet."
             case .rescanFirst:
                 "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+            case .settledDescendant:
+                "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too."
             }
         }
 

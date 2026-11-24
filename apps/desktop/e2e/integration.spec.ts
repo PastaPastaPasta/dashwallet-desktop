@@ -113,7 +113,7 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002000 tDASH.");
   });
 });
 
