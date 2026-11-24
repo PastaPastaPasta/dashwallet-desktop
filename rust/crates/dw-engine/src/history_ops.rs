@@ -389,6 +389,8 @@ struct LoadedHistory {
     settled: HashSet<Txid>,
     /// [`Persisted::lock_parents`].
     lock_parents: HashMap<Txid, Vec<Txid>>,
+    /// [`Persisted::dropped`].
+    dropped: BTreeSet<Txid>,
 }
 
 impl NetworkSession {
@@ -487,6 +489,7 @@ impl NetworkSession {
                         stored,
                         settled,
                         lock_parents: persisted.lock_parents,
+                        dropped: persisted.dropped.into_iter().collect(),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -516,6 +519,7 @@ impl NetworkSession {
             stored,
             settled,
             lock_parents,
+            dropped,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -571,12 +575,17 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, claims, settled));
+            sends.push((wallet, sent, complete, claims, settled, dropped));
         }
         drop(wm);
-        for (wallet, sent, complete, claims, stored) in sends {
+        for (wallet, sent, complete, claims, stored, dropped) in sends {
             self.restore_unmined_spends(&live.manager, wallet, &sent, (complete, claims), &stored)
                 .await;
+            // What a payment of this app built on a claim the store's open
+            // dropped as unsigned is dropped with it (#739).
+            if complete && !dropped.is_empty() {
+                self.abandon_on_dead(&live.manager, wallet, &dropped).await;
+            }
         }
         Ok(())
     }

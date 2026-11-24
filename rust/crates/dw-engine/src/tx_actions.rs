@@ -1124,7 +1124,7 @@ impl NetworkSession {
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let mut recorded = None;
         let result = self
-            .abandon_unrewound(manager, wallet, root, &mut recorded)
+            .abandon_unrewound(manager, wallet, root, &BTreeSet::new(), &mut recorded)
             .await;
         let abandoned = result.as_ref().ok().cloned().unwrap_or_default();
         #[cfg(test)]
@@ -1149,12 +1149,15 @@ impl NetworkSession {
 
     /// [`Self::abandon_inner`] up to the rescan: the rewind is recorded,
     /// not made, and `recorded` lowered to the checkpoint it starts from,
-    /// failure or not. Returns the abandoned txids.
+    /// failure or not. Returns the abandoned txids. `dead`: transactions
+    /// already dropped whose outputs `root` spends; none of their outputs
+    /// is released or scanned for again, as none exists.
     async fn abandon_unrewound(
         &self,
         manager: &Manager,
         wallet: WalletId,
         root: Txid,
+        dead: &BTreeSet<Txid>,
         recorded: &mut Option<u32>,
     ) -> Result<BTreeSet<Txid>, EngineError> {
         #[cfg(test)]
@@ -1189,9 +1192,10 @@ impl NetworkSession {
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
-            let (descendants, links) = (self.hub.history).read(&wallet, |txs| {
+            let (descendants, mut links) = (self.hub.history).read(&wallet, |txs| {
                 unmined_descendants(txs, &info.core_wallet, root)
             });
+            links.extend(dead);
             // Never one key-wallet holds settled, whatever the history
             // still says of it: its parents are the network's too.
             if let Some(refusal) =
@@ -1878,7 +1882,7 @@ impl NetworkSession {
                         continue;
                     }
                     match this
-                        .abandon_unrewound(&manager, id, txid, &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, &BTreeSet::new(), &mut lowest)
                         .await
                     {
                         Ok(set) => done.extend(set),
@@ -1914,7 +1918,7 @@ impl NetworkSession {
                     .collect();
                 for txid in damaged.into_iter().filter(|_| failed.is_none()) {
                     match this
-                        .abandon_unrewound(&manager, id, txid, &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, &BTreeSet::new(), &mut lowest)
                         .await
                     {
                         Ok(set) => {
@@ -1956,6 +1960,75 @@ impl NetworkSession {
             Ok(dropped)
         })
         .await
+    }
+
+    /// Drops what this wallet built on the outputs of `dead`, transactions
+    /// that can never confirm: a sweep's, or claims the store dropped as
+    /// unsigned by their coin's owner (#739). Each unconfirmed, unlocked
+    /// transaction of the history that spends one of their outputs is
+    /// abandoned with what descends from it, as Remove Unconfirmed does; one
+    /// mined or InstantSend-locked, and what descends from it, is kept.
+    pub(crate) async fn abandon_on_dead(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        dead: &BTreeSet<Txid>,
+    ) {
+        let children: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
+            (txs.iter())
+                .filter(|(t, e)| {
+                    !dead.contains(*t)
+                        && !e.is_abandoned()
+                        && e.context.block_info().is_none()
+                        && !locked(e)
+                        && (e.tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid))
+                })
+                .map(|(t, _)| *t)
+                .collect()
+        });
+        if children.is_empty() {
+            return;
+        }
+        let _batch = self.hub.abandon_batch(wallet);
+        let (mut done, mut lowest) = (BTreeSet::new(), None::<u32>);
+        for child in children {
+            if done.contains(&child) {
+                continue;
+            }
+            match (self.abandon_unrewound(manager, wallet, child, dead, &mut lowest)).await {
+                Ok(set) => done.extend(set),
+                Err(e) => {
+                    tracing::warn!(%wallet, txid = %child, error = %e, "kept a transaction built on one that can never confirm")
+                }
+            }
+        }
+        if (!done.is_empty() || lowest.is_some())
+            && let Err(e) = self.finish_abandons(manager, wallet, &done, lowest).await
+        {
+            tracing::warn!(%wallet, error = %e, "the abandon of transactions built on dead ones did not finish");
+        }
+    }
+
+    /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events.
+    pub(crate) fn attach_swept_dead(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let rt = self.rt.clone();
+        self.hub.attach_swept_dead(Box::new(move |id, dead| {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                let Ok(_op) = session.enter().await else {
+                    return;
+                };
+                let _lifecycle = session.wallet_lifecycle.hold().await;
+                let Ok(manager) = session.manager() else {
+                    return;
+                };
+                session.abandon_on_dead(&manager, id, &dead).await;
+            });
+        }));
     }
 
     /// dash-qt CSV export of the filtered history (QT-093), exact bytes.

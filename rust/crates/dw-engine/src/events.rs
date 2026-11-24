@@ -531,6 +531,9 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Drops what the history built on a sweep's transactions
+    /// (`tx_actions`, #739); unset in hub-only tests.
+    swept_dead: OnceLock<Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>>,
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -774,6 +777,7 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            swept_dead: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
             sweep_news: OnceLock::new(),
@@ -956,6 +960,15 @@ impl SessionHub {
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
     pub(crate) fn attach_reconcile(&self, start: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.reconcile.set(start);
+    }
+
+    /// Sets what drops the history's transactions built on swept ones
+    /// (once).
+    pub(crate) fn attach_swept_dead(
+        &self,
+        start: Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>,
+    ) {
+        let _ = self.swept_dead.set(start);
     }
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
@@ -1595,6 +1608,12 @@ impl SessionHub {
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
+                }
+                // A swept transaction can never confirm, nor can what the
+                // history alone holds built on its outputs (a payment
+                // key-wallet has no record of after a restart, #739).
+                if let Some(start) = self.swept_dead.get() {
+                    start(id, txids.iter().copied().collect());
                 }
             }
             WalletEvent::ChainTruncated {
