@@ -372,7 +372,7 @@ function ContactForm({
   // The choice stays the user's: a source that can no longer pay holds Review with its reason.
   const source = chosen;
   const activity = usePlatformActivity(walletId);
-  const basis = `${String(pools.platform)}|${(activity.data ?? []).filter(isHeldOp).map((a) => a.id).join(",")}`;
+  const basis = `${pools.platform}|${(activity.data ?? []).filter(isHeldOp).map((a) => a.id).join(",")}`;
   const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown, blocked: chosenReason(rows, chosen), basis });
   // A payment whose reply was lost holds the contact until a later read settles it (P6).
   const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
@@ -385,8 +385,9 @@ function ContactForm({
   useEffect(() => {
     if (lost) void settleLost();
   }, [lost, settleLost]);
-  const lostHeld = !lockHeld && flow.unresolved !== null;
+  const lostHeld = !lockHeld && lost;
   const held = lockHeld || lostHeld;
+  const shownFound = found ?? lostFound;
   const shownBanner: Banner | null = lostHeld ? { kind: "paymentLock", text: t("pay.contact.banner.paymentLockPlatform"), txid: "", source: "platform" } : banner;
   const recheck = () => {
     setLostFound(null);
@@ -435,7 +436,7 @@ function ContactForm({
           </DashButton>
         </section>
         {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? flow.checking : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
-        <ActionLine ok={(found ?? lostFound)?.resolved ?? true} text={(found ?? lostFound)?.text ?? null} testId="pay-lock-resolve" />
+        <ActionLine ok={shownFound?.resolved ?? true} text={shownFound?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
           <section className="pay-card card-l1">
             <FromStep rows={rows} source={source} onChange={setChosen} />

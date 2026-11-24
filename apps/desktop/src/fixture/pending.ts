@@ -272,10 +272,10 @@ export function contactPayoutQuote(world: Ctx["world"], walletId: string, credit
   const c = BigInt(credits);
   if (c < PAYOUT_MIN_CREDITS || c > PAYOUT_MAX_CREDITS)
     throw fail("credits.withdrawal_out_of_range", "out of range", { kind: "creditRange", min: String(PAYOUT_MIN_CREDITS), max: String(PAYOUT_MAX_CREDITS) });
-  // As the engine's `Limits::to_contact_at`: the amount and three fee estimates.
-  if (c + 3n * PAYOUT_FEE_CREDITS > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(c + 3n * PAYOUT_FEE_CREDITS), available: String(total(p)) });
+  const most = c + 3n * PAYOUT_FEE_CREDITS;
+  if (most > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(most), available: String(total(p)) });
   const expectedDuffs = Math.max(0, Number(c / CREDITS_PER_DUFF) - UNLOCK_FEE_DUFFS);
-  return { source: "platform", credits: String(c), expectedDuffs, feeCredits: String(PAYOUT_FEE_CREDITS), grant: { maxDuffs: 0, maxCredits: String(c + 3n * PAYOUT_FEE_CREDITS) } };
+  return { source: "platform", credits: String(c), expectedDuffs, feeCredits: String(PAYOUT_FEE_CREDITS), grant: { maxDuffs: 0, maxCredits: String(most) } };
 }
 
 /** `contact_pay` from the Platform balance under `grant`: as `nextPayout` says, sent (the debit and

@@ -71,6 +71,13 @@ export function BalanceAmount({ shown, amount, inputRef }: { shown: Shown; amoun
   );
 }
 
+/** Amounts in duffs and credits with the unit, masked in discreet mode. */
+function useMaskedAmounts(shown: Shown) {
+  const discreet = useUi((s) => s.discreet);
+  const amount = (duffs: number) => (discreet ? shown.masked() : shown.withUnit(duffs));
+  return { amount, credit: (c: string) => amount(creditsToDuffs(c)) };
+}
+
 /** A payment from a balance in the contact form: its quote while the amount is settled, what holds
  * Review back, and the sheet once Review opened it. */
 export function useBalancePay({
@@ -99,7 +106,7 @@ export function useBalancePay({
 }) {
   const b = useBackend();
   const client = useQueryClient();
-  const discreet = useUi((s) => s.discreet);
+  const { credit } = useMaskedAmounts(shown);
   const flow = useModel(contactPayFor(b, walletId, identity, contact));
   const [confirmed, setConfirmed] = useState<ContactPayQuoteInfo | null>(null);
   const active = source !== "core";
@@ -111,9 +118,7 @@ export function useBalancePay({
     enabled: credits !== null && !open,
     retry: false,
   });
-  // A refusal names amounts: discreet mode masks them as the confirm does.
-  const credit = (c: string) => (discreet ? shown.masked() : shown.withUnit(creditsToDuffs(c)));
-  const problem = !active ? null : blocked !== null ? blocked : credits === null ? null : quote.isError ? fromErrorText(quote.error, credits, credit) : null;
+  const problem = !active ? null : (blocked ?? (credits !== null && quote.isError ? fromErrorText(quote.error, credits, credit) : null));
   const q = quote.data && quote.data.credits === credits && quote.data.source === source ? quote.data : null;
   return {
     active,
@@ -159,9 +164,7 @@ export function BalancePaySheet({
   onClose: (paid: boolean) => void;
 }) {
   const t = useT();
-  const discreet = useUi((s) => s.discreet);
-  const amount = (duffs: number) => (discreet ? shown.masked() : shown.withUnit(duffs));
-  const credit = (c: string) => amount(creditsToDuffs(c));
+  const { amount, credit } = useMaskedAmounts(shown);
   const { step, outcome } = flow;
   // A prompt still open when the sheet goes (a lock) is cancelled: the flow is not left running.
   useEffect(() => () => flow.grants.cancel(), [flow]);
