@@ -311,8 +311,9 @@ pub struct UnrecordedSpend {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpendOutcome {
     pub credits: u64,
-    /// The shielded balance after (while `pending`, less the notes the
-    /// spend holds).
+    /// The shielded balance after. While `pending`, the balance before
+    /// less `credits` and the fee: the change is not a note until a pass
+    /// finds it.
     pub balance: u64,
     /// For an unshield, the Core address paid.
     pub to: String,

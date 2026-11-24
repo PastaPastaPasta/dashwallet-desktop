@@ -1156,6 +1156,9 @@ async fn spend(
     }
     let lease = authority(session, wallet, grant, FlowKind::ShieldedSpend).await?;
     let permit = write_permit(&lease, operation, quote.total_credits)?;
+    // A pending spend's change is no note of the library's until a pass
+    // finds it: its balance after is the one before less what it spends.
+    let after = balance(lib).await.saturating_sub(quote.total_credits);
     // The records and reservations before, to tell this spend's (spends of
     // the wallet run one at a time, under its lock, and no pass runs
     // under the hold).
@@ -1234,7 +1237,7 @@ async fn spend(
                 }
             }
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved,
             })
@@ -1288,7 +1291,7 @@ async fn spend(
             }
             drop(hold);
             Ok(Spent {
-                balance: balance(lib).await,
+                balance: after,
                 state: ShieldedSpendState::Pending,
                 unresolved: armed,
             })

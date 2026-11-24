@@ -1950,6 +1950,13 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
         .unwrap();
         assert_eq!(out.state, ShieldedSpendState::Pending);
         assert_eq!(out.unresolved, Some(unresolved(n)));
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        // The balance it leaves, not the notes less those it holds.
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
         assert_eq!(
             lib.probed.lock().unwrap().last(),
             Some(&true),
@@ -1960,11 +1967,6 @@ fn an_unconfirmed_spend_stays_pending_until_a_scan_resolves_it() {
             "and let go"
         );
         // The quote stays charged; no pass ran for it.
-        let kind = if unshield {
-            ShieldedFeeKind::Withdrawal
-        } else {
-            ShieldedFeeKind::Base
-        };
         assert_eq!(fx.credits_spent(&lease), credits + fee_of(credits, kind));
         assert_eq!(lib.syncs.load(Ordering::SeqCst), syncs);
         assert_eq!(status().unresolved_spends, [unresolved(n)]);
@@ -2208,6 +2210,8 @@ fn a_spend_the_library_kept_no_record_of_is_marked_and_gates_the_next_spends() {
         (out.state, out.unresolved),
         (ShieldedSpendState::Pending, None)
     );
+    let fee = fee_of(credits, ShieldedFeeKind::Base);
+    assert_eq!(out.balance, 2 * NOTE - credits - fee);
     let markers = fx
         .engine
         .block_on(fx.s.leases.unrecorded_spends(wallet))
@@ -4252,6 +4256,12 @@ fn a_failed_send_is_an_error_only_when_the_library_holds_nothing_of_it() {
             (out.state, out.unresolved),
             (ShieldedSpendState::Pending, None)
         );
+        let kind = if unshield {
+            ShieldedFeeKind::Withdrawal
+        } else {
+            ShieldedFeeKind::Base
+        };
+        assert_eq!(out.balance, 2 * NOTE - credits - fee_of(credits, kind));
     }
     let markers = fx
         .engine
