@@ -1685,7 +1685,33 @@ pub(crate) fn top_up_plan(
     amount: WithdrawAmount,
     limits: &Limits,
 ) -> Result<Plan, CreditsError> {
-    let mut count = 1;
+    top_up_plan_from(balances, amount, limits, 1)
+}
+
+/// The plan of `amount` that takes its fee as `quoted` does, when one
+/// exists: a Max over several inputs keeps their band on input 0, and the
+/// same total as an amount fits fewer inputs with a smaller band, so it is
+/// planned again at each larger band. `None`: none claims input 0 as
+/// quoted.
+fn top_up_plan_as(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+    quoted: &Plan,
+) -> Option<Plan> {
+    (2..=limits.max_inputs)
+        .filter_map(|count| top_up_plan_from(balances, amount, limits, count).ok())
+        .find(|planned| quoted.takes_fee_as(planned))
+}
+
+/// [`top_up_plan`] with input 0 keeping at least the band for `count`
+/// inputs.
+fn top_up_plan_from(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+    mut count: usize,
+) -> Result<Plan, CreditsError> {
     loop {
         let rules = Input0Rules {
             reserve: limits.keep(count),
@@ -3305,6 +3331,12 @@ pub(crate) async fn run(
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
             let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
+            let planned = match (target, quoted) {
+                (Target::Identity(_), Some(q)) if !q.takes_fee_as(&planned) => {
+                    top_up_plan_as(&balances, amount, &limits, q).unwrap_or(planned)
+                }
+                _ => planned,
+            };
             // A new send or a top-up signs the fee its Confirm showed or
             // nothing: the read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {

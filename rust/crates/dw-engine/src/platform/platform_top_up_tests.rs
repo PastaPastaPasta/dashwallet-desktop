@@ -302,6 +302,44 @@ fn a_top_up_takes_the_fee_input_its_quote_named() {
     assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
 }
 
+/// Max over two inputs keeps the two-input band on input 0. Confirmed as
+/// its quoted credits, as the sheet and dwcli confirm it, that total would
+/// fit input 0 alone at the one-input band and claim more of it: the
+/// top-up signs the quote's own plan instead, on unchanged balances.
+#[test]
+fn a_max_top_up_confirms_its_own_quote() {
+    let w = World::new();
+    let order = w.in_order();
+    let l = limits();
+    let small = l.keep(2) - l.keep(1);
+    assert!(small >= l.min_input, "a second input the plan takes");
+    w.net.fund(order[0], 10 * DASH);
+    w.net.fund(order[1], small);
+    let max = w.top_up_quote(&me(), WithdrawAmount::All).unwrap();
+    assert_eq!(max.inputs.len(), 2);
+    let balances = BTreeMap::from([(order[0], 10 * DASH), (order[1], small)]);
+    let one = top_up_plan(&balances, credits(max.credits), &l).unwrap();
+    assert_eq!(
+        one.inputs.len(),
+        1,
+        "the same total as an amount: one input"
+    );
+    let grant = w.f.grant(max.debit_credits);
+    let done = w.confirm(&max, credits(max.credits), &grant).unwrap();
+    assert_eq!(done.credits, max.credits);
+    let sent = w.net.sent.lock().unwrap()[0].clone();
+    let claims: Vec<_> = sent
+        .iter()
+        .map(|(a, (_, c))| (bech32m(a, w.network()), *c))
+        .collect();
+    let quoted: Vec<_> = max
+        .inputs
+        .iter()
+        .map(|i| (i.address.clone(), i.credits))
+        .collect();
+    assert_eq!(claims, quoted, "the quote's inputs and claims");
+}
+
 /// A quoted fee input that is not a Platform address is refused before
 /// anything is read.
 #[test]

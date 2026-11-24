@@ -2007,6 +2007,10 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
+            // What Confirm showed, Max included: its credits and its fee input.
+            let amount = WithdrawAmount::Credits {
+                credits: quote.credits,
+            };
             let fee_input = quote.inputs.first().cloned();
             let outcome =
                 ctx.block_on(dp.top_up_from_platform(identity, amount, fee_input, grant))?;

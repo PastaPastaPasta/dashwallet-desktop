@@ -18,7 +18,12 @@ async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
   if (nextTopUp) await page.evaluate((n) => void (window.__dwFixture!.world.pending.platform!.nextTopUp = n), nextTopUp);
-  if (!sendsActive) await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.sendsActive = false));
+  if (!sendsActive)
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      (f.world.pending.platform! as { sendsActive?: boolean }).sendsActive = false;
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
+    });
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "profile" }));
   await expect(page.getByTestId("page-profile")).toBeVisible();
   await page.getByTestId("profile-top-up").click();

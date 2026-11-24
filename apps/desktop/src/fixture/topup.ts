@@ -176,7 +176,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
   function fromPlatformChecks(world: World, amount: WithdrawAmount) {
     if (world.launch.network.dirName === "mainnet") throw fail("platform.feature_off", TOP_UP_FROM_PLATFORM, { kind: "feature", feature: TOP_UP_FROM_PLATFORM });
     const p = world.pending.platform;
-    if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
+    if (p === null || p.sendsActive === false) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
     const held = p.activity.find(isHeldOp);
     if (held) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held.id });
     return { p, ...fromPlatformPlan(p.addresses, amount) };

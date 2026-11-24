@@ -189,6 +189,16 @@ describe("credits top-up from Platform (C-routes D-C3)", () => {
     const g = await fromPlatformGrant("40000000000");
     expect((await cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), null, g)).state).toBe("pending");
     expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("credits.move_pending");
+    fx.world.pending.platform!.nextTopUp = "done";
+    fx.world.pending.platform!.activity = fx.world.pending.platform!.activity.filter((a) => a.kind !== "toIdentity");
+    // Below address funds, the quote and the top-up are refused, the grant unused.
+    const q = await cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000"));
+    fx.world.pending.platform!.sendsActive = false;
+    const off = await fromPlatformGrant("40000000000");
+    expect(await code(cmd.creditsTopUpFromPlatform(W, A, credits("1000000000"), q.inputs[0], off))).toBe("platform.feature_off");
+    expect(fx.world.grants.find((x) => x.grant.id === off)?.used).toBe(false);
+    expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("platform.feature_off");
+    fx.world.pending.platform!.sendsActive = true;
     fx.world.launch.network = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
     expect(await code(cmd.creditsTopUpFromPlatformQuote(W, A, credits("1000000000")))).toBe("platform.feature_off");
   });
