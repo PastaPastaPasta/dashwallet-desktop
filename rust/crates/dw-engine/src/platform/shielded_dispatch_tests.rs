@@ -1182,6 +1182,9 @@ fn unshield_bytes(
     st.serialize_to_bytes().unwrap()
 }
 
+/// The fee these tests' unshields quote.
+const UNSHIELD_FEE: u64 = 20_000_000;
+
 /// A Platform address of the wallet's (in these tests, any one).
 fn own_platform() -> dpp::address_funds::PlatformAddress {
     dpp::address_funds::PlatformAddress::P2pkh([0x51; 20])
@@ -1215,11 +1218,19 @@ impl Hooked {
         }
     }
 
-    /// The wallet's unshield intent: `to` and the quoted credits.
+    /// The wallet's unshield intent: `to`, the quoted credits, and the
+    /// quoted total with [`UNSHIELD_FEE`].
     fn intend(&self, to: dpp::address_funds::PlatformAddress, credits: u64) {
+        self.intend_total(to, credits, credits + UNSHIELD_FEE);
+    }
+
+    /// The wallet's unshield intent: `to`, `credits`, and the quoted
+    /// `total`.
+    fn intend_total(&self, to: dpp::address_funds::PlatformAddress, credits: u64, total: u64) {
         let intent = pool::UnshieldIntent {
             to,
             credits,
+            total,
             record: None,
         };
         (self.f.session.platform.unshield_intents.lock().unwrap()).insert(self.f.wallet, intent);
@@ -1247,7 +1258,7 @@ impl Hooked {
 fn unshield_hook_arms_its_record_after_the_artifact() {
     use super::super::platform_moves::FromShieldedSource;
     let h = Hooked::new();
-    let fee = 20_000_000;
+    let fee = UNSHIELD_FEE;
     let payload = h.staged_unshield(
         1,
         &[1],
@@ -1255,6 +1266,7 @@ fn unshield_hook_arms_its_record_after_the_artifact() {
     );
     let hash = payload.st_hash;
     h.intend(own_platform(), NOTE / 2);
+    let again = payload.clone();
     assert_eq!(h.dispatch(payload), Ok(()));
     let artifact = h.artifact(1).unwrap();
     assert_eq!(
@@ -1285,23 +1297,41 @@ fn unshield_hook_arms_its_record_after_the_artifact() {
         own_platform().to_bech32m_string(dashcore::Network::Regtest)
     );
     assert_eq!(h.intended_record(), Some(r.id()));
+
+    // The same unshield handed to the hook again: refused at its artifact,
+    // its record as it was, still one.
+    let refused = h.dispatch(again).unwrap_err();
+    assert!(refused.contains("already has an artifact"), "{refused}");
+    assert_eq!(h.records(), records);
 }
 
 /// No intent (an unshield the engine did not start), another address, or
-/// an amount that does not cover the quoted credits: refused before the
+/// a signed amount other than the quoted total: refused before the
 /// artifact, nothing written, nothing sent.
 #[test]
 fn unshield_hook_refuses_without_or_against_its_intent() {
     let h = Hooked::new();
-    let fee = 20_000_000;
+    let fee = UNSHIELD_FEE;
     use dpp::address_funds::PlatformAddress;
     let other = PlatformAddress::P2pkh([0x77; 20]);
     type Case = (Option<(PlatformAddress, u64)>, PlatformAddress, u64);
-    let cases: [Case; 4] = [
+    let cases: [Case; 6] = [
         (None, own_platform(), NOTE / 2 + fee),
         (Some((own_platform(), NOTE / 2)), other, NOTE / 2 + fee),
         (Some((own_platform(), NOTE / 2)), own_platform(), NOTE / 2),
         (Some((own_platform(), NOTE)), own_platform(), NOTE / 2 + fee),
+        // A signed total one credit off the quoted total, either way,
+        // though still above the credits.
+        (
+            Some((own_platform(), NOTE / 2)),
+            own_platform(),
+            NOTE / 2 + fee + 1,
+        ),
+        (
+            Some((own_platform(), NOTE / 2)),
+            own_platform(),
+            NOTE / 2 + fee - 1,
+        ),
     ];
     for (n, (intent, to, amount)) in (1u8..).zip(cases) {
         (h.f.session.platform.unshield_intents.lock().unwrap()).clear();
@@ -1329,7 +1359,7 @@ fn unshield_hook_refuses_without_or_against_its_intent() {
 #[test]
 fn unshield_hook_refuses_when_its_record_is_not_written() {
     let h = Hooked::new();
-    let fee = 20_000_000;
+    let fee = UNSHIELD_FEE;
     let payload = h.staged_unshield(
         1,
         &[1],
@@ -1352,7 +1382,7 @@ fn unshield_hook_refuses_when_its_record_is_not_written() {
 #[test]
 fn unshield_resend_is_admitted_only_once_its_record_is_armed() {
     let h = Hooked::new();
-    let fee = 20_000_000;
+    let fee = UNSHIELD_FEE;
     let payload = h.staged_unshield(
         1,
         &[1],
@@ -1392,4 +1422,71 @@ fn unshield_resend_is_admitted_only_once_its_record_is_armed() {
     assert_eq!(wrote, Ok(true));
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 2, [0x22; 32]), Ok(()));
     assert_eq!(h.records().len(), 1);
+}
+
+/// An unshield signed by dpp's own builder (`build_unshield_transition`,
+/// the one `shielded_unshield_to_with_keyset` signs with, and the real
+/// Orchard prover) for the engine's quote is admitted by the hook: the
+/// builder signs the credits plus the fee the quote priced, which is the
+/// quote's total, and the hook arms the record with the quoted credits.
+#[test]
+fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
+    use dpp::address_funds::OrchardAddress;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::shielded::builder::{SpendableNote, build_unshield_transition};
+    use dpp::version::PlatformVersion;
+    use grovedb_commitment_tree::{
+        Anchor, FullViewingKey, MerkleHashOrchard, MerklePath, NOTE_COMMITMENT_TREE_DEPTH, Note,
+        NoteValue, RandomSeed, Rho, Scope, SpendAuthorizingKey, SpendingKey,
+    };
+    let h = Hooked::new();
+    let credits = NOTE / 2;
+    let lib = super::FakeShielded::default();
+    let quote = (h.f.engine)
+        .block_on(async { pool::unshield_to_platform_quote(&lib, credits, None).await })
+        .unwrap();
+    assert_eq!(quote.total_credits, credits + quote.fee_credits);
+
+    let sk = SpendingKey::from_bytes([42; 32]).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+    let address = fvk.address_at(0u32, Scope::External);
+    let rho: Rho = Option::from(Rho::from_bytes(&[0; 32])).unwrap();
+    let rseed: RandomSeed = Option::from(RandomSeed::from_bytes([1; 32], &rho)).unwrap();
+    let note: Note = Option::from(Note::from_parts(
+        address,
+        NoteValue::from_raw(NOTE),
+        rho,
+        rseed,
+    ))
+    .unwrap();
+    let auth_path = [MerkleHashOrchard::empty_leaf(); NOTE_COMMITMENT_TREE_DEPTH];
+    let spend = SpendableNote {
+        note,
+        merkle_path: MerklePath::from_parts(0, auth_path),
+    };
+    let change = OrchardAddress::from_raw_bytes(&address.to_raw_address_bytes()).unwrap();
+    let prover = CachedOrchardProver::new();
+    let (st, fee) = build_unshield_transition(
+        vec![spend],
+        own_platform(),
+        credits,
+        &change,
+        &fvk,
+        &SpendAuthorizingKey::from(&sk),
+        Anchor::empty_tree(),
+        &&prover,
+        [0; 36],
+        PlatformVersion::get(lib.version).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fee, quote.fee_credits, "the builder's fee is the quote's");
+
+    h.intend_total(own_platform(), quote.credits, quote.total_credits);
+    let payload = h.staged_unshield(1, &[1], st.serialize_to_bytes().unwrap());
+    assert_eq!(h.dispatch(payload), Ok(()));
+    let records = h.records();
+    assert_eq!(
+        (records.len(), records[0].credits, records[0].armed),
+        (1, credits, true)
+    );
 }

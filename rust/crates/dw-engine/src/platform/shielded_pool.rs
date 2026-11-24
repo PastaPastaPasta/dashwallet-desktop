@@ -1183,6 +1183,9 @@ struct Spent {
 pub(crate) struct UnshieldIntent {
     pub(crate) to: PlatformAddress,
     pub(crate) credits: u64,
+    /// What the quote charges the grant: `credits` and the fee, the
+    /// transition's whole amount.
+    pub(crate) total: u64,
     pub(crate) record: Option<String>,
 }
 
@@ -1197,11 +1200,12 @@ impl<'a> IntentSlot<'a> {
         session: &'a NetworkSession,
         wallet: WalletId,
         to: PlatformAddress,
-        credits: u64,
+        (credits, total): (u64, u64),
     ) -> Self {
         let intent = UnshieldIntent {
             to,
             credits,
+            total,
             record: None,
         };
         (session.platform.unshield_intents.lock())
@@ -1228,8 +1232,8 @@ impl Drop for IntentSlot<'_> {
 
 /// The `FromShielded` record of the unshield `payload` hands the hook: what
 /// its signed transition credits, checked against the wallet's
-/// [`UnshieldIntent`] (the address the engine accepted, and more than the
-/// credits it quoted: the transition's amount carries the fee too). None
+/// [`UnshieldIntent`] (the address the engine accepted, and exactly the
+/// total it quoted and charged the grant: the credits and the fee). None
 /// stands, or another transition: refused before anything is written.
 fn unshield_record(
     session: &NetworkSession,
@@ -1248,7 +1252,10 @@ fn unshield_record(
     let StateTransition::Unshield(unshield) = st else {
         return Err(refused("the unshield's transition is not an unshield"));
     };
-    if *unshield.output_address() != intent.to || unshield.unshielding_amount() <= intent.credits {
+    if *unshield.output_address() != intent.to
+        || unshield.unshielding_amount() != intent.total
+        || intent.total <= intent.credits
+    {
         return Err(refused("the unshield is not the one the engine accepted"));
     }
     let to = intent.to.to_bech32m_string(session.vault.network());
@@ -1359,7 +1366,12 @@ async fn spend(
         .collect();
     let held_before = lib.held_spends().await?;
     let intent = match to {
-        To::Platform(address) => Some(IntentSlot::set(session, wallet, *address, quote.credits)),
+        To::Platform(address) => Some(IntentSlot::set(
+            session,
+            wallet,
+            *address,
+            (quote.credits, quote.total_credits),
+        )),
         _ => None,
     };
     let sent = leased(&lease, async {
@@ -2548,8 +2560,16 @@ impl ShieldedDispatch for EngineDispatch {
         // the transition can leave (C-routes C1-9). Not armed, the send is
         // refused; a re-send is admitted only once armed (`admit`).
         if let Some(id) = record {
-            (super::platform_moves::arm_from_shielded(&session, wallet, payload.activity_id).await)
+            let armed = (super::platform_moves::arm_from_shielded(
+                &session,
+                wallet,
+                (payload.activity_id, payload.st_hash),
+            )
+            .await)
                 .map_err(|e| refused(format!("the FromShielded record was not armed: {e}")))?;
+            if !armed {
+                return Err(refused("the FromShielded record was not armed: it is gone"));
+            }
             if let Some(intent) = (session.platform.unshield_intents.lock())
                 .unwrap_or_else(PoisonError::into_inner)
                 .get_mut(&wallet)
@@ -2596,7 +2616,8 @@ impl ShieldedDispatch for EngineDispatch {
         // An unshield's record, written before its artifact, is armed before
         // it leaves, also when a stop cut off its arming in `dispatch`.
         if artifact.kind == Some(ArtifactKind::Unshield) {
-            (super::platform_moves::arm_from_shielded(&session, wallet, activity_id).await)
+            (super::platform_moves::arm_from_shielded(&session, wallet, (activity_id, st_hash))
+                .await)
                 .map_err(|e| refused(format!("the FromShielded record was not armed: {e}")))?;
         }
         Ok(())

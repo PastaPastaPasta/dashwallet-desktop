@@ -2834,8 +2834,9 @@ impl World {
         self.stage_unshield(n, to, credits, n.wrapping_add(1))?;
         self.unshield_artifact(n);
         let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
-        let armed =
-            (self.f.engine).block_on(async move { arm_from_shielded(&s, id, [n; 32]).await });
+        let armed = (self.f.engine).block_on(async move {
+            arm_from_shielded(&s, id, ([n; 32], [n.wrapping_add(1); 32])).await
+        });
         assert_eq!(armed, Ok(true));
         Ok(())
     }
@@ -2867,13 +2868,43 @@ impl World {
 
     /// Unshield `n`'s artifact as the library's disposition settles it.
     fn settle_unshield(&self, n: u8, status: dw_appdb::dispatch::ArtifactStatus) {
+        use dw_appdb::dispatch::ArtifactStatus;
+        let disposition = match status {
+            ArtifactStatus::Executed => ("executed", None),
+            ArtifactStatus::NotExecuted => ("not_executed", Some("pruned")),
+            _ => ("unresolved", Some("cancelled")),
+        };
+        self.settle_unshield_as(n, status, disposition);
+    }
+
+    /// Unshield `n`'s artifact settled `status`, the library's disposition
+    /// stored as `disposition`.
+    fn settle_unshield_as(
+        &self,
+        n: u8,
+        status: dw_appdb::dispatch::ArtifactStatus,
+        disposition: (&'static str, Option<&'static str>),
+    ) {
         let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
         let settled = (self.f.engine).block_on(async move {
             (s.leases)
-                .settle_shielded_artifact(id, [n.wrapping_add(1); 32], status, None, false)
+                .settle_shielded_artifact(
+                    id,
+                    [n.wrapping_add(1); 32],
+                    status,
+                    Some(disposition),
+                    false,
+                )
                 .await
         });
         assert_eq!(settled, Ok(dw_appdb::dispatch::ArtifactSettled::Settled));
+    }
+
+    fn commit(&self, writes: Vec<Write>) {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        (self.f.engine)
+            .block_on(async move { Store::of(&s, id).unwrap().commit(writes).await })
+            .unwrap();
     }
 
     fn shielded_row(&self, n: u8) -> PlatformActivity {
@@ -2968,12 +2999,13 @@ fn from_shielded_done_only_on_executed_artifact() {
         "after done: incoming"
     );
 
-    // Executed before its rise was read: the first rise is its own.
+    // Executed, its credit landed before the read that settles it: that
+    // read's rise is its own.
     w.arm_unshield(2, b, DASH).unwrap();
     w.settle_unshield(2, ArtifactStatus::Executed);
-    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
     w.net.fund(b, DASH);
     assert_eq!(incoming_total(&w.activity()), 3 * DASH);
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
     w.net.fund(b, 2 * DASH);
     assert_eq!(incoming_total(&w.activity()), 5 * DASH);
 
@@ -3030,8 +3062,15 @@ fn from_shielded_unarmed_is_no_row() {
         "unarmed: absorbs nothing"
     );
     w.unshield_artifact(1);
+    // The first transition's hash: not this record's.
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
-    let armed = (w.f.engine).block_on(async move { arm_from_shielded(&s, id, [1; 32]).await });
+    let stale =
+        (w.f.engine).block_on(async move { arm_from_shielded(&s, id, ([1; 32], [7; 32])).await });
+    assert!(stale.is_err(), "{stale:?}");
+    assert!(w.shielded_rows().is_empty(), "still unarmed");
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let armed =
+        (w.f.engine).block_on(async move { arm_from_shielded(&s, id, ([1; 32], [2; 32])).await });
     assert_eq!(armed, Ok(true));
     let row = w.shielded_row(1);
     assert_eq!(
@@ -3040,14 +3079,34 @@ fn from_shielded_unarmed_is_no_row() {
         "the second transition's"
     );
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
-    let none = (w.f.engine).block_on(async move { arm_from_shielded(&s, id, [5; 32]).await });
+    let none =
+        (w.f.engine).block_on(async move { arm_from_shielded(&s, id, ([5; 32], [6; 32])).await });
     assert_eq!(none, Ok(false));
+
+    // An unarmed record's spend never left: its artifact settling does not
+    // make it done, and it takes no later rise.
+    let b = w.address(1);
+    w.stage_unshield(3, b, DASH, 4).unwrap();
+    w.unshield_artifact(3);
+    w.settle_unshield(3, dw_appdb::dispatch::ArtifactStatus::Executed);
+    let before = incoming_total(&w.activity());
+    w.net.fund(b, DASH);
+    assert_eq!(incoming_total(&w.activity()), before + DASH);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let records = (w.f.engine).block_on(async move { from_shielded_records(&s, id).await });
+    let unarmed = records
+        .iter()
+        .find(|r| r.activity == hex::encode([3u8; 32]))
+        .unwrap();
+    assert_eq!(
+        (unarmed.state, unarmed.armed),
+        (PlatformActivityState::Pending, false)
+    );
 }
 
 /// Two records of one address, both executed before either rise is read:
-/// each rise is one record's, and the next one is `incoming` (a read that
-/// takes part of what the records have still to read takes it from the
-/// oldest, not from none or all).
+/// the first read above their height shows both credits, neither
+/// `incoming`, and the next rise is `incoming`.
 #[test]
 fn from_shielded_two_executed_take_one_rise_each() {
     use dw_appdb::dispatch::ArtifactStatus;
@@ -3057,16 +3116,14 @@ fn from_shielded_two_executed_take_one_rise_each() {
     w.arm_unshield(2, a, DASH).unwrap();
     w.settle_unshield(1, ArtifactStatus::Executed);
     w.settle_unshield(2, ArtifactStatus::Executed);
+    w.net.fund(a, 2 * DASH);
+    assert_eq!(incoming_total(&w.activity()), 0);
     assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
-    for _ in 0..2 {
-        w.net.fund(a, DASH);
-        assert_eq!(incoming_total(&w.activity()), 0);
-    }
     w.net.fund(a, DASH);
     assert_eq!(
         incoming_total(&w.activity()),
         DASH,
-        "the third rise is incoming"
+        "the next rise is incoming"
     );
 }
 
@@ -3108,4 +3165,202 @@ fn from_shielded_failed_records_rise_goes_to_the_other() {
             "the next rise is incoming ({newer_first})"
         );
     }
+}
+
+/// Rule 2: only the library's own proof of the spend makes the record
+/// done. An execution it could not tie to this spend (a confirmed history
+/// row beside an unattributable outcome) leaves it pending, its rise
+/// absorbed, not `incoming`.
+#[test]
+fn from_shielded_unattributable_execution_stays_pending() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    let unattributable = ("unresolved", Some("unattributable"));
+    w.settle_unshield_as(1, ArtifactStatus::Executed, unattributable);
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 0, "its rise, absorbed");
+    for _ in 0..2 {
+        let row = w.shielded_row(1);
+        assert_eq!(
+            (row.state, row.may_land),
+            (PlatformActivityState::Pending, true)
+        );
+    }
+    w.arm_unshield(2, a, DASH).unwrap();
+    w.settle_unshield(2, ArtifactStatus::Executed);
+    assert_eq!(
+        w.shielded_row(2).state,
+        PlatformActivityState::Done,
+        "proved"
+    );
+}
+
+/// A done record's credit is what the first read above the height it was
+/// settled at shows of it. What that read did not show as its own (the
+/// address fell in the same read: a debit beside the credit) is no later
+/// rise's: a later unrelated payment is `incoming`.
+#[test]
+fn from_shielded_done_allowance_ends_at_its_first_read() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.net.fund(a, 5 * DASH);
+    assert_eq!(incoming_total(&w.activity()), 5 * DASH);
+    w.arm_unshield(1, a, 2 * DASH).unwrap();
+    w.settle_unshield(1, ArtifactStatus::Executed);
+    // 5 out and its 2 in before the read that settles it: a fall to 2.
+    w.net.state.lock().unwrap().get_mut(&a).unwrap().1 = 2 * DASH;
+    w.net.tick();
+    assert_eq!(incoming_total(&w.activity()), 5 * DASH);
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+    w.net.fund(a, 2 * DASH);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        7 * DASH,
+        "a later payment: incoming"
+    );
+}
+
+/// A read that does not compare the record's address (a fund apply runs
+/// there) does not end its allowance: the first read that compares it
+/// takes the credit, no `incoming` row.
+#[test]
+fn from_shielded_done_allowance_waits_for_a_held_address() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    let to = bech32m(&a, Network::Regtest);
+    w.arm_unshield(1, a, DASH).unwrap();
+    let hold = FundHold::new(&w.f.s.platform.fund_holds, w.f.wallet, to);
+    w.settle_unshield(1, ArtifactStatus::Executed);
+    w.net.tick();
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 0, "held: not compared");
+    drop(hold);
+    assert_eq!(incoming_total(&w.activity()), 0, "its credit, once");
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH);
+}
+
+/// A rise a failed record had read as its own goes only to a record of
+/// its address armed before that read: a later unshield's record never
+/// claims it, so it is `incoming` again, and the later record still takes
+/// its own credit.
+#[test]
+fn a_later_unshield_never_claims_a_rise_read_before_it_was_armed() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 0, "the first record's");
+    w.arm_unshield(2, a, DASH).unwrap();
+    w.settle_unshield(1, ArtifactStatus::NotExecuted);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        DASH,
+        "read before the second was armed: incoming"
+    );
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH, "the second's own");
+    w.settle_unshield(2, ArtifactStatus::Executed);
+    assert_eq!(w.shielded_row(2).state, PlatformActivityState::Done);
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 2 * DASH);
+}
+
+/// A restored fund's armed record read part of a done unshield's credit
+/// as its own. Platform reports its lock used: the record goes, and what
+/// it absorbed is the unshield's again, not `incoming`, so the credit
+/// shows once; a later payment to the address is `incoming`.
+#[test]
+fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    let to = bech32m(&a, Network::Regtest);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.settle_unshield(1, ArtifactStatus::Executed);
+    let txid = "cd".repeat(32);
+    let at = dashcore::OutPoint::new(txid.parse().unwrap(), 0);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let arming = (w.f.engine)
+        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100).await });
+    assert_eq!(arming, Ok(Arming::Made));
+    w.net.fund(a, DASH);
+    let rows = w.activity();
+    assert_eq!(incoming_total(&rows), 0, "{rows:?}");
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    (w.f.engine)
+        .block_on(async move { fund_used(&s, id, &txid, DASH / 100).await })
+        .unwrap();
+    let rows = w.activity();
+    assert!(
+        rows.iter()
+            .all(|r| r.kind != PlatformActivityKind::FromCore),
+        "{rows:?}"
+    );
+    assert_eq!(incoming_total(&rows), 0, "shown once: {rows:?}");
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let again = "cd".repeat(32);
+    (w.f.engine)
+        .block_on(async move { fund_used(&s, id, &again, DASH / 100).await })
+        .unwrap();
+    assert_eq!(incoming_total(&w.activity()), 0, "given back once");
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH, "a later payment");
+}
+
+/// A settle whose write fails records nothing: the next read settles the
+/// record again and gives back what it absorbed once, never twice.
+#[test]
+fn a_failed_from_shielded_settle_write_gives_back_once() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.net.fund(a, DASH / 2);
+    assert_eq!(incoming_total(&w.activity()), 0);
+    w.settle_unshield(1, ArtifactStatus::NotExecuted);
+    w.fail_next_outcome_write();
+    let failed = w.call(|net, s, wl, id| async move { activity(&*net, &s, &wl, id).await });
+    assert!(failed.is_err(), "{failed:?}");
+    for _ in 0..2 {
+        assert_eq!(incoming_total(&w.activity()), DASH / 2);
+        assert_eq!(w.shielded_row(1).state, PlatformActivityState::Failed);
+    }
+}
+
+/// A record that cannot be read is an error, never "no record", so the
+/// hook refuses a re-send rather than let it go unattributed. A record
+/// whose activity is not the id its key names is left out: no row, and it
+/// absorbs nothing.
+#[test]
+fn an_unreadable_or_malformed_from_shielded_record_claims_nothing() {
+    let w = World::new();
+    let a = w.address(0);
+    let key = |n: u8| format!("{FROM_SHIELDED_PREFIX}{}", hex::encode([n; 32]));
+    w.commit(vec![(key(1), Some("{not a record".into()))]);
+    let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+    let armed =
+        (w.f.engine).block_on(async move { arm_from_shielded(&s, id, ([1; 32], [2; 32])).await });
+    assert!(armed.is_err(), "{armed:?}");
+
+    let record = FromShieldedRecord::staged(
+        FromShieldedSource::Unshield,
+        ([2; 32], [3; 32]),
+        bech32m(&a, Network::Regtest),
+        DASH,
+    );
+    let mut value = serde_json::to_value(&record).unwrap();
+    value["armed"] = true.into();
+    value["activity"] = "zz".into();
+    w.commit(vec![(key(2), Some(value.to_string()))]);
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), DASH);
+    assert!(w.shielded_rows().is_empty());
 }

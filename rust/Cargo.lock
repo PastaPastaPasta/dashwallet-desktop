@@ -2573,6 +2573,7 @@ dependencies = [
  "dw-vault",
  "futures-util",
  "grovedb-bincode",
+ "grovedb-commitment-tree",
  "hex",
  "image",
  "key-wallet",
