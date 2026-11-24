@@ -7,7 +7,7 @@ import type { MasternodeKeyInfo } from "../api/generated/MasternodeKeyInfo";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { RevealedMasternodeKey } from "../api/generated/RevealedMasternodeKey";
 import { appError, FakeWorld, status, WALLET_A } from "../onboarding/testWorld";
-import { canCopySecret, KeyRevealModel, keyMatches, keysErrorText } from "./keys";
+import { canCopySecret, KeyRevealModel, keyMatches, keysErrorText, knownMatches, type ReadState } from "./keys";
 
 const key = (role: MasternodeKeyRoleName, over: Partial<MasternodeKeyInfo> = {}): MasternodeKeyInfo => ({
   role,
@@ -58,6 +58,27 @@ describe("matching keys to known masternodes (D8)", () => {
   it("matches a platform node key by node id", () => {
     expect(keyMatches(key("platform_node", { platformNodeId: "AB12" }), nodes, name).map((m) => m.proTxHash)).toEqual(["h2"]);
     expect(keyMatches(key("platform_node", { platformNodeId: "ffff" }), nodes, name)).toEqual([]);
+  });
+});
+
+describe("when key matches are settled (D8)", () => {
+  const read = <T>(data: T | undefined, over: Partial<ReadState<T>> = {}): ReadState<T> => ({ data, isError: false, isPending: data === undefined, isFetching: false, ...over });
+  const office = detail("11", { owner: "yOffice" });
+
+  it("matches only once the list and every detail have settled with success", () => {
+    expect(knownMatches(read(["11"]), [read(office)])).toEqual({ details: [office], state: "done" });
+    expect(knownMatches(read(undefined), [])).toEqual({ details: [], state: "checking" });
+    expect(knownMatches(read(["11"]), [read<MasternodeDetail>(undefined)])).toEqual({ details: [], state: "checking" });
+  });
+
+  it("is checking, with no match from cached data, while a refresh runs", () => {
+    expect(knownMatches(read(["11"], { isFetching: true }), [read(office)])).toEqual({ details: [], state: "checking" });
+    expect(knownMatches(read(["11"]), [read(office, { isFetching: true })])).toEqual({ details: [], state: "checking" });
+  });
+
+  it("is failed, with no match from cached data, after a refresh fails", () => {
+    expect(knownMatches(read(["11"]), [read(office, { isError: true })])).toEqual({ details: [], state: "failed" });
+    expect(knownMatches(read(["11"], { isError: true }), [read(office)])).toEqual({ details: [], state: "failed" });
   });
 });
 

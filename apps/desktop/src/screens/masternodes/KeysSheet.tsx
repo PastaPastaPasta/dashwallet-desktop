@@ -19,7 +19,7 @@ import { noCopy, ProtectionPending } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { shortAddress } from "../../format/tx";
 import { useT } from "../../i18n";
-import { canCopySecret, KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, keysErrorText, type KeyMatch } from "../../masternodes/keys";
+import { canCopySecret, KEY_ROLES, KEYS_PAGE, KeyRevealModel, keyMatches, keysErrorText, knownMatches, type KeyMatch, type MatchState } from "../../masternodes/keys";
 import { rowName } from "../../masternodes/model";
 import { mnKeys, useMasternodes } from "../../masternodes/queries";
 import { useModel } from "../../onboarding/model";
@@ -104,7 +104,7 @@ export function MasternodeKeysSheet({
                       <span className="mono">{shortKey(key)}</span>
                       {" · "}
                       <span className="mg-muted" data-testid={`mn-key-${key.index}-match`}>
-                        {matches.length > 0 || known.state === "done"
+                        {known.state === "done"
                           ? matchText(t, matches)
                           : t(known.state === "checking" ? `${P}.checking` : `${P}.checkFailed`)}
                       </span>
@@ -173,26 +173,20 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   };
 }
 
-/** The details of the masternodes this wallet knows (its own and tracked), for matching. A key is
- * called unmatched only once every read succeeded ("done"); before, "checking"; after a failed
- * read, "failed", with `retry`. */
-function useKnownDetails(walletId: string): { details: MasternodeDetail[]; state: "checking" | "failed" | "done"; retry: () => void } {
+/** The details of the masternodes this wallet knows (its own and tracked), for matching
+ * (`knownMatches`), with `retry` after a failed read. */
+function useKnownDetails(walletId: string): { details: MasternodeDetail[]; state: MatchState; retry: () => void } {
   const b = useBackend();
   const list = useMasternodes(walletId);
   const hashes = (list.data?.masternodes ?? []).map((r) => r.proTxHash);
   const details = useQueries({
     queries: hashes.map((h) => ({ queryKey: mnKeys.detail(walletId, h), queryFn: () => b.mnMasternode(walletId, h) })),
   });
-  const failed = list.isError || details.some((d) => d.isError);
-  const checking = list.isPending || details.some((d) => d.isPending);
   const retry = () => {
     if (list.isError) void list.refetch();
     for (const d of details) if (d.isError) void d.refetch();
   };
-  // Only a read whose latest attempt succeeded matches: a failed refresh keeps its old data, and
-  // a failed list may name masternodes that are gone.
-  const current = list.isSuccess ? details.flatMap((d) => (d.isSuccess ? [d.data] : [])) : [];
-  return { details: current, state: failed ? "failed" : checking ? "checking" : "done", retry };
+  return { ...knownMatches(list, details), retry };
 }
 
 function KeyPanel({ walletId, k, noSeed }: { walletId: string; k: MasternodeKeyInfo; noSeed: boolean }) {

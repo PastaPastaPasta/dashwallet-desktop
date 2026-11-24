@@ -52,6 +52,26 @@ export function keyMatches(key: MasternodeKeyInfo, details: readonly MasternodeD
     .map((d) => ({ proTxHash: d.row.proTxHash, name: name(d), service: d.list?.service ?? d.row.service }));
 }
 
+/** A query's state, as `useQuery` reports it. */
+export interface ReadState<T> {
+  data: T | undefined;
+  isError: boolean;
+  isPending: boolean;
+  isFetching: boolean;
+}
+
+export type MatchState = "checking" | "failed" | "done";
+
+/** The known masternodes keys match against, and whether that is settled (D8). Matches come only
+ * once every read has settled with success: a refresh in flight is "checking", and a failed one,
+ * whose old data stays cached, is "failed". */
+export function knownMatches<L, D>(list: ReadState<L>, details: readonly ReadState<D>[]): { details: D[]; state: MatchState } {
+  const reads = [list, ...details];
+  if (reads.some((r) => r.isError)) return { details: [], state: "failed" };
+  if (reads.some((r) => r.isPending || r.isFetching)) return { details: [], state: "checking" };
+  return { details: details.map((d) => d.data!), state: "done" };
+}
+
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "authorize" | "mnRevealKey" | "revokeGrant">;
 
 export type RevealStep = "loading" | "failed" | "hidden" | "working" | "shown";
