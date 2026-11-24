@@ -69,7 +69,7 @@ for (const theme of THEMES) {
   test(`Pay with: Dash wallet by default, Platform with Max, Shielded not offered (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme);
     await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();
-    await expect(page.getByTestId("topup-source-shielded")).toContainText("Not available on this network yet.");
+    await expect(page.getByTestId("topup-source-shielded")).toContainText("Paying from Shielded isn't available here yet.");
     await expect(page.getByTestId("topup-source-shielded").locator("input")).toBeDisabled();
     await expect(page.getByTestId("topup-max")).toHaveCount(0);
     await shot(page, theme, "pay-with-dash-wallet");
