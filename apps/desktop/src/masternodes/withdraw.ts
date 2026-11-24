@@ -5,7 +5,7 @@ import { hasCode } from "../api/backend";
 import { t } from "../i18n";
 
 /** Why a destination still reads `checking` (MG-13 `WithdrawalCheckingReason`). */
-export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "payout_change_unconfirmed" | "unverified" | "spv_unsynced";
+export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "payout_change_abandoned" | "payout_change_unconfirmed" | "unverified" | "spv_unsynced";
 
 /** Where a withdrawal by one key pays (MG-13 `WithdrawalDestinationCheck`), as the quote's
  * `owner_destination` and `payout_destination` carry it. */
@@ -17,11 +17,13 @@ export function withdrawDestinationText(d: WithdrawDestination): string {
 }
 
 /** What the sheet says under a destination that still checks; `null` for one that is fixed or
- * checks for a reason other than unverified data or an unconfirmed payout change. */
+ * checks for a reason other than unverified data, an unconfirmed payout change or an abandoned one
+ * that may still confirm. */
 export function destinationNote(d: WithdrawDestination | null | undefined): string | null {
   if (d?.kind !== "checking") return null;
   if (d.reason === "unverified") return t("masternodes.withdraw.unverified");
   if (d.reason === "payout_change_unconfirmed") return t("masternodes.withdraw.payoutUnconfirmed");
+  if (d.reason === "payout_change_abandoned") return t("masternodes.withdraw.heldAbandonedChange");
   return null;
 }
 

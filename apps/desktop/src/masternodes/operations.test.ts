@@ -76,10 +76,10 @@ describe("In progress (§1.10)", () => {
       more: [],
     });
     expect(t(`${I}.status.abandoned`, { title: "Registration" })).toBe(
-      "Registration · Abandoned. Its coins are available again.",
+      "Registration · Abandoned",
     );
     expect(t(`${I}.abandoned`)).toBe(
-      "It may still confirm if it reached the network. To make sure it never does, send one of its coins to yourself.",
+      "The coins this transaction spent are available again. It may still confirm if it reached the network. To make sure it never does, send one of its coins to yourself.",
     );
   });
 
