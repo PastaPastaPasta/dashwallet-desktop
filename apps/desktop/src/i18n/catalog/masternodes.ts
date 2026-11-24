@@ -787,6 +787,8 @@ export const masternodes = {
       hash: "ProTx hash",
       stepHosted: "Send your operator the ProTx hash. They start the server with it.",
       stepSelf: "Copy the operator secret from Masternode keys to your server, then start it. If its setup asks for the ProTx hash, copy it from here.",
+      /** Beside stepSelf: closes the wizard and opens Masternode keys on the operator role. */
+      openKeys: "Open Masternode keys",
       stepActive: "The masternode shows Active once the network sees the server.",
       stepPayouts: "Payouts then arrive in this wallet and show in Activity as \"Masternode reward\".",
       copyHash: "Copy ProTx hash",

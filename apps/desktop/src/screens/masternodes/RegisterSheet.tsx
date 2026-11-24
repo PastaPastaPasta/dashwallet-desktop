@@ -811,7 +811,7 @@ function Done({ op, self, onOpenKeys }: { op: ProTxOperation; self: boolean; onO
             <>
               {" "}
               <DashButton variant="plainBlue" size="small" data-testid="reg-open-keys" onClick={onOpenKeys}>
-                {t("masternodes.keys.open")}
+                {t(`${R}.doneScreen.openKeys`)}
               </DashButton>
             </>
           )}
