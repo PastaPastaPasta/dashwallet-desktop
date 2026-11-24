@@ -137,6 +137,10 @@ pub(crate) struct Persisted {
     /// Spends the store's open dropped as not signed by their coins'
     /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
     pub(crate) dropped: HashSet<Txid>,
+    /// Of `dropped`, those whose stored record has an input script that
+    /// isn't push-only, or doesn't read: the store's verdict on them may be
+    /// wrong, so nothing built on them is dropped with them (#739).
+    pub(crate) dropped_doubtful: HashSet<Txid>,
     /// Transactions with a verified InstantSend lock stored and no record,
     /// by the transactions their lock names inputs of: what links a locked
     /// child whose record is gone to its parents (#611).
@@ -223,21 +227,37 @@ pub(crate) fn persisted_txids(
             persisted.records.push(txid);
         }
     }
-    type Row = (Vec<u8>, Vec<u8>);
+    type Row = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
     let dropped = || -> Result<Vec<Row>, rusqlite::Error> {
-        let mut stmt = conn.prepare("SELECT wallet_id, txid FROM core_dropped_unsigned_spends")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut stmt = conn.prepare(
+            "SELECT wallet_id, txid, \
+             CASE WHEN length(record_blob) <= ?1 THEN record_blob END \
+             FROM core_dropped_unsigned_spends",
+        )?;
+        let rows = stmt.query_map([lock_size_limit()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
         rows.collect()
     };
     match dropped() {
         Ok(rows) => {
-            for (wallet, txid) in rows {
+            for (wallet, txid, blob) in rows {
                 let (Ok(wallet), Ok(txid)) =
                     (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid))
                 else {
                     continue;
                 };
-                out.entry(wallet).or_default().dropped.insert(txid);
+                let record = blob.as_deref().and_then(decode_record);
+                let doubtful = !record.is_some_and(|r| {
+                    r.txid == txid
+                        && (r.transaction.input.iter())
+                            .all(|i| crate::tx_actions::push_only(&i.script_sig))
+                });
+                let persisted = out.entry(wallet).or_default();
+                persisted.dropped.insert(txid);
+                if doubtful {
+                    persisted.dropped_doubtful.insert(txid);
+                }
             }
         }
         Err(e) => {
@@ -295,6 +315,16 @@ const LOCKS_WITHOUT_RECORD: &str = "SELECT l.wallet_id, l.txid, \
 
 fn lock_size_limit() -> i64 {
     i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX)
+}
+
+/// A stored record's blob, decoded as the store encodes it.
+fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
+    let config =
+        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+    match bincode::serde::decode_from_slice(blob, config) {
+        Ok((record, used)) if used == blob.len() => Some(record),
+        _ => None,
+    }
 }
 
 /// A stored lock row's blob, decoded as the store encodes it.
@@ -462,7 +492,7 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
-                    let dropped_here = crate::tx_actions::load_dropped(&appdb, wallet);
+                    let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
                     sent.retain(|t, _| {
                         persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
                     });
@@ -484,6 +514,7 @@ impl NetworkSession {
                         abandoned,
                         sent,
                         complete: clean
+                            && dropped_read
                             && !persisted.locks_unread
                             && marks_read
                             && sent_read == crate::tx_actions::SentRead::Complete,
@@ -494,6 +525,7 @@ impl NetworkSession {
                         settled,
                         lock_parents: persisted.lock_parents,
                         dropped: (persisted.dropped.into_iter())
+                            .filter(|t| !persisted.dropped_doubtful.contains(t))
                             .chain(dropped_here)
                             .collect(),
                     }
@@ -854,11 +886,11 @@ impl NetworkSession {
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
-            let dropped_here = crate::tx_actions::load_dropped(&appdb, wallet);
+            let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
             sent.retain(|t, _| {
                 persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
             });
-            if !(read && marks_read && sent_read != crate::tx_actions::SentRead::Failed) {
+            if !(read && marks_read && dropped_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
             }

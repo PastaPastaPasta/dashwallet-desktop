@@ -503,6 +503,10 @@ pub(crate) type HeaderSource = Arc<
 /// transactions the history held (`tx_actions`, #739).
 pub(crate) type SweptDead = dyn Fn(WalletId, BTreeSet<Txid>, Txid, Vec<Transaction>) + Send + Sync;
 
+/// What checks the history's pending spends of new transactions' outputs
+/// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
+pub(crate) type Funded = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -542,7 +546,7 @@ pub(crate) struct SessionHub {
     /// Drops the history's pending spends a new transaction shows its
     /// coin's owner never signed (`tx_actions`, #739); unset in hub-only
     /// tests.
-    funded: OnceLock<Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>>,
+    funded: OnceLock<Box<Funded>>,
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -608,6 +612,12 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: how many sweep events' drops of what is built on them ran.
+    #[cfg(test)]
+    pub(crate) dead_hooks_done: std::sync::atomic::AtomicUsize,
+    /// Tests: new transactions don't start the check for unsigned claims.
+    #[cfg(test)]
+    pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -822,6 +832,10 @@ impl SessionHub {
             #[cfg(test)]
             quit_before_sweep: Default::default(),
             #[cfg(test)]
+            dead_hooks_done: Default::default(),
+            #[cfg(test)]
+            skip_unsigned_check: Default::default(),
+            #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
             pause_before_rescan: Mutex::new(None),
@@ -980,8 +994,34 @@ impl SessionHub {
 
     /// Sets what checks the history's pending spends of a new
     /// transaction's outputs (once).
-    pub(crate) fn attach_funded(&self, start: Box<dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync>) {
+    pub(crate) fn attach_funded(&self, start: Box<Funded>) {
         let _ = self.funded.set(start);
+    }
+
+    /// Starts the check for unsigned claims on what `funded` pays, when a
+    /// pending, unabandoned transaction of the history spends an output of
+    /// one: most new transactions fund none, and start no task.
+    fn check_funded(&self, id: WalletId, funded: BTreeSet<Txid>) {
+        #[cfg(test)]
+        if self
+            .skip_unsigned_check
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(start) = self.funded.get() else {
+            return;
+        };
+        let spent = self.history.read_wallet(&id, |h| {
+            h.txs.values().any(|e| {
+                !e.is_abandoned()
+                    && e.context.block_info().is_none()
+                    && (e.tx.input.iter()).any(|i| funded.contains(&i.previous_output.txid))
+            })
+        });
+        if spent {
+            start(id, funded);
+        }
     }
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
@@ -1539,9 +1579,7 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
-                if let Some(start) = self.funded.get() {
-                    start(id, BTreeSet::from([record.txid]));
-                }
+                self.check_funded(id, BTreeSet::from([record.txid]));
                 // An event queued before an Abandon this session took its
                 // transaction carries the balance from before the sweep:
                 // read the manager's instead. One queued while the entry
@@ -1700,10 +1738,8 @@ impl SessionHub {
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
                 self.schedule_reconcile(id);
-                if !inserted.is_empty()
-                    && let Some(start) = self.funded.get()
-                {
-                    start(id, inserted.iter().map(|r| r.txid).collect());
+                if !inserted.is_empty() {
+                    self.check_funded(id, inserted.iter().map(|r| r.txid).collect());
                 }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {

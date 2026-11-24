@@ -90,6 +90,7 @@ fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
     let session = reopen(&engine, session);
+    skip_unsigned_check(&session);
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
 
     let session = reopen(&engine, session);
@@ -281,6 +282,13 @@ fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
         "the payment is kept"
+    );
+    // The store's open now drops the claim on its own verdict: what is built
+    // on it stays all the same.
+    let session = reopen(&engine, session);
+    assert!(
+        !dropped(&engine, &session, id, payment.txid()),
+        "the payment is kept after the store drops the claim"
     );
 }
 
@@ -576,16 +584,146 @@ fn a_swept_claim_whose_input_script_isnt_push_only_keeps_what_is_built_on_it() {
         session.hub.history.get(&id, &claim.txid()).is_none(),
         "key-wallet swept the claim"
     );
-    let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
-    let swept = vec![claim.clone()];
-    engine
-        .block_on(session.on_runtime(async move {
-            let dead = std::collections::BTreeSet::from([swept[0].txid()]);
-            (s.abandon_on_dead(&manager, id, &dead, Some((funding.txid(), &swept)))).await;
-            Ok(())
-        }))
-        .unwrap();
+    super::own_spend_disk_tests::eventually("the sweep's drop ran", || {
+        (session.hub.dead_hooks_done).load(std::sync::atomic::Ordering::SeqCst) > 0
+    });
     assert!(!dropped(&engine, &session, id, payment.txid()), "S is kept");
     let b = OutPoint::new(b_funding.txid(), 0);
     assert!(!spendable(&engine, &session, id, b), "b stays held");
+    let session = reopen(&engine, session);
+    assert!(
+        !dropped(&engine, &session, id, payment.txid()),
+        "S is kept after a restart"
+    );
+    assert!(
+        !spendable(&engine, &session, id, b),
+        "b stays held after a restart"
+    );
+}
+
+/// Stops new transactions from starting the engine's check for unsigned
+/// claims in `session`, so only the store's open and key-wallet drop them.
+fn skip_unsigned_check(session: &Arc<NetworkSession>) {
+    (session.hub.skip_unsigned_check).store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The store's open drops the claim, and the load drops S with it: b, which
+/// S also spent, is released through the load's abandon and counts once
+/// when scanned again.
+#[test]
+fn a_coin_a_payment_on_a_claim_the_store_dropped_spent_is_offered_again() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let session = reopen(&engine, session);
+    skip_unsigned_check(&session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "not dropped in the session"
+    );
+
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+    let session = reopen(&engine, session);
+    assert_payment_dropped_with_b(&engine, &session, id, &payment, &b_funding);
+}
+
+/// The claim pays two change outputs; S1 from one is InstantSend-locked,
+/// S2 from the other is pending. Nothing of the claim's tree is dropped:
+/// not when the engine finds the claim unsigned, nor when the store drops
+/// the claim at the next start.
+#[test]
+fn a_locked_sibling_keeps_a_pending_payment_on_a_dropped_claim() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let second = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+    claim.output.push(TxOut {
+        value: CHANGE,
+        script_pubkey: second.script_pubkey(),
+    });
+    claim.output[0].value -= CHANGE;
+    mempool(&engine, &session, id, &claim);
+    let from = |vout| {
+        send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), vout)]),
+            CHANGE / 2,
+            false,
+        )
+    };
+    let (locked, pending) = (from(1), from(2));
+    mempool(&engine, &session, id, &locked);
+    instant_lock(&engine, &session, id, &locked);
+    mempool(&engine, &session, id, &pending);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let (s, manager) = (Arc::clone(&session), session.manager().unwrap());
+    let funded = std::collections::BTreeSet::from([funding.txid()]);
+    engine
+        .block_on(session.on_runtime(async move {
+            let claims = s.unsigned_claims(&manager, id, &funded).await;
+            s.abandon_unsigned_claims(&manager, id, claims, &funded)
+                .await;
+            Ok(())
+        }))
+        .unwrap();
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept"
+    );
+    assert!(
+        !dropped(&engine, &session, id, pending.txid()),
+        "S2 is kept"
+    );
+
+    let session = reopen(&engine, session);
+    assert!(
+        !dropped(&engine, &session, id, pending.txid()),
+        "S2 is kept after the store's drop"
+    );
+    assert!(!dropped(&engine, &session, id, locked.txid()), "S1 is kept");
+}
+
+/// S spent b, and after a restart a transaction from another device of the
+/// wallet that spends b too is mined. When the claim is found unsigned and
+/// S goes, b stays spent.
+#[test]
+fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, funding, claim, payment) =
+        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let b_owner = Address::from_script(
+        &b_funding.output[0].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let other = signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &b_owner,
+        spend_of(b, vec![(elsewhere(), PAID - 1_000)]),
+    );
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 30, vec![other]);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    super::own_spend_disk_tests::eventually("the claim and S are dropped", || {
+        dropped(&engine, &session, id, claim.txid())
+            && !rows(&engine, &session, id)
+                .iter()
+                .any(|r| r.0 == payment.txid().to_string() && r.1 == TxStatusKind::Unconfirmed)
+    });
+    assert!(!spendable(&engine, &session, id, b), "b stays spent");
+    assert_eq!(balances(&session, id).total, PAID, "b doesn't count");
+    let session = reopen(&engine, session);
+    assert!(
+        !spendable(&engine, &session, id, b),
+        "b stays spent after a restart"
+    );
+    assert_eq!(balances(&session, id).total, PAID);
 }
