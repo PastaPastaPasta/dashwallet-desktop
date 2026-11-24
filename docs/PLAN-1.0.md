@@ -347,7 +347,7 @@ No longer on this list: partner credentials and Explore database access (lane L 
 | Go-ahead for the upstream platform pull request (E0-04.P3/P4), or agreement to drop it | Mode A dispatch | 11-21 | dropped as superseded by item 0's hook |
 
 Signing follows Dash Core's detached-signatures model (#780; the runbook is `docs/release/SIGNING.md`, which lands
-with it). CI builds the unsigned files and `SHA256SUMS` and holds no signing secrets. pasta signs on his own
+with it). CI builds the unsigned files and `SHA256SUMS` and holds no signing secrets. pasta signs on pasta's own
 machines, and CI attaches the detached signatures, checks them and publishes. Release candidates (`-rc.N`) stay
 unsigned.
 
