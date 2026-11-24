@@ -118,6 +118,18 @@ pub(crate) const DEFAULT_LOOKAHEAD: u32 = key_wallet::gap_limit::DEFAULT_EXTERNA
 /// lookahead ([`WideScan`]). Absent on a wallet an older build scanned.
 pub(crate) const WIDE_SCAN_SETTING: &str = "coinjoin.wide_scan";
 
+/// The replay record ([`upgrade_mark`]) of the replay from its birth that
+/// a wallet's first open after an upgrade started (local scope): a replay
+/// resumed from that record is shown as the upgrade's. Cleared at an open
+/// that finds no record and when the user starts a rescan.
+pub(crate) const UPGRADE_REPLAY_SETTING: &str = "coinjoin.upgrade_replay";
+
+/// What [`UPGRADE_REPLAY_SETTING`] holds for replay record `r`: a record
+/// any later rewind merged into, or a new one, does not match it.
+pub(crate) fn upgrade_mark(r: &crate::replay_record::ReplayRecord) -> String {
+    format!("{}:{}", r.reached, r.target)
+}
+
 /// What [`WIDE_SCAN_SETTING`] holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WideScan {
@@ -192,6 +204,11 @@ pub(crate) static FAIL_WIDE_SCAN_IO: std::sync::Mutex<Vec<[u8; 32]>> =
 /// written).
 #[cfg(test)]
 pub(crate) static FAIL_WIDE_SCAN_READ: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: wallets whose refused attach cannot put its birth back.
+#[cfg(test)]
+pub(crate) static FAIL_BIRTH_PUT_BACK: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Tests: wallets whose lookahead cannot be stored.
@@ -1117,10 +1134,33 @@ impl NetworkSession {
         // import's lookahead, so a crash after either replays with it. It is
         // replayed once the keys are attached, with the birth lowered to that
         // start if it is below.
-        // A refused attach puts back the lookahead row and the marker it
-        // replaced, in that order: an exit in between leaves a replay owed.
-        let mut undo = (None, None);
-        let attached = if registered && (state.issued.is_some() || lookahead.is_some()) {
+        // A refused attach puts back the lookahead row, the birth and the
+        // marker it replaced, in that order: an exit in between leaves a
+        // replay owed. A seed write the vault refuses before writing (no
+        // vault, locked, unlocked for mixing only, its OS store
+        // unavailable) is refused the same way;
+        // any other failed seed write puts back none of them, as the vault
+        // may hold the seed all the same. Keys attached alone with a birth
+        // below the wallet's, or to a wallet that still owes a replay, replay
+        // from the earlier start the same way, except for a backup restore
+        // (`restore_one`), which can still roll back: it lowers the birth of
+        // a wallet that was there before, and rewinds one synced past its
+        // start, only when its bundle carries Dash Core's counters.
+        let birth = birth_checkpoint(&manager, wallet_id).await;
+        let owed = if registered && state.rows.is_none() {
+            let marker = self.wide_scan(wallet_id).await;
+            marker.ok().flatten().and_then(|m| m.owed_from(birth))
+        } else {
+            None
+        };
+        let earlier = birth_height
+            .map(|h| h.saturating_sub(1))
+            .filter(|&h| h < birth);
+        let ranged = state.issued.is_some() || lookahead.is_some();
+        let replay_due =
+            registered && state.rows.is_none() && (earlier.is_some() || owed.is_some());
+        let mut undo = (None, None, None);
+        let attached = if registered && (ranged || replay_due) {
             // The wallet keeps the larger of its own lookahead (the default
             // when none is stored, or none that parses) and the import's.
             let previous_gap = match lookahead {
@@ -1132,10 +1172,22 @@ impl NetworkSession {
                 .flatten()
                 .and_then(|v| parse_lookahead(&v));
             let lookahead = lookahead.map(|gap| gap.max(stored.unwrap_or(DEFAULT_LOOKAHEAD)));
-            let birth = birth_checkpoint(&manager, wallet_id).await;
-            let from = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
-            let (from, replaced) = self.note_narrow_below(&manager, wallet_id, from).await?;
-            undo = (previous_gap, replaced);
+            let requested = if ranged {
+                birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth))
+            } else {
+                earlier.into_iter().chain(owed).min().unwrap_or(birth)
+            };
+            let (from, replaced) = (self.note_narrow_below(&manager, wallet_id, requested)).await?;
+            undo = (previous_gap, None, replaced);
+            // Lowered to the start the replay owes now, with the replay
+            // marked, not once the keys are stored: a quit in between would
+            // keep the old birth for good when no rewind is owed. A failure
+            // leaves the replay owed.
+            if from < birth {
+                let lowered = from.saturating_add(1);
+                (self.lower_birth_height(&manager, wallet_id, lowered)).await?;
+                undo.1 = Some((lowered, birth.saturating_add(1)));
+            }
             let applied = async {
                 self.cover_imported_range(&manager, wallet_id, &state)
                     .await?;
@@ -1155,7 +1207,7 @@ impl NetworkSession {
             match applied {
                 Ok(raised) => Some((from, raised)),
                 Err(e) => {
-                    self.undo_attach(wallet_id, undo.0, undo.1).await;
+                    self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
                     return Err(e);
                 }
             }
@@ -1178,7 +1230,8 @@ impl NetworkSession {
         {
             Ok(prior) => prior,
             Err(e) => {
-                self.undo_attach(wallet_id, undo.0.clone(), undo.1).await;
+                self.undo_attach(wallet_id, undo.0.clone(), undo.1, undo.2)
+                    .await;
                 if readmitted || !had_secret {
                     self.record_removed_again(held, wallet_id).await;
                 }
@@ -1213,8 +1266,17 @@ impl NetworkSession {
                             Some(prior) => self.restore_imported_state(prior).await,
                             None => true,
                         };
-                        if restored {
-                            self.undo_attach(wallet_id, undo.0, undo.1).await;
+                        let refused = matches!(
+                            e,
+                            EngineError::Vault(
+                                VaultError::NoVault
+                                    | VaultError::Locked
+                                    | VaultError::MixingOnly
+                                    | VaultError::OsStoreUnavailable(_)
+                            )
+                        );
+                        if refused && restored {
+                            self.undo_attach(wallet_id, undo.0, undo.1, undo.2).await;
                         }
                     } else {
                         self.record_removed_again(held, wallet_id).await;
@@ -1254,7 +1316,7 @@ impl NetworkSession {
                     let wm = wm.read().await;
                     let info = wm.get_wallet_info(&wallet_id.0);
                     if info.is_some_and(|i| i.core_wallet.synced_height() < r.target) {
-                        self.publish_replay(wallet_id, r.reached, r.target);
+                        self.publish_replay(wallet_id, r.reached, r.target, false);
                     }
                 }
                 self.refresh_wallet_state(&manager, wallet_id).await;
@@ -1491,12 +1553,15 @@ impl NetworkSession {
             .await
     }
 
-    /// Puts back what a refused attach replaced: the lookahead row, then
-    /// the marker. Failures are logged.
+    /// Puts back what a refused attach replaced: the lookahead row, the
+    /// birth height it lowered (`(lowered, old)`; not when something changed
+    /// it since), then the marker. A failure is logged and leaves the marker
+    /// pending, so the next load replays what may be owed.
     async fn undo_attach(
         &self,
         id: WalletId,
         gap: Option<Option<String>>,
+        birth: Option<(u32, u32)>,
         marker: Option<Option<WideScan>>,
     ) {
         if let Some(gap) = gap
@@ -1504,6 +1569,30 @@ impl NetworkSession {
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
             return;
+        }
+        if let Some((lowered, old)) = birth {
+            let Ok(manager) = self.manager() else {
+                return;
+            };
+            let current = {
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&id.0)).map(|info| info.core_wallet.birth_height())
+            };
+            if current == Some(lowered) {
+                let put_back = async {
+                    #[cfg(test)]
+                    if fails_for(&FAIL_BIRTH_PUT_BACK, id) {
+                        return Err(EngineError::Storage("test: birth not put back".into()));
+                    }
+                    self.store_birth_height(id, old).await
+                };
+                if let Err(e) = put_back.await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not put the birth height back");
+                    return;
+                }
+                self.refresh_wallet_state(&manager, id).await;
+            }
         }
         if let Some(marker) = marker {
             self.set_wide_scan(id, marker).await;
@@ -1638,6 +1727,7 @@ impl NetworkSession {
         // A wallet whose marker cannot be read is replayed and keeps that
         // marker, so its next load reads it again.
         let mut unsure = false;
+        let mut upgrade = false;
         let from = match &marker {
             Ok(Some(WideScan::Done)) => loaded_at,
             // It may owe any start: replayed from the birth, and nothing
@@ -1648,10 +1738,12 @@ impl NetworkSession {
                 Some(birth_checkpoint(manager, id).await)
             }
             Ok(Some(m)) => {
+                upgrade = matches!(m, WideScan::Legacy(_));
                 let h = (m.owed_from(birth_checkpoint(manager, id).await)).unwrap_or_default();
                 Some(loaded_at.map_or(h, |c| c.min(h)))
             }
             Ok(None) if self.scanned_narrow(manager, id, lookahead).await => {
+                upgrade = true;
                 Some(birth_checkpoint(manager, id).await)
             }
             Ok(None) => {
@@ -1667,6 +1759,7 @@ impl NetworkSession {
             Ok(live) => live.replay.stored(id).await.ok().flatten(),
             Err(_) => None,
         };
+
         // A cancelled one holding above an owed start leaves that start
         // owed: the marker stays for the next open, not `Done`. Its hold
         // comes back no lower than the birth checkpoint.
@@ -1692,6 +1785,7 @@ impl NetworkSession {
                 .inspect_err(|e| tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap"))
                 .is_ok(),
         };
+        self.note_upgrade_replay(id, upgrade).await;
         if !(widened && raised.is_ok()) {
             // The session scans on with what pools it has: the next load
             // replays from the earliest start still owed.
@@ -1727,6 +1821,48 @@ impl NetworkSession {
         lookahead
             || (wm.get_wallet_info(&id.0))
                 .is_some_and(|info| !info.core_wallet.accounts.coinjoin_accounts.is_empty())
+    }
+
+    /// Wallet `id`'s [`UPGRADE_REPLAY_SETTING`]; `None` when it cannot be
+    /// read.
+    pub(crate) async fn upgrade_replay(&self, id: WalletId) -> Option<String> {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        (self
+            .appdb_op(move |db| db.setting(&scope, UPGRADE_REPLAY_SETTING))
+            .await)
+            .ok()
+            .flatten()
+    }
+
+    /// Stores or clears wallet `id`'s [`UPGRADE_REPLAY_SETTING`]; a failure
+    /// is logged: it only names why a replay runs, never which.
+    pub(crate) async fn set_upgrade_replay(&self, id: WalletId, mark: Option<String>) {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let stored = self
+            .appdb_op(move |db| db.set_setting(&scope, UPGRADE_REPLAY_SETTING, mark.as_deref()))
+            .await;
+        if let Err(e) = stored {
+            tracing::warn!(wallet_id = %id, error = %e, "could not store whether the wallet's replay is its upgrade's");
+        }
+    }
+
+    /// After a load: names wallet `id`'s replay record as its upgrade's when
+    /// `upgrade` (the open chose the upgrade's replay from its birth), and
+    /// clears a name no record carries any more. Writes only a change.
+    async fn note_upgrade_replay(&self, id: WalletId, upgrade: bool) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let stored = self.upgrade_replay(id).await;
+        let mark = match live.replay.get(id).await {
+            Ok(Some(r)) if upgrade => Some(upgrade_mark(&r)),
+            Ok(Some(_)) => return,
+            Ok(None) => None,
+            Err(_) => return,
+        };
+        if stored != mark {
+            self.set_upgrade_replay(id, mark).await;
+        }
     }
 
     /// Wallet `id`'s [`WIDE_SCAN_SETTING`].

@@ -53,6 +53,7 @@ import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { NamesTab } from "./NamesTab";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
+import { SharedSessionSheet, SharedStartSheet, type OpenSession } from "./Shared";
 import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -78,10 +79,12 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
+  const [tracking, setTracking] = useState(false);
   /** The registration wizard: new, or reopened at Prove on a saved External registration. */
   const [register, setRegister] = useState<{ resume?: ProTxOperation } | null>(null);
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
   const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
+  const [shared, setShared] = useState<OpenSession | "start" | null>(null);
   const walletId = wallet.walletId;
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
@@ -164,7 +167,13 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           <h1 className="top-intro-title">{GovText.title}</h1>
           {tab === "myMasternodes" && (
             <span className="mg-header-actions" data-testid="mn-actions">
-              <MoreMenu testId="mn-page-more" items={[{ id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) }]} />
+              <MoreMenu
+                testId="mn-page-more"
+                items={[
+                  { id: "track", title: t("masternodes.myMasternodes.track.menu"), onSelect: () => setTracking(true) },
+                  { id: "keys", title: t("masternodes.keys.open"), onSelect: () => ui.set({ dialog: "mnKeys", mnKeysRole: null }) },
+                ]}
+              />
               <DashButton
                 variant="filledBlue"
                 size="small"
@@ -199,17 +208,24 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
               </DashButton>
             </span>
           )}
+          {tab === "myMasternodes" && !wallet.watchOnly && (
+            <span className="mg-header-actions" data-testid="mn-actions">
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-shared" onClick={() => setShared("start")}>
+                {t("masternodes.shared.headerButton")}
+              </DashButton>
+            </span>
+          )}
         </header>
         <Tabs label={GovText.title} tabs={tabs} current={tab} onSelect={setTab} testId="masternodes-tabs">
-          {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
-            <p className="mg-muted mg-small" data-testid="mn-list-height">
-              {MnText.listHeight(mnList.data.height)}
-            </p>
-          )}
+          <p className="mg-muted mg-small mg-list-height" data-testid="mn-list-slot">
+            {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && <span data-testid="mn-list-height">{MnText.listHeight(mnList.data.height)}</span>}
+          </p>
           {tab === "myMasternodes" ? (
             <MyMasternodes
               wallet={wallet}
               network={network}
+              tracking={tracking}
+              onTrackClose={() => setTracking(false)}
               onVote={() => {
                 setFilter("needsVote");
                 setTab("governance");
@@ -242,6 +258,8 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
       )}
       {register && <RegisterSheet wallet={wallet} network={network} resume={register.resume} onClose={() => setRegister(null)} />}
       {voteOn && <VoteSheet row={voteOn} wallet={wallet} network={network} onClose={() => setVoteOn(null)} />}
+      {shared === "start" && <SharedStartSheet wallet={wallet} network={network} onClose={() => setShared(null)} onOpen={setShared} />}
+      {shared && shared !== "start" && <SharedSessionSheet key={shared.id} wallet={wallet} network={network} open={shared} onClose={() => setShared(null)} />}
     </main>
   );
 }

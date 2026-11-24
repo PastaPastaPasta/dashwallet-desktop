@@ -5,9 +5,11 @@
 // handler then rejects as an unknown command does.
 
 import type { AppError } from "../api/generated/AppError";
+import type { CommandArgs } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FundAmount } from "../api/generated/FundAmount";
+import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
@@ -23,9 +25,12 @@ import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
+import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
+import type { PayoutStateName } from "../api/generated/PayoutStateName";
+import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -39,6 +44,12 @@ const MOVE_FEE_CREDITS = 2_000_000n;
  * a send pays (dpp's minimum output). The fee is taken from its source address, whatever it holds then. */
 const SEND_FEE_CREDITS = 6_500_000n;
 const SEND_MIN_CREDITS = 500_000n;
+/** A contact payout's fee estimate, and Platform's withdrawal range (fixture/topup.ts's). */
+const PAYOUT_FEE_CREDITS = 2_000_000n;
+const PAYOUT_MIN_CREDITS = 1_190_000n;
+const PAYOUT_MAX_CREDITS = 50_000_000_000_000n;
+/** What the asset unlock keeps back on Core, in duffs. */
+const UNLOCK_FEE_DUFFS = 226;
 
 /** What the next `platform_move_to_core` comes to: Platform's proved answer, an answer that says
  * nothing (the move stays `pending`), a refusal, a move whose debit is proved but not what
@@ -135,6 +146,10 @@ export interface PlatformWorld {
   syncedAt: number | null;
   /** Credits on addresses too small to move: in `credits`, not in `movableCredits`. */
   dust: string;
+  /** What the next payment to a contact from this balance comes to (C-funding D-C5). */
+  nextPayout: PayoutStateName;
+  /** The next payment's reply is lost after the engine recorded it (an `internal` error). */
+  loseReply?: boolean;
 }
 
 export interface PendingWorld {
@@ -175,6 +190,7 @@ export const newPlatformWorld = (): PlatformWorld => ({
   nextOperation: 1,
   receive: { address: "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0", index: 2 },
   dust: "0",
+  nextPayout: "sent",
   syncedAt: Math.floor(FIXTURE_NOW.getTime() / 1000) - 60,
 });
 
@@ -271,6 +287,60 @@ function balance(p: PlatformWorld): PlatformAddressBalance {
 function platformOf(world: Ctx["world"], call: string): PlatformWorld {
   if (world.pending.platform === null) throw absent(call);
   return world.pending.platform;
+}
+
+/** `contact_pay_quote` from the Platform balance: the engine's refusals in its order (a held move
+ * or send, the withdrawal range, the balance), then the amount, about what arrives, the fee, and a
+ * grant for the amount and three fee estimates (P8). */
+export function contactPayoutQuote(world: Ctx["world"], walletId: string, credits: string): ContactPayQuoteInfo {
+  wallet(world, walletId);
+  const p = world.pending.platform;
+  if (p === null) throw fail("platform.feature_off", "platform_addresses", { kind: "feature", feature: "platform_addresses" });
+  const held = p.activity.filter(isHeldOp);
+  if (held.length > 0) throw moveHeld(held[0].id);
+  const c = BigInt(credits);
+  if (c < PAYOUT_MIN_CREDITS || c > PAYOUT_MAX_CREDITS)
+    throw fail("credits.withdrawal_out_of_range", "out of range", { kind: "creditRange", min: String(PAYOUT_MIN_CREDITS), max: String(PAYOUT_MAX_CREDITS) });
+  const most = c + 3n * PAYOUT_FEE_CREDITS;
+  if (most > total(p)) throw fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(most), available: String(total(p)) });
+  const expectedDuffs = Math.max(0, Number(c / CREDITS_PER_DUFF) - UNLOCK_FEE_DUFFS);
+  return { source: "platform", credits: String(c), expectedDuffs, feeCredits: String(PAYOUT_FEE_CREDITS), grant: { maxDuffs: 0, maxCredits: String(most) } };
+}
+
+/** `contact_pay` from the Platform balance under `grant`: as `nextPayout` says, sent (the debit and
+ * a `contactPayment` row), unknown (a pending row that holds the balance) or not sent (nothing). */
+export function contactPayout(world: Ctx["world"], walletId: string, credits: string, grant: string, contact: TxCounterparty): { reference: string; state: PayoutStateName } {
+  const q = contactPayoutQuote(world, walletId, credits);
+  const g = checkGrant(world, grant, walletId, ["platformOp"]);
+  if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
+  if (BigInt(g.grant.purpose.maxCredits) < BigInt(q.grant.maxCredits))
+    throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: q.grant.maxCredits, remaining: g.grant.purpose.maxCredits });
+  useGrant(world, grant);
+  const p = platformOf(world, "contact_pay");
+  const state = p.nextPayout;
+  const reference = `move-${p.activity.length + 1}`;
+  if (state === "notSent") return { reference, state };
+  const sent = state === "sent";
+  const debit = BigInt(q.credits) + PAYOUT_FEE_CREDITS;
+  p.activity = [
+    {
+      id: reference,
+      kind: "contactPayment",
+      state: sent ? "done" : "pending",
+      credits: sent ? String(debit) : q.credits,
+      address: null,
+      to: null,
+      expectedDuffs: q.expectedDuffs,
+      feeCredits: sent ? q.feeCredits : null,
+      at: Math.floor(FIXTURE_NOW.getTime() / 1000),
+      mayLand: !sent,
+      estimated: false,
+      contact,
+    },
+    ...p.activity,
+  ];
+  if (sent) spend(p, debit);
+  return { reference, state };
 }
 
 /** The credits a move of `amount` takes: all of them, or that many (the quote's refusals). */
@@ -455,7 +525,34 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" }, max: null };
 }
 
+/** As the engine's `refuse_on_mainnet`: a payment from a balance is off on mainnet, before anything else. */
+function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
+  if (source === "platform" && world.launch.network.kind === "mainnet") throw fail("platform.feature_off", "platform_contact_payment", { kind: "feature", feature: "platform_contact_payment" });
+}
+
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
+  // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
+  contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {
+    refusePayoutOnMainnet(world, source);
+    payeeOfPayout(world, walletId, { identity, contact }, credits, source);
+    return contactPayoutQuote(world, walletId, credits);
+  },
+  contact_pay: ({ walletId, identity, contact, payment, grant }: CommandArgs["contact_pay"], ctx: Ctx) => {
+    const pair = { identity, contact };
+    refusePayoutOnMainnet(ctx.world, payment.source);
+    if (grant === "") throw fail("invalid_argument", "empty grant");
+    const c = payeeOfPayout(ctx.world, walletId, pair, payment.credits, payment.source);
+    const counterparty = { identity: contact, username: c.summary.username, displayName: c.summary.displayName, avatarUrl: c.profile?.avatarUrl ?? null };
+    const out = contactPayout(ctx.world, walletId, payment.credits, grant, counterparty);
+    payoutOnContact(ctx, walletId, pair, c, out, payment.credits);
+    const p = ctx.world.pending.platform;
+    if (p?.loseReply) {
+      p.loseReply = false;
+      throw fail("internal", "the reply was lost after the payout was recorded");
+    }
+    return out;
+  },
   get_network_choice: (_: unknown, { world }: Ctx) => {
     if (world.pending.networkChoice === null) throw absent("get_network_choice");
     return networkView(world);
