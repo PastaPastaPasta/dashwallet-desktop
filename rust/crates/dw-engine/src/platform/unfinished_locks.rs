@@ -17,20 +17,22 @@
 //!   install's, or another device's of the same seed. The journal outlives
 //!   a wallet's removal, so a wallet imported again on the same install
 //!   reads its own locks back as its own.
-//! - **What cannot be told.** For these funding types nothing the wallet
-//!   can read says whether Platform already took a lock: the library keeps
-//!   a restored one "consumption unknown" (`asset_lock/tracked.rs`,
-//!   `RecoveredFromChain`), and Platform answers no query of its spent
-//!   outpoints. So a lock is unfinished until an apply is tried. Trying is
-//!   safe: Platform executes at most one apply of an outpoint (every
-//!   asset-lock transition's proof validation refuses a consumed one,
-//!   rs-drive-abci `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`).
+//! - **What is known before an apply.** The library keeps a restored lock
+//!   "consumption unknown" (`asset_lock/tracked.rs`, `RecoveredFromChain`),
+//!   so a lock is unfinished until an apply is tried. Trying is safe:
+//!   Platform executes at most one apply of an outpoint (every asset-lock
+//!   transition's proof validation refuses a consumed one, rs-drive-abci
+//!   `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`). Platform's
+//!   spent outpoints can be read with a proof ([`proved_spent`], its
+//!   `SpentAssetLockTransactions` tree); the runner reads it when an apply
+//!   is answered "already consumed".
 //! - **Outcomes.** Only Platform's proved execution finishes a lock. Its
 //!   "already consumed" for the exact outpoint
 //!   (`PlatformWalletError::AssetLockAlreadyConsumed`, the library's typed
 //!   form of `IdentityAssetLockTransactionOutPointAlreadyConsumedError`
 //!   matched to the outpoint, `error.rs` `is_asset_lock_already_consumed`)
-//!   is unauthenticated: any node can say it. Any other failure after the
+//!   is unauthenticated: any node can say it, so it counts only when the
+//!   proved read says consumed. Any other failure after the
 //!   lock's credit key signed may have executed. Neither settles a lock or
 //!   changes a balance; balances come only from proved reads.
 //! - **Evidence by outpoint.** One lock transaction can carry several

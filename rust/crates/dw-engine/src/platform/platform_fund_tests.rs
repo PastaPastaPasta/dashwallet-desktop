@@ -2922,3 +2922,54 @@ fn an_already_consumed_after_a_signed_attempt_and_a_retry_needs_the_proof() {
         "one signature per call"
     );
 }
+
+/// #465: one unauthenticated "already consumed" answer is never final. A
+/// restored fund lock Platform answers that for, with no proved read,
+/// reads Checking, and after a restart it is listed again with Check
+/// again. Check again applies it once the proved read says unspent, and
+/// a later proved "consumed" takes another such lock off the card.
+#[test]
+fn an_unauthenticated_already_consumed_is_never_final_across_a_restart() {
+    let mut fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let (live, used) = (
+        lib.lock(11, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+        lib.lock(12, 1_000_000, AssetLockStatus::RecoveredFromChain, true),
+    );
+    let (a, b) = (live.out_point, used.out_point);
+    lib.track(live.clone());
+    lib.track(used.clone());
+    for at in [a, b] {
+        lib.answer(Answer::Unrecorded);
+        assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
+    }
+    assert!(reported(&fx, &lib).is_empty(), "nothing taken as used");
+
+    drop(lib);
+    reopen(&mut fx);
+    let lib = Arc::new(FakeFund::new(&fx));
+    lib.track(live);
+    lib.track(used);
+    let listed = state_of(&fx, &lib);
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    for at in [a, b] {
+        assert!(
+            listed.contains(&(at, UnfinishedState::Checking)),
+            "listed again after a restart, with Check again: {listed:?}"
+        );
+    }
+
+    lib.proves(a, SpentRead::Unspent);
+    lib.answer(Answer::Done(None));
+    let (applied, asked) = finish(&fx, &lib, a);
+    assert!(asked);
+    assert_eq!(applied.unwrap(), LockFinish::Applied, "unspent: applied");
+
+    lib.proves(b, SpentRead::Consumed);
+    lib.answer(Answer::Unrecorded);
+    assert_eq!(finish(&fx, &lib, b).0.unwrap(), LockFinish::ReportedUsed);
+    assert!(
+        state_of(&fx, &lib).is_empty(),
+        "the proved read settles both"
+    );
+}
