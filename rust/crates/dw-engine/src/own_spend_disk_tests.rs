@@ -2423,6 +2423,108 @@ fn abandoning_a_transfer_a_second_wallet_spent_locked_is_refused() {
     }
 }
 
+/// A change chain R → P → Q of this wallet, Q paying a second loaded
+/// wallet, whose InstantSend-locked spend C of it this wallet never sees;
+/// then a restart. C proves Q, P and R across both wallets: Abandon of R is
+/// not offered and refuses, Remove Unconfirmed for all wallets keeps R, P
+/// and Q, and R's coin stays spent, in the session and after a restart
+/// (#611 F1).
+#[test]
+fn abandoning_the_root_of_a_chain_a_second_wallet_spent_locked_two_hops_on_is_refused() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let a = OutPoint::new(paid.txid(), 0);
+    let root = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &root);
+    let middle = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change_of(&root, &own_scripts(&engine, &session, id))]),
+        COIN / 8,
+        false,
+    );
+    mempool(&engine, &session, id, &middle);
+    let to = fresh_address(&engine, &session, other);
+    let last = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change_of(
+            &middle,
+            &own_scripts(&engine, &session, id),
+        )]),
+        &to.to_string(),
+        COIN / 16,
+        false,
+    );
+    mempool(&engine, &session, id, &last);
+    let chain = [root.txid(), middle.txid(), last.txid()];
+    wait_stored(&session, id, &chain);
+    wait_stored(&session, other, &[last.txid()]);
+    let received = (last.output.iter())
+        .position(|o| o.script_pubkey == to.script_pubkey())
+        .unwrap();
+    let spend = super::spend_of(
+        OutPoint::new(last.txid(), received as u32),
+        vec![
+            (elsewhere(), COIN / 32),
+            (
+                fresh_address(&engine, &session, other).script_pubkey(),
+                COIN / 64,
+            ),
+        ],
+    );
+    instant_lock(&engine, &session, other, &spend);
+    wait_stored(&session, other, &[spend.txid()]);
+    super::wait_stored_locked(&session, other, spend.txid());
+
+    let session = reopen(&engine, session);
+    start_spv(&engine, &session);
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, root.txid()))
+        .unwrap();
+    assert!(!extras.can_abandon, "Abandon is offered");
+    let result = engine.block_on(session.abandon_transaction(id, root.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::SettledDescendant
+            ))
+        ),
+        "{result:?}"
+    );
+    engine.block_on(session.drop_unconfirmed(None)).unwrap();
+    let mut session = session;
+    for state in ["the session", "a restart"] {
+        if state != "the session" {
+            session = reopen(&engine, session);
+        }
+        for t in chain {
+            assert!(!abandoned(&engine, &session, id, t), "{state}: {t}");
+        }
+        assert!(
+            !held(&engine, &session, id).contains(&a),
+            "{state}: R's coin is held"
+        );
+        assert!(
+            !spendable(&engine, &session, id, a),
+            "{state}: R's coin is offered"
+        );
+    }
+}
+
 /// A second loaded wallet whose stored record didn't read at its load: what
 /// it settled could descend from this wallet's payment, so Abandon of an
 /// unlocked payment here refuses until a restart and a rescan (#611).
