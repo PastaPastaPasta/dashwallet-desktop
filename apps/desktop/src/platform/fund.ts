@@ -15,6 +15,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { Preparing } from "../transfer/preparing";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { moveErrorText, onMoveSettledNotify } from "./move";
 
@@ -276,6 +277,8 @@ export class PlatformFundFlow extends Model {
   /** The sheet is shown. */
   open = false;
   step: FundStep = "form";
+  /** An add's call has been pending for a second. */
+  readonly preparing = new Preparing(() => this.changed());
   /** The amount as typed (in the display unit). */
   text = "";
   request: FundRequest | null = null;
@@ -367,6 +370,7 @@ export class PlatformFundFlow extends Model {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
+        if (request.kind === "add") this.preparing.start();
         this.changed();
         return request.kind === "add" ? this.api.platformFund(this.walletId, { kind: "duffs", duffs: request.duffs }, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
       });
@@ -383,6 +387,7 @@ export class PlatformFundFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
+      this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) onMoveSettledNotify();
       this.changed();

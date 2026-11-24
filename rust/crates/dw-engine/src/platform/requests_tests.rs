@@ -421,17 +421,17 @@ impl Fixture {
     }
 
     pub(crate) fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, true, |_| {})
+        Self::build(mine, balance, true, true, |_| {})
     }
 
     /// [`Self::new`] with the session on `network`.
     pub(crate) fn on(network: crate::DashNetwork, balance: u64) -> Self {
-        Self::build_on(network, keys(true), balance, true, |_| {})
+        Self::build_on(network, keys(true), balance, true, true, |_| {})
     }
 
     /// Our identity with `mine` as they are: keys the vault does not hold.
     pub(crate) fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, false, |_| {})
+        Self::build(mine, balance, false, true, |_| {})
     }
 
     /// Our identity with the keys the vault holds, then `adjust`ed (a
@@ -440,16 +440,30 @@ impl Fixture {
         balance: u64,
         adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
     ) -> Self {
-        Self::build(keys(true), balance, true, adjust)
+        Self::build(keys(true), balance, true, true, adjust)
+    }
+
+    /// [`Self::new`] on a session with Platform on, so starting SPV runs
+    /// the DashPay bring-up.
+    pub(crate) fn with_platform() -> Self {
+        Self::build(keys(true), 0, true, false, |_| {})
     }
 
     fn build(
         mine: BTreeMap<KeyID, IdentityPublicKey>,
         balance: u64,
         held: bool,
+        no_platform: bool,
         adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
     ) -> Self {
-        Self::build_on(crate::DashNetwork::Regtest, mine, balance, held, adjust)
+        Self::build_on(
+            crate::DashNetwork::Regtest,
+            mine,
+            balance,
+            held,
+            no_platform,
+            adjust,
+        )
     }
 
     fn build_on(
@@ -457,12 +471,13 @@ impl Fixture {
         mine: BTreeMap<KeyID, IdentityPublicKey>,
         balance: u64,
         held: bool,
+        no_platform: bool,
         adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
     ) -> Self {
         let dir = dw_testutil::private_tempdir();
         let events = Arc::new(Recorder::default());
         let engine = engine(dir.path(), Arc::clone(&events) as Arc<dyn EventSink>);
-        let (s, wallet) = session_on(&engine, network, true);
+        let (s, wallet) = session_on(&engine, network, no_platform);
         let mut mine = if held {
             vault_keys(&engine, &s, wallet, mine)
         } else {
