@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "steps": [
+    "unlocked the real vault; SPV syncs from the suite's controller node",
+    "governance was off: Turn on; dwd_ak_p0 is listed",
+    "Track found 1cad2084\u2026: \"Masternode \u00b7 127.0.0.1:14773voting address yQgz\u2026NutF\"",
+    "Add keys (Voting keyLets this wallet vote on proposals and usernames with this masternode.): \"Matches this masternode's voting key.\"",
+    "tracked row \"Masternode 1cad2084Masternode \u00b7 127.0.0.1:14773ActiveTracked\"; Voting key \u00b7 matchesRemove",
+    "Vote\u2026 Yes with \"Masternode 1cad2084 \u00b7 127.0.0.1:14773key you added1None\": \"1 of 1 vote sent\" (Masternode 1cad2084 \u00b7 127.0.0.1:14773weight 1 \u00b7 to 3 peersSent)"
+  ],
+  "evidence": {
+    "trackResult": "Masternode \u00b7 127.0.0.1:14773voting address yQgz\u2026NutF",
+    "addKeyRole": "Voting keyLets this wallet vote on proposals and usernames with this masternode.",
+    "addKeyResult": "Matches this masternode's voting key.",
+    "keyAdded": "Voting key \u00b7 matchesRemove",
+    "trackedRow": "Masternode 1cad2084Masternode \u00b7 127.0.0.1:14773ActiveTracked",
+    "voteRow": "Masternode 1cad2084 \u00b7 127.0.0.1:14773key you added1None",
+    "voteResult": "1 of 1 vote sent",
+    "voteResultRow": "Masternode 1cad2084 \u00b7 127.0.0.1:14773weight 1 \u00b7 to 3 peersSent",
+    "core": {
+      "vote": "4e325a8e63ee71a6c6b65afd68af987c4d1be7d579fe0e16b7d63dd7cb539516-1:1795508097:yes:funding:1",
+      "votingAddress": "yQgz53uCX1xpnsdjwinaakWRadL6HxNutF"
+    }
+  },
+  "source": {
+    "head": "030362713f041ad862662f8b27fe093bdaff3f7f",
+    "dirty": false
+  }
+}
