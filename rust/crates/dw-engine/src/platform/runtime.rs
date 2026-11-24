@@ -12,6 +12,7 @@ use dw_vault::{LockState, Vault};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
+use super::registration::RegistrationWait;
 use super::startup::{StartupStatus, SyncLoop, SyncLoopStatus};
 use super::startup_status::{DashPayStartup, PlatformCadence, SpvState};
 use crate::events::SessionHub;
@@ -275,6 +276,14 @@ pub(crate) struct PlatformRuntime {
     /// running (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_before_running: Mutex<Option<Arc<TestPause>>>,
+    /// Tests: [`Self::await_bring_up`]'s queued and running waits in place
+    /// of [`super::bringup::FLOW_QUEUE_WAIT`] and [`super::bringup::FLOW_WAIT`].
+    #[cfg(test)]
+    pub(super) bring_up_waits: Mutex<Option<(Duration, Duration)>>,
+    /// Tests: holds the next [`Self::await_bring_up`] after it read the
+    /// hold and before it waits for a change.
+    #[cfg(test)]
+    pub(super) pause_bring_up_wait: Mutex<Option<Arc<TestPause>>>,
     /// The queued-account drains asked of the supervisor (#84).
     contact_drains: Mutex<ContactDrains>,
     /// Tests: how many contact-crypto drains ran (`bringup.rs`).
@@ -572,6 +581,10 @@ impl PlatformRuntime {
             pause_after_keys: Mutex::new(None),
             #[cfg(test)]
             pause_before_running: Mutex::new(None),
+            #[cfg(test)]
+            bring_up_waits: Mutex::new(None),
+            #[cfg(test)]
+            pause_bring_up_wait: Mutex::new(None),
             contact_drains: Mutex::default(),
             #[cfg(test)]
             contact_drains_run: AtomicU64::new(0),
@@ -800,21 +813,55 @@ impl PlatformRuntime {
 
     /// A rerun of wallet `id`'s bring-up was asked for and has not ended,
     /// or a bring-up of it runs.
-    fn bring_up_pending(&self, id: &WalletId) -> bool {
+    pub(super) fn bring_up_pending(&self, id: &WalletId) -> bool {
         guard(&self.startup_retries)
             .get(id)
             .is_some_and(|r| r.asked)
-            || self
-                .startup_of(id)
-                .is_some_and(|s| s.startup == StartupStatus::Starting)
+            || self.starting(id)
     }
 
-    /// A funding held on wallet `id`'s bring-up (`held`): asks for the
-    /// rerun ([`Self::retry_startup`]) and waits while one is asked for or
-    /// runs, until `held` lifts, the library's budget has passed or the
-    /// supervisor stops. Nothing while SPV is stopped. The caller reads its
+    fn starting(&self, id: &WalletId) -> bool {
+        self.startup_of(id)
+            .is_some_and(|s| s.startup == StartupStatus::Starting)
+    }
+
+    /// A flow about to act on wallet `id` whose library holds it at
+    /// `hold()`: on a [`RegistrationWait::Startup`] hold, waits for the
+    /// bring-up's rerun ([`Self::await_bring_up`]). The caller reads its
     /// hold again after: this decides nothing.
-    pub(crate) async fn await_bring_up(&self, id: WalletId, held: impl Fn() -> bool) {
+    pub(crate) async fn settle_startup_hold(
+        &self,
+        id: WalletId,
+        hold: impl Fn() -> Option<RegistrationWait>,
+    ) {
+        let on_startup = || hold() == Some(RegistrationWait::Startup);
+        if on_startup() {
+            self.await_bring_up(id, on_startup).await;
+        }
+    }
+
+    /// `hold`, a read of wallet `id`'s funding hold, after asking for the
+    /// bring-up's rerun ([`Self::retry_startup`]) when it is
+    /// [`RegistrationWait::Startup`]: nothing else runs it again before the
+    /// next start.
+    pub(crate) fn ask_on_startup_hold(
+        &self,
+        id: WalletId,
+        hold: Option<RegistrationWait>,
+    ) -> Option<RegistrationWait> {
+        if hold == Some(RegistrationWait::Startup) {
+            self.retry_startup(id);
+        }
+        hold
+    }
+
+    /// A flow held on wallet `id`'s bring-up (`held`): asks for the rerun
+    /// ([`Self::retry_startup`]) and waits while one is asked for or runs,
+    /// until `held` lifts or the supervisor stops; at most
+    /// [`super::bringup::FLOW_QUEUE_WAIT`] for the rerun to start, then
+    /// [`super::bringup::FLOW_WAIT`] from its start. Nothing while SPV is
+    /// stopped.
+    async fn await_bring_up(&self, id: WalletId, held: impl Fn() -> bool) {
         // Subscribed before any read below: a change from here on wakes it.
         let mut seen = self.startup_seen.subscribe();
         let Some(mut cancel) = guard(&self.supervisor)
@@ -824,9 +871,23 @@ impl PlatformRuntime {
         else {
             return;
         };
-        let deadline = Instant::now() + super::bringup::FLOW_WAIT;
+        let (queued, running) = self.bring_up_waits();
+        let mut deadline = Instant::now() + queued;
+        let mut started = false;
         self.retry_startup(id);
         while held() && self.bring_up_pending(&id) && !*cancel.borrow() {
+            if !started && self.starting(&id) {
+                started = true;
+                deadline = Instant::now() + running;
+            }
+            #[cfg(test)]
+            {
+                let pause = guard(&self.pause_bring_up_wait).take();
+                if let Some(pause) = pause {
+                    pause.reached.store(true, Ordering::SeqCst);
+                    pause.release.notified().await;
+                }
+            }
             tokio::select! {
                 biased;
                 () = super::bringup::until(&mut cancel, |c| *c) => return,
@@ -837,6 +898,15 @@ impl PlatformRuntime {
                 }
             }
         }
+    }
+
+    /// [`Self::await_bring_up`]'s waits: queued, then running.
+    fn bring_up_waits(&self) -> (Duration, Duration) {
+        #[cfg(test)]
+        if let Some(waits) = *guard(&self.bring_up_waits) {
+            return waits;
+        }
+        (super::bringup::FLOW_QUEUE_WAIT, super::bringup::FLOW_WAIT)
     }
 
     /// A flow is held on wallet `id`'s bring-up (`StartupStatus::awaits_rerun`;

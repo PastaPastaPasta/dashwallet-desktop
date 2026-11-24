@@ -54,9 +54,13 @@ pub const CREATED_HERE_BUDGET: Duration = Duration::from_secs(3);
 /// library bounds its awaits by the budget, not its synchronous work (the
 /// vault's derivations, a few milliseconds each).
 const BUDGET_SLACK: Duration = Duration::from_millis(500);
-/// How long a funding held on a bring-up waits for the rerun it asked for
-/// (`PlatformRuntime::await_bring_up`): a rerun's budget and its slack.
+/// How long a flow held on a bring-up waits for the rerun it asked for once
+/// the rerun has started (`PlatformRuntime::await_bring_up`): a rerun's
+/// budget and its slack.
 pub(super) const FLOW_WAIT: Duration = DEFAULT_STARTUP_BUDGET.saturating_add(BUDGET_SLACK);
+/// How long that flow waits for the rerun to start, queued behind other
+/// wallets' bring-ups: the supervisor runs one job at a time.
+pub(super) const FLOW_QUEUE_WAIT: Duration = Duration::from_secs(30);
 
 /// How often a start retries starting the loops while a pass of an earlier
 /// start is still in flight.

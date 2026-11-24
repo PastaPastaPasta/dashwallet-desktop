@@ -2545,7 +2545,27 @@ fn skipped_at_restart(
         startup(&s, id) == StartupStatus::NotRun
     });
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1);
+    caught_up(&s, id);
     (engine, s, id, platform)
+}
+
+/// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
+/// held by nothing but its bring-up.
+fn caught_up(s: &NetworkSession, id: WalletId) {
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(100);
+    headers.update_tip_height(100);
+    headers.set_state(SyncState::Synced);
+    let mut mn = MasternodesProgress::default();
+    mn.update_target_height(100);
+    mn.update_current_height(100);
+    mn.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    progress.update_masternodes(mn);
+    s.hub.tracker().on_progress(&progress);
+    assert!(super::registration_flow::wallet_synced(s, id), "caught up");
 }
 
 /// A Platform transfer of 0.001 Dash from a wallet with no coins: past the
@@ -2587,6 +2607,7 @@ fn a_first_funding_after_a_skipped_bring_up_waits_for_its_rerun() {
     wait_until("the skipped bring-up", || {
         startup(&s, id) == StartupStatus::NotRun
     });
+    caught_up(&s, id);
     let opened = engine.block_on(async {
         let lib = super::shielded_pool::PwShielded::open(&s, id)
             .await
@@ -2684,6 +2705,259 @@ fn a_funding_waiting_on_a_rerun_ends_when_spv_stops() {
         "{:?}",
         started.elapsed()
     );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+fn test_pause() -> Arc<TestPause> {
+    Arc::new(TestPause {
+        reached: AtomicBool::new(false),
+        release: Notify::new(),
+    })
+}
+
+/// `funded` got past the bring-up's hold (with no coins, it is refused for
+/// its funds).
+fn past_the_hold(funded: &Result<super::PlatformFundOutcome, super::CreditsError>) {
+    let code = funded
+        .as_ref()
+        .map(|_| "funded")
+        .unwrap_or_else(|e| e.code());
+    assert_ne!(
+        code, "platform.unavailable",
+        "held at the bring-up: {funded:?}"
+    );
+}
+
+/// A second restored wallet, of another seed, which Platform knows nothing
+/// of.
+fn restore_other(engine: &Engine, s: &Arc<NetworkSession>) -> WalletId {
+    engine
+        .block_on(
+            s.import_wallet(
+                Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                Zeroizing::new(Vec::new()),
+                ImportOptions::default(),
+            ),
+        )
+        .unwrap()
+}
+
+/// #585 (Q63 C1): the rerun answers after the press read its hold and
+/// before it waits for a change; the press goes on at once, not at its
+/// deadline.
+#[test]
+fn a_rerun_answering_before_the_press_waits_still_lets_it_go_on() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
+    let pause = test_pause();
+    *guard(&s.platform.pause_bring_up_wait) = Some(Arc::clone(&pause));
+    let started = Instant::now();
+    let funded = engine.block_on(async {
+        let answer = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            while startup(&s, id) != StartupStatus::NoIdentity || s.platform.bring_up_pending(&id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            pause.release.notify_one();
+        };
+        tokio::join!(fund_once(&s, id), answer).0
+    });
+    past_the_hold(&funded);
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63 C2): the supervisor runs one job at a time, so the rerun a
+/// press asks for can queue behind another wallet's bring-up. The press
+/// waits for it to start and answer.
+#[test]
+fn a_rerun_queued_behind_another_wallets_bring_up_is_waited_for() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let _other = restore_other(&engine, &s);
+    wait_until("the other wallet's bring-up", || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    let started = Instant::now();
+    let funded = engine.block_on(async {
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(startup(&s, id), StartupStatus::NotRun, "queued");
+            pause.release.notify_one();
+        };
+        tokio::join!(fund_once(&s, id), release).0
+    });
+    past_the_hold(&funded);
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    assert_eq!(startup(&s, id), StartupStatus::NoIdentity);
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 3);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63 C2): a rerun that stays queued past the queue's cap is not
+/// waited for further: the press is refused as held, and the rerun runs
+/// when its turn comes.
+#[test]
+fn a_rerun_queued_past_the_cap_leaves_the_press_held() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    let queued = Duration::from_millis(300);
+    *guard(&s.platform.bring_up_waits) = Some((queued, Duration::from_secs(120)));
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let _other = restore_other(&engine, &s);
+    wait_until("the other wallet's bring-up", || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    let started = Instant::now();
+    let funded = engine.block_on(fund_once(&s, id));
+    let waited = started.elapsed();
+    assert_eq!(
+        funded.as_ref().map_err(|e| e.code()).err(),
+        Some("platform.unavailable"),
+        "{funded:?}"
+    );
+    assert!(
+        waited >= queued && waited < Duration::from_secs(10),
+        "{waited:?}"
+    );
+    pause.release.notify_one();
+    wait_until("the queued rerun", || {
+        startup(&s, id) == StartupStatus::NoIdentity
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 3);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63): a rerun that runs past the wait leaves the press refused as
+/// held, its grant unredeemed.
+#[test]
+fn a_press_refused_after_the_wait_leaves_its_grant_unused() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _platform) = skipped_at_restart(dir.path());
+    let running = Duration::from_millis(300);
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), running));
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let g = grant(
+        &engine,
+        &s,
+        id,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1_000_000,
+            max_credits: 0,
+        },
+    );
+    let started = Instant::now();
+    let funded = engine.block_on(async {
+        let lib = super::platform_fund::PwFund::open(&s, id).await.unwrap();
+        let amount = super::FundAmount::Duffs { duffs: 100_000 };
+        super::platform_fund::fund(&s, id, &lib, amount, &g).await
+    });
+    let waited = started.elapsed();
+    assert_eq!(
+        funded.as_ref().map_err(|e| e.code()).err(),
+        Some("platform.unavailable"),
+        "{funded:?}"
+    );
+    assert!(pause.reached.load(Ordering::SeqCst), "the rerun ran");
+    assert!(
+        waited >= running && waited < Duration::from_secs(10),
+        "{waited:?}"
+    );
+    assert!(
+        (s.vault)
+            .grant_purpose(&g, dw_vault::GrantKind::PlatformOp, Some(&id.0))
+            .is_ok(),
+        "the grant is unused"
+    );
+    pause.release.notify_one();
+    wait_until("the rerun", || startup(&s, id) == StartupStatus::NoIdentity);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63): the session closing mid-wait ends the wait; the press is
+/// refused and close is not held by it.
+#[test]
+fn a_press_waiting_on_a_rerun_ends_when_the_session_closes() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _platform) = skipped_at_restart(dir.path());
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let started = Instant::now();
+    let funded = engine.block_on(async {
+        let lib = super::platform_fund::PwFund::open(&s, id).await.unwrap();
+        let closing = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            s.close().await;
+        };
+        let amount = super::FundAmount::Duffs { duffs: 100_000 };
+        let fund = super::platform_fund::fund(&s, id, &lib, amount, "no grant");
+        tokio::join!(fund, closing).0
+    });
+    assert!(funded.is_err(), "{funded:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    pause.release.notify_one();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #585 (Q63 C4): after a restart, a marker wallet's unfinished transfers
+/// list asks for the bring-up's rerun (nothing else would before the next
+/// start), and a Finish waits for it, as a fund or shield press does.
+#[test]
+fn unfinished_transfers_after_a_skipped_bring_up_ask_for_and_wait_on_its_rerun() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, platform) = skipped_at_restart(dir.path());
+    let listed = engine.block_on(s.dashpay(id).unfinished_transfers());
+    assert!(listed.is_ok(), "{listed:?}");
+    wait_until("the rerun the list asked for", || {
+        startup(&s, id) == StartupStatus::NoIdentity
+    });
+    assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 2);
+
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    for (kind, runs) in [
+        (super::LockKindId::PlatformAddress, 3),
+        (super::LockKindId::Shielded, 4),
+    ] {
+        stop(&engine, &s);
+        start(&engine, &s);
+        wait_until("the skipped bring-up", || {
+            startup(&s, id) == StartupStatus::NotRun
+        });
+        caught_up(&s, id);
+        let finished =
+            engine.block_on(
+                s.dashpay(id)
+                    .finish_transfer(kind, zero.into(), 0, "no grant".into()),
+            );
+        assert!(
+            matches!(finished, Err(PlatformError::InvalidArgument { .. })),
+            "{kind:?}: {finished:?}"
+        );
+        assert_eq!(startup(&s, id), StartupStatus::NoIdentity, "{kind:?}");
+        assert_eq!(platform.bring_ups.load(Ordering::SeqCst), runs, "{kind:?}");
+    }
     engine.block_on(engine.shutdown()).unwrap();
 }
 
