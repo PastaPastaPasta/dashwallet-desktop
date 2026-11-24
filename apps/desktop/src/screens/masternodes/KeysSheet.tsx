@@ -4,7 +4,7 @@
 // screen captures while it is open; its secret is dropped on hide, on another keypair, on a role
 // change and on close.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
 import type { MasternodeKeyInfo } from "../../api/generated/MasternodeKeyInfo";
@@ -46,6 +46,19 @@ export function MasternodeKeysSheet({
   const known = useKnownDetails(walletId);
   const { details } = known;
   const keys = useKeyPages(walletId, role, pages);
+  // Try again leaves once the page is read: focus goes to the list, not the page body.
+  const list = useRef<HTMLUListElement>(null);
+  const refocusList = useRef(false);
+  useEffect(() => {
+    // A retry that failed again leaves nothing to refocus later.
+    if (!keys.retrying && keys.error !== null) refocusList.current = false;
+  }, [keys.retrying, keys.error]);
+  useEffect(() => {
+    if (!refocusList.current || keys.error !== null) return;
+    refocusList.current = false;
+    // Only when focus fell to the page; a role picked meanwhile keeps it.
+    if (document.activeElement === null || document.activeElement === document.body) list.current?.focus();
+  }, [keys.error]);
   const choose = (r: MasternodeKeyRoleName) => {
     setRole(r);
     setPages(1);
@@ -85,8 +98,23 @@ export function MasternodeKeysSheet({
             ))}
           </div>
           {keys.error !== null && (
-            <p className="form-problem" role="alert" data-testid="mn-keys-failed">
-              {keys.error}
+            <p className="mg-notice-row" data-testid="mn-keys-failed">
+              <span className="field-error" role="alert">
+                {keys.error}
+              </span>
+              <DashButton
+                variant="tintedBlue"
+                size="small"
+                data-testid="mn-keys-retry"
+                aria-disabled={keys.retrying || undefined}
+                onClick={() => {
+                  if (keys.retrying) return;
+                  refocusList.current = true;
+                  keys.retry();
+                }}
+              >
+                {t("components.phrase.tryAgain")}
+              </DashButton>
             </p>
           )}
           {keys.loading && rows.length === 0 ? (
@@ -94,7 +122,7 @@ export function MasternodeKeysSheet({
               {t(`${P}.loading`)}
             </p>
           ) : (
-            <ul role="list" className="mg-key-list card-l1" data-testid="mn-keys-list">
+            <ul role="list" className="mg-key-list card-l1" data-testid="mn-keys-list" ref={list} tabIndex={-1}>
               {rows.map(({ key, matches }) => (
                 <li key={`${key.role}-${key.index}`} className="mg-key-row" data-testid={`mn-key-${key.index}`}>
                   <div className="mg-notice-row">
@@ -164,12 +192,30 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   const watchOnly = failed !== null && hasCode(failed, "masternode.watch_only");
   const keys = results.flatMap((r) => r.data ?? []);
   const last = results[results.length - 1];
+  const error = failed !== null && !watchOnly ? keysErrorText(failed) : null;
+  // A page that never loaded drops its error while it is read again, and an offline read is paused
+  // rather than fetching: the retried error and an inert Try again stay until this role's read
+  // settles, and are forgotten once it does or the role changes.
+  const [retried, setRetried] = useState<{ role: MasternodeKeyRoleName; error: string } | null>(null);
+  // A refetch dispatches its fetch synchronously, so the render after Try again already reads.
+  const reading = results.some((r) => r.isFetching || r.isPaused);
+  const retrying = retried !== null && retried.role === role && reading;
+  useEffect(() => {
+    if (retried !== null && !retrying) setRetried(null);
+  }, [retried, retrying]);
   return {
     keys,
     watchOnly,
-    error: failed !== null && !watchOnly ? keysErrorText(failed) : null,
+    error: error ?? (retrying ? retried.error : null),
     loading: results.some((r) => r.isPending),
     more: last?.data?.length === KEYS_PAGE,
+    /** Reads the failed pages again; the pages already in stay on screen. */
+    retry: () => {
+      if (retrying || error === null) return;
+      setRetried({ role, error });
+      for (const r of results) if (r.isError) void r.refetch();
+    },
+    retrying,
   };
 }
 
