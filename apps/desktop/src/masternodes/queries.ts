@@ -4,7 +4,7 @@
 // result is a secret the sheet holds only while shown.
 
 import { useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
@@ -130,6 +130,21 @@ export function useNodeNames(walletId: string): NodeNames {
   // An unlabelled row's fallback name ("Evonode b2b2…") is translated: a language change re-reads it.
   const language = useUi((s) => s.prefs.language);
   return useMemo(() => nodeNames(list.data), [list.data, language]);
+}
+
+/** What an attached key's change re-reads: the masternodes, and the proposal and username voters
+ * (governance/queries.ts's `["governance", …]` and `contestedNamesKey`), so the vote sheets list a
+ * new key at once and drop a removed one. */
+export const KEY_CHANGE_KEYS = [m, keys.governanceAll, ["contestedNames"]] as const;
+
+export function invalidateAfterKeyChange(client: QueryClient) {
+  return Promise.all(KEY_CHANGE_KEYS.map((queryKey) => client.invalidateQueries({ queryKey })));
+}
+
+/** After Add key, Remove and Stop tracking. */
+export function useKeysChanged() {
+  const client = useQueryClient();
+  return () => invalidateAfterKeyChange(client);
 }
 
 /** Re-reads every engine-local masternode query (after a command, before its event lands). */

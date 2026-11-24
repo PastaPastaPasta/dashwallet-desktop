@@ -5772,6 +5772,25 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-m);
 }
 
+/* Keys you added: one line per key with its Remove. */
+.mg-keys-added {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-keys-added li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
 /* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
 .mg-key-list {
   margin: var(--dw-space-m) 0;

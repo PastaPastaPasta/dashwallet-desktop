@@ -4797,6 +4797,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.already_tracked",
   "masternodes.not_tracked",
   "masternodes.key_mismatch",
+  "masternodes.key_exists",
   "masternodes.not_evonode",
   "masternodes.no_identity",
   "masternodes.platform_unavailable",
