@@ -83,6 +83,47 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  for (const [how, delay] of [["click", ""], ["Enter", ""], ["twice", ""], ["twice", "&delay=100"], ["twice", "&delay=400"]] as const) {
+    test(`shared masternode ${theme}: Done (${how}${delay ? `, engine ${delay.split("=")[1]} ms` : ""}) after Create invitation opens the session, never Discard`, async ({ page }) => {
+      test.setTimeout(60_000);
+      const errors = await open(page, "sh-capability-active", theme, delay);
+      await page.getByTestId("mn-shared").click();
+      await page.getByTestId("sh-start-button").click();
+      await page.getByTestId("sh-setup-label-1").fill("Bob");
+      await page.getByTestId("sh-setup-amount-0").fill("600");
+      await page.getByTestId("sh-setup-amount-1").fill("400");
+      await page.getByTestId("sh-setup-continue").click();
+      await page.getByTestId("sh-setup-service").fill("203.0.113.30:19999");
+      await page.getByTestId("sh-setup-operator-self").check();
+      await page.getByTestId("sh-setup-operator-share").fill("5");
+      await page.getByTestId("sh-setup-continue").click();
+      await expect(page.getByTestId("sh-setup-step-exit")).toBeVisible();
+      await page.getByTestId("sh-setup-continue").click();
+      await expect(page.getByTestId("sh-setup-estimate")).toBeVisible();
+      await page.getByTestId("sh-setup-continue").click();
+      await expect(page.getByTestId("sh-setup-step-invite")).toBeVisible();
+      const done = page.getByTestId("sh-setup-continue");
+      if (how === "click") await done.click();
+      else if (how === "twice") {
+        // A second click where Done was, as a quick double click lands it.
+        const box = (await done.boundingBox())!;
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await page.waitForTimeout(250);
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      }
+      else {
+        await done.focus();
+        await page.keyboard.press(how, { delay: 100 });
+      }
+      await expect(page.getByTestId("sh-session")).toBeVisible();
+      await expect(page.getByTestId("sh-stages")).toBeVisible();
+      await page.waitForTimeout(1500);
+      await expect(page.getByTestId("sh-close")).toHaveCount(0);
+      await expect(page.getByTestId("sh-session")).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
+
   test(`shared masternode ${theme}: a pasted invitation is joined; Close offers Discard`, async ({ page }, info) => {
     const errors = await open(page, "sh-capability-active", theme);
     await page.getByTestId("mn-shared").click();
