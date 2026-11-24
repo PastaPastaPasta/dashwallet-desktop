@@ -680,6 +680,10 @@ mirror_struct!(engine::ProTxOperation => ProTxOperation {
     created_at, signed_at, sent_at, last_error, terms: into,
 });
 
+#[path = "masternodes_shared.rs"]
+mod shared;
+pub use shared::*;
+
 #[cfg(test)]
 mod tests {
     use zeroize::Zeroizing;
