@@ -24,6 +24,8 @@ export const MnText = withTable(
     "loading",
     "listSyncing",
     "failed",
+    "opsLoading",
+    "opsFailed",
     "payoutsFailed",
     "tryAgain",
     "emptyTitle",

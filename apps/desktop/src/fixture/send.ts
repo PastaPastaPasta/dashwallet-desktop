@@ -458,7 +458,7 @@ export interface SendDeps {
   /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
    * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
    * and before the payee (`validate_recipients`). */
-  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
+  checkContact(w: World, walletId: string, r: Pair, stage: "draft" | "prepare", amount?: () => void): void;
   /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
