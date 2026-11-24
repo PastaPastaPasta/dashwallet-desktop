@@ -2216,6 +2216,69 @@ fn abandoning_a_payment_under_a_locked_child_is_refused_and_its_coin_stays_spent
     kept_under_a_settled_child(&engine, session, id, &payment, &child);
 }
 
+/// Three generations: P, its child C spending P's change, and C's child G
+/// spending C's change, only G InstantSend-locked; then a restart. G proves
+/// C and so P: Abandon of P is not offered and is refused, and P's coin is
+/// never offered (#446).
+#[test]
+fn abandoning_a_payment_under_a_locked_grandchild_is_refused_and_its_coin_stays_spent() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        COIN / 8,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    let child_change = change_of(&child, &own_scripts(&engine, &session, id));
+    let grandchild = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![child_change]),
+        COIN / 16,
+        false,
+    );
+    mempool(&engine, &session, id, &grandchild);
+    instant_lock(&engine, &session, id, &grandchild);
+    wait_stored(
+        &session,
+        id,
+        &[payment.txid(), child.txid(), grandchild.txid()],
+    );
+    super::wait_stored_locked(&session, id, grandchild.txid());
+    let session = reopen(&engine, session);
+    start_spv(&engine, &session);
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, payment.txid()))
+        .unwrap();
+    assert!(!extras.can_abandon, "Abandon is offered");
+    let result = engine.block_on(session.abandon_transaction(id, payment.txid()));
+    assert!(
+        matches!(
+            result,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::SettledDescendant
+            ))
+        ),
+        "{result:?}"
+    );
+    kept_under_a_settled_child(&engine, session, id, &payment, &child);
+}
+
 /// As above, through Remove Unconfirmed: the payment is kept and its coin
 /// stays spent (#446).
 #[test]
