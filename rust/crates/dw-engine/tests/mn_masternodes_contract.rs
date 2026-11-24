@@ -68,6 +68,7 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.shared_shares",
     "standby_file_transactions",
     "Masternodes.shared_sessions",
+    "Masternodes.unreadable_shared_sessions",
     "Masternodes.shared_session",
     "Masternodes.start_shared",
     "Masternodes.set_shared_fee",
@@ -1215,6 +1216,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             (Activation::Unknown, Activation::Inactive, true)
         );
         assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
+        assert!(
+            mn.unreadable_shared_sessions(wallet)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         for refused in [
             mn.shared_session(wallet, "zz".into()).await.map(drop),
             mn.start_shared(wallet, StartSharedRequest { fee: 0, ..shared() })
