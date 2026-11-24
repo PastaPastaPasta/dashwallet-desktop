@@ -63,7 +63,7 @@ test.describe("Unfinished transfers", () => {
     test(`${scenario}: a restored lock Platform already took reads checking, and Check again says it was already added`, async ({ page }) => {
       const errors = await open(page, scenario);
       const text = page.getByTestId("unfinished-text");
-      await expect(text).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.");
+      await expect(text).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
       await expect(page.getByTestId("unfinished-card")).not.toContainText("hasn't seen");
       await page.getByTestId("unfinished-checkAgain").click();
       await authorize(page);
@@ -93,7 +93,7 @@ test.describe("Unfinished transfers", () => {
 
   test("recovery-restored-unapplied: a restored checking lock Platform never took is added by Check again", async ({ page }) => {
     const errors = await open(page, "recovery-restored-unapplied");
-    await expect(page.getByTestId("unfinished-text")).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.");
+    await expect(page.getByTestId("unfinished-text")).toHaveText("1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
     await page.getByTestId("unfinished-checkAgain").click();
     await authorize(page);
     await expect(page.getByTestId("unfinished-card")).toHaveCount(0);

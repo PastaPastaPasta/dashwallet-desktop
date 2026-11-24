@@ -12,11 +12,16 @@ describe("the Checking lines", () => {
     expect(texts.filter((m) => /can't confirm it yet/i.test(m))).toEqual([]);
   });
 
+  it("never promise that Check again adds the amount: it tries to", () => {
+    const texts = [...flatten(en).values()].flatMap((m) => (typeof m === "string" ? [m] : Object.values(m)));
+    expect(texts.filter((m) => m.includes("Check again adds it"))).toEqual([]);
+  });
+
   it("name the Home row's own Check again button", () => {
     for (const copy of [FUND_COPY, SHIELDED_COPY]) {
       const label = copy.card.checkAgain;
       expect(copy.done.checking.row).toContain(`Choose ${label} to confirm it.`);
-      expect(copy.done.checking.row).toContain(`, ${label} adds it.`);
+      expect(copy.done.checking.row).toContain(`, ${label} tries to add it.`);
     }
   });
 
@@ -24,7 +29,7 @@ describe("the Checking lines", () => {
     for (const copy of [FUND_COPY, SHIELDED_COPY]) {
       const label = copy.card.checkAgain;
       expect(copy.done.checking.text).toContain(`choose ${label} on the ${RECOVERY_COPY.title} card on Home.`);
-      expect(copy.done.checking.text).toContain(`, ${label} adds it.`);
+      expect(copy.done.checking.text).toContain(`, ${label} tries to add it.`);
     }
   });
 

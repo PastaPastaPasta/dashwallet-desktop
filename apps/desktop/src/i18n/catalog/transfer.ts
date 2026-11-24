@@ -145,8 +145,8 @@ export const transfer = {
        * title the same as theirs. */
       checking: {
         title: "Checking",
-        text: "This amount may already be on your Platform addresses. To confirm it, choose Check again on the Unfinished transfers card on Home. If it wasn't added yet, Check again adds it.",
-        row: "This amount may already be on your Platform addresses. Choose Check again to confirm it. If it wasn't added yet, Check again adds it.",
+        text: "This amount may already be on your Platform addresses. To confirm it, choose Check again on the Unfinished transfers card on Home. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+        row: "This amount may already be on your Platform addresses. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
       },
       /** `why` is the engine's error code. */
       notApplied: { title: "Locked, not applied", text: "Your Dash is locked but Dash Platform did not add it yet ({why}). Finish it from Unfinished transfers on Home: nothing is lost." },
@@ -243,8 +243,8 @@ export const transfer = {
        * card's title the same as theirs. */
       checking: {
         title: "Checking",
-        text: "This amount may already be in your shielded balance. To confirm it, choose Check again on the Unfinished transfers card on Home. If it wasn't added yet, Check again adds it.",
-        row: "This amount may already be in your shielded balance. Choose Check again to confirm it. If it wasn't added yet, Check again adds it.",
+        text: "This amount may already be in your shielded balance. To confirm it, choose Check again on the Unfinished transfers card on Home. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+        row: "This amount may already be in your shielded balance. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
       },
       /** `why` is the engine's error code. */
       notApplied: { title: "Locked, not applied", text: "Your Dash is locked but Dash Platform did not add it yet ({why}). Finish it from Unfinished transfers on Home: nothing is lost." },

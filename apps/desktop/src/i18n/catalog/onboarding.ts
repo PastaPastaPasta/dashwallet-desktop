@@ -226,8 +226,8 @@ export const onboarding = {
     running: "Finishing…",
     /** "Check again" in these lines names the `checkAgain` button: keep the two the same. */
     checking: {
-      one: "{count} transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.",
-      other: "{count} transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again adds it.",
+      one: "{count} transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+      other: "{count} transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
     },
     finish: "Finish",
     finishAll: "Finish all",
@@ -258,7 +258,7 @@ export const onboarding = {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",
         /** "Check again" names the row's `checkAgain` button: keep the two the same. */
-        checking: "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again adds it.",
+        checking: "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
         proofWaiting: "Waiting for the network to confirm",
         reportedUsed: "The network says this was already added. There's nothing left to finish.",
       },
