@@ -34,6 +34,7 @@ import {
   type LegendEntry,
   type StandbySend,
 } from "../../masternodes/shared";
+import { useAmountField } from "../pay/form";
 import { CredentialField, useCredential } from "./credential";
 import { Notice } from "./common";
 import { useSharedText, type OpenSession } from "./Shared";
@@ -371,19 +372,19 @@ function Alone({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
 function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
   const t = useT();
   const b = useBackend();
-  const { dash } = useSharedText(c.network);
+  const { shown, dash } = useSharedText(c.network);
   const n = c.shares.shares.length;
   const least = togetherFee(n);
-  const [fee, setFee] = useState(String(least));
+  const amount = useAmountField(shown, shown.full(least));
   const id = useId();
   const g = useGranted(c, t(`${P}.dissolve.togetherAsk`));
-  const typed = /^\d{1,7}$/.test(fee.trim()) ? Number(fee.trim()) : null;
-  const duffs = typed !== null && typed >= 1 && typed <= 1_000_000 ? typed : null;
+  const below = typeof amount.duffs === "number" && amount.duffs < least;
+  const fee = amount.settled && typeof amount.duffs === "number" && !below ? amount.duffs : null;
   const share = mineOf(c)[0]?.index ?? null;
-  const ready = duffs !== null && share !== null && g.credential.ready && !g.busy && !c.wallet.watchOnly;
+  const ready = fee !== null && share !== null && g.credential.ready && !g.busy && !c.wallet.watchOnly;
   const start = async () => {
     if (!ready) return;
-    const out = await g.run(duffs, (grant) => b.mnSharedStartDissolveTogether(c.wallet.walletId, { proTxHash: c.hash, shareIndex: share, fee: duffs }, grant));
+    const out = await g.run(fee, (grant) => b.mnSharedStartDissolveTogether(c.wallet.walletId, { proTxHash: c.hash, shareIndex: share, fee }, grant));
     if (out) {
       onClose();
       c.onOpenSession({ id: out.session.id, imported: null });
@@ -399,13 +400,29 @@ function Together({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
       }}
     >
       <p className="mg-muted">{t(`${P}.dissolve.togetherText`)}</p>
-      <div className="form-field">
-        <label htmlFor={id}>{t(`${P}.dissolve.togetherFee`)}</label>
-        <input id={id} inputMode="numeric" data-testid="sh-together-fee" value={fee} onChange={(e) => setFee(e.target.value)} />
-        <span className="mg-field-help">
-          {typed !== null && `${dash(typed)} · `}
-          {t(`${P}.dissolve.togetherFeeHelp`, { min: least.toLocaleString(), count: n })}
+      <div className={`form-field ${below || amount.error ? "has-error" : ""}`}>
+        <label htmlFor={id}>{t(`${P}.dissolve.fee`)}</label>
+        <span className="mg-field-row">
+          <input
+            id={id}
+            inputMode="decimal"
+            placeholder={shown.placeholder}
+            data-testid="sh-together-fee"
+            aria-invalid={below || !!amount.error}
+            value={amount.text}
+            onChange={(e) => amount.setText(e.target.value)}
+          />
+          <span>{shown.name}</span>
         </span>
+        {amount.error ? (
+          <span className="mg-field-error" role="alert" data-testid="sh-together-fee-error">
+            {amount.error}
+          </span>
+        ) : (
+          <span className={below ? "mg-field-error" : "mg-field-help"} role={below ? "alert" : undefined} data-testid="sh-together-fee-help">
+            {t(`${P}.dissolve.togetherFeeHelp`, { min: dash(least), count: n })}
+          </span>
+        )}
       </div>
       <CredentialField c={g.credential} busy={g.busy} testId="sh-together-credential" />
       <Problem text={g.error} testId="sh-together-error" />

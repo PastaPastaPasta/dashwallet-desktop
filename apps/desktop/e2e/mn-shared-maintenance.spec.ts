@@ -73,6 +73,31 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`shared maintenance ${theme}: Together's fee in the display unit, refused below the minimum`, async ({ page }, info) => {
+    const errors = trackPageErrors(page);
+    const chromium = info.project.name === "chromium";
+    await openPane(page, "sh-detail", theme);
+    await page.getByTestId("sh-dissolve-open").click();
+    await page.getByTestId("sh-dissolve-together").click();
+    const fee = page.getByTestId("sh-together-fee");
+    await expect(fee).toHaveValue("0.00001000");
+    await expect(page.getByTestId("sh-together-fee-help")).toHaveText("At least 0.00001000 tDASH for 3 shares");
+    await expect(page.getByTestId("sh-dissolve-together-form")).not.toContainText("duffs");
+    await passphrase(page, "sh-together-credential");
+    await expect(page.getByTestId("sh-together-start")).toBeEnabled();
+    await shot(page, "sh-together-fee", theme, chromium);
+    await fee.fill("0.000009");
+    await expect(page.getByTestId("sh-together-fee-help")).toHaveAttribute("role", "alert");
+    await expect(page.getByTestId("sh-together-start")).toBeDisabled();
+    await shot(page, "sh-together-fee-low", theme, chromium);
+    await fee.fill("0.00002");
+    await expect(page.getByTestId("sh-together-start")).toBeEnabled();
+    await page.getByTestId("sh-together-start").click();
+    await expect(page.getByTestId("sh-session")).toBeVisible();
+    await expect(page.getByTestId("sh-row-togetherSendApproval")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test(`shared maintenance ${theme}: a standby created, then saved behind MG's alert`, async ({ page }, info) => {
     const errors = trackPageErrors(page);
     const chromium = info.project.name === "chromium";

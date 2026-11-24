@@ -214,11 +214,11 @@ export function sessionNeedsAction(s: SharedSession, slice: SharedSlice = S5_SLI
 export const sharedBadgeCount = (sessions: readonly SharedSession[] | undefined, slice: SharedSlice = S5_SLICE) =>
   (sessions ?? []).filter((s) => sessionNeedsAction(s, slice)).length;
 
-/** The final stages (F4): never offered Discard, and out of "Sessions in progress". The engine reads
- * a dead session as discardable until something of it was sent; the UI doesn't offer it. */
+/** The final stages (F4): confirmed, conflicted and dead. */
 export const isFinal = (s: Pick<SharedSession, "stage">) => s.stage.kind === "confirmed" || s.stage.kind === "conflicted" || s.stage.kind === "dead";
 
-/** Discard is offered only while the engine says so, and never at a final stage. */
+/** Discard is offered exactly while the engine reads the session as discardable: a dead session
+ * still holds its reserved coins until it is discarded. */
 export const canDiscard = (s: Pick<SharedSession, "discardable">) => s.discardable;
 
 /** "Sessions in progress" (§2.1): not final, or final but still discardable (a dead session whose
