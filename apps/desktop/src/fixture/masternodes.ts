@@ -1287,6 +1287,13 @@ export function masternodesScenarios(base: Base) {
     "reg-prepared-spent": (t: ThemeName | null) => mnBase(base, t, (m, w) => (reg(m, w), prepared(m, { kind: "inputs_spent" }))),
     /** The `mn-list` board with an operation in every state and of every kind. */
     "mn-ops": (t: ThemeName | null) => mnBase(base, t, ops),
+    /** Show Masternodes on Auto: no masternode and no collateral-sized coin, only a sent registration. */
+    "mn-registration-only": (t: ThemeName | null) =>
+      mnBase(base, t, (m, w) => {
+        Object.assign(m, { rows: [], payouts: {}, attached: {}, collateralCoins: [] });
+        m.operations = [scenarioOp(OP_SENT, 5, { kind: "sent" })];
+        w.settings.ui = { ...w.settings.ui, masternodesItem: "auto" };
+      }),
     /** The `mn-list` board, Home node's collateral released. */
     "mn-released": (t: ThemeName | null) => mnBase(base, t, (m) => (byHash(m, HOME).collateralReleased = true)),
   };
