@@ -42,7 +42,7 @@ impl World {
     }
 
     /// Confirms `q` for `amount` as the sheet does: with its input 0.
-    fn confirm(
+    fn confirm_top_up(
         &self,
         q: &TopUpFromPlatformQuote,
         amount: WithdrawAmount,
@@ -276,18 +276,18 @@ fn a_top_up_takes_the_fee_input_its_quote_named() {
     let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
     assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
     w.net.fund(order[0], 3 * DASH);
-    refused(w.confirm(&q, credits(DASH), &grant));
+    refused(w.confirm_top_up(&q, credits(DASH), &grant));
 
     // Max over input 0: a deposit to it raises the claim.
     let max = w.top_up_quote(&me(), WithdrawAmount::All).unwrap();
     w.net.fund(order[0], DASH);
-    refused(w.confirm(&max, WithdrawAmount::All, &grant));
+    refused(w.confirm_top_up(&max, WithdrawAmount::All, &grant));
 
     // A deposit that leaves input 0's address and claim as quoted.
     let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
     w.net.fund(order[0], DASH);
     w.net.fund(order[2], DASH);
-    let done = w.confirm(&q, credits(DASH), &grant).unwrap();
+    let done = w.confirm_top_up(&q, credits(DASH), &grant).unwrap();
     assert_eq!(done.credits, DASH);
     assert_eq!(w.sent(), 1);
     assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
@@ -325,7 +325,9 @@ fn a_max_top_up_confirms_its_own_quote() {
         "the same total as an amount: one input"
     );
     let grant = w.f.grant(max.debit_credits);
-    let done = w.confirm(&max, credits(max.credits), &grant).unwrap();
+    let done = w
+        .confirm_top_up(&max, credits(max.credits), &grant)
+        .unwrap();
     assert_eq!(done.credits, max.credits);
     let sent = w.net.sent.lock().unwrap()[0].clone();
     let claims: Vec<_> = sent
@@ -349,7 +351,7 @@ fn a_top_up_with_a_malformed_fee_input_is_refused() {
     let mut q = w.top_up_quote(&me(), credits(DASH)).unwrap();
     q.inputs[0].address = "not-an-address".into();
     let grant = w.f.grant(10 * DASH);
-    let refused = w.confirm(&q, credits(DASH), &grant).unwrap_err();
+    let refused = w.confirm_top_up(&q, credits(DASH), &grant).unwrap_err();
     assert_eq!(refused.code(), "invalid_argument");
     assert!(w.f.unused(&grant));
     assert_eq!(w.sent(), 0);

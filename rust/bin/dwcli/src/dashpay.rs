@@ -2689,7 +2689,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
