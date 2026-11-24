@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 use dashcore::{OutPoint, Txid};
 
 use crate::denoms::{COLLATERAL_AMOUNT, MAX_COLLATERAL_AMOUNT, is_denominated};

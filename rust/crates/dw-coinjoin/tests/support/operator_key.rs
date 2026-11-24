@@ -10,7 +10,7 @@
 #![expect(clippy::disallowed_types)]
 
 use dash_pkc::bls::{BlsScIetf, BlsSecretKey, BlsSigId};
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 
 pub struct OperatorKey(BlsSecretKey<BlsScIetf>);
 
