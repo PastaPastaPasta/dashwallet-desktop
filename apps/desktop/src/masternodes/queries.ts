@@ -6,6 +6,7 @@
 import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
+import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import { keys, useBackend } from "../api/queries";
 import type { NodeNames } from "../governance/model";
 import { nodeNames } from "./model";
@@ -24,7 +25,9 @@ export const mnKeys = {
   payouts: (walletId: string, hash: string, since: number | null) => [...m, "payouts", walletId, hash, since] as const,
   find: (query: string) => [...m, "find", query] as const,
   keychain: (walletId: string, role: MasternodeKeyRoleName, start: number, count: number) => [...m, "keychain", walletId, role, start, count] as const,
+  operations: (walletId: string) => [...m, "operations", walletId] as const,
   credits: (hash: string) => ["mnPlatform", hash, "credits"] as const,
+  registrationKeys: (walletId: string, kind: MasternodeTypeName) => [...m, "registrationKeys", walletId, kind] as const,
 };
 
 export function useMasternodeListState() {
@@ -58,10 +61,22 @@ export function useEvonodeCredits(hash: string, enabled = true) {
   return useQuery({ queryKey: mnKeys.credits(hash), queryFn: () => b.mnEvonodeCredits(hash), enabled, refetchInterval: PLATFORM_REFRESH_MS });
 }
 
+/** The keychain keys a registration of `kind` would use (wizard steps 3 and 4). */
+export function useRegistrationKeys(walletId: string, kind: MasternodeTypeName, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.registrationKeys(walletId, kind), queryFn: () => b.mnRegistrationKeys(walletId, kind), enabled, retry: false });
+}
+
 /** The keychain's public keys of `role`, one page. */
 export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.keychain(walletId, role, start, count), queryFn: () => b.mnKeys(walletId, role, start, count) });
+}
+
+/** The wallet's ProTx operations (registrations and registrar updates). */
+export function useMasternodeOperations(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.operations(walletId), queryFn: () => b.mnOperations(walletId), enabled });
 }
 
 /** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */

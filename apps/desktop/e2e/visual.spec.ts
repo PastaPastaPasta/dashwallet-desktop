@@ -416,6 +416,24 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
 
 // DP1-09: the registration wizard's two steps and a registration's screens on the Join page.
 const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  // C-funding F19: "Pay another way".
+  "pay-with": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-shielded-reason")).toBeVisible();
+      await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+    },
+  },
+  // Dash wallet short of the cost: its reason; Continue off.
+  "pay-with-short": {
+    scenario: "empty",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-core-reason")).toBeVisible();
+      await expect(page.getByTestId("registration-next")).toBeDisabled();
+    },
+  },
   name: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
@@ -1069,6 +1087,70 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-key-1-match")).not.toHaveText("Checking…");
     await page.mouse.move(0, 0);
     await shoot(page, "mn-keys", theme);
+  });
+}
+
+// MG-10 S2: the registration wizard's steps and the In progress group, under
+// MG-00's frame names. `reg-review` is the hosted FundNew masternode, which can't send yet, `reg-operator-evo`
+// the self-run evonode.
+async function openMasternodes(page: Page, scenario: string, theme: Theme) {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl(scenario, theme));
+  await page.getByTestId("toolbar").waitFor();
+  await page.getByTestId("sidebar-masternodes").click();
+  await page.getByTestId("page-masternodes").waitFor();
+}
+
+async function shootStep(page: Page, name: string, theme: Theme) {
+  await page.mouse.move(0, 0);
+  await shoot(page, name, theme);
+}
+
+for (const theme of THEMES) {
+  test(`visual reg-wizard ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "reg", theme);
+    await page.getByTestId("mn-set-up").click();
+    await page.getByTestId("reg-step-type").waitFor();
+    await shootStep(page, "reg-type", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-collateral-existing").click();
+    await page.getByTestId("reg-coins").waitFor();
+    await shootStep(page, "reg-collateral", theme);
+    await page.getByTestId("reg-collateral-fund-new").click();
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-operator-key").fill("ab".repeat(48));
+    await page.getByTestId("reg-service").fill("203.0.113.20:19999");
+    await page.getByTestId("reg-share").fill("2.5");
+    await page.getByTestId("reg-share").blur();
+    await shootStep(page, "reg-operator", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-owner").waitFor();
+    await shootStep(page, "reg-keys", theme);
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-review").waitFor();
+    await page.getByTestId("reg-send-off").waitFor();
+    await shootStep(page, "reg-review", theme);
+  });
+
+  test(`visual reg-operator-evo ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "reg", theme);
+    await page.getByTestId("mn-set-up").click();
+    await page.getByTestId("reg-kind-evonode").click();
+    await page.getByTestId("reg-runner-self").click();
+    await page.getByTestId("reg-continue").click();
+    await page.getByTestId("reg-step-collateral").waitFor();
+    await page.getByTestId("reg-continue").click();
+    await expect(page.getByTestId("reg-node-wallet")).not.toHaveText("…");
+    await page.getByTestId("reg-service").fill("203.0.113.20:19999");
+    await page.getByTestId("reg-service").blur();
+    await shootStep(page, "reg-operator-evo", theme);
+  });
+
+  test(`visual mn-inprogress ${theme}`, async ({ page }) => {
+    await openMasternodes(page, "mn-ops", theme);
+    await page.getByTestId("mn-facts").waitFor();
+    await page.getByTestId("mn-group-in-progress").scrollIntoViewIfNeeded();
+    await shootStep(page, "mn-inprogress", theme);
   });
 }
 

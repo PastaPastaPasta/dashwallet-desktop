@@ -22,6 +22,8 @@ export const settings = {
       dark: "Dark is in use for this session. Your choice below applies the next time Dash Wallet starts normally.",
     },
     unit: "Unit to show amounts in",
+    decimals: "Decimal places",
+    decimalsHint: "Amounts show at least this many decimal places. Nothing is rounded: an amount with more digits shows them all.",
     subtractFee: "Subtract the fee from the amount by default",
     language: "Language",
     languageSystem: "System default ({language})",

@@ -2118,6 +2118,15 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-card);
 }
 
+.pay-scan-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin-top: calc(-1 * var(--dw-space-xs));
+}
+
 .amount-entry {
   display: flex;
   align-items: center;
@@ -5272,6 +5281,15 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
+/* C-funding F19: a source that cannot pay shows why and cannot be chosen. */
+.pay-with-source[data-disabled] {
+  cursor: default;
+}
+
+.pay-with-source[data-disabled] .topup-choice-amount {
+  color: var(--dw-role-text-secondary);
+}
+
 .topup-title {
   display: flex;
   align-items: center;
@@ -5836,6 +5854,11 @@ button.bell-row-open:focus-visible {
   min-height: 0;
 }
 
+/* A step shown without the list (Sent) takes the whole width. */
+.mg-wizard > .mg-step:only-child {
+  grid-column: 1 / -1;
+}
+
 .mg-steps {
   display: flex;
   flex-direction: column;
@@ -5990,6 +6013,13 @@ button.bell-row-open:focus-visible {
 
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
+}
+
+/* A checkbox with its sentence beside it. */
+.mg-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
 }
 
 /* Vote sheet: masternodes with a checkbox, their weight and current vote. */
@@ -6238,6 +6268,32 @@ button.bell-row-open:focus-visible {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* Change keys or payout: the review card and a gap above each key's choices. */
+.mg-change-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+}
+
+.sheet .mg-operator-body {
+  gap: var(--dw-space-s);
+}
+
+.mg-operator-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding-inline-start: var(--dw-space-l);
+}
+
+.mg-change-keys .mg-choices + .mg-choices,
+.mg-change-keys .mg-choices:first-of-type {
+  margin-top: var(--dw-space-s);
 }
 
 .page-masternodes .mg-notice {
@@ -6497,4 +6553,8 @@ button.bell-row-open:focus-visible {
 /* The selected row's tint under a "PoSe banned" chip keeps the text at AA, as with .chip-warning (axe). */
 .mg-row .chip-danger {
   background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}
+
+.sync-phase-active {
+  font-weight: 600;
 }

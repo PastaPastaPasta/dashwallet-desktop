@@ -435,7 +435,9 @@ struct Mine {
 
 impl Mine {
     async fn of(wallet: &PlatformWallet, pair: &Pair) -> Result<Self, ContactError> {
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet)
+            .await
+            .map_err(PlatformError::from)?;
         let m = (state.identity_manager.managed_identity(&pair.identity))
             .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
             .ok_or_else(not_found)?;
@@ -467,7 +469,7 @@ async fn save_local(
     pair: &Pair,
     d: &PrivateDetails,
 ) -> Result<(), PlatformError> {
-    let mut state = wallet.state_mut().await;
+    let mut state = crate::wallet_read::info_mut_of(wallet).await?;
     let Some(managed) = (state.identity_manager).managed_identity_mut(&pair.identity) else {
         return Ok(());
     };
@@ -827,7 +829,7 @@ impl NetworkSession {
         let source = self.info_source()?;
         let found = (self.read_platform(&*source, crypto, (index, owner), deadline)).await?;
         let established: Vec<(Identifier, PrivateDetails)> = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(wallet).await?;
             let Some(m) = state.identity_manager.managed_identity(&owner) else {
                 return Ok(());
             };
@@ -898,7 +900,9 @@ impl NetworkSession {
         only: Option<Identifier>,
     ) -> bool {
         let owners: Vec<(Identifier, u32)> = {
-            let state = wallet.state().await;
+            let Ok(state) = crate::wallet_read::info_of(wallet).await else {
+                return true;
+            };
             (state.identity_manager.managed_identities())
                 .filter(|m| m.wallet_id == Some(wallet.wallet_id()))
                 .filter_map(|m| Some((m.id(), m.identity_index?)))
@@ -1123,5 +1127,35 @@ pub(super) async fn set(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gone_tests {
+    use super::super::requests::tests::Fixture;
+    use super::*;
+    use crate::wallet_read::gone_tests::assert_gone;
+
+    /// #263: the pair's read, for a wallet gone from the manager, fails; no
+    /// panic.
+    #[test]
+    fn the_pair_of_a_wallet_gone_from_the_manager_does_not_panic() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.detach();
+        let r = f.engine.block_on(Mine::of(&w, &f.pair(2)));
+        assert_gone(r.map(drop).map_err(|e| e.code()));
+    }
+
+    /// #263: the local save, for a wallet gone from the manager, fails; no
+    /// panic.
+    #[test]
+    fn a_local_save_for_a_wallet_gone_from_the_manager_does_not_panic() {
+        let f = Fixture::new(u64::MAX / 2);
+        let w = f.engine.block_on(f.s.wallet(&f.wallet)).unwrap();
+        let fence = f.engine.block_on(f.s.write_fence(f.wallet, &w)).unwrap();
+        let w = f.detach();
+        let d = PrivateDetails::default();
+        let r = f.engine.block_on(save_local(&fence, &w, &f.pair(2), &d));
+        assert_gone(r.map_err(|e| e.code()));
     }
 }

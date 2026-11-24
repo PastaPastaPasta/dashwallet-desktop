@@ -125,6 +125,8 @@ pub(crate) struct FakeRequests {
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
     pub(crate) during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Runs as a failed write's request is read back, before the answer.
+    pub(crate) reading: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// What a key upgrade costs.
     fee: u64,
     /// The `contactInfo` documents a write publishes.
@@ -246,6 +248,9 @@ impl RequestNet for FakeRequests {
         recipient: Identifier,
     ) -> Result<Option<ContactRequest>, PlatformError> {
         self.up()?;
+        if let Some(reading) = &*self.reading.lock().unwrap() {
+            reading();
+        }
         let landed = self.landed.load(Ordering::SeqCst);
         Ok(landed.then(|| ContactRequest::new(sender, recipient, 0, 0, 0, vec![1; 96], 1, 9_000)))
     }
@@ -1563,6 +1568,10 @@ fn t2_testnet_requests() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+#[cfg(unix)]
+#[path = "requests_tests/kill9.rs"]
+mod kill9;
+
 /// The contract vector of `dashpay_accept_request`'s grant rules (U-07, Sol
 /// r1 #3), in the step language `apps/desktop/src/fixture/accept.test.ts`
 /// replays against the fixture backend. Each case runs on a fresh
@@ -2179,4 +2188,32 @@ mod accept_vectors {
             path.display()
         );
     }
+}
+
+impl Fixture {
+    /// Takes the wallet's info out of the manager, leaving its handle
+    /// (`wallet_read::gone_tests::detach`).
+    pub(crate) fn detach(&self) -> Arc<PlatformWallet> {
+        crate::wallet_read::gone_tests::detach(&self.engine, &self.s, self.wallet)
+    }
+}
+
+/// #263: the contact pair's own read, for a wallet gone from the manager,
+/// fails; no panic.
+#[test]
+fn a_pair_read_of_a_wallet_gone_from_the_manager_does_not_panic() {
+    use crate::wallet_read::gone_tests::assert_gone;
+    let f = Fixture::new(u64::MAX / 2);
+    let w = f.detach();
+    let r = f.engine.block_on(Own::of(&w, &f.pair(BOB)));
+    assert_gone(r.map(drop).map_err(|e| e.code()));
+}
+
+/// #263: the record of a sent request that landed, for a wallet gone from
+/// the manager, is skipped; no panic.
+#[test]
+fn a_sent_request_of_a_wallet_gone_from_the_manager_is_not_recorded() {
+    let f = Fixture::new(u64::MAX / 2);
+    let w = f.detach();
+    (f.engine).block_on(remember_sent(&w, &request(ME, BOB, 7_000)));
 }
