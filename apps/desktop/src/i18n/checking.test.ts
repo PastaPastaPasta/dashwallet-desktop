@@ -1,0 +1,29 @@
+import { describe, expect, it } from "vitest";
+import { FUND_COPY } from "../platform/fund";
+import { RECOVERY_COPY } from "../recovery/model";
+import { SHIELDED_COPY } from "../shielded/flow";
+import { flatten } from "./core";
+import { en } from "./en";
+
+describe("the Checking lines", () => {
+  it("never tell the user to wait: no catalog string says we can't confirm it yet", () => {
+    const texts = [...flatten(en).values()].flatMap((m) => (typeof m === "string" ? [m] : Object.values(m)));
+    expect(texts.filter((m) => /can't confirm it yet/i.test(m))).toEqual([]);
+  });
+
+  it("name the Home row's own Check again button", () => {
+    for (const copy of [FUND_COPY, SHIELDED_COPY]) {
+      const label = copy.card.checkAgain;
+      expect(copy.done.checking.row).toContain(`Choose ${label} to confirm it.`);
+      expect(copy.done.checking.row).toContain(`, ${label} adds it.`);
+    }
+  });
+
+  it("on a result with no button, name Home's Unfinished transfers card and its Check again button", () => {
+    for (const copy of [FUND_COPY, SHIELDED_COPY]) {
+      const label = copy.card.checkAgain;
+      expect(copy.done.checking.text).toContain(`choose ${label} on the ${RECOVERY_COPY.title} card on Home.`);
+      expect(copy.done.checking.text).toContain(`, ${label} adds it.`);
+    }
+  });
+});

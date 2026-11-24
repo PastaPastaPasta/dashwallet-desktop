@@ -197,6 +197,9 @@ export const SHIELDED_COPY = {
       get text() {
         return t("transfer.shielded.done.checking.text");
       },
+      get row() {
+        return t("transfer.shielded.done.checking.row");
+      },
     },
     notApplied: {
       get title() {

@@ -140,7 +140,14 @@ export const transfer = {
     done: {
       applied: { title: "Added to Platform", text: "About {amount} was added to your Platform balance." },
       waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
-      checking: { title: "Checking", text: "This amount may already be on your Platform addresses; we can't confirm it yet." },
+      /** `text`: the Add to Platform address result, which has no Check again button: it names Home's Unfinished transfers
+       * card and its button. `row`: Home's row, beside its `card.checkAgain` button. Keep "Check again" and the card's
+       * title the same as theirs. */
+      checking: {
+        title: "Checking",
+        text: "This amount may already be on your Platform addresses. To confirm it, choose Check again on the Unfinished transfers card on Home. If it wasn't added yet, Check again adds it.",
+        row: "This amount may already be on your Platform addresses. Choose Check again to confirm it. If it wasn't added yet, Check again adds it.",
+      },
       /** `why` is the engine's error code. */
       notApplied: { title: "Locked, not applied", text: "Your Dash is locked but Dash Platform did not add it yet ({why}). Finish it from Unfinished transfers on Home: nothing is lost." },
     },
@@ -231,7 +238,14 @@ export const transfer = {
     done: {
       add: { title: "Added to Shielded", text: "Your Shielded balance is now {balance}." },
       waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
-      checking: { title: "Checking", text: "This amount may already be in your shielded balance; we can't confirm it yet." },
+      /** `text`: the Shielded and CoinJoin move results, which have no Check again button: it names Home's Unfinished
+       * transfers card and its button. `row`: Home's row, beside its `card.checkAgain` button. Keep "Check again" and the
+       * card's title the same as theirs. */
+      checking: {
+        title: "Checking",
+        text: "This amount may already be in your shielded balance. To confirm it, choose Check again on the Unfinished transfers card on Home. If it wasn't added yet, Check again adds it.",
+        row: "This amount may already be in your shielded balance. Choose Check again to confirm it. If it wasn't added yet, Check again adds it.",
+      },
       /** `why` is the engine's error code. */
       notApplied: { title: "Locked, not applied", text: "Your Dash is locked but Dash Platform did not add it yet ({why}). Finish it from Unfinished transfers on Home: nothing is lost." },
       send: { title: "Sent", text: "{amount} was sent privately." },
