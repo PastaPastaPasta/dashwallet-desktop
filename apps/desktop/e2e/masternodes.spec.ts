@@ -59,7 +59,7 @@ test("list → pane → rename → copy", async ({ page }) => {
   await expect(page.getByTestId("mn-fact-service")).toHaveText("203.0.113.7:19999");
   await expect(page.getByTestId("mn-vote")).toBeEnabled();
   await page.getByTestId("mn-more").click();
-  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Copy collateral outpoint", "Service update or revoke…"]);
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Copy collateral outpoint", "Release collateral…", "Service update or revoke…"]);
   await page.getByTestId("mn-more-rename").click();
   await page.getByTestId("mn-rename-input").fill("Basement node");
   await page.getByTestId("mn-rename-save").click();

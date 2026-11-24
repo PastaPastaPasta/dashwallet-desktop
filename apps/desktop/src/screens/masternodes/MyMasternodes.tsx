@@ -70,20 +70,43 @@ export function MyMasternodes({
   const [selected, setSelected] = useState<string | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
 
+  const work = ops.data ?? [];
+  // A failed or pending read is not an empty one: saved work stays named until the read answers.
+  const progress = (
+    <>
+      {ops.isError && (
+        <Notice
+          tone="warning"
+          testId="mn-ops-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-ops-retry" onClick={() => void ops.refetch()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.opsFailed}</strong> {mnErrorText(ops.error)}
+        </Notice>
+      )}
+      {ops.isPending ? <LoadingState testId="mn-ops-loading" text={MnText.opsLoading} /> : <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />}
+    </>
+  );
   if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
   if (list.isError)
     return (
-      <Notice
-        tone="warning"
-        testId="mn-list-failed"
-        action={
-          <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
-            {MnText.tryAgain}
-          </DashButton>
-        }
-      >
-        <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
-      </Notice>
+      <>
+        <Notice
+          tone="warning"
+          testId="mn-list-failed"
+          action={
+            <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
+              {MnText.tryAgain}
+            </DashButton>
+          }
+        >
+          <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
+        </Notice>
+        {progress}
+      </>
     );
   const o = list.data;
   const watchNotice = wallet.watchOnly && (
@@ -91,12 +114,11 @@ export function MyMasternodes({
       <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
     </Notice>
   );
-  const work = ops.data ?? [];
-  const progress = <InProgressGroup ops={work} wallet={wallet} network={network} onContinue={onContinue} />;
   if (isEmpty(o) && inProgress(work).length === 0 && conflicted(work).length === 0)
     return (
       <>
         {watchNotice}
+        {!ops.isSuccess && progress}
         <section className="mg-empty card-l1" data-testid="mn-empty">
           <h2>{MnText.emptyTitle}</h2>
           <p>{MnText.emptyText}</p>

@@ -466,7 +466,12 @@ const opsFor = (m: MasternodesWorld, walletId: string) => (walletId === FIXTURE_
 
 /** The state read now: a prepared row whose fee inputs went reads `inputs_spent`. */
 const readState = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation["state"] => (m.spendInputs && o.state.kind === "needs_signature" ? { kind: "inputs_spent" } : o.state);
-const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => ({ ...copy(o), state: readState(m, o) });
+/** As the engine reads a row: the sign request only while it still needs a signature. */
+const readOp = (m: MasternodesWorld, o: ProTxOperation): ProTxOperation => {
+  const c = copy(o);
+  const state = readState(m, o);
+  return { ...c, state, signRequest: state.kind === "needs_signature" ? c.signRequest : null };
+};
 
 /** wallet → id → not found, as the engine reads an operation. */
 function opOf(world: World, walletId: string, id: string): ProTxOperation {
@@ -1196,7 +1201,7 @@ function ops(m: MasternodesWorld) {
   const dissolve = (n: number, debit: number) => ({ kind: "dissolve" as const, proTxHash: h("5d"), debit, terms: scenarioTerms(n, { collateral: null, collateralOutpoint: null, collateralAddress: null }) });
   m.operations = [
     scenarioOp(OP_NEEDS_SIGNATURE, 1, { kind: "needs_signature" }, { terms: external(1), signRequest: signRequest(1) }),
-    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: signRequest(2) }),
+    scenarioOp(OP_INPUTS_SPENT, 2, { kind: "inputs_spent" }, { terms: external(2), signRequest: null }),
     scenarioOp(OP_SIGNED, 3, { kind: "signed" }),
     scenarioOp(OP_NOT_SENT, 4, { kind: "not_sent" }, { lastError: "send.no_peers" }),
     scenarioOp(OP_SENT, 5, { kind: "sent" }),

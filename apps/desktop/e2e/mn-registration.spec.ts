@@ -4,6 +4,7 @@ import {
   DUP_SERVICE,
   EXTERNAL_ADDRESS,
   EXTERNAL_OUTPOINT,
+  EXTERNAL_SIGNATURE,
   HOME,
   keyInfo,
   OP_CONFIRMED,
@@ -460,6 +461,147 @@ test("a saved registration offers Continue, and Prove can submit; Discard still 
   await page.getByTestId("mn-op-discard-confirm").click();
   await expect(page.getByTestId("mn-group-in-progress")).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+const revokes = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+/** Grants issued and neither redeemed nor revoked: a refusal must leave none. */
+const liveGrants = (page: Page) => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).map((g) => g.grant.id));
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a saved registration whose fee coins were spent offers a new message from Prove, then submits (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared-spent", theme);
+    await expect(page.getByTestId(`mn-op-status-${OP_PREPARED}`)).toHaveText("The coins for the fee were spent");
+    await page.getByTestId(`mn-op-refresh-${OP_PREPARED}`).click();
+    await expect(step(page, "prove")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-prove-spent-${theme}.png`) });
+    // The engine sends no sign request for a spent row: Prove offers the new message, not an empty step.
+    await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+    await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+    await expect(page.getByTestId("reg-submit")).toBeDisabled();
+    await page.getByTestId("reg-new-message").click();
+    await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+    await expect(page.getByTestId("reg-inputs-spent")).toHaveCount(0);
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
+    await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
+    await page.getByTestId("reg-passphrase").fill("demo");
+    await page.getByTestId("reg-submit").click();
+    await expect(page.getByTestId("reg-done-body")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: Prove names the fee and what leaves this wallet (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme);
+    await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+    await expect(step(page, "prove")).toBeVisible();
+    await page.waitForTimeout(300);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-prove-${theme}.png`) });
+    await expect(page.getByTestId("reg-prove-fee")).toContainText("0.00000453");
+    await expect(page.getByTestId("reg-prove-debit")).toContainText("0.00000453");
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: External Review asks no passphrase, since Continue signs nothing (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg", theme);
+    await setUp(page);
+    await next(page);
+    await page.getByTestId("reg-collateral-external").click();
+    await page.getByTestId("reg-external-outpoint").fill(EXTERNAL_OUTPOINT);
+    await page.getByTestId("reg-external-address").fill(EXTERNAL_ADDRESS);
+    await next(page);
+    await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+    await page.getByTestId("reg-service").fill(SERVICE);
+    await next(page);
+    await toReview(page);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`reg-external-review-${theme}.png`) });
+    await expect(page.getByTestId("reg-passphrase")).toHaveCount(0);
+    await expect(page.getByTestId("reg-continue")).toBeEnabled();
+    await page.getByTestId("reg-continue").click();
+    await expect(step(page, "prove")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+test("a mistyped signature is refused before any signing, and its grant is revoked (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(step(page, "prove")).toBeVisible();
+  const before = await revokes(page);
+  await page.getByTestId("reg-signature").fill(`H${"B".repeat(86)}=`);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-submit").click();
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  // The refused submit's grant is gone: none is left to redeem.
+  expect(await liveGrants(page)).toEqual([]);
+  await expect(step(page, "prove")).toBeVisible();
+  await expect(page.getByTestId("reg-done-body")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of ["light", "dark"] as const)
+  test(`${theme}: a failed In progress read says so instead of reading as nothing in progress (issue 460)`, async ({ page }, info) => {
+    const errors = await open(page, "reg-prepared", theme);
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.fail("mn_operations", "rpc"));
+    await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "mn_operations").length)).toBeGreaterThan(1);
+    await page.waitForTimeout(500);
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`mn-ops-failed-${theme}.png`) });
+    await expect(page.getByTestId("mn-ops-failed")).toBeVisible();
+    // What the last read found stays shown beside the failure.
+    await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+    await page.evaluate(() => window.__dwFixture!.fail("mn_operations", null));
+    await page.getByTestId("mn-ops-retry").click();
+    await expect(page.getByTestId("mn-ops-failed")).toHaveCount(0);
+    expect(errors.filter((e) => !e.includes("mn_operations"))).toEqual([]);
+  });
+
+test("fee coins spent while Prove is open: the refusal hides the old message and offers a new one (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await page.getByTestId(`mn-op-continue-${OP_PREPARED}`).click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  await page.evaluate(() => {
+    window.__dwFixture!.world.masternodes.spendInputs = true;
+  });
+  const before = await revokes(page);
+  await page.getByTestId("reg-signature").fill(EXTERNAL_SIGNATURE);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-submit").click();
+  await expect(page.getByTestId("reg-inputs-spent")).toBeVisible();
+  await expect(page.getByTestId("reg-sign-request")).toHaveCount(0);
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
+  await page.getByTestId("reg-new-message").click();
+  await expect(page.getByTestId("reg-sign-request")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a refused Send again from In progress revokes its grant (issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-ops");
+  await page.getByTestId(`mn-op-resend-${OP_SIGNED}`).click();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_resend_operation", "rpc"));
+  const before = await revokes(page);
+  await page.getByTestId("mn-op-resend-passphrase").fill("demo");
+  await page.getByTestId("mn-op-resend-confirm").click();
+  await expect.poll(() => revokes(page)).toBe(before + 1);
+  expect(await liveGrants(page)).toEqual([]);
+  await expect(page.getByTestId("mn-op-resend-sheet")).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
+test("a failed masternode list read still shows the work in progress (issue 460)", async ({ page }) => {
+  const errors = await open(page, "reg-prepared");
+  await expect(page.getByTestId(`mn-op-${OP_PREPARED}`)).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_list", "rpc"));
+  await page.evaluate(() => window.__dwFixture!.emit({ kind: "masternodes", network: window.__dwFixture!.world.launch.network.dirName }));
+  await expect(page.getByTestId("mn-list-failed")).toBeVisible();
+  await expect(page.getByTestId(`mn-op-continue-${OP_PREPARED}`)).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
 });
 
 test("a released collateral offers Lock it again on testnet", async ({ page }) => {
