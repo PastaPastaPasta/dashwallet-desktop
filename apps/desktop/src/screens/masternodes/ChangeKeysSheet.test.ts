@@ -10,7 +10,7 @@ import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { BackendContext } from "../../api/queries";
 import { t } from "../../i18n";
-import { REGISTRAR_UPDATE_SENDS } from "../../masternodes/changeKeys";
+import { registrarUpdateSends } from "../../masternodes/changeKeys";
 import { ChangeKeysSheet } from "./ChangeKeysSheet";
 
 const HASH = "4e".repeat(32);
@@ -32,11 +32,11 @@ vi.mock("../../components/sheet", () => ({
 
 const unsent = { id: "op1", kind: "update_registrar", proTxHash: HASH, state: { kind: "not_sent" }, lastError: null, debit: 1000 } as unknown as ProTxOperation;
 
-const render = (operations: ProTxOperation[]) => {
+const render = (operations: ProTxOperation[], kind: NetworkInfo["kind"] = "mainnet") => {
   ops.current = operations;
   const sheet = createElement(ChangeKeysSheet, {
     wallet: { walletId: "w" } as WalletSummary,
-    network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" } as NetworkInfo,
+    network: { kind, dirName: kind, unitName: kind === "mainnet" ? "DASH" : "tDASH" } as NetworkInfo,
     row: { proTxHash: HASH, kind: "regular" } as unknown as MasternodeRow,
     detail: { registration: { payoutAddress: "yRecordedPayoutAddressMn7qR2vWx9Kf" }, list: null } as unknown as MasternodeDetail,
     onClose: () => undefined,
@@ -47,12 +47,17 @@ const render = (operations: ProTxOperation[]) => {
   );
 };
 
-describe("Change keys or payout while registrar updates can't be sent", () => {
-  it("is off in this version", () => {
-    expect(REGISTRAR_UPDATE_SENDS).toBe(false);
+describe("Change keys or payout follows the network", () => {
+  it("is off on mainnet and while the network is still loading, and on for testnet, regtest and devnet", () => {
+    expect(registrarUpdateSends(null)).toBe(false);
+    expect(registrarUpdateSends(undefined)).toBe(false);
+    expect(registrarUpdateSends({ kind: "mainnet" })).toBe(false);
+    expect(registrarUpdateSends({ kind: "testnet" })).toBe(true);
+    expect(registrarUpdateSends({ kind: "regtest" })).toBe(true);
+    expect(registrarUpdateSends({ kind: "devnet" })).toBe(true);
   });
 
-  it("offers no Send or passphrase, and says nothing has been sent", () => {
+  it("offers no Send or passphrase on mainnet, and says nothing has been sent", () => {
     const html = render([]);
     expect(html).toContain('data-testid="mn-change-operator"');
     expect(html).not.toContain("mn-change-send");
@@ -61,12 +66,27 @@ describe("Change keys or payout while registrar updates can't be sent", () => {
     expect(html).toContain(t("masternodes.myMasternodes.changeKeys.held").replaceAll("'", "&#x27;"));
   });
 
-  it("offers Discard but no Send again for an update that didn't go out", () => {
+  it("offers Send and a passphrase on testnet", () => {
+    const html = render([], "testnet");
+    expect(html).toContain('data-testid="mn-change-send"');
+    expect(html).toContain('data-testid="credential"');
+    expect(html).not.toContain("mn-change-held");
+  });
+
+  it("offers Discard but no Send again for an update that didn't go out, on mainnet", () => {
     const html = render([unsent]);
     expect(html).toContain('data-testid="mn-change-unsent-discard"');
     expect(html).not.toContain("mn-change-unsent-resend");
     expect(html).not.toContain('data-testid="credential"');
     expect(html).toContain('data-testid="mn-change-held"');
+  });
+
+  it("offers Send again on testnet for an update that didn't go out", () => {
+    const html = render([unsent], "testnet");
+    expect(html).toContain('data-testid="mn-change-unsent-discard"');
+    expect(html).toContain('data-testid="mn-change-unsent-resend"');
+    expect(html).toContain('data-testid="credential"');
+    expect(html).not.toContain("mn-change-held");
   });
 
   it("names a failed Discard where the passphrase field's error used to show", () => {

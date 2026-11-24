@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import type { MasternodeRow } from "../../api/generated/MasternodeRow";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { isAppError } from "../../api/backend";
 import { useBackend } from "../../api/queries";
@@ -10,7 +11,7 @@ import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useT, type Translate } from "../../i18n";
 import { mnErrorText, rowName } from "../../masternodes/model";
-import { collateralDash, registrationCalls } from "../../masternodes/registration";
+import { collateralDash, registrationCalls, registrationSends } from "../../masternodes/registration";
 import { useMasternodesRefresh } from "../../masternodes/queries";
 
 const L = "masternodes.release";
@@ -19,9 +20,9 @@ const L = "masternodes.release";
 export const collateralErrorText = (e: unknown, t: Translate) =>
   isAppError(e) && e.code === "masternodes.collateral_unavailable" ? t(`${L}.unavailable`) : mnErrorText(e);
 
-export function ReleaseSheet({ row, wallet, onClose }: { row: MasternodeRow; wallet: WalletSummary; onClose: () => void }) {
+export function ReleaseSheet({ row, wallet, network, onClose }: { row: MasternodeRow; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
   const t = useT();
-  const b = registrationCalls(useBackend());
+  const b = registrationCalls(useBackend(), registrationSends(network));
   const refresh = useMasternodesRefresh();
   const [understood, setUnderstood] = useState(false);
   const [busy, setBusy] = useState(false);
