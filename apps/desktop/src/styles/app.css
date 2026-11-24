@@ -4813,6 +4813,11 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.export-staging-path {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* ------------------------------------------------------------------ Prices (MP-01) */
 
 .rates-consent-card {

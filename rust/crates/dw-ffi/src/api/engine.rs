@@ -84,7 +84,9 @@ impl NoticeCode {
             | C::DispatchRecordMissing
             | C::UnscopedDispatch
             | C::DispatchJournalUnavailable
-            | C::PlatformTrustMismatch => return None,
+            | C::PlatformTrustMismatch
+            | C::ExportStagingDeleted
+            | C::ExportStagingNotDeleted => return None,
         })
     }
 }
