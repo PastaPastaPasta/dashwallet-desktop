@@ -4752,6 +4752,11 @@ button.bell-row-open:focus-visible {
   margin: var(--dw-space-m) 0 0;
 }
 
+.pay-shielded-route {
+  display: flex;
+  margin-top: calc(-1 * var(--dw-space-s));
+}
+
 /* ------------------------------------------------------------------ Protocol advisory */
 
 .protocol-advisory-banner {
@@ -6072,6 +6077,20 @@ button.bell-row-open:focus-visible {
 
 .mg-sheet-footer .mg-actions {
   flex-wrap: nowrap;
+}
+
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--dw-role-card);
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .sheet .mg-sheet-body {

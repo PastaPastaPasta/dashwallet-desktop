@@ -119,6 +119,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -859,6 +863,12 @@ const SCENARIOS = {
     const w = base(t);
     const s = w.sync;
     w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
+    return w;
+  },
+  /** Shielded ready and funded while the wallet's Core sync still runs: a shield's funding waits. */
+  "shielded-core-syncing": (t) => {
+    const w = base(t);
+    w.sync = syncing();
     return w;
   },
   /** Shielded is on and its account is not established yet: its actions wait and say why. */

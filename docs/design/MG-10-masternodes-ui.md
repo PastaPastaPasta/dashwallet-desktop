@@ -491,6 +491,7 @@ Closing after step 1 asks "Discard this registration?" (nothing was sent). A pre
 | `checking{spv_unsynced}` | "Waiting for the wallet to finish syncing…" |
 | `checking{unverified}` | "Waiting for an answer from Platform the wallet can verify…" |
 | `checking{payout_change_pending}` | "A payout change you sent hasn't reached Platform yet. Withdrawing waits for it." |
+| `checking{owner_payout_p2sh}` (owner key only) | "Owner-key withdrawals don't work with this evonode's payout address, because it's a P2SH address: Platform would send the credits to an address nobody can spend. To withdraw with the owner key, change the payout to a regular address first. You can withdraw once that change confirms." |
 | `checking{payout_change_unconfirmed}` | "A payout change for this evonode hasn't confirmed yet. You can withdraw once it confirms, so the credits go to the new payout address." Refused on Withdraw: "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address." and "If the change will never confirm, because it was replaced or dropped from the network, you can abandon it in History and withdraw then. Don't abandon a change that may still be on the network: if it confirms after you withdraw, the credits can go to the old payout address." |
 | `checking{platform_behind{lag}}` | "Waiting for Platform to catch up with Core ({lag} blocks)…"; with no lag: "Waiting for Platform to catch up with Core…" (MG-13 D14) |
 | locked, custody unknown | "Unlock to check added withdrawal keys" [Unlock] |
@@ -2303,7 +2304,9 @@ Every merge gate is COMMON's gate, plus the rows below.
   - **the `masternodeWithdraw` host grant**: `GrantPurposeSpec::MasternodeWithdraw`, its mapping, the generated TS,
     and the E0-13 text (Opus M1);
   - the withdraw sheet and the pane's Platform block with every state, the `mnPlatform` keys, D11, and the unlock
-    path.
+    path;
+  - the owner-key note for a masternode with no registration in history (#379): the copy goes to MG when the sheet is
+    built.
 - **Hidden:** shared.
 - **Needs:** S1 + MG-13 on main.
 - **Merge gate:**
