@@ -192,12 +192,15 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
   // A page that never loaded drops its error while it is read again, and an offline read is paused
   // rather than fetching: the retried error and an inert Try again stay until this role's read
   // settles, and are forgotten once it does or the role changes.
-  const [retried, setRetried] = useState<{ role: MasternodeKeyRoleName; error: string } | null>(null);
+  const [retried, setRetried] = useState<{ role: MasternodeKeyRoleName; error: string; seen: boolean } | null>(null);
   const reading = results.some((r) => r.isFetching || r.isPaused);
-  const retrying = retried !== null && retried.role === role && reading;
+  // Until its read is seen in flight, a retry counts as running: the refetch reports a render later.
+  const retrying = retried !== null && retried.role === role && (reading || !retried.seen);
   useEffect(() => {
-    if (retried !== null && !retrying) setRetried(null);
-  }, [retried, retrying]);
+    if (retried === null) return;
+    if (retried.role !== role || (retried.seen && !reading)) setRetried(null);
+    else if (reading && !retried.seen) setRetried({ ...retried, seen: true });
+  }, [retried, role, reading]);
   return {
     keys,
     watchOnly,
@@ -207,7 +210,7 @@ function useKeyPages(walletId: string, role: MasternodeKeyRoleName, pages: numbe
     /** Reads the failed pages again; the pages already in stay on screen. */
     retry: () => {
       if (retrying || error === null) return;
-      setRetried({ role, error });
+      setRetried({ role, error, seen: false });
       for (const r of results) if (r.isError) void r.refetch();
     },
     retrying,
