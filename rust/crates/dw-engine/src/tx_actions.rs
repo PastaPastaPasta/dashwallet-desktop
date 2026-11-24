@@ -130,7 +130,38 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// an open that finishes its sweep keeps them all stored spent. The value
 /// lists the coins it spent that the drop holds for good (`txid:vout`,
 /// comma-separated), restored as claims at each load ([`dropped_holds`]).
-const DROPPED_PREFIX: &str = "dropped:";
+/// Not `dropped:`, which marks a transaction the claim rule dropped (#739)
+/// and holds nothing: neither reads the other's keys.
+const DROPPED_PREFIX: &str = "drop_holds:";
+
+/// Settings key prefix (wallet scope) of a transaction key-wallet swept
+/// for a winner that funds it: a claim, whose descendants the claim rule
+/// judges (#739). A load does not take them as orphaned.
+const CLAIM_SWEPT_PREFIX: &str = "claim_swept:";
+
+/// Notes `txids`, swept as claims, for wallet `wallet`.
+pub(crate) fn note_claims_swept(
+    appdb: &AppDb,
+    wallet: WalletId,
+    txids: &[Txid],
+) -> Result<(), dw_appdb::AppDbError> {
+    let keys: Vec<String> = (txids.iter())
+        .map(|t| format!("{CLAIM_SWEPT_PREFIX}{t}"))
+        .collect();
+    let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), Some(""))).collect();
+    appdb.set_settings_durable(&wallet.to_string(), &writes)
+}
+
+/// The transactions of `wallet` swept as claims ([`note_claims_swept`]).
+pub(crate) fn claims_swept(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), CLAIM_SWEPT_PREFIX)?;
+    Ok((rows.into_iter())
+        .filter_map(|(key, _)| Txid::from_str(&key[CLAIM_SWEPT_PREFIX.len()..]).ok())
+        .collect())
+}
 
 /// The coins each wallet's drops hold for good, as its open read them.
 pub(crate) type DroppedHolds = HashMap<WalletId, BTreeSet<OutPoint>>;
@@ -1603,14 +1634,15 @@ impl NetworkSession {
     /// left (#170 cases 3 and 4), one drop at a time: the children of the
     /// payments a sweep took, which its event queued with its winner; the
     /// payments [`beaten_unrecorded`] finds; and, at a load that read every
-    /// stored transaction (`stored`), the [`orphaned_unmined`] ones, whose
-    /// winner is unknown. Reads under the manager's read lock, and takes
+    /// stored transaction (`stored`, with those the store dropped as
+    /// unsigned claims), the [`orphaned_unmined`] ones, whose winner is
+    /// unknown. Reads under the manager's read lock, and takes
     /// the write lock only to drop something.
     pub(crate) async fn drop_dead(
         &self,
         manager: &Manager,
         wallet: WalletId,
-        stored: Option<&HashSet<Txid>>,
+        stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
     ) {
         let _gate = self.hub.drop_gate.lock().await;
         let mut work: Vec<_> = (self.hub.take_dead_children(wallet).into_iter())
@@ -1643,7 +1675,7 @@ impl NetworkSession {
                         beaten.entry(w).or_default().push(t);
                     }
                     work.extend((beaten.into_iter()).map(|(w, ts)| (ts, w, BTreeSet::new(), true)));
-                    let orphans = stored.map(|s| orphaned_unmined(&h.txs, s));
+                    let orphans = stored.map(|(s, dropped)| orphaned_unmined(&h.txs, s, dropped));
                     if let Some(orphans) = orphans.filter(|o| !o.is_empty()) {
                         work.push((orphans, Winner::default(), BTreeSet::new(), false));
                     }

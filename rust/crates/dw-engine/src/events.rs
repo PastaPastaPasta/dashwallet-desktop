@@ -1620,15 +1620,34 @@ impl SessionHub {
                 // the history drops them too, and their sent marks go. Their
                 // children it holds no record of can never confirm either:
                 // the next reconcile drops them, with this winner.
-                let children = self.history.with_wallet(id, |h| {
-                    let children = crate::history::unmined_children(&h.txs, txids);
+                let (children, claim) = self.history.with_wallet(id, |h| {
+                    // A sweep whose winner funds a swept transaction is the
+                    // claim rule's (#739): what is built on the claim is
+                    // its to judge. So is one whose swept transaction the
+                    // history does not hold.
+                    let claim = (txids.iter()).any(|t| {
+                        h.txs.get(t).is_none_or(|e| {
+                            (e.tx.input.iter()).any(|i| i.previous_output.txid == *superseded_by)
+                        })
+                    });
+                    let children = match claim {
+                        true => BTreeSet::new(),
+                        false => crate::history::unmined_children(&h.txs, txids),
+                    };
                     for t in txids {
                         h.forget(t);
                         h.swept.insert(*t);
                     }
-                    children
+                    (children, claim)
                 });
                 let queued = !children.is_empty();
+                if claim {
+                    if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                        if let Err(e) = crate::tx_actions::note_claims_swept(&appdb, id, txids) {
+                            tracing::warn!(wallet = %id, error = %e, "could not note the claims swept")
+                        }
+                    }
+                }
                 if queued {
                     let winner = crate::history::Winner {
                         txid: Some(*superseded_by),

@@ -613,15 +613,23 @@ pub(crate) fn unmined_children(txs: &HashMap<Txid, TxEntry>, parents: &[Txid]) -
 /// the store holds no row of and the history no live entry of (#170 case
 /// 4): its parent was swept or dropped, so they can never confirm. The
 /// store keeps every row once final, so a missing one is not a pruned
-/// funding.
-pub(crate) fn orphaned_unmined(txs: &HashMap<Txid, TxEntry>, stored: &HashSet<Txid>) -> Vec<Txid> {
+/// funding. One that spends a transaction the store dropped as an unsigned
+/// claim (`dropped`) is the claim rule's to judge (#739), and is left.
+pub(crate) fn orphaned_unmined(
+    txs: &HashMap<Txid, TxEntry>,
+    stored: &HashSet<Txid>,
+    dropped: &HashSet<Txid>,
+) -> Vec<Txid> {
     let gone = |p: &Txid| !stored.contains(p) && !txs.get(p).is_some_and(|e| !e.is_abandoned());
+    let claim_dropped =
+        |e: &TxEntry| (e.tx.input.iter()).any(|i| dropped.contains(&i.previous_output.txid));
     (txs.iter())
         .filter(|(t, e)| {
             stored.contains(*t)
                 && e.context.block_info().is_none()
                 && !e.is_abandoned()
                 && !instant_locked(e)
+                && !claim_dropped(e)
                 && (e.own_inputs.keys())
                     .filter_map(|i| e.tx.input.get(*i as usize))
                     .any(|i| gone(&i.previous_output.txid))
@@ -3231,11 +3239,16 @@ mod tests {
         mined.context = in_block(10, 0);
         add(mined, true);
 
-        let mut found = orphaned_unmined(&txs, &stored);
+        let mut found = orphaned_unmined(&txs, &stored, &HashSet::new());
         found.sort();
         let mut want = vec![orphan, under_dead];
         want.sort();
         assert_eq!(found, want);
+        assert_eq!(
+            orphaned_unmined(&txs, &stored, &HashSet::from([gone])),
+            vec![under_dead],
+            "a claim the store dropped is the claim rule's"
+        );
     }
 
     /// #88: the claims restored at load are the inputs of each payment this
