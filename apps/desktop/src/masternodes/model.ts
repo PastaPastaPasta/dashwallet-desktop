@@ -233,6 +233,13 @@ export function attachedLines(r: MasternodeRow): AttachedKeyLine[] | null {
   }));
 }
 
+/** Tickets for a search whose answers may arrive out of order: only the latest started, not dropped since,
+ * is current, so an answer to an earlier query never shows (or offers Track) under a later one. */
+export function latestRequest() {
+  let n = 0;
+  return { start: () => ++n, isCurrent: (ticket: number) => ticket === n, drop: () => void n++ };
+}
+
 /** A Track refusal as §1.3's sentence; `name` is the already-tracked masternode's. */
 export function trackErrorText(e: unknown, name: string | null): string {
   if (isAppError(e)) {

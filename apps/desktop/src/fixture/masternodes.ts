@@ -263,7 +263,9 @@ type Attached = MasternodesWorld["attached"][string][number];
 /** A key's check as every read makes it again (D24): a voting key against the listed voting key now, so a
  * key the masternode rotated away from no longer matches. */
 function liveCheck(m: MasternodesWorld, hash: string, k: Attached): KeyCheckName {
-  if (k.role !== "voting" || !listedOf(m, hash)) return k.check;
+  if (k.role !== "voting") return k.check;
+  // No list entry now: nothing to check against (tracking.rs `KeyReferences::check`).
+  if (!listedOf(m, hash)) return "unchecked";
   return k.keyId === m.expected[hash]?.voting ? "matched" : "key_mismatch";
 }
 

@@ -313,6 +313,13 @@ describe("fixture masternodes: track and keys", () => {
     expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.voting).toBe(false);
   });
 
+  it("reads an attached voting key as unchecked while the list has no entry for its masternode", async () => {
+    const f = install("mn-track-voting");
+    f.world.masternodes.listed = f.world.masternodes.listed.filter((l) => l.proTxHash !== CLUB);
+    const club = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!;
+    expect(club.roles).toMatchObject({ voting: false, attached: [{ role: "voting", check: "unchecked" }] });
+  });
+
   it("refuses an attach while locked or unlocked for mixing only before checking it, keeping the key attached", async () => {
     const f = install("mn-track-voting-locked");
     await expect(cmd.mnAttachKey(CLUB, "voting", KEY_OTHER)).rejects.toMatchObject({ code: "vault.locked" });

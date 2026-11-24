@@ -411,7 +411,8 @@ export function governanceHandlers({
         const m = voters(world, addedVoters).find((x) => x.proTxHash === proTxHash);
         const refused = (rejected: string): VoteCast => ({ proTxHash, hash: null, peers: 0, rejected });
         // The engine checks an attached key against the listed voting key when it signs (voting.rs `choose_key`).
-        if (staleAddedVoter(world.masternodes, proTxHash)) return refused("no_voting_key");
+        // A keychain voter votes with its keychain key whatever key is attached (`choose_key` tries it first).
+        if (!m && staleAddedVoter(world.masternodes, proTxHash)) return refused("no_voting_key");
         if (!m) return refused("unknown_masternode");
         if (!m.collateralResolved) return refused(COLLATERAL_UNRESOLVED);
         if (g.refuse[proTxHash]) return refused(g.refuse[proTxHash]);

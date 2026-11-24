@@ -130,6 +130,16 @@ describe("fixture governance", () => {
     expect((await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)?.roles).toMatchObject({ voting: false, attached: [{ role: "voting", check: "key_mismatch" }] });
   });
 
+  it("lets a keychain voter vote whatever stale key is attached to it, as choose_key tries the keychain first", async () => {
+    const f = install("governance");
+    const club = f.world.masternodes.rows.find((r) => r.proTxHash === CLUB)!;
+    f.world.masternodes.rows.push({ ...structuredClone(club), proTxHash: MN_B, tracked: true });
+    f.world.masternodes.attached[MN_B] = [{ role: "voting", keyId: "stale", check: "matched" }];
+    const hash = await hashOf("dashcon-2027-venue");
+    const grant = await cmd.authorize({ kind: "governance" }, W, PASS);
+    expect((await cmd.governanceVote(W, hash, "yes", [MN_B], grant.id))[0].rejected).toBeNull();
+  });
+
   it("refuses a vote whose voting key changed (governance-vote-refused)", async () => {
     install("governance-vote-refused");
     const hash = await hashOf("dashcon-2027-venue");

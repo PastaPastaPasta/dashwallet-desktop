@@ -23,6 +23,7 @@ import {
   keyErrorText,
   keyResultText,
   keyRoles,
+  latestRequest,
   lastPayoutTitle,
   MnText,
   mnErrorText,
@@ -219,6 +220,17 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
     // A tracked masternode's name is the tracked registry's (tracking.rs `set_label`), which every wallet on
     // this network reads, not this wallet's alone.
     expect(t("masternodes.myMasternodes.track.labelHelp")).toBe("Only Dash Wallet on this computer sees it.");
+  });
+
+  it("keeps only the latest search current, so an earlier query's answer never shows under a later one", () => {
+    const searches = latestRequest();
+    const a = searches.start();
+    const b = searches.start();
+    expect([searches.isCurrent(a), searches.isCurrent(b)]).toEqual([false, true]);
+    // The field changed after B was sent: B's answer is stale too.
+    searches.drop();
+    expect(searches.isCurrent(b)).toBe(false);
+    expect(searches.isCurrent(searches.start())).toBe(true);
   });
 
   it("says what each attach answered", () => {

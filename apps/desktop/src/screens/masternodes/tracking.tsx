@@ -23,6 +23,7 @@ import {
   keyRoles,
   kindText,
   type KeyRoleView,
+  latestRequest,
   MnText,
   mnErrorText,
   rowName,
@@ -63,15 +64,19 @@ export function TrackSheet({ rows, onClose, onTracked }: { rows: MasternodeRow[]
     const r = rows.find((x) => x.proTxHash === hash);
     return r ? rowName(r) : null;
   };
+  const [searches] = useState(latestRequest);
   const find = async () => {
+    const ticket = searches.start();
     setBusy(true);
     setError(null);
     try {
       const hits = await backend.mnFind(query.trim());
+      if (!searches.isCurrent(ticket)) return;
       setFound(hits);
       setPicked(hits.find((h) => !h.tracked)?.proTxHash ?? null);
       if (hits.length === 0) setError(t("masternodes.myMasternodes.track.none"));
     } catch (e) {
+      if (!searches.isCurrent(ticket)) return;
       setFound(null);
       setError(trackErrorText(e, null));
     } finally {
@@ -112,6 +117,7 @@ export function TrackSheet({ rows, onClose, onTracked }: { rows: MasternodeRow[]
               data-autofocus
               aria-describedby={`${id}-help`}
               onChange={(e) => {
+                searches.drop();
                 setQuery(e.target.value);
                 setFound(null);
                 setPicked(null);
