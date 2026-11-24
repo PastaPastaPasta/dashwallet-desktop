@@ -27,6 +27,11 @@ impl Fx {
     /// The wallet records `tx` in the mempool, as dash-spv records a local
     /// broadcast: key-wallet's record, then the history's entry.
     fn seen_in_mempool(&self, tx: &Transaction) {
+        self.seen_with(tx, TransactionContext::Mempool);
+    }
+
+    /// [`Self::seen_in_mempool`] in `context`.
+    fn seen_with(&self, tx: &Transaction, context: TransactionContext) {
         let (manager, id, t) = (
             Arc::clone(&self.session.live().unwrap().manager),
             self.wallet,
@@ -38,7 +43,7 @@ impl Fx {
             let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
             let mut wallet = wallet.clone();
             info.core_wallet
-                .check_core_transaction(&t, TransactionContext::Mempool, &mut wallet, true, true)
+                .check_core_transaction(&t, context, &mut wallet, true, true)
                 .await;
             (info.core_wallet.transaction_history().into_iter())
                 .find(|r| r.txid == t.txid())
@@ -626,6 +631,28 @@ fn mg10_remove_unconfirmed_frees_a_sent_registrations_coins() {
     f.assert_released_by_the_abandon(&op, funding);
     assert_eq!(kind(f.state(&op)), "abandoned");
     f.assert_resend_refused(&op);
+}
+
+/// Remove unconfirmed keeps what is InstantSend-locked, as its confirmation
+/// says (`abandon_refusal`): a locked registration is not abandoned, reads
+/// `sent` and keeps its coins.
+#[test]
+fn mg10_remove_unconfirmed_keeps_an_instantsend_locked_registration() {
+    let f = fx(Library::Accept);
+    let (op, tx, funding) = f.sent_registration();
+    f.seen_with(&tx, TransactionContext::InstantSend(Default::default()));
+    f.run_spv();
+    (f.engine)
+        .block_on(f.session.drop_unconfirmed(Some(f.wallet)))
+        .unwrap();
+    let marks = f
+        .engine
+        .block_on(f.session.abandoned_txids(f.wallet))
+        .unwrap();
+    assert!(!marks.contains(&tx.txid()), "abandoned");
+    assert_eq!(f.state(&op), ProTxOperationState::Sent);
+    f.assert_unlock_refused(funding);
+    assert!(!f.selectable(funding), "{:?}", f.held());
 }
 
 /// An abandon that lands while a resend waits for the coin fence, past its
