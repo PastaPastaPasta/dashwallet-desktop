@@ -19,7 +19,7 @@ export const activity = {
   /** The details of a Shielded or Platform-address row, from its own activity record. */
   sourceDetail: {
     title: "Transaction details",
-    loading: "Loading details",
+    loading: "Loading details…",
     /** The record left the list while its details were open. */
     gone: "This activity is no longer listed.",
     status: {

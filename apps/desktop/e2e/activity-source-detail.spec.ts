@@ -76,6 +76,21 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-amount")).toHaveCount(0);
   });
 
+  test("a failed Shielded payment reads the same word in its details as on its row", async ({ page }) => {
+    await activity(page);
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const s = f.world.pending.shielded!;
+      s.activity = s.activity.map((a) => (a.id === "sh-2" ? { ...a, status: "failed" as const } : a));
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } } as never);
+    });
+    const row = page.locator('button[data-txid="shielded:sent:sh-2"]');
+    await expect(row).toContainText("Not accepted");
+    await row.click();
+    await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
+    await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
+  });
+
   test("says so when the record leaves the list while its details are open", async ({ page }) => {
     await activity(page);
     await page.locator('button[data-txid="shielded:received:sh-3"]').click();
