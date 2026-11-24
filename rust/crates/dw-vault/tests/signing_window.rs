@@ -280,15 +280,22 @@ fn a_damaged_spend_limit_can_be_set_again() {
     drop(v);
     let mut json = fx.read_json();
     let ct = json["manifest"]["ct"].as_str().unwrap().to_owned();
-    let flipped = format!("{}{}", if ct.starts_with('0') { '1' } else { '0' }, &ct[1..]);
+    let flipped = format!(
+        "{}{}",
+        if ct.starts_with('0') { '1' } else { '0' },
+        &ct[1..]
+    );
     json["manifest"]["ct"] = serde_json::json!(flipped);
     fx.write_json(&json);
     let v = fx.open();
     let refused = v.unlock(PASS, UnlockScope::Full).is_err()
-        || v
-            .authorize(GrantPurpose::ChangeCredential, None, Credential::Passphrase(PASS))
-            .and_then(|g| v.set_quick_unlock_spend_limit(&g.id, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT))
-            .is_err();
+        || v.authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .and_then(|g| v.set_quick_unlock_spend_limit(&g.id, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT))
+        .is_err();
     assert!(refused);
 }
 
