@@ -21,6 +21,8 @@
     "allow-dashpay-verify-scanned",
     "allow-contact-payment-lock",
     "allow-resolve-contact-payment-lock",
+    "allow-contact-pay-quote",
+    "allow-contact-pay",
     "allow-contact-activity",
     "allow-frequent-contacts",
     "allow-dashpay-events",

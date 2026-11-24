@@ -423,6 +423,7 @@ impl From<ContactError> for AppError {
                 ContactCode::DetailsTooLong,
                 Some(ErrorData::Size { bytes, max }),
             ),
+            C::Credits(e) => return (*e).into(),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -649,6 +650,7 @@ mod tests {
                 bytes: 2032,
                 max: 2031,
             },
+            ContactError::Credits(Box::new(CreditsError::MovePending { id: s() })),
             ContactError::Platform(PlatformError::Unavailable),
         ];
         for e in contacts {
