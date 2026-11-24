@@ -1045,6 +1045,9 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * refused (`settledDescendant`) when a later transaction spending from
  * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
  * spend of one of its inputs beat it and those are only locked (#446).
+ * One not under the ChainLock exception is refused (`recordUnreadable`)
+ * while a saved transaction of any loaded wallet didn't read at its
+ * load (#611).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1066,7 +1069,8 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
  * rescans once, from the lowest funding height of them all. One the
  * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
  * or that a settled later transaction holds (`settledDescendant`), is
- * skipped.
+ * skipped. One refused as `recordUnreadable` is kept too, and the call
+ * then fails with that refusal.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -2246,6 +2250,22 @@ export function unshieldQuote(walletId: string, credits: string, to: string | nu
  */
 export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
   return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
+ * What moving `credits` from Shielded to the wallet's own Platform
+ * address `to` costs (`null` for its receive address).
+ */
+export function unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_to_platform_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Platform: unshields `credits` to the wallet's own Platform
+ * address `to` under `grant`.
+ */
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
 }
 
 /**
@@ -3581,6 +3601,8 @@ export type CommandArgs = {
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
@@ -3956,6 +3978,8 @@ export type CommandResults = {
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
+  unshield_to_platform_quote: ShieldedSpendQuote;
+  unshield_to_platform: ShieldedSpendOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
@@ -4333,6 +4357,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_send: "identity",
   unshield_quote: "identity",
   unshield_to_core: "identity",
+  unshield_to_platform_quote: "identity",
+  unshield_to_platform: "identity",
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",

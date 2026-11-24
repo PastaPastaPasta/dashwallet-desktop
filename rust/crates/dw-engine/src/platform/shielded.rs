@@ -596,6 +596,42 @@ impl DashPay {
         .await
     }
 
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (its receive address when `None`), with the
+    /// refusals of [`Self::unshield_to_platform`].
+    pub async fn unshield_to_platform_quote(
+        &self,
+        credits: u64,
+        to: Option<String>,
+    ) -> Result<ShieldedSpendQuote, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+            pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
+        })
+        .await
+    }
+
+    /// Shielded → Platform: unshields `credits` from the wallet's notes to
+    /// `to`, one of the wallet's own Platform addresses (its receive address
+    /// when `None`; any other is `shielded.invalid_address` before the grant
+    /// is redeemed), under a `ShieldedSpend` lease begun from `grant`;
+    /// `confirm_unrecorded` as for [`Self::shielded_send`].
+    pub async fn unshield_to_platform(
+        &self,
+        credits: u64,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> Result<ShieldedSpendOutcome, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
+        let wallet = self.wallet_id;
+        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+            let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
+            pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
+        })
+        .await
+    }
+
     /// The wallet's shielded history for Activity, pending rows first, then
     /// newest first; `limit` at most 500.
     pub async fn shielded_history(
