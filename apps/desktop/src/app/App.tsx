@@ -6,7 +6,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
-import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
@@ -155,6 +155,7 @@ function WalletChrome({
   const detail = useUi((s) => s.detail);
   const lock = useLockStatus();
   const sync = useSyncStatus();
+  useHistoryGapReads(sync.raw?.running === true, (wallets.data ?? []).map((w) => `${w.walletId}:${w.birthHeight}`).join(","));
   const dashpay = useDashPayShell(wallet?.walletId);
   const registration = useStatusRegistration(wallet?.walletId, dashpay.status);
   const open = (row: TxRow) => ui.set({ detail: row.txid });
