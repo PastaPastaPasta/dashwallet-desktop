@@ -19,6 +19,7 @@ import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } fro
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
+import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
@@ -44,6 +45,7 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
+import { sharedHandlers } from "./shared";
 import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -671,6 +673,30 @@ function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
   contactsChanged(ctx, walletId, identity);
 }
 
+/** A payout's payee, as a contact draft checks it, then its source (`core` is a draft's). */
+export function payeeOfPayout(w: World, walletId: string, pair: Pair, credits: string, source: PaymentSourceName): ContactDetailInfo {
+  if (source === "core" || !/^[0-9]+$/.test(credits) || BigInt(credits) === 0n) throw fail("invalid_argument", "not a payment from a balance");
+  checkContact(w, walletId, pair, "prepare");
+  if (source === "shielded") throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  return pairContact(w, walletId, pair);
+}
+
+/** Whether the payout `reference` names was proved sent (its Platform row is done). */
+const payoutSettled = (w: World, reference: string) => w.pending.platform?.activity.some((a) => a.id === reference && a.kind === "contactPayment" && a.state === "done") ?? false;
+
+/** A payout's outcome on the contact (fixture/pending.ts pays it): unknown locks the pair; sent is
+ * the contact's activity. */
+export function payoutOnContact(ctx: Ctx, walletId: string, pair: Pair, c: ContactDetailInfo, out: { reference: string; state: string }, credits: string) {
+  const now = secs(FIXTURE_NOW);
+  if (out.state === "pending") sendDeps.setPaymentLock(ctx, walletId, pair, { txid: out.reference, since: now, source: "platform", reference: out.reference });
+  if (out.state !== "sent") return;
+  const dp = dashpay(ctx.world, walletId, pair.identity);
+  const amount = Number(BigInt(credits) / CREDITS_PER_DUFF);
+  (dp.activity[pair.contact] ??= []).push({ txid: out.reference, direction: "sent", amount, height: null, timestamp: now, source: "platform", reference: out.reference, coreTxid: null });
+  c.summary = { ...c.summary, lastActivityAt: now };
+  paymentsChanged(ctx, walletId, pair.identity);
+}
+
 const sendDeps: SendDeps = {
   wallet,
   spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
@@ -726,6 +752,8 @@ export const HANDLERS: Handlers = {
   ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesHandlers({ wallet, useGrant }),
+  // Shared masternodes (MG-10b): shared.ts.
+  ...sharedHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
@@ -1276,7 +1304,7 @@ export const HANDLERS: Handlers = {
   resolve_contact_payment_lock: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
     if (!c.paymentLock) throw fail("invalid_argument", "no payment lock for this contact");
-    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] ? "sent" : "unknown");
+    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] || payoutSettled(ctx.world, c.paymentLock.reference) ? "sent" : "unknown");
     if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id }, null);
     return found;
   },
