@@ -817,6 +817,10 @@ fn a_dropped_claim_mined_since_loses_its_record_at_the_next_start() {
             .is_some_and(|e| e.context.block_info().is_some()),
         "the history holds the claim mined"
     );
+    assert!(
+        dropped_records(&session, id).contains(&claim.txid()),
+        "the record stays until the next load"
+    );
     let session = reopen(&engine, session);
     assert!(
         !dropped_records(&session, id).contains(&claim.txid()),
