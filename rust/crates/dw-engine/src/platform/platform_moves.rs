@@ -389,26 +389,11 @@ impl FundRecord {
     /// What it absorbed of its address's rise (as the fund's, while
     /// pending), an `incoming` row again, once.
     fn give_back(&mut self) -> Result<Vec<Write>, PlatformError> {
-        let credits = std::mem::take(&mut self.absorbed);
-        if credits == 0 {
-            return Ok(Vec::new());
-        }
-        let at = unix_now();
-        let row = PlatformActivity {
-            id: format!("released-{at}-{}", self.txid),
-            kind: PlatformActivityKind::Incoming,
-            state: PlatformActivityState::Done,
-            credits,
-            address: Some(self.address.clone()),
-            to: None,
-            expected_duffs: None,
-            fee_credits: None,
-            at,
-            may_land: false,
-            estimated: false,
-        };
-        let key = format!("{ROW_PREFIX}{at:020}/released/{}", self.txid);
-        Ok(vec![(key, Some(json(&row)?))])
+        released(
+            &self.address,
+            std::mem::take(&mut self.absorbed),
+            &self.txid,
+        )
     }
 
     /// After Platform's unproved "already consumed" of its lock, its
@@ -433,6 +418,30 @@ impl FundRecord {
     fn outpoint(&self) -> Option<OutPoint> {
         Some(OutPoint::new(self.txid.parse().ok()?, self.vout))
     }
+}
+
+/// `credits` of `address`'s rise that a record had read as its own, an
+/// `incoming` row again (none for 0), its key unique by `tag`.
+fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, PlatformError> {
+    if credits == 0 {
+        return Ok(Vec::new());
+    }
+    let at = unix_now();
+    let row = PlatformActivity {
+        id: format!("released-{at}-{tag}"),
+        kind: PlatformActivityKind::Incoming,
+        state: PlatformActivityState::Done,
+        credits,
+        address: Some(address.to_owned()),
+        to: None,
+        expected_duffs: None,
+        fee_credits: None,
+        at,
+        may_land: false,
+        estimated: false,
+    };
+    let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
+    Ok(vec![(key, Some(json(&row)?))])
 }
 
 /// What a read knows of the wallet's fund locks
