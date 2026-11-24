@@ -841,9 +841,19 @@ export const masternodes = {
         "Anyone can dissolve the masternode alone at any time and everyone gets their share back. In the early period, whoever leaves alone pays a penalty to the others.",
     },
     inProgress: "Sessions in progress",
+    /** Before Create invitation and before Join, on every network. */
+    reservationNote:
+      "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share. This version can't sign or send the registration yet.",
     /** A session's row: its code, then what it is waiting for. */
     sessionRow: "Session {code}",
     sessionStarted: "started {date}",
+    unreadable: {
+      title: "Session {code} can't be read",
+      discardable: "This wallet can't read this session anymore. Discard it to release the coins it reserved.",
+      mayBeOut:
+        "This wallet can't read this session anymore, and part of it may already be on the network. Its coins stay reserved until that transaction confirms. If another transaction spends one of them first, the others come back about 15 minutes later.",
+      discard: "Discard",
+    },
     role: { coordinator: "you coordinate", participant: "you take part" },
     /** Q9: v24 not yet seen on this network. */
     capabilityUnknown: "This wallet hasn't yet seen evidence that v24 is active on {network}. Shared masternodes become available once it has.",
@@ -909,6 +919,7 @@ export const masternodes = {
     warning: {
       edited_message: "This message was edited after it was copied. Ask for it again before you approve.",
       unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration can't confirm. Discard this session to release your coins.",
+      unvalued_inputs_out: "This wallet can't check the amounts of the coins from {labels}. If one is short, the registration can't confirm. You can abandon the session to release your coins.",
       empty_service: "The coordinator gave no server address: the masternode starts banned until the operator sends a service update.",
       zero_penalty: "With an early period and no penalty, anyone can leave early for just the network fee.",
       skipped_signatures: { one: "{count} signature for {labels} didn't apply to this session and was skipped.", other: "{count} signatures for {labels} didn't apply to this session and were skipped." },
@@ -932,6 +943,8 @@ export const masternodes = {
       copyLocked: "Copy locked terms",
       signText: "Sign your coins into the registration: {debit} leaves this wallet when {coordinator} sends it. After you sign, only Abandon gets them back.",
       signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
+      signedOut:
+        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends one of its coins back to itself, so the registration can't confirm, and the others come back about 15 minutes later.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",

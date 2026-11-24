@@ -360,6 +360,7 @@ export class IpcBackend implements Backend {
   mnDiscardOperation = cmd.mnDiscardOperation;
   mnSharedCapability = cmd.mnSharedCapability;
   mnSharedSessions = cmd.mnSharedSessions;
+  mnSharedUnreadable = cmd.mnSharedUnreadable;
   mnSharedSession = cmd.mnSharedSession;
   mnSharedStart = cmd.mnSharedStart;
   mnSharedSetFee = cmd.mnSharedSetFee;

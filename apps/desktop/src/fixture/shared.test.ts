@@ -57,6 +57,16 @@ describe("fixture shared masternodes", () => {
     expect(await cmd.mnSharedSessions(W)).toEqual([]);
   });
 
+  it("lists unreadable sessions; Discard frees one that may not be out and refuses the other", async () => {
+    installFixture({ scenario: "sh-unreadable" });
+    const [free, out] = await cmd.mnSharedUnreadable(W);
+    expect([free.discardable, out.discardable]).toEqual([true, false]);
+    await expect(cmd.mnSharedDiscard(W, out.id)).rejects.toMatchObject({ code: "masternodes.shared_stage" });
+    await cmd.mnSharedDiscard(W, free.id);
+    expect((await cmd.mnSharedUnreadable(W)).map((s) => s.id)).toEqual([out.id]);
+    expect(await cmd.mnSharedSessions(W)).toHaveLength(1);
+  });
+
   it("refuses Discard once the session may be out", async () => {
     installFixture({ scenario: "sh-close-out" });
     const [s] = await cmd.mnSharedSessions(W);

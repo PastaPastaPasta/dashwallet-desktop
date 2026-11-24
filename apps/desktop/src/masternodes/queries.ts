@@ -28,6 +28,7 @@ export const mnKeys = {
   credits: (hash: string) => ["mnPlatform", hash, "credits"] as const,
   sharedCapability: (walletId: string) => [...m, "sharedCapability", walletId] as const,
   sharedSessions: (walletId: string) => [...m, "sharedSessions", walletId] as const,
+  sharedUnreadable: (walletId: string) => [...m, "sharedUnreadable", walletId] as const,
   sharedSession: (walletId: string, session: string) => [...m, "sharedSession", walletId, session] as const,
 };
 
@@ -84,6 +85,12 @@ export function useSharedCapability(walletId: string, enabled = true) {
 export function useSharedSessions(walletId: string, enabled = true) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.sharedSessions(walletId), queryFn: () => b.mnSharedSessions(walletId), enabled });
+}
+
+/** Sessions this wallet can no longer read, listed under In progress with Discard while allowed. */
+export function useSharedUnreadable(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({ queryKey: mnKeys.sharedUnreadable(walletId), queryFn: () => b.mnSharedUnreadable(walletId), enabled });
 }
 
 /** One session; the sheet renders the record a command returns at once and lets the event re-read it. */

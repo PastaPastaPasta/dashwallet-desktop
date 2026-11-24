@@ -2104,6 +2104,13 @@ fn files_go_through_the_dialog_the_user_answers() {
     }));
     let choose = |path: Option<&std::path::Path>| *answer.lock().unwrap() = path.map(Into::into);
 
+    // A shared-masternode file never reaches the renderer: refused before any dialog.
+    demo.err(
+        "open_file",
+        json!({ "purpose": "sharedMasternodeMessage" }),
+        "invalid_argument",
+    );
+    assert!(asked.lock().unwrap().is_empty());
     // Cancelled.
     assert_eq!(
         demo.ok("open_file", json!({ "purpose": "psbt" })),

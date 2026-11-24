@@ -48,6 +48,7 @@ export type RowKey =
   | "sendSigned"
   | "waitingSigned"
   | "signLater"
+  | "signedOut"
   | "send"
   | "sent"
   | "confirmed"
@@ -71,7 +72,7 @@ const coordinator = (s: SharedSession) => s.role === "coordinator";
 
 /** §2.3.1, registration rows: the render key is `next` (D2), read with the stage and role. */
 export function renderSession(s: SharedSession, slice: SharedSlice = S5_SLICE): SessionRender {
-  const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row, primary, copy, known });
+  const r = (row: RowKey, primary: SessionRender["primary"], copy = false, known = true): SessionRender => ({ row: row === "signLater" && !s.discardable ? "signedOut" : row, primary, copy, known });
   if (!isRegistration(s)) return r("unknown", null, false, false);
   const stage = s.stage.kind;
   const c = coordinator(s);
@@ -282,7 +283,7 @@ export function warningText(w: SharedWarning, s: SharedSession | null): string |
     case "edited_message":
       return t("masternodes.shared.warning.edited_message");
     case "unvalued_inputs":
-      return t("masternodes.shared.warning.unvalued_inputs", { labels: shareLabels(s, w.shares) });
+      return t(s?.discardable === false ? "masternodes.shared.warning.unvalued_inputs_out" : "masternodes.shared.warning.unvalued_inputs", { labels: shareLabels(s, w.shares) });
     case "empty_service":
       return t("masternodes.shared.warning.empty_service");
     case "zero_penalty":

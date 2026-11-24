@@ -10,7 +10,7 @@ use crate::dto::masternodes::{
     AttachedKeyRoleName, EvonodeCredits, JoinSharedRequest, KeyCheckName, ListedMasternode,
     MasternodeDetail, MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState,
     MasternodeOverview, MasternodePayout, ProTxOperation, RevealedMasternodeKey,
-    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedSession,
+    SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedSession, UnreadableSession,
     StartSharedRequest, UntrackOutcome, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
 use crate::error::AppError;
@@ -300,6 +300,15 @@ commands! {
     fn mn_shared_sessions(state, wallet_id: String) -> Vec<SharedSession> {
         let wallet = parse_wallet_id(&wallet_id)?;
         let sessions = state.masternodes().await?.shared_sessions(wallet).await?;
+        Ok(sessions.into_iter().map(Into::into).collect())
+    }
+
+    /// Sessions whose stored record no longer reads, newest first: each can
+    /// be discarded while nothing of it may be out.
+    #[facade("Masternodes::unreadable_shared_sessions")]
+    fn mn_shared_unreadable(state, wallet_id: String) -> Vec<UnreadableSession> {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let sessions = state.masternodes().await?.unreadable_shared_sessions(wallet).await?;
         Ok(sessions.into_iter().map(Into::into).collect())
     }
 

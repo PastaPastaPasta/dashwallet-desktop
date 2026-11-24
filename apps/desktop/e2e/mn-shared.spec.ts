@@ -102,6 +102,8 @@ for (const theme of THEMES) {
     await page.getByTestId("sh-in-progress").getByRole("button").first().click();
     await expect(page.getByTestId("sh-session")).toBeVisible();
     await expect(page.getByTestId("sh-copy")).toHaveCount(0);
+    await expect(page.getByTestId("sh-row-signedOut")).toContainText("can't be discarded");
+    await expect(page.getByTestId("sh-session")).not.toContainText("nothing has left this wallet");
     await page.getByTestId("sh-close-button").click();
     await expect(page.getByTestId("sh-close")).toHaveCount(0);
     await expect(page.getByTestId("sh-session")).toBeHidden();
@@ -118,6 +120,26 @@ for (const theme of THEMES) {
     if (info.project.name === "chromium") await shot(page, "sh-join-pick", theme);
     await page.getByTestId("sh-join-button").click();
     await expect(page.getByTestId("sh-copy")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared masternode ${theme}: a session that can't be read is listed, with Discard only while nothing may be out`, async ({ page }, info) => {
+    const errors = await open(page, "sh-unreadable", theme);
+    await page.getByTestId("mn-shared").click();
+    const free = page.getByTestId("sh-unreadable-7C7C7C");
+    const out = page.getByTestId("sh-unreadable-9E9E9E");
+    await expect(free).toContainText("Session 7C7C7C can't be read");
+    await expect(free).toContainText("Discard it to release the coins it reserved.");
+    await expect(out).toContainText("the others come back about 15 minutes later");
+    await expect(page.getByTestId("sh-unreadable-discard-9E9E9E")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-unreadable", theme);
+    await page.getByTestId("sh-unreadable-discard-7C7C7C").click();
+    await expect(page.getByTestId("sh-unreadable-confirm")).toBeVisible();
+    if (info.project.name === "chromium") await shot(page, "sh-unreadable-confirm", theme);
+    await page.getByTestId("sh-unreadable-confirm-discard").click();
+    await expect(page.getByTestId("sh-unreadable-confirm")).toBeHidden();
+    await expect(free).toHaveCount(0);
+    await expect(out).toBeVisible();
     expect(errors).toEqual([]);
   });
 }

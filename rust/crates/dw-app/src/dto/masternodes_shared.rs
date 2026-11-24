@@ -443,6 +443,26 @@ mirror_struct!(engine::SharedSession => SharedSession {
     created_at, updated_at, last_error,
 });
 
+/// A session whose stored record this wallet can no longer read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadableSession {
+    /// 64 lower-case hex.
+    pub id: String,
+    /// The id's first six characters, upper-case.
+    pub code: String,
+    pub kind: SharedKindName,
+    pub role: SharedRoleName,
+    /// `mn_shared_discard` would delete it now: nothing of it may be out.
+    pub discardable: bool,
+    pub reserved: Vec<String>,
+    pub updated_at: u64,
+}
+
+mirror_struct!(engine::UnreadableSession => UnreadableSession {
+    id, code, kind: into, role: into, discardable, reserved, updated_at,
+});
+
 /// The message to copy or save now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

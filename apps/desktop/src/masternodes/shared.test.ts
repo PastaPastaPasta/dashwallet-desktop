@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SharedNextName } from "../api/generated/SharedNextName";
 import type { SharedSession } from "../api/generated/SharedSession";
 import { coordinatorSession, participantSession } from "../fixture/shared";
-import { COIN, isIpv4Service, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, stageStep } from "./shared";
+import { COIN, isIpv4Service, warningText, operatorKeyProblem, parseDash, parsePercent, penaltyError, renderSession, S5_SLICE, sessionNeedsAction, shareErrors, stageStep } from "./shared";
 
 const shares = (...amounts: number[]) => amounts.map((a, i) => ({ label: `P${i}`, amount: a * COIN }));
 
@@ -70,5 +70,16 @@ describe("the session's render under this slice", () => {
     expect(renderSession(coordinatorSession(["Bob", "Carol"])).primary).toBe("lock");
     expect(renderSession(participantSession("invited")).primary).toBe("join");
     expect(renderSession(participantSession("signing")).primary).toBe("approve");
+  });
+});
+
+describe("a session whose funding signature may be out", () => {
+  it("never says nothing has left, and never advises Discard", () => {
+    const out = { ...participantSession("funding_signed"), next: "copy" as const, discardable: false };
+    expect(renderSession(out).row).toBe("signedOut");
+    expect(renderSession({ ...out, discardable: true }).row).toBe("signLater");
+    const w = { kind: "unvalued_inputs" as const, shares: [0], count: 1 };
+    expect(warningText(w, out)).not.toContain("Discard");
+    expect(warningText(w, { ...out, discardable: true })).toContain("Discard");
   });
 });

@@ -149,6 +149,7 @@ import type { SharedImport } from "./generated/SharedImport";
 import type { SharedMessage } from "./generated/SharedMessage";
 import type { SharedOutcome } from "./generated/SharedOutcome";
 import type { SharedSession } from "./generated/SharedSession";
+import type { UnreadableSession } from "./generated/UnreadableSession";
 import type { StartSharedRequest } from "./generated/StartSharedRequest";
 import type { UntrackOutcome } from "./generated/UntrackOutcome";
 import type { ProTxOperation } from "./generated/ProTxOperation";
@@ -680,6 +681,8 @@ export interface Backend {
   // Shared masternodes (MG-10b S5 over mn-engine §2.4): sessions up to approval.
   mnSharedCapability(walletId: string): Promise<SharedCapability>;
   mnSharedSessions(walletId: string): Promise<SharedSession[]>;
+  /** Sessions whose stored record no longer reads; Discard frees one while `discardable`. */
+  mnSharedUnreadable(walletId: string): Promise<UnreadableSession[]>;
   mnSharedSession(walletId: string, session: string): Promise<SharedSession>;
   /** Reserves the coordinator's share and the fee; signs nothing. */
   mnSharedStart(walletId: string, request: StartSharedRequest): Promise<SharedOutcome>;

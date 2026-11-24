@@ -12,6 +12,7 @@ import type { SharedSession } from "../api/generated/SharedSession";
 import type { ShareRow } from "../api/generated/ShareRow";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { StandbyDescription } from "../api/generated/StandbyDescription";
+import type { UnreadableSession } from "../api/generated/UnreadableSession";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureWallet, World } from "./scenarios";
@@ -47,6 +48,8 @@ export interface SharedWorld {
   saved: string[];
   /** Standbys this wallet holds, by txid. */
   standbys: string[];
+  /** Sessions whose stored record no longer reads. */
+  unreadable: UnreadableSession[];
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -241,7 +244,7 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [] };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [] };
 }
 
 function find(world: World, id: string): SharedSession {
@@ -395,6 +398,10 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       return copy(world.shared.sessions).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     },
+    mn_shared_unreadable: ({ walletId }, { world }) => {
+      wallet(world, walletId);
+      return copy(world.shared.unreadable).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    },
     mn_shared_session: ({ walletId, session: id }, { world }) => {
       wallet(world, walletId);
       return copy(find(world, id));
@@ -518,6 +525,13 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_discard: ({ walletId, session: id }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      if (lost) {
+        if (!lost.discardable) throw stageRefusal("sent");
+        world.shared.unreadable = world.shared.unreadable.filter((x) => x.id !== id);
+        changed(ctx);
+        return null;
+      }
       const s = find(world, id);
       if (!s.discardable) throw stageRefusal(s.stage.kind);
       world.shared.sessions = world.shared.sessions.filter((x) => x.id !== id);
@@ -603,7 +617,18 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
+    /** Two sessions this wallet can't read: one it may discard, one that may be out. */
+    "sh-unreadable": (t: ThemeName | null) =>
+      shBase(base, t, (s) => {
+        s.sessions = [coordinatorSession(["Bob"])];
+        s.unreadable = [unreadable("7c", true, 3), unreadable("9e", false, 2)];
+      }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
   };
+}
+
+function unreadable(byte: string, discardable: boolean, ago: number): UnreadableSession {
+  const id = h(byte);
+  return { id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 };
 }

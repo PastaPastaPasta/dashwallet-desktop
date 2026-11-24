@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { SharedImport } from "../../api/generated/SharedImport";
 import type { SharedSession } from "../../api/generated/SharedSession";
+import type { UnreadableSession } from "../../api/generated/UnreadableSession";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
 import { saveText } from "../../app/files";
@@ -16,7 +17,7 @@ import { showToast } from "../../components/toast";
 import { useDisplay } from "../../format/display";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
-import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions } from "../../masternodes/queries";
+import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
 import {
   basisPoints,
   DEFAULT_FEE,
@@ -59,6 +60,8 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
   const { dash, networkName } = useSharedText(network);
   const capability = useSharedCapability(wallet.walletId);
   const sessions = useSharedSessions(wallet.walletId);
+  const unreadable = useSharedUnreadable(wallet.walletId);
+  const [discarding, setDiscarding] = useState<UnreadableSession | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +112,8 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
     );
 
   const inProgress = sessionsInProgress(sessions.data);
+  const lost = unreadable.data ?? [];
+  if (discarding) return <DiscardUnreadable wallet={wallet} network={network} session={discarding} onDone={() => setDiscarding(null)} />;
   return (
     <Sheet title={t(`${P}.title`)} width="large" testId="sh-start" onClose={onClose}>
       <div className="mg-sheet-body mg-step">
@@ -173,7 +178,7 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
           <dt>{t(`${P}.facts.leaving`)}</dt>
           <dd>{t(`${P}.facts.leavingText`)}</dd>
         </dl>
-        {inProgress.length > 0 && (
+        {inProgress.length + lost.length > 0 && (
           <section data-testid="sh-in-progress">
             <h3>{t(`${P}.inProgress`)}</h3>
             <ul className="mg-list">
@@ -187,9 +192,62 @@ export function SharedStartSheet({ wallet, network, onClose, onOpen }: { wallet:
                   </button>
                 </li>
               ))}
+              {lost.map((s) => (
+                <li key={s.id} className="mg-row sh-unreadable" data-testid={`sh-unreadable-${s.code}`}>
+                  <span className="mg-node-name">{t(`${P}.unreadable.title`, { code: s.code })}</span>
+                  <span className="mg-node-sub">{t(s.discardable ? `${P}.unreadable.discardable` : `${P}.unreadable.mayBeOut`)}</span>
+                  {s.discardable && (
+                    <DashButton variant="plainRed" size="small" data-testid={`sh-unreadable-discard-${s.code}`} disabled={wallet.watchOnly} onClick={() => setDiscarding(s)}>
+                      {t(`${P}.unreadable.discard`)}
+                    </DashButton>
+                  )}
+                </li>
+              ))}
             </ul>
           </section>
         )}
+      </div>
+    </Sheet>
+  );
+}
+
+/** Discard of a session this wallet can't read: the same question as a readable one, without amounts it can't know. */
+function DiscardUnreadable({ wallet, network, session, onDone }: { wallet: WalletSummary; network: NetworkInfo; session: UnreadableSession; onDone: () => void }) {
+  const t = useT();
+  const { dash, networkName } = useSharedText(network);
+  const b = useBackend();
+  const refresh = useMasternodesRefresh();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const discard = async () => {
+    setBusy(true);
+    try {
+      await b.mnSharedDiscard(wallet.walletId, session.id);
+      onDone();
+    } catch (e) {
+      setError(sharedErrorText(e, { network: networkName, dash }));
+    } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+  return (
+    <Sheet title={t(`${P}.unreadable.title`, { code: session.code })} width="small" testId="sh-unreadable-confirm" onClose={onDone}>
+      <div className="mg-sheet-body mg-step">
+        <p>{t(`${P}.unreadable.discardable`)}</p>
+        <p className="form-problem" role="alert" data-testid="sh-unreadable-error">
+          {error}
+        </p>
+        <footer className="mg-sheet-footer">
+          <span className="mg-actions">
+            <DashButton variant="tintedGray" size="medium" data-testid="sh-unreadable-cancel" data-autofocus onClick={onDone}>
+              {t(`${P}.close.cancel`)}
+            </DashButton>
+            <DashButton variant="plainRed" size="medium" data-testid="sh-unreadable-confirm-discard" disabled={busy} onClick={() => void discard()}>
+              {t(`${P}.unreadable.discard`)}
+            </DashButton>
+          </span>
+        </footer>
       </div>
     </Sheet>
   );
@@ -233,6 +291,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const [reply, setReply] = useState("");
   const [closing, setClosing] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
   const [pickedShare, setPickedShare] = useState<number | null>(null);
   const replyId = useId();
   const s = pick(query.data, latest);
@@ -332,7 +391,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const rowText = rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
   const moreItems = [
     ...(s.role === "coordinator" && s.stage.kind === "draft" && s.rows.slice(1).every((r) => !r.contributed) ? [{ id: "fee", title: t(`${P}.session.changeFee`), onSelect: () => setFeeOpen(true) }] : []),
-    ...(s.role === "coordinator" && s.stage.kind === "signing" ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => void act(() => b.mnSharedUnlock(wallet.walletId, s.id)) }] : []),
+    ...(s.role === "coordinator" && s.stage.kind === "signing" ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => setUnlocking(true) }] : []),
   ];
 
   if (closing && s.discardable)
@@ -372,6 +431,34 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
               </DashButton>
               <DashButton variant="filledBlue" size="medium" data-testid="sh-close-keep" data-autofocus onClick={onClose}>
                 {t(`${P}.close.keep`)}
+              </DashButton>
+            </span>
+          </footer>
+        </div>
+      </Sheet>
+    );
+
+  if (unlocking)
+    return (
+      <Sheet title={t(`${P}.session.unlock`)} width="small" testId="sh-unlock" onClose={() => setUnlocking(false)}>
+        <div className="mg-sheet-body mg-step">
+          <p>{t(`${P}.session.unlockConfirm`)}</p>
+          <footer className="mg-sheet-footer">
+            <span className="mg-actions">
+              <DashButton variant="tintedGray" size="medium" data-testid="sh-unlock-cancel" data-autofocus onClick={() => setUnlocking(false)}>
+                {t(`${P}.close.cancel`)}
+              </DashButton>
+              <DashButton
+                variant="plainRed"
+                size="medium"
+                data-testid="sh-unlock-confirm"
+                disabled={busy}
+                onClick={() => {
+                  setUnlocking(false);
+                  void act(() => b.mnSharedUnlock(wallet.walletId, s.id));
+                }}
+              >
+                {t(`${P}.session.unlock`)}
               </DashButton>
             </span>
           </footer>
@@ -600,6 +687,8 @@ function rowCopy(
     case "sign":
     case "signLater":
       return t(`${P}.row.signLater`);
+    case "signedOut":
+      return t(`${P}.row.signedOut`);
     case "sendSigned":
       return t(`${P}.row.sendSigned`, { coordinator });
     case "waitingSigned":
