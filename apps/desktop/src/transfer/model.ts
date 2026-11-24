@@ -53,7 +53,10 @@ export function platformToCoreOff(pools: Pools): string | null {
 }
 
 /** The picker's Platform row says it can't be reached from this end on this network. */
-export const platformChip = (pools: Pools, end: "from" | "to"): boolean => !!pools.platform?.mainnet && (end === "to" || !pools.platform.mainnet.held);
+export function platformChip(pools: Pools, end: "from" | "to"): boolean {
+  const off = pools.platform?.mainnet;
+  return !!off && (end === "to" || !off.held);
+}
 
 export const TRANSFER_COPY = {
   get title() {
@@ -185,21 +188,27 @@ export interface Pools {
   coreSyncing?: boolean;
 }
 
-/** Set where this version keeps the Platform addresses' funds paths off (mainnet). `held`: a move made
- * earlier still holds them, so Move stays offered as its exit and `text` says so above it; otherwise
- * `text` is the line in place of Move. */
+/** Set where this version keeps the Platform addresses' funds paths off (mainnet). `held`: payments or
+ * moves made earlier still hold them, so Move stays offered as their exit and `text` says so above it;
+ * otherwise `text` is the line in place of Move. `credits`: what the addresses hold. */
 export interface MainnetOff {
   held: boolean;
   text: string;
+  credits: string;
 }
 
-/** The mainnet state from the addresses' credits and the held move (`heldExitOp`), if any. */
-export function mainnetOff(credits: string, held: { credits: string } | null, fmt: (duffs: number) => string): MainnetOff {
+/** The mainnet state from the addresses' credits and how many records hold them (`heldExitOps`). */
+export function mainnetOff(credits: string, held: number, fmt: (duffs: number) => string): MainnetOff {
+  if (held > 0) return { held: true, text: MAINNET_OFF_COPY.heldExit(held), credits };
   const duffs = creditsToDuffs(credits);
-  if (!held) return { held: false, text: duffs > 0 ? MAINNET_OFF_COPY.held(fmt(duffs)) : MAINNET_OFF_COPY.moveAndSend };
-  const rest = creditsToDuffs(String(BigInt(credits) - BigInt(held.credits)));
-  const exit = MAINNET_OFF_COPY.heldExit(fmt(creditsToDuffs(held.credits)));
-  return { held: true, text: rest > 0 ? `${exit} ${MAINNET_OFF_COPY.heldExitRest(fmt(rest))}` : exit };
+  return { held: false, text: duffs > 0 ? MAINNET_OFF_COPY.held(fmt(duffs)) : MAINNET_OFF_COPY.moveAndSend, credits };
+}
+
+/** Beside a held exit, what the addresses outside the hold keep: `exit`, the credits the exit's quote
+ * takes (the hold's inputs). `null` when that is nothing. */
+export function heldExitRest(off: MainnetOff, exit: string, fmt: (duffs: number) => string): string | null {
+  const rest = creditsToDuffs(String(BigInt(off.credits) - BigInt(exit)));
+  return rest > 0 ? MAINNET_OFF_COPY.heldExitRest(fmt(rest)) : null;
 }
 
 /** The pools the picker lists: the Dash wallet always, the others while this dw-app has them. */

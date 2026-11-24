@@ -16,7 +16,7 @@ import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
-import { canSwap, coreFundedMax, defaultRoute, feeText, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
+import { canSwap, coreFundedMax, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
@@ -111,27 +111,39 @@ describe("routes", () => {
     expect(canSwap("platform", "core", true)).toBe(false);
   });
 
-  it("Platform → Dash wallet on mainnet: the line in place of Move, the held line while the addresses hold Dash, the exit while a move made earlier is held", () => {
+  it("Platform → Dash wallet on mainnet: the line in place of Move, the held line while the addresses hold Dash, the exit while earlier payments or moves hold them", () => {
     const fmt = (d: number) => `${d / 1e8} DASH`;
     const on = (mainnet: MainnetOff | undefined): Pools => ({ ...POOLS, platform: { ...POOLS.platform!, mainnet } });
     expect(platformToCoreOff(POOLS)).toBeNull();
     expect(platformChip(POOLS, "from")).toBe(false);
-    const empty = mainnetOff("0", null, fmt);
+    const empty = mainnetOff("0", 0, fmt);
     expect(platformToCoreOff(on(empty))).toBe("This version can move and send from Platform addresses on test networks only.");
-    expect(platformToCoreOff(on(mainnetOff("999", null, fmt)))).toBe(empty.text);
-    const held = mainnetOff("40000000000", null, fmt);
-    expect(platformToCoreOff(on(held))).toBe("0.4 DASH is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.");
+    expect(platformToCoreOff(on(mainnetOff("999", 0, fmt)))).toBe(empty.text);
+    expect(platformToCoreOff(on(mainnetOff("40000000000", 0, fmt)))).toBe("0.4 DASH is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.");
     expect([platformChip(on(empty), "from"), platformChip(on(empty), "to")]).toEqual([true, true]);
-    // A held move: Move stays offered as its exit, with the rest of the balance named only when there is one.
-    const exit = mainnetOff("40000000000", { credits: "40000000000" }, fmt);
-    expect(exit).toEqual({ held: true, text: "A move of 0.4 DASH from Platform to your Dash wallet hasn't finished yet. You can finish it now, on the terms you already signed." });
-    expect(platformToCoreOff(on(exit))).toBeNull();
-    expect([platformChip(on(exit), "from"), platformChip(on(exit), "to")]).toEqual([false, true]);
-    expect(mainnetOff("50000000000", { credits: "40000000000" }, fmt).text).toBe(
-      "A move of 0.4 DASH from Platform to your Dash wallet hasn't finished yet. You can finish it now, on the terms you already signed. The rest of your Platform balance, 0.1 DASH, is still yours. This version can move it on test networks only.",
+    // One held record: Move stays offered as its exit, and the line names no amount.
+    const one = mainnetOff("40000000000", 1, fmt);
+    expect(one).toEqual({
+      held: true,
+      credits: "40000000000",
+      text: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+    });
+    expect(one.text).not.toMatch(/\d/);
+    expect(platformToCoreOff(on(one))).toBeNull();
+    expect([platformChip(on(one), "from"), platformChip(on(one), "to")]).toEqual([false, true]);
+    // Several records in one hold: one line with their count, still no amount.
+    const several = mainnetOff("40000000000", 2, fmt);
+    expect(several.text).toBe(
+      "2 payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
     );
-    // Once it settles, the line falls back by the balance, with no other notice.
-    expect(mainnetOff("10000000000", null, fmt).text).toBe("0.1 DASH is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.");
+    expect(several.text.replace(/^2 /, "")).not.toMatch(/\d/);
+    // Rest: the credits outside what the exit's quote takes, only when there are some.
+    expect(heldExitRest(one, "40000000000", fmt)).toBeNull();
+    expect(heldExitRest(one, "39999999500", fmt)).toBeNull();
+    expect(heldExitRest(mainnetOff("50000000000", 1, fmt), "40000000000", fmt)).toBe("The rest of your Platform balance, 0.1 DASH, is still yours. This version can move it on test networks only.");
+    // Once the hold settles, the line falls back by the balance, with no other notice.
+    expect(mainnetOff("10000000000", 0, fmt).text).toBe("0.1 DASH is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.");
+    expect(mainnetOff("0", 0, fmt).text).toBe(empty.text);
   });
 
   it("list the pools this dw-app has; Mixed coins is not one", () => {

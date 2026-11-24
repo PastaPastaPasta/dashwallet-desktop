@@ -28,7 +28,7 @@ import type { ContactPayQuoteInfo } from "../api/generated/ContactPayQuoteInfo";
 import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
-import { isHeldOp } from "../platform/move";
+import { heldExitOp, isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, fundDuffs, HANDLERS, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
@@ -259,7 +259,7 @@ const total = (p: PlatformWorld) => sum(p.addresses);
 /** The inputs of a held move, contact payment or top-up from Platform, where the world names them: its
  * exit (C3-9) moves those only. `null`: no such hold. */
 function exitInputs(p: PlatformWorld): string[] | null {
-  const held = p.activity.find((a) => a.kind !== "send" && isHeldOp(a));
+  const held = heldExitOp(p.activity);
   return held ? (p.heldInputs?.[held.id] ?? null) : null;
 }
 

@@ -6,7 +6,7 @@ import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
-import { hasPendingMove, hasUnansweredOp, heldExitOp, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
+import { hasPendingMove, hasUnansweredOp, heldExitOp, heldExitOps, sendHolds, invalidArgumentText, moveBlock, moveCanRetry, moveErrorText, moveFor, MOVE_COPY, onMoveSettled, PlatformMoveFlow, resetPlatformMoves } from "./move";
 
 const TO = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
 const OUTCOME: MoveToCoreOutcome = { id: "pm-1", credits: "40000000000", expectedDuffs: 39_998_000, to: TO, state: "done", feeCredits: "2000000" };
@@ -101,6 +101,8 @@ describe("Move to Dash wallet", () => {
     const older = { ...base, id: "pm-1", kind: "moveToCore", state: "failed", mayLand: true } as const;
     const newer = { ...base, id: "pm-2", kind: "toIdentity", state: "failed", mayLand: true } as const;
     expect(heldExitOp([newer, older])?.id).toBe("pm-2");
+    // A hold of two records is one exit, counted.
+    expect(heldExitOps([newer, older, { ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }]).map((a) => a.id)).toEqual(["pm-2", "pm-1"]);
     expect(heldExitOp([{ ...base, id: "ps-1", kind: "send", state: "failed", mayLand: true }])).toBeNull();
     expect(heldExitOp([{ ...older, state: "done", mayLand: false }, { ...base, id: "pm-3", kind: "contactPayment", state: "pending", mayLand: false }])?.id).toBe("pm-3");
     // Once it settles there is none, and the screen falls back to the balance's line.

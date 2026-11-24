@@ -10,7 +10,8 @@ import { callsOf } from "./transfer";
 const PAYEE = "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const OFF = "This version can move and send from Platform addresses on test networks only.";
 const HELD = /^[\d.]+ DASH is on your Platform addresses\. It's still yours\. This version can move it to your Dash wallet on test networks only\.$/;
-const EXIT = "A move of 0.40000000 DASH from Platform to your Dash wallet hasn't finished yet. You can finish it now, on the terms you already signed.";
+const EXIT =
+  "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.";
 
 async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
   const errors = trackPageErrors(page);
@@ -73,6 +74,7 @@ for (const theme of ["light", "dark"] as const) {
       const errors = await open(page, "platform-move-failed-may-land", theme);
       await openTransfer(page, "platformToCore");
       await expect(page.getByTestId("transfer-mainnet-exit")).toHaveText(EXIT);
+      await expect(page.getByTestId("transfer-mainnet-rest")).toHaveCount(0);
       await expect(page.getByTestId("transfer-continue")).toHaveText("Move to Dash wallet");
       await expect(page.getByTestId("transfer-continue")).toBeEnabled();
       await shot(page, `${theme}-transfer-held-exit`);
@@ -87,10 +89,21 @@ for (const theme of ["light", "dark"] as const) {
     test("a held move with more on the addresses names the rest", async ({ page }) => {
       const errors = await open(page, "platform-move-held-and-rest", theme);
       await openTransfer(page, "platformToCore");
+      await expect(page.getByTestId("transfer-mainnet-rest")).toHaveText("The rest of your Platform balance, 0.10000000 DASH, is still yours. This version can move it on test networks only.");
       await expect(page.getByTestId("transfer-mainnet-exit")).toHaveText(`${EXIT} The rest of your Platform balance, 0.10000000 DASH, is still yours. This version can move it on test networks only.`);
       // The exit moves the held move's inputs only: the rest stays.
       await expect(page.getByTestId("transfer-amount")).toHaveValue(/^0\.39/);
       await shot(page, `${theme}-transfer-held-exit-rest`);
+      await done(page, errors);
+    });
+
+    test("one hold of several records is one exit, counted, with one button", async ({ page }) => {
+      const errors = await open(page, "platform-move-held-several", theme);
+      await openTransfer(page, "platformToCore");
+      await expect(page.getByTestId("transfer-mainnet-exit")).toHaveText(/^2 payments or moves you made earlier from your Platform balance haven't finished, /);
+      await expect(page.getByTestId("transfer-continue")).toHaveText("Move to Dash wallet");
+      await expect(page.getByRole("button", { name: "Move to Dash wallet" })).toHaveCount(1);
+      await shot(page, `${theme}-transfer-held-exit-several`);
       await done(page, errors);
     });
 

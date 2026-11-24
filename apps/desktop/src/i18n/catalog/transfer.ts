@@ -35,9 +35,11 @@ export const transfer = {
     mainnetOffChip: "Test networks only",
     /** In place of `mainnetOff` while the Platform addresses hold a balance. */
     mainnetHeld: "{amount} is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.",
-    /** In place of both while a move made earlier is held: its exit is offered. */
-    mainnetHeldExit: "A move of {moveAmount} from Platform to your Dash wallet hasn't finished yet. You can finish it now, on the terms you already signed.",
-    /** After `mainnetHeldExit` while the balance outside the held move is above 0. */
+    /** In place of both while a payment or move made earlier holds the addresses: its exit is offered. */
+    mainnetHeldExit: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+    /** `mainnetHeldExit` for a hold of `count` (2 or more) records. */
+    mainnetHeldExitSeveral: "{count} payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
+    /** After `mainnetHeldExit` while the addresses outside the hold hold credits. */
     mainnetHeldExitRest: "The rest of your Platform balance, {rest}, is still yours. This version can move it on test networks only.",
   },
   none: {

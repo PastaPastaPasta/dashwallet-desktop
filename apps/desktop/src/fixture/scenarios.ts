@@ -882,6 +882,15 @@ const SCENARIOS = {
     p.addresses.push({ address: "tdash1q3rest7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr", credits: "10000000000" });
     return w;
   },
+  /** A move and its retry at the same inputs, both failed by height and able to land: one hold of two records. */
+  "platform-move-held-several": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, mayLand: true, estimated: false } as const;
+    p.activity = [{ ...row, id: "pm-held-2", at: at - 300 }, { ...row, id: "pm-held", at: at - 600 }, ...p.activity];
+    return w;
+  },
   /** The next "Add from Dash wallet" is applied (as the base world does). */
   "paddr-fund-applies": (t) => {
     const w = base(t);

@@ -31,11 +31,11 @@ export const MAINNET_OFF_COPY = {
   held(amount: string) {
     return t("transfer.platform.mainnetHeld", { amount });
   },
-  /** While a move made earlier is held, in place of `moveAndSend` and `held`. */
-  heldExit(moveAmount: string) {
-    return t("transfer.platform.mainnetHeldExit", { moveAmount });
+  /** While `count` payments or moves made earlier hold the addresses, in place of `moveAndSend` and `held`. */
+  heldExit(count: number) {
+    return count > 1 ? t("transfer.platform.mainnetHeldExitSeveral", { count: String(count) }) : t("transfer.platform.mainnetHeldExit");
   },
-  /** After `heldExit` while the balance outside the held move is above 0. */
+  /** After `heldExit` while the addresses outside the hold hold `rest`. */
   heldExitRest(rest: string) {
     return t("transfer.platform.mainnetHeldExitRest", { rest });
   },

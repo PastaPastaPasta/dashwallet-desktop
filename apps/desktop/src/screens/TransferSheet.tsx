@@ -20,13 +20,14 @@ import { useModel } from "../onboarding/model";
 import { FROM_PLATFORM_COPY } from "../dashpay/topupSource";
 import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
-import { heldExitOp, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
+import { heldExitOps, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
 import { shieldedSyncing } from "../shielded/syncing";
 import {
   canSwap,
   defaultRoute,
   feeText,
+  heldExitRest,
   listedPools,
   mainnetOff,
   noRouteText,
@@ -81,7 +82,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
             dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))),
             block: hold.block,
             waitingText: hold.waitingText,
-            mainnet: addresses && addressSendsOff(network, addresses) ? mainnetOff(addresses.credits, heldExitOp(hold.activity.data), fmt) : undefined,
+            mainnet: addresses && addressSendsOff(network, addresses) ? mainnetOff(addresses.credits, heldExitOps(hold.activity.data).length, fmt) : undefined,
           },
     coreSyncing: sync !== undefined && isSyncing(sync),
   };
@@ -354,6 +355,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   const p = pools.platform;
   // A move Platform has not confirmed holds this route: Activity shows it.
   const waiting = why !== null && (move.pending || p?.block === "pending");
+  const rest = p?.mainnet?.held && q ? heldExitRest(p.mainnet, q.credits, fmt) : null;
   return (
     <form
       className="topup-form"
@@ -365,6 +367,12 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
       {p?.mainnet?.held ? (
         <p className="sheet-text" data-testid="transfer-mainnet-exit">
           {p.mainnet.text}
+          {rest && (
+            <>
+              {" "}
+              <span data-testid="transfer-mainnet-rest">{rest}</span>
+            </>
+          )}
         </p>
       ) : (
         <p className="sheet-text">{INTRO.platformToCore.text}</p>
