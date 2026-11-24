@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, trackPageErrors } from "./helpers";
+import { hold, release } from "./transfer";
 
 // Unfinished transfers on Home (src/screens/UnfinishedTransfersCard.tsx) on the fixture backend
 // (src/fixture/recovery.ts): the card for a restored Core → Shielded or "Add from Dash wallet" lock,
@@ -21,6 +22,20 @@ test.describe("Unfinished transfers", () => {
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.getByTestId("unfinished-finish").click();
     await authorize(page);
+    await expect(card).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("recovery-one: a Finish still pending after a second says it is preparing the transfer", async ({ page }) => {
+    const errors = await open(page, "recovery-one");
+    const card = page.getByTestId("unfinished-card");
+    await hold(page, "finish_transfer");
+    await page.getByTestId("unfinished-finish").click();
+    await authorize(page);
+    await expect(card).toHaveAttribute("data-kind", "running");
+    await expect(card.getByTestId("transfer-preparing")).toHaveText("Preparing the transfer…");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await release(page);
     await expect(card).toHaveCount(0);
     expect(errors).toEqual([]);
   });

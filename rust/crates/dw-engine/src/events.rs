@@ -615,6 +615,10 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load fails to list the stored records.
     #[cfg(test)]
     pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
+    /// Tests: SPV's progress reports leave the sync reading as the test
+    /// set it.
+    #[cfg(test)]
+    pub(crate) pin_progress: std::sync::atomic::AtomicBool,
     /// Tests: the next history load's read of the dropped records fails.
     #[cfg(test)]
     pub(crate) fail_dropped_read: std::sync::atomic::AtomicBool,
@@ -866,6 +870,8 @@ impl SessionHub {
             resend_wire: Mutex::new(None),
             #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            pin_progress: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_dropped_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1977,6 +1983,10 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
 
 impl EventHandler for SessionHub {
     fn on_progress(&self, progress: &SyncProgress) {
+        #[cfg(test)]
+        if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
             (

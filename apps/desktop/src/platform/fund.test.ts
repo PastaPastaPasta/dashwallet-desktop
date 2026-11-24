@@ -43,6 +43,27 @@ afterEach(() => resetPlatformFunds());
 const pendingFund = (p: Partial<PendingPlatformFund> = {}): PendingPlatformFund => ({ txid: "lock1", duffs: 5_000, proved: true, consumptionUnknown: false, state: "ready", ...p });
 
 describe("the Add from Dash wallet flow", () => {
+  it("says it is preparing once an add's call has been pending for a second, and only then", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { flow, answer } = setup();
+      flow.begin();
+      flow.next(50_000_000);
+      const going = flow.run(GRANT);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(flow.step).toBe("running");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(flow.preparing.shown).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(flow.preparing.shown).toBe(true);
+      answer(APPLIED);
+      await going;
+      expect([flow.step, flow.preparing.shown]).toEqual(["done", false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("adds under a duffs grant, can close while it runs, and reads again", async () => {
     const { flow, vault, calls, answer } = setup();
     const settled = vi.fn();
