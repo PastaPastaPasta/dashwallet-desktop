@@ -557,7 +557,8 @@ impl Rig for ShieldRig {
 /// with at least Platform's fee for moving the rest, it lists Recoverable
 /// with what is left; below that fee, too small; never Checking, and never
 /// applied as a shield again. A failure Platform does not prove partly used
-/// stays Checking.
+/// stays Checking. A partly used lock is no longer a pending shield (whose
+/// Check again would shield it again).
 #[test]
 fn a_shield_refused_after_a_penalty_lists_what_is_left() {
     let rig = ShieldRig::new();
@@ -599,6 +600,12 @@ fn a_shield_refused_after_a_penalty_lists_what_is_left() {
     assert_eq!(of(left), (UnfinishedState::Recoverable, Some(600_000_000)));
     assert_eq!(of(small), (UnfinishedState::TooSmall, Some(floor - 1)));
     assert_eq!(of(plain), (UnfinishedState::Checking, None));
+    let open = run(&rig.fx, &rig.lib, |_, lib| async move {
+        crate::platform::shielded_pool::open_shields(&*lib).await
+    })
+    .unwrap();
+    let open: Vec<_> = open.iter().map(|o| o.lock.outpoint).collect();
+    assert_eq!(open, [plain], "a partly used lock is no pending shield");
 
     let applies = rig.applies();
     for at in [left, small] {

@@ -120,11 +120,15 @@ fn remaining(fx: &Fixture) -> std::collections::HashMap<OutPoint, u64> {
         .block_on(async move { locks::remaining_of(&s, wallet, LockKindId::Shielded).await })
 }
 
-/// Every row of the wallet's local scope of `app.sqlite`.
+/// The wallet's rows of `app.sqlite` a recover could write: the unfinished
+/// transfers' records and the Platform activity's (background tasks such as
+/// the auto-backup write others).
 fn rows(fx: &Fixture) -> Vec<(String, String)> {
     let appdb = fx.s.live().unwrap().appdb;
     let scope = dw_appdb::local_scope(&fx.wallet.to_string());
-    appdb.settings_with_prefix(&scope, "").unwrap()
+    let mut rows = appdb.settings_with_prefix(&scope, "recovery.").unwrap();
+    rows.extend(appdb.settings_with_prefix(&scope, "platform_address/").unwrap());
+    rows
 }
 
 fn record(fx: &Fixture, at: OutPoint) -> Option<platform_moves::FundRecord> {
@@ -280,8 +284,8 @@ fn only_a_proved_remaining_is_recovered() {
 
 /// The shield flow's own network gate comes first: where Platform's
 /// shielded pool is not active, a quote and a recover are refused before
-/// anything is read, written, redeemed or signed. The wallet's rows of
-/// `app.sqlite` stay byte-equal.
+/// anything is read, written, redeemed or signed. The wallet's recovery and
+/// Platform activity rows of `app.sqlite` stay byte-equal.
 #[test]
 fn a_recover_is_behind_the_shield_flows_network_gate() {
     let fx = Fixture::new(0);

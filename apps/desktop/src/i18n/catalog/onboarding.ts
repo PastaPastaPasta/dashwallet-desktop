@@ -235,6 +235,17 @@ export const onboarding = {
     details: "Details",
     retry: "Retry",
     dismiss: "Dismiss",
+    /** A transfer to Shielded Platform refused after a penalty, with a value left that can be moved. */
+    recover: "Recover",
+    recoverOne: "{amount} is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+    /** Two or more: the card says "one" for a single transfer. */
+    recoverSeveral: "{count} transfers to Shielded that Platform refused have {total} left. You can recover each to your Platform balance, minus Platform's fee.",
+    recoverConfirm: {
+      title: "Recover leftover value",
+      body: "Move the {amount} left on this transfer to your Platform balance? Platform's fee comes out of this amount.",
+      confirm: "Recover",
+      cancel: "Cancel",
+    },
     sheet: {
       title: "Unfinished transfers",
       introShielded: "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
@@ -253,7 +264,10 @@ export const onboarding = {
         notActive: "Not active on this network yet",
         unsupported: "Can't be finished in this version",
         tooSmall: "Too small to finish: worth less than the Platform fee",
+        recoverable: "Can be recovered",
       },
+      recoverTooSmall: "The {amount} left on this transfer is less than Platform's fee for moving it, so it can't be recovered.",
+      recoverFailed: "Dash Wallet couldn't recover this value. It's still listed here, and you can try again.",
       done: {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",

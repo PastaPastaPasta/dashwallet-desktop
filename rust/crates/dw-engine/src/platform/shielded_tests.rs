@@ -286,6 +286,8 @@ struct FakeShielded {
     consumed: AtomicBool,
     /// Platform's proved spent read of each outpoint; unread when unset.
     pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
+    /// The locks Platform proved partly used, unless `real_rows`.
+    pub(super) partly_used: Mutex<HashSet<OutPoint>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -468,6 +470,7 @@ impl Default for FakeShielded {
             rest: Mutex::new(Some(pool::RestClock::default())),
             drops_rest: AtomicBool::new(false),
             spent_reads: Mutex::default(),
+            partly_used: Mutex::default(),
         }
     }
 }
@@ -796,6 +799,13 @@ impl ShieldedLib for FakeShielded {
             return self.real().await.mark_unknown(txid).await;
         }
         self.unknown.lock().unwrap().insert(txid);
+    }
+
+    async fn partly_used(&self) -> HashSet<OutPoint> {
+        if self.real_rows {
+            return self.real().await.partly_used().await;
+        }
+        self.partly_used.lock().unwrap().clone()
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {

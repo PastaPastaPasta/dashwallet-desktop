@@ -36,7 +36,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
-import { restoredFundLock, restoredLock } from "./recovery";
+import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
@@ -1056,6 +1056,31 @@ const SCENARIOS = {
   "paddr-recovery-mixed": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.3 DASH left: Home offers Recover. */
+  "recovery-recoverable": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n)];
+    return w;
+  },
+  /** Two refused transfers to Shielded: one with 0.3 DASH left, one with less than the fee left (too small, not on the card). */
+  "recovery-recoverable-small": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** Only refused transfers to Shielded with less than the fee left: no card. */
+  "recovery-too-small-only": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** The first recover fails after its signature ("checking"); the next is applied. */
+  "recovery-recover-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 300_000_000_000n)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** The first finish ends `platform.unavailable`; a retry is applied. */

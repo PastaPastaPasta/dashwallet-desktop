@@ -7,6 +7,7 @@ import type { UnfinishedTransfers } from "../api/generated/UnfinishedTransfers";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onMoveSettled } from "../platform/move";
+import type { RecoverQuote } from "../api/generated/RecoverQuote";
 import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
 
 const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock["origin"] = "restored", duffs = 50_000_000): UnfinishedLock => ({
@@ -16,7 +17,10 @@ const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock[
   duffs,
   origin,
   state,
+  remainingCredits: null,
 });
+/** This device's refused transfer to Shielded with `credits` left (#402). */
+const partly = (n: number, state: "recoverable" | "tooSmall", credits: string): UnfinishedLock => ({ ...lock(n, state, "thisDevice"), remainingCredits: credits });
 const fundLock = (n: number, state: UnfinishedLock["state"], duffs = 50_000_000): UnfinishedLock => ({ ...lock(n, state, "restored", duffs), kind: "platformAddress" });
 const list = (locks: UnfinishedLock[], complete = true): UnfinishedTransfers => ({ locks, complete, unread: [] });
 const IDLE: RecoveryState = { kind: "idle" };
@@ -133,6 +137,47 @@ describe("unfinished transfers card", () => {
   });
 });
 
+describe("unfinished transfers card: refused transfers to Shielded (#402)", () => {
+  it("one recoverable transfer, this device's or restored: what is left and Recover", () => {
+    const one = partly(1, "recoverable", "300000000000");
+    expect(view(list([one]))).toMatchObject({
+      kind: "recoverable",
+      text: "300000000 duffs is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+      actions: ["recover"],
+      lock: one,
+    });
+  });
+
+  it("counts only the rows at or above the fee; a below-fee row stays on the sheet", () => {
+    const rows = [partly(1, "recoverable", "300000000000"), partly(2, "recoverable", "100000000000"), partly(3, "tooSmall", "40000000")];
+    expect(view(list(rows))).toMatchObject({
+      kind: "recoverable",
+      text: "2 transfers to Shielded that Platform refused have 400000000 duffs left. You can recover each to your Platform balance, minus Platform's fee.",
+      actions: ["details"],
+      lock: null,
+    });
+    const withSmall = view(list([rows[0], rows[2]]));
+    expect(withSmall).toMatchObject({ kind: "recoverable", actions: ["recover", "details"], lock: rows[0] });
+    expect(withSmall?.text).toContain("300000000 duffs is left");
+    expect(sheetRows(list([rows[0], rows[2]]), new Map()).map((r) => r.lock.state)).toEqual(["recoverable", "tooSmall"]);
+  });
+
+  it("shows no card when every refused transfer is below the fee", () => {
+    expect(view(list([partly(3, "tooSmall", "40000000")]))).toBeNull();
+    expect(view(list([partly(3, "tooSmall", "40000000"), partly(4, "tooSmall", "1")]))).toBeNull();
+  });
+
+  it("names its states and lines in MG's words", () => {
+    expect(C.sheet.state.recoverable).toBe("Can be recovered");
+    expect(C.recover).toBe("Recover");
+    expect(C.recoverConfirm.title).toBe("Recover leftover value");
+    expect(C.recoverConfirm.body("0.3 DASH")).toBe("Move the 0.3 DASH left on this transfer to your Platform balance? Platform's fee comes out of this amount.");
+    expect([C.recoverConfirm.confirm, C.recoverConfirm.cancel]).toEqual(["Recover", "Cancel"]);
+    expect(C.sheet.recoverTooSmall("0.0004 DASH")).toBe("The 0.0004 DASH left on this transfer is less than Platform's fee for moving it, so it can't be recovered.");
+    expect(C.sheet.recoverFailed).toBe("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+  });
+});
+
 describe("unfinished transfers sheet", () => {
   it("lists the restored locks and keeps the ones applied in this session", () => {
     const a = lock(1, "ready");
@@ -179,8 +224,28 @@ function setup(finish: (txid: string, n: number) => LockFinish | Error = () => (
       if (got instanceof Error) throw got;
       return got;
     }),
+    recoverTransferQuote: vi.fn(async (): Promise<RecoverQuote> => ({ kind: "finished" })),
+    recoverTransfer: vi.fn(async (): Promise<LockFinish> => ({ kind: "applied" })),
   };
   return { model: new RecoveryModel(api, WALLET_A), api, calls, vault };
+}
+
+function recoverSetup(quote: RecoverQuote | Error, recovered: LockFinish | Error | ReturnType<typeof appError> = { kind: "applied" }) {
+  const base = setup();
+  const api = {
+    ...base.api,
+    recoverTransferQuote: vi.fn(async (_: string, txid: string, vout: number) => {
+      base.calls.push(`quote ${txid[0]}:${vout}`);
+      if (quote instanceof Error) throw quote;
+      return quote;
+    }),
+    recoverTransfer: vi.fn(async (_: string, txid: string, vout: number, grant: string) => {
+      base.calls.push(`recover ${txid[0]}:${vout} ${grant}`);
+      if (recovered instanceof Error || "code" in recovered) throw recovered;
+      return recovered;
+    }),
+  };
+  return { ...base, api, model: new RecoveryModel(api, WALLET_A) };
 }
 
 describe("RecoveryModel", () => {
@@ -305,5 +370,64 @@ describe("RecoveryModel", () => {
     expect(model.state).toEqual({ kind: "idle" });
     expect(calls).toEqual([]);
     expect(api.finishTransfer).not.toHaveBeenCalled();
+  });
+});
+
+describe("RecoveryModel recover (#402)", () => {
+  const one = partly(1, "recoverable", "300000000000");
+  const READY: RecoverQuote = { kind: "ready", credits: "290000000000", feeCredits: "56000000" };
+
+  it("reads Platform first, asks to confirm the fresh amount, then recovers under a grant of exactly those credits", async () => {
+    const { model, calls, vault } = recoverSetup(READY);
+    await model.askRecover(one);
+    expect(model.asking).toEqual({ lock: one, credits: "290000000000" });
+    expect(calls).toEqual(["quote 1:0"]);
+    expect(vault.calls.authorize).toEqual([]);
+    await model.confirmRecover();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "290000000000" }, walletId: WALLET_A });
+    expect(calls).toEqual(["quote 1:0", "recover 1:0 grant-1"]);
+    expect(model.asking).toBeNull();
+    expect(model.results.get(lockKey(one))).toEqual({ lock: one, result: { kind: "applied" }, recovered: true });
+    expect(model.state).toEqual({ kind: "idle" });
+  });
+
+  it("Cancel recovers nothing", async () => {
+    const { model, calls, api } = recoverSetup(READY);
+    await model.askRecover(one);
+    model.cancelRecover();
+    expect(model.asking).toBeNull();
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
+    expect(calls).toEqual(["quote 1:0"]);
+  });
+
+  it("a value now below the fee is never offered: the row says so", async () => {
+    const { model, api } = recoverSetup({ kind: "tooSmall", credits: "40000000", feeCredits: "56000000" });
+    await model.askRecover(one);
+    expect(model.asking).toBeNull();
+    expect(model.notes.get(lockKey(one))).toEqual({ kind: "tooSmall", credits: "40000000" });
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
+  });
+
+  it("a quote that fails, a recover that may have executed, or one that throws, leave the lock listed with the failure line", async () => {
+    for (const [quote, recovered] of [
+      [new Error("down"), undefined],
+      [{ kind: "notApplied", error: "platform.unavailable" } as RecoverQuote, undefined],
+      [READY, { kind: "checking" } as LockFinish],
+      [READY, appError("platform.grant_invalid")],
+    ] as const) {
+      const { model } = recoverSetup(quote, recovered);
+      await model.askRecover(one);
+      if (model.asking) await model.confirmRecover();
+      expect(model.notes.get(lockKey(one))).toEqual({ kind: "failed" });
+      expect(model.results.has(lockKey(one))).toBe(false);
+      expect(model.state).toEqual({ kind: "idle" });
+    }
+  });
+
+  it("a lock already recovered or used up reads as added to the Platform address", async () => {
+    const { model, api } = recoverSetup({ kind: "finished" });
+    await model.askRecover(one);
+    expect(model.results.get(lockKey(one))).toEqual({ lock: one, result: { kind: "applied" }, recovered: true });
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
   });
 });

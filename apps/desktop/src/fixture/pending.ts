@@ -25,7 +25,7 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
-import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
+import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
@@ -478,6 +478,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,
+  ...REMAINDER_HANDLERS,
   platform_addresses: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
     return balance(platformOf(world, "platform_addresses"));

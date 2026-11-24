@@ -251,12 +251,12 @@ impl DashPay {
         vout: u32,
     ) -> Result<RecoverQuote, PlatformError> {
         let wallet = self.wallet_id;
-        let outpoint = lock_outpoint(&txid, vout)?;
         platform_fund::on_lib(
             &self.session,
             wallet,
             false,
             move |session, lib| async move {
+                let outpoint = lock_outpoint(&txid, vout)?;
                 Ok(remainder::quote(&session, wallet, &lib, outpoint).await?)
             },
         )
@@ -278,12 +278,12 @@ impl DashPay {
         grant: String,
     ) -> Result<LockFinish, PlatformError> {
         let wallet = self.wallet_id;
-        let outpoint = lock_outpoint(&txid, vout)?;
         platform_fund::on_lib(
             &self.session,
             wallet,
             true,
             move |session, lib| async move {
+                let outpoint = lock_outpoint(&txid, vout)?;
                 Ok(remainder::recover(&session, wallet, &lib, outpoint, &grant).await?)
             },
         )

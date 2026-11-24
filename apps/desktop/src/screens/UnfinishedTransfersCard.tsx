@@ -17,7 +17,19 @@ import { useT } from "../i18n";
 import { useModel } from "../onboarding/model";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { moveFor, MOVE_COPY as M } from "../platform/move";
-import { cardView, lockKey, lockKinds, RECOVERY_COPY as C, recoveryFor, resultText, sheetRows, withoutPendingShields, type CardAction, type RecoveryModel } from "../recovery/model";
+import {
+  cardView,
+  creditsAsDuffs,
+  lockKey,
+  lockKinds,
+  RECOVERY_COPY as C,
+  recoveryFor,
+  resultText,
+  sheetRows,
+  withoutPendingShields,
+  type CardAction,
+  type RecoveryModel,
+} from "../recovery/model";
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
 import { shieldedRoute, transferFor } from "../transfer/model";
@@ -46,6 +58,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
     finish: () => view?.lock && void model.finish(view.lock),
     finishAll: () => void model.finishAll(),
     checkAgain: () => void model.checkAgain(checking),
+    recover: () => view?.lock && void model.askRecover(view.lock),
     details: () => setDetails(true),
     retry: () => void model.retry(),
     dismiss: () => model.dismiss(),
@@ -162,6 +175,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
         </section>
       )}
       {details && <UnfinishedTransfersSheet model={model} walletId={walletId} network={network} onClose={() => setDetails(false)} />}
+      <RecoverConfirmSheet model={model} format={fmt.duffs} />
     </>
   );
 }
@@ -186,8 +200,11 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
       <dl className="detail-list card-l1" data-testid="unfinished-rows">
         {rows.map(({ lock, result }) => {
           const key = lockKey(lock);
+          const recovered = model.results.get(key)?.recovered === true;
+          const note = model.notes.get(key);
           const finished = result?.kind === "applied" || result?.kind === "reportedUsed" ? result.kind : null;
-          const action = finished ? null : lock.state === "ready" ? "finish" : lock.state === "checking" ? "checkAgain" : null;
+          const action = finished ? null : lock.state === "ready" ? "finish" : lock.state === "checking" ? "checkAgain" : lock.state === "recoverable" ? "recover" : null;
+          const left = note?.kind === "tooSmall" ? note.credits : lock.state === "tooSmall" ? lock.remainingCredits : null;
           return (
             <div className="detail-row" key={key} data-testid="unfinished-row" data-state={finished ?? lock.state}>
               <dt className="detail-label">{C.sheet.kind[lock.kind]}</dt>
@@ -200,7 +217,17 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                 <CopyValue value={lock.txid} display={shortId(lock.txid)} action={tr("home.unfinished.copyTxid")} mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
-                    {resultText(result, errorText, lock.kind)}
+                    {resultText(result, errorText, recovered ? "platformAddress" : lock.kind)}
+                  </p>
+                )}
+                {!finished && left !== null && (
+                  <p className="field-hint" role="status" data-testid="unfinished-row-too-small">
+                    {C.sheet.recoverTooSmall(fmt.duffs(creditsAsDuffs(left)))}
+                  </p>
+                )}
+                {!finished && note?.kind === "failed" && (
+                  <p className="form-problem" role="status" data-testid="unfinished-row-recover-failed">
+                    {C.sheet.recoverFailed}
                   </p>
                 )}
                 {action && (
@@ -210,9 +237,9 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
                       size="small"
                       data-testid={`unfinished-row-${action}`}
                       disabled={model.running}
-                      onClick={() => void (action === "finish" ? model.finish(lock) : model.checkAgain([lock]))}
+                      onClick={() => void (action === "finish" ? model.finish(lock) : action === "recover" ? model.askRecover(lock) : model.checkAgain([lock]))}
                     >
-                      {action === "finish" ? C.finish : C.checkAgain}
+                      {action === "finish" ? C.finish : action === "recover" ? C.recover : C.checkAgain}
                     </DashButton>
                   </div>
                 )}
@@ -232,6 +259,28 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" data-testid="unfinished-close" onClick={onClose}>
           {C.sheet.close}
+        </DashButton>
+      </div>
+    </Sheet>
+  );
+}
+
+/** MG's confirmation of a recover: the amount Platform's proved state showed left just now. */
+function RecoverConfirmSheet({ model, format }: { model: RecoveryModel; format: (duffs: number) => string }) {
+  useModel(model);
+  const ask = model.asking;
+  if (!ask) return null;
+  return (
+    <Sheet title={C.recoverConfirm.title} width="small" testId="recover-confirm" onClose={() => model.cancelRecover()}>
+      <p className="sheet-text" data-testid="recover-confirm-text">
+        {C.recoverConfirm.body(format(creditsAsDuffs(ask.credits)))}
+      </p>
+      <div className="sheet-actions">
+        <DashButton variant="tintedGray" size="large" data-testid="recover-confirm-cancel" onClick={() => model.cancelRecover()}>
+          {C.recoverConfirm.cancel}
+        </DashButton>
+        <DashButton variant="tintedBlue" size="large" data-testid="recover-confirm-ok" onClick={() => void model.confirmRecover()}>
+          {C.recoverConfirm.confirm}
         </DashButton>
       </div>
     </Sheet>

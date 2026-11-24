@@ -23,7 +23,17 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 
 export type RecoveryApi = Pick<
   Backend,
-  "finishTransfer" | "finishAssetLocks" | "registrationQuote" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  | "finishTransfer"
+  | "finishAssetLocks"
+  | "recoverTransferQuote"
+  | "recoverTransfer"
+  | "registrationQuote"
+  | "authorize"
+  | "revokeGrant"
+  | "lockStatus"
+  | "paymentAuthentication"
+  | "unlock"
+  | "unlockMixingOnly"
 >;
 
 /** The destinations of a set of locks: one kind, or both. */
@@ -68,6 +78,23 @@ export const RECOVERY_COPY = {
   get dismiss() {
     return t("onboarding.unfinished.dismiss");
   },
+  get recover() {
+    return t("onboarding.unfinished.recover");
+  },
+  recoverOne: (amount: string) => t("onboarding.unfinished.recoverOne", { amount }),
+  recoverSeveral: (n: number, total: string) => t("onboarding.unfinished.recoverSeveral", { count: n, total }),
+  recoverConfirm: {
+    get title() {
+      return t("onboarding.unfinished.recoverConfirm.title");
+    },
+    body: (amount: string) => t("onboarding.unfinished.recoverConfirm.body", { amount }),
+    get confirm() {
+      return t("onboarding.unfinished.recoverConfirm.confirm");
+    },
+    get cancel() {
+      return t("onboarding.unfinished.recoverConfirm.cancel");
+    },
+  },
   sheet: {
     get title() {
       return t("onboarding.unfinished.sheet.title");
@@ -78,6 +105,10 @@ export const RECOVERY_COPY = {
     },
     get close() {
       return t("onboarding.unfinished.sheet.close");
+    },
+    recoverTooSmall: (amount: string) => t("onboarding.unfinished.sheet.recoverTooSmall", { amount }),
+    get recoverFailed() {
+      return t("onboarding.unfinished.sheet.recoverFailed");
     },
     kind: messageTable("onboarding.unfinished.sheet.kind", Object.keys(en.onboarding.unfinished.sheet.kind satisfies Record<LockKind, string>) as LockKind[]),
     state: messageTable("onboarding.unfinished.sheet.state", Object.keys(en.onboarding.unfinished.sheet.state satisfies Record<UnfinishedState, string>) as UnfinishedState[]),
@@ -96,19 +127,39 @@ export const RECOVERY_COPY = {
   },
 } as const;
 
-export type CardAction = "finish" | "finishAll" | "checkAgain" | "details" | "retry" | "dismiss";
+export type CardAction = "finish" | "finishAll" | "checkAgain" | "recover" | "details" | "retry" | "dismiss";
 
 export interface CardView {
-  kind: "running" | "failed" | "ready" | "checking" | "done";
+  kind: "running" | "failed" | "ready" | "checking" | "recoverable" | "done";
   text: string;
   /** The result line of the last Finish all, shown above the rest. */
   note: string | null;
   actions: CardAction[];
-  /** The lock "Finish" is for. */
+  /** The lock "Finish" or "Recover" is for. */
   lock: UnfinishedLock | null;
 }
 
-type Action = { kind: "finish"; lock: UnfinishedLock } | { kind: "all" } | { kind: "check"; locks: UnfinishedLock[] };
+type Action =
+  | { kind: "finish"; lock: UnfinishedLock }
+  | { kind: "all" }
+  | { kind: "check"; locks: UnfinishedLock[] }
+  | { kind: "recover"; lock: UnfinishedLock; credits: string };
+
+/** A recover asked for: the lock and the credits Platform's proved state showed left just now. */
+export interface RecoverAsk {
+  lock: UnfinishedLock;
+  credits: string;
+}
+
+/** What a recover of a lock came to, when it moved nothing: too small to move, or it failed. */
+export type RecoverNote = { kind: "tooSmall"; credits: string } | { kind: "failed" };
+
+/** Credits as the duffs they are worth, for the DASH formatter (rounded down). */
+export const creditsAsDuffs = (credits: string): number => Number(BigInt(credits) / 1000n);
+
+/** A transfer to Shielded Platform proved partly used: listed whatever its origin (this device's own
+ * refused shield is no pending shield), and only ever recovered. */
+export const partlyUsed = (l: UnfinishedLock): boolean => l.state === "recoverable" || l.remainingCredits !== null;
 
 export type RecoveryState =
   | { kind: "idle" }
@@ -121,7 +172,7 @@ export type RowResult = LockFinish;
 
 export const lockKey = (l: Pick<UnfinishedLock, "kind" | "txid" | "vout">) => `${l.kind}:${l.txid}:${l.vout}`;
 
-export const restoredOf = (data: UnfinishedTransfers | null | undefined): UnfinishedLock[] => data?.locks.filter((l) => l.origin === "restored") ?? [];
+export const restoredOf = (data: UnfinishedTransfers | null | undefined): UnfinishedLock[] => data?.locks.filter((l) => l.origin === "restored" || partlyUsed(l)) ?? [];
 
 /** `data` without the locks the card already shows as this install's pending shields. */
 export function withoutPendingShields(data: UnfinishedTransfers | null | undefined, pending: readonly { txid: string }[] | null | undefined): UnfinishedTransfers | null | undefined {
@@ -158,6 +209,15 @@ export function cardView(
     return { kind: "ready", text: RECOVERY_COPY.several(ready.length, duffs(total), lockKinds(ready)), note, actions: ["finishAll", "details"], lock: null };
   }
   if (checking.length > 0) return { kind: "checking", text: RECOVERY_COPY.checking(checking.length), note, actions: ["checkAgain", "details"], lock: null };
+  const recoverable = restored.filter((l) => l.state === "recoverable" && l.remainingCredits !== null);
+  if (recoverable.length === 1) {
+    const [lock] = recoverable;
+    return { kind: "recoverable", text: RECOVERY_COPY.recoverOne(duffs(creditsAsDuffs(lock.remainingCredits ?? "0"))), note, actions: ["recover", ...details], lock };
+  }
+  if (recoverable.length > 1) {
+    const total = recoverable.reduce((n, l) => n + BigInt(l.remainingCredits ?? "0"), 0n);
+    return { kind: "recoverable", text: RECOVERY_COPY.recoverSeveral(recoverable.length, duffs(creditsAsDuffs(String(total)))), note, actions: ["details"], lock: null };
+  }
   return note === null ? null : { kind: "done", text: note, note: null, actions: ["dismiss"], lock: null };
 }
 
@@ -201,8 +261,12 @@ export function onRecoverySettled(f: () => void): () => void {
 
 export class RecoveryModel extends Model {
   state: RecoveryState = { kind: "idle" };
-  /** Per lock: what its last finish came to in this session. */
-  results = new Map<string, { lock: UnfinishedLock; result: RowResult }>();
+  /** Per lock: what its last finish came to in this session (`recovered`: a recover's). */
+  results = new Map<string, { lock: UnfinishedLock; result: RowResult; recovered?: boolean }>();
+  /** Per lock: a recover that moved nothing. */
+  notes = new Map<string, RecoverNote>();
+  /** The recover waiting for the user's confirmation. */
+  asking: RecoverAsk | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -236,6 +300,39 @@ export class RecoveryModel extends Model {
 
   retry(): Promise<void> {
     return this.state.kind === "failed" ? this.#run(this.state.retry) : Promise.resolve();
+  }
+
+  /** Reads what is left on a partly used lock from Platform's proved state now; enough to move asks
+   * the user to confirm (`asking`). */
+  async askRecover(lock: UnfinishedLock): Promise<void> {
+    if (this.running) return;
+    const key = lockKey(lock);
+    this.notes.delete(key);
+    this.#set({ kind: "running" });
+    try {
+      const quote = await this.api.recoverTransferQuote(this.walletId, lock.txid, lock.vout);
+      if (quote.kind === "ready") this.asking = { lock, credits: quote.credits };
+      else if (quote.kind === "tooSmall") this.notes.set(key, { kind: "tooSmall", credits: quote.credits });
+      else if (quote.kind === "finished") {
+        this.results.set(key, { lock, result: { kind: "applied" }, recovered: true });
+        for (const f of settledListeners) queueMicrotask(f);
+      } else this.notes.set(key, { kind: "failed" });
+    } catch {
+      this.notes.set(key, { kind: "failed" });
+    }
+    this.#set({ kind: "idle" });
+  }
+
+  /** The user confirmed: the recover runs under a grant of exactly the quoted credits. */
+  confirmRecover(): Promise<void> {
+    const ask = this.asking;
+    this.asking = null;
+    return ask ? this.#run({ kind: "recover", lock: ask.lock, credits: ask.credits }) : Promise.resolve();
+  }
+
+  cancelRecover() {
+    this.asking = null;
+    this.changed();
   }
 
   /** Drops a failure whose locks are no longer listed. */
@@ -276,6 +373,7 @@ export class RecoveryModel extends Model {
       if (report?.value.byKind.some((k) => k.kind === "platformAddress")) touchedPlatform();
       return report ? { kind: "done", text: REG_COPY.finished(report.value) } : { kind: "idle" };
     }
+    if (action.kind === "recover") return this.#recover(action, since, started, touchedPlatform);
     const locks = action.kind === "finish" ? [action.lock] : action.locks;
     for (const lock of locks) {
       if (lock.kind === "platformAddress") touchedPlatform();
@@ -291,6 +389,24 @@ export class RecoveryModel extends Model {
     }
     const only = locks.length === 1 ? this.results.get(lockKey(locks[0]))?.result : undefined;
     return only?.kind === "reportedUsed" ? { kind: "done", text: RECOVERY_COPY.sheet.done.reportedUsed } : { kind: "idle" };
+  }
+
+  async #recover({ lock, credits }: { lock: UnfinishedLock; credits: string }, since: number, started: () => void, touchedPlatform: () => void): Promise<RecoveryState> {
+    const key = lockKey(lock);
+    try {
+      const got = await this.grants.withGrant(
+        platformOp({ maxDuffs: 1, maxCredits: credits }),
+        this.walletId,
+        (grant) => (started(), touchedPlatform(), this.api.recoverTransfer(this.walletId, lock.txid, lock.vout, grant.id)),
+        since,
+      );
+      if (!got) return { kind: "idle" };
+      if (got.value.kind === "applied" || got.value.kind === "reportedUsed") this.results.set(key, { lock, result: got.value, recovered: true });
+      else this.notes.set(key, { kind: "failed" });
+    } catch {
+      this.notes.set(key, { kind: "failed" });
+    }
+    return { kind: "idle" };
   }
 
   #set(state: RecoveryState) {
