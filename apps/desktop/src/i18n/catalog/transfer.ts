@@ -67,7 +67,7 @@ export const transfer = {
       debitOnly: "Dash Platform has not said whether the move of {taken} went through. Activity shows it when it does. Do not move again until it does.",
     },
     replaced: { title: "Replaced by a retry", text: "This move was replaced by a retry. Activity shows the retry." },
-    failed: { title: "The move did not go through", text: "These credits were already used by another payment or move from your Platform balance. Check Activity for details." },
+    failed: { title: "The move did not go through", text: "Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again." },
     unseen: "Your move has an update.",
     waiting: {
       text: "A move to your Dash wallet is not confirmed yet. Do not move again until Activity shows that it went through.",

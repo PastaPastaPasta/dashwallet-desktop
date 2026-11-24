@@ -276,7 +276,7 @@ for (const theme of THEMES) {
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
     });
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
-    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used by another payment or move from your Platform balance. Check Activity for details.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again.");
     await moveShot(page, theme, "exit-settled-failed");
     expect(errors).toEqual([]);
   });
@@ -289,7 +289,7 @@ for (const theme of THEMES) {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
-    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("These credits were already used by another payment or move from your Platform balance. Check Activity for details.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again.");
     await moveShot(page, theme, "exit-lost");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
