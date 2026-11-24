@@ -39,6 +39,12 @@ pub struct PlatformAddressBalance {
     pub synced_at: Option<u64>,
     /// A sync pass runs now.
     pub syncing: bool,
+    /// The network's protocol version as the session last knew it has
+    /// address funds transitions: a send, a top-up of an identity or a
+    /// move from these addresses. Below it they are refused
+    /// (`platform.feature_off`).
+    #[serde(default)]
+    pub sends_active: bool,
 }
 
 /// One funded Platform address.

@@ -492,10 +492,14 @@ impl DashPay {
     /// Tops `identity` up with `amount` of the Platform addresses' credits
     /// under `grant` (a `PlatformOp` grant or a `PlatformAddressMove`
     /// lease): an address move to the identity (`platform_moves.rs`).
+    /// `fee_input`: the quote's input 0; a plan that takes the fee from
+    /// another address or claims another amount of it is
+    /// `credits.quote_changed`, and the grant is kept.
     pub async fn top_up_from_platform(
         &self,
         identity: String,
         amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
         let wallet_id = self.wallet_id;
@@ -504,7 +508,7 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            let ask = (identity.as_str(), amount);
+            let ask = (identity.as_str(), amount, fee_input.as_ref());
             platform_moves::top_up(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await

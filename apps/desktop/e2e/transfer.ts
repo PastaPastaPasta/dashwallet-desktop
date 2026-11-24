@@ -49,8 +49,11 @@ async function confirm(page: Page, route: TransferRoute, amount: string) {
   await view(page, route, "steps");
 }
 
-const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
-const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
+const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", shieldedToPlatform: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
+const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", shieldedToPlatform: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
+
+/** The fixture's Platform receive address, where Shielded → Platform pays. */
+export const PLATFORM_RECEIVE = "tdash1k9w4v7d2n8x3c5m0q6z8r2t4y6u8p0s2a4d6f8h0";
 
 async function run(page: Page, route: TransferRoute) {
   await confirm(page, route, AMOUNT[route]);
@@ -355,6 +358,118 @@ export const TRANSFER_STATES: TransferState[] = [
     },
   },
 
+  // Shielded → Platform: to the wallet's own Platform receive address.
+  {
+    id: "shieldedToPlatform-idle",
+    scenario: "funded",
+    go: async (page) => {
+      await openTransfer(page, "shieldedToPlatform");
+      await view(page, "shieldedToPlatform", "form");
+      await expect(page.getByTestId("transfer-from")).toHaveAttribute("data-pool", "shielded");
+      await expect(page.getByTestId("transfer-to")).toHaveAttribute("data-pool", "platform");
+      await expect(page.getByTestId("transfer-body")).toContainText("Move Shielded funds to your Platform address.");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+      // Platform → Shielded has no command: no swap.
+      await expect(page.getByTestId("transfer-swap")).toBeDisabled();
+    },
+  },
+  {
+    id: "shieldedToPlatform-unavailable",
+    scenario: "shielded-empty",
+    go: async (page) => {
+      await openTransfer(page, "shieldedToPlatform");
+      await expect(page.getByTestId("transfer-unavailable")).toContainText("Nothing in Shielded to send yet.");
+      await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      expect(await callsOf(page, "unshield_to_platform_quote")).toBe(0);
+    },
+  },
+  {
+    id: "shieldedToPlatform-insufficient",
+    scenario: "funded",
+    go: async (page) => {
+      await typed(page, "shieldedToPlatform", "5");
+      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough in Shielded: /);
+      await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+    },
+  },
+  {
+    id: "shieldedToPlatform-max",
+    scenario: "funded",
+    go: async (page) => {
+      await openTransfer(page, "shieldedToPlatform");
+      await maxFills(page, "unshield_to_platform_quote", /^1\.249739170*$/);
+      expect(await callsOf(page, "unshield_quote")).toBe(0);
+    },
+  },
+  {
+    id: "shieldedToPlatform-confirm",
+    scenario: "funded",
+    go: async (page) => {
+      await confirm(page, "shieldedToPlatform", "0.5");
+      await expect(page.getByTestId("shielded-quote-amount")).toContainText("0.5");
+      // Credits, not duffs: nothing reaches a Core address.
+      await expect(page.getByTestId("shielded-quote-receive")).toHaveCount(0);
+      await expect(page.getByTestId("shielded-slow")).toBeVisible();
+    },
+  },
+  { id: "shieldedToPlatform-progress", scenario: "funded", go: (page) => inProgress(page, "shieldedToPlatform", "unshield_to_platform", (p) => expect(p.getByTestId("shielded-progress")).toBeVisible()) },
+  {
+    id: "shieldedToPlatform-done",
+    scenario: "funded",
+    go: async (page) => {
+      await run(page, "shieldedToPlatform");
+      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+      await expect(page.getByTestId("shielded-outcome-text")).toHaveText(`Moved to your Platform address ${PLATFORM_RECEIVE}.`);
+    },
+  },
+  {
+    id: "shieldedToPlatform-failed",
+    scenario: "transfer-shielded-refused",
+    go: async (page) => {
+      await run(page, "shieldedToPlatform");
+      await expect(page.getByTestId("shielded-refusal")).toBeVisible();
+    },
+  },
+  {
+    id: "shieldedToPlatform-may-be-out",
+    scenario: "funded",
+    go: async (page) => {
+      await page.evaluate(() => window.__dwFixture!.fail("unshield_to_platform", "artifact"));
+      await run(page, "shieldedToPlatform");
+      await expect(page.getByTestId("shielded-refusal")).toHaveText("This move may still go through. Until Dash Wallet knows, these Shielded funds stay held. Don't move them again until Activity shows this move as done or failed.");
+      await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
+    },
+  },
+  {
+    id: "shieldedToPlatform-pending",
+    scenario: "funded",
+    go: async (page) => {
+      await page.evaluate(() => void (window.__dwFixture!.world.pending.shielded!.next = "unknown"));
+      await run(page, "shieldedToPlatform");
+      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Not confirmed yet");
+      // No retry: the outcome's only action is Close.
+      await expect(page.getByTestId("shielded-body").getByRole("button")).toHaveText(["Close"]);
+    },
+  },
+  {
+    id: "shieldedToPlatform-mainnet",
+    scenario: "transfer-mainnet",
+    go: async (page) => {
+      await openTransfer(page, "shieldedToCore");
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-platform").click();
+      await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "unsupported");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.");
+      await expect(page.getByTestId("transfer-unavailable")).toHaveClass("field-hint");
+      await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
+      expect(await callsOf(page, "unshield_to_platform_quote")).toBe(0);
+      // The other routes still run on mainnet.
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-core").click();
+      await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToCore");
+    },
+  },
+
   // Platform → Dash wallet: its whole balance.
   {
     id: "platformToCore-idle",
@@ -458,13 +573,13 @@ export const TRANSFER_STATES: TransferState[] = [
 
   // The sheet's own rows.
   {
-    id: "shieldedPlatform-unsupported",
+    id: "platformShielded-unsupported",
     scenario: "funded",
     go: async (page) => {
-      await openTransfer(page, "shieldedToCore");
+      await openTransfer(page, "platformToCore");
       await page.getByTestId("transfer-to").click();
-      await page.getByTestId("transfer-picker-platform").click();
-      await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving straight between Shielded and Platform isn't available on desktop yet. Move through your Dash wallet.");
+      await page.getByTestId("transfer-picker-shielded").click();
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText("Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.");
       // Information, not a failure: the hint style the other unavailable lines use.
       await expect(page.getByTestId("transfer-unavailable")).toHaveClass("field-hint");
       await expect(page.getByTestId("transfer-continue")).toHaveCount(0);

@@ -25,6 +25,7 @@ import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { NetworkSwitch } from "./generated/NetworkSwitch";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
@@ -292,6 +293,10 @@ export interface Backend {
   /** Shielded → Core; `to` null: the wallet's next receive address. */
   unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
   unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  /** Shielded → one of the wallet's own Platform addresses; `to` null: its receive address. Off on
+   * mainnet (`platform.feature_off`). */
+  unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
+  unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
   /** The account's activity, pending first (`offset`, `limit` ≤ 500). */
   shieldedHistory(walletId: string, offset: number, limit: number): Promise<ShieldedActivity[] | null>;
   /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */
@@ -628,7 +633,7 @@ export interface Backend {
   /** C-routes D-C3: what a top-up of `identity` from the Platform addresses gives, its fee and grant; `all` keeps the fee band on the first input. */
   creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote>;
   /** Tops up `identity` from the Platform addresses under the quote's `platformOp` grant. */
-  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, grant: string): Promise<TopUpFromPlatformOutcome>;
+  creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;
