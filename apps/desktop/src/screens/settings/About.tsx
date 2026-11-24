@@ -43,7 +43,7 @@ export function ProjectLinksView({ failed, onOpen }: { failed: { url: string | n
             {t(`settings.about.links.${link}`)}
           </DashButton>
           {link === "issues" && (
-            <p className="settings-hint" data-testid="settings-link-issues-hint">
+            <p className="field-hint settings-hint" data-testid="settings-link-issues-hint">
               {t("settings.about.links.issuesHint")}
             </p>
           )}
