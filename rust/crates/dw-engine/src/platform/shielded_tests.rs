@@ -2746,6 +2746,48 @@ fn a_note_seen_after_the_first_scan_rests_three_hours_and_the_first_scans_at_onc
     assert_eq!(rested(&later, end), (true, None));
 }
 
+/// A payment another wallet sent, found by a pass after the wallet's first
+/// scan, is dated when the engine first saw it, before and after the rest
+/// clock records it; one restored in the first scan stays undated, and so
+/// does a row a scan derived that is not incoming.
+#[test]
+fn a_shielded_payment_received_after_the_first_scan_is_dated_when_first_seen() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        activity: vec![row(1, Direction::In, 0)],
+        ..FakeShielded::default()
+    });
+    let observe = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            pool::observe_rest(&*lib, true, crate::events::unix_now())
+                .await
+                .unwrap()
+        })
+    };
+    let dates = |lib: &Arc<FakeShielded>| {
+        run(&fx, lib, |_, lib| async move {
+            (pool::history(&*lib, 0, 10).await.unwrap().into_iter())
+                .map(|a| (a.id, a.created_at))
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+    };
+    let id = |n: u32| hex::encode(row(n, Direction::In, 0).id);
+    assert_eq!(dates(&lib)[&id(1)], None, "before the first scan");
+    observe(&lib);
+    assert_eq!(dates(&lib)[&id(1)], None, "restored");
+
+    let before = crate::events::unix_now();
+    lib.rows.lock().unwrap().push(row(2, Direction::In, 0));
+    lib.rows.lock().unwrap().push(row(3, Direction::Out, 0));
+    let unrecorded = dates(&lib)[&id(2)].expect("dated before the clock records it");
+    assert!(unrecorded >= before);
+    let recorded = observe(&lib).flatten().unwrap();
+    let shown = dates(&lib);
+    assert_eq!(shown[&id(2)], Some(recorded));
+    assert_eq!(shown[&hex::encode(row(3, Direction::Out, 0).id)], None);
+    assert_eq!(shown[&id(1)], None);
+}
+
 /// Ruling M9: a note the clock's write dropped (a removed wallet's insert
 /// is ignored, `Ok`) is first seen now, never rested.
 #[test]
