@@ -260,7 +260,14 @@ export function ConfirmSheet({
     let authId: string;
     if (contact?.acceptsToo) {
       try {
-        lease = await acceptUnderLease(b, { walletId, identity: contact.identity, from: contact.payee.contact, spendCap: total, credential });
+        lease = await acceptUnderLease(b, {
+          walletId,
+          identity: contact.identity,
+          from: contact.payee.contact,
+          spendCap: total,
+          credential,
+          windowed: credential.kind === "unencrypted" && lock.data?.encrypted === true,
+        });
       } catch (e) {
         if (e instanceof AcceptFailed && e.stage === "authorize") return refused(e.cause);
         const text = acceptFailedText(e instanceof AcceptFailed ? e.cause : e);
