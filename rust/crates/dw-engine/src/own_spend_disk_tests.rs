@@ -4503,9 +4503,9 @@ fn abandoning_an_unlocked_payment_a_chainlock_beat_under_a_locked_child_drops_it
     );
 }
 
-/// As above, but the child is in the ChainLocked block rather than
-/// InstantSend-locked: a mined descendant refuses the abandon whatever beat
-/// the payment, and its other output stays held (#446).
+/// As above, but the child is in a block rather than InstantSend-locked: a
+/// mined descendant refuses the abandon whatever beat the payment, and its
+/// other output stays held (#446).
 #[test]
 fn abandoning_an_unlocked_payment_a_chainlock_beat_under_a_mined_child_is_refused() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -4541,23 +4541,23 @@ fn abandoning_an_unlocked_payment_a_chainlock_beat_under_a_mined_child_is_refuse
         ),
     );
     mempool(&engine, &session, id, &child);
+    mined(&engine, &session, id, TIP + 1, vec![child.clone()]);
     wait_stored(&session, id, &[payment.txid(), child.txid()]);
     let left = OutPoint::new(payment.txid(), 1);
 
     let session = reopen(&engine, session);
     assert!(held(&engine, &session, id).contains(&left));
     let winner = rival(&engine, &session, id, &paid, 1);
-    mined(
-        &engine,
-        &session,
-        id,
-        TIP + 1,
-        vec![winner.clone(), child.clone()],
+    assert!(
+        (session.hub.history.get(&id, &child.txid()))
+            .is_some_and(|e| e.context.block_info().is_some()),
+        "the history holds the child in its block"
     );
+    mined(&engine, &session, id, TIP + 2, vec![winner.clone()]);
     wait_stored(&session, id, &[winner.txid()]);
-    let won = block_hash(&[winner, child.clone()]);
-    chain_lock(&engine, &session, id, TIP + 1, won);
-    header_chain(&session, &[(TIP + 1, won)]);
+    let won = block_hash(&[winner]);
+    chain_lock(&engine, &session, id, TIP + 2, won);
+    header_chain(&session, &[(TIP + 2, won)]);
     start_spv(&engine, &session);
     let extras = engine
         .block_on(session.tx_detail_extras(id, payment.txid()))
