@@ -3294,9 +3294,13 @@ pub(crate) async fn quote(
     amount: WithdrawAmount,
 ) -> Result<MoveToCoreQuote, CreditsError> {
     let network = session.vault.network();
-    let pool = pool(wallet).await?;
     let moves = Store::of(session, wallet_id)?.moves().await?;
+    held_exit_open(network, &moves)?;
+    let pool = pool(wallet).await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if !(moves.iter()).any(|m| m.holds() && !m.reached(&seen)) {
+        address_sends_open(network)?;
+    }
     // As the move will decide, before anything is asked of the user: a
     // send that may still execute holds the next move (it must have the
     // send's exact terms, which no move has).
@@ -3533,6 +3537,16 @@ pub(crate) fn address_sends_open(network: Network) -> Result<(), PlatformError> 
     Ok(())
 }
 
+/// [`address_sends_open`], or, with the flag off, a record of `moves`
+/// that holds the addresses: a move signed before, which only its exit
+/// (a move at its very inputs and nonces) or its exact retry may follow.
+fn held_exit_open(network: Network, moves: &[MoveRecord]) -> Result<(), PlatformError> {
+    match address_sends_open(network) {
+        Err(_) if moves.iter().any(MoveRecord::holds) => Ok(()),
+        open => open,
+    }
+}
+
 /// [`address_sends_open`], or, with the flag off, a send that `retry_of`
 /// names as the exact retry (the same recipient and amount) of a stored
 /// send that still holds; read from the local store only.
@@ -3671,6 +3685,7 @@ pub(crate) async fn move_to_core(
     (amount, to): (WithdrawAmount, &str),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
+    held_exit_open(session.vault.network(), &records(session, wallet_id).await?)?;
     let (record, _) = run(
         net,
         session,
@@ -3826,7 +3841,8 @@ pub(crate) async fn run(
     let balances = proved_balances(&pool, &seen, network);
     // With the flag off only a held move's exit or a held send's exact
     // retry signs: anything else is the flag's refusal, never a new plan.
-    let off = matches!(target, Target::Platform(_)) && address_sends_open(network).is_err();
+    let off = matches!(target, Target::Core(_) | Target::Platform(_))
+        && address_sends_open(network).is_err();
     let flag = || CreditsError::from(address_sends_open(network).unwrap_err());
     // A retry of a send that landed pays nothing and signs nothing.
     if let (Target::Platform(to), Some(id)) = (target, retry_of) {
@@ -3971,7 +3987,10 @@ pub(crate) async fn run(
         });
     }
     let mut script = match target {
-        Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
+        Target::Core(to) => match own_core_destination(session, wallet_id, network, to).await {
+            Err(_) if off => return Err(flag()),
+            script => Some(script?),
+        },
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
     // The authority before anything is redeemed: a refusal keeps the grant.

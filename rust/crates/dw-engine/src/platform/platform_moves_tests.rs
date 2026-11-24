@@ -477,6 +477,8 @@ pub(crate) struct FakeMoves {
     pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
     /// The withdrawal document reads made so far.
     withdrawal_reads: AtomicUsize,
+    /// The `MoveNet` calls made so far.
+    calls: AtomicUsize,
 }
 
 impl FakeMoves {
@@ -506,7 +508,13 @@ impl FakeMoves {
             document_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
         })
+    }
+
+    /// The `MoveNet` calls made so far.
+    pub(crate) fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 
     /// The withdrawal document reads made so far: none without a payout.
@@ -768,10 +776,12 @@ impl FakeMoves {
 
 impl MoveNet for FakeMoves {
     fn version(&self) -> &'static PlatformVersion {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         *self.version.lock().unwrap()
     }
 
     async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.stop_in_read.swap(false, Ordering::SeqCst) {
             panic!("the process stops");
         }
@@ -800,6 +810,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let effect = Effect::Withdrawal(script.as_bytes().to_vec());
         (self
             .broadcast(inputs, None, (fee_strategy, effect), signer)
@@ -808,6 +819,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.withdrawal_reads.fetch_add(1, Ordering::SeqCst);
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let height = self.height.load(Ordering::SeqCst);
@@ -823,6 +835,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         (self
             .broadcast(inputs, Some(to), (fee_strategy, Effect::Moves), signer)
             .await)
@@ -835,6 +848,7 @@ impl MoveNet for FakeMoves {
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<u64, PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         // dpp's constructor fixes the fee on input 0.
         let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
         (self
@@ -845,6 +859,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.documents_down.load(Ordering::SeqCst) {
             return Err(PlatformError::Unavailable);
         }
@@ -875,7 +890,15 @@ pub(in crate::platform) struct World {
 
 impl World {
     pub(crate) fn new() -> Self {
-        let f = Fixture::new(0);
+        Self::over(Fixture::new(0))
+    }
+
+    /// [`Self::new`] with the session on `network`.
+    pub(crate) fn on(network: crate::DashNetwork) -> Self {
+        Self::over(Fixture::on(network, 0))
+    }
+
+    fn over(f: Fixture) -> Self {
         let net = FakeMoves::new();
         let mut w = Self {
             f,
@@ -3658,3 +3681,6 @@ mod top_up;
 
 #[path = "platform_register_tests.rs"]
 mod register;
+
+#[path = "platform_mainnet_flag_tests.rs"]
+mod mainnet_flag;
