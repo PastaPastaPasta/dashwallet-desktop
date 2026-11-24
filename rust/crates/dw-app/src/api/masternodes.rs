@@ -6,6 +6,8 @@
 
 use zeroize::Zeroizing;
 
+use dw_engine::DashNetwork;
+
 use crate::dto::masternodes::{
     AttachedKeyRoleName, EvonodeCredits, JoinSharedRequest, KeyCheckName, ListedMasternode,
     MasternodeDetail, MasternodeKeyInfo, MasternodeKeyRoleName, MasternodeListState,
@@ -13,7 +15,7 @@ use crate::dto::masternodes::{
     SharedCapability, SharedImport, SharedMessage, SharedOutcome, SharedSession, UnreadableSession,
     StartSharedRequest, UntrackOutcome, UpdateRegistrarPreview, UpdateRegistrarRequest,
 };
-use crate::error::AppError;
+use crate::error::{AppCode, AppError, ErrorData};
 use crate::ipc::commands;
 use crate::shell::files::FilePurpose;
 use crate::state::{AppState, parse_wallet_id};
@@ -54,16 +56,8 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     ("Masternodes::retry_withdrawal", "deferred (MG-10 S4)"),
     ("Masternodes::send_maintenance", "deferred (MG-10 S6)"),
-    (
-        "Masternodes::send_shared_registration",
-        "deferred (MG-10 S5b): needs the recovery read (EP 4)",
-    ),
     ("Masternodes::send_standby", "deferred (MG-10 S6)"),
     ("Masternodes::shared_shares", "deferred (MG-10 S6)"),
-    (
-        "Masternodes::sign_shared_funding",
-        "deferred (MG-10 S5b): needs the recovery read (EP 4)",
-    ),
     ("Masternodes::standby", "deferred (MG-10 S6)"),
     (
         "Masternodes::start_dissolve_together",
@@ -405,6 +399,39 @@ commands! {
         Ok(outcome.into())
     }
 
+    /// A participant at `combined` signs its funding inputs into the
+    /// registration, charged its `debit`. Takes a `masternodeOp` grant of at
+    /// least that `debit`. Refused on mainnet before the engine is called
+    /// (`app.shared_send_off`).
+    #[facade("Masternodes::sign_shared_funding")]
+    fn mn_shared_sign(state, wallet_id: String, session: String, grant: String) -> SharedOutcome {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        require_shared_send(&state).await?;
+        let outcome = state
+            .masternodes()
+            .await?
+            .sign_shared_funding(wallet, session, grant)
+            .await?;
+        Ok(outcome.into())
+    }
+
+    /// The coordinator signs its own inputs last and sends the registration
+    /// at `combined`, or sends the saved registration again at `sent`,
+    /// charged its `debit`. Takes a `masternodeOp` grant of at least that
+    /// `debit`. Refused on mainnet before the engine is called
+    /// (`app.shared_send_off`).
+    #[facade("Masternodes::send_shared_registration")]
+    fn mn_shared_send(state, wallet_id: String, session: String, grant: String) -> SharedOutcome {
+        let wallet = parse_wallet_id(&wallet_id)?;
+        require_shared_send(&state).await?;
+        let outcome = state
+            .masternodes()
+            .await?
+            .send_shared_registration(wallet, session, grant)
+            .await?;
+        Ok(outcome.into())
+    }
+
     /// Deletes a session nothing of which may be out and releases its coins
     /// (`SharedSession.discardable`).
     #[facade("Masternodes::discard_shared_session")]
@@ -459,6 +486,61 @@ commands! {
     }
 }
 
+/// Whether this version sends shared-masternode transactions on `network`:
+/// everywhere but mainnet (MG's ruling for this release). [`SHARED_SEND_GATE`]
+/// lists what it gates: `mn_shared_dissolve`, `mn_shared_send_standby`,
+/// `mn_shared_send_maintenance`, and `sign_shared_funding` once a command
+/// binds it (a participant's funding signature lets the coordinator send).
+/// Reads, standby create and export, approvals, the maintenance starts and
+/// `abandon_shared_session` send nothing of a share and are never gated.
+pub(crate) fn shared_sends_allowed(network: &DashNetwork) -> bool {
+    !matches!(network, DashNetwork::Mainnet)
+}
+
+/// [`shared_sends_allowed`] for the open session's network, as an error.
+async fn require_shared_send(state: &AppState) -> Result<(), AppError> {
+    let session = state.session().await?;
+    let network = session.network();
+    if shared_sends_allowed(network) {
+        return Ok(());
+    }
+    Err(AppError::app(
+        AppCode::SharedSendOff,
+        "this version sends shared-masternode transactions on test networks only",
+    )
+    .with(ErrorData::SharedSendNetwork {
+        network: network.dir_name(),
+    }))
+}
+
+/// How a shared-masternode call stands against [`shared_sends_allowed`].
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendGate {
+    /// The command refuses on mainnet before the engine is called.
+    Gated,
+    /// Not bound yet; its command must check the gate when it is.
+    GatedWhenBound,
+    /// The command never checks it.
+    Never,
+}
+
+/// Every shared-masternode command or engine call that signs or reserves,
+/// with its gate. `tests::the_send_gate_table_matches_the_source` checks
+/// each command's body against it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const SHARED_SEND_GATE: &[(&str, SendGate)] = &[
+    ("Masternodes::dissolve", SendGate::GatedWhenBound),
+    ("Masternodes::send_standby", SendGate::GatedWhenBound),
+    ("Masternodes::send_maintenance", SendGate::GatedWhenBound),
+    ("mn_shared_sign", SendGate::Gated),
+    ("mn_shared_send", SendGate::Gated),
+    ("Masternodes::update_share", SendGate::GatedWhenBound),
+    ("Masternodes::abandon_shared_session", SendGate::Never),
+    ("mn_shared_lock", SendGate::Never),
+    ("mn_shared_approve", SendGate::Never),
+];
+
 /// The chosen file's text; `null` on cancel. Invalid UTF-8 is refused as a
 /// message that isn't a shared-masternode one, without its bytes.
 async fn open_shared_file(state: &AppState) -> Result<Option<String>, AppError> {
@@ -480,4 +562,79 @@ async fn open_shared_file(state: &AppState) -> Result<Option<String>, AppError> 
 /// message.
 fn file_messages(text: String) -> Vec<String> {
     dw_engine::masternodes::standby_file_transactions(&text).unwrap_or_else(|_| vec![text])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_sends_are_off_on_mainnet_only() {
+        assert!(!shared_sends_allowed(&DashNetwork::Mainnet));
+        assert!(shared_sends_allowed(&DashNetwork::Testnet));
+        assert!(shared_sends_allowed(&DashNetwork::Regtest));
+        assert!(shared_sends_allowed(&DashNetwork::Devnet {
+            name: "paloma".into()
+        }));
+    }
+
+    /// A command's body in this file, from its `fn` to the next command's
+    /// doc comment.
+    fn body<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("{name} isn't declared here"));
+        let rest = &src[start..];
+        let end = rest.find("\n    ///").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// The engine calls that hand a shared-masternode transaction to the
+    /// network, or sign what lets another wallet do it.
+    const SEND_CALLS: &[&str] = &[
+        ".dissolve(",
+        ".send_standby(",
+        ".send_maintenance(",
+        ".sign_shared_funding(",
+        ".send_shared_registration(",
+        ".update_share(",
+    ];
+
+    #[test]
+    fn the_send_gate_table_matches_the_source() {
+        let src = include_str!("masternodes.rs");
+        let commands = &src[..src.find("\n/// Whether this version sends").unwrap()];
+        for (name, gate) in SHARED_SEND_GATE {
+            if let Some(call) = name.strip_prefix("Masternodes::") {
+                // Unbound: excluded with a reason, claimed by no command.
+                assert!(
+                    EXCLUDED.iter().any(|(m, _)| m == name),
+                    "{name} is bound: give its command a row"
+                );
+                assert!(!commands.contains(&format!(".{call}(")), "{name} is called");
+                continue;
+            }
+            assert!(NAMES.contains(name), "{name} isn't a command");
+            let checks = body(commands, name).contains("require_shared_send(");
+            assert_eq!(checks, *gate == SendGate::Gated, "{name}");
+        }
+        // Every command that makes a send call is in the table, gated.
+        for name in NAMES {
+            let b = body(commands, name);
+            if SEND_CALLS.iter().any(|c| b.contains(c)) {
+                assert!(
+                    SHARED_SEND_GATE.contains(&(name, SendGate::Gated)),
+                    "{name} sends but isn't gated"
+                );
+            }
+        }
+        // C1, C2: the funding signature and the registration's send are
+        // gated; abandon never.
+        assert!(SHARED_SEND_GATE.contains(&("mn_shared_sign", SendGate::Gated)));
+        assert!(SHARED_SEND_GATE.contains(&("mn_shared_send", SendGate::Gated)));
+        assert!(SHARED_SEND_GATE.contains(&(
+            "Masternodes::abandon_shared_session",
+            SendGate::Never
+        )));
+    }
 }

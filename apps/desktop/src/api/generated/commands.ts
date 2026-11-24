@@ -208,6 +208,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnreadableSession } from "./UnreadableSession";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -2914,6 +2915,14 @@ export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>
 }
 
 /**
+ * Sessions whose stored record no longer reads, newest first: each can
+ * be discarded while nothing of it may be out.
+ */
+export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
+  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
+}
+
+/**
  * One session, its stage derived now.
  */
 export function mnSharedSession(walletId: string, session: string): Promise<SharedSession> {
@@ -2971,6 +2980,27 @@ export function mnSharedUnlock(walletId: string, session: string): Promise<Share
  */
 export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
   return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
+}
+
+/**
+ * A participant at `combined` signs its funding inputs into the
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of at
+ * least that `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_sign", { walletId, session, grant });
+}
+
+/**
+ * The coordinator signs its own inputs last and sends the registration
+ * at `combined`, or sends the saved registration again at `sent`,
+ * charged its `debit`. Takes a `masternodeOp` grant of at least that
+ * `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_send", { walletId, session, grant });
 }
 
 /**
@@ -3472,6 +3502,7 @@ export type CommandArgs = {
   mn_discard_operation: { walletId: string; operation: string };
   mn_shared_capability: { walletId: string };
   mn_shared_sessions: { walletId: string };
+  mn_shared_unreadable: { walletId: string };
   mn_shared_session: { walletId: string; session: string };
   mn_shared_start: { walletId: string; request: StartSharedRequest };
   mn_shared_set_fee: { walletId: string; session: string; fee: number };
@@ -3480,6 +3511,8 @@ export type CommandArgs = {
   mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
+  mn_shared_sign: { walletId: string; session: string; grant: string };
+  mn_shared_send: { walletId: string; session: string; grant: string };
   mn_shared_discard: { walletId: string; session: string };
   mn_shared_import: { walletId: string; text: string; target: string | null };
   mn_shared_import_file: { walletId: string; target: string | null };
@@ -3828,6 +3861,7 @@ export type CommandResults = {
   mn_discard_operation: null;
   mn_shared_capability: SharedCapability;
   mn_shared_sessions: Array<SharedSession>;
+  mn_shared_unreadable: Array<UnreadableSession>;
   mn_shared_session: SharedSession;
   mn_shared_start: SharedOutcome;
   mn_shared_set_fee: SharedOutcome;
@@ -3836,6 +3870,8 @@ export type CommandResults = {
   mn_shared_lock: SharedOutcome;
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
+  mn_shared_sign: SharedOutcome;
+  mn_shared_send: SharedOutcome;
   mn_shared_discard: null;
   mn_shared_import: SharedImport;
   mn_shared_import_file: Array<SharedImport> | null;
@@ -4186,6 +4222,7 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_discard_operation: "masternodes",
   mn_shared_capability: "masternodes",
   mn_shared_sessions: "masternodes",
+  mn_shared_unreadable: "masternodes",
   mn_shared_session: "masternodes",
   mn_shared_start: "masternodes",
   mn_shared_set_fee: "masternodes",
@@ -4194,6 +4231,8 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_lock: "masternodes",
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
+  mn_shared_sign: "masternodes",
+  mn_shared_send: "masternodes",
   mn_shared_discard: "masternodes",
   mn_shared_import: "masternodes",
   mn_shared_import_file: "masternodes",
@@ -4245,6 +4284,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.shared_send_off",
+  "app.shared_send_unsupported",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

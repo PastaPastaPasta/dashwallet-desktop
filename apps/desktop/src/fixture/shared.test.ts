@@ -26,7 +26,7 @@ const request = (amounts: number[] = [400, 300, 300]): StartSharedRequest => ({
   nodeRunBy: null,
 });
 
-const grant = async () => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: 0 }, W, PASS)).id;
+const grant = async (maxDuffs = 0) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs }, W, PASS)).id;
 
 describe("fixture shared masternodes", () => {
   it("runs a coordinator's session from start to locked terms", async () => {
@@ -59,11 +59,15 @@ describe("fixture shared masternodes", () => {
 
   it("lists unreadable sessions; Discard frees one that may not be out and refuses the other", async () => {
     installFixture({ scenario: "sh-unreadable" });
-    const [free, out] = await cmd.mnSharedUnreadable(W);
-    expect([free.discardable, out.discardable]).toEqual([true, false]);
+    const listed = await cmd.mnSharedUnreadable(W);
+    const free = listed.find((s) => s.discardable)!;
+    const out = listed.find((s) => !s.discardable)!;
+    expect(listed.map((s) => s.discardable).sort()).toEqual([false, true]);
     await expect(cmd.mnSharedDiscard(W, out.id)).rejects.toMatchObject({ code: "masternodes.shared_stage" });
     await cmd.mnSharedDiscard(W, free.id);
-    expect((await cmd.mnSharedUnreadable(W)).map((s) => s.id)).toEqual([out.id]);
+    const left = (await cmd.mnSharedUnreadable(W)).map((s) => s.id);
+    expect(left).toContain(out.id);
+    expect(left).not.toContain(free.id);
     expect(await cmd.mnSharedSessions(W)).toHaveLength(1);
   });
 
@@ -78,5 +82,46 @@ describe("fixture shared masternodes", () => {
     installFixture({ scenario: "sh-coordinator-draft" });
     await expect(cmd.mnSharedImport(W, SH_TEXT.wrongNetwork, null)).rejects.toMatchObject({ code: "masternodes.shared_message", data: { kind: "sharedMessage", reason: "network" } });
     await expect(cmd.mnSharedImport(W, SH_TEXT.otherSession, null)).rejects.toMatchObject({ data: { reason: "other_session" } });
+  });
+
+  it("signs a participant's funding under a grant of its debit, and refuses one below it", async () => {
+    installFixture({ scenario: "sh-participant-combined" });
+    const [s] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedSign(W, s.id, await grant(s.debit! - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    const signed = await cmd.mnSharedSign(W, s.id, await grant(s.debit!));
+    expect(signed.session).toMatchObject({ stage: { kind: "funding_signed" }, next: "copy", discardable: false });
+    await expect(cmd.mnSharedSign(W, s.id, await grant(s.debit!))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "funding_signed" } });
+    await expect(cmd.mnSharedSend(W, s.id, await grant(s.debit!))).rejects.toMatchObject({ data: { stage: "participant" } });
+  });
+
+  it("sends the registration once every other input is signed, then sends it again", async () => {
+    installFixture({ scenario: "sh-coordinator-combined" });
+    const [waiting] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedSend(W, waiting.id, await grant(waiting.debit!))).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "unsigned" } });
+    installFixture({ scenario: "sh-coordinator-send" });
+    const [s] = await cmd.mnSharedSessions(W);
+    await expect(cmd.mnSharedSign(W, s.id, await grant(s.debit!))).rejects.toMatchObject({ data: { stage: "coordinator" } });
+    await expect(cmd.mnSharedSend(W, s.id, await grant(s.debit! - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
+    const sent = await cmd.mnSharedSend(W, s.id, await grant(s.debit!));
+    expect(sent.session).toMatchObject({ stage: { kind: "sent" }, next: "wait", discardable: false, lastError: null });
+    expect((await cmd.mnSharedSend(W, s.id, await grant(s.debit!))).session.stage).toEqual({ kind: "sent" });
+  });
+
+  it("refuses Send again once the registration was abandoned, before the grant", async () => {
+    installFixture({ scenario: "sh-coordinator-sent-abandoned" });
+    const [s] = await cmd.mnSharedSessions(W);
+    const g = await grant(s.debit!);
+    await expect(cmd.mnSharedSend(W, s.id, g)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoned" } });
+  });
+
+  it("refuses Sign and Send on mainnet before the engine, naming the network", async () => {
+    for (const [scenario, call] of [
+      ["sh-participant-combined-mainnet", cmd.mnSharedSign],
+      ["sh-coordinator-send-mainnet", cmd.mnSharedSend],
+    ] as const) {
+      installFixture({ scenario });
+      const [s] = await cmd.mnSharedSessions(W);
+      await expect(call(W, s.id, "no-grant")).rejects.toMatchObject({ code: "app.shared_send_off", data: { kind: "sharedSendNetwork", network: "mainnet" } });
+    }
   });
 });

@@ -268,6 +268,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 className="filter-chip is-selected"
                 aria-label={`Remove the filter ${routeFilterTitle(routeFilter)}`}
                 data-testid="tx-route-filter"
+                data-txids={routeFilter.kind === "txids" ? routeFilter.txids.join(",") : undefined}
                 onClick={() => ui.set({ activityFilter: null })}
               >
                 {routeFilterTitle(routeFilter)} <span aria-hidden="true">×</span>
