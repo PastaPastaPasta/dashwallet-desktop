@@ -69,6 +69,7 @@ export class IpcBackend implements Backend {
   openNetwork = () => cmd.openNetwork(null, null);
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
+  recentNotices = () => cmd.recentNotices();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
   unlockMixingOnly = (passphrase: string) => cmd.unlockMixingOnly(passphrase);
   lock = () => cmd.lock();
@@ -128,6 +129,7 @@ export class IpcBackend implements Backend {
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
   openReleasesPage = () => cmd.openReleasesPage();
+  openProjectLink = cmd.openProjectLink;
   protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
@@ -188,6 +190,7 @@ export class IpcBackend implements Backend {
   automaticBackups = cmd.automaticBackups;
   automaticBackupFailures = () => cmd.automaticBackupFailures();
   backupDirectory = () => cmd.backupDirectory();
+  openBackupDirectory = () => cmd.openBackupDirectory();
   backupPolicy = () => cmd.backupPolicy();
   setBackupPolicy = cmd.setBackupPolicy;
   readBackupHeader = cmd.readBackupHeader;

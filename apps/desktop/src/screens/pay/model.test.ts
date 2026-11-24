@@ -27,6 +27,8 @@ import {
   DEFAULT_ADVANCED,
   feeMode,
   keepsPromise,
+  MIXED_INPUT_WARNING,
+  mixedSendNotes,
   unsignedKeepsPromise,
   outpointKey,
   outpointOf,
@@ -51,7 +53,7 @@ const lock = (over: Partial<LockStatus> = {}): LockStatus => ({
 });
 const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
 const recipient = recipientOf({ address: PAYEE, amount: 50_000_000, subtractFee: false, label: "  Alice ", message: " " });
-const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000 };
+const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000, leftOver: 0 };
 const confirmed = confirmedOf(recipient, estimate, { kind: "auto" });
 
 const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
@@ -59,7 +61,7 @@ const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
   fee: 226,
   feeRatePerKb: 1000,
   sizeBytes: 226,
-  inputs: [],
+  inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 50_000_236 }],
   outputs: [
     { address: PAYEE, amount: 50_000_000, isChange: false, label: null, isMine: false },
     { address: "yChange", amount: 10, isChange: true, label: null, isMine: true },
@@ -283,6 +285,15 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
 });
 
 describe("the confirm sheet's promise (U-03 D2)", () => {
+  it("is broken by a payment re-planned with other coins of the same total", () => {
+    // Ten 0.100001 denominations make the same total as one 1.00001: Send must not quietly spend
+    // ten mixed coins where the sheet showed one.
+    expect(keepsPromise(confirmed, summary())).toBe(true);
+    const input = summary().inputs[0];
+    const ten = Array.from({ length: 10 }, (_, vout) => ({ ...input, outpoint: { ...input.outpoint, vout }, amount: 5_000_023 }));
+    expect(keepsPromise(confirmed, summary({ inputs: [...ten, { ...input, amount: 6 }] }))).toBe(false);
+  });
+
   it("caps the grant at the amount plus the fee", () => {
     expect(confirmed.total).toBe(50_000_226);
   });
@@ -450,6 +461,28 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
   });
 });
 
+describe("mixedSendNotes (U-06b)", () => {
+  const est = (inputCount: number, leftOver = 0) => ({ inputCount, leftOver });
+
+  it("warns from 10 coins, as dash-qt does", () => {
+    expect(MIXED_INPUT_WARNING).toBe(10);
+    expect(mixedSendNotes("mixed", est(9))).toEqual({ inputCount: 9, manyCoins: false, leftOver: null });
+    expect(mixedSendNotes("mixed", est(10))?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(11))?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(1))?.manyCoins).toBe(false);
+  });
+
+  it("names the left-over only when there is one", () => {
+    expect(mixedSendNotes("mixed", est(2, 0))?.leftOver).toBeNull();
+    expect(mixedSendNotes("mixed", est(2, 49_999_660))?.leftOver).toBe(49_999_660);
+  });
+
+  it("says nothing for any other coin source", () => {
+    expect(mixedSendNotes("any", est(11, 500))).toBeNull();
+    expect(mixedSendNotes("selected", est(11, 500))).toBeNull();
+  });
+});
+
 describe("paysWithUnmixed", () => {
   const status = (state: CoinJoinStatus["state"], fullyMixed: number) =>
     ({ state, balances: { fullyMixed }, amountAndRounds: { rounds: 4 } }) as unknown as CoinJoinStatus;
@@ -489,7 +522,7 @@ describe("a payment to several recipients (QT-052)", () => {
   const bob = recipientOf({ address: BOB, amount: 20_000_000, subtractFee: false, label: "Bob", message: "" });
   const carol = recipientOf({ address: CAROL, amount: 5_000_000, subtractFee: true, label: "", message: "" });
   // Alice 50 000 000, Bob 20 000 000, Carol 5 000 000 less the 300 fee.
-  const est = { fee: 300, sizeBytes: 300, inputCount: 1, change: 10, totalSent: 74_999_700 };
+  const est = { fee: 300, sizeBytes: 300, inputCount: 1, change: 10, totalSent: 74_999_700, leftOver: 0 };
   const many = confirmedOf(recipient, est, { kind: "auto" }, [bob, carol]);
   const outputs = [
     { address: PAYEE, amount: 50_000_000, isChange: false, label: null, isMine: false },

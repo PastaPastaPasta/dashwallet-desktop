@@ -94,7 +94,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
               <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
                 {p.consumptionUnknown ? (
                   <>
-                    <strong>{S.done.checking.title}.</strong> {S.done.checking.text}
+                    <strong>{S.done.checking.title}.</strong> {S.done.checking.row}
                   </>
                 ) : (
                   S.card.unfinished(fmt.duffs(p.duffs))
