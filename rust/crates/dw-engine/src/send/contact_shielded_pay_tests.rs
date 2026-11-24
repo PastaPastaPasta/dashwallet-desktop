@@ -421,7 +421,7 @@ fn a_kill_at_each_step_relaunches_into_what_the_records_prove() {
     assert_eq!(row.2, Some(hex::encode(hash)));
     assert_eq!(f.lock(BOB).map(|l| l.reference), Some(row.0.clone()));
     assert!(f.reserved(BOB).is_none(), "the address may have been paid");
-    assert_eq!(lib.withdrawn_to(), [row.3.clone()]);
+    assert_eq!(lib.withdrawn_to(), std::slice::from_ref(&row.3));
     f.settle_artifact(hash, ArtifactStatus::Executed, true);
     f.restart_payments();
     assert!(f.lock(BOB).is_none());
@@ -481,7 +481,7 @@ fn mainnet_refuses_a_shielded_payout_before_anything_is_written() {
     };
     let grant = |s: &Arc<NetworkSession>| {
         (s.vault()
-            .authorize(purpose.clone(), Some(&wallet.0), Credential::None))
+            .authorize(purpose, Some(&wallet.0), Credential::None))
         .unwrap()
         .id
     };
