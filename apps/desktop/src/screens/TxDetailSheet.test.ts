@@ -50,10 +50,10 @@ describe("transaction detail status", () => {
 });
 
 describe("the abandon confirmation", () => {
-  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.";
+  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.";
   const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
   const UNKNOWN_INPUTS =
-    "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.";
+    "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.";
 
   it("warns about paying twice when the wallet spent inputs", () => {
     expect(abandonQuestion({ totalDebit: 50_000_226, inputsUnresolved: false })).toBe(OUTGOING);

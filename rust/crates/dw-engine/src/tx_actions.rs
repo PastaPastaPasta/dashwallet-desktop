@@ -1095,6 +1095,20 @@ impl NetworkSession {
         Ok((entry, f))
     }
 
+    /// Stops dash-spv's rebroadcast timer from sending `txid` again.
+    async fn stop_rebroadcast(&self, manager: &Manager, _wallet: WalletId, txid: Txid) {
+        manager.spv().stop_rebroadcast(&txid).await;
+        #[cfg(test)]
+        {
+            let marked = self.abandon_marked(_wallet, txid).await;
+            self.hub
+                .stopped_rebroadcasts
+                .lock()
+                .unwrap()
+                .push((txid, marked));
+        }
+    }
+
     /// Whether an Abandon of `txid` committed its mark, which it writes
     /// before its sweep: a mark that cannot be read counts.
     pub(crate) async fn abandon_marked(&self, wallet: WalletId, txid: Txid) -> bool {
@@ -1347,6 +1361,13 @@ impl NetworkSession {
             let marks = (txs.iter())
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
                 .collect();
+            // Before the marks, under the gate a resend's hand-off holds: no
+            // marked transaction is sent again by dash-spv's rebroadcast
+            // timer. One this abandon then fails is rebroadcast again only
+            // after a resend of it lifts the stop.
+            for t in &planned {
+                self.stop_rebroadcast(manager, wallet, *t).await;
+            }
             self.write_abandoned_marks(wallet, marks).await?;
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {

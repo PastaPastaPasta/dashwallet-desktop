@@ -5985,3 +5985,42 @@ fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_ope
         "the closed wallet"
     );
 }
+
+/// Abandon, and Remove unconfirmed transactions, stop the running SPV
+/// client from sending again what they abandon.
+#[test]
+fn abandoning_stops_the_spv_client_sending_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let stopped = |txid: Txid| {
+        let manager = session.manager().unwrap();
+        engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await })
+    };
+    let pay_from = |vouts: [u32; 2]| {
+        let coins = vouts.map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+        let tx = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(coins),
+            COIN,
+            false,
+        );
+        mempool(&engine, &session, id, &tx);
+        tx
+    };
+    let payment = pay_from([0, 1]);
+    let next = pay_from([2, 3]);
+    wait_stored(&session, id, &[payment.txid(), next.txid()]);
+    start_spv(&engine, &session);
+    assert!(!stopped(payment.txid()), "stopped before the abandon");
+
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    assert!(stopped(payment.txid()), "the abandoned payment");
+    assert!(!stopped(next.txid()), "stopped before the removal");
+
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 1);
+    assert!(stopped(next.txid()), "the removed payment");
+}

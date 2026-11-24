@@ -2266,6 +2266,45 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
+/// An Abandon stops dash-spv's rebroadcast of every transaction it
+/// abandons, before it writes their marks; so does Remove unconfirmed
+/// transactions.
+#[test]
+fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let abandoned = try_abandon(&engine, &session, id, txid).unwrap();
+    assert!(abandoned.contains(&txid), "{abandoned:?}");
+    let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+    assert_eq!(
+        stopped.iter().map(|(t, _)| *t).collect::<BTreeSet<_>>(),
+        abandoned,
+        "not every abandoned transaction was stopped"
+    );
+    assert!(
+        stopped.iter().all(|(_, marked)| !marked),
+        "stopped after the mark: {stopped:?}"
+    );
+}
+
+#[test]
+fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert!(removed >= 1, "nothing removed");
+    let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+    assert!(
+        stopped.iter().any(|(t, _)| *t == payment.txid()),
+        "the payment was not stopped: {stopped:?}"
+    );
+    assert_eq!(stopped.len(), removed as usize, "{stopped:?}");
+    assert!(
+        stopped.iter().all(|(_, marked)| !marked),
+        "stopped after the mark: {stopped:?}"
+    );
+}
+
 /// An Activity Resend that checked a payment just before an Abandon
 /// committed its mark hands nothing off: it reads the mark again, held
 /// against the Abandon, before its bytes go out.
