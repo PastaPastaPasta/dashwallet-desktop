@@ -360,7 +360,7 @@ fn an_identity_found_at_the_index_is_taken_before_any_plan() {
     f.drive(&lib, draft, Some(f.lease()), false);
     assert!(lib.w().platform_asks.is_empty());
     let row = f.row(draft);
-    assert_eq!((row.identity, plan_of(&row)), (Some(found), None));
+    assert_eq!((plan_of(&row), row.identity), (None, Some(found)));
 }
 
 /// F10: a create that can never execute clears the plan and the row plans
