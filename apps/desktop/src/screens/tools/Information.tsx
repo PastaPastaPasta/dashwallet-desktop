@@ -34,7 +34,7 @@ export function InformationTab() {
           <dl className="detail-list">
             {section.rows.map((r) => (
               <DetailRow key={r.title} label={r.title}>
-                <span className="tool-value">{r.value}</span>
+                <span className="tool-value">{r.ltr ? <bdi dir="ltr">{r.value}</bdi> : r.value}</span>
                 {r.note && <span className="field-hint tool-note">{r.note}</span>}
               </DetailRow>
             ))}
