@@ -846,6 +846,7 @@ test.describe("Activity", () => {
     await page.getByTestId("sidebar-activity").click();
     await page.locator(`.tx-row[data-txid="${"5d".repeat(32)}"]`).first().click();
     await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
@@ -857,7 +858,7 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText(
-      "This transaction can't be abandoned. A later transaction that spends from it is already locked or confirmed, so this one will confirm too.",
+      "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     );
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
