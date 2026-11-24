@@ -346,7 +346,7 @@ export class OnboardingModel extends Model {
 
   /** The date field's text (`YYYY-MM-DD`), read as a local date, so today is never in the
    * future (an input's `valueAsDate` is UTC midnight). A field left empty, or a day the month
-   * does not have, is refused (#686): it would scan from the first block without saying so. */
+   * does not have, is refused: it would scan from the first block without saying so. */
   setScanDate(text: string) {
     this.scanDate = text;
     const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
