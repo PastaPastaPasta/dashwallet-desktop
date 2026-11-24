@@ -16,7 +16,7 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, change_of, coins, foreign, fresh_address, funding,
-    own_scripts, send, spendable, start_offline_spv, store_raw, wait_stored,
+    own_scripts, send, spendable, start_offline_spv, wait_stored,
 };
 use super::{block_with, deliver, elsewhere, engine_wallet, mempool, mined, reopen};
 use crate::send::CoinSource;
@@ -614,11 +614,6 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
 
     let session = reopen(&engine, session);
     assert!(
-        !held(&engine, &session, id).contains(&a),
-        "W spent A in a ChainLocked block: {}",
-        known_gap_story(&engine, &session, id, (a, b), &named)
-    );
-    assert!(
         held(&engine, &session, id).contains(&b),
         "known gap: after a restart B is offered although E spends it"
     );
@@ -639,109 +634,10 @@ fn known_gap_a_coin_another_device_spent_shows_again_when_the_abandoned_payment_
     );
     let session = reopen(&engine, session);
     assert!(
-        !held(&engine, &session, id).contains(&a),
-        "W spent A, after a restart: {}",
-        known_gap_story(&engine, &session, id, (a, b), &named)
-    );
-    assert!(
         !held(&engine, &session, id).contains(&b),
         "E is in a block, after a restart: {}",
         known_gap_story(&engine, &session, id, (a, b), &named)
     );
-}
-
-/// The store hands A back unspent after W, a ChainLocked spend of A, is
-/// already in the history. The load must not list A. B stays: E, which
-/// spends it, is not ChainLocked yet.
-#[test]
-fn a_chainlocked_spend_is_not_listed_when_the_store_still_has_the_coin() {
-    use platform_wallet::changeset::CoreChangeSet;
-    let (_dir, engine, session, id) = engine_wallet();
-    let to: Vec<Address> = (0..COINS)
-        .map(|_| fresh_address(&engine, &session, id))
-        .collect();
-    let funded = funding(7, &to, COIN);
-    mined(&engine, &session, id, FUNDED_AT, vec![funded.clone()]);
-    mined(&engine, &session, id, TIP, vec![foreign()]);
-    let (a, b) = (
-        OutPoint::new(funded.txid(), 0),
-        OutPoint::new(funded.txid(), 1),
-    );
-    let loser = send(
-        &engine,
-        &session,
-        id,
-        CoinSource::Outpoints(vec![a, b]),
-        COIN + COIN / 2,
-        false,
-    );
-    mempool(&engine, &session, id, &loser);
-    abandon(&engine, &session, id, loser.txid());
-    let session = reopen(&engine, session);
-    mined(&engine, &session, id, FUNDED_AT, vec![funded.clone()]);
-    let other_device = super::signed_by_wallet(
-        &engine,
-        &session,
-        id,
-        &to[1],
-        super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]),
-    );
-    mempool(&engine, &session, id, &other_device);
-    let locked = loser.clone();
-    deliver(&engine, &session, id, move |wm| {
-        Box::pin(async move {
-            wm.process_mempool_transaction(&locked, Some(lock_for(&locked)))
-                .await;
-        })
-    });
-    let winner = super::spend_of(
-        a,
-        vec![
-            (elsewhere(), COIN / 2),
-            (fresh_address(&engine, &session, id).script_pubkey(), 10_000),
-        ],
-    );
-    let height = TIP + 1;
-    deliver(&engine, &session, id, move |wm| {
-        Box::pin(async move {
-            let block = block_with(vec![winner]);
-            wm.apply_chain_lock(ChainLock {
-                block_height: height,
-                block_hash: block.block_hash(),
-                signature: BLSSignature::from([0; 96]),
-            });
-            wm.process_block_for_wallets(
-                &block,
-                block.block_hash(),
-                height,
-                &BTreeSet::from([id.0]),
-            )
-            .await;
-            wm.update_wallet_synced_height(&id.0, height);
-        })
-    });
-    let session = reopen(&engine, session);
-    let mut coin =
-        key_wallet::Utxo::new(a, funded.output[0].clone(), to[0].clone(), FUNDED_AT, false);
-    coin.is_confirmed = true;
-    store_raw(
-        &session,
-        id,
-        CoreChangeSet {
-            new_utxos: vec![coin],
-            ..Default::default()
-        },
-    );
-    let session = reopen(&engine, session);
-    assert!(
-        !held(&engine, &session, id).contains(&a),
-        "the load lists a coin W spent in a ChainLocked block"
-    );
-    assert!(
-        held(&engine, &session, id).contains(&b),
-        "B stays: E is not in a ChainLocked block"
-    );
-    assert!(!spendable(&engine, &session, id, a));
 }
 
 /// Runs `op` on the session's wallet manager, then hands the hub the

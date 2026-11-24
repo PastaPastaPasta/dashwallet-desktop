@@ -420,31 +420,6 @@ pub(crate) fn spent_outpoints(
         .collect()
 }
 
-/// Inputs a transaction recorded in a ChainLocked block spends, with that
-/// transaction.
-///
-/// Key-wallet drops those records from memory, so after a restart the coin
-/// set is whatever the store still calls unspent. A spent mark that lagged
-/// the record leaves the coin listed (#400). The load restores one claim
-/// per input so the coin is dropped and a later credit is refused. Only a
-/// record whose own context is ChainLocked counts: a plain block at or
-/// below the ChainLock can be a loser the history still holds, and its
-/// other inputs are free.
-pub(crate) fn chainlocked_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint, Txid)> {
-    let mut spends = Vec::new();
-    for (txid, entry) in txs {
-        if !matches!(entry.context, TransactionContext::InChainLockedBlock(_)) {
-            continue;
-        }
-        for input in &entry.tx.input {
-            spends.push((input.previous_output, *txid));
-        }
-    }
-    spends.sort_unstable();
-    spends.dedup();
-    spends
-}
-
 /// The wallet's coins that the payments this app sent
 /// ([`crate::tx_actions::load_sent`]) spend while they are out of a block
 /// and not abandoned, each with its payment: key-wallet's spent-output

@@ -549,10 +549,6 @@ impl NetworkSession {
                 claims.retain(|(_, spender)| {
                     !h.session_held.contains(spender) && !h.swept.contains(spender)
                 });
-                // A ChainLocked spend is final, and key-wallet no longer
-                // holds its record. Claim its inputs too, so a coin the
-                // store still lists is dropped and not credited again.
-                claims.extend(crate::history::chainlocked_spends(&h.txs));
                 let locked = crate::history::locked_claimants(&h.txs, &claims);
                 (claims, locked)
             })
