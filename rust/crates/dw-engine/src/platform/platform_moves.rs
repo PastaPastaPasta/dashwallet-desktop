@@ -2721,6 +2721,7 @@ pub(crate) async fn balance(
         .collect();
     addresses.sort_by(|a, b| b.credits.cmp(&a.credits).then(a.address.cmp(&b.address)));
     let sync = manager.platform_address_sync();
+    let off = address_sends_open(network).is_err();
     PlatformAddressBalance {
         credits: cached.values().sum(),
         movable_credits: movable,
@@ -2728,9 +2729,8 @@ pub(crate) async fn balance(
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
-        sends_active: address_sends_open(network).is_ok()
-            && sends_active(manager.sdk_arc().version()).is_ok(),
-        sends_off: (address_sends_open(network).is_err()).then(|| PLATFORM_ADDRESS_SENDS.into()),
+        sends_active: !off && sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_off: off.then(|| PLATFORM_ADDRESS_SENDS.into()),
     }
 }
 
@@ -3843,7 +3843,11 @@ pub(crate) async fn run(
     // retry signs: anything else is the flag's refusal, never a new plan.
     let off = matches!(target, Target::Core(_) | Target::Platform(_))
         && address_sends_open(network).is_err();
-    let flag = || CreditsError::from(address_sends_open(network).unwrap_err());
+    let flag = || {
+        CreditsError::from(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        })
+    };
     // A retry of a send that landed pays nothing and signs nothing.
     if let (Target::Platform(to), Some(id)) = (target, retry_of) {
         match retry_decision(&moves, id, (&bech32m(&to, network), amount)) {

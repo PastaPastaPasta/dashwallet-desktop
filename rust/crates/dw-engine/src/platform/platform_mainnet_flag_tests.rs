@@ -437,3 +437,35 @@ fn an_exit_whose_inputs_differ_from_the_held_record_is_off_on_mainnet() {
     assert!(w.net.sent().is_empty());
     assert!(w.f.unused(&grant));
 }
+
+#[test]
+fn a_smaller_exit_on_part_of_the_held_inputs_is_off_on_mainnet() {
+    let w = World::mainnet();
+    let (a, b) = (w.address(0), w.address(1));
+    w.net.fund(a, 3 * DASH);
+    w.net.fund(b, 3 * DASH);
+    let mut moved = held(
+        "move-1-0",
+        MoveKind::ToCore,
+        (&bech32m(&a, Network::Mainnet), 1, 3 * DASH, 3 * DASH),
+        &w.to.clone(),
+    );
+    moved.inputs.push(MoveInput {
+        address: bech32m(&b, Network::Mainnet),
+        nonce: 1,
+        credits: 3 * DASH,
+        before: 3 * DASH,
+        fee_source: false,
+        unseen: 0,
+    });
+    w.seed(&moved);
+    let grant = w.f.grant(6 * DASH);
+    off(w.move_to(
+        WithdrawAmount::Credits { credits: DASH },
+        &w.to.clone(),
+        &grant,
+    ));
+    assert!(w.net.sent().is_empty());
+    assert!(w.net.recorded_before_signing.lock().unwrap().is_empty());
+    assert!(w.f.unused(&grant));
+}
