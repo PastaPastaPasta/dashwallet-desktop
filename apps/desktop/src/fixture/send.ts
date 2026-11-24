@@ -32,6 +32,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { mainUsername } from "./dashpay";
+import { abandonFee } from "./shared";
 import { BASE58, FIXTURE_NOW, makeIds, prng, secs, TIP, txDetails, type HistoryVariant } from "./wallet";
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -886,7 +887,10 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
       }
       // The wallet's own registration abandoned: the shared session's reserved coins are spendable again.
-      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) sh.abandonable = true;
+      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) {
+        sh.abandonable = true;
+        sh.abandonCharge = abandonFee(sh.reserved.length);
+      }
       changed(ctx, w, [txid]);
       return null;
     },

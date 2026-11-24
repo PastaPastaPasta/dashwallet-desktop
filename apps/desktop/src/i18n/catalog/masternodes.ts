@@ -711,6 +711,8 @@ export const masternodes = {
       update_pending_sent:
         "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.",
       update_superseded: "A newer change to this masternode replaced this one.",
+      update_abandoned_pending:
+        "An abandoned change to this masternode may still confirm, and it would undo this one. To clear it, send one of that change's coins to yourself. You can make this change once that payment is in a block.",
       share_not_mine: "This share isn't held by this wallet.",
       shared_too_early: "Available once the masternode list includes the registration.",
       shared_registration_unknown: "This wallet's history doesn't hold this masternode's registration.",
@@ -912,10 +914,13 @@ export const masternodes = {
       notSent: "Not sent: {reason}",
       notSentPlain: "Not sent",
       sent: "{title} · waiting for 1 confirmation",
+      abandoned: "{title} · Abandoned",
     },
     chip: "Needs signature",
     overdue: "If this never confirms: abandon its transaction in Activity, then unlock one of its coins and spend it.",
     overdueDissolve: "It locks none of your coins. It confirms, or another dissolution replaces it.",
+    abandoned:
+      "The coins this transaction spent are available again. It may still confirm if it reached the network. To make sure it never does, send one of its coins to yourself.",
     openInActivity: "Open in Activity",
     continue: "Continue",
     newMessage: "Get a new message",
@@ -1158,12 +1163,14 @@ export const masternodes = {
     /** B7 where sends are on: without its last sentence. */
     reservationNoteSends:
       "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share.",
-    /** Collapsed (no overdue signal yet) where this wallet holds the registration; expanded it shows `abandon.ownFirst`. */
+    /** Where this wallet holds the registration: collapsed until the session is `overdue` (D49), then expanded; expanded it shows `abandon.ownFirst`. Under the spend back's row it shows a `spendBack.wayOut*` sentence instead, expanded once the spend back is overdue. */
     wayOut: {
       title: "Changed your mind? Ways to get your coins back ▸",
     },
     /** On mainnet, where a sign or send row would be. */
     mainnetSignNote: "This version can't sign or send a shared masternode registration on mainnet yet.",
+    /** On mainnet, beside a disabled Start, Join, Lock, Approve, Change fee or Unlock. */
+    mainnetOff: "This version can set up and join shared masternodes on test networks only.",
     /** A session's row: its code, then what it is waiting for. */
     sessionRow: "Session {code}",
     sessionStarted: "started {date}",
@@ -1220,6 +1227,9 @@ export const masternodes = {
       earlyValue: "{blocks} blocks · leaving alone before then costs {penalty}",
       earlyNone: "None",
       fee: "Network fee",
+      /** The Network fee row's value under its own label: the coordinator's, then a participant's. */
+      feeYoursValue: "{fee}, paid by you",
+      feePayerValue: "Paid by {coordinator}",
       checkHelp: "Send each reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask for it again.",
       close: "Close",
       more: "More",
@@ -1244,6 +1254,30 @@ export const masternodes = {
       ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
       openActivity: "Open in Activity",
     },
+    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each names the spend by its
+     * short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
+    spendBack: {
+      uncertain: "The spend back to this wallet ({txid}) may already be on the network. The wallet couldn't confirm it went out.",
+      refused: "The spend back to this wallet didn't go out: {sentence}.",
+      inHistory: "Abandoning: waiting for the spend back ({txid}) to confirm. Your coins are still reserved.",
+      cancelled: "You cancelled the earlier spend back ({txid}) in Activity.",
+      legacy: "The wallet couldn't confirm the spend back ({txid}) went out. It may still confirm.",
+      sendAgain: "Send again",
+      tryAgain: "Try again",
+      abandonAgain: "Abandon again",
+      /** The way out under the spend back's row, by what Activity offers for the spend back; `{action}` is the sheet's next button. */
+      wayOutBoth: "Activity can send this spend back again or abandon it. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutAbandon: "You can abandon this spend back in Activity. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutResend: "Activity can send this spend back again.",
+      /** Cancelled in Activity, but Activity still offers its Abandon: that abandon didn't finish. */
+      wayOutFinish: "Activity didn't finish abandoning this spend back. Open it there and abandon it again.",
+      /** Activity holds this wallet's own transaction spending the coins, not the spend back. */
+      wayOutOwn: "First abandon this wallet's transaction that spends these coins in Activity, then choose {action} here.",
+      /** Send again's confirm: `{charge}` is the replay's grant cap. */
+      resendConfirm: "Send the same spend again. It's the same transaction, so it costs at most {charge}, once.",
+      /** Try again's and Abandon again's confirm adds this to `abandon.question`. */
+      again: "This is a new spend of the same coins and pays the {charge} network fee again.",
+    },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",
       dismiss: "Dismiss",
@@ -1259,7 +1293,7 @@ export const masternodes = {
     },
     row: {
       join: "Nothing is sent to the network now.",
-      joinButton: "Join: reserve about {amount}",
+      joinButton: "Join: reserve coins covering {amount}",
       decline: "Decline",
       waitingReplies: "Waiting for replies: {joined} of {total} joined",
       copyInvitation: "Copy invitation",
@@ -1291,7 +1325,7 @@ export const masternodes = {
       spvStopped: "Available once the wallet is connected.",
       signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
       signedOut:
-        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends one of its coins back to itself, so the registration can't confirm, and the others come back about 15 minutes later.",
+        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends the session's coins back to itself, so the registration can't confirm. They come back once that spend confirms.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",
@@ -1305,7 +1339,7 @@ export const masternodes = {
       /** Before coins are picked: an estimate. */
       estimate: "About {amount}: your share, plus any change too small to keep.",
       estimateCoordinator:
-        "About {amount} of your {balance} will be reserved: your {share} share and the {fee} network fee, plus any change too small to keep.",
+        "Coins covering about {amount} will be reserved: your {share} share and the {fee} network fee. Coins are reserved whole, so if a coin is larger than needed, all of it stays unavailable for other payments while the session lasts.",
       participant: "{debit} leaves this wallet: your {share} share",
       coordinator: "{debit} leaves this wallet: your {share} share and the {fee} network fee",
       participantDust: "{debit} leaves this wallet: your {share} share, and {dust} of change too small to keep, which goes to the network fee",
@@ -1319,7 +1353,7 @@ export const masternodes = {
     },
     close: {
       title: "Keep this session for later?",
-      text: "Keeping it leaves your {debit} reserved so you can carry on where you left off. Discarding releases them; if the others are still waiting for you, they have to start over.",
+      text: "Keeping it leaves the coins covering your {debit} reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
       keep: "Keep and close",
       discard: "Discard and release {debit}",
       cancel: "Cancel",
@@ -1506,6 +1540,10 @@ export const masternodes = {
     /** Under "Checking…" while a payout change only the wallet's history holds is unconfirmed. */
     payoutUnconfirmed:
       "A payout change for this evonode hasn't confirmed yet. You can withdraw once it confirms, so the credits go to the new payout address.",
+    /** Under "Checking…" while this wallet's own payout change, abandoned in Activity, may still
+     * confirm (MG-13 P16): its barrier holds until one of its coins is spent in a block. */
+    heldAbandonedChange:
+      "An abandoned change to this masternode's payout address may still confirm, so withdrawals wait. To end the wait, send one of that change's coins to yourself. Withdrawals resume once that payment is in a block.",
     /** The withdrawal refused over that change: first, wait for it. */
     payoutUnconfirmedWait:
       "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address.",

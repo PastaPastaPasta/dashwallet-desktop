@@ -2281,6 +2281,77 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
+/// An Activity Resend that checked a payment just before an Abandon
+/// committed its mark hands nothing off: it reads the mark again, held
+/// against the Abandon, before its bytes go out.
+#[test]
+fn an_abandon_during_an_activity_resend_stops_its_hand_off() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    start_offline_spv(&engine, &session);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected {
+            address: "127.0.0.1:9".parse().unwrap(),
+        },
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_resend.lock().unwrap() = Some(Arc::clone(&pause));
+    let resending = {
+        let s = Arc::clone(&session);
+        session
+            .rt
+            .spawn(async move { s.resend_transaction(id, txid).await })
+    };
+    eventually("the resend checked the payment", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst) || resending.is_finished()
+    });
+    assert!(!resending.is_finished(), "{:?}", engine.block_on(resending));
+    try_abandon(&engine, &session, id, txid).unwrap();
+    assert!(
+        abandon_marked(&session, id, txid),
+        "the mark was not written"
+    );
+    pause.release.notify_one();
+    let resent = engine.block_on(resending).unwrap();
+    assert!(
+        matches!(
+            resent,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::AlreadyAbandoned
+            ))
+        ),
+        "{resent:?}"
+    );
+    assert!(wire.lock().unwrap().is_empty(), "handed off after the mark");
+}
+
+/// A restart ends dash-spv's rebroadcast of an abandoned payment: its
+/// tracked broadcasts live in memory, and the wallet store hands
+/// platform-wallet's load no sends to dispatch again, before or after the
+/// Abandon.
+#[test]
+fn the_wallet_store_stages_no_sends_to_dispatch_again_at_load() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let staged = |session: &Arc<NetworkSession>| {
+        let state = session.live().unwrap().persister.load().unwrap();
+        let wallet = state.wallets.get(&id.0).expect("the wallet loads");
+        wallet.unconfirmed_outgoing_txs.len()
+    };
+    assert_eq!(staged(&session), 0, "a pending send is staged");
+    try_abandon(&engine, &session, id, payment.txid()).unwrap();
+    assert_eq!(staged(&session), 0, "an abandoned send is staged");
+    let session = reopen(&engine, session);
+    assert_eq!(
+        staged(&session),
+        0,
+        "an abandoned send is staged after a restart"
+    );
+}
+
 /// Remove unconfirmed transactions whose read of the sent marks fails says
 /// so, rather than reporting nothing removed, and abandons nothing: also
 /// across wallets, when a wallet read after the payment's fails.

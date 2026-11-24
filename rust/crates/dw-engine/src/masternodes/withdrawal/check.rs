@@ -177,7 +177,9 @@ pub(crate) async fn look(
         Some(WithdrawalCheckingReason::SpvUnsynced)
     } else if !identity.passed {
         Some(WithdrawalCheckingReason::Unverified)
-    } else if pending {
+    } else if pending == Some(Pending::Abandoned) {
+        Some(WithdrawalCheckingReason::PayoutChangeAbandoned)
+    } else if pending.is_some() {
         Some(WithdrawalCheckingReason::PayoutChangePending)
     } else if unconfirmed {
         Some(WithdrawalCheckingReason::PayoutChangeUnconfirmed)
@@ -325,32 +327,44 @@ fn payout_rank(change: &PayoutChange) -> u64 {
 /// conflicted. An operation that can't be read (its wallet deleted or not
 /// loaded) leaves Platform evidence the only term (fail closed). Backfill
 /// not complete (`barriers_ready` false) is pending whatever the table
-/// holds, and counts as an older pending barrier.
+/// holds, and counts as an older pending barrier. `Abandoned` when every
+/// pending one is an operation its wallet abandoned (MG-10 §1.10).
 async fn pending_barriers(
     env: &impl Env,
     pro_tx_hash: &[u8; 32],
     identity: &Gated<Option<Identity>>,
-) -> Result<bool, WithdrawalError> {
+) -> Result<Option<Pending>, WithdrawalError> {
     let shown = crate::masternodes::display_hex(pro_tx_hash);
     let barriers = on_db(env, move |db| db.payout_barriers_of(&shown)).await?;
-    let mut older_pending = !env.barriers_ready();
+    let mut pending = (!env.barriers_ready()).then_some(Pending::Other);
     for barrier in barriers {
-        if clears(env, &barrier, identity, !older_pending).await? {
-            let cleared = on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
-            tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
-        } else {
-            older_pending = true;
+        match clears(env, &barrier, identity, pending.is_none()).await? {
+            None => {
+                let cleared =
+                    on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
+                tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
+            }
+            Some(p) => pending = Some(pending.map_or(p, |q| q.max(p))),
         }
     }
-    Ok(older_pending)
+    Ok(pending)
 }
 
+/// Why a payout-change barrier is still pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Pending {
+    /// Its operation was abandoned in Activity and may still be mined.
+    Abandoned,
+    Other,
+}
+
+/// `None` when `barrier` clears, else why it is pending.
 async fn clears(
     env: &impl Env,
     barrier: &PayoutBarrierRow,
     identity: &Gated<Option<Identity>>,
     evidence: bool,
-) -> Result<bool, WithdrawalError> {
+) -> Result<Option<Pending>, WithdrawalError> {
     let platform = identity.passed.then_some(&identity.read);
     if evidence
         && let Some(read) = platform
@@ -359,15 +373,17 @@ async fn clears(
         && let Window::Pays { script, .. } = window(id)
         && script.as_bytes() == barrier.barrier.payout_script.as_slice()
     {
-        return Ok(true);
+        return Ok(None);
     }
-    Ok(match env.barrier_state(barrier).await? {
+    let clears = match env.barrier_state(barrier).await? {
         Some(ProTxOperationState::Confirmed { height }) => {
             platform.is_some_and(|read| height <= read.core_height)
         }
         Some(ProTxOperationState::Conflicted) => true,
+        Some(ProTxOperationState::Abandoned) => return Ok(Some(Pending::Abandoned)),
         _ => false,
-    })
+    };
+    Ok((!clears).then_some(Pending::Other))
 }
 
 /// The look, again every `poll` until (a)–(c) hold, while only (a) fails

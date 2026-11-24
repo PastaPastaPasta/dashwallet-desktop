@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, openTransfer, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // C-routes D-C3 (C3-8): the top-up sheet's "Pay with" on the fixture backend. Dash wallet is
 // chosen every time; Platform pays from the wallet's Platform addresses with Max, its confirm
@@ -37,6 +37,40 @@ async function shot(page: Page, theme: Theme, state: string) {
   await page.getByTestId("topup-sheet").screenshot({ path: `${shots}/${process.env.DW_SHOTS_TAG ?? "after"}-${theme}-${state}.png` });
 }
 
+async function moveShot(page: Page, theme: Theme, state: string) {
+  if (!shots) return;
+  await fontsReady(page);
+  await page.getByTestId("transfer-sheet").screenshot({ path: `${shots}/${process.env.DW_SHOTS_TAG ?? "after"}-${theme}-${state}.png` });
+}
+
+/** A top-up from Platform held, its outcome open with Move to Dash wallet. */
+async function heldTopUp(page: Page, theme: Theme) {
+  const errors = await openTopUp(page, theme, "held");
+  await page.getByTestId("topup-source-platform").click();
+  await page.getByTestId("topup-next").click();
+  await page.getByTestId("topup-pay").click();
+  await authorize(page);
+  await expect(page.getByTestId("topup-move-to-core")).toBeVisible();
+  return errors;
+}
+
+/** Home's transfer at Platform → Dash wallet's confirmation, its quote read. */
+async function moveConfirm(page: Page) {
+  await expect(page.getByTestId("transfer-sheet")).toBeVisible();
+  await page.getByTestId("transfer-continue").click();
+  await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+}
+
+/** The held top-up lands: it is done and has taken its inputs. */
+const topUpLands = (page: Page) =>
+  page.evaluate(() => {
+    const p = window.__dwFixture!.world.pending.platform!;
+    const held = p.activity.find((a) => a.kind === "toIdentity" && a.mayLand)!;
+    const inputs = p.heldInputs?.[held.id] ?? [];
+    p.activity = p.activity.map((a) => (a.id === held.id ? { ...a, state: "done" as const, mayLand: false } : a));
+    p.addresses = p.addresses.filter((a) => !inputs.includes(a.address));
+  });
+
 for (const theme of THEMES) {
   test(`Pay with: Platform is not offered on a network without address funds transitions yet (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme, undefined, false);
@@ -51,7 +85,7 @@ for (const theme of THEMES) {
   test(`Pay with: Dash wallet by default, Platform with Max, Shielded not offered (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme);
     await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();
-    await expect(page.getByTestId("topup-source-shielded")).toContainText("Not available on this network yet.");
+    await expect(page.getByTestId("topup-source-shielded")).toContainText("Paying from Shielded isn't available here yet.");
     await expect(page.getByTestId("topup-source-shielded").locator("input")).toBeDisabled();
     await expect(page.getByTestId("topup-max")).toHaveCount(0);
     await shot(page, theme, "pay-with-dash-wallet");
@@ -201,6 +235,104 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("topup-outcome-title")).toHaveText("Top-up sent");
     await expect(page.getByTestId("topup-move-to-core")).toHaveCount(0);
     await shot(page, theme, "platform-pending");
+    expect(errors).toEqual([]);
+  });
+
+  test(`the exit of a held top-up that landed since its quote is refused, from the top-up sheet (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    await topUpLands(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
+    await expect(page.getByTestId("platform-move-refused-back")).toBeVisible();
+    expect(await page.evaluate(() => window.__dwFixture!.world.pending.platform!.activity.some((a) => a.kind === "moveToCore"))).toBe(false);
+    await moveShot(page, theme, "exit-quote-changed");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    // Back: a new quote, no longer the exit of anything.
+    await page.getByTestId("platform-move-refused-back").click();
+    await expect(page.getByTestId("platform-move-quote")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`the exit of a held top-up that landed since its quote is refused, from Home (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.getByTestId("topup-done").click();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+    await openTransfer(page, "platformToCore");
+    await moveConfirm(page);
+    await topUpLands(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
+    expect(errors).toEqual([]);
+  });
+
+  test(`an exit's outcome shows the amount its Confirm showed, which it moved (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    const quoted = await page.getByTestId("platform-move-quote-duffs").innerText();
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("is on its way to your Dash wallet");
+    expect(await page.getByTestId("platform-move-outcome-text").innerText()).toContain(quoted);
+    expect(errors).toEqual([]);
+  });
+
+  test(`an exit whose inputs no longer carry its amount moves nothing (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    // The held input holds less at submit than the quote read.
+    await page.evaluate(() => {
+      const p = window.__dwFixture!.world.pending.platform!;
+      const held = p.activity.find((a) => a.kind === "toIdentity" && a.mayLand)!;
+      const inputs = p.heldInputs?.[held.id] ?? [];
+      p.addresses = p.addresses.map((a) => (inputs.includes(a.address) ? { ...a, credits: String(BigInt(a.credits) / 2n) } : a));
+    });
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-refusal")).toHaveText("What you can move from your Platform addresses changed since you reviewed this move. Review it again.");
+    expect(errors).toEqual([]);
+  });
+
+  test(`an open outcome sheet takes Activity's answer once the exit can no longer land (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "pending"));
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    // Activity proves the top-up executed in the exit's place.
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const p = f.world.pending.platform!;
+      p.activity = p.activity.map((a) =>
+        a.kind === "moveToCore" && a.state === "pending" ? { ...a, state: "failed" as const, mayLand: false } : a.kind === "toIdentity" && a.mayLand ? { ...a, state: "done" as const, mayLand: false } : a,
+      );
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } } as never);
+    });
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again.");
+    await moveShot(page, theme, "exit-settled-failed");
+    expect(errors).toEqual([]);
+  });
+
+  test(`the exit of a held top-up that executed in its place finds its credits used (${theme})`, async ({ page }) => {
+    const errors = await heldTopUp(page, theme);
+    await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.nextMove = "lost"));
+    await page.getByTestId("topup-move-to-core").click();
+    await moveConfirm(page);
+    await page.getByTestId("platform-move-go").click();
+    await authorize(page);
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("The move did not go through");
+    await expect(page.getByTestId("platform-move-outcome-text")).toHaveText("Another payment or move from your Platform balance went first, possibly from another device using the same recovery phrase. Check your Platform balance: anything still there can be moved again.");
+    await moveShot(page, theme, "exit-lost");
+    expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
   });
 }

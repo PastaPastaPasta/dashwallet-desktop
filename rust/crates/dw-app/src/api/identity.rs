@@ -547,16 +547,18 @@ commands! {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
+    /// `exit_of`: the quote's, the held top-up this move is the exit of.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
         wallet_id: String,
         amount: WithdrawAmount,
         to: String,
+        exit_of: Option<String>,
         grant: String,
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
+        Ok(dashpay.move_to_core(amount.into(), to, exit_of, grant).await?.into())
     }
 
     /// The wallet's Platform receive address: the lowest unused one.

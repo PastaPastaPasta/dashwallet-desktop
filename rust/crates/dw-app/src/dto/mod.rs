@@ -274,6 +274,9 @@ pub struct LaunchInfo {
     pub network: NetworkInfo,
     pub app_version: String,
     pub engine_version: String,
+    /// The version the build was stamped with (`0.3.0`, `0.3.0-rc.1`,
+    /// `0.3.0-dev.1230.gb04c5c7`); an unstamped build reads `X.Y.Z-dev`.
+    pub build_version: String,
 }
 
 impl LaunchInfo {
@@ -289,6 +292,7 @@ impl LaunchInfo {
             network: NetworkInfo::from(network),
             app_version: app_version.into(),
             engine_version: dw_engine::ENGINE_VERSION.into(),
+            build_version: dw_engine::BUILD_VERSION.into(),
         }
     }
 }
@@ -545,6 +549,23 @@ mod tests {
             B::Funding | B::Credits | B::Spend | B::Crypto | B::Masternode | B::Voting => 6,
         };
         assert_eq!(MAX_LEASE_BUDGETS, budgets(B::Funding));
+    }
+
+    /// About shows the version the build was stamped with, not only the
+    /// app's X.Y.Z: a dev build from main reads `X.Y.Z-dev.N.gHASH`.
+    #[test]
+    fn launch_info_carries_the_stamped_build_version() {
+        let info = LaunchInfo::new(&LaunchOptions::default(), &DashNetwork::Testnet, "0.1.0");
+        assert_eq!(info.app_version, "0.1.0");
+        assert_eq!(info.build_version, dw_engine::BUILD_VERSION);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["buildVersion"], dw_engine::BUILD_VERSION);
+        if option_env!("DW_BUILD_VERSION").is_none() {
+            assert_eq!(
+                info.build_version,
+                concat!(env!("CARGO_PKG_VERSION"), "-dev")
+            );
+        }
     }
 
     #[test]

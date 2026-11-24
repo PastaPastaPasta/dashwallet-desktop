@@ -3041,6 +3041,9 @@ fn t2_testnet_the_money_gate_verifies_a_contact() {
 #[path = "contact_pay_tests.rs"]
 mod pay;
 
+#[path = "contact_shielded_pay_tests.rs"]
+mod shielded_pay;
+
 #[path = "contact_payout_tests.rs"]
 mod payout;
 
