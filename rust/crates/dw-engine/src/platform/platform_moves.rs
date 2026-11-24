@@ -3250,17 +3250,19 @@ pub(crate) async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    // Every spend, before anything is planned (#533).
+    // A retry of a send that landed pays nothing and signs nothing.
+    if let (Target::Platform(to), Some(id)) = (target, retry_of)
+        && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
+    {
+        return Ok((settled.clone(), None));
+    }
+    // Every spend that may sign, before anything is planned (#533).
     behind(&moves, &seen)?;
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
-    // only its exact retry, and a retry of one that landed pays nothing.
+    // only its exact retry.
     let (held, planned) = match (target, retry_of) {
-        (Target::Platform(to), Some(id)) => {
-            let to = bech32m(&to, network);
-            if let Some(settled) = retry_decision(&moves, id, (&to, amount))? {
-                return Ok((settled.clone(), None));
-            }
+        (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
             let planned =
                 (held.and_then(|h| h.replan(&balances))).ok_or(PlatformError::Unavailable)?;
