@@ -15,7 +15,7 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
-import { actsOn, conflicted, inProgress, opRow, opTitle, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
+import { actsOn, conflicted, inProgress, opRow, opTitle, proTxSends, resendCap, resendConfirmText, type OpAction } from "../../masternodes/operations";
 import { useMasternodesRefresh } from "../../masternodes/queries";
 import { MoreMenu, StatusChip } from "./common";
 import { CredentialField, useCredential } from "./credential";
@@ -40,6 +40,7 @@ export function InProgressGroup({
   const [resending, setResending] = useState<ProTxOperation | null>(null);
   const [discarding, setDiscarding] = useState<ProTxOperation | null>(null);
   const [error, setError] = useState<{ id: string; text: string } | null>(null);
+  const sends = proTxSends(network);
   const rows = inProgress(ops);
   const replaced = conflicted(ops);
   if (rows.length === 0 && replaced.length === 0) return null;
@@ -62,7 +63,7 @@ export function InProgressGroup({
       ))}
       <ul className="mg-list">
         {rows.map((o) => {
-          const v = opRow(o);
+          const v = opRow(o, sends);
           return (
             <li key={o.id} className="mg-row mg-row-wide mg-op" data-testid={`mn-op-${o.id}`} data-state={o.state.kind}>
               <span className="mg-row-text">
@@ -176,7 +177,7 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
     };
   }, []);
   const send = async () => {
-    if (busy || !credential.ready || !actsOn(op)) return;
+    if (busy || !credential.ready || !actsOn(op, proTxSends(network))) return;
     const gen = lockGeneration();
     setBusy(true);
     try {

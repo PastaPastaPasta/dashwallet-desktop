@@ -34,6 +34,7 @@ import type { MasternodesWorld } from "./masternodes";
 type AddedVoters = (m: MasternodesWorld) => { proTxHash: string; facts: ListFacts }[];
 type StaleAddedVoter = (m: MasternodesWorld, hash: string) => boolean;
 import { nameHandlers, nameScenarios, newNamesWorld, type NamesWorld } from "./names";
+import { newMasternodesWorld, noMasternodesWorld } from "./masternodes";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -560,7 +561,8 @@ type Base = (theme: ThemeName | null) => World;
 function governanceBase(base: Base, theme: ThemeName | null, patch: Partial<GovernanceWorld> = {}): World {
   const w = base(theme);
   w.governance = { ...syncedGovernance(), ...patch };
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true, masternodesTab: "governance" };
+  w.masternodes = newMasternodesWorld();
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on", masternodesTab: "governance" };
   return w;
 }
 
@@ -572,6 +574,14 @@ export function governanceScenarios(base: Base) {
       patch?.(w.governance.names);
       return w;
     }),
+    /** Show Masternodes on Auto, with a confirming proposal as the wallet's only masternode work. */
+    "governance-proposal-only": (t: ThemeName | null) => {
+      const w = governanceBase(base, t);
+      w.governance.mine[id(w)] = [EVERY_STATE[1]];
+      w.masternodes = noMasternodesWorld();
+      w.settings.ui = { ...w.settings.ui, masternodesItem: "auto" };
+      return w;
+    },
     /** The `gov-list` mock: synced, three voting masternodes (one banned), one own proposal confirming. */
     governance: (t: ThemeName | null) => {
       const w = governanceBase(base, t);

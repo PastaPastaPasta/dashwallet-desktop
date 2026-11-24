@@ -215,12 +215,92 @@ fn a_tampered_spend_limit_does_not_raise_the_window() {
     let v = fx.open();
     allow_window(&v);
     v.unlock(PASS, UnlockScope::Full).unwrap();
-    assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 500_000_000);
+    // The tampered plain copy is not shown as the limit: it can't be read,
+    // and the limit in force is 0 (#173 item 10, Q17 F1).
+    let policy = v.quick_unlock_policy();
+    assert!(policy.limit_unreadable);
+    assert_eq!(policy.spend_limit_duffs, 0);
     assert!(matches!(
         v.authorize(spend(1), Some(&w), Credential::None),
         Err(VaultError::CredentialRequired)
     ));
     assert!(v.signing_window_remaining().is_none());
+}
+
+/// #173 item 10: a sealed spending limit that no longer authenticates (here
+/// its plain copy was changed) counts as none, and the setter replaces it
+/// after the passphrase check its grant made, instead of failing on the old
+/// one. A manifest that does not authenticate is still refused.
+#[test]
+fn a_damaged_spend_limit_can_be_set_again() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    allow_window(&v);
+    let w = wallet(1);
+    v.store_wallet_secret(&w, &secret(1)).unwrap();
+    let change = |v: &dw_vault::Vault| {
+        v.authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id
+    };
+    v.set_quick_unlock_spend_limit(&change(&v), DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
+        .unwrap();
+    drop(v);
+    let mut json = fx.read_json();
+    json["quick_unlock"]["spend_limit_duffs"] = serde_json::json!(500_000_000u64);
+    fx.write_json(&json);
+    let v = fx.open();
+    allow_window(&v);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(matches!(
+        v.authorize(spend(1), Some(&w), Credential::None),
+        Err(VaultError::CredentialRequired)
+    ));
+
+    let limit = v
+        .set_quick_unlock_spend_limit(&change(&v), DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
+        .unwrap();
+    assert_eq!(limit.spend_limit_duffs, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT);
+    // The new limit is sealed: after a passphrase unlock the window pays up to it.
+    v.lock();
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(v.authorize(spend(1), Some(&w), Credential::None).is_ok());
+    drop(v);
+    let v = fx.open();
+    allow_window(&v);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(
+        v.quick_unlock_policy().spend_limit_duffs,
+        DEFAULT_QUICK_UNLOCK_SPEND_LIMIT
+    );
+    assert!(v.authorize(spend(1), Some(&w), Credential::None).is_ok());
+
+    // A damaged manifest is not a damaged limit: the setter still refuses.
+    drop(v);
+    let mut json = fx.read_json();
+    let ct = json["manifest"]["ct"].as_str().unwrap().to_owned();
+    let flipped = format!(
+        "{}{}",
+        if ct.starts_with('0') { '1' } else { '0' },
+        &ct[1..]
+    );
+    json["manifest"]["ct"] = serde_json::json!(flipped);
+    fx.write_json(&json);
+    let v = fx.open();
+    let refused = v.unlock(PASS, UnlockScope::Full).is_err()
+        || v.authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .and_then(|g| v.set_quick_unlock_spend_limit(&g.id, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT))
+        .is_err();
+    assert!(refused);
 }
 
 #[test]
