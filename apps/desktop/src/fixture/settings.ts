@@ -374,8 +374,8 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       world.settings.backupFailures.filter((f) => world.wallets.some((w) => w.summary.walletId === f.walletId)),
     backup_directory: () => FIXTURE_BACKUP_DIR,
     open_backup_directory: (_, { world }) => {
-      if (world.settings.backupFolderMissing) throw fail("app.backup_folder_missing", "no backup folder yet");
-      if (world.settings.folderOpenFails) throw fail("app.folder_open", "no file manager opened");
+      if (world.settings.backupFolderMissing) throw fail("app.backup_folder_missing", "fixture: the backup folder is missing");
+      if (world.settings.folderOpenFails) throw fail("app.folder_open", "fixture: the file manager did not open");
       world.settings.foldersOpened = (world.settings.foldersOpened ?? 0) + 1;
       return null;
     },

@@ -616,7 +616,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
       files.dialogs.push({ purpose, save, suggestedName });
       if (files.dialogFails) {
         files.dialogFails = false;
-        throw fail("app.file_dialog", "the dialog could not be shown");
+        throw fail("app.file_dialog", "fixture: the dialog failed");
       }
       return save ? savePath(files, suggestedName) : files.open && `${files.saveDir ?? "/home/user"}/${files.open.name}`;
     },
