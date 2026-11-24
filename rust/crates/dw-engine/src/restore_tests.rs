@@ -4242,3 +4242,89 @@ fn an_upgrade_replay_names_its_wallet_until_it_is_done() {
     assert_eq!(upgrading(&session), None);
     assert_eq!(engine.block_on(session.upgrade_replay(id)), None);
 }
+
+/// Stores one block header at `height` under the session's chain data, as
+/// dash-spv anchors its headers there.
+fn store_header_anchor(engine: &Engine, session: &NetworkSession, height: u32) {
+    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    let dir = session.data_dir().join(crate::session::SPV_DIR);
+    let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
+    engine.block_on(async {
+        let mut storage = PersistentBlockHeaderStorage::open(&dir).await.unwrap();
+        let hashed = dash_spv::types::HashedBlockHeader::from(header);
+        storage
+            .store_headers_at_height(&[hashed], height)
+            .await
+            .unwrap();
+        storage.persist(&dir).await.unwrap();
+    });
+}
+
+/// A wallet whose birth is below the first stored block header is reported
+/// until "Reset chain data and resync". The reset replays it from its
+/// birth, and the next SPV start anchors its headers at or below that
+/// birth, so nothing is reported with headers stored again. A payment in a
+/// block below the old header start then shows once the replay reaches it.
+#[test]
+fn a_wallet_born_below_the_stored_headers_is_reported_until_the_chain_data_is_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_from_genesis(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    store_header_anchor(&engine, &session, HEIGHT);
+    let to = bip44_address(&engine, &session, id, 3);
+    let tx = pays(1, &to);
+
+    let gap = engine.block_on(session.history_gap()).unwrap();
+
+    assert_eq!(
+        gap,
+        Some(crate::tools::HistoryGap {
+            start_height: HEIGHT,
+            wallets: vec![id],
+        })
+    );
+    engine.block_on(session.reset_chain_data()).unwrap();
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    let birth = birth_height(&engine, &session, id);
+    assert_eq!(
+        synced_height(&engine, &session, id),
+        birth.saturating_sub(1)
+    );
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((birth.saturating_sub(1), HEIGHT + 100))
+    );
+    start_offline_spv(&engine, &session);
+    engine.block_on(session.stop_spv()).unwrap();
+    let spv = session.data_dir().join(crate::session::SPV_DIR);
+    let start = crate::tools::stored_header_start(&spv).unwrap();
+    assert!(start.is_some_and(|h| h <= birth), "{start:?}");
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+    replay_at(
+        &engine,
+        &session,
+        id,
+        std::slice::from_ref(&tx),
+        HEIGHT - 400,
+    );
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
+}
+
+/// A wallet born at the first stored header is covered: no gap is
+/// reported.
+#[test]
+fn a_wallet_born_at_the_first_stored_header_is_not_reported() {
+    let (_dir, engine, session, _) = engine_wallet();
+    store_header_anchor(&engine, &session, 0);
+
+    assert_eq!(engine.block_on(session.history_gap()).unwrap(), None);
+}
