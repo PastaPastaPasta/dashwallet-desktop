@@ -112,9 +112,12 @@ pub(crate) fn registration_collaterals<'a>(
 /// The library numbers each type in block order, where a ProRegTx not yet in
 /// a block (height 0) comes first: a new masternode would be "Masternode 1"
 /// while it registers and another number once mined (#651). Within each
-/// type, the numbers the library gave are handed out again with every
-/// unconfirmed registration after every mined one, each group in the
-/// library's order, so a masternode keeps its number from Registering on.
+/// type, the numbers the library gave are handed out again in three groups,
+/// each in the library's order: mined registrations, then unconfirmed ones,
+/// then rows with no registration (update-only), which the library numbers
+/// last. A registration then keeps its number from Registering on, as long
+/// as it is the only one unconfirmed; two that confirm in the other order
+/// take the mined order's numbers.
 fn pending_last(records: &mut [MasternodeRecord]) {
     for evonode in [false, true] {
         let mut numbered: Vec<usize> = (0..records.len())
@@ -124,10 +127,12 @@ fn pending_last(records: &mut [MasternodeRecord]) {
         numbers.sort_unstable();
         numbered.sort_by_key(|&i| {
             let r = &records[i];
-            (
-                r.has_registration && r.registration_height == 0,
-                r.type_index,
-            )
+            let group = match (r.has_registration, r.registration_height) {
+                (false, _) => 2,
+                (true, 0) => 1,
+                (true, _) => 0,
+            };
+            (group, r.type_index)
         });
         for (i, n) in numbered.into_iter().zip(numbers) {
             records[i].type_index = n;
@@ -407,6 +412,29 @@ mod tests {
         let mined = aggregate(&[(100, 1, old.clone()), (200, 1, new.clone())]);
         assert_eq!((index(&mined, &old), index(&mined, &new)), (1, 2));
         let evo = registration(null(3), true, 0, coins(&[EVONODE_COLLATERAL]));
+        // A masternode the wallet knows only from an update comes after both.
+        let other = update(Txid::from_byte_array([9; 32]), 8);
+        let pending = aggregate(&[
+            (100, 1, old.clone()),
+            (0, 0, new.clone()),
+            (90, 1, other.clone()),
+        ]);
+        let mined = aggregate(&[
+            (100, 1, old.clone()),
+            (200, 1, new.clone()),
+            (90, 1, other.clone()),
+        ]);
+        let row = |out: &[OwnedMasternode], hash: [u8; 32]| {
+            out.iter()
+                .find(|o| o.record.pro_tx_hash == hash)
+                .unwrap()
+                .record
+                .type_index
+        };
+        let numbers =
+            |out: &[OwnedMasternode]| (index(out, &old), index(out, &new), row(out, [9; 32]));
+        assert_eq!(numbers(&pending), (1, 2, 3));
+        assert_eq!(numbers(&mined), (1, 2, 3));
         let mixed = aggregate(&[
             (0, 0, new.clone()),
             (50, 1, evo.clone()),
