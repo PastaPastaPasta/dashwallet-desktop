@@ -311,6 +311,25 @@ test("self-run, Sent: Masternode keys… opens the keys on the operator role to 
   expect(errors).toEqual([]);
 });
 
+test("self-run with an operator key entered by hand: Sent offers no Masternode keys button", async ({ page }) => {
+  const errors = await open(page, "reg");
+  await setUp(page);
+  await page.getByTestId("reg-runner-self").click();
+  await next(page);
+  await next(page);
+  await page.getByTestId("reg-operator-enter").click();
+  await page.getByTestId("reg-operator-key").fill(OPERATOR_KEY);
+  await page.getByTestId("reg-service").fill(SERVICE);
+  await next(page);
+  await expect(page.getByTestId("reg-owner")).toBeVisible();
+  await toReview(page);
+  await page.getByTestId("reg-passphrase").fill("demo");
+  await page.getByTestId("reg-register").click();
+  await expect(page.getByTestId("reg-done-body")).toBeVisible();
+  await expect(page.getByTestId("reg-open-keys")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("field errors: an IPv6 or bad IPv4 service, a bad operator key, the voting address set to the owner's", async ({ page }) => {
   const errors = await open(page, "reg");
   await setUp(page);
