@@ -3088,3 +3088,110 @@ fn a_watch_only_wallets_beaten_payment_is_dropped_and_its_coin_held() {
     let holds = crate::tx_actions::dropped_holds(&session.live().unwrap().appdb, id).unwrap();
     assert!(holds.contains(&a), "A is held: {holds:?}");
 }
+
+/// C dropped with its winner unknown (an InstantSend-locked sweep the
+/// history does not hold), so D, which nothing really spends, is held.
+fn child_dropped_holding_d() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    OutPoint,
+    Transaction,
+) {
+    let (dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    (dir, engine, session, id, d, paid)
+}
+
+/// #749 (MG): a held coin of value X shows X in the held total, and never
+/// in the balance's buckets; so after a restart.
+#[test]
+fn a_held_coin_counts_in_the_held_total_and_never_in_the_balance() {
+    let (_dir, engine, session, id, d, paid) = child_dropped_holding_d();
+    let x = paid.output[d.vout as usize].value;
+    let check = |session: &NetworkSession, state: &str| {
+        let b = balances(session, id);
+        assert_eq!(
+            (b.held_unfinished, b.held_unvalued),
+            (x, 0),
+            "{state}: {b:?}"
+        );
+        assert!(!held(&engine, session, id).contains(&d), "{state}");
+        let counted: u64 = coins(&engine, session, id).iter().map(|c| c.1).sum();
+        assert_eq!(b.total, counted, "{state}: D is in no bucket: {b:?}");
+    };
+    check(&session, "dropped");
+    let session = reopen(&engine, session);
+    check(&session, "restarted");
+}
+
+/// #749: removing the wallet takes its drops' holds with its rows, and a
+/// restore from its recovery phrase, scanned from the birth, credits D,
+/// which nothing spends, and offers it.
+#[test]
+fn removing_and_restoring_the_wallet_drops_its_holds() {
+    let (_dir, engine, session, id, d, paid) = child_dropped_holding_d();
+    let wipe = (session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    engine.block_on(session.remove_wallet(id, wipe)).unwrap();
+    let appdb = session.live().unwrap().appdb;
+    assert!(
+        crate::tx_actions::dropped_holds(&appdb, id)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(session.hub.dropped_holds(id).is_empty(), "held in memory");
+
+    let restored = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(super::PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(super::BIRTH),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert_eq!(restored, id, "the same wallet");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    assert!(held(&engine, &session, id).contains(&d), "D is credited");
+    assert!(spendable(&engine, &session, id, d), "D is offered");
+    let b = balances(&session, id);
+    assert_eq!((b.held_unfinished, b.held_unvalued), (0, 0), "{b:?}");
+
+    let session = reopen(&engine, session);
+    assert!(held(&engine, &session, id).contains(&d), "after a restart");
+    assert!(
+        crate::tx_actions::dropped_holds(&session.live().unwrap().appdb, id)
+            .unwrap()
+            .is_empty()
+    );
+}

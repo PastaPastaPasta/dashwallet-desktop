@@ -1662,6 +1662,62 @@ impl NetworkSession {
                 }
             }
         }
+        self.refresh_held(manager, wallet).await;
+    }
+
+    /// Reads again what wallet `wallet`'s drops hold (the coins their notes
+    /// list, which the drops claim for good), summed from the outputs that
+    /// made them, and publishes it with the balances when it changed. A
+    /// coin a block or a mined transaction of the history spent since is
+    /// settled, not held. One whose transaction the history does not hold
+    /// is counted apart, its value unknown; so is an output no address of
+    /// the wallet's own receives.
+    pub(crate) async fn refresh_held(&self, manager: &Manager, wallet: WalletId) {
+        if self.hub.wallet_state(&wallet).is_none() {
+            return;
+        }
+        let holds = self.hub.dropped_holds(wallet);
+        let held = match holds.is_empty() {
+            true => (0, 0),
+            false => {
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                let Some(info) = wm.get_wallet_info(&wallet.0) else {
+                    return;
+                };
+                let observed = info.core_wallet.observed_spent_outpoints();
+                let owned = crate::history_ops::owned_scripts(info);
+                (self.hub.history).read(&wallet, |txs| {
+                    let spent_in_block = |o: &OutPoint| {
+                        observed.contains_key(o)
+                            || (txs.values()).any(|e| {
+                                e.context.block_info().is_some()
+                                    && e.tx.input.iter().any(|i| i.previous_output == *o)
+                            })
+                    };
+                    let (mut sum, mut unvalued) = (0u64, 0u32);
+                    for o in holds.iter().filter(|o| !spent_in_block(o)) {
+                        let output =
+                            (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
+                        match output {
+                            Some(out) if owned.contains_key(&out.script_pubkey) => {
+                                sum = sum.saturating_add(out.value)
+                            }
+                            _ => unvalued += 1,
+                        }
+                    }
+                    (sum, unvalued)
+                })
+            }
+        };
+        let changed = self.hub.update_wallet_state(wallet, |s| {
+            let changed = s.held != held;
+            s.held = held;
+            changed
+        });
+        if changed {
+            self.hub.pump.mark_balances(wallet);
+        }
     }
 
     /// Drops `roots` and what descends from them ([`plan_drop`]) as an
@@ -1782,7 +1838,14 @@ impl NetworkSession {
                 ]
             })
             .collect();
+        let noted: Vec<OutPoint> = (plan.copies.iter())
+            .flat_map(|(_, tx)| {
+                let held = holds(tx);
+                (held.split(',').filter_map(|o| OutPoint::from_str(o).ok())).collect::<Vec<_>>()
+            })
+            .collect();
         self.write_abandoned_marks(wallet, marks).await?;
+        self.hub.add_dropped_holds(wallet, noted);
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");
         let rest: Vec<Txid> = dead.collect();

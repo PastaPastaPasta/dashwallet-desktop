@@ -93,6 +93,15 @@ pub struct WalletBalances {
     /// `false` says only that the birth block was scanned: a wallet born
     /// long ago is still behind the tip while SPV syncs (the sync snapshot).
     pub catching_up: bool,
+    /// The coins drops of payments that can never confirm hold while what
+    /// beat them is unfinished (#170, #749), summed: none of them counts in
+    /// a bucket above. Read from the hold set, never from a balance. A coin
+    /// whose value the wallet does not know is not summed but counted in
+    /// `held_unvalued`.
+    pub held_unfinished: u64,
+    /// The held coins whose value the wallet does not know: no transaction
+    /// the history holds made them.
+    pub held_unvalued: u32,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the

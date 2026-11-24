@@ -208,9 +208,11 @@ export const FUNDED_BALANCES: Balances = {
   total: 3_039_698_287,
   coinjoin: 0,
   catchingUp: false,
+  heldUnfinished: 0,
+  heldUnvalued: 0,
 };
 
-export const ZERO_BALANCES: Balances = { confirmed: 0, unconfirmed: 0, immature: 0, locked: 0, total: 0, coinjoin: 0, catchingUp: false };
+export const ZERO_BALANCES: Balances = { confirmed: 0, unconfirmed: 0, immature: 0, locked: 0, total: 0, coinjoin: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0 };
 
 /** Caught up at the fixture tip. */
 export function caughtUp(): SyncStatus {

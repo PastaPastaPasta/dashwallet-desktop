@@ -617,6 +617,7 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             self.apply_spend_claims(manager, wallet, |_, _| (Vec::new(), HashSet::new()))
                 .await;
+            self.refresh_held(manager, wallet).await;
             return;
         }
         let (mut candidates, mut own) = (Vec::new(), None);
@@ -640,6 +641,7 @@ impl NetworkSession {
         .await;
         if !complete {
             tracing::warn!(%wallet, "history load incomplete: no sent mark settled");
+            self.refresh_held(manager, wallet).await;
             return;
         }
         self.drop_dead(manager, wallet, Some(all)).await;

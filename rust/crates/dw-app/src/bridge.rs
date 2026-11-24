@@ -873,6 +873,8 @@ mod tests {
                         total: u64::MAX,
                         coinjoin: u64::MAX,
                         catching_up: true,
+                        held_unfinished: u64::MAX,
+                        held_unvalued: u32::MAX,
                     }),
                 },
                 EngineEvent::HistoryChanged {

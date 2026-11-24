@@ -312,6 +312,11 @@ pub struct Balances {
     /// scanned: a wallet born long ago is still behind the tip while the
     /// sync status says so.
     pub catching_up: bool,
+    /// The coins held while what beat a payment that can never confirm is
+    /// unfinished, summed: in no bucket above.
+    pub held_unfinished: u64,
+    /// The held coins whose value is unknown, not in `heldUnfinished`.
+    pub held_unvalued: u32,
 }
 
 impl From<WalletBalances> for Balances {
@@ -324,6 +329,8 @@ impl From<WalletBalances> for Balances {
             total,
             coinjoin,
             catching_up,
+            held_unfinished,
+            held_unvalued,
         } = b;
         Balances {
             confirmed,
@@ -333,6 +340,8 @@ impl From<WalletBalances> for Balances {
             total,
             coinjoin,
             catching_up,
+            held_unfinished,
+            held_unvalued,
         }
     }
 }

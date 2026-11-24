@@ -359,6 +359,9 @@ pub(crate) struct WalletState {
     /// `ChainTruncated` event of: the event at this height, or one above
     /// it that would lower nothing, is that truncation's, heard late.
     pub detected: Option<u32>,
+    /// What the wallet's drops hold, summed, and the held coins of unknown
+    /// value (`NetworkSession::refresh_held`).
+    pub held: (u64, u32),
 }
 
 impl WalletState {
@@ -390,6 +393,7 @@ impl WalletState {
             loading: self.loading,
             fully_mixed: self.fully_mixed,
             detected: self.detected,
+            held: self.held,
             ..read
         };
     }
@@ -422,6 +426,8 @@ impl WalletState {
             total: b.total(),
             coinjoin,
             catching_up: self.catching_up(),
+            held_unfinished: self.held.0,
+            held_unvalued: self.held.1,
         }
     }
 
@@ -1014,6 +1020,16 @@ impl SessionHub {
         (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
     }
 
+    /// Adds the coins a drop of wallet `id` noted it holds.
+    pub(crate) fn add_dropped_holds(
+        &self,
+        id: WalletId,
+        held: impl IntoIterator<Item = dashcore::OutPoint>,
+    ) {
+        let mut holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        holds.entry(id).or_default().extend(held);
+    }
+
     /// The coins wallet `id`'s drops hold for good, as its open read them.
     pub(crate) fn dropped_holds(&self, id: WalletId) -> BTreeSet<dashcore::OutPoint> {
         let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
@@ -1245,6 +1261,9 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        // Its notes go with its rows: a wallet restored under the same id
+        // holds nothing of them.
+        (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
