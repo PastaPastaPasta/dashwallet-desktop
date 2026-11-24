@@ -45,11 +45,12 @@ export function useInProgressActions(wallet: WalletSummary, network: NetworkInfo
   };
   const sheets = (
     <>
-      {resending && <ResendSheet op={resending} wallet={wallet} network={network} onClose={() => setResending(null)} />}
+      {resending && <ResendSheet op={resending} wallet={wallet} network={network} onClose={() => setResending(null)} returnFocus={rowAction(resending.id, "resend")} />}
       {discarding && (
         <DiscardSheet
           op={discarding}
           onClose={() => setDiscarding(null)}
+          returnFocus={rowAction(discarding.id, "discard")}
           onConfirm={async () => {
             const o = discarding;
             try {
@@ -147,11 +148,27 @@ export function InProgressGroup({
   );
 }
 
-function DiscardSheet({ op, onClose, onConfirm }: { op: ProTxOperation; onClose: () => void; onConfirm: () => Promise<void> }) {
+type ReturnFocus = () => HTMLElement | null;
+
+// A list read can replace the row, so the opener may be gone when the sheet closes.
+const rowAction = (id: string, action: OpAction): ReturnFocus => () =>
+  document.querySelector<HTMLElement>(`[data-testid="mn-op-${action}-${id}"]`) ?? document.querySelector<HTMLElement>(`[data-testid="mn-op-more-${id}"]`);
+
+function DiscardSheet({
+  op,
+  onClose,
+  onConfirm,
+  returnFocus,
+}: {
+  op: ProTxOperation;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  returnFocus: ReturnFocus;
+}) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   return (
-    <Sheet title={t(`${I}.discardTitle`)} width="small" testId="mn-op-discard-sheet" closable={!busy} onClose={onClose}>
+    <Sheet title={t(`${I}.discardTitle`)} width="small" testId="mn-op-discard-sheet" closable={!busy} onClose={onClose} returnFocus={returnFocus}>
       <div className="mg-sheet-body">
         <p>{t(`${I}.discardText.${op.kind}`)}</p>
         <footer className="mg-sheet-footer">
@@ -179,7 +196,19 @@ function DiscardSheet({ op, onClose, onConfirm }: { op: ProTxOperation; onClose:
   );
 }
 
-function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
+function ResendSheet({
+  op,
+  wallet,
+  network,
+  onClose,
+  returnFocus,
+}: {
+  op: ProTxOperation;
+  wallet: WalletSummary;
+  network: NetworkInfo;
+  onClose: () => void;
+  returnFocus: ReturnFocus;
+}) {
   const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
@@ -219,7 +248,7 @@ function ResendSheet({ op, wallet, network, onClose }: { op: ProTxOperation; wal
     }
   };
   return (
-    <Sheet title={t(`${I}.resendTitle`)} width="small" testId="mn-op-resend-sheet" closable={!busy} onClose={onClose}>
+    <Sheet title={t(`${I}.resendTitle`)} width="small" testId="mn-op-resend-sheet" closable={!busy} onClose={onClose} returnFocus={returnFocus}>
       <form
         className="mg-sheet-body"
         onSubmit={(e) => {

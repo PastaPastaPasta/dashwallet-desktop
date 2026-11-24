@@ -5,7 +5,7 @@
 // the margin. An External registration is saved at Review's [Continue] (`needs_signature`, In
 // progress) and reopens at Prove. A refusal goes back to the step and field it belongs to.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { isAppError } from "../../api/backend";
 import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
@@ -29,7 +29,7 @@ import { shortAddress, shortHash } from "../../governance/model";
 import { useT } from "../../i18n";
 import { mnErrorText } from "../../masternodes/model";
 import { lastErrorText } from "../../masternodes/operations";
-import { useMasternodes, useMasternodesRefresh, useRegistrationKeys } from "../../masternodes/queries";
+import { mnKeys, useMasternodes, useMasternodesRefresh, useRegistrationKeys } from "../../masternodes/queries";
 import {
   buildRequest,
   coinsFor,
@@ -82,6 +82,7 @@ export function RegisterSheet({
   const shown = useDisplay(network);
   const id = useId();
   const refresh = useMasternodesRefresh();
+  const queryClient = useQueryClient();
   const overview = useMasternodes(wallet.walletId);
   const [step, setStep] = useState<Step>(resume ? "prove" : "type");
   const [d, setD] = useState<RegDraft>(newDraft);
@@ -277,7 +278,11 @@ export function RegisterSheet({
       if (refusedWhileLocked(e) || !mounted.current) return;
       if (isAppError(e) && e.code === "masternodes.operation_state" && e.data?.kind === "operationState" && e.data.state === "inputs_spent") {
         setInputsSpent(true);
-        // The saved row reads spent too, so In progress offers a new message if this sheet closes.
+        // The saved row reads spent at once, so In progress offers a new message if this sheet closes
+        // before the list is read again.
+        queryClient.setQueryData<ProTxOperation[]>(mnKeys.operations(wallet.walletId), (rows) =>
+          rows?.map((o) => (o.id === op.id ? { ...o, state: { kind: "inputs_spent" }, signRequest: null } : o)),
+        );
         void refresh();
         return;
       }
