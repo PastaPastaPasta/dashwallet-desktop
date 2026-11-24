@@ -204,6 +204,13 @@ export function untrackKeysText(r: Pick<MasternodeRow, "roles">): string | null 
   return r.roles.attached.length > 0 ? t(`${P}.untrack.keys`, { count: r.roles.attached.length }) : null;
 }
 
+/** Why an Add key sheet the vault could write shows no field: the added keys aren't read yet, or a voting key
+ * was added meanwhile and must be removed first. */
+export function addKeyWaitText(r: Pick<MasternodeRow, "roles">): string | null {
+  if (r.roles.attached === null) return t("masternodes.keys.loading");
+  return keyRoles(r).length === 0 ? t(`${K}.exists`, { role: roleWord("voting") }) : null;
+}
+
 /** The vault holds its full-scope key: an attach can be written (tracking.rs refuses `locked` and mixing-only). */
 export const canAttach = (state: LockStateName | undefined) => state !== "locked" && state !== "unlockedMixingOnly";
 

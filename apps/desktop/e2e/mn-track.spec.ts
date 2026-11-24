@@ -122,7 +122,7 @@ test("an attach onto a role that got a key meanwhile is refused, and the key the
   const errors = await open(page, "mn-track");
   await page.getByTestId("mn-more").click();
   await page.getByTestId("mn-more-add-keys").click();
-  // Another window (or dwcli) adds a voting key while this sheet is open.
+  // Another window adds a voting key while this sheet is open.
   await page.evaluate((club) => {
     const m = window.__dwFixture!.world.masternodes;
     m.attached[club] = [{ role: "voting", keyId: m.expected[club].voting!, check: "matched" }];

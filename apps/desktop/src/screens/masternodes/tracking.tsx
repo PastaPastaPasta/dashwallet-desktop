@@ -15,6 +15,7 @@ import { Sheet } from "../../components/sheet";
 import { shortAddress } from "../../governance/model";
 import { useT } from "../../i18n";
 import {
+  addKeyWaitText,
   type AttachedKeyLine,
   attachedLines,
   canAttach,
@@ -200,7 +201,7 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
       setResult(check);
     } catch (e) {
       setError({ text: keyErrorText(e), unlock: isVaultLocked(e) });
-      // A key was added meanwhile (another window, dwcli): read it, so the pane shows it with its Remove.
+      // A key was added meanwhile (another window): read it, so the pane shows it with its Remove.
       if (isAppError(e) && e.code === "masternodes.key_exists") void refresh();
     } finally {
       setBusy(false);
@@ -272,6 +273,11 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
         </form>
       ) : (
         <div className="mg-sheet-body" data-testid="mn-add-key-unlock-first">
+          {writable && (
+            <p className="mg-small" role="status" data-testid="mn-add-key-wait">
+              {addKeyWaitText(row)}
+            </p>
+          )}
           {lock.isSuccess && !writable && (
             <p className="mg-small mg-notice-row">
               <span>{t("masternodes.myMasternodes.keys.locked")}</span>
@@ -290,8 +296,13 @@ export function AddKeySheet({ row, onClose, onUnlock }: { row: MasternodeRow; on
 /** The pane's "Keys you added" with Remove; "unlock to see" while the vault is locked. */
 export function KeysYouAdded({ row }: { row: MasternodeRow }) {
   const t = useT();
-  const [removing, setRemoving] = useState<AttachedKeyLine | null>(null);
+  const [removing, setRemoving] = useState<AttachedKeyLine["role"] | null>(null);
   const lines = attachedLines(row);
+  const removingLine = lines?.find((l) => l.role === removing);
+  // The key went (another window, a lock): drop the confirmation rather than reopen it when the role is back.
+  useEffect(() => {
+    if (removing && !removingLine) setRemoving(null);
+  }, [removing, removingLine]);
   if (lines === null)
     return (
       <p className="mg-small mg-muted mg-notice-row" data-testid="mn-keys-added-locked">
@@ -309,13 +320,13 @@ export function KeysYouAdded({ row }: { row: MasternodeRow }) {
         {lines.map((l) => (
           <li key={l.role} data-testid={`mn-key-added-${l.role}`}>
             <span>{l.text}</span>
-            <DashButton variant="plainBlue" size="small" data-testid={`mn-key-remove-${l.role}`} onClick={() => setRemoving(l)}>
+            <DashButton variant="plainBlue" size="small" data-testid={`mn-key-remove-${l.role}`} onClick={() => setRemoving(l.role)}>
               {l.remove}
             </DashButton>
           </li>
         ))}
       </ul>
-      {removing && <RemoveKeySheet row={row} line={removing} onClose={() => setRemoving(null)} />}
+      {removingLine && <RemoveKeySheet row={row} line={removingLine} onClose={() => setRemoving(null)} />}
     </div>
   );
 }

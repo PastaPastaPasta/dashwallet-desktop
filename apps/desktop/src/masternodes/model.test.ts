@@ -14,6 +14,7 @@ import { compact } from "../format/amount";
 import { nodeName, voteRows } from "../governance/model";
 import {
   activityChip,
+  addKeyWaitText,
   attachedLines,
   bannedCount,
   formatCredits,
@@ -281,6 +282,13 @@ describe("track and keys (MG-10 §1.3, §1.4; MG-00 D13 amended for 1.0)", () =>
     const club = rowOf(CLUB);
     // Unread (locked or not re-read yet): no key field until the attached keys are known.
     expect(keyRoles({ ...club, roles: { ...club.roles, attached: null } })).toEqual([]);
+    // An open sheet the vault could write says why it has no field: still reading, or a voting key came meanwhile.
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: null } })).toBe("Loading keys…");
+    const voting = { role: "voting" as const, keyId: null, check: "matched" as const };
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: [voting] } })).toBe(
+      "A voting key is already added for this masternode on this computer. Remove it first.",
+    );
+    expect(addKeyWaitText({ roles: { ...club.roles, attached: [] } })).toBeNull();
   });
 
   it("warns that Stop tracking deletes any added keys while their count isn't known", () => {
