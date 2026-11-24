@@ -2007,7 +2007,9 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.top_up_from_platform(identity, amount, grant))?;
+            let fee_input = quote.inputs.first().cloned();
+            let outcome =
+                ctx.block_on(dp.top_up_from_platform(identity, amount, fee_input, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),

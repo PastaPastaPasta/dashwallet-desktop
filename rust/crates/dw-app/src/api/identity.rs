@@ -471,19 +471,21 @@ commands! {
     }
 
     /// Tops the identity up with `amount` of the Platform addresses'
-    /// credits under `grant`.
+    /// credits under `grant`. `fee_input`: the quote's input 0; a plan
+    /// with another fee source or claim is `credits.quote_changed`.
     #[facade("DashPay::top_up_from_platform")]
     fn credits_top_up_from_platform(
         state,
         wallet_id: String,
         identity: String,
         amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> TopUpFromPlatformOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         let _in_flight = state.broadcasting();
         let out = dashpay
-            .top_up_from_platform(identity, amount.into(), grant)
+            .top_up_from_platform(identity, amount.into(), fee_input.map(Into::into), grant)
             .await?;
         Ok(out.into())
     }

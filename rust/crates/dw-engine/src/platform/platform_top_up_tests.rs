@@ -37,7 +37,21 @@ impl World {
     ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
         let (identity, grant) = (identity.to_owned(), grant.to_owned());
         self.call(move |net, s, w, id| async move {
-            top_up(&*net, &s, &w, id, (identity.as_str(), amount), &grant).await
+            top_up(&*net, &s, &w, id, (identity.as_str(), amount, None), &grant).await
+        })
+    }
+
+    /// Confirms `q` for `amount` as the sheet does: with its input 0.
+    fn confirm(
+        &self,
+        q: &TopUpFromPlatformQuote,
+        amount: WithdrawAmount,
+        grant: &str,
+    ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+        let (fee_input, grant) = (q.inputs[0].clone(), grant.to_owned());
+        self.call(move |net, s, w, id| async move {
+            let ask = (me(), amount, Some(&fee_input));
+            top_up(&*net, &s, &w, id, (ask.0.as_str(), ask.1, ask.2), &grant).await
         })
     }
 
@@ -237,6 +251,70 @@ fn top_up_from_platform_refusal_keeps_the_grant() {
         w.f.flow(FlowKind::PlatformAddressMove, vec![w.f.grant(3 * DASH)]);
     w.top_up_as(&me(), credits(DASH / 10), &lease).unwrap();
     assert_eq!(w.sent(), 2);
+}
+
+/// A top-up signs the fee source and claim its Confirm showed or nothing:
+/// a deposit since the quote to an address before input 0, or to a Max's
+/// input 0, is `credits.quote_changed` with the grant kept and nothing
+/// recorded or signed. A deposit that leaves input 0 as quoted confirms,
+/// and so does a confirm without the quote's input 0, as before.
+#[test]
+fn a_top_up_takes_the_fee_input_its_quote_named() {
+    let w = World::new();
+    let order = w.in_order();
+    w.net.fund(order[1], 2 * DASH);
+    w.net.fund(order[2], 5 * DASH);
+    let grant = w.f.grant(10 * DASH);
+    let refused = |r: Result<TopUpFromPlatformOutcome, CreditsError>| {
+        assert_eq!(r.unwrap_err().code(), "credits.quote_changed");
+        assert!(w.f.unused(&grant));
+        assert_eq!(w.sent(), 0);
+        assert!(w.moves().is_empty(), "nothing recorded");
+    };
+
+    // An address before input 0 is funded: it becomes input 0.
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
+    w.net.fund(order[0], 3 * DASH);
+    refused(w.confirm(&q, credits(DASH), &grant));
+
+    // Max over input 0: a deposit to it raises the claim.
+    let max = w.top_up_quote(&me(), WithdrawAmount::All).unwrap();
+    w.net.fund(order[0], DASH);
+    refused(w.confirm(&max, WithdrawAmount::All, &grant));
+
+    // A deposit that leaves input 0's address and claim as quoted.
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    w.net.fund(order[0], DASH);
+    w.net.fund(order[2], DASH);
+    let done = w.confirm(&q, credits(DASH), &grant).unwrap();
+    assert_eq!(done.credits, DASH);
+    assert_eq!(w.sent(), 1);
+    assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
+
+    // Without the quote's input 0 the same race signs the submit's plan.
+    let w = World::new();
+    w.net.fund(order[1], 2 * DASH);
+    let q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(q.inputs[0].address, bech32m(&order[1], w.network()));
+    w.net.fund(order[0], 3 * DASH);
+    w.top_up(credits(DASH)).unwrap();
+    assert_eq!(w.net.sent.lock().unwrap()[0].keys().next(), Some(&order[0]));
+}
+
+/// A quoted fee input that is not a Platform address is refused before
+/// anything is read.
+#[test]
+fn a_top_up_with_a_malformed_fee_input_is_refused() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    let mut q = w.top_up_quote(&me(), credits(DASH)).unwrap();
+    q.inputs[0].address = "not-an-address".into();
+    let grant = w.f.grant(10 * DASH);
+    let refused = w.confirm(&q, credits(DASH), &grant).unwrap_err();
+    assert_eq!(refused.code(), "invalid_argument");
+    assert!(w.f.unused(&grant));
+    assert_eq!(w.sent(), 0);
 }
 
 /// An unknown outcome leaves the record pending and able to land; the next
@@ -761,7 +839,8 @@ fn lock_order_top_up_from_platform_vs_withdraw_vs_move() {
             // A withdrawal of the identity in flight.
             let withdrawal = locks.write.lock().await;
             let me = me();
-            let top_up = top_up(&*net, &s, &wallet, id, (me.as_str(), credits(DASH)), &grant);
+            let ask = (me.as_str(), credits(DASH), None);
+            let top_up = top_up(&*net, &s, &wallet, id, ask, &grant);
             tokio::pin!(top_up);
             let early = tokio::time::timeout(Duration::from_millis(300), &mut top_up).await;
             assert!(early.is_err(), "the top-up waits for the identity");

@@ -13,11 +13,12 @@ test.describe.configure({ timeout: 60_000 });
 const sheet = (page: Page) => page.getByTestId("topup-body");
 const shots = process.env.DW_SHOTS_DIR;
 
-async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending" | "failed") {
+async function openTopUp(page: Page, theme: Theme, nextTopUp?: "held" | "pending" | "failed", sendsActive = true) {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-registered", theme));
   await page.getByTestId("toolbar").waitFor();
   if (nextTopUp) await page.evaluate((n) => void (window.__dwFixture!.world.pending.platform!.nextTopUp = n), nextTopUp);
+  if (!sendsActive) await page.evaluate(() => void (window.__dwFixture!.world.pending.platform!.sendsActive = false));
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "profile" }));
   await expect(page.getByTestId("page-profile")).toBeVisible();
   await page.getByTestId("profile-top-up").click();
@@ -32,6 +33,16 @@ async function shot(page: Page, theme: Theme, state: string) {
 }
 
 for (const theme of THEMES) {
+  test(`Pay with: Platform is not offered on a network without address funds transitions yet (${theme})`, async ({ page }) => {
+    const errors = await openTopUp(page, theme, undefined, false);
+    await expect(page.getByTestId("topup-source-platform")).toContainText("Not available on this network yet.");
+    await expect(page.getByTestId("topup-source-platform").locator("input")).toBeDisabled();
+    await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();
+    await shot(page, theme, "pay-with-platform-not-on-network");
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   test(`Pay with: Dash wallet by default, Platform with Max, Shielded not offered (${theme})`, async ({ page }) => {
     const errors = await openTopUp(page, theme);
     await expect(page.getByTestId("topup-source-core").locator("input")).toBeChecked();

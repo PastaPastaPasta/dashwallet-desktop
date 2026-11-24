@@ -2280,6 +2280,7 @@ pub(crate) async fn balance(
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
+        sends_active: sends_active(manager.sdk_arc().version()).is_ok(),
     }
 }
 
@@ -3053,19 +3054,37 @@ pub(crate) async fn top_up_quote(
     })
 }
 
+/// The quote's input 0 (`TopUpFromPlatformQuote::inputs`), as the plan
+/// whose fee source and claim the top-up must keep.
+fn quoted_fee_input(row: &PlatformAddressRow) -> Result<Plan, CreditsError> {
+    let source = parse(&row.address).ok_or_else(|| PlatformError::InvalidArgument {
+        detail: "the quoted fee input is not a Platform address".into(),
+    })?;
+    Ok(Plan {
+        inputs: BTreeMap::from([(source, row.credits)]),
+        fee_source: source,
+        fee: 0,
+        reserve: 0,
+        fee_from_output: false,
+    })
+}
+
 /// `DashPay::top_up_from_platform` (C-routes C3-2 to C3-5, C3-9): the
 /// money gate on the identity, its write lock, then a move to it under
 /// the move lock, recorded before signing and settled by its inputs'
-/// proved nonces, never by the identity's answered balance.
+/// proved nonces, never by the identity's answered balance. With
+/// `fee_input` (the quote's input 0) a plan with another fee source or
+/// claim is `credits.quote_changed`, before the grant is redeemed.
 pub(crate) async fn top_up(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (identity, amount): (&str, WithdrawAmount),
+    (identity, amount, fee_input): (&str, WithdrawAmount, Option<&PlatformAddressRow>),
     grant: &str,
 ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
     top_up_open(session.vault.network())?;
+    let quoted = fee_input.map(quoted_fee_input).transpose()?;
     let id = parse_identity(identity)?;
     withdrawal::own(wallet, id).await?;
     (session.money_gate(Subject::Identity(wallet_id, id)).await)
@@ -3075,7 +3094,7 @@ pub(crate) async fn top_up(
     let _write = locks.write.lock().await;
     let (_, me) = withdrawal::own(wallet, id).await?;
     sends_active(net.sends_version().await)?;
-    let ask = (amount, Target::Identity(&me), None, None);
+    let ask = (amount, Target::Identity(&me), None, quoted.as_ref());
     let (record, balance) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
     let row = record.activity();
     Ok(TopUpFromPlatformOutcome {
@@ -3286,8 +3305,8 @@ pub(crate) async fn run(
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
             let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)?;
-            // A new send signs the fee its Confirm showed or nothing: the
-            // read since the quote may pick another fee source.
+            // A new send or a top-up signs the fee its Confirm showed or
+            // nothing: the read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {
                 return Err(CreditsError::QuoteChanged);
             }
