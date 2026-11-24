@@ -1016,8 +1016,8 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote")).toBeVisible();
     // The quote's own pool fee, not a constant.
-    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.0001 tDASH");
-    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.0001 tDASH, whatever you add.");
+    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.00010000 tDASH");
+    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.00010000 tDASH, whatever you add.");
     await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Most of this goes to fees.");
     await shot(page, "light-shielded-fee-warning");
     await page.getByTestId("shielded-back").click();

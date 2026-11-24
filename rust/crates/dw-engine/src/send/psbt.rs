@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use dashcore::{Address, OutPoint, Transaction, Txid};
+use rand::seq::SliceRandom;
+
+use dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_psbt::{InputData, KeyPaths, PartiallySignedTransaction, Status};
 use dw_vault::{GrantKind, VaultError};
 use key_wallet::bip32::{DerivationPath, Fingerprint};
@@ -268,9 +270,44 @@ impl TxDraft {
                     }
                     (ChangeTarget::Auto, None) => r.plan.inputs[0].address.clone(),
                 };
-                let (tx, _, _) = r.builder(&change).build_unsigned_reserved().map_err(|e| {
-                    EngineError::Internal(format!("key-wallet cannot build the plan: {e}"))
-                })?;
+                // A CoinJoin payment has no change: its remainder is fee, so
+                // it is built from the plan as `prepare` builds it, not by
+                // key-wallet's builder, which would make that remainder change.
+                let tx = if r.coinjoin {
+                    Transaction {
+                        version: 2,
+                        lock_time: 0,
+                        // Shuffled as `prepare` shuffles them: the PSBT keeps
+                        // its order to the broadcast, and the selector's order
+                        // would show.
+                        input: {
+                            let mut inputs = r.plan.inputs.clone();
+                            inputs.shuffle(&mut rand::thread_rng());
+                            inputs
+                        }
+                        .iter()
+                        .map(|u| TxIn {
+                            previous_output: u.outpoint,
+                            script_sig: ScriptBuf::new(),
+                            sequence: u32::MAX,
+                            witness: Default::default(),
+                        })
+                        .collect(),
+                        output: (r.recipients.iter())
+                            .zip(&r.plan.amounts)
+                            .map(|(rc, amount)| TxOut {
+                                value: *amount,
+                                script_pubkey: rc.address.script_pubkey(),
+                            })
+                            .collect(),
+                        special_transaction_payload: None,
+                    }
+                } else {
+                    let (tx, _, _) = r.builder(&change).build_unsigned_reserved().map_err(|e| {
+                        EngineError::Internal(format!("key-wallet cannot build the plan: {e}"))
+                    })?;
+                    tx
+                };
                 check_against_plan(&tx, &r.plan, &change).map_err(|m| m.into_error())?;
                 let fingerprint = session.master_fingerprint(&this.wallet_id).await;
                 let history = session.hub.history.snapshot(&this.wallet_id);
