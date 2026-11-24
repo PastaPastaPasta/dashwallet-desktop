@@ -1079,8 +1079,9 @@ async fn unshield_to_platform_plan(
 pub(crate) const UNSHIELD_TO_PLATFORM: &str = "unshield_to_platform";
 
 /// `platform.feature_off{feature: UNSHIELD_TO_PLATFORM}` on mainnet, before
-/// any read, grant or write.
-fn refuse_on_mainnet(network: Network) -> Result<(), ShieldedError> {
+/// any read, grant or write: the facade's first step, before the wallet or
+/// the shielded store is opened.
+pub(crate) fn refuse_on_mainnet(network: Network) -> Result<(), ShieldedError> {
     if network == Network::Mainnet {
         return Err(PlatformError::FeatureOff {
             feature: UNSHIELD_TO_PLATFORM.into(),

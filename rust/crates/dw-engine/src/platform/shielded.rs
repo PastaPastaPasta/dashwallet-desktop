@@ -619,6 +619,7 @@ impl DashPay {
         credits: u64,
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
         on_pool(&self.session, self.wallet_id, move |_, lib| async move {
             pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
         })
@@ -637,6 +638,7 @@ impl DashPay {
         grant: String,
         confirm_unrecorded: bool,
     ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
+        pool::refuse_on_mainnet(self.session.network().core_network())?;
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
