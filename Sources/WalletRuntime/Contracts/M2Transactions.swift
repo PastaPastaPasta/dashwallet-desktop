@@ -45,7 +45,8 @@ public struct TransactionDetailExtras: Sendable, Hashable {
 /// Why abandon or resend was refused; `ServiceError.code` is
 /// `tx_action.refused` and `parameters["refusal"]` is `rawValue`.
 public enum TransactionActionRefusal: Int64, Sendable, Hashable, CaseIterable {
-    case confirmed, instantLocked, alreadyAbandoned, coinbase, inMempool, notSentByWallet, rescanFirst
+    case confirmed, instantLocked, alreadyAbandoned, coinbase, inMempool, notSentByWallet, rescanFirst,
+         settledDescendant
 }
 
 /// Options for `exportCSV` (QT-093).

@@ -263,6 +263,9 @@ pub enum RegistrationError {
     Name(NameError),
     #[error(transparent)]
     Invitation(InvitationError),
+    /// A Platform-funded plan's refusal (`credits.move_pending`).
+    #[error(transparent)]
+    Credits(CreditsError),
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -285,6 +288,7 @@ impl RegistrationError {
             Self::QuoteChanged => "registration.quote_changed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
+            Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }
@@ -293,6 +297,7 @@ impl RegistrationError {
         match self {
             Self::Name(e) => e.platform(),
             Self::Invitation(e) => e.platform(),
+            Self::Credits(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }
@@ -315,6 +320,15 @@ impl From<InvitationError> for RegistrationError {
         match e {
             InvitationError::Platform(p) => Self::Platform(p),
             other => Self::Invitation(other),
+        }
+    }
+}
+
+impl From<CreditsError> for RegistrationError {
+    fn from(e: CreditsError) -> Self {
+        match e {
+            CreditsError::Platform(p) => Self::Platform(p),
+            other => Self::Credits(other),
         }
     }
 }
@@ -389,8 +403,21 @@ pub enum ContactError {
     /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
     #[error("private details too long: {bytes} bytes, at most {max}")]
     DetailsTooLong { bytes: u32, max: u32 },
+    /// A payment from the Platform balance refused by the move's own rules
+    /// (C-funding P3): another move pending, the withdrawal range.
+    #[error(transparent)]
+    Credits(Box<CreditsError>),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+impl From<CreditsError> for ContactError {
+    fn from(e: CreditsError) -> Self {
+        match e {
+            CreditsError::Platform(p) => Self::Platform(p),
+            e => Self::Credits(Box::new(e)),
+        }
+    }
 }
 
 impl ContactError {
@@ -406,6 +433,7 @@ impl ContactError {
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
             Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }

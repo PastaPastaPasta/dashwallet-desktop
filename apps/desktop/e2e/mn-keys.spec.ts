@@ -130,6 +130,76 @@ test("a refresh that fails after a match says Couldn't check, not the old match"
   await expect(sheet.getByTestId("mn-key-1-match")).toHaveText("Matched to Office node · 203.0.113.9:19999");
 });
 
+test("a key page that fails to load offers Try again and keeps the rows already in", async ({ page }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = true));
+  await sheet.getByTestId("mn-keys-more").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
+  // By keyboard: while the page is read again, the error and an inert Try again stay, and keep focus.
+  const retry = sheet.getByTestId("mn-keys-retry");
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await expect(retry).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await release.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  // Focus moves into the list, not to the page.
+  await expect(sheet.getByTestId("mn-keys-list")).toBeFocused();
+  // Another role read for the first time shows no error left from the retry.
+  const held = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
+  await sheet.getByTestId("mn-keys-role-platform_node").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  await held.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+});
+
+test("switching role while a key page retry runs shows no error from the other role", async ({ page }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = true));
+  await sheet.getByTestId("mn-keys-more").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("mn_keys"));
+  await sheet.getByTestId("mn-keys-retry").click();
+  await sheet.getByTestId("mn-keys-role-platform_node").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  await expect(sheet.getByTestId("mn-keys-role-platform_node")).toBeFocused();
+  await release.evaluate((r) => r());
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+  await expect(sheet.getByTestId("mn-keys-role-platform_node")).toBeFocused();
+});
+
+test("a key page retried offline waits with its error and an inert Try again, and loads on reconnect", async ({ page, context }) => {
+  await open(page, "light");
+  const sheet = page.getByTestId("mn-keys");
+  await sheet.getByTestId("mn-keys-role-operator").click();
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(20);
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = true));
+  await sheet.getByTestId("mn-keys-more").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await page.evaluate(() => (window.__dwFixture!.world.masternodes.keyPagesFail = false));
+  await context.setOffline(true);
+  await sheet.getByTestId("mn-keys-retry").click();
+  await expect(sheet.getByTestId("mn-keys-failed")).toBeVisible();
+  await expect(sheet.getByTestId("mn-keys-retry")).toHaveAttribute("aria-disabled", "true");
+  await context.setOffline(false);
+  await expect(sheet.getByTestId("mn-keys-list").locator("li")).toHaveCount(25);
+  await expect(sheet.getByTestId("mn-keys-failed")).toHaveCount(0);
+});
+
 test("a wallet without its seed lists public keys and offers no Reveal", async ({ page }) => {
   await open(page, "light", "mn-watchonly", () =>
     page.evaluate((id) => (window.__dwFixture!.world.masternodes.keysWithoutSeed = [id]), FIXTURE_WALLET_ID),

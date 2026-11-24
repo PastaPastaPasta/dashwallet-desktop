@@ -3,4 +3,4 @@
 /**
  * Why `abandon_transaction` or `resend_transaction` refused (QT-105).
  */
-export type TxActionRefusalName = "confirmed" | "instantLocked" | "alreadyAbandoned" | "coinbase" | "inMempool" | "notSentByWallet" | "rescanFirst";
+export type TxActionRefusalName = "confirmed" | "instantLocked" | "alreadyAbandoned" | "coinbase" | "inMempool" | "notSentByWallet" | "rescanFirst" | "settledDescendant";
