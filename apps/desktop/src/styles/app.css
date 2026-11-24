@@ -551,6 +551,11 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A Shielded outcome can name a Platform address: it wraps rather than widening the sheet. */
+.shielded-outcome-text {
+  overflow-wrap: anywhere;
+}
+
 /* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
 .mn-banned-notice {
   overflow-wrap: anywhere;
@@ -4767,6 +4772,8 @@ button.bell-row-open:focus-visible {
 
 .pay-shielded-route {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
   margin-top: calc(-1 * var(--dw-space-s));
 }
 

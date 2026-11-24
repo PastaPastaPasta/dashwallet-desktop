@@ -18,22 +18,29 @@ import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 export type Pool = "core" | "shielded" | "platform";
 
 /** The routes with a desktop command. */
-export type RouteId = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "platformToCore";
+export type RouteId = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "shieldedToPlatform" | "platformToCore";
 
 export const ROUTES: Record<RouteId, { from: Pool; to: Pool }> = {
   coreToShielded: { from: "core", to: "shielded" },
   coreToPlatform: { from: "core", to: "platform" },
   shieldedToCore: { from: "shielded", to: "core" },
+  shieldedToPlatform: { from: "shielded", to: "platform" },
   platformToCore: { from: "platform", to: "core" },
 };
 
-/** The route from `from` to `to`; `"unsupported"` between Shielded and Platform, which has no desktop
- * command; `null` for the same pool. */
-export function routeOf(from: Pool, to: Pool): RouteId | "unsupported" | null {
+/** The routes the engine keeps off on mainnet (`platform.feature_off`), each by its flag. */
+export const OFF_ON_MAINNET: ReadonlySet<RouteId> = new Set<RouteId>(["shieldedToPlatform"]);
+
+/** The route from `from` to `to`; `"unsupported"` where no desktop command moves it (Platform →
+ * Shielded) or the route is off on this network; `null` for the same pool. */
+export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsupported" | null {
   if (from === to) return null;
   const id = (Object.keys(ROUTES) as RouteId[]).find((r) => ROUTES[r].from === from && ROUTES[r].to === to);
-  return id ?? "unsupported";
+  return id && !(mainnet && OFF_ON_MAINNET.has(id)) ? id : "unsupported";
 }
+
+/** Why the ends make no route: off on this network, or no command for it. */
+export const unsupportedText = (from: Pool, to: Pool): string => (from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : TRANSFER_COPY.unsupported);
 
 export const TRANSFER_COPY = {
   get title() {
@@ -101,6 +108,9 @@ export const TRANSFER_COPY = {
   get unsupported() {
     return t("transfer.unsupported");
   },
+  get offOnNetwork() {
+    return t("transfer.offOnNetwork");
+  },
   none: {
     get absent() {
       return t("transfer.none.absent");
@@ -134,6 +144,9 @@ export const TRANSFER_COPY = {
     },
     get shieldedToCore() {
       return t("transfer.routeNames.shieldedToCore");
+    },
+    get shieldedToPlatform() {
+      return t("transfer.routeNames.shieldedToPlatform");
     },
     get platformToCore() {
       return t("transfer.routeNames.platformToCore");
@@ -185,14 +198,21 @@ export function defaultEnd(pool: Pool, pools: Pools): Pool {
 }
 
 /** Whether the ends can swap: the reverse is a route with a command. */
-export const canSwap = (from: Pool, to: Pool): boolean => {
-  const r = routeOf(to, from);
+export const canSwap = (from: Pool, to: Pool, mainnet = false): boolean => {
+  const r = routeOf(to, from, mainnet);
   return r !== null && r !== "unsupported";
 };
 
+/** The routes the Shielded flow runs. */
+export type ShieldedRouteId = "coreToShielded" | "shieldedToCore" | "shieldedToPlatform";
+
+const SHIELDED_KIND: Record<ShieldedRouteId, ShieldedKind> = { coreToShielded: "add", shieldedToCore: "out", shieldedToPlatform: "toPlatform" };
+
+export const isShieldedRoute = (route: RouteId): route is ShieldedRouteId => route in SHIELDED_KIND;
+
 /** The route a Shielded flow kind belongs to (a lock's Finish belongs to the add); `"send"` for a
  * payment to another Shielded address. */
-export const shieldedRoute = (kind: ShieldedKind): "coreToShielded" | "shieldedToCore" | "send" => (kind === "send" ? "send" : kind === "out" ? "shieldedToCore" : "coreToShielded");
+export const shieldedRoute = (kind: ShieldedKind): ShieldedRouteId | "send" => (kind === "send" ? "send" : kind === "out" ? "shieldedToCore" : kind === "toPlatform" ? "shieldedToPlatform" : "coreToShielded");
 
 export interface Flows {
   shielded: ShieldedFlow;
@@ -204,7 +224,8 @@ export interface Flows {
 export function routeActive(route: RouteId, flows: Flows): boolean {
   switch (route) {
     case "coreToShielded":
-    case "shieldedToCore": {
+    case "shieldedToCore":
+    case "shieldedToPlatform": {
       const f = flows.shielded;
       return (f.running || f.unseen) && shieldedRoute(f.kind) === route;
     }
@@ -221,7 +242,8 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
   if (routeActive(route, flows)) return null;
   switch (route) {
     case "coreToShielded":
-    case "shieldedToCore": {
+    case "shieldedToCore":
+    case "shieldedToPlatform": {
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
@@ -230,7 +252,7 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       // The flow is shared: another of its moves is running, or its result waits to be seen.
       if (f.running) return SHIELDED_COPY.card.why.busy;
       if (f.unseen) return SHIELDED_COPY.unseen;
-      if (route === "shieldedToCore" && !s.duffs) return SHIELDED_COPY.card.why.empty;
+      if (route !== "coreToShielded" && !s.duffs) return SHIELDED_COPY.card.why.empty;
       return null;
     }
     case "coreToPlatform":
@@ -459,6 +481,7 @@ export const MAX_DERIVE = {
   coreToShielded: coreFundedMax(SHIELDED_CODES.fundingInsufficient),
   coreToPlatform: coreFundedMax("credits.funding_insufficient"),
   shieldedToCore: shieldedSpendMax,
+  shieldedToPlatform: shieldedSpendMax,
 } as const;
 
 /** What the fee line says for a quote of the amount (`null`: nothing yet; a refusal says its own). */
@@ -475,19 +498,21 @@ export function feeText(route: Exclude<RouteId, "platformToCore">, state: LineSt
       const q = state.quote as PlatformFundQuote;
       return TRANSFER_COPY.fee(credits(BigInt(q.feeDuffs) * CREDITS_PER_DUFF + BigInt(q.feeCredits)), credits(q.credits));
     }
-    case "shieldedToCore": {
+    case "shieldedToCore":
+    case "shieldedToPlatform": {
       const q = state.quote as ShieldedSpendQuote;
       return TRANSFER_COPY.fee(credits(q.feeCredits), q.expectedDuffs === null ? credits(q.credits) : fmt(q.expectedDuffs));
     }
   }
 }
 
-export type TransferApi = ShieldedApi & PlatformFundApi & PlatformMoveApi & Pick<Backend, "shieldQuote" | "unshieldQuote" | "platformFundQuote">;
+export type TransferApi = ShieldedApi & PlatformFundApi & PlatformMoveApi & Pick<Backend, "shieldQuote" | "unshieldQuote" | "unshieldToPlatformQuote" | "platformFundQuote">;
 
 export interface Lines {
   coreToShielded: QuoteLine<ShieldQuote>;
   coreToPlatform: QuoteLine<PlatformFundQuote>;
   shieldedToCore: QuoteLine<ShieldedSpendQuote>;
+  shieldedToPlatform: QuoteLine<ShieldedSpendQuote>;
 }
 
 /** Where the sheet is. The routes' flows keep their own steps; this keeps the picks. */
@@ -503,6 +528,8 @@ export class TransferModel extends Model {
   reviewed = false;
   /** Opened by the shortcut before the pools were read: the default route is picked once they are. */
   awaitingDefault = false;
+  /** The wallet is on mainnet: the routes in `OFF_ON_MAINNET` are not offered. */
+  mainnet = false;
   /** The route whose flow the sheet opened. */
   private begun: RouteId | null = null;
   /** The text Max last filled on each route: discreet mode masks it while the field still holds it. */
@@ -511,7 +538,7 @@ export class TransferModel extends Model {
 
   constructor(
     readonly flows: Flows,
-    api: Pick<Backend, "shieldQuote" | "unshieldQuote" | "platformFundQuote">,
+    api: Pick<Backend, "shieldQuote" | "unshieldQuote" | "unshieldToPlatformQuote" | "platformFundQuote">,
     walletId: string,
     timers: Timers = WINDOW_TIMERS,
   ) {
@@ -520,6 +547,7 @@ export class TransferModel extends Model {
       coreToShielded: new QuoteLine((d) => api.shieldQuote(walletId, { kind: "duffs", duffs: d }), timers),
       coreToPlatform: new QuoteLine((d) => api.platformFundQuote(walletId, { kind: "duffs", duffs: d }), timers),
       shieldedToCore: new QuoteLine((d) => api.unshieldQuote(walletId, String(BigInt(d) * CREDITS_PER_DUFF), null), timers),
+      shieldedToPlatform: new QuoteLine((d) => api.unshieldToPlatformQuote(walletId, String(BigInt(d) * CREDITS_PER_DUFF), null), timers),
     };
     for (const f of [flows.shielded, flows.fund, flows.move]) f.subscribe(() => this.onFlow());
   }
@@ -529,9 +557,17 @@ export class TransferModel extends Model {
     return this.begun;
   }
 
-  /** The route the ends make: a route, `"unsupported"` (Shielded ↔ Platform) or `null`. */
+  /** The route the ends make: a route, `"unsupported"` (no command, or off on this network) or `null`. */
   get route(): RouteId | "unsupported" | null {
-    return routeOf(this.from, this.to);
+    return routeOf(this.from, this.to, this.mainnet);
+  }
+
+  /** The wallet's network: on mainnet a route that is off there is unsupported, and its flow closes. */
+  setMainnet(mainnet: boolean) {
+    if (mainnet === this.mainnet) return;
+    this.mainnet = mainnet;
+    if (this.open) this.select(this.from, this.to);
+    else this.changed();
   }
 
   /** Whether the sheet shows: opened here, or a route's flow opened itself (a Finish on a card). */
@@ -556,6 +592,7 @@ export class TransferModel extends Model {
     switch (r) {
       case "coreToShielded":
       case "shieldedToCore":
+      case "shieldedToPlatform":
         // A lock's Finish waits for its grant at "form" with no amount to edit.
         return this.flows.shielded.step === "form" && this.flows.shielded.kind !== "resume" ? null : r;
       case "coreToPlatform":
@@ -595,7 +632,7 @@ export class TransferModel extends Model {
   }
 
   swap() {
-    if (canSwap(this.from, this.to)) this.select(this.to, this.from);
+    if (canSwap(this.from, this.to, this.mainnet)) this.select(this.to, this.from);
   }
 
   /** Platform → Dash wallet: Continue shows the move's own confirmation. */
@@ -646,9 +683,10 @@ export class TransferModel extends Model {
     switch (route) {
       case "coreToShielded":
       case "shieldedToCore":
+      case "shieldedToPlatform":
         if ((s.running || s.unseen) && shieldedRoute(s.kind) !== route) return;
         this.begun = route;
-        s.begin(route === "coreToShielded" ? (s.running || s.unseen ? s.kind : "add") : "out");
+        s.begin(route === "coreToShielded" ? (s.running || s.unseen ? s.kind : "add") : SHIELDED_KIND[route]);
         return;
       case "coreToPlatform":
         this.begun = route;
@@ -663,14 +701,14 @@ export class TransferModel extends Model {
     }
   }
 
-  /** The flow `route` runs (the two Shielded routes share one). */
-  flowOf(route: "coreToShielded" | "shieldedToCore"): ShieldedFlow;
+  /** The flow `route` runs (the Shielded routes share one). */
+  flowOf(route: ShieldedRouteId): ShieldedFlow;
   flowOf(route: "coreToPlatform"): PlatformFundFlow;
   flowOf(route: "platformToCore"): PlatformMoveFlow;
   flowOf(route: Exclude<RouteId, "platformToCore">): ShieldedFlow | PlatformFundFlow;
   flowOf(route: RouteId): ShieldedFlow | PlatformFundFlow | PlatformMoveFlow;
   flowOf(route: RouteId): ShieldedFlow | PlatformFundFlow | PlatformMoveFlow {
-    return route === "coreToShielded" || route === "shieldedToCore" ? this.flows.shielded : route === "coreToPlatform" ? this.flows.fund : this.flows.move;
+    return isShieldedRoute(route) ? this.flows.shielded : route === "coreToPlatform" ? this.flows.fund : this.flows.move;
   }
 
   /** The fee line of `route`. */
@@ -717,7 +755,7 @@ export class TransferModel extends Model {
    * amount in duffs) only from the last quote that took it; `text` is how the field shows that amount. */
   async max(route: Exclude<RouteId, "platformToCore">, probe: number, fill: (duffs: number) => void, text?: (duffs: number) => string): Promise<void> {
     const line = this.lineOf(route);
-    const got = await line.max(probe, MAX_DERIVE[route] as (answer: Settled<unknown>, amount: number) => number | null, route === "shieldedToCore" ? SHIELDED_MAX_QUOTES : 2);
+    const got = await line.max(probe, MAX_DERIVE[route] as (answer: Settled<unknown>, amount: number) => number | null, route === "shieldedToCore" || route === "shieldedToPlatform" ? SHIELDED_MAX_QUOTES : 2);
     if (got === null) return;
     if (text) this.maxText[route] = text(got);
     fill(got);
