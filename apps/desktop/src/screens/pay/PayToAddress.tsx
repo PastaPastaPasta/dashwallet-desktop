@@ -1,5 +1,6 @@
-// Pay ▸ To an address (U-03, UX-SPEC §4.7 on the mobile layout): one recipient, Max, subtract
-// fee, label and message; the live fee from the engine's draft; Advanced holds coin control and
+// Pay ▸ To an address (U-03, UX-SPEC §4.7 on the mobile layout): a recipient, Max, subtract
+// fee, label and message, and (off mainnet, `multiRecipientPay`) more recipients in the same
+// payment, one of them at most paying the fee; the live fee from the engine's draft; Advanced holds coin control and
 // the unsigned transaction (P15); Review opens the confirm sheet, which authenticates, signs and
 // sends; the result follows. A watch-only wallet's Review makes the PSBT.
 
@@ -20,7 +21,8 @@ import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { HeldPlatformSend, PayFromPlatform } from "./PayFromPlatform";
 import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
-import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, reviewBlockedReason, type Advanced } from "./model";
+import { addressProblem, confirmedOf, DEFAULT_ADVANCED, multiRecipientPay, recipientOf, reviewBlockedReason, type Advanced } from "./model";
+import { MoreRecipient, type MoreRow } from "./MoreRecipients";
 import { ResultSheet, SendingSheet } from "./ResultSheet";
 import { UnsignedPsbt } from "./UnsignedPsbt";
 import { useDraft } from "./useDraft";
@@ -48,7 +50,20 @@ export function PayToAddress({
   const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
   // Settings ▸ General's default starts each new form (U-04 D5); Max still turns it on.
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
-  const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
+  const [subtractFee, setSubtractFeeFirst] = useState(subtractFeeByDefault);
+  // Added recipients (QT-052). One recipient at most subtracts the fee: turning it on for one
+  // turns it off for the others.
+  const [more, setMore] = useState<MoreRow[]>([]);
+  const nextRow = useRef(1);
+  const setSubtractFee = useCallback((on: boolean) => {
+    setSubtractFeeFirst(on);
+    if (on) setMore((rows) => rows.map((r) => (r.subtractFee ? { ...r, subtractFee: false } : r)));
+  }, []);
+  const setRowSubtractFee = (id: number, on: boolean) => {
+    if (on) setSubtractFeeFirst(false);
+    setMore((rows) => rows.map((r) => (r.id === id ? { ...r, subtractFee: on } : on ? { ...r, subtractFee: false } : r)));
+  };
+  const multi = multiRecipientPay(network);
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
@@ -57,6 +72,7 @@ export function PayToAddress({
     setAddress("");
     amount.setText("");
     setSubtractFee(subtractFeeByDefault());
+    setMore([]);
     setLabel("");
     setMessage("");
     setAdvanced(DEFAULT_ADVANCED);
@@ -132,20 +148,30 @@ export function PayToAddress({
     addrClass.data?.kind === "core" && checkedAddr !== "" && typeof duffs === "number" && duffs > 0
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
-  const spec = draftSpec(recipient, advanced);
+  const moreRecipients = more.every((r) => r.recipient) ? more.map((r) => r.recipient!) : null;
+  const othersTotal = more.reduce((n, r) => n + (r.amount ?? 0), 0);
+  const rowsSettled = more.every((r) => r.settled);
+  const spec = draftSpec(recipient, advanced, multi ? moreRecipients : []);
   const available = useAvailable(walletId, advanced, sheets.held);
 
   const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || sheets.held, shown);
   const ready = estimated && settled && !amount.fiat.error;
-  const max = useMax(walletId, advanced, shown, (text) => {
-    amount.setText(text);
-    setSubtractFee(true);
-  });
+  const max = useMax(
+    walletId,
+    advanced,
+    shown,
+    (text) => {
+      amount.setText(text);
+      setSubtractFee(true);
+    },
+    othersTotal,
+    !rowsSettled,
+  );
 
   const review = (from: "review" | "psbt") => {
     const unsigned = from === "psbt" || watchOnly;
     openedBy.current = from;
-    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec, unsigned);
+    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change, spec.more), spec, unsigned);
   };
 
   return (
@@ -241,9 +267,40 @@ export function PayToAddress({
             </>
           )}
         </section>
+        {multi &&
+          more.map((row, i) => (
+            // Hidden, not unmounted, while the first address is a Platform one: the rows keep what was typed.
+            <div key={row.id} hidden={platform}>
+            <MoreRecipient
+              row={row}
+              number={i + 2}
+              network={network}
+              shown={shown}
+              fieldError={(f) => fieldError(f, i + 1)}
+              onChange={(r, amount, settled) => setMore((rows) => rows.map((x) => (x.id === row.id ? { ...x, recipient: r, amount, settled } : x)))}
+              onSubtractFee={(on) => setRowSubtractFee(row.id, on)}
+              onRemove={() => setMore((rows) => rows.filter((x) => x.id !== row.id))}
+            />
+            </div>
+          ))}
+        {!platform && multi && (
+          <div className="pay-more-add">
+            <DashButton
+              variant="tintedBlue"
+              size="small"
+              data-testid="pay-add-recipient"
+              onClick={() => setMore((rows) => [...rows, { id: nextRow.current++, recipient: null, amount: null, settled: true, subtractFee: false }])}
+            >
+              {t("pay.more.add")}
+            </DashButton>
+            <span className="field-hint" data-testid="pay-add-recipient-note">
+              {t("pay.more.testnetOnly")}
+            </span>
+          </div>
+        )}
         {!platform && (
           <>
-            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
+            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" && more.every((r) => r.amount !== null) ? [duffs, ...more.map((r) => r.amount!)] : null} />
             <UnsignedPsbt
               watchOnly={watchOnly}
               why={reviewBlockedReason(ready, [addrError, fieldError("address"), amount.fiat.error, amount.error, fieldError("amount"), max.error, generalError], !!spec)}
