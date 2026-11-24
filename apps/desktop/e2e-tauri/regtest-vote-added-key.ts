@@ -31,7 +31,9 @@ const RPC = new URL(env("DW_E2E_RPC"));
 const PROPOSAL = env("DW_E2E_PROPOSAL");
 const VOTER = env("DW_E2E_VOTER");
 const VOTING_KEY = env("DW_E2E_VOTING_KEY");
-const PORT = Number(env("DW_E2E_PORT", "4786"));
+// Not passed on to tauri-driver, WebKitWebDriver or the app.
+delete process.env.DW_E2E_VOTING_KEY;
+const PORT = Number(env("DW_E2E_PORT", "4796"));
 /** SPV, the masternode list and governance sync on a loaded host (as regtest-send.ts allows). */
 const LOAD_WAIT_MS = Number(env("DW_E2E_LOAD_WAIT_MS", "600000"));
 const SHORT = VOTER.slice(0, 8);
@@ -86,9 +88,11 @@ async function main() {
     for (let i = 0; i < 3; i++) {
       await wd.clear(await wd.waitFor(tid("mn-add-key-input")));
       await fillSecret(wd, tid("mn-add-key-input"), VOTING_KEY);
-      if ((await wd.script<number>(`return document.querySelector(arguments[0])?.value.length ?? -1`, [tid("mn-add-key-input")])) === VOTING_KEY.length) break;
+      if ((await wd.script<number>(`return document.querySelector(arguments[0])?.value.length ?? -1`, [tid("mn-add-key-input")])) === VOTING_KEY.length)
+        return wd.press(tid("mn-add-key-submit"));
     }
-    await wd.press(tid("mn-add-key-submit"));
+    await wd.clear(await wd.waitFor(tid("mn-add-key-input")));
+    throw new Error(`mn-add-key-input did not take ${VOTING_KEY.length} characters`);
   };
   try {
     await enter("lock-field", PASSPHRASE);
@@ -135,8 +139,8 @@ async function main() {
 
     // Add keys follows Track. It asks for the full unlock first when the vault isn't fully unlocked.
     await wd.waitFor(tid("mn-add-key-sheet"), "Add keys after Track");
-    if (await poll(TIMEOUT_MS, "the key field or the unlock step", async () =>
-      (await exists("mn-add-key-input")) ? false : (await exists("mn-add-key-unlock-first")) ? true : undefined,
+    if (await poll(TIMEOUT_MS, "the key field or Add keys' Unlock", async () =>
+      (await exists("mn-add-key-input")) ? false : (await exists("mn-add-key-unlock")) ? true : undefined,
     )) {
       await wd.press(tid("mn-add-key-unlock"));
       await fillSecret(wd, tid("unlock-sheet-field"), PASSPHRASE);
@@ -165,6 +169,7 @@ async function main() {
     evidence.keyAdded = await poll(TIMEOUT_MS, "Keys you added", async () => ((await exists("mn-key-added-voting")) ? (await textOf("mn-key-added-voting")).trim() : undefined));
     evidence.trackedRow = await textOf(`mn-row-${VOTER}`);
     await wd.screenshot("3-tracked-row");
+    if (!String(evidence.keyAdded).includes("· matches")) throw new Error(`Keys you added: ${evidence.keyAdded}`);
     step(`tracked row "${evidence.trackedRow}"; ${evidence.keyAdded}`);
 
     // Vote with it.

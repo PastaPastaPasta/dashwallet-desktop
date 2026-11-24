@@ -14,14 +14,16 @@ holds no coin and no masternode votes with one of its keys.
 Setup:
  - Core generates a fresh voting key in a legacy wallet of node0 (`getnewaddress`,
    `dumpprivkey`); `protx update_registrar` makes it masternode 2's voting key. The key is a
-   regtest key made for this run; it reaches the UI script by environment only;
+   regtest key made for this run (Core's wallet and the framework's log hold it too); the UI
+   script gets it by environment and passes it on to no process it starts;
  - Core submits proposal `dwd_ak_p0` to vote on.
 
 Checks, after the UI run:
  1. every node holds a funding Yes from masternode 2's collateral on dwd_ak_p0, and Core's Yes
     count went from 0 to 1;
  2. neither the run's output (logs, result.json, screenshots) nor the app's data directory holds
-    the key in plain text (WIF, hex or raw bytes).
+    the key in plain text (WIF, hex, raw bytes in either order), checked whether the UI run
+    passed or not.
 
 Run (DW_APP, TAURI_DRIVER and DISPLAY as for scripts/e2e-regtest-vote-added-key.sh):
   DWCLI=<target>/debug/dwcli DW_APP=<target>/debug/dash-wallet TAURI_DRIVER=<tauri-driver> \\
@@ -36,14 +38,13 @@ import subprocess
 import time
 from decimal import Decimal
 
-from dwd_governance_ui import DESKTOP, FIRST_SUPERBLOCK, MATURITY_WINDOW, PASSPHRASE, PHRASE, SPORK_OFF, Dwcli, DwdGovernanceUi, source_head
+from dwd_governance_ui import DESKTOP, FIRST_SUPERBLOCK, MATURITY_WINDOW, PASSPHRASE, PHRASE, SPORK_OFF, UI_TIMEOUT, Dwcli, DwdGovernanceUi, source_head
 from test_framework.address import base58_to_byte
 from test_framework.governance import prepare_object
 from test_framework.messages import uint256_to_string
 from test_framework.util import assert_equal, p2p_port, rpc_url
 
 PROPOSAL = "dwd_ak_p0"
-UI_TIMEOUT = 3600
 
 
 def leaks(root, secrets):
@@ -71,7 +72,7 @@ class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
         self.log.info("Setup: the app's wallet; Core gives masternode 2 a voting key of its own")
         dwcli = Dwcli(os.environ["DWCLI"], os.path.join(self.options.tmpdir, "dwcli"), p2p_port(0), self.log)
         dwcli.run("init-vault")
-        wallet = " ".join(dwcli.run("import", "--birth-height", "0", stdin=PHRASE)).split()[-1]
+        dwcli.run("import", "--birth-height", "0", stdin=PHRASE)
         while node.getbalance() < 20:
             self.generate(node, 10)
         node.createwallet(wallet_name="voting", descriptors=False)
@@ -123,6 +124,9 @@ class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
                 raise
         with open(os.path.join(out, "app.log"), encoding="utf8") as log:
             self.log.info("".join(line for line in log if line.startswith("regtest-vote-added-key:")))
+        self.log.info("No file of the run or of the app's data holds the key in plain text")
+        secrets = [wif.encode(), secret.hex().encode(), secret.hex().upper().encode(), secret, secret[::-1], secret[::-1].hex().encode()]
+        assert_equal(leaks(out, secrets) + leaks(dwcli.root, secrets), [])
         assert_equal(p.returncode, 0)
 
         self.log.info(f"1. Core holds the app's Yes from masternode 2 on {PROPOSAL}")
@@ -134,10 +138,6 @@ class DwdGovernanceAddedKeyUi(DwdGovernanceUi):
             # `<outpoint>:<time>:yes:funding:<weight>`: a regular masternode weighs 1.
             assert_equal(ours[0].split(":")[2:], ["yes", "funding", "1"])
             self.log.info(f"node{n.index}: {ours[0]}")
-
-        self.log.info("2. No file of the run or of the app's data holds the key in plain text")
-        secrets = [wif.encode(), secret.hex().encode(), secret.hex().upper().encode(), secret]
-        assert_equal(leaks(out, secrets) + leaks(dwcli.root, secrets), [])
 
         with open(os.path.join(out, "result.json"), encoding="utf8") as f:
             result = json.load(f)
