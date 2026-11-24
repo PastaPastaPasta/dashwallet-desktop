@@ -238,6 +238,15 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-save")).toHaveCount(0);
     await expect(page.getByTestId("sh-row-sendSigned")).toHaveCount(0);
     if (info.project.name === "chromium") await shot(page, "sh-signed-out-abandoned", theme);
+    // The recorded spend back's own exit is Activity's: the way out opens the spend back there.
+    await expect(page.getByTestId("sh-way-out-toggle")).toHaveAttribute("aria-expanded", "false");
+    await page.getByTestId("sh-way-out-toggle").click();
+    await expect(page.getByTestId("sh-way-out-text")).toContainText("Activity can send this spend back again or abandon it.");
+    await expect(page.getByTestId("sh-way-out-abandon")).toHaveCount(0);
+    if (info.project.name === "chromium") await shot(page, "sh-spend-back-way-out", theme);
+    await page.getByTestId("sh-way-out-activity").click();
+    await expect(page.getByTestId("sh-session")).toBeHidden();
+    await expect(page.getByTestId("tx-route-filter")).toHaveAttribute("data-txids", "a8".repeat(32));
     expect(errors).toEqual([]);
   });
 
