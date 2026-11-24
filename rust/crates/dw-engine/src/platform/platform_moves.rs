@@ -1047,9 +1047,7 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                         MoveKind::ToCore
                         | MoveKind::ToContact
                         | MoveKind::ToIdentity
-                        | MoveKind::Register => {
-                            PlatformActivityState::Failed
-                        }
+                        | MoveKind::Register => PlatformActivityState::Failed,
                     };
                     moves[i].can_land = false;
                 }
