@@ -6268,7 +6268,7 @@ button.bell-row-open:focus-visible {
   border: 0;
 }
 
-.mg-choices > .mg-section-title {
+div.mg-choices > .mg-section-title {
   margin: 0;
   padding-inline: 2px;
 }
