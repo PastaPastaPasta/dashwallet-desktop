@@ -385,8 +385,10 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   let change: number | null = sum - pay - (subtract ? 0 : base);
   let rest = 0;
   // Change at or below dust is not made (as plan.rs: change only when the rest is above dust): the
-  // transaction is smaller and the rest goes to the fee.
-  if (change <= DUST) {
+  // transaction is smaller and the rest goes to the fee. A fully mixed spend makes none at all, so
+  // its rest pays the fee first and a subtract-fee recipient pays only what it leaves (plan.rs
+  // `plan_with`, no_change).
+  if (change <= DUST || d.source.kind === "fullyMixedOnly") {
     base = feeWith(inputs.length, false);
     rest = sum - pay - (subtract ? 0 : base);
     if (rest < 0) {
