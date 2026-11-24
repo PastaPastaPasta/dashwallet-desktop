@@ -3,4 +3,4 @@
 /**
  * `CompatFailure`: a Dash Core file or export failed.
  */
-export type CompatCode = "compat.file_unreadable" | "compat.unsupported_format" | "compat.corrupt" | "compat.passphrase_required" | "compat.wrong_passphrase" | "compat.no_hd_chain" | "compat.network_mismatch" | "compat.invalid_key_material" | "compat.watch_only" | "compat.destination_unwritable";
+export type CompatCode = "compat.file_unreadable" | "compat.unsupported_format" | "compat.corrupt" | "compat.passphrase_required" | "compat.wrong_passphrase" | "compat.no_hd_chain" | "compat.network_mismatch" | "compat.invalid_key_material" | "compat.watch_only" | "compat.destination_unwritable" | "compat.wallet_too_large" | "compat.extra_hd_account";

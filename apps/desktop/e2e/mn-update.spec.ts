@@ -116,7 +116,7 @@ test("a given operator key and another payout address are signed as reviewed; a 
   await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("mn-change-send").click();
   await expect(page.getByTestId("mn-change-keys-sent")).toBeVisible();
-  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.updates[0].terms);
+  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.find((o) => o.kind === "update_registrar")!.terms);
   expect(terms).toMatchObject({ operatorPublicKey: "ab".repeat(48), payoutAddress: PAYOUT });
 });
 

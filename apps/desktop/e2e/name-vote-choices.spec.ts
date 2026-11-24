@@ -21,6 +21,9 @@ async function openSheet(page: Page) {
   return { errors, sheet };
 }
 
+// Tall enough that the sheet isn't at its height limit, so a doubled legend would show as movement.
+test.use({ viewport: { width: 1280, height: 1200 } });
+
 const choices = (page: Page) => page.getByRole("group", { name: "Your vote" });
 
 test("the choices are a labelled group with no legend, as tall as their content", async ({ page }) => {
@@ -74,7 +77,9 @@ test("every choice selects with one click", async ({ page }) => {
 test("the keyboard reaches the choices and arrows move between them", async ({ page }) => {
   await openSheet(page);
   const radios = choices(page).getByRole("radio");
-  await radios.first().focus();
+  // From the focused close button, Tab reaches the first choice.
+  await page.keyboard.press("Tab");
+  await expect(radios.first()).toBeFocused();
   await page.keyboard.press("Space");
   await expect(radios.first()).toBeChecked();
   await page.keyboard.press("ArrowDown");

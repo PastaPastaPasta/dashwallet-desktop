@@ -5821,6 +5821,11 @@ button.bell-row-open:focus-visible {
   min-height: 0;
 }
 
+/* A step shown without the list (Sent) takes the whole width. */
+.mg-wizard > .mg-step:only-child {
+  grid-column: 1 / -1;
+}
+
 .mg-steps {
   display: flex;
   flex-direction: column;
@@ -5977,6 +5982,13 @@ button.bell-row-open:focus-visible {
   padding-top: var(--dw-space-xxs);
 }
 
+/* A checkbox with its sentence beside it. */
+.mg-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
 /* Vote sheet: masternodes with a checkbox, their weight and current vote. */
 .mg-nodes {
   margin: 0;
@@ -6005,6 +6017,7 @@ button.bell-row-open:focus-visible {
 
 .mg-node-name {
   font-weight: var(--dw-type-footnote-medium-weight);
+  overflow-wrap: anywhere;
 }
 
 .mg-node-sub {
@@ -6517,4 +6530,8 @@ button.bell-row-open:focus-visible {
 /* The selected row's tint under a "PoSe banned" chip keeps the text at AA, as with .chip-warning (axe). */
 .mg-row .chip-danger {
   background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}
+
+.sync-phase-active {
+  font-weight: 600;
 }
