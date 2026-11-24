@@ -3,7 +3,7 @@
 // CoinJoin cards (DP1-08, U-06), the frequent contacts
 // (DP3-07), then the recent history in day-group cards.
 
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useState, type ReactNode } from "react";
 import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
@@ -74,21 +74,26 @@ function HeldLine({ text, walletId }: { text: string; walletId: string }) {
   const tr = useT();
   const wallets = useWallets();
   const [open, setOpen] = useState(false);
+  const textId = useId();
+  // The variant depends on how many wallets are open: none is chosen before the list is read.
+  const wayOut = wallets.isPending ? null : heldWayOutText(walletId, wallets.data ?? []);
   return (
     <>
       <p className="hero-held" data-testid="hero-held">
-        <span className="hero-held-text" data-testid="hero-held-text">
+        <span className="hero-held-text" id={textId} data-testid="hero-held-text">
           {text}
         </span>
-        <button type="button" className="hero-held-link" data-testid="hero-held-way-out" onClick={() => setOpen(true)}>
+        <button type="button" className="hero-held-link" aria-describedby={textId} data-testid="hero-held-way-out" onClick={() => setOpen(true)}>
           {tr("home.core.heldWhatCanIDo")}
         </button>
       </p>
       {open && (
         <Sheet title={tr("home.core.heldWhatCanIDo")} width="small" testId="held-way-out" onClose={() => setOpen(false)}>
-          <p className="sheet-text" data-testid="held-way-out-text">
-            {heldWayOutText(walletId, wallets.data ?? [])}
-          </p>
+          {wayOut && (
+            <p className="sheet-text" data-testid="held-way-out-text">
+              {wayOut}
+            </p>
+          )}
         </Sheet>
       )}
     </>

@@ -4,6 +4,7 @@ import { artifactPath, fixtureUrl, THEMES } from "./helpers";
 /** Coins a dropped payment holds, set on the fixture's first wallet: `valued` duffs summed, and
  * `unvalued` coins of unknown value. */
 async function hold(page: Page, valued: number, unvalued: number, watchOnly = false) {
+  await expect(page.getByTestId("hero-amount")).toBeVisible();
   await page.evaluate(
     ([valued, unvalued, watchOnly]) => {
       const f = window.__dwFixture!;
@@ -17,8 +18,8 @@ async function hold(page: Page, valued: number, unvalued: number, watchOnly = fa
 }
 
 const STATES = [
-  { name: "valued", valued: 150_000_000, unvalued: 0, line: "1.50 tDASH held by an unfinished payment" },
-  { name: "at-least", valued: 150_000_000, unvalued: 2, line: "At least 1.50 tDASH held by an unfinished payment" },
+  { name: "valued", valued: 150_000_000, unvalued: 0, line: "1.50 held by an unfinished payment" },
+  { name: "at-least", valued: 150_000_000, unvalued: 2, line: "At least 1.50 held by an unfinished payment" },
   { name: "unvalued-one", valued: 0, unvalued: 1, line: "A coin held by an unfinished payment" },
   { name: "unvalued", valued: 0, unvalued: 3, line: "3 coins held by an unfinished payment" },
 ] as const;
@@ -33,7 +34,6 @@ for (const theme of THEMES) {
   for (const s of STATES) {
     test(`Home shows the held line, ${s.name} (${theme})`, async ({ page }, info) => {
       await page.goto(fixtureUrl("funded", theme));
-      await expect(page.getByTestId("hero-amount")).toBeVisible();
       await hold(page, s.valued, s.unvalued);
       await expect(page.getByTestId("hero-held-text")).toHaveText(s.line);
       await page.getByTestId("hero-band").screenshot({ path: artifactPath(info, `${theme}-home-held-${s.name}.png`) });

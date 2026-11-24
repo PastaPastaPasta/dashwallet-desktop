@@ -1086,10 +1086,11 @@ input[type="radio"]:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  height: calc(var(--dw-layout-hero-height) + var(--hero-held-line, 0px));
+  height: calc(var(--dw-layout-hero-height) + var(--hero-held-line));
   padding: var(--dw-space-l) var(--dw-layout-page-padding-h) 0;
   background: var(--dw-role-hero);
   color: var(--dw-role-text-on-hero);
+  --hero-held-line: 0px;
 }
 
 /* The line of coins a dropped payment holds: the band grows by it while it shows. */
@@ -1152,29 +1153,34 @@ input[type="radio"]:disabled {
 
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
-  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line, 0px));
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
 /* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
    the fiat row and the note of what Core has pending. */
 @media (min-width: 980px) {
   .hero-band:has(.hero[data-breakdown="none"]) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line, 0px));
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
   .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line, 0px));
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line, 0px));
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
   }
 }
 
-.hero-note {
+.hero-note,
+.hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
+}
+
+.hero-note,
+.hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
 }
 
@@ -1184,15 +1190,8 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs) var(--dw-space-s);
   align-items: baseline;
   justify-content: center;
-  margin: var(--dw-space-s) 0 0;
-  font-size: var(--dw-type-footnote-size);
-  font-weight: var(--dw-type-footnote-weight);
-  line-height: var(--dw-type-footnote-line);
+  margin-top: var(--dw-space-s);
   text-align: center;
-}
-
-.hero-held-text {
-  opacity: var(--dw-opacity-hero-secondary-text);
 }
 
 .hero-held-link {

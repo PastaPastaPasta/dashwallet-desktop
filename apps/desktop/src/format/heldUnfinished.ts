@@ -9,9 +9,9 @@ import { t } from "../i18n";
  * "At least" says some are missing from it, and with none known the coins are counted instead. */
 export function heldLine(core: Balances, fmt: (duffs: number) => string): string {
   const { heldUnfinished: valued, heldUnvalued: unvalued } = core;
-  if (unvalued === 0) return valued > 0 ? t("home.core.heldUnfinished", { amount: fmt(valued) }) : "";
-  if (valued > 0) return t("home.core.heldUnfinishedAtLeast", { amount: fmt(valued) });
-  return t("home.core.heldUnfinishedUnvalued", { count: unvalued });
+  if (valued > 0) return t(unvalued > 0 ? "home.core.heldUnfinishedAtLeast" : "home.core.heldUnfinished", { amount: fmt(valued) });
+  if (unvalued > 0) return t("home.core.heldUnfinishedUnvalued", { count: unvalued });
+  return "";
 }
 
 /** The way out for the wallet `walletId` among the open `wallets`: a watch-only wallet is added

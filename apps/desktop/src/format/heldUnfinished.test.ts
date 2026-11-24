@@ -5,7 +5,7 @@ import { heldLine, heldWayOutText } from "./heldUnfinished";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: 0, immature: 0, locked: 0, total: 3 * COIN, coinjoin: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0 };
-const fmt = (duffs: number) => `${(duffs / COIN).toFixed(2)} DASH`;
+const fmt = (duffs: number) => (duffs / COIN).toFixed(2);
 const A = "a1".repeat(32);
 const B = "b2".repeat(32);
 
@@ -15,11 +15,11 @@ describe("Home's held line", () => {
   });
 
   it("gives the held amount when every held coin's value is known", () => {
-    expect(heldLine({ ...core, heldUnfinished: 1.5 * COIN }, fmt)).toBe("1.50 DASH held by an unfinished payment");
+    expect(heldLine({ ...core, heldUnfinished: 1.5 * COIN }, fmt)).toBe("1.50 held by an unfinished payment");
   });
 
   it("says at least, summing only the known values, when some are unknown", () => {
-    expect(heldLine({ ...core, heldUnfinished: 1.5 * COIN, heldUnvalued: 2 }, fmt)).toBe("At least 1.50 DASH held by an unfinished payment");
+    expect(heldLine({ ...core, heldUnfinished: 1.5 * COIN, heldUnvalued: 2 }, fmt)).toBe("At least 1.50 held by an unfinished payment");
   });
 
   it("counts the coins when no held coin's value is known, never hiding the line", () => {
