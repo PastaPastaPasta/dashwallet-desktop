@@ -30,7 +30,7 @@ import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -569,8 +569,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   // Keep runs KeepLive: the request and the journal go, RESTORED stays.
   keep_current_files: (_: { network: string | null }, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("keepCurrentFiles");
-    if (world.openRefusal?.screen.titleKey === "storeUpgrade.restore.foreign.title") {
-      world.openRefusal = undefined;
+    if (world.openRestore?.state === "foreign") {
+      world.openRestore = undefined;
       world.restored = true;
     }
     return null;
@@ -636,10 +636,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       // Saved last, as dw-app saves it; `saveFails` keeps the choice the switch started from.
       world.pending.networkChoice = knobs.saveFails ? before : { chosen: network, saved: true };
       keepWorlds(world);
-      return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+      return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
     }
     world.pending.networkChoice = { chosen: network, saved: true };
-    return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+    return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,

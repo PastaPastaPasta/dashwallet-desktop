@@ -33,6 +33,14 @@ pub enum StoreUpgradeError {
     #[error("the upgrade fails on a copy of this wallet file: {detail}")]
     UpgradeRehearsalFailed { detail: String },
 
+    /// SQLite would not write the rehearsal's copy of `wallet.sqlite`
+    /// (`SQLITE_READONLY`, `SQLITE_PERM`). The copy keeps the file's own
+    /// mode, so a write-protected `wallet.sqlite` ends here, and a retry
+    /// fails the same way. No defect of the data is claimed: its screen is
+    /// the unexpected-state refusal. File unchanged.
+    #[error("the upgrade can't write a copy of this wallet file: {detail}")]
+    UpgradeCopyUnwritable { detail: String },
+
     /// Fork V1 recorded as refinery version 19, before the fork history table
     /// existed. File unchanged.
     #[error("the file records the fork migration in upstream's history (pre-history shape)")]
@@ -58,16 +66,60 @@ pub enum StoreUpgradeError {
     #[error("upgrade snapshot failed: {detail}")]
     SnapshotFailed { detail: String },
 
+    /// A store the snapshot copies is damaged: SQLite reads it as corrupt
+    /// (`SQLITE_CORRUPT`) or not a database (`SQLITE_NOTADB`), or the
+    /// integrity check of its copy fails. A retry would fail the same way:
+    /// its screen is the unexpected-state refusal. File unchanged.
+    #[error("{store} is damaged: {detail}")]
+    SnapshotSourceDamaged { store: String, detail: String },
+
     /// A restore is requested or part-done in {dir}: no store may open
     /// there until the next start runs it.
     #[error("a restore is pending in {dir}")]
     RestorePending { dir: PathBuf },
+
+    /// The requested restore was refused before anything moved
+    /// (`storeUpgrade.restore.refused.*`). The request was removed so the
+    /// refusal shows once (MG (k)); every wallet and backup file is unchanged.
+    #[error("restore refused: {cause}")]
+    RestoreRefused { cause: crate::restore::RefusalCause },
+
+    /// Not enough space for the copies a restore makes before its journal
+    /// (`storeUpgrade.restore.noSpace.*`). This attempt's copies were removed
+    /// (or marked safe to delete) and the request cleared (MG (s)). Nothing
+    /// was changed. `needed` is the extra space the copies take.
+    #[error("not enough disk space to restore (needs {needed:?} bytes)")]
+    RestoreNoSpace { needed: Option<u64> },
+
+    /// A restore stopped. Before its journal (`journal_written` false) nothing
+    /// changed and the request stays (`storeUpgrade.restore.notStarted.*`);
+    /// after it the stores may be part-swapped and no store may open until a
+    /// restart finishes it (`storeUpgrade.restore.incomplete.*`).
+    #[error("restore stopped ({cause}): {detail}")]
+    RestoreIncomplete {
+        cause: crate::restore::IncompleteCause,
+        journal_written: bool,
+        detail: String,
+    },
+
+    /// A restore was asked for after a store opened in this process
+    /// (Q82-G1 F4-a, Q86 (f)). Nothing changed; the request stays.
+    #[error("restore refused: a wallet store has already opened in this process")]
+    RestoreAfterOpen,
 
     /// The store is held open in this process (upstream `AlreadyOpen`, a
     /// live [`crate::PersisterOpened`], or the `app.sqlite` lock). Never read
     /// as "no wallet" (Q82-G1 F4-d). Nothing changed.
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
+
+    /// `wallet.sqlite`, its `-wal` or its `-shm` is a symbolic link (unix
+    /// only, as upstream) or is owned by another user: the upstream open
+    /// refuses the first and can't make the second owner-only, and the copy
+    /// the upgrade is rehearsed on has neither. Refused before R1's drop.
+    /// Its screen is the unexpected-state refusal. Nothing changed.
+    #[error("{detail}")]
+    WalletFileUnsupported { detail: String },
 
     /// [`crate::PersisterOpened::open`] was asked for a load policy other
     /// than `Strict` (Q78 R6). Nothing was opened.
@@ -128,6 +180,7 @@ impl StoreUpgradeError {
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
             | Self::UpgradeRehearsalFailed { .. }
+            | Self::UpgradeCopyUnwritable { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
@@ -136,8 +189,16 @@ impl StoreUpgradeError {
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
+            | Self::SnapshotSourceDamaged { .. }
+            | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
+            | Self::RestoreRefused { .. }
+            | Self::RestoreNoSpace { .. }
+            | Self::RestoreAfterOpen
             | Self::StoreHeld { .. } => true,
+            Self::RestoreIncomplete {
+                journal_written, ..
+            } => !journal_written,
             Self::PersisterOpen { .. } => false,
             Self::Sqlite { unchanged, .. } | Self::Io { unchanged, .. } => *unchanged,
             #[cfg(test)]
@@ -145,9 +206,8 @@ impl StoreUpgradeError {
         }
     }
 
-    /// Whether this is a refusal the user sees on a "can't open" screen
-    /// ([`crate::copy::screen_for`]): this build cannot take this data, and
-    /// left it unchanged.
+    /// Whether this build refuses this data as it is, leaving it unchanged.
+    /// Every refusal has a screen ([`crate::copy::screen_for`], Q98 98-2).
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
@@ -156,9 +216,12 @@ impl StoreUpgradeError {
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
                 | Self::UpgradeRehearsalFailed { .. }
+                | Self::UpgradeCopyUnwritable { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
+                | Self::SnapshotSourceDamaged { .. }
+                | Self::WalletFileUnsupported { .. }
         )
     }
 

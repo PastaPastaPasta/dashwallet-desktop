@@ -72,7 +72,9 @@ impl From<dw_engine::EngineError> for EngineError {
             E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
-            | E::DataFolderNotPrivate { .. } => Self::Storage { detail },
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_) => Self::Storage { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },
