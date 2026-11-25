@@ -1970,7 +1970,8 @@ fn a_pass_is_held_while_a_held_spends_row_cannot_be_kept() {
                     Some(true) => store.arm_redrive(id, again).unwrap(),
                     Some(false) => {
                         assert!(store.mark_pending(id, &reserved).unwrap());
-                        (store.set_pending_spend(id, &reserved, again.anchor, AGAIN, None)).unwrap();
+                        (store.set_pending_spend(id, &reserved, again.anchor, AGAIN, None))
+                            .unwrap();
                     }
                     None => {}
                 }
@@ -1981,7 +1982,11 @@ fn a_pass_is_held_while_a_held_spends_row_cannot_be_kept() {
     };
     damage_artifact_read(&journal, wallet, spend.activity_id, true);
     assert_eq!(
-        [pass_with(Some(true)), pass_with(Some(false)), pass_with(None)],
+        [
+            pass_with(Some(true)),
+            pass_with(Some(false)),
+            pass_with(None)
+        ],
         [(false, 0), (false, 0), (true, 1)]
     );
 }

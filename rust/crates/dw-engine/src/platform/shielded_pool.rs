@@ -4436,8 +4436,8 @@ pub(crate) async fn periodic_pass(
 /// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
 /// are taken and again as the library's pass starts, and while imported
 /// spends' history rows cannot be kept and the library holds a spend with
-/// no row ([`keep_import_rows`]); a periodic
-/// one's proved note `count`, with the time it was proved at, may skip it.
+/// no row ([`keep_import_rows`]); a periodic one's proved note `count`,
+/// with the time it was proved at, may skip it.
 async fn pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
@@ -4481,7 +4481,9 @@ async fn pass(
         kept &= keep_import_rows(session, &coordinator, WalletId(wallet)).await;
     }
     if !kept {
-        tracing::warn!("imported shielded spends' history rows could not be kept; the sync pass is held back");
+        tracing::warn!(
+            "imported shielded spends' history rows could not be kept; the sync pass is held back"
+        );
         return false;
     }
     if let Some((count, proved_at)) = count
