@@ -190,6 +190,9 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
+  /** Every coin the Dash wallet holds, in duffs, incoming and mixed ones too: Max from it is offered
+   * while there is any, since the Core Max says why it can't move them. `null` while it is not read. */
+  coreCoins?: number | null;
   mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. */

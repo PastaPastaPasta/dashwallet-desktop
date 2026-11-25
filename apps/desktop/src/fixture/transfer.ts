@@ -56,6 +56,15 @@ export function transferScenarios(base: Base) {
     /** As "transfer-max-arriving", the coin being 0.00005 DASH: too little for either route's smallest amount even
      * once it has confirmed. */
     "transfer-max-arriving-small": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 5_000 }]),
+    /** The Dash wallet's only coin is an incoming payment of 0.002 DASH not confirmed yet, which a payment can't
+     * spend: Max is still offered, and says the coins are arriving. */
+    "transfer-max-incoming": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 200_000, isChange: false, spendable: false }]),
+    /** The Dash wallet holds only a mixed coin of 0.1 DASH, which neither a payment nor Max takes: Max is still
+     * offered, and says it has nothing to move. */
+    "transfer-max-mixed-only": (t: ThemeName | null) => {
+      const w = base(t);
+      return maxCoins(w, [{ amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds }]);
+    },
     /** Max from the Dash wallet has nothing to move: its one coin of 0.002 DASH is another account's. */
     "transfer-max-nothing": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 200_000 }], [0]),
     /** Max from the Dash wallet moves nothing, its one coin of 500 duffs being less than the fee, and
