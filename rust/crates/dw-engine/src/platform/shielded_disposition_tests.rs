@@ -432,3 +432,6 @@ fn cancelled_first_send_holds_notes_and_reads_checking() {
     );
     refused(engine.block_on(session.unload_wallet(wallet)));
 }
+
+#[path = "shielded_release_tests.rs"]
+mod release_tests;
