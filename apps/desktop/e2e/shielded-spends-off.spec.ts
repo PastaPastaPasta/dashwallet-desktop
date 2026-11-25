@@ -77,6 +77,15 @@ test.describe("Shielded spends off", () => {
         expect(await seriousAxeViolations(page)).toEqual([]);
         await page.getByTestId("transfer-cancel").click();
       }
+      await openTransfer(page, "platformToCore");
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-shielded").click();
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText(REASON);
+      await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
+      await shot(page, `${theme}-transfer-platformToShielded-off`);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("transfer-body")).toHaveCount(0);
 
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();

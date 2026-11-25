@@ -45,8 +45,10 @@ export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsup
 }
 
 /** Why the ends make no route: off on this network, or no command for it. On mainnet, where Dash
- * wallet → Platform is off too, the line names no detour through the Dash wallet. */
-export function unsupportedText(from: Pool, to: Pool, mainnet = false): string {
+ * wallet → Platform is off too, the line names no detour through the Dash wallet; while this build
+ * cannot spend from Shielded, every detour into or out of it waits too, so the line is that reason. */
+export function unsupportedText(from: Pool, to: Pool, mainnet = false, spendsOff = false): string {
+  if (spendsOff && (from === "shielded" || to === "shielded")) return SHIELDED_SPENDS_COPY.unavailable;
   if (from === "core" && to === "platform") return MAINNET_OFF_COPY.add;
   if (from === "shielded" && to === "platform") return mainnet ? TRANSFER_COPY.offOnMainnet.shieldedToPlatform : TRANSFER_COPY.offOnNetwork;
   if (from === "platform" && to === "shielded" && mainnet) return TRANSFER_COPY.offOnMainnet.platformToShielded;
