@@ -81,6 +81,8 @@
     "allow-shielded-history",
     "allow-unfinished-transfers",
     "allow-finish-transfer",
+    "allow-recover-transfer",
+    "allow-recover-transfer-quote",
     "allow-grant-request",
     "allow-dispatch-status",
     "allow-resolve-stuck-funding",
