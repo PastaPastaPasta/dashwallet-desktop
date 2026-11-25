@@ -340,7 +340,7 @@ test.describe("Wallets", () => {
     ["inFlight", "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed."],
     [
       "carriedOver",
-      "Dash Wallet doesn't know whether a Shielded payment this wallet made in an earlier test build went through, so nothing was removed. You can remove this wallet once this version can send from Shielded.",
+      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
     ],
   ] as const) {
     test(`a removal refused (${reason}) says why and removes nothing`, async ({ page }) => {

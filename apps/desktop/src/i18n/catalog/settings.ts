@@ -193,7 +193,7 @@ export const settings = {
     removeHeldTitle: "This wallet can't be removed yet",
     removeHeldInFlight: "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed.",
     removeHeldCarriedOver:
-      "Dash Wallet doesn't know whether a Shielded payment this wallet made in an earlier test build went through, so nothing was removed. You can remove this wallet once this version can send from Shielded.",
+      "Dash Wallet can't tell whether an earlier Shielded payment from this wallet went through, so nothing was removed. You can keep using this wallet, but this version may not be able to remove it.",
     removeHeldKeysRemoved:
       "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     removeHeldOk: "OK",
