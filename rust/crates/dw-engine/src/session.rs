@@ -211,7 +211,7 @@ pub(crate) async fn unload_after_failed_open(manager: &Manager) -> bool {
 static KEPT_AFTER_FAILED_OPEN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Why an open of a [`KEPT_AFTER_FAILED_OPEN`] directory is refused.
-pub(crate) const KEPT_AFTER_FAILED_OPEN_REFUSAL: &str = "it needs to restart first. Quit Dash Wallet and open it again. Your wallets and their payments are kept, and Try again won't work until you've restarted.";
+pub(crate) const KEPT_AFTER_FAILED_OPEN_REFUSAL: &str = "Dash Wallet needs to restart first. Quit Dash Wallet and open it again. Your wallets and their payments are kept, and Try again won't work until you've restarted.";
 
 fn kept_after_failed_open() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
     KEPT_AFTER_FAILED_OPEN

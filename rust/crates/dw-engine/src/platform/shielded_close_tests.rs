@@ -1149,11 +1149,11 @@ fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
     assert!(engine.block_on(manager.shielded_coordinator()).is_some());
     engine.block_on(crate::session::unload_after_failed_open(&manager));
 
+    assert_eq!(pending_rows(session.data_dir(), wallet), before);
     assert!(
         manager.list_wallet_ids_blocking().contains(&wallet.0),
         "still loaded"
     );
-    assert_eq!(pending_rows(session.data_dir(), wallet), before);
 }
 
 /// Where the failed-open test's child processes keep their data root.
