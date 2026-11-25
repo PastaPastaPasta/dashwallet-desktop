@@ -2077,7 +2077,8 @@ mod tests {
 
     /// Keys attached from a wallet.dat to a wallet with a narrower lookahead
     /// raise its pools before Core's counters are covered, so the range past
-    /// each counter is the attach's lookahead.
+    /// each counter is the attach's lookahead even when the stored ranges
+    /// applied after the attach are not.
     #[test]
     fn an_attach_covers_cores_counters_with_its_raised_lookahead() {
         let (_dir, engine, s, _created) = regtest_session();
@@ -2100,7 +2101,12 @@ mod tests {
         }
 
         assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+        (crate::keys::FAIL_RANGES_IN.lock().unwrap()).push(s.data_dir().to_path_buf());
         assert_eq!(import(&engine, &s, "bdb_wide_range.dat"), id);
+        assert!(
+            !(crate::keys::FAIL_RANGES_IN.lock().unwrap()).contains(&s.data_dir().to_path_buf()),
+            "the stored ranges after the attach were not applied"
+        );
         let addresses = addresses_of(&engine, &s, id);
         for (chain, counter) in counters {
             assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
