@@ -597,7 +597,10 @@ fn a_change_after_the_reads_writes_nothing() {
     let wallet = f.wallet;
     std::thread::scope(|scope| {
         let passing = scope.spawn(|| f.pass());
-        f.engine.block_on(reached_rx).unwrap();
+        let wait = tokio::time::timeout(std::time::Duration::from_secs(120), reached_rx);
+        (f.engine.block_on(wait))
+            .expect("the release reached its pause")
+            .unwrap();
         f.engine
             .block_on(coordinator.ack_spend_disposition(
                 wallet.0,
