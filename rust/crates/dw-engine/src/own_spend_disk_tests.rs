@@ -6612,11 +6612,12 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
         held(&engine, &session, id).contains(&change),
         "P2's change is counted before the lock"
     );
+    wait_stored_row(&session, id, change, Some(false), "P2's change is stored");
 
     instant_lock(&engine, &session, id, &payment);
     lock_reruns_done(&engine, &session);
-    // Right after the lock the store may not have applied its events yet
-    // (`wait_stored_row`); after a restart it has.
+    // Right after the lock the persister's event task may still be applying
+    // its events; after a restart it has.
     let gone = |session: &Arc<NetworkSession>, state: &str, settle: bool| {
         assert_holds(&engine, session, id, &want, state);
         assert!(
@@ -6628,7 +6629,13 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
             "{state}: the history drops P2"
         );
         if settle {
-            wait_stored_row(session, id, change, None, state);
+            wait_stored_row(
+                session,
+                id,
+                change,
+                None,
+                &format!("{state}: P2's change is not stored"),
+            );
             eventually(&format!("{state}: P2's record leaves the store"), || {
                 !stored_record(session, id, p2.txid())
             });
