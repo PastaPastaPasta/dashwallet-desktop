@@ -338,6 +338,10 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
             Some(Unexpected),
         ),
         (
+            E::UpgradeCopyUnwritable { detail: "x".into() },
+            Some(Unexpected),
+        ),
+        (
             E::RestoreRefused {
                 cause: RefusalCause::MissingBackup,
             },
@@ -800,6 +804,7 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             dir: PathBuf::from("x"),
         },
         E::WalletFileUnsupported { detail: "x".into() },
+        E::UpgradeCopyUnwritable { detail: "x".into() },
         E::InjectedFault("x"),
     ]
 }
@@ -831,6 +836,7 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::RestoreAfterOpen => "RestoreAfterOpen",
         E::UpgradeSnapshotMissing { .. } => "UpgradeSnapshotMissing",
         E::WalletFileUnsupported { .. } => "WalletFileUnsupported",
+        E::UpgradeCopyUnwritable { .. } => "UpgradeCopyUnwritable",
         E::InjectedFault(_) => "InjectedFault",
     }
 }
@@ -840,7 +846,7 @@ fn every_refusal_variant_has_a_screen() {
     let all = every_variant();
     let names: BTreeSet<&str> = all.iter().map(variant).collect();
     assert_eq!(names.len(), all.len(), "each variant listed once");
-    assert_eq!(names.len(), 25, "every variant in `variant` is listed");
+    assert_eq!(names.len(), 26, "every variant in `variant` is listed");
     let mut refusals = 0;
     let mut unexpected = BTreeSet::new();
     for e in &all {
@@ -865,8 +871,11 @@ fn every_refusal_variant_has_a_screen() {
             );
         }
     }
-    assert_eq!(refusals, 10);
-    assert_eq!(unexpected, ["WalletFileUnsupported"].into());
+    assert_eq!(refusals, 11);
+    assert_eq!(
+        unexpected,
+        ["UpgradeCopyUnwritable", "WalletFileUnsupported"].into()
+    );
     let missing = all
         .iter()
         .find(|e| variant(e) == "UpgradeSnapshotMissing")

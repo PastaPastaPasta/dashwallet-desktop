@@ -113,7 +113,7 @@ fn a_snapshot_of_the_dropped_column_file_is_never_kept_as_the_backup() {
 }
 
 #[test]
-fn a_migration_or_integrity_fault_of_the_machine_is_retryable() {
+fn a_fault_inside_a_migration_or_integrity_check_is_read_by_its_code() {
     let tmp = private_tempdir();
     let path = tmp.path().join("ro.sqlite");
     drop(Connection::open(&path).unwrap());
@@ -123,9 +123,9 @@ fn a_migration_or_integrity_fault_of_the_machine_is_retryable() {
     let err = refinery::Runner::new(&[migration])
         .run(&mut ro)
         .expect_err("read-only");
-    assert!(crate::precheck::storage_fault(
-        &WalletStorageError::Migration(err)
-    ));
+    let readonly = WalletStorageError::Migration(err);
+    assert!(!crate::precheck::storage_fault(&readonly));
+    assert!(crate::precheck::write_refused(&readonly));
 
     let full =
         rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL), None);

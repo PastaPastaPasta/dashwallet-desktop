@@ -161,6 +161,7 @@ impl RefusedCause {
             | E::RestoreIncomplete { .. }
             | E::RestoreAfterOpen => return None,
             E::WalletFileUnsupported { .. }
+            | E::UpgradeCopyUnwritable { .. }
             | E::NonStrictOpen { .. }
             | E::OpenConfigUnsupported { .. }
             | E::ProbeNotRun

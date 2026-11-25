@@ -33,6 +33,14 @@ pub enum StoreUpgradeError {
     #[error("the upgrade fails on a copy of this wallet file: {detail}")]
     UpgradeRehearsalFailed { detail: String },
 
+    /// SQLite would not write the rehearsal's copy of `wallet.sqlite`
+    /// (`SQLITE_READONLY`, `SQLITE_PERM`). The copy keeps the file's own
+    /// mode, so a write-protected `wallet.sqlite` ends here, and a retry
+    /// fails the same way. No defect of the data is claimed: its screen is
+    /// the unexpected-state refusal. File unchanged.
+    #[error("the upgrade can't write a copy of this wallet file: {detail}")]
+    UpgradeCopyUnwritable { detail: String },
+
     /// Fork V1 recorded as refinery version 19, before the fork history table
     /// existed. File unchanged.
     #[error("the file records the fork migration in upstream's history (pre-history shape)")]
@@ -177,6 +185,7 @@ impl StoreUpgradeError {
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
             | Self::UpgradeRehearsalFailed { .. }
+            | Self::UpgradeCopyUnwritable { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
@@ -212,6 +221,7 @@ impl StoreUpgradeError {
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
                 | Self::UpgradeRehearsalFailed { .. }
+                | Self::UpgradeCopyUnwritable { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
