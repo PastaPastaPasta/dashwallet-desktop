@@ -1770,6 +1770,7 @@ fn a_beaten_payment_stays_when_a_heard_fork_takes_its_winner_before_a_chainlock(
 /// detection saw. The other payment and its child stay.
 #[test]
 fn a_beaten_payment_stays_when_an_unheard_fork_takes_its_winner_before_a_chainlock() {
+    use dash_spv::EventHandler;
     let t = beaten_payment_with_a_child();
     let block = [t.winner.clone(), t.elsewhere_spend.clone()];
     header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
