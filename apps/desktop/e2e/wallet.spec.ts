@@ -113,10 +113,7 @@ test.describe("Home", () => {
     await page.getByTestId("shortcut-send").click();
     await expect(page.getByTestId("pay-address-form")).toBeVisible();
     await page.getByTestId("sidebar-home").click();
-    // Scan QR: no camera on the desktop, so the address field takes a pasted code.
-    await page.getByTestId("shortcut-scan").click();
-    await expect(page.getByTestId("pay-address")).toBeFocused();
-    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("shortcut-card").locator(".shortcut-item")).toHaveText(["Receive", "Send", "Transfer", "Back up"]);
     const backup = page.getByTestId("shortcut-backup");
     await expect(backup).toHaveAttribute("aria-disabled", "true");
     await expect(backup).toHaveAttribute("title", /not available yet/);
