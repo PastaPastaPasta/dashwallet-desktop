@@ -177,7 +177,7 @@ describe("ContactActions", () => {
   });
 
   it("says a write whose outcome is unknown may already be out, never the engine's bare message", () => {
-    expect(actionError(appError("platform.broadcast_unknown", null, "broadcast outcome unknown"))).toBe("It may have been sent. Check your contacts before trying again.");
-    expect(actionError(appError("platform.will_be_sent", null, "will be sent"))).toBe("It is still being sent. Check your contacts in a minute.");
+    expect(actionError(appError("platform.broadcast_unknown", null, "broadcast outcome unknown"))).toBe("Dash Platform did not confirm this change. It may already have gone through, so check before trying again.");
+    expect(actionError(appError("platform.will_be_sent", null, "will be sent"))).toBe("This change is still being sent to Dash Platform. Check again in a minute.");
   });
 });
