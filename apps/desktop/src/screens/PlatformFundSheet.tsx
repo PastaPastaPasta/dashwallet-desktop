@@ -11,6 +11,7 @@ import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
+import { preparingText } from "../transfer/preparing";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
 
 /** Formats for the sheet: Dash in the display unit with its full decimals, masked in discreet mode. */
@@ -155,6 +156,11 @@ export function FundBody({ flow, walletId, network }: { flow: PlatformFundFlow; 
             {C.running.steps.join(" → ")}
           </p>
           <p className="sheet-text">{C.running.text}</p>
+          {flow.preparing.shown && (
+            <p className="sheet-text" data-testid="transfer-preparing">
+              {preparingText()}
+            </p>
+          )}
         </div>
       )}
       {step === "done" && <Outcome flow={flow} fmt={fmt} pending={pending} />}

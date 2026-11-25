@@ -19,6 +19,7 @@ import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { Preparing } from "../transfer/preparing";
 
 export type ShieldedApi = Pick<
   Backend,
@@ -384,6 +385,8 @@ export class ShieldedFlow extends Model {
   open = false;
   kind: ShieldedKind = "add";
   step: ShieldedStep = "form";
+  /** A shield's call has been pending for a second. */
+  readonly preparing = new Preparing(() => this.changed());
   /** The form's fields as typed (the amount in the display unit). */
   text = "";
   to = "";
@@ -501,6 +504,7 @@ export class ShieldedFlow extends Model {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
+        if (request.kind === "add") this.preparing.start();
         this.changed();
         return this.call(request, g.id, confirmUnrecorded);
       });
@@ -518,6 +522,7 @@ export class ShieldedFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
+      this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) shieldedSettled();
       this.changed();

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS } from "./dashpay";
+import { CARDS, platformRunFails } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -145,6 +145,15 @@ export const STATES: Record<string, State> = {
       await page.getByTestId("pay-with-core-balance").waitFor();
     },
   },
+  "pay-with-move-pending": {
+    scenario: "platform-send-held",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform-reason").waitFor();
+    },
+  },
   "name-rules": {
     scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],
@@ -159,6 +168,20 @@ export const STATES: Record<string, State> = {
   "name-taken": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => typed(page, "b0b", /problem/) },
   confirm: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, LABEL) },
   "confirm-contested": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, "alice") },
+  "confirm-platform": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform").getByRole("radio").check();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-name-field").fill(LABEL);
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
   "confirm-shortfall": {
     scenario: "empty",
     roots: ["page-joinDashPay"],
@@ -181,6 +204,22 @@ export const STATES: Record<string, State> = {
   repair: { scenario: "dashpay-registration-needs-finish", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   "repair-unknown": { scenario: "dashpay-registration-failed-unknown", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   stopped: { scenario: "dashpay-registration-stopped", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "stopped") },
+  refunded: {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await platformRunFails(page, LABEL, "paidFailure");
+    },
+  },
+  "quote-changed": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await platformRunFails(page, LABEL, "replanRefused");
+    },
+  },
   finished: {
     scenario: "dashpay-registration-needs-finish",
     roots: ["page-joinDashPay"],

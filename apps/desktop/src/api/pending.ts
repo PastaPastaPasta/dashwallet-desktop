@@ -14,6 +14,9 @@ export const CREDITS_PER_DUFF = 1000n;
 /** Whole duffs in `credits` (a decimal string). */
 export const creditsToDuffs = (credits: string): number => Number(BigInt(credits) / CREDITS_PER_DUFF);
 
+/** Credits as duffs, rounded up: an "about" amount or a least amount never undersells. */
+export const creditsToDuffsUp = (credits: bigint | string): number => Number((BigInt(credits) + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF);
+
 /** The `ShieldedCode`s by name, one place for the screens' copy and the fixture. Every value is the
  * generated `ShieldedCode`, so a code the engine adds or renames is a type error here. */
 export const SHIELDED_CODES = {
