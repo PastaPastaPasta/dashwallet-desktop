@@ -72,7 +72,7 @@ const REFUSED_UNCHANGED: Line = line(
 );
 const CHANGED_BY_UPGRADE: Line = line(
     "storeUpgrade.refused.changedByUpgrade",
-    "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 const REFUSED_KEEP: Line = line(
     "storeUpgrade.refused.keep",
@@ -243,8 +243,9 @@ pub struct ProvedState {
     pub backup: Option<BackupState>,
     /// `Some(true)`: this start changed nothing and the file is not
     /// part-upgraded, the only case the screen says Dash Wallet didn't
-    /// change anything. `Some(false)`: this start changed the files or an
-    /// earlier one part-upgraded it. `None`: not proved either way.
+    /// change anything. `Some(false)`: this start upgraded the files or an
+    /// earlier one part-upgraded it. `None`: not proved either way, or a
+    /// restore this start put the file back.
     pub unchanged: Option<bool>,
 }
 
@@ -253,6 +254,11 @@ impl ProvedState {
     /// writing. `wrote` is whether this start changed its files: a restore
     /// finished ([`crate::Prepared::restored`]) or
     /// [`crate::reconcile_fork_store`] returned `Pending` or `Retired`.
+    /// "Unchanged" is about this start alone, and the way out goes by the
+    /// file as read, never by the restored mark. A file this start wrote and
+    /// left not upgraded was put back by a restore: neither "didn't change
+    /// anything" nor "had already started upgrading" holds, so `unchanged`
+    /// is `None` (`storeUpgrade.refused.keep`).
     pub fn read(network_dir: &Path, wrote: bool) -> Self {
         let upgrade = upgrade(network_dir);
         Self {
@@ -267,11 +273,11 @@ impl ProvedState {
                     }
                     s => BackupState::from(&s),
                 }),
-            unchanged: match upgrade {
-                _ if wrote => Some(false),
-                Some(Upgrade::NotStarted | Upgrade::Done) => Some(true),
-                Some(Upgrade::Part) => Some(false),
-                None => None,
+            unchanged: match (upgrade, wrote) {
+                (Some(Upgrade::NotStarted), true) => None,
+                (Some(Upgrade::Part), _) | (Some(Upgrade::Done) | None, true) => Some(false),
+                (Some(Upgrade::NotStarted | Upgrade::Done), false) => Some(true),
+                (None, false) => None,
             },
         }
     }
@@ -532,10 +538,7 @@ pub fn notice_line(notice: UpgradeNotice) -> Line {
 }
 
 /// Catalog keys whose text is a best guess until MG writes the final.
-pub const PENDING_MG: &[&str] = &[
-    "storeUpgrade.refused.changedByUpgrade",
-    "storeUpgrade.refused.keep",
-];
+pub const PENDING_MG: &[&str] = &[];
 
 const RETRY_NO_SPACE_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
 const RETRY_NO_SPACE_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";

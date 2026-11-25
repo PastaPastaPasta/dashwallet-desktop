@@ -21,7 +21,7 @@ const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 const TITLE: &str = "Dash Wallet can't open this wallet data safely";
 const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
 const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
-const CHANGED: &str = "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const CHANGED: &str = "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const KEEP: &str = "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
 const EARLIER: &str =
@@ -575,8 +575,10 @@ fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
     );
     assert!(shown(released).contains(&unchanged));
     assert!(!shown(released).contains(&changed));
-    assert_eq!(read(&f, true).unchanged, Some(false), "this start wrote");
-    assert!(shown(read(&f, true)).contains(&changed));
+    let put_back = read(&f, true);
+    assert_eq!(put_back.unchanged, None, "a restore this start put it back");
+    assert!(shown(put_back).contains(&KEEP.replace("{folder}", FOLDER)));
+    assert!(!shown(put_back).contains(&unchanged) && !shown(put_back).contains(&changed));
 
     let hidden = fixture("v0.1.0");
     exec(&hidden.wallet(), "PRAGMA wal_checkpoint(TRUNCATE)");
@@ -981,4 +983,24 @@ fn only_a_start_stopped_by_the_machine_gets_the_retry_screen() {
         source: std::io::Error::other("disk full"),
     };
     assert_retry_copy(&retry_copy_for(&e).unwrap());
+}
+
+#[test]
+fn the_notices_carry_mg_s_final_text() {
+    use crate::reconcile::UpgradeNotice;
+    assert_eq!(
+        crate::copy::notice_line(UpgradeNotice::SnapshotDamaged),
+        crate::copy::Line {
+            key: "storeUpgrade.notice.snapshotDamaged",
+            text: "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        }
+    );
+    assert_eq!(
+        crate::copy::notice_line(UpgradeNotice::SnapshotOther),
+        crate::copy::Line {
+            key: "storeUpgrade.notice.snapshotOther",
+            text: "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        }
+    );
+    assert!(crate::copy::PENDING_MG.is_empty());
 }

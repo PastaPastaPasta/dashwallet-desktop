@@ -223,6 +223,14 @@ fn t4_the_true_snapshot_is_reused_and_restores() {
     assert!(restored.is_some());
     assert!(column_present(&f));
     assert!(refinery_max(&f) <= crate::fork::FORK_REFINERY_MAX);
+    let state = ProvedState::read(&f.net, true);
+    assert_eq!((state.migrated, state.unchanged), (Some(false), None));
+    assert!(crate::restore::restored_mark_present(&f.net));
+    assert_eq!(
+        WayOut::for_cause(RefusedCause::ForkUnsupported, state),
+        WayOut::Previous,
+        "the way out goes by the file, not the restored mark"
+    );
 }
 
 #[test]
