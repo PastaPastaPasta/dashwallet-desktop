@@ -353,7 +353,9 @@ So, trimming only (no new runners):
 
 - `macos-swift` runs the Swift side beside `macos` instead of after it.
 - A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
-- A docs-only merge starts no CI run (the docs that tests read still do).
+- A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; GitHub matches a
+  push's first 300 changed files only). A merge never cancels the 02:47 UTC run or a dispatch: the event
+  is part of the concurrency group.
 - Release builds on tags, at 02:47 UTC and on a dispatch, not on every merge (in the pull request after #780,
   which rewrites `release.yml`).
 - Release's macOS job and nightly restore CI's Rust cache (`ci-<os>`) and never save one, which leaves CI's
