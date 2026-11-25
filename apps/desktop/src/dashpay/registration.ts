@@ -19,6 +19,7 @@ import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { waitText } from "../onboarding/model";
 import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
+import { INSTANT_COPY, type TemporaryOutcome } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
 import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, WAITS, withTable, type CardStep } from "./status";
 
@@ -198,7 +199,21 @@ export type ScreenKind =
   /** A Platform payment that may still go through: Continue or Move to Dash wallet. */
   | "held";
 
-export type ScreenActionKind = "home" | "continue" | "moveToCore" | "unlock" | "finish" | "repair" | "another" | "reconfirm" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
+/** `instantRetry`: D13's instant username, prefilled with the row's temporary name that failed. */
+export type ScreenActionKind =
+  | "home"
+  | "continue"
+  | "moveToCore"
+  | "unlock"
+  | "finish"
+  | "repair"
+  | "another"
+  | "reconfirm"
+  | "done"
+  | "wallet"
+  | "votingInfo"
+  | "instantRetry"
+  | Exclude<WelcomeStepKind, "share">;
 
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
@@ -235,6 +250,8 @@ export interface ScreenInputs {
   date: (secs: number) => string;
   amount: (duffs: number) => string;
   discreet: boolean;
+  /** What became of the row's temporary name (instantOffer.ts `temporaryOutcome`). */
+  temporary?: TemporaryOutcome;
 }
 
 const act = (kind: ScreenActionKind, label: string): ScreenAction => ({ kind, label });
@@ -280,13 +297,13 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
         step: null,
       });
     // A contested label ends `done` too; its contest is the status's (D4).
-    if (i.contestPending) return votingScreen(label, i.contestEndsAt, i.date);
+    if (i.contestPending) return votingScreen(label, i.contestEndsAt, i.date, instantOf(row, i));
     const done = doneScreen(label);
     // A claim's request to its inviter (DP5-03 C2).
     const note = requestNote(row);
     return note ? { ...done, lines: [...done.lines, note] } : done;
   }
-  if (row.phase === "contested") return votingScreen(label, row.contestEndsAt ?? i.contestEndsAt, i.date);
+  if (row.phase === "contested") return votingScreen(label, row.contestEndsAt ?? i.contestEndsAt, i.date, instantOf(row, i));
 
   // Unknown funding first: a failed row may still wait on it (m4 §2.2 `waiting`).
   if (row.waiting === "fundingUnknown")
@@ -341,22 +358,29 @@ export function pendingModel(readFailed = false): ScreenModel {
   };
 }
 
-/** The result of a name registered from credits (D6): R9, or R11 once its contest started. */
-export function namedModel(label: string, outcome: NameOutcome, date: (secs: number) => string): ScreenModel {
-  return outcome.kind === "contestStarted" ? votingScreen(label, outcome.endsAt, date) : doneScreen(label);
+/** The result of a name registered from credits (D6): R9, or R11 once its contest started. An
+ * instant username (D13) registered while `contested` is voted on says so (iOS's success line). */
+export function namedModel(label: string, outcome: NameOutcome, date: (secs: number) => string, contested: string | null = null): ScreenModel {
+  if (outcome.kind === "contestStarted") return votingScreen(label, outcome.endsAt, date);
+  const done = doneScreen(label);
+  return contested === null ? done : { ...done, lines: [...done.lines, INSTANT_COPY.success(label, contested)] };
 }
 
-/** R11: the vote on `label` began. */
-function votingScreen(label: string, endsAt: number | null, date: (secs: number) => string): ScreenModel {
-  return {
-    kind: "voting",
-    label,
-    title: REG_COPY.voting.title,
-    lines: [REG_COPY.voting.message(label), endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(date(endsAt))],
-    step: null,
-    busy: false,
-    actions: [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)],
-  };
+/** The row's temporary name and what became of it, once known. */
+const instantOf = (row: RegistrationStatus, i: ScreenInputs) =>
+  row.temporaryLabel !== null && i.temporary ? { label: row.temporaryLabel, outcome: i.temporary } : null;
+
+/** R11: the vote on `label` began. With a temporary name beside it, iOS's success line, or its
+ * failure line with Try again. */
+function votingScreen(label: string, endsAt: number | null, date: (secs: number) => string, instant: { label: string; outcome: NonNullable<TemporaryOutcome> } | null = null): ScreenModel {
+  const lines = [REG_COPY.voting.message(label), endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(date(endsAt))];
+  const actions = [act("done", REG_COPY.voting.action), act("votingInfo", REG_COPY.voting.info)];
+  if (instant?.outcome === "owned") lines.push(INSTANT_COPY.success(instant.label, label));
+  if (instant?.outcome === "failed") {
+    lines.push(INSTANT_COPY.failure(instant.label));
+    actions.unshift(act("instantRetry", INSTANT_COPY.retry));
+  }
+  return { kind: "voting", label, title: REG_COPY.voting.title, lines, step: null, busy: false, actions };
 }
 
 /** DP5-03 C2 (F2, D8): a claim's Done note on the request to its inviter; `null` when none was

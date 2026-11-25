@@ -22,6 +22,7 @@ import {
   startErrorText,
   type ScreenInputs,
 } from "./registration";
+import { INSTANT_COPY } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
 import { COPY, heldWithBoth } from "./status";
 import { t } from "../i18n";
@@ -246,6 +247,35 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(namedModel("bob", { kind: "registered" }, I.date)).toMatchObject({ kind: "done", title: "Welcome to DashPay, @bob" });
     expect(namedModel("bob", { kind: "contestStarted", endsAt: 5 }, I.date)).toMatchObject({ kind: "voting", lines: [REG_COPY.voting.message("bob"), "Results on day 5."] });
     expect(namedModel("bob", { kind: "contestStarted", endsAt: null }, I.date).lines[1]).toBe(COPY.voting.notify);
+  });
+});
+
+describe("R11 with an instant username beside the vote (D4 reversed)", () => {
+  const contested = row({ phase: "contested", waiting: null, identity: "A", temporaryLabel: "alice2", contestEndsAt: 9 });
+
+  it("registered: iOS's success line", () => {
+    const m = screenModel(contested, { ...I, temporary: "owned" });
+    expect(m.lines).toEqual([REG_COPY.voting.message("alice"), "Results on day 9.", INSTANT_COPY.success("alice2", "alice")]);
+    expect(m.actions.map((a) => a.kind)).toEqual(["done", "votingInfo"]);
+  });
+
+  it("refused: its failure line, Try again first", () => {
+    const m = screenModel(contested, { ...I, temporary: "failed" });
+    expect(m.lines.at(-1)).toBe(INSTANT_COPY.failure("alice2"));
+    expect(m.actions.map((a) => a.kind)).toEqual(["instantRetry", "done", "votingInfo"]);
+    expect(m.actions[0].label).toBe("Try again");
+    // A done row whose contest is open says the same.
+    expect(screenModel({ ...contested, phase: "done" }, { ...I, contestPending: true, temporary: "failed" }).actions[0].kind).toBe("instantRetry");
+  });
+
+  it("not known yet, or none asked: neither line", () => {
+    expect(screenModel(contested, { ...I, temporary: null }).lines).toHaveLength(2);
+    expect(screenModel({ ...contested, temporaryLabel: null }, { ...I, temporary: "failed" }).lines).toHaveLength(2);
+  });
+
+  it("D13: an instant username from credits while a vote runs says iOS's success line", () => {
+    expect(namedModel("alice2", { kind: "registered" }, I.date, "alice").lines.at(-1)).toBe(INSTANT_COPY.success("alice2", "alice"));
+    expect(namedModel("alice2", { kind: "registered" }, I.date).lines.join(" ")).not.toContain("reachable");
   });
 });
 

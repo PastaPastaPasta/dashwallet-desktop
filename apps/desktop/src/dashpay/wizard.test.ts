@@ -488,3 +488,105 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     expect(wiz.request(platformQuote).funding.kind).toBe("invitation");
   });
 });
+
+describe("the instant username beside a contested one (D4 reversed)", () => {
+  it("Next on a contested name offers it, over step 1; a plain name goes straight to Confirm", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel(" alice ");
+    wiz.next(true);
+    expect(wiz).toMatchObject({ step: "name", offer: true, label: "alice", temporaryLabel: null });
+    wiz.dismissOffer();
+    expect(wiz).toMatchObject({ step: "name", offer: false });
+    wiz.setLabel("alice-77");
+    wiz.next(false);
+    expect(wiz).toMatchObject({ step: "confirm", offer: false });
+  });
+
+  it("No, thanks: Confirm for the contested name alone, and one start with no temporary name", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    wiz.declineInstant();
+    expect(wiz).toMatchObject({ step: "confirm", offer: false, temporaryLabel: null });
+    await wiz.confirm(quote("alice"));
+    expect(api.startRegistration).toHaveBeenCalledTimes(1);
+    expect(api.startRegistration.mock.calls[0][1]).toEqual(coreRequest("alice"));
+    expect(api.startRegistration.mock.calls[0][1].temporaryLabel).toBeNull();
+  });
+
+  it("Create: the form prefilled, then Confirm, then one start carrying the temporary name", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    wiz.createInstant("alice2");
+    expect(wiz).toMatchObject({ step: "instant", offer: false, temporaryLabel: "alice2" });
+    wiz.setTemporaryLabel(" alice3 ");
+    wiz.confirmInstant();
+    expect(wiz).toMatchObject({ step: "confirm", temporaryLabel: "alice3" });
+    await wiz.confirm(quote("alice"));
+    expect(api.startRegistration).toHaveBeenCalledTimes(1);
+    expect(api.startRegistration.mock.calls[0][1]).toEqual({ ...coreRequest("alice"), temporaryLabel: "alice3" });
+  });
+
+  it("from the Platform balance, the start carries it too", async () => {
+    const { wiz, api } = setup();
+    wiz.begin({ kind: "core" }, "source");
+    wiz.setSource("platform");
+    wiz.pickSource();
+    wiz.setLabel("alice");
+    wiz.next(true);
+    wiz.createInstant("alice2");
+    wiz.confirmInstant();
+    await wiz.confirm(platformQuote);
+    expect(api.startRegistration.mock.calls[0][1]).toMatchObject({ label: "alice", temporaryLabel: "alice2", funding: { kind: "platformAddresses" } });
+  });
+
+  it("Back: Confirm → the form → the name, which drops the temporary name", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    wiz.createInstant("alice2");
+    wiz.confirmInstant();
+    wiz.back();
+    expect(wiz).toMatchObject({ step: "instant", temporaryLabel: "alice2" });
+    wiz.back();
+    expect(wiz).toMatchObject({ step: "name", temporaryLabel: null });
+    // Choosing again starts without one until the offer is taken again.
+    wiz.next(false);
+    expect(wiz.request().temporaryLabel).toBeNull();
+  });
+
+  it("skipped where the identity may own a name or one name is paid for: credits and a claim", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "credits", identity: "ID" });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    expect(wiz).toMatchObject({ step: "confirm", offer: false, temporaryLabel: null });
+    wiz.begin({ kind: "invitation", linkId: "l", contestedAllowed: true, inviter: null });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    expect(wiz).toMatchObject({ step: "confirm", offer: false });
+    expect(wiz.request().temporaryLabel).toBeNull();
+  });
+
+  it("a new wizard forgets the last one's temporary name", () => {
+    const { wiz } = setup();
+    wiz.begin({ kind: "core" });
+    wiz.setLabel("alice");
+    wiz.next(true);
+    wiz.createInstant("alice2");
+    wiz.begin({ kind: "core" });
+    expect(wiz).toMatchObject({ offer: false, temporaryLabel: null, step: "name" });
+  });
+
+  it("F22: a run sent back to Confirm keeps the row's temporary name", async () => {
+    const { wiz } = setup();
+    await wiz.reconfirm(row({ label: "alice", temporaryLabel: "alice2", fundsCommitted: false }));
+    expect(wiz).toMatchObject({ step: "confirm", label: "alice", temporaryLabel: "alice2" });
+    expect(wiz.request().temporaryLabel).toBe("alice2");
+  });
+});

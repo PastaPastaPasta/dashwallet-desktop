@@ -19,7 +19,7 @@ import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShows
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
+import { filterExtra, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
 import { contactName, DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
@@ -35,7 +35,7 @@ const decorateSource = (row: TxRow): RowDecor => {
     title: sourceRowTitle(row),
     ...(party ? { party } : {}),
     tag: SOURCE_TAG[source],
-    ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
+    ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isSettledUnknownRow(row) ? (row.amount === 0 ? { hideAmount: true } : {}) : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
   };
 };
 

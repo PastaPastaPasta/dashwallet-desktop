@@ -23,7 +23,6 @@ import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
-import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -46,7 +45,7 @@ import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -331,12 +330,6 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
-}
-
-/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
-export function fundDuffs(amount: FundAmount): number {
-  if (amount.kind === "duffs") return amount.duffs;
-  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
@@ -1068,6 +1061,27 @@ export const HANDLERS: Handlers = {
         label: r.label,
         coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
       })),
+  // The engine's notices of payments dropped because what they spent was never valid: those whose
+  // coins are back, not dismissed, one per payee, without the fee.
+  dropped_notices: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    return w.rows
+      .filter((r) => r.status.dropped?.cause === "invalidSource" && r.status.dropped.state.kind === "released" && r.category === "sent" && !w.droppedSeen?.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: Math.abs(r.amount) - (r.recordIndex === 0 ? (r.fee ?? 0) : 0),
+        timestamp: r.timestamp,
+        address: r.address,
+        label: r.label,
+        counterparty: r.counterparty ?? null,
+      }));
+  },
+  dismiss_dropped_notices: ({ walletId, txids }, { world }) => {
+    const w = wallet(world, walletId);
+    w.droppedSeen = [...new Set([...(w.droppedSeen ?? []), ...txids])];
+    return null;
+  },
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
@@ -1130,8 +1144,9 @@ export const HANDLERS: Handlers = {
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
+    checkTemporary(request);
     if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
-    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
+    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label, request.temporaryLabel);
     return {
       contested,
       lockDuffs,

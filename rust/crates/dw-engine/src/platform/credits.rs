@@ -176,6 +176,16 @@ pub struct CoreMax {
     pub arriving_duffs: u64,
 }
 
+/// What a Core Max refused below the lock's floor would move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreMaxShort {
+    /// The account's final coins less the lock's fee bound: the figure
+    /// held against the floor.
+    pub duffs: u64,
+    /// As [`CoreMax`]'s: spendable coins of the wallet's other accounts.
+    pub left_duffs: u64,
+}
+
 /// What a withdrawal of `amount` takes and pays out, at the network's
 /// protocol version (`withdrawal.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

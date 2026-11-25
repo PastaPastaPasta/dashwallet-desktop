@@ -21,14 +21,14 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
+import { droppedLine, invalidSourceDetail, recipientOf } from "../history/dropped";
 import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
-import { useT } from "../i18n";
+import { t, useT } from "../i18n";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
-import { t } from "../i18n";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, detailWhat, detailWho, isProblem, rowDate, shownAmount, txIcon } from "../format/tx";
 
@@ -39,6 +39,7 @@ const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "con
  * row reads as InstantSend (the activity row's word for it). A count of confirmations is technical
  * and stays in the folded details. */
 export function statusText(s: TxStatusInfo): string {
+  if (s.dropped) return t("activity.status.droppedLabel");
   switch (s.kind) {
     case "abandoned":
       return "Abandoned";
@@ -350,6 +351,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   // A stamp is history, shown while prices are on, today's price or not; off hides every value.
   const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
   const confirmations = confirmationDetail(d.status);
+  const recipient = row ? recipientOf({ ...row, address: counterparty }) : null;
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
@@ -373,6 +375,13 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             {statusText(d.status)}
           </span>
         </div>
+        {d.status.dropped && (
+          <p className="tx-detail-dropped" data-testid="tx-detail-dropped">
+            {invalidSourceDetail(d.status.dropped) && recipient && amount < 0
+              ? t("activity.invalidSource.detail", { recipient })
+              : droppedLine(d.status.dropped)}
+          </p>
+        )}
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
