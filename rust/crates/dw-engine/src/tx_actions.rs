@@ -2005,9 +2005,10 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
         txids: &BTreeSet<Txid>,
-        core: &ManagedWalletInfo,
+        info: &platform_wallet::PlatformWalletInfo,
     ) -> Result<BTreeSet<Txid>, EngineError> {
-        let spends: HashSet<Txid> = (core.accounts.all_accounts().into_iter())
+        let owned = crate::history_ops::owned_scripts(info);
+        let spends: HashSet<Txid> = (info.core_wallet.accounts.all_accounts().into_iter())
             .filter(|a| !a.managed_account_type().is_contact_owned())
             .flat_map(|a| a.transactions().iter())
             .filter(|(t, r)| txids.contains(*t) && !r.input_details.is_empty())
@@ -2017,7 +2018,15 @@ impl NetworkSession {
             (txids.iter().copied()).partition(|t| {
                 spends.contains(t)
                     || (self.hub.history).read_wallet(&wallet, |h| {
-                        h.txs.get(t).is_some_and(|e| !e.own_inputs.is_empty())
+                        // Activity's Resend counts an input whose funding
+                        // entry pays the wallet, so this does too.
+                        let own = |i: &dashcore::TxIn| {
+                            let prev = Some(&i.previous_output);
+                            crate::history::resolve_own_input(None, prev, &h.txs, &owned).is_some()
+                        };
+                        h.txs
+                            .get(t)
+                            .is_some_and(|e| !e.own_inputs.is_empty() || e.tx.input.iter().any(own))
                             || h.drop_inputs.get(t).is_some_and(|i| !i.is_empty())
                     })
             });
@@ -2401,7 +2410,7 @@ impl NetworkSession {
             // marked transaction this wallet sent is sent again by
             // dash-spv's rebroadcast timer. One this abandon then fails is
             // rebroadcast again only after a resend of it lifts the stop.
-            for t in self.sent_by(wallet, &planned, &info.core_wallet).await? {
+            for t in self.sent_by(wallet, &planned, info).await? {
                 self.stop_rebroadcast(manager, wallet, t).await;
             }
             // A drop of what can never confirm is recorded with the marks,

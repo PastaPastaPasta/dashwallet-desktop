@@ -2825,6 +2825,51 @@ fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
     assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
 }
 
+/// A pending payment the history holds that spends the wallet's coin,
+/// with no input of it named and no sent mark (another device's payment,
+/// read back after a restart with none of its inputs): Activity's Resend
+/// sends it, as it counts an input whose funding entry pays the wallet, so
+/// its Abandon stops dash-spv sending it again.
+#[test]
+fn abandoning_a_resent_payment_known_by_its_funding_stops_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let mut p = super::own_spend_disk_tests::foreign();
+    p.input = vec![dashcore::TxIn {
+        previous_output: OutPoint::new(paid.txid(), 0),
+        ..Default::default()
+    }];
+    let entry = crate::history::TxEntry {
+        tx: p.clone(),
+        context: key_wallet::transaction_checking::TransactionContext::Mempool,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: BTreeMap::new(),
+        abandoned: false,
+    };
+    (session.hub.history).with_wallet(id, |h| h.txs.insert(p.txid(), entry));
+    start_offline_spv(&engine, &session);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected {
+            address: "127.0.0.1:9".parse().unwrap(),
+        },
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    engine
+        .block_on(session.resend_transaction(id, p.txid()))
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [p.txid()], "not resent");
+
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
+    let abandoned = try_abandon(&engine, &session, id, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    let stopped: Vec<Txid> = (session.hub.stopped_rebroadcasts.lock().unwrap().iter())
+        .map(|(t, _)| *t)
+        .collect();
+    assert_eq!(stopped, [p.txid()], "the resent payment keeps being sent");
+}
+
 /// An abandon whose sent-mark read fails stops nothing and marks nothing:
 /// the transaction may be another loaded wallet's payment, whose retries
 /// the client shares.
