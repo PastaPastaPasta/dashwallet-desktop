@@ -3684,6 +3684,8 @@ fn swept_while_another_wallet_opens(
         session.hub.deferred_drop_wallets().contains(&id)
     });
     assert!(live_in_history(&session, id, c.txid()), "C waits");
+    // No drop is part-way through its take when the chain changes.
+    drops_done(&engine, &session);
     meanwhile(&engine, &session, id);
     pause.release.notify_one();
     engine.block_on(opening).unwrap().unwrap();
