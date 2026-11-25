@@ -9,7 +9,7 @@ identities pinned in this repository, attests the result and publishes the candi
 password goes into GitHub Actions, and no agent handles any of them.
 
 Candidates stay keyless by default. A candidate takes the signed path only when the repository variable
-`DW_SIGN_RC=1` is set **before its tag is pushed**. Without it, the tag publishes the 8 keyless assets at once, as
+`DW_SIGN_RC` is set to exactly `1` **before its tag is pushed** (`true` or `yes` mean keyless). Without it, the tag publishes the 8 keyless assets at once, as
 before.
 
 The examples use `v1.0.0-rc.1`. Substitute the real tag everywhere.
@@ -60,8 +60,10 @@ lands by pull request before the tag.
       `docs/release/windows-ca.pem` holds the Windows CA root and intermediates.
 - [ ] **Release notes.** `docs/release/1.0.0-notes.md` says candidates are unsigned ("Release candidates are not
       notarized on macOS and not code-signed on Windows", and its release-owner header). For a signed candidate,
-      switch Known limitations, Install and Verify to the signed wording (the "Final tag" comments in that file) in
-      the same notes pull request. `release-publish.sh` uses that file as the body of every `v1.0.0-rc.N`.
+      switch Known limitations, Files (add `SHA256SUMS.asc`), Install and Verify to the signed wording (the
+      "Final tag" comments in that file) in the same notes pull request, but carry over nothing about `latest.json`
+      or in-app updates: a candidate has no feed. `release-publish.sh` uses that file as the body of every
+      `v1.0.0-rc.N`.
 
 Once, in GitHub (the signer, with admin rights on the repository):
 
@@ -84,7 +86,7 @@ Once, in GitHub (the signer, with admin rights on the repository):
 xcode-select -p                     # expect /Applications/Xcode.app/... or /Library/Developer/CommandLineTools
 xcode-select --install              # only if the line above failed (codesign, notarytool, stapler, hdiutil)
 brew install osslsigncode libp11 yubico-piv-tool ykman opensc gnupg gh jq
-osslsigncode --version              # expect 2.9 or newer, "using: OpenSSL 3.x/4.x"
+osslsigncode --version              # expect 2.14 or newer, "using: OpenSSL 3.x/4.x"
 gh auth status                      # expect "Logged in to github.com" (read access is enough to fetch; the
                                     # dispatch in step 6 needs Actions write)
 git clone https://github.com/PastaPastaPasta/dashwallet-desktop ~/src/dashwallet-desktop
@@ -108,7 +110,7 @@ app-specific password and it stays out of shell history:
 
 ```sh
 xcrun notarytool store-credentials dash-notary --apple-id "<Apple ID of the Dash Core developer account>" --team-id "<TEAM_ID>"
-# expect: "Validating your credentials..."  then  "Success. Credentials saved to Keychain."
+# expect: "Validating your credentials...", "Success. Credentials validated." and "Credentials saved to Keychain."
 xcrun notarytool history --keychain-profile dash-notary
 # expect: a table of past submissions, or "No submission history." (either proves the profile works)
 ```
@@ -123,8 +125,8 @@ ykman list                          # expect one line: "YubiKey 5 ... Serial: <n
 ykman piv info
 ```
 
-Expected `ykman piv info` output: `PIV version`, `PIN tries remaining`, and a `Slot 9C` (Digital Signature) or
-`Slot 9A` (Authentication) section whose `Subject DN` is Dash Core's code-signing subject and whose `Issuer DN` is
+Expected `ykman piv info` output: `PIV version`, `PIN tries remaining`, and a `Slot 9C (SIGNATURE)` or
+`Slot 9A (AUTHENTICATION)` section whose `Subject DN` is Dash Core's code-signing subject and whose `Issuer DN` is
 its CA. Note which slot holds it. Check the certificate and compute its pinned hash:
 
 ```sh
@@ -140,7 +142,7 @@ Find the PKCS#11 module and provider paths, and the object ID that `sign-windows
 ```sh
 export YKCS11="$(brew --prefix yubico-piv-tool)/lib/libykcs11.dylib"
 export PKCS11PROV="$(brew --prefix libp11)/lib/ossl-modules/pkcs11prov.dylib"
-ls -l "$YKCS11" "$PKCS11PROV"       # both must exist (sign-windows.sh finds the provider by itself)
+ls -l "$YKCS11" "$PKCS11PROV"       # both must exist (pkcs11prov may end in .so; sign-windows.sh finds either)
 pkcs11-tool --module "$YKCS11" --list-slots
 # expect: "Slot 0 (0x0): Yubico YubiKey ..." and "token label : YubiKey PIV #<serial>"
 pkcs11-tool --module "$YKCS11" --list-objects --type cert
@@ -149,6 +151,12 @@ pkcs11-tool --module "$YKCS11" --list-objects --type cert
 
 libykcs11 maps PIV slots to IDs as follows: `9a` → `01`, `9c` → `02`, `9d` → `03`, `9e` → `04`. For slot `9c` the URIs
 are `pkcs11:id=%02;type=cert` and `pkcs11:id=%02;type=private`.
+
+libykcs11 can also list a "PIV Attestation" certificate for the slot. Check how many certificates carry the ID:
+`pkcs11-tool --module "$YKCS11" --list-objects --type cert` should show exactly one with `ID: 02`. If it shows more,
+pin the code-signing certificate by its label as well, using the `label:` that `pkcs11-tool` printed (URL-encoded),
+for example `pkcs11:id=%02;object=X.509%20Certificate%20for%20Digital%20Signature;type=cert`. A wrong certificate
+fails closed later, in `osslsigncode verify` and in the pinned leaf hash, but it costs a signing round.
 
 Save the CA's intermediate certificates (PEM) next to your other signing material, for example
 `~/certs/dashcore-win-chain.pem`, and check what it contains:
@@ -195,7 +203,8 @@ build job and one macOS script-test job; macOS runners are scarce, so don't re-r
 ```sh
 git checkout --detach "$TAG"
 export TAG_SHA=$(git rev-parse "$TAG^{commit}")
-export RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --branch "$TAG" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
+RUN_ID=; until [[ -n "$RUN_ID" ]]; do sleep 10; RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --branch "$TAG" --event push --json databaseId,headSha --jq ".[] | select(.headSha == \"$TAG_SHA\") | .databaseId" | head -n 1); done
+export RUN_ID && echo "RUN_ID=$RUN_ID"
 gh run watch "$RUN_ID" --repo "$REPO" --exit-status
 ```
 
@@ -210,6 +219,19 @@ found`). The run has two artifacts, and every file in them is attested by `relea
 
 If the release appeared at once with 8 keyless assets, `DW_SIGN_RC` was not `1` when the run started. That
 candidate stays keyless (never re-push a tag). Set the variable and cut `-rc.2`.
+
+### Fallback: publish the waiting candidate keyless
+
+The candidate waits, unpublished, until step 6 succeeds. If signing can't finish in time (identities not on
+`main` at the tag, a YubiKey or notarization problem), either:
+
+- publish this tag keyless: `gh variable delete DW_SIGN_RC --repo "$REPO"`, then in the tag's Release run use
+  **Re-run all jobs** (`gh run rerun "$RUN_ID" --repo "$REPO"`). `decide` reads the variable again, and the run
+  rebuilds and publishes the 8 keyless assets. It costs a full rebuild, including one macOS job; or
+- cut the next candidate: leave this tag unpublished and push `-rc.N+1`, with or without the variable.
+
+The pinned identities and scripts come from the tagged commit, so a fix merged after the tag never helps that
+tag: it needs a new candidate.
 
 ## 4. Sign each artifact on the Mac
 
@@ -331,7 +353,8 @@ sha256sum -c SHA256SUMS             # every line OK (macOS: shasum -a 256 -c SHA
 ### 4.5 Updater feed: skipped for a candidate
 
 Don't run `sign-updater.sh`: it refuses `-rc.N`, and the candidate publishes no `latest.json` (see the top of this
-file). `$SIGS` must have no `updater/` directory: `release-attach.sh` refuses a candidate that has one.
+file). `$SIGS` must have no `updater/` directory, even an empty one: `release-attach.sh` refuses a candidate that has
+one.
 
 ## 5. Store the detached signatures
 
@@ -377,7 +400,8 @@ Rehearse first (`dry_run=true`). It runs every verification on `macos-15` and st
 gh workflow run release-publish-signed.yml --repo "$REPO" --ref "$TAG" \
   -f tag="$TAG" -f release_run_id="$RUN_ID" \
   -f sigs_repo=PastaPastaPasta/dashwallet-detached-sigs -f sigs_ref="$SIGS_COMMIT" -f dry_run=true
-gh run watch "$(gh run list --repo "$REPO" --workflow release-publish-signed.yml --limit 1 --json databaseId --jq '.[0].databaseId')" --repo "$REPO" --exit-status
+sleep 15; gh run list --repo "$REPO" --workflow release-publish-signed.yml --event workflow_dispatch --limit 3
+gh run watch "<the newest run's ID from the list above>" --repo "$REPO" --exit-status
 ```
 
 Approve the `release` environment when GitHub asks. A green rehearsal ends with the notice
@@ -417,6 +441,7 @@ for f in *; do
 done
 curl -fsSLO https://raw.githubusercontent.com/PastaPastaPasta/dashwallet-desktop/v1.0.0-rc.1/docs/release/release-key.asc
 gpg --import release-key.asc && gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c SHA256SUMS
+# macOS: shasum -a 256 -c SHA256SUMS
 ```
 
 Then run the macOS (4.2) and Windows (4.3) verification commands on the downloaded `.dmg` and `.exe`, and the

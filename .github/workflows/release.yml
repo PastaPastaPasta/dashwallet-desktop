@@ -608,7 +608,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/unsigned-attest"
           cp "$RUNNER_TEMP/release"/* "$RUNNER_TEMP/unsigned-macos"/* "$RUNNER_TEMP/unsigned-attest/"
           echo "WAIT_FOR_SIGS=1" >> "$GITHUB_ENV"
-          echo "::notice::Tag v$VERSION holds unsigned binaries until detached signatures are attached (fail closed). Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md, RC-SIGNING.md for a candidate), or set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned stable override."
+          echo "::notice::Tag v$VERSION holds unsigned binaries until detached signatures are attached (fail closed). Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md; a candidate: RC-SIGNING.md, whose fallback section publishes it keyless instead), or set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned stable override."
       - name: Attest unsigned build inputs (for local verification before signing)
         if: ${{ env.WAIT_FOR_SIGS == '1' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

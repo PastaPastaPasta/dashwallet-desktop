@@ -38,7 +38,7 @@
 #   SHA256SUMS.asc                                         # detached armored PGP signature over SHA256SUMS
 #
 # A release candidate (--version X.Y.Z-rc.N, docs/release/RC-SIGNING.md) has no updater feed: no
-# updater/latest.json (refused if present), no .app.tar.gz, and SHA256SUMS lists the 7 bundles and SBOMs.
+# updater/ directory (refused if present), no .app.tar.gz, and SHA256SUMS lists the 7 bundles and SBOMs.
 set -euo pipefail
 umask 022
 
@@ -292,7 +292,7 @@ cp "$signed_dmg" "$dist_out/$dmg_name"
 # 6. Updater feed: verify all 4 exact URLs and minisign signatures against tauri.conf.json pubkey and version.
 latest_src="$sigs_dir/updater/latest.json"
 if ((rc)); then
-  [[ ! -e "$latest_src" ]] || die "$latest_src on release candidate $version: a candidate publishes no updater feed"
+  [[ ! -e "$sigs_dir/updater" ]] || die "$sigs_dir/updater on release candidate $version: a candidate publishes no updater feed"
 else
   [[ -s "$latest_src" ]] || die "missing $latest_src"
   cp "$latest_src" "$feed_out/latest.json"
@@ -318,24 +318,15 @@ expected_names=(
   "dash-wallet-$version-linux-amd64.deb"
   "dash-wallet-$version-linux-x86_64.AppImage"
   "dash-wallet-$version-linux-x86_64.flatpak"
-  "dash-wallet-$version-macos-universal.app.tar.gz"
+)
+((rc)) || expected_names+=("dash-wallet-$version-macos-universal.app.tar.gz")
+expected_names+=(
   "dash-wallet-$version-macos-universal.dmg"
   "dash-wallet-$version-sbom-npm.cdx.json"
   "dash-wallet-$version-sbom-rust.cdx.json"
   "dash-wallet-$version-windows-x64-setup.exe"
-  "latest.json"
 )
-if ((rc)); then
-  expected_names=(
-    "dash-wallet-$version-linux-amd64.deb"
-    "dash-wallet-$version-linux-x86_64.AppImage"
-    "dash-wallet-$version-linux-x86_64.flatpak"
-    "dash-wallet-$version-macos-universal.dmg"
-    "dash-wallet-$version-sbom-npm.cdx.json"
-    "dash-wallet-$version-sbom-rust.cdx.json"
-    "dash-wallet-$version-windows-x64-setup.exe"
-  )
-fi
+((rc)) || expected_names+=("latest.json")
 actual_names=()
 while IFS= read -r fname; do
   [[ -n "$fname" ]] && actual_names+=("$fname")

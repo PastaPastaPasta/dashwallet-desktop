@@ -1591,19 +1591,8 @@ PY
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-badsums" --out-dir "$e2e/attached-badsums"
 
   # Signed release candidate (docs/release/RC-SIGNING.md): attach, verify and publish a candidate with no updater feed
-  rc_attach_base=(
-    --version 0.1.0-rc.1
-    --unsigned-dir "$e2e/rc-unsigned"
-    --sigs-dir "$e2e/rc-sigs"
-    --signed-dmg "$e2e/work/dash-wallet-0.1.0-rc.1-macos-universal.dmg"
-    --repo o/r
-    --tauri-conf "$e2e/work/tauri.conf.json"
-    --identities-file "$e2e/work/identities.json"
-    --pgp-pubkey "$e2e/work/release-key.asc"
-    --win-ca-file "$e2e/work/win.crt"
-    --skip-win-chain-verify
-  )
-  [[ "$(uname -s)" == Darwin ]] || rc_attach_base+=(--allow-non-darwin)
+  rc_attach_base=("${attach_base[@]}" --version 0.1.0-rc.1 --unsigned-dir "$e2e/rc-unsigned"
+    --sigs-dir "$e2e/rc-sigs" --signed-dmg "$e2e/work/dash-wallet-0.1.0-rc.1-macos-universal.dmg")
   rc_attach_rc=0
   PATH="$attach_path" "$here/release-attach.sh" "${rc_attach_base[@]}" --out-dir "$e2e/rc-attached" > "$e2e/rc-attach.out" 2>&1 || rc_attach_rc=$?
   check "signed RC: release-attach verifies the candidate's Windows+macOS sigs and PGP over 7 files; 9-file manifest, empty feed" \
@@ -1615,9 +1604,9 @@ PY
   check "signed RC: release-attach -> release-publish (signed dispatch) publishes the 9 verified assets as a prerelease" \
     '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 9 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "/attest/SHA256SUMS.asc" && ! log_has "latest.json"'
   cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-feed"
-  mkdir -p "$e2e/rc-sigs-feed/updater" && cp "$e2e/sigs/updater/latest.json" "$e2e/rc-sigs-feed/updater/"
+  mkdir -p "$e2e/rc-sigs-feed/updater"
   expect_attach_fail \
-    "signed RC: release-attach refuses a candidate whose signatures carry an updater feed" \
+    "signed RC: release-attach refuses a candidate whose signatures carry an updater/ directory, even an empty one" \
     "publishes no updater feed" "$e2e/rc-attach-feed.out" \
     "${rc_attach_base[@]}" --sigs-dir "$e2e/rc-sigs-feed" --out-dir "$e2e/rc-attached-feed"
   cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-stablesums"
@@ -1829,6 +1818,7 @@ required_env = {
     "DW_ALLOW_UNSIGNED_STABLE": "${{ vars.DW_ALLOW_UNSIGNED_STABLE }}",
     "DW_SIGNING_REQUIRED": "${{ vars.DW_SIGNING_REQUIRED }}",
     "DW_UPDATER_REQUIRED": "${{ vars.DW_UPDATER_REQUIRED }}",
+    "DW_SIGN_RC": "${{ vars.DW_SIGN_RC }}",
 }
 found = set()
 for step in steps:
@@ -1849,8 +1839,17 @@ for step in steps:
                 if got_v != want_v:
                     raise SystemExit(f"release.yml publish/{label} step env missing {k}: {want_v} (got {got_v!r})")
 assert found == set(want_steps), f"did not find all release-publish.sh steps: {found}"
+# A signed candidate: decide reads DW_SIGN_RC and outputs detached; every signing-input and wait step keys on it,
+# and only signed_stable embeds the updater endpoint.
+d = re.search(r"(?m)^  decide:\n([\s\S]*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text)
+assert d and "DW_SIGN_RC: ${{ vars.DW_SIGN_RC }}" in d.group(1), "decide step does not pass DW_SIGN_RC"
+assert "detached: ${{ steps.kind.outputs.detached }}" in d.group(1), "decide does not output detached"
+gated = re.findall(r"if: \$\{\{ needs\.decide\.outputs\.(\w+) == 'true' \}\}", text)
+assert gated and set(gated) == {"detached"} and len(gated) == 7, f"signing-input/wait steps must key on detached: {gated}"
+upd = re.findall(r"DW_ENABLE_UPDATER: \$\{\{ needs\.decide\.outputs\.(\w+) == 'true'", text)
+assert upd == ["signed_stable"] * 3, f"DW_ENABLE_UPDATER must follow signed_stable on all three builds: {upd}"
 PY
-check "r4688012522: release.yml publish job maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, and DW_ALLOW_UNSIGNED_STABLE on both prepare and publish steps" \
+check "r4688012522: release.yml maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, DW_ALLOW_UNSIGNED_STABLE and DW_SIGN_RC on prepare and publish, passes DW_SIGN_RC to decide, gates signing inputs on detached and the updater on signed_stable" \
   '[[ $wiring_rc -eq 0 ]]'
 if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
 

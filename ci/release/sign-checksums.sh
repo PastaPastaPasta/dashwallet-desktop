@@ -87,16 +87,17 @@ feed_names=(
   "dash-wallet-$version-macos-universal.app.tar.gz"
   "latest.json"
 )
-((!rc)) || feed_names=()
 
 for name in "${dist_names[@]}"; do
   [[ -f "$dist_dir/$name" ]] || die "missing $dist_dir/$name"
   sha256_line "$dist_dir" "$name" >> "$sums"
 done
-for name in ${feed_names[@]+"${feed_names[@]}"}; do
-  [[ -f "$feed_dir/$name" ]] || die "missing $feed_dir/$name"
-  sha256_line "$feed_dir" "$name" >> "$sums"
-done
+if ((!rc)); then
+  for name in "${feed_names[@]}"; do
+    [[ -f "$feed_dir/$name" ]] || die "missing $feed_dir/$name"
+    sha256_line "$feed_dir" "$name" >> "$sums"
+  done
+fi
 LC_ALL=C sort -k2 "$sums" -o "$sums"
 
 rm -f "$asc"

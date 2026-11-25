@@ -179,19 +179,19 @@ fi
 # DW_SIGN_RC=1 opted candidates in; main/continuous are never required to be signed.
 require_signed=0
 rc_tag=0
+signed_n=11
 if [[ "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   if ((signed_dispatch)) || [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
     require_signed=1
   fi
 elif [[ "$kind" == tag ]]; then
+  # A signed candidate has no updater feed (latest.json, .app.tar.gz): 9 files instead of 11.
   rc_tag=1
+  signed_n=9
   if ((signed_dispatch)) || [[ "${DW_SIGN_RC:-}" == 1 ]]; then
     require_signed=1
   fi
 fi
-# A signed stable release has 11 files; a signed candidate has no updater feed (latest.json, .app.tar.gz).
-signed_n=11
-((!rc_tag)) || signed_n=9
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
