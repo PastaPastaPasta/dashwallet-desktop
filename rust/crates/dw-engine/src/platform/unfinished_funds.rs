@@ -195,7 +195,11 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         let duffs = fund::minimum_duffs(rules);
         Some(Minimum {
             duffs,
-            code: CreditsError::BelowMinimum { min: duffs }.code(),
+            code: CreditsError::BelowMinimum {
+                min: duffs,
+                max: None,
+            }
+            .code(),
         })
     }
 
