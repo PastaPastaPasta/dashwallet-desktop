@@ -825,6 +825,79 @@ fn a_balance_below_the_fees_is_refused() {
     ));
 }
 
+/// Platform-wallet picks the key a contact request is encrypted to by
+/// purpose and id, not bounds: an app key of a DashPay purpose the identity
+/// has no DashPay key for would become its contact key. No such key is added,
+/// none on the DashPay contract either, and the sign-in still finishes.
+#[test]
+fn an_app_key_never_stands_in_for_a_dashpay_key() {
+    fn other_contract(k: &mut IdentityPublicKey) {
+        if let IdentityPublicKey::V0(v) = k {
+            v.contract_bounds = Some(ContractBounds::SingleContract { id: id(77) });
+        }
+    }
+    let cases: [(&str, EncPurpose, Identifier, fn(&mut Identity)); 4] = [
+        ("no DECRYPTION key", EncPurpose::Decryption, app(), |me| {
+            me.public_keys_mut()
+                .retain(|_, k| k.purpose() != Purpose::DECRYPTION);
+        }),
+        (
+            "ENCRYPTION key on another contract",
+            EncPurpose::Encryption,
+            app(),
+            |me| {
+                for k in me.public_keys_mut().values_mut() {
+                    if k.purpose() == Purpose::ENCRYPTION {
+                        other_contract(k);
+                    }
+                }
+            },
+        ),
+        (
+            "disabled ENCRYPTION key",
+            EncPurpose::Encryption,
+            app(),
+            |me| {
+                for k in me.public_keys_mut().values_mut() {
+                    if k.purpose() == Purpose::ENCRYPTION {
+                        k.set_disabled_at(1);
+                    }
+                }
+            },
+        ),
+        (
+            "the DashPay contract",
+            EncPurpose::Encryption,
+            dashpay_contract::ID,
+            |_| {},
+        ),
+    ];
+    for (case, purpose, contract, edit) in cases {
+        let f = Fixture::new();
+        edit(f.net.identities.lock().unwrap().get_mut(&id(ME)).unwrap());
+        let mut r = request();
+        r.app_id = contract.to_buffer();
+        r.enc_bindings = vec![EncBinding {
+            contract: contract.to_buffer(),
+            purpose,
+        }];
+        let l = devnet(r);
+        let grant = f.quoted_grant(&l, &Fixture::choice());
+        f.approve(&l, &Fixture::choice(), &grant).unwrap();
+        let updates = f.net.updates.lock().unwrap().clone();
+        assert!(
+            updates[0]
+                .0
+                .iter()
+                .all(|k| k.purpose() == Purpose::AUTHENTICATION),
+            "{case}: {:?}",
+            updates[0].0
+        );
+        let records = f.engine.block_on(records(&f.s, f.wallet)).unwrap();
+        assert!(records[0].encryption_keys.is_empty(), "{case}");
+    }
+}
+
 #[test]
 fn an_existing_encryption_key_is_shared_not_registered() {
     let f = Fixture::new();

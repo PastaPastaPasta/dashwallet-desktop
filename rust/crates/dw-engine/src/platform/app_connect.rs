@@ -24,6 +24,7 @@ use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, Securi
 use dpp::platform_value::BinaryData;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::system_data_contracts::dashpay_contract;
 use dw_uri::connect::{AppConnectRequest, Bounds, ConnectUri, EncPurpose, Level};
 use dw_vault::app_connect::AppKey;
 use dw_vault::{GrantKind, GrantPurpose, SignerError, SignerScope, VaultSigner};
@@ -39,7 +40,7 @@ use super::dashpay::DashPay;
 use super::errors::{ConnectError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind};
 use super::identity_writes::identity_locks;
-use super::keys_policy::key_path;
+use super::keys_policy::{key_path, missing_dashpay_purposes};
 use super::lease::session::HeldKey;
 use super::lease::{Lease, SignatureCount};
 use super::requests::{leased, write_permit};
@@ -726,6 +727,9 @@ fn contract_keys(
     })
 }
 
+/// What each encryption binding gets. No app key goes on the DashPay contract
+/// or becomes the identity's only key of a DashPay purpose: platform-wallet
+/// picks contact-request keys by purpose and id, not by bounds.
 async fn encryption_plans(
     net: &impl ConnectNet,
     request: &AppConnectRequest,
@@ -741,6 +745,7 @@ async fn encryption_plans(
         let current =
             current.and_then(|id| identity.public_keys().get(&id).filter(|k| !k.is_disabled()));
         out.push(match current {
+            _ if contract == dashpay_contract::ID => EncPlan::Omit,
             Some(key) => match key.key_type() {
                 KeyType::ECDSA_SECP256K1 => EncPlan::Share {
                     key_id: key.id(),
@@ -748,7 +753,11 @@ async fn encryption_plans(
                 },
                 _ => EncPlan::Omit,
             },
-            None if contract_keys(identity, contract, purpose).next().is_some() => EncPlan::Omit,
+            None if contract_keys(identity, contract, purpose).next().is_some()
+                || missing_dashpay_purposes(identity.public_keys().values()).contains(&purpose) =>
+            {
+                EncPlan::Omit
+            }
             None => EncPlan::Register,
         });
     }

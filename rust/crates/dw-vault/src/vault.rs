@@ -3768,6 +3768,42 @@ mod tests {
         assert_eq!(*seen.borrow(), Some(Ok(())));
     }
 
+    /// App Connect needs the passphrase even with a valid quick unlock in
+    /// range: the keys it hands out carry more than its fee.
+    #[test]
+    fn app_connect_never_takes_a_quick_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        let key = v.enroll_quick_unlock(&change.id).unwrap();
+        let connect = GrantPurpose::AppConnect {
+            max_credits: 1_000,
+            request: [1; 20],
+            plan: [2; 32],
+        };
+        let wallet = Some(&[1; 32]);
+        assert!(matches!(
+            v.authorize(connect, wallet, Credential::QuickUnlock(&key)),
+            Err(VaultError::CredentialRequired)
+        ));
+        let spend = GrantPurpose::Spend { max_duffs: 1 };
+        assert!(
+            v.authorize(spend, wallet, Credential::QuickUnlock(&key))
+                .is_ok()
+        );
+        assert!(
+            v.authorize(connect, wallet, Credential::Passphrase(pw))
+                .is_ok()
+        );
+    }
+
     /// A lower limit whose write fails (here after the new file reached the
     /// disk) keeps the limit in memory and still ends the window.
     #[test]

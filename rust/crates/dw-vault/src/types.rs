@@ -234,7 +234,9 @@ impl GrantPurpose {
     /// for `PlatformOp`; `ceil(max_credits / CREDITS_PER_DUFF)` for
     /// `MasternodeWithdraw`, as `PlatformOp`'s credits count (MG-13 P12);
     /// 0 for `SignMessage` and `Governance` (MG-05 D2);
-    /// `None` for a purpose quick unlock never issues.
+    /// `None` for a purpose quick unlock never issues, `AppConnect` among
+    /// them: its keys spend credits and tokens its `max_credits` doesn't
+    /// count.
     /// Saturates at `u64::MAX`, which is above every spending limit.
     pub fn quick_unlock_value(&self) -> Option<u64> {
         match *self {
@@ -245,10 +247,10 @@ impl GrantPurpose {
                 max_duffs,
                 max_credits,
             } => Some(max_duffs.saturating_add(max_credits.div_ceil(CREDITS_PER_DUFF))),
-            GrantPurpose::MasternodeWithdraw { max_credits, .. }
-            | GrantPurpose::AppConnect { max_credits, .. } => {
+            GrantPurpose::MasternodeWithdraw { max_credits, .. } => {
                 Some(max_credits.div_ceil(CREDITS_PER_DUFF))
             }
+            GrantPurpose::AppConnect { .. } => None,
             GrantPurpose::SignMessage | GrantPurpose::Governance => Some(0),
             _ => None,
         }
