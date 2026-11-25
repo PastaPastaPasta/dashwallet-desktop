@@ -68,6 +68,7 @@ export const shell = {
       /** Shielded's first scan; `percent` is formatted. */
       scan: "{percent} scanned",
       unlock: "Unlock to sync",
+      unlockFully: "Unlock fully to sync",
       watchOnly: "Not available in a watch-only wallet",
       platformIncomplete: "Didn't finish. It tries again the next time you start Dash Wallet.",
       /** A failed Shielded or Platform-address pass: the next one retries it. */
