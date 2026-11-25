@@ -456,7 +456,7 @@ impl WayOut {
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.wayOut.damaged",
-                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
             ),
         }
     }
