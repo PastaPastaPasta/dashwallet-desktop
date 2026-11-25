@@ -166,6 +166,8 @@ export function creditsDash(credits: bigint): string {
   return frac ? `${credits / CREDITS_PER_DASH}.${frac}` : String(credits / CREDITS_PER_DASH);
 }
 /** The funding limit the quote writes to Platform: its keys' budgets together. */
+const planOf = (quote: ConnectQuote | null) => (quote?.grant.kind === "appConnect" ? quote.grant.plan : null);
+
 export const quotedLimit = (quote: ConnectQuote) => creditsDash(quote.budgets.reduce((sum, b) => sum + BigInt(b), 0n));
 
 /** Only a CRITICAL key can sign a token transition, and only one bound to a whole contract or a
@@ -332,7 +334,8 @@ export class ConnectFlow extends Model {
     }
   }
 
-  /** Approve: a fresh quote, its grant under the passphrase, then the approval. */
+  /** Approve: a fresh quote, its grant under the passphrase, then the approval. A fresh quote that
+   * read anything other than what the sheet showed reads the request again instead. */
   async approve(): Promise<void> {
     const choice = this.choice();
     if (this.phase !== "sheet" || this.busy || !choice) return;
@@ -343,7 +346,10 @@ export class ConnectFlow extends Model {
     try {
       const quote = await this.api.appConnectQuote(this.walletId, this.linkId, choice);
       if (this.#closed) return;
-      this.quote = quote;
+      if (planOf(quote) !== planOf(this.quote)) {
+        this.busy = false;
+        return this.#reread();
+      }
       const got = await this.grants.withGrant(quote.grant, this.walletId, (g) => {
         this.phase = "approving";
         this.changed();

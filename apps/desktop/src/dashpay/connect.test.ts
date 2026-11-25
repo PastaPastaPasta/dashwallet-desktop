@@ -151,7 +151,7 @@ describe("the flow over the fixture", () => {
     const flow = new ConnectFlow(backend, FIXTURE_WALLET_ID, linkId, returnsTo, closed);
     await flow.load();
     await settle();
-    return { fixture, flow, closed, link: () => fixture.world.connect![linkId] };
+    return { fixture, flow, closed, backend, link: () => fixture.world.connect![linkId] };
   }
 
   async function approve(flow: ConnectFlow) {
@@ -231,6 +231,23 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("sheet");
     expect(flow.planChanged).toBe(true);
     expect(flow.sheet!.bindings).toHaveLength(2);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("an approval whose fresh quote read anything other than the sheet showed reads the request again", async () => {
+    const { flow, backend, link } = await open("ok");
+    const shown = flow.quote!;
+    const real = backend.appConnectQuote;
+    const quote = vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => {
+      const fresh = await real(...args);
+      return { ...fresh, grant: { ...fresh.grant, plan: "b".repeat(64) } } as typeof fresh;
+    });
+    await flow.approve();
+    await settle();
+    expect([flow.phase, flow.planChanged, flow.grants.pending, link().started]).toEqual(["sheet", true, null, false]);
+    await vi.waitFor(() => expect(flow.quote).toEqual(shown));
+    quote.mockRestore();
     await approve(flow);
     expect(flow.phase).toBe("done");
   });
