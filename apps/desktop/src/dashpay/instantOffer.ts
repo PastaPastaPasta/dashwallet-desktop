@@ -4,6 +4,7 @@
 // status.ts or registration.ts, which import it. The form's checks are instantName.ts.
 
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
+import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { spanLong } from "../governance/model";
@@ -63,15 +64,32 @@ export function voteDuration(network: NetworkKind, polls: Readonly<Partial<Recor
 export interface NamesRead {
   startedAt: number;
   identities: IdentitySummary[];
+  /** DPNS's answer for the temporary label, asked once the identities lack it: the engine hides a
+   * label whose write may still be in flight, so only Platform can say it is not the identity's. */
+  temporary?: NameAvailability;
 }
 
 /** `owned`: a names read says the identity owns the temporary name; `failed`: a read started
  * after the row last changed (so after it reached Contested, which is after the temporary name's
- * write) says it does not; `null`: nothing asked for, or no such read yet. A read in flight, one
+ * write) says it does not, and DPNS says the label is free or another identity's; `null`: nothing
+ * asked for, or no such read yet. A read in flight, one
  * started before the row's change, a failed one, or one whose names are not settled says nothing. */
 export type TemporaryOutcome = "owned" | "failed" | null;
 
 export function temporaryOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
+  const names = namesOutcome(row, read);
+  if (names !== "failed") return names;
+  // The names lack it: failed only once DPNS says the label is free or another identity's.
+  const t = read?.temporary;
+  return t?.kind === "available" || (t?.kind === "taken" && t.owner !== null && t.owner !== row?.identity) ? "failed" : null;
+}
+
+/** The names read alone: whether it lacks the temporary name, so DPNS should be asked. */
+export function lacksTemporary(row: RegistrationStatus | undefined, read: NamesRead | undefined): boolean {
+  return namesOutcome(row, read) === "failed";
+}
+
+function namesOutcome(row: RegistrationStatus | undefined, read: NamesRead | undefined): TemporaryOutcome {
   const temp = row?.temporaryLabel;
   if (!row || !temp || !row.identity || (row.phase !== "contested" && row.phase !== "done")) return null;
   const summary = read?.identities.find((s) => s.identity === row.identity);
@@ -79,6 +97,20 @@ export function temporaryOutcome(row: RegistrationStatus | undefined, read: Name
   if (summary.names.some((n) => homographSafe(n) === homographSafe(temp))) return "owned";
   // Whole seconds: the row's time is the engine's (unix seconds, rounded down).
   return Math.floor(read.startedAt / 1000) > row.updatedAt ? "failed" : null;
+}
+
+/** The row's second, once it reached its contest with a temporary name: a names read started in
+ * it says nothing, so the caller reads again once it is over (`rereadAfterSecond`). */
+export function rowSecond(row: RegistrationStatus | undefined): number | null {
+  return row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
+}
+
+/** Schedules one more read when the last one (started at `startedAt`, ms) began in or before
+ * `second` (unix seconds): nothing else reads again once the row stops running. Returns the cancel. */
+export function rereadAfterSecond(second: number | null, startedAt: number | undefined, reread: () => void): (() => void) | undefined {
+  if (second === null || startedAt === undefined || Math.floor(startedAt / 1000) > second) return undefined;
+  const timer = setTimeout(reread, Math.max(0, (second + 1) * 1000 - Date.now()) + 50);
+  return () => clearTimeout(timer);
 }
 
 /** The registration of the contest `label` by `identity` that asked for a temporary name. */
@@ -105,8 +137,9 @@ export interface InstantInputs {
   offered: boolean;
   /** Credits a plain name costs (`grant_request(registerName)`), `null` while unknown. */
   nameCredits: string | null;
-  /** The temporary name the contest's registration asked for, and what became of it. */
-  asked: AskedTemporary | null;
+  /** The temporary name the contest's registration asked for, and what became of it; `undefined`
+   * while the registrations are not read (nothing is offered until they are). */
+  asked: AskedTemporary | null | undefined;
 }
 
 /** The card's instant offer for an open contest whose identity holds no other name. */
@@ -115,14 +148,15 @@ export type InstantOffer =
   | { kind: "create" }
   /** The credits do not cover a name: "Top up". */
   | { kind: "short" }
-  /** The registration's temporary name could not be registered: "Try again" with it. */
-  | { kind: "failed"; label: string }
+  /** The registration's temporary name could not be registered: "Try again" with it, or "Top up"
+   * while the credits do not cover it (`short`). */
+  | { kind: "failed"; label: string; short: boolean }
   /** Nothing to offer (gated off, names unsettled, a temporary name held or not known yet). */
   | null;
 
 export function instantOffer(main: IdentitySummary | undefined, temporary: string | null, i: InstantInputs | undefined): InstantOffer {
-  if (!i?.offered || !main || main.namesUpdating || main.namesCheck !== null || temporary) return null;
-  if (i.asked) return i.asked.outcome === "failed" ? { kind: "failed", label: i.asked.label } : null;
-  if (i.nameCredits !== null && main.balance !== null && BigInt(main.balance) < BigInt(i.nameCredits)) return { kind: "short" };
-  return { kind: "create" };
+  if (!i?.offered || !main || main.namesUpdating || main.namesCheck !== null || temporary || i.asked === undefined) return null;
+  const short = i.nameCredits !== null && main.balance !== null && BigInt(main.balance) < BigInt(i.nameCredits);
+  if (i.asked) return i.asked.outcome === "failed" ? { kind: "failed", label: i.asked.label, short } : null;
+  return short ? { kind: "short" } : { kind: "create" };
 }

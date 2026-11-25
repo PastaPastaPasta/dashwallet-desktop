@@ -99,6 +99,27 @@ describe("AvailabilityChecker: debounced 400 ms, stale answers dropped", () => {
     expect(c.availability).toEqual({ kind: "taken", owner: null });
   });
 
+  it("A, B, then A again waits for a new answer for A instead of reusing the first", async () => {
+    const answers: ((a: NameAvailability) => void)[] = [];
+    const lookup = vi.fn((_: string) => new Promise<NameAvailability>((resolve) => answers.push(resolve)));
+    const c = new AvailabilityChecker(lookup);
+    c.set("alice2");
+    await vi.advanceTimersByTimeAsync(400);
+    answers[0]({ kind: "available", contested: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.pending).toBe(false);
+    c.set("alice3");
+    c.set("alice2");
+    expect(c.availability).toBeUndefined();
+    expect(c.pending).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(c.pending).toBe(true);
+    answers[1]({ kind: "taken", owner: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.availability).toEqual({ kind: "taken", owner: null });
+  });
+
   it("set again after dispose (StrictMode's effect replay) asks again instead of staying pending", async () => {
     const lookup = vi.fn(async (_: string): Promise<NameAvailability> => ({ kind: "available", contested: false }));
     const c = new AvailabilityChecker(lookup);

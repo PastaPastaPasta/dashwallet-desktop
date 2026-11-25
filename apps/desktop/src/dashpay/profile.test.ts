@@ -242,6 +242,11 @@ describe("the request card (IOS-068, AND-071)", () => {
     const failed = requestModel("al", 5, undefined, false, none, date, { ...ON, asked: { label: "al2", outcome: "failed" } });
     expect(failed).toMatchObject({ instant: false, failed: "al2" });
     expect(failed.lines.at(-1)).toBe(INSTANT_COPY.failure("al2"));
+    const failedShort = requestModel("al", 5, undefined, false, alice({ mainName: null, names: [], balance: "5" }), date, { ...ON, asked: { label: "al2", outcome: "failed" } });
+    expect(failedShort).toMatchObject({ instant: false, short: true, failed: null });
+    expect(failedShort.lines.slice(-2)).toEqual([INSTANT_COPY.failure("al2"), "Not enough credits for an instant username."]);
+    // Registrations not read yet: nothing offered.
+    expect(requestModel("al", 5, undefined, false, none, date, { ...ON, asked: undefined })).toMatchObject({ instant: false, short: false, failed: null });
     const owned = requestModel("al", 5, contest({ temporaryName: "al2" }), false, alice({ mainName: "al2", names: ["al2"] }), date, { ...ON, asked: { label: "al2", outcome: "owned" } });
     expect(owned.lines.at(-1)).toBe(INSTANT_COPY.success("al2", "al"));
   });

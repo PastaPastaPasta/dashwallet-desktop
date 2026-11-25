@@ -4,8 +4,9 @@
 
 import { describe, expect, it } from "vitest";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
+import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
-import { contestRow, INSTANT_COPY, instantOffer, registrationOffered, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
+import { contestRow, INSTANT_COPY, instantOffer, lacksTemporary, registrationOffered, temporaryOutcome, VOTE_COPY, VOTE_POLL_MS, voteDuration, type InstantInputs, type NamesRead } from "./instantOffer";
 
 const ROW_AT = 1_800_000_000;
 
@@ -49,8 +50,15 @@ const summary = (s: Partial<IdentitySummary> = {}): IdentitySummary => ({
   ...s,
 });
 
-/** A read that started `afterSecs` after the row last changed, answering `s`. */
-const read = (afterSecs: number, s: Partial<IdentitySummary> = {}): NamesRead => ({ startedAt: (ROW_AT + afterSecs) * 1000, identities: [summary(s)] });
+const FREE: NameAvailability = { kind: "available", contested: false };
+
+/** A read that started `afterSecs` after the row last changed, answering `s`; DPNS says the
+ * temporary label is free unless `temporary` says otherwise. */
+const read = (afterSecs: number, s: Partial<IdentitySummary> = {}, temporary: NameAvailability | undefined = FREE): NamesRead => ({
+  startedAt: (ROW_AT + afterSecs) * 1000,
+  identities: [summary(s)],
+  temporary,
+});
 
 describe("voteDuration: Platform's vote poll per network (dpp_voting_versions v2)", () => {
   it("mainnet: two weeks", () => {
@@ -99,19 +107,35 @@ describe("temporaryOutcome: only a names read started after the row reached Cont
   });
 
   it("a read started in the same second as the change says nothing (the row's time is whole seconds)", () => {
-    expect(temporaryOutcome(row(), { startedAt: ROW_AT * 1000 + 999, identities: [summary()] })).toBeNull();
-    expect(temporaryOutcome(row(), { startedAt: (ROW_AT + 1) * 1000, identities: [summary()] })).toBe("failed");
+    expect(temporaryOutcome(row(), { startedAt: ROW_AT * 1000 + 999, identities: [summary()], temporary: FREE })).toBeNull();
+    expect(temporaryOutcome(row(), { startedAt: (ROW_AT + 1) * 1000, identities: [summary()], temporary: FREE })).toBe("failed");
   });
 
   it("a failed read (none answered) says nothing, neither owned nor failed", () => {
     expect(temporaryOutcome(row(), undefined)).toBeNull();
   });
 
+  it("a write the engine still holds as pending is no failure: DPNS must say the label is free or another's", () => {
+    expect(lacksTemporary(row(), { ...read(5), temporary: undefined })).toBe(true);
+    // The identities lack it, but DPNS was not asked or could not say: nothing.
+    expect(temporaryOutcome(row(), { ...read(5), temporary: undefined })).toBeNull();
+    expect(temporaryOutcome(row(), read(5, {}, { kind: "unknown" }))).toBeNull();
+    // The write landed (the engine hides it while pending): the identity's own, so no failure.
+    expect(temporaryOutcome(row(), read(5, {}, { kind: "taken", owner: "A" }))).toBeNull();
+    expect(temporaryOutcome(row(), read(5, {}, { kind: "taken", owner: null }))).toBeNull();
+    // Free, or another identity's: it failed.
+    expect(temporaryOutcome(row(), read(5, {}, FREE))).toBe("failed");
+    expect(temporaryOutcome(row(), read(5, {}, { kind: "taken", owner: "B" }))).toBe("failed");
+    // A read that holds the name, or says nothing yet, needs no lookup.
+    expect(lacksTemporary(row(), read(5, { names: ["alice2"] }))).toBe(false);
+    expect(lacksTemporary(row(), read(0))).toBe(false);
+  });
+
   it("names not settled say nothing", () => {
     expect(temporaryOutcome(row(), read(5, { namesUpdating: true }))).toBeNull();
     expect(temporaryOutcome(row(), read(5, { namesCheck: "pending" }))).toBeNull();
     expect(temporaryOutcome(row(), read(5, { namesCheck: "failed" }))).toBeNull();
-    expect(temporaryOutcome(row(), { startedAt: (ROW_AT + 5) * 1000, identities: [] })).toBeNull();
+    expect(temporaryOutcome(row(), { startedAt: (ROW_AT + 5) * 1000, identities: [], temporary: FREE })).toBeNull();
   });
 
   it("owned under DPNS's homograph folding, even from a stale read", () => {
@@ -166,8 +190,14 @@ describe("instantOffer: the card's and the request's offer while the contest is 
     expect(instantOffer(summary({ balance: "1" }), null, { ...on, nameCredits: null })).toEqual({ kind: "create" });
   });
 
-  it("a registration's temporary name: Try again once it failed, nothing while it is not known", () => {
-    expect(instantOffer(summary(), null, { ...on, asked: { label: "alice2", outcome: "failed" } })).toEqual({ kind: "failed", label: "alice2" });
+  it("nothing while the registrations are not read, so a failed temporary name never flashes Create", () => {
+    expect(instantOffer(summary(), null, { ...on, asked: undefined })).toBeNull();
+    expect(instantOffer(summary(), null, { ...on, asked: null })).toEqual({ kind: "create" });
+  });
+
+  it("a registration's temporary name: Try again once it failed, Top up first when credits fall short", () => {
+    expect(instantOffer(summary(), null, { ...on, asked: { label: "alice2", outcome: "failed" } })).toEqual({ kind: "failed", label: "alice2", short: false });
+    expect(instantOffer(summary({ balance: "1" }), null, { ...on, asked: { label: "alice2", outcome: "failed" } })).toEqual({ kind: "failed", label: "alice2", short: true });
     expect(instantOffer(summary(), null, { ...on, asked: { label: "alice2", outcome: null } })).toBeNull();
     expect(instantOffer(summary(), null, { ...on, offered: false, asked: { label: "alice2", outcome: "failed" } })).toBeNull();
   });

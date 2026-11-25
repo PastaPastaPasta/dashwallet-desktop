@@ -4,7 +4,9 @@
 
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { Backend } from "../api/backend";
 import type { DashPayStatus } from "../api/generated/DashPayStatus";
+import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
@@ -17,7 +19,7 @@ import { isSyncing, syncPercent } from "../format/sync";
 import type { PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
-import { contestRow, registrationOffered, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
+import { contestRow, lacksTemporary, registrationOffered, rereadAfterSecond, rowSecond, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
 import { QUOTE_REQUEST, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest } from "./wizard";
 
@@ -46,7 +48,7 @@ export const dashpayKeys = {
    * object where `labelQuote` has its label, so no username shares its key. */
   shieldedReadiness: (walletId: string) => ["dashpay", "quote", walletId, { funding: "shielded" }] as const,
   /** The identities read with the time it started, for what became of a temporary name. */
-  namesRead: (walletId: string) => ["dashpay", "namesRead", walletId] as const,
+  namesRead: (walletId: string, temporaryLabel: string | null, second: number | null) => ["dashpay", "namesRead", walletId, temporaryLabel, second] as const,
   /** C-funding F19: the "Pay with" step's Platform quote of a plain name, keyed as the readiness. */
   platformSource: (walletId: string) => ["dashpay", "quote", walletId, { funding: "platform" }] as const,
 };
@@ -195,29 +197,36 @@ export function useUsernameQuote(walletId: string, enabled: boolean) {
   return quote.data;
 }
 
+/** The names read for `row`'s temporary name: the identities with when the read started, and
+ * DPNS's answer for the label once they lack it (`temporaryOutcome`). Keyed by the row's second,
+ * so the row reaching its contest reads afresh: a read from before says nothing. */
+export function namesReadQuery(b: Backend, walletId: string, row: RegistrationStatus | undefined) {
+  const temporaryLabel = row?.temporaryLabel ?? null;
+  return {
+    queryKey: dashpayKeys.namesRead(walletId, temporaryLabel, rowSecond(row)),
+    queryFn: async (): Promise<NamesRead> => {
+      const read: NamesRead = { startedAt: Date.now(), identities: await b.identities(walletId) };
+      if (temporaryLabel === null || !lacksTemporary(row, read)) return read;
+      const unknown: NameAvailability = { kind: "unknown" };
+      return { ...read, temporary: await b.nameAvailability(walletId, temporaryLabel).catch(() => unknown) };
+    },
+    enabled: temporaryLabel !== null,
+    retry: false,
+  };
+}
+
+/** A failed read says nothing, not even what an earlier one said. */
+export const answeredRead = (read: { isError: boolean; data?: NamesRead }): NamesRead | undefined => (read.isError ? undefined : read.data);
+
 /** The identities as one read answered, with when it started: a failed read says nothing. */
 export function useNamesRead(walletId: string, row: RegistrationStatus | undefined): NamesRead | undefined {
   const b = useBackend();
-  const read = useQuery({
-    queryKey: dashpayKeys.namesRead(walletId),
-    queryFn: async () => {
-      const startedAt = Date.now();
-      return { startedAt, identities: await b.identities(walletId) };
-    },
-    enabled: row?.temporaryLabel != null,
-    retry: false,
-  });
-  // A read in the row's own second says nothing (`temporaryOutcome`), and nothing else may read
-  // again once the row stops running: read once more when that second is over.
-  const after = row?.temporaryLabel != null && (row.phase === "contested" || row.phase === "done") ? row.updatedAt : null;
+  const read = useQuery(namesReadQuery(b, walletId, row));
+  const second = rowSecond(row);
   const startedAt = read.data?.startedAt;
   const { refetch } = read;
-  useEffect(() => {
-    if (after === null || startedAt === undefined || Math.floor(startedAt / 1000) > after) return;
-    const timer = setTimeout(() => void refetch(), Math.max(0, (after + 1) * 1000 - Date.now()) + 50);
-    return () => clearTimeout(timer);
-  }, [after, startedAt, refetch]);
-  return read.isError ? undefined : read.data;
+  useEffect(() => rereadAfterSecond(second, startedAt, () => void refetch()), [second, startedAt, refetch]);
+  return answeredRead(read);
 }
 
 /** What the voting card and the request's details offer while the wallet's own contest is open
@@ -229,15 +238,18 @@ export function useInstantInputs(walletId: string, status: DashPayStatus | undef
   const rows = useRegistrations(walletId, contest !== null);
   const row = contest ? contestRow(rows.data, contest.identity, contest.label) : undefined;
   const read = useNamesRead(walletId, row);
-  // The credits matter only while the card may offer a new instant username.
-  const mayOffer = contest !== null && rows.data !== undefined && row === undefined;
-  const credits = useNameCredits(walletId, mayOffer ? contest.identity : null, contest ? suggest(contest.label) : "");
+  const outcome = temporaryOutcome(row, read);
+  // The credits matter only while the card may offer a name: a new instant username, or the
+  // registration's temporary name again.
+  const label = row?.temporaryLabel ?? (contest ? suggest(contest.label) : "");
+  const mayOffer = contest !== null && rows.data !== undefined && (row === undefined || outcome === "failed");
+  const credits = useNameCredits(walletId, mayOffer ? contest.identity : null, label);
   if (!contest) return undefined;
   const wallet = wallets.data?.find((w) => w.walletId === walletId);
   return {
     offered: registrationOffered(wallet),
     nameCredits: credits.data?.maxCredits ?? null,
-    asked: row?.temporaryLabel ? { label: row.temporaryLabel, outcome: temporaryOutcome(row, read) } : null,
+    asked: rows.data === undefined ? undefined : row?.temporaryLabel ? { label: row.temporaryLabel, outcome } : null,
   };
 }
 

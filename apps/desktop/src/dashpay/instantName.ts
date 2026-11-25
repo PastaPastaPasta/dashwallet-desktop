@@ -79,6 +79,8 @@ export class AvailabilityChecker extends Model {
   set(label: string | null) {
     if (label === this.#label) return;
     this.#label = label;
+    // An answer for a label set before (A, B, A again) is stale: the field waits for a new one.
+    this.#answer = null;
     const seq = ++this.#seq;
     clearTimeout(this.#timer);
     if (label !== null) {

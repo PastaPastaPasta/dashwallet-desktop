@@ -280,7 +280,8 @@ export interface RequestModel {
   instant: boolean;
   /** The credits do not cover an instant username: Top up instead (D4 reversed). */
   short: boolean;
-  /** The temporary name the registration could not register: its line and Try again. */
+  /** The temporary name the registration could not register, with the credits for it: its line
+   * and Try again (short of credits it is `null` and `short` offers Top up). */
   failed: string | null;
   /** R6: `contest_status` failed. */
   readFailed: boolean;
@@ -335,8 +336,9 @@ export function requestModel(
       const lines: string[] = [C.deciding, end === null ? C.notify : C.endsOn(date(end))];
       if (temporary) lines.push(temporaryLine(temporary, label, instant?.asked));
       const offer = instantOffer(main, temporary, instant);
-      if (offer?.kind === "short") lines.push(VOTE_COPY.instantShort);
       if (offer?.kind === "failed") lines.push(INSTANT_COPY.failure(offer.label));
+      const short = offer?.kind === "short" || (offer?.kind === "failed" && offer.short);
+      if (short) lines.push(VOTE_COPY.instantShort);
       return {
         state: "open",
         title: C.title(label),
@@ -344,8 +346,8 @@ export function requestModel(
         tally: read ? tallyRows(read) : null,
         temporary,
         instant: offer?.kind === "create",
-        short: offer?.kind === "short",
-        failed: offer?.kind === "failed" ? offer.label : null,
+        short,
+        failed: offer?.kind === "failed" && !offer.short ? offer.label : null,
         readFailed: readFailed && !read,
       };
     }

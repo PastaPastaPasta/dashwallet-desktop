@@ -398,6 +398,18 @@ describe("the voting card's instant username (D4 reversed)", () => {
       retryLabel: "alice2",
     });
     expect(homeCard(inputs(CONTEST, { main: named(null), instant: asked(null) }))).toMatchObject({ lines: base, action: { kind: "votingInfo" }, secondary: null });
+    // Failed with credits short of the name: Top up, as for a new one, not Try again.
+    expect(homeCard(inputs(CONTEST, { main: named(null, "100"), instant: asked("failed") }))).toMatchObject({
+      tone: "problem",
+      lines: [...base, INSTANT_COPY.failure("alice2"), "Not enough credits for an instant username."],
+      action: { kind: "buyCredits", label: "Top up" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("while the registrations are not read: neither Create nor Try again", () => {
+    const quiet = { lines: base, action: { kind: "votingInfo" }, secondary: null };
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: { ...on, asked: undefined } }))).toMatchObject(quiet);
   });
 
   it("the Join page shows the same card", () => {

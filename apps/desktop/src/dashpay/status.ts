@@ -419,6 +419,12 @@ export function homeCard(i: StatusInputs): CardModel | null {
         case "short":
           return card("voting", "pending", title, [...lines, VOTE_COPY.instantShort], { action: action("buyCredits", VOTE_COPY.topUp), secondary: info });
         case "failed":
+          // Credits short of the name: Top up first, as for a new one.
+          if (offer.short)
+            return card("voting", "problem", title, [...lines, INSTANT_COPY.failure(offer.label), VOTE_COPY.instantShort], {
+              action: action("buyCredits", VOTE_COPY.topUp),
+              secondary: info,
+            });
           return card("voting", "problem", title, [...lines, INSTANT_COPY.failure(offer.label)], {
             action: action("instantRetry", INSTANT_COPY.retry),
             secondary: info,
