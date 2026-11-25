@@ -195,7 +195,7 @@ export const settings = {
     removeHeldCarriedOver:
       "Dash Wallet doesn't know whether a Shielded payment this wallet made in an earlier test build went through, so nothing was removed. You can remove this wallet once this version can send from Shielded.",
     removeHeldKeysRemoved:
-      "This wallet's keys were removed from this computer, but the wallet stays until Dash Wallet knows what happened to a Shielded payment from it. Try removing it again later.",
+      "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     removeHeldOk: "OK",
     xpubTitle: "Extended public key",
     xpubHint: "Anyone with this key can see every address and payment of this account, but cannot spend.",

@@ -262,7 +262,7 @@ describe("remove wallet", () => {
     await model.remove(PASS);
     expect(model.step).toBe("held");
     expect(model.held).toBe(
-      "This wallet's keys were removed from this computer, but the wallet stays until Dash Wallet knows what happened to a Shielded payment from it. Try removing it again later.",
+      "Dash Wallet removed this wallet's keys from this computer, but it keeps the wallet in the list until it knows whether a Shielded payment from this wallet went through. Try removing it again later.",
     );
     expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A, B]);
   });
