@@ -1,6 +1,7 @@
 # Attach detached signatures to an unsigned CI release build, verify every signature against
 # pinned identities committed in this repository at the tag, attest the final signed assets,
-# and publish the GitHub Release (docs/release/SIGNING.md).
+# and publish the GitHub Release (docs/release/SIGNING.md). A release candidate vX.Y.Z-rc.N built with
+# DW_SIGN_RC=1 publishes the same way as a prerelease, without an updater feed (docs/release/RC-SIGNING.md).
 #
 # Zero signing secrets live in this workflow or in the `release` environment: all signatures are
 # created locally by the release signer and stored in the detached-sigs repository (mirroring
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Stable release tag to publish (e.g. v1.0.0; dispatch with --ref <tag>)"
+        description: "Release tag to publish (v1.0.0, or a candidate built with DW_SIGN_RC=1 such as v1.0.0-rc.1; dispatch with --ref <tag>)"
         required: true
         type: string
       release_run_id:
@@ -73,8 +74,8 @@ jobs:
           INPUT_SIGS_REF: ${{ inputs.sigs_ref }}
           INPUT_DMG_TAG: ${{ inputs.dmg_draft_tag }}
         run: |
-          [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::tag must be a final stable tag vX.Y.Z (got '$INPUT_TAG')" >&2
+          [[ "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || {
+            echo "::error::tag must be vX.Y.Z or vX.Y.Z-rc.N (got '$INPUT_TAG')" >&2
             exit 1
           }
           [[ "$GITHUB_REF" == "refs/tags/$INPUT_TAG" ]] || {

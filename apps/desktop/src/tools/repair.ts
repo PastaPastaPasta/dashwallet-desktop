@@ -109,9 +109,11 @@ export function shieldBlockedText(b: ShieldRepairBlocked): string {
   return t(b.retryLater ? "tools.repair.shieldBlockedRetry" : "tools.repair.shieldBlockedPermanent", { why });
 }
 
-/** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
-export function repairErrorText(e: unknown): string {
+/** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`); `what` is the action refused,
+ * when it changes the copy. */
+export function repairErrorText(e: unknown, what?: Confirmation): string {
   if (!isAppError(e)) return failureText(e);
+  if (what === "dropUnconfirmed" && e.code === "rescan_in_progress") return t("tools.repair.removeUnconfirmed.catchingUp");
   switch (e.code) {
     case "spv_running":
       return t("tools.repair.errors.spvRunning");
@@ -369,7 +371,7 @@ export class RepairModel extends Model {
       if (what === "dropUnconfirmed") return { kind: "done", text: RepairText.dropped(await this.api.dropUnconfirmed(this.walletId)) };
       await resetChainAndResync(this.api);
       return { kind: "done", text: RepairText.resetDone };
-    });
+    }, what);
   }
 
   /** A rescan from a typed height: a whole number, else refused before any call (D10). */
@@ -441,13 +443,13 @@ export class RepairModel extends Model {
     }));
   }
 
-  async #run(f: () => Promise<RepairState>) {
+  async #run(f: () => Promise<RepairState>, what?: Confirmation) {
     this.#set({ kind: "working" });
     try {
       this.#set(await f());
     } catch (e) {
       const unreadable = unreadableWallet(e);
-      const text = unreadable === undefined ? repairErrorText(e) : recordUnreadableText(unreadable, await this.api.listWallets().catch(() => []));
+      const text = unreadable === undefined ? repairErrorText(e, what) : recordUnreadableText(unreadable, await this.api.listWallets().catch(() => []));
       this.#set({ kind: "failed", text });
     }
     await this.refresh();

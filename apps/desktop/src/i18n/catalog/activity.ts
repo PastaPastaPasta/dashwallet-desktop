@@ -14,6 +14,8 @@ export const activity = {
     /** In an abandoned payment's details while a rescan checks a coin it spent before giving it back. */
     checkingSpentCoins:
       "Dash Wallet is checking the coins this payment spent. Any that haven't been spent elsewhere come back to your balance when the check finishes.",
+    /** The engine refused with `rescan_in_progress`: after a chain fork it catches up for about a block. */
+    catchingUp: "The wallet is catching up with the network. You can abandon this payment once it has finished.",
     settledChild:
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     /** A saved transaction of {wallet} doesn't read; more than one wallet is open. */
