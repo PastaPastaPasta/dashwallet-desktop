@@ -34,7 +34,7 @@ import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashP
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
-import type { HeldRestoreStatus } from "../api/platformHold";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -109,7 +109,7 @@ export interface World {
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
   /** What RESTORED waits for (`restore_status`); nothing when unset. */
-  restoreStatus?: HeldRestoreStatus;
+  restoreStatus?: RestoreStatus;
   /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
   noPlatform?: boolean;
   /** What `finish_without_platform` does instead of finishing: refuse as a busy or draining network
@@ -560,7 +560,7 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
 }
 
 /** RESTORED set, waiting as `status` says (`restore_status`). */
-function withRestoreStatus(w: World, status: Partial<HeldRestoreStatus>): World {
+function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
   w.restored = true;
   w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, ...status };
   return w;

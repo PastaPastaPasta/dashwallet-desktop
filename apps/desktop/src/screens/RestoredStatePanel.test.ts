@@ -17,7 +17,6 @@ import { BackendContext, keys } from "../api/queries";
 import { switchOutcome } from "../network/switch";
 import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import type { RestoreWait } from "../api/generated/RestoreWait";
-import type { HeldRestoreStatus } from "../api/platformHold";
 import { isRestored } from "../api/storeOpen";
 import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS, ui } from "../app/ui";
@@ -54,7 +53,7 @@ const SOURCE = readFileSync(resolve(import.meta.dirname, "RestoredStatePanel.tsx
 const escaped = (text: string) => text.replace(/&/g, "&amp;").replace(/'/g, "&#x27;").replace(/"/g, "&quot;");
 const noop = () => {};
 
-const status = (s: Partial<HeldRestoreStatus>): HeldRestoreStatus => ({ waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, ...s });
+const status = (s: Partial<RestoreStatus>): RestoreStatus => ({ waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, ...s });
 const PLATFORM_ONLY = status({ waiting: ["platformPass"], platformOnly: true });
 type ViewActions = Parameters<typeof RestoredStateView>[0]["actions"];
 const idle: ViewActions = { running: false, problem: null, failedLink: null, retry: async () => {}, finishWithoutPlatform: async () => {}, report: async () => {} };
@@ -198,13 +197,14 @@ describe("the restored state panel", () => {
   });
 
   it("has no line, Try again or Finish for waiting on a wallet: the panel can't be reached without one", () => {
-    const wallet = "wallet" as unknown as RestoreWait;
+    const wallet: RestoreWait = "wallet";
     const alone = status({ waiting: [wallet] });
     const html = view(alone);
     expect(html).not.toContain("restored-waiting-");
     expect(button(html, "restored-finish-without-platform")).toBeNull();
     expect(button(html, "restored-retry")).toBeNull();
     expect(offersFinishWithoutPlatform(alone)).toBe(false);
+    expect(offersFinishWithoutPlatform(status({ waiting: [wallet, "platformPass"] }))).toBe(false);
     expect(panel(true, alone)).toBe("");
     expect(lines(view(status({ waiting: [wallet, "coreSync"] })))).toEqual([["restored-waiting-coreSync", COPY.core]]);
   });
@@ -541,9 +541,9 @@ describe("the fixture's restore status", () => {
     expect(fixture.calls.at(-1)).toBe("finish_without_platform");
     expect(fixture.calls).not.toContain("close_network");
     expect(fixture.world.noPlatform).toBe(true);
-    expect(boot).toHaveBeenCalledWith(null);
+    expect(boot).toHaveBeenCalledWith(null, true);
     expect(isRestored(await backend.activeNetwork())).toBe(false);
-    expect(await backend.restoreStatus()).toEqual(status({ platformOnly: true }));
+    expect(await backend.restoreStatus()).toEqual(status({ waiting: ["platformPass"], platformOnly: true }));
     // The page boots again on the same session: the world it carries has RESTORED clear.
     expect(JSON.parse(sessionStorage.getItem("dw-fixture-switch")!).active.restored).toBe(false);
   });

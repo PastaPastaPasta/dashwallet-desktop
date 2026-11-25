@@ -6,6 +6,7 @@
 import type { Backend } from "../api/backend";
 import { errorMessage, isAppError } from "../api/backend";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
+import { leaveOpenedWithoutPlatform } from "../api/platformHold";
 import { releaseListeners } from "../api/tauri";
 import { linksTaken } from "../app/shellBridge";
 import { prefsWritten } from "../settings/prefs";
@@ -67,9 +68,11 @@ export function closeRefusal(e: unknown, canLock = false, text: CloseRefusalText
 }
 
 /** Boots the page again on the window's network: after the settings write in flight, with every
- * event subscription ended (Tauri keeps a listener's entry across a reload otherwise). */
-export async function bootAgain(note: string | null = null, reload: () => void = () => location.reload()) {
+ * event subscription ended (Tauri keeps a listener's entry across a reload otherwise).
+ * `withoutPlatform`: the open before it was Finish without Dash Platform's. */
+export async function bootAgain(note: string | null = null, reload: () => void = () => location.reload(), withoutPlatform = false) {
   if (note !== null) leaveSwitchNote(note);
+  leaveOpenedWithoutPlatform(withoutPlatform);
   await prefsWritten();
   await linksTaken();
   await releaseListeners();

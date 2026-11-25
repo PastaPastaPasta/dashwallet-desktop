@@ -24,6 +24,7 @@ import { payNote } from "../../contacts/pane";
 import { messageTable, t } from "../../i18n";
 import { en } from "../../i18n/en";
 import type { PayNotice } from "./model";
+import { platformOffText } from "../../api/platformHold";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
 
@@ -356,5 +357,5 @@ export async function acceptUnderLease(
 /** The result's words for an accept that went through (D12, E0-04 C8). */
 export const acceptedText = (name: string) => t("pay.contact.accepted", { name });
 
-/** An accept's refusal: DP2-09's wording; nothing was paid. */
-export const acceptFailedText = (e: unknown) => `${actionError(e)} ${t("pay.contact.nothingPaid")}`;
+/** An accept's refusal: DP2-09's wording, or Dash Platform off this session (C7); nothing was paid. */
+export const acceptFailedText = (e: unknown) => platformOffText(e) ?? `${actionError(e)} ${t("pay.contact.nothingPaid")}`;

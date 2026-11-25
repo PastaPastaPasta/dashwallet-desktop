@@ -1,21 +1,24 @@
 // C6/C7: every Platform or Shielded funds flow says the restore's hold and Dash Platform being off for
 // the session in MG's words, and keeps its own line for Platform that can't be reached or is off on
-// this network.
+// this network. The engine's C7 refusal is a bare platform.unavailable: only this session's own open
+// (Finish without Dash Platform) tells it from unreachable.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { claimErrorText } from "../dashpay/claim";
 import { startErrorText } from "../dashpay/registration";
 import { topUpErrorText } from "../dashpay/topup";
 import { fromPlatformErrorText } from "../dashpay/topupSource";
 import { withdrawErrorText } from "../dashpay/withdraw";
+import { bootAgain } from "../network/switch";
 import { fundErrorText } from "../platform/fund";
 import { moveErrorText } from "../platform/move";
 import { sendErrorText } from "../platform/send";
+import { acceptFailedText } from "../screens/pay/contact";
 import { fromErrorText } from "../screens/pay/fromBalance";
 import { shieldedErrorText } from "../shielded/flow";
-import { platformHoldText } from "./platformHold";
+import { leaveOpenedWithoutPlatform, platformHoldText } from "./platformHold";
 
 const RESTORED =
   "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.";
@@ -23,9 +26,15 @@ const OFF = "Nothing was sent: Dash Platform is off until you next start Dash Wa
 const OFF_NOT_SENDING = "Dash Platform is off until you next start Dash Wallet, and this needs it.";
 
 const restored = { code: "platform.restored", message: "restored" };
-const OFF_FORMS = ["platform.feature_off", "platform.unavailable"].map((code) => ({ code, message: "platform off", data: { kind: "feature", feature: "platform" } }));
+const featureOff = { code: "platform.feature_off", message: "platform off", data: { kind: "feature", feature: "platform" } };
+const unavailable = { code: "platform.unavailable", message: "Platform is off for this session" };
 const offOnNetwork = { code: "platform.feature_off", message: "off on mainnet", data: { kind: "feature", feature: "platform_registration" } };
-const unreachable = { code: "platform.unavailable", message: "DAPI did not answer" };
+
+beforeEach(() => {
+  const stored = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
+});
+afterEach(() => vi.unstubAllGlobals());
 
 const n = String;
 const FLOWS: Record<string, (e: unknown) => string> = {
@@ -42,23 +51,47 @@ const FLOWS: Record<string, (e: unknown) => string> = {
 };
 
 describe("the restore's Platform and Shielded hold, as each flow says it", () => {
-  for (const [flow, text] of Object.entries(FLOWS))
-    it(`${flow}: platform.restored and Platform off for the session each say MG's line; unreachable and off on this network keep their own`, () => {
+  for (const [flow, text] of Object.entries(FLOWS)) {
+    it(`${flow}: with Platform on, platform.unavailable is unreachable; restored and feature_off "platform" say MG's lines`, () => {
       expect(text(restored)).toBe(RESTORED);
-      for (const off of OFF_FORMS) expect(text(off), off.code).toBe(OFF);
-      for (const other of [unreachable, offOnNetwork]) {
+      expect(text(featureOff)).toBe(OFF);
+      for (const other of [unavailable, offOnNetwork]) {
         expect(text(other), other.code).not.toBe(OFF);
         expect(text(other), other.code).not.toBe(RESTORED);
       }
     });
 
+    it(`${flow}: in a session Finish without Dash Platform opened, platform.unavailable says Dash Platform is off`, () => {
+      leaveOpenedWithoutPlatform(true);
+      expect(text(unavailable)).toBe(OFF);
+      expect(text(offOnNetwork)).not.toBe(OFF);
+    });
+  }
+
+  it("accept and pay: Dash Platform off says C7's line; any other refusal keeps its own, with nothing paid", () => {
+    expect(acceptFailedText(featureOff)).toBe(OFF);
+    for (const other of [unavailable, restored, offOnNetwork]) expect(acceptFailedText(other), other.code).toMatch(/\S Nothing was paid\.$/);
+    leaveOpenedWithoutPlatform(true);
+    expect(acceptFailedText(unavailable)).toBe(OFF);
+  });
+
   it("says Platform off without \"Nothing was sent\" where nothing was being sent", () => {
-    for (const off of OFF_FORMS) {
-      expect(platformHoldText(off), off.code).toBe(OFF);
-      expect(platformHoldText(off, false), off.code).toBe(OFF_NOT_SENDING);
-    }
+    expect(platformHoldText(featureOff)).toBe(OFF);
+    expect(platformHoldText(featureOff, false)).toBe(OFF_NOT_SENDING);
+    expect(platformHoldText(unavailable, false)).toBeNull();
+    leaveOpenedWithoutPlatform(true);
+    expect(platformHoldText(unavailable)).toBe(OFF);
+    expect(platformHoldText(unavailable, false)).toBe(OFF_NOT_SENDING);
     expect(platformHoldText(restored, false)).toBe(RESTORED);
-    expect(platformHoldText(unreachable, false)).toBeNull();
+  });
+
+  it("a boot after Finish without Dash Platform leaves its mark; any other boot clears it", async () => {
+    const reload = vi.fn();
+    await bootAgain(null, reload, true);
+    expect(platformHoldText(unavailable)).toBe(OFF);
+    await bootAgain(null, reload);
+    expect(platformHoldText(unavailable)).toBeNull();
+    expect(reload).toHaveBeenCalledTimes(2);
   });
 
   // A quote, a Max, the Shielded receive address and the claim's check send nothing.
@@ -84,7 +117,7 @@ describe("the restore's Platform and Shielded hold, as each flow says it", () =>
   });
 
   it("answers nothing for any other failure", () => {
-    expect(platformHoldText(unreachable)).toBeNull();
+    expect(platformHoldText(unavailable)).toBeNull();
     expect(platformHoldText(offOnNetwork)).toBeNull();
     expect(platformHoldText({ code: "platform.unavailable", message: "x", data: { kind: "feature", feature: "platform_addresses" } })).toBeNull();
     expect(platformHoldText(new Error("platform.restored"))).toBeNull();

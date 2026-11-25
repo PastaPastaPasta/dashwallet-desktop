@@ -6,7 +6,6 @@ import { keys, useBackend, useRestored, useRestoreStatus, useWallets } from "../
 import { setRestoreFinishing } from "../api/restoreGate";
 import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import type { RestoreWait } from "../api/generated/RestoreWait";
-import { platformOnly } from "../api/platformHold";
 import { DashButton } from "../components/basics";
 import { t, useT } from "../i18n";
 import { busyLine, type BusyLines } from "../network/choice";
@@ -15,19 +14,16 @@ import { Model, useModel } from "../onboarding/model";
 import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
 
-/** "wallet" (no wallet restored yet) comes with the engine's next bindings; it has no line, as the
- * panel can't be reached without a wallet. */
-type Wait = RestoreWait | "wallet";
-
+/** "wallet" (no wallet loaded yet) has no line: the panel can't be reached without a wallet. */
 const WAITING = {
   coreSync: "storeUpgrade.restore.waiting.core",
   platformPass: "storeUpgrade.restore.waiting.platform",
   historyLoad: "storeUpgrade.restore.waiting.history",
   wallet: null,
-} as const satisfies Record<Wait, string | null>;
+} as const satisfies Record<RestoreWait, string | null>;
 
 const saidWaits = (s: RestoreStatus) =>
-  (s.waiting as readonly Wait[]).flatMap((wait) => {
+  s.waiting.flatMap((wait) => {
     const line = WAITING[wait];
     return line === null ? [] : [{ wait, line }];
   });
@@ -36,9 +32,11 @@ const saidWaits = (s: RestoreStatus) =>
  * to load offers Report a problem only. */
 export const offersRetry = (s: RestoreStatus) => saidWaits(s).length > 0 || s.clearFailed;
 
-/** Only while Platform's first check is what it waits for (with Platform off it never is), and no
- * history failed to load: RESTORED can't clear without it, with or without Platform. */
-export const offersFinishWithoutPlatform = (s: RestoreStatus) => s.waiting.includes("platformPass") && s.historyWallets.length === 0 && !platformOnly(s);
+/** Only while Platform's first check is what it waits for (with Platform off it never is), a wallet is
+ * loaded, and no history failed to load: RESTORED can't clear without it, with or without Platform.
+ * Otherwise the engine returns without reopening. */
+export const offersFinishWithoutPlatform = (s: RestoreStatus) =>
+  s.waiting.includes("platformPass") && !s.waiting.includes("wallet") && s.historyWallets.length === 0 && !s.platformOnly;
 
 const FINISH_BUSY: BusyLines = {
   wait: (flows) => t("storeUpgrade.restore.finishBusy.waitBefore", { flows }),
@@ -59,7 +57,7 @@ const FINISH_REFUSAL: CloseRefusalText = {
   shieldedUnresolved: null,
 };
 
-const saysSomething = (s: RestoreStatus) => saidWaits(s).length > 0 || s.historyWallets.length > 0 || s.clearFailed || platformOnly(s);
+const saysSomething = (s: RestoreStatus) => saidWaits(s).length > 0 || s.historyWallets.length > 0 || s.clearFailed || s.platformOnly;
 
 /** The panel's actions through dw-app, with the latest failure. Finish without Dash Platform is one
  * engine call: a close refused while the network is busy changes nothing and says why here; an open
@@ -75,7 +73,7 @@ export class RestoredStateActions extends Model {
   constructor(
     private readonly api: Pick<Backend, "restoreRetry" | "finishWithoutPlatform" | "openProjectLink">,
     private readonly client: QueryClient,
-    private readonly boot: (note: string | null) => unknown = bootAgain,
+    private readonly boot: (note: string | null, withoutPlatform?: boolean) => unknown = (note, withoutPlatform) => bootAgain(note, undefined, withoutPlatform),
   ) {
     super();
   }
@@ -106,7 +104,7 @@ export class RestoredStateActions extends Model {
       this.changed();
       return;
     }
-    await this.boot(null);
+    await this.boot(null, true);
   };
 
   /** Opened as usual: a new session, so every read is read again. RESTORED, what it waits for and the
@@ -169,7 +167,7 @@ export function RestoredStatePanel() {
   const status = useRestoreStatus(known);
   const wallets = useWallets(known);
   const actions = useModel(restoredStateActions(useBackend(), useQueryClient()));
-  const held = restored === true || (restored === false && status.data != null && platformOnly(status.data));
+  const held = restored === true || (restored === false && status.data?.platformOnly === true);
   const shown = actions.finishing ?? (held ? status.data : null);
   if (!shown) return null;
   const names = new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]));
@@ -192,7 +190,7 @@ export function RestoredStateView({
   return (
     <section className="restored-state-panel card-l1" data-testid="restored-state" aria-busy={actions.running}>
       <div className="protocol-advisory-body" role="status">
-        {platformOnly(status) && (
+        {status.platformOnly && (
           <p className="protocol-advisory-text" data-testid="restored-platform-only">
             {tr("storeUpgrade.restore.platformOnly")}
           </p>

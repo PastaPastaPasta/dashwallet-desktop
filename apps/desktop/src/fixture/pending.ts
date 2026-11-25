@@ -38,7 +38,7 @@ import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 import { restoreFailure, storeRestoreError } from "./errors";
-import type { HeldRestoreStatus } from "../api/platformHold";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
@@ -239,19 +239,19 @@ export function switchedWorld(): World | null {
   return active;
 }
 
-/** What RESTORED waits for (`restore_status`), as the engine counts it: with Platform off its first
- * check is satisfied. */
-function restoreStatusOf(world: World): HeldRestoreStatus {
+/** What the gate waits for (`restore_status`), as the engine counts it: while RESTORED is set with
+ * Platform off, Platform's first check is not waited for. */
+function restoreStatusOf(world: World): RestoreStatus {
   const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false };
-  return { ...s, waiting: world.noPlatform ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
+  return { ...s, waiting: world.noPlatform && !s.platformOnly ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
 }
 
-/** Clears RESTORED once nothing holds it. */
+/** Clears RESTORED once nothing holds it; with Platform off, Platform's check stays held (C6). */
 function settleRestored(world: World) {
   const s = restoreStatusOf(world);
   if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
     world.restored = false;
-    world.restoreStatus = undefined;
+    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true } : undefined;
   }
 }
 
@@ -637,11 +637,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       });
     }
     world.noPlatform = true;
-    const left = restoreStatusOf(world);
-    if (left.waiting.length === 0 && left.historyWallets.length === 0 && !left.clearFailed) {
-      world.restored = false;
-      world.restoreStatus = { ...left, platformOnly: true };
-    }
+    settleRestored(world);
     keepWorlds(world);
     return openedNetwork(world, restoredNetwork(world));
   },
