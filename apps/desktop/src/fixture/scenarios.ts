@@ -204,6 +204,7 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       name: variant === "xss" ? XSS_PAYLOADS.walletName : "Main",
       watchOnly: false,
       hasMnemonic: true,
+      legacyIssued: false,
       hd: true,
       birthHeight: 1_200_000,
       createdAt: null,

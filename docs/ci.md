@@ -248,6 +248,57 @@ deep-link and Swift jobs delete the preinstalled .NET, Android, GHC and CodeQL t
 (`ci/github/linux-free-disk.sh`). `Rust tests (Linux)` does not: its runner starts with about 90 GB free and
 ends a cold run with 71 GB free and a 16 GB `rust/target`; its last step reports the disk use.
 
+## Funds review gate (`funds-gate.yml`)
+
+A pull request that changes a funds path merges only with two records for its **exact head commit**: a
+funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
+`ci/funds-paths.txt`. All of dw-engine counts, except the files its `!` lines name as not funds (for example rates,
+CSV export, avatars, banners and governance voting; the file has the full list), so a
+new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, CoinJoin and units crates, the
+CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
+(Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
+screen view-models that build money requests, the dependency pins, and the gate itself. Check a branch with
+`git diff --no-renames --name-only -z origin/main... | ci/github/funds-gate.py match -z`.
+
+A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
+inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
+count). An approve must sit on a line of its own, starting at the first column, outside a `>` quote or a code
+block, so quoting a verdict never casts one. A block counts wherever its marker appears, mid-line, quoted or
+in code included, because a stray block can only refuse; within one comment a block wins. To lift a block,
+post a new approve after every comment that quotes it. Post records with `funds-gate.py record`: it puts the
+record on the comment's first line and refuses a note that contains one. A hand-written approve in or after a
+list may not be read.
+
+    <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
+    <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
+
+Reviewer lanes post one with `ci/github/funds-gate.py record --repo PastaPastaPasta/dashwallet-desktop --pr <N>
+--sha <head they reviewed> --kind funds|review --verdict approve|block --model <their model> [--note-file F]`.
+It refuses when the head has moved since the review, and refuses any model but Opus (`claude-opus-…`); Sonnet
+is never a reviewer. Rules:
+
+- Only records naming the current head count. Any push, a merge of main included, makes the old ones stale.
+- For each kind, the latest record at the head wins: `verdict=block` withdraws an earlier approve. "Latest" is
+  by the comment's creation time; editing an old comment changes its record in place.
+- A pull request that changes no funds path passes with no records.
+- If the API truncates the file list, the gate treats the pull request as funds.
+
+`funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review, edited: a base
+change alters the file list), on a pull request comment that adds, edits or deletes a record, and on a
+dispatch (`gh workflow run funds-gate.yml -f pr=<N>`). For a pull request into `main` it posts the commit
+status **Funds review gate** on the head: pending while it checks, then success or failure; an error after it
+reads the pull request leaves it pending. If that first read fails, the previous status stays until the next
+run, but the drain's check refuses on any error. A pull request into another branch gets no status, because a
+status belongs to the commit and a stacked pull request at the same commit must not turn it green. If the head
+or base moves while it reads the file list, it reads again, up to three times. It runs the gate from the pull
+request's base branch (comment runs: the default branch), never from the pull request, and checks out no pull
+request code. The status is advisory until `main`'s branch protection requires the context `Funds review gate`
+(not the job name, whose run passes on a refusal). The PO's drain script runs the same `funds-gate.py check
+--sha <head>` from origin/main before every merge and refuses on anything but a pass. That fresh check is the
+authoritative one: a change to `ci/funds-paths.txt` on main does not re-run the status on open pull requests,
+but the drain reads the new list. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
+pattern in `ci/funds-paths.txt` still matches a tracked file.
+
 ## UI tests (U-07)
 
 The renderer is tested in a browser against the **fixture backend** (`apps/desktop/src/fixture/`): Tauri's

@@ -97,6 +97,19 @@ pub struct WalletBalances {
     /// `false` says only that the birth block was scanned: a wallet born
     /// long ago is still behind the tip while SPV syncs (the sync snapshot).
     pub catching_up: bool,
+    /// The coins drops of payments that can never confirm hold while what
+    /// beat them is unfinished (#170, #749), summed: none of them counts in
+    /// a bucket above. Read from the hold set, never from a balance. A coin
+    /// whose value the wallet does not know is not summed but counted in
+    /// `held_unvalued`.
+    pub held_unfinished: u64,
+    /// The held coins whose value the wallet does not know: no transaction
+    /// the history holds made them.
+    pub held_unvalued: u32,
+    /// A held coin awaits what spends it: a transaction that uses it, or
+    /// that beat its payment, isn't ChainLocked yet (#749, Q81b S2). A
+    /// remove-and-restore would credit it meanwhile.
+    pub held_awaiting: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -853,6 +866,7 @@ impl NetworkSession {
         session.attach_dead_claims();
         session.attach_sweep_resend();
         session.attach_balance_reread();
+        session.attach_held_refresh();
         session.attach_lock_rerun();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
