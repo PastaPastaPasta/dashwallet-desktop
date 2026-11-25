@@ -113,10 +113,7 @@ test.describe("Home", () => {
     await page.getByTestId("shortcut-send").click();
     await expect(page.getByTestId("pay-address-form")).toBeVisible();
     await page.getByTestId("sidebar-home").click();
-    // Scan QR: no camera on the desktop, so the address field takes a pasted code.
-    await page.getByTestId("shortcut-scan").click();
-    await expect(page.getByTestId("pay-address")).toBeFocused();
-    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("shortcut-card").locator(".shortcut-item")).toHaveText(["Receive", "Send", "Transfer", "Back up"]);
     const backup = page.getByTestId("shortcut-backup");
     await expect(backup).toHaveAttribute("aria-disabled", "true");
     await expect(backup).toHaveAttribute("title", /not available yet/);
@@ -871,6 +868,17 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("an Abandon refused while the wallet catches up after a fork says to wait", async ({ page }) => {
+    const errors = await open(page, "abandon-catching-up");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5b".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. You can abandon this payment once it has finished.");
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
   });

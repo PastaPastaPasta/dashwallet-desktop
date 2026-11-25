@@ -3,11 +3,14 @@
 Dash Wallet can update itself from a signed feed on this repository's GitHub Releases. It is off unless all three of
 these allow it:
 
-1. **The build.** Only a build made with the updater signing key has the feed. `rust/crates/dw-app/tauri.conf.json`
-   carries the release public key (`plugins.updater.pubkey`, minisign key ID `ED322B963B527B21`) and no endpoint, so
-   the public key alone turns nothing on. release.yml gives the private key only to the build jobs of a pushed stable
-   tag `vX.Y.Z` on main (the `decide` job's `signing`), from the `release` environment, and `ci/github/tauri-build.sh`
-   then merges `rust/crates/dw-app/tauri.updater.conf.json` (the feed URL and `bundle.createUpdaterArtifacts`).
+1. **The build.** Only a stable release build has the feed enabled. `rust/crates/dw-app/tauri.conf.json`
+   carries the stable release public key (`plugins.updater.pubkey`) and no endpoint, so the public key alone
+   turns nothing on. On a pushed stable tag `vX.Y.Z` on `main` (`decide` job's `stable_tag`), `release.yml`
+   passes `DW_ENABLE_UPDATER=1` to `ci/github/tauri-build.sh`, which merges `rust/crates/dw-app/tauri.updater.conf.json`
+   (adding the feed URL) with `bundle.createUpdaterArtifacts: false` so CI builds unsigned with zero private keys.
+   The stable updater private key lives **only** with the release signer locally (never in CI); `ci/release/sign-updater.sh`
+   signs the final Linux AppImage, signed Windows installer, and signed macOS `.app.tar.gz` with
+   `pnpm tauri signer sign --app-version <VERSION>` to produce `latest.json` ([`SIGNING.md`](SIGNING.md)).
    Every other build (main, pull requests, rc, dry runs, dev, local) has no feed: no updater plugin at all, and
    Settings ▸ About says that this build does not update itself and links to the releases page.
 2. **The install.** A Flatpak is updated by Flatpak, and a .deb or .rpm by the system's package manager. A macOS app
@@ -51,53 +54,28 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
   `Accept` header. The status request after a failed check is the same URL with neither header. GitHub sees the IP
   address and the time.
 
-## The release key (set up 2026-11-20)
+## The stable updater key (local-only, Dash Core detached-sigs model)
 
-- The key pair is minisign key ID `ED322B963B527B21`. Its public key is in `tauri.conf.json`. The earlier key ID
-  `7A4629E8E5438F3C` is dead: never use it.
-- The private key and its passphrase are the secrets `TAURI_SIGNING_PRIVATE_KEY` and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, only in the `release` environment. That environment exists, with the
-  deployment tag rule `v*`. There are no repository-level secrets: the build jobs read the key only through the
-  environment, so a repository secret would never be used.
-- **No offline backup of the private key exists.** If the environment's secret is lost or has to be rotated, the app
-  must be re-keyed: a new key pair, its public key in `tauri.conf.json`, and new secrets. Copies installed before the
-  re-keyed release trust only the old key, so their users install that release by hand once. If the key leaks,
-  whoever has it can ship an update: re-key the same way.
-- `v*` matches rc and dry-run tags too. What keeps the key to stable tags is the build jobs' condition, the `decide`
-  job's `signing` output (a pushed `vX.Y.Z` tag on main), not the environment rule.
-
-## Still open
-
-1. **Pasta's choice: a tag ruleset or required reviewers on `release`.** The `v*` rule matches a tag's name, and
-   `decide` is code of the pushed commit, so anyone who may push a `v*` tag could push one on a commit whose workflow
-   prints the key. One of these closes that:
-   - **A tag ruleset** (no wait at release time). Settings ▸ Rules ▸ Rulesets ▸ New ruleset ▸ New tag ruleset: name
-     `release tags`, enforcement Active, target tags matching `v*`, rules "Restrict creations", "Restrict updates" and
-     "Restrict deletions", and add the Repository admin role to the bypass list. Or:
-
-     ```sh
-     gh api -X POST repos/PastaPastaPasta/dashwallet-desktop/rulesets --input - <<'JSON'
-     {"name": "release tags", "target": "tag", "enforcement": "active",
-      "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
-      "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
-      "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]}
-     JSON
-     ```
-
-   - **Required reviewers on `release`** (each stable tag's three build jobs wait for an approval). Settings ▸
-     Environments ▸ `release` ▸ "Required reviewers": add yourself and save. Then approve the jobs under the tag's run
-     ("Review deployments") when they ask.
-2. A `workflow_dispatch` run never gets the key, even on a tag: it builds the plain app. It is also the first run whose
-   build jobs use `environment: ''` (no environment), which GitHub does not document: run
-   `gh workflow run release.yml --ref <branch>` once before the first signed release and check that the three build
-   jobs start and finish. A main push or the schedule takes the same path.
-3. The next stable release tag then builds with the feed. Its release gains two assets, `latest.json` and
-   `dash-wallet-X.Y.Z-macos-universal.app.tar.gz` (the macOS update), and both are listed in SHA256SUMS. The AppImage
-   and the Windows installer are their own updates, so their signatures are only in `latest.json`.
-4. Once that release is out, set the repository variable `DW_UPDATER_REQUIRED` to `1`
-   (`gh variable set DW_UPDATER_REQUIRED --body 1 --repo PastaPastaPasta/dashwallet-desktop`). From then on a stable tag
-   whose build has no key fails, and `release-publish.sh` refuses a stable release without `latest.json`: published as
-   Latest, it would leave every installed copy without updates. Until then a stable tag without the key only warns.
+- **No stable updater private key lives in GitHub Actions.** The stable updater key is held only locally by the
+  release signer and used by `ci/release/sign-updater.sh` (`pnpm tauri signer sign --app-version <VERSION>`) after
+  macOS and Windows code-signing completes; see [`SIGNING.md`](SIGNING.md).
+- The currently committed public key in `rust/crates/dw-app/tauri.conf.json` is minisign key ID `ED322B963B527B21`
+  (the earlier key ID `7A4629E8E5438F3C` is dead: never use it). Because `ED322B963B527B21` was originally uploaded
+  to the GitHub `release` environment during PK-03 setup, **rotate it before 1.0**: remove
+  `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from GitHub Actions, generate a fresh
+  local-only stable updater key pair, commit its public key to `tauri.conf.json` (and update `RELEASE_KEY_ID` in
+  `rust/crates/dw-app/src/updates_tests.rs`), and keep an encrypted offline backup.
+- If the private key is lost or has to be rotated, the app must be re-keyed: a new key pair, its public key in
+  `tauri.conf.json`, and a new signed release. Copies installed before the re-keyed release trust only the old key,
+  so their users install that release by hand once.
+- A signed stable release gains `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz` (plus
+  `SHA256SUMS.asc`), and `latest.json` + `.app.tar.gz` are listed in `SHA256SUMS`. The AppImage and the Windows
+  installer are their own updates, so their minisign signatures live only in `latest.json`.
+- Final stable tags (`vX.Y.Z`) fail closed automatically: `release.yml` holds back unsigned binaries and
+  `release-publish.sh` refuses any final `vX.Y.Z` release missing verified attached signatures (`SHA256SUMS.asc`,
+  `latest.json` + `.app.tar.gz`, and `signed-manifest.json` with all 11 hashes and pinned identities) unless
+  `DW_ALLOW_UNSIGNED_STABLE=1` is explicitly set. Release candidates (`vX.Y.Z-rc.N`) never require signing and
+  never publish `latest.json`.
 
 Copies installed before the first signed release have no updater: their users install that release by hand once.
 

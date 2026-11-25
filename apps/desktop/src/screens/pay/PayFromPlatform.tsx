@@ -161,7 +161,7 @@ function SendSheet({
         {step === "refused" && (
           <>
             <p className="form-problem" role="alert" data-testid="platform-send-refusal">
-              {sendRefusalText(flow.error, credits, activity)}
+              {sendRefusalText(flow.error, credits, activity, flow.retryOf)}
             </p>
             <div className="sheet-actions">
               {sendCanRetry(flow.error) && (
