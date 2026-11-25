@@ -694,6 +694,10 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next rescan's publication, after its rewind.
     #[cfg(test)]
     pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of beaten payments between their
+    /// detection and its recheck under the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_recheck: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next truncation between its heights and the rest.
     #[cfg(test)]
     pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -910,6 +914,8 @@ impl SessionHub {
             pause_resume: Mutex::new(None),
             #[cfg(test)]
             pause_publish: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_recheck: Mutex::new(None),
             #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),

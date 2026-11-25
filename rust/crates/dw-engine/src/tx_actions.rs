@@ -14,7 +14,7 @@
 //! without proof; the host warns that the transaction may still confirm
 //! (DESIGN-opus §1.14). If it does, the history shows it confirmed again.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -1966,7 +1966,7 @@ impl NetworkSession {
         stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
     ) {
         let _gate = self.hub.drop_gate.lock().await;
-        let mut work: Vec<_> = (self.hub.take_dead_children(wallet).into_iter())
+        let mut work: VecDeque<_> = (self.hub.take_dead_children(wallet).into_iter())
             .map(|(roots, winner, swept)| (roots, winner, swept, false))
             .collect();
         {
@@ -1998,14 +1998,23 @@ impl NetworkSession {
                     work.extend((beaten.into_iter()).map(|(w, ts)| (ts, w, BTreeSet::new(), true)));
                     let orphans = stored.map(|(s, exempt)| orphaned_unmined(&h.txs, s, exempt));
                     if let Some(orphans) = orphans.filter(|o| !o.is_empty()) {
-                        work.push((orphans, Winner::default(), BTreeSet::new(), false));
+                        work.push_back((orphans, Winner::default(), BTreeSet::new(), false));
                     }
                 });
             }
         }
-        for (roots, winner, links, recheck) in work {
-            let dropped = self.drop_dead_unmined(manager, wallet, &roots, winner, &links, recheck);
-            match dropped.await {
+        while let Some((roots, winner, links, recheck)) = work.pop_front() {
+            let mut regrouped = Vec::new();
+            let dropped = self.drop_dead_unmined(
+                manager,
+                wallet,
+                (&roots, winner),
+                &links,
+                recheck.then_some(&mut regrouped),
+            );
+            let dropped = dropped.await;
+            work.extend((regrouped.into_iter()).map(|(ts, w)| (ts, w, BTreeSet::new(), true)));
+            match dropped {
                 Ok(dropped) if !dropped.is_empty() => {
                     tracing::info!(%wallet, ?dropped, ?winner, "dropped transactions that can never confirm")
                 }
@@ -2027,15 +2036,28 @@ impl NetworkSession {
     /// they spent is claimed for good. Holds the wallet's abandon gate for
     /// writing through its marks, as an abandon does, so no resend hands off
     /// bytes it has marked. Returns the dropped txids.
+    ///
+    /// With `regrouped`, `roots` were found beaten under the read lock and
+    /// are found again under the write lock, each with what beats it now:
+    /// the call drops one winner's roots, and the others go, with their
+    /// winner now, to `regrouped` (Q89 R1).
     pub(crate) async fn drop_dead_unmined(
         &self,
         manager: &Manager,
         wallet: WalletId,
-        roots: &[Txid],
-        winner: Winner,
+        (roots, winner): (&[Txid], Winner),
         links: &BTreeSet<Txid>,
-        recheck: bool,
+        regrouped: Option<&mut Vec<(Vec<Txid>, Winner)>>,
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        #[cfg(test)]
+        let pause = (regrouped.is_some())
+            .then(|| self.hub.pause_drop_recheck.lock().unwrap().take())
+            .flatten();
+        #[cfg(test)]
+        if let Some(pause) = &pause {
+            pause.mark_reached();
+            pause.release.notified().await;
+        }
         let _gate = self.abandon_gate(wallet).write_owned().await;
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
@@ -2056,16 +2078,17 @@ impl NetworkSession {
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(BTreeSet::new());
         };
-        let plan = (self.hub.history).read_wallet(&wallet, |h| {
+        let (plan, winner) = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
             let chainlock = self.chainlock_height(&info.core_wallet);
             let facts = (complete, chainlock, &settled.under);
-            // A beaten root is beaten still under this lock: a truncation
-            // since its detection may have undone its winner.
+            // A beaten root is beaten still under this lock, by what beats
+            // it now: a truncation since its detection may have undone its
+            // winner, and a block or a record since may have named another.
             let rechecked: Vec<Txid>;
-            let roots = match recheck {
-                false => roots,
-                true => {
+            let (roots, winner) = match regrouped {
+                None => (roots, winner),
+                Some(regrouped) => {
                     let core = &info.core_wallet;
                     let recorded = |t: &Txid| {
                         (core.accounts.all_accounts().into_iter()).any(|a| a.has_transaction(t))
@@ -2075,21 +2098,29 @@ impl NetworkSession {
                         (tx.output.iter()).any(|o| owned.contains_key(&o.script_pubkey))
                     };
                     let observed = core.observed_spent_outpoints();
-                    let beaten: HashSet<Txid> =
+                    let now: HashMap<Txid, Winner> =
                         beaten_unrecorded(&h.txs, recorded, observed, chainlock, pays)
                             .into_iter()
-                            .filter(|(_, w)| *w == winner)
-                            .map(|(t, _)| t)
                             .collect();
-                    rechecked = roots
-                        .iter()
-                        .filter(|t| beaten.contains(*t))
-                        .copied()
-                        .collect();
-                    &rechecked
+                    let mut groups: BTreeMap<Winner, Vec<Txid>> = BTreeMap::new();
+                    for t in roots {
+                        if let Some(w) = now.get(t) {
+                            groups.entry(*w).or_default().push(*t);
+                        }
+                    }
+                    let (now, first) = match groups.remove(&winner) {
+                        Some(first) => (winner, first),
+                        None => groups.pop_first().unwrap_or((winner, Vec::new())),
+                    };
+                    regrouped.extend(groups.into_iter().map(|(w, ts)| (ts, w)));
+                    if now != winner && !first.is_empty() {
+                        tracing::debug!(%wallet, ?winner, ?now, "a beaten payment's winner changed before its drop");
+                    }
+                    rechecked = first;
+                    (&rechecked[..], now)
                 }
             };
-            plan_drop(
+            let plan = plan_drop(
                 &h.txs,
                 &h.swept,
                 &info.core_wallet,
@@ -2097,7 +2128,8 @@ impl NetworkSession {
                 winner,
                 links,
                 facts,
-            )
+            );
+            (plan, winner)
         });
         let Some(plan) = plan else {
             return Ok(BTreeSet::new());
