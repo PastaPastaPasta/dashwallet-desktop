@@ -36,6 +36,35 @@ pub(crate) const BUILD_FAULT: &str = "restore_gate.build";
 /// How often the gate's watcher looks again without a wake.
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 
+/// The longest a failed clear waits before the next attempt.
+const CLEAR_BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// What a restored network waits for before its money gate opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreStatus {
+    /// Empty: the clear runs now or at the watcher's next look.
+    pub waiting: Vec<RestoreWait>,
+    /// The loaded wallets whose history load has not built their holds.
+    pub history_wallets: Vec<WalletId>,
+    /// The last attempt to clear failed (the mark did not read or write,
+    /// the dropped records did not read, or the session was closing). It
+    /// is tried again after a growing delay, at once on
+    /// [`NetworkSession::restore_retry`].
+    pub clear_failed: bool,
+}
+
+/// One thing a restored network waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreWait {
+    /// Core has not caught up with its peers.
+    CoreSync,
+    /// Platform (its masternode list, a clean Platform-address pass and the
+    /// shielded pass) has not been checked since the network opened.
+    PlatformPass,
+    /// A loaded wallet's history has not loaded.
+    HistoryLoad,
+}
+
 /// The network's RESTORED state: its mark, read where it lives.
 #[derive(Default)]
 pub(crate) struct RestoreGate {
@@ -47,6 +76,12 @@ pub(crate) struct RestoreGate {
     /// A shielded pass completed since the session opened.
     shielded_pass: AtomicBool,
     pub(crate) wake: tokio::sync::Notify,
+    /// The last clear failed.
+    clear_failed: AtomicBool,
+    /// A retry asked the watcher to try the clear now.
+    retry: AtomicBool,
+    /// The status the host last read about: a change marks sync.
+    published: Mutex<Option<RestoreStatus>>,
     /// Tests: what all-Synced reads, in place of the services.
     #[cfg(test)]
     pub(crate) all_synced: Mutex<Option<bool>>,
@@ -60,6 +95,16 @@ pub(crate) struct RestoreGate {
     /// unreadable mark.
     #[cfg(test)]
     pub(crate) clear_fails: std::sync::atomic::AtomicU32,
+    /// Tests: how many clears were tried.
+    #[cfg(test)]
+    pub(crate) clear_attempts: std::sync::atomic::AtomicU32,
+    /// Tests: every backoff after a failed clear, in place of the growing one.
+    #[cfg(test)]
+    pub(crate) backoff: Mutex<Option<Duration>>,
+    /// Tests: what Core's sync (and its masternode list) reads, in place of
+    /// the tracker.
+    #[cfg(test)]
+    pub(crate) core_synced: Mutex<Option<bool>>,
     /// Tests: the gate as the masternode withdrawals' recheck read it when
     /// it started.
     #[cfg(test)]
@@ -67,6 +112,9 @@ pub(crate) struct RestoreGate {
     /// Tests: how many masternode withdrawal rechecks ran.
     #[cfg(test)]
     pub(crate) recheck_runs: std::sync::atomic::AtomicU32,
+    /// Tests: how many times what waited for the gate was let run.
+    #[cfg(test)]
+    pub(crate) cleared_runs: std::sync::atomic::AtomicU32,
 }
 
 impl RestoreGate {
@@ -81,6 +129,18 @@ impl RestoreGate {
     /// anything that reads the gate starts.
     pub(crate) fn set_dir(&self, network_dir: &Path) {
         let _ = self.network_dir.set(network_dir.to_path_buf());
+    }
+
+    /// How long the watcher waits after `failures` failed clears in a row.
+    fn backoff(&self, failures: u32) -> Duration {
+        if failures == 0 {
+            return Duration::ZERO;
+        }
+        #[cfg(test)]
+        if let Some(backoff) = *self.backoff.lock().unwrap() {
+            return backoff;
+        }
+        clear_backoff(failures)
     }
 
     /// Reads the network's mark; returns whether it is set. A mark whose
@@ -120,6 +180,14 @@ impl RestoreGate {
             self.wake.notify_one();
         }
     }
+}
+
+/// The growing delay after `failures` failed clears: twice the watcher's
+/// look per failure, up to [`CLEAR_BACKOFF_MAX`].
+pub(crate) fn clear_backoff(failures: u32) -> Duration {
+    WATCH_EVERY
+        .saturating_mul(1 << failures.min(5))
+        .min(CLEAR_BACKOFF_MAX)
 }
 
 fn encode(inputs: &BTreeSet<OutPoint>) -> String {
@@ -408,7 +476,9 @@ impl NetworkSession {
     }
 
     /// Reads the network's mark before the history loads and, when it is
-    /// set, starts the watcher that clears it (H4).
+    /// set, starts the watcher that clears it (H4). A failed clear is tried
+    /// again after a growing delay, or at once on a retry; meanwhile the
+    /// watcher still publishes what the gate waits for.
     pub(crate) fn attach_restore_gate(self: &Arc<Self>) {
         if !self.hub.restore.init(self.data_dir()) {
             return;
@@ -416,54 +486,153 @@ impl NetworkSession {
         tracing::info!("restore: the money gate is on until the first full sync");
         let weak = Arc::downgrade(self);
         self.rt.spawn(async move {
+            let mut failures = 0u32;
+            let mut next_try = tokio::time::Instant::now();
             loop {
-                let wake = {
+                let (hub, wait) = {
                     let Some(session) = weak.upgrade() else {
                         return;
                     };
-                    match session.try_clear_restored().await {
-                        Ok(true) => return,
-                        Ok(false) => {}
-                        Err(e) => tracing::warn!(error = %e, "restore: the mark did not clear"),
+                    let gate = &session.hub.restore;
+                    if gate.retry.swap(false, Ordering::SeqCst) {
+                        next_try = tokio::time::Instant::now();
                     }
-                    let hub = Arc::clone(&session.hub);
-                    drop(session);
-                    hub
+                    if tokio::time::Instant::now() >= next_try {
+                        match session.try_clear_restored().await {
+                            Ok(true) => return,
+                            Ok(false) => failures = 0,
+                            Err(e) => {
+                                failures = failures.saturating_add(1);
+                                tracing::warn!(error = %e, failures, "restore: the mark did not clear");
+                            }
+                        }
+                        gate.clear_failed.store(failures > 0, Ordering::SeqCst);
+                        next_try = tokio::time::Instant::now() + gate.backoff(failures);
+                    }
+                    session.publish_restore_status().await;
+                    let left = next_try.saturating_duration_since(tokio::time::Instant::now());
+                    let wait = match failures {
+                        0 => WATCH_EVERY,
+                        _ => WATCH_EVERY.min(left),
+                    };
+                    (Arc::clone(&session.hub), wait)
                 };
-                let _ = tokio::time::timeout(WATCH_EVERY, wake.restore.wake.notified()).await;
+                let _ = tokio::time::timeout(wait, hub.restore.wake.notified()).await;
             }
         });
     }
 
-    /// Core, Platform and Shielded synced, a service that is off counting
-    /// as synced, and every loaded wallet's holds built.
-    async fn restore_all_synced(&self) -> Result<bool, EngineError> {
-        let manager = self.manager()?;
-        let ids = manager.list_wallet_ids_blocking();
-        let built = ids
-            .iter()
-            .all(|id| (self.hub.history).read_wallet(&WalletId(*id), |h| h.restore_holds_built));
-        #[cfg(test)]
-        if let Some(synced) = *self.hub.restore.all_synced.lock().unwrap() {
-            return Ok(synced && built);
+    /// What the money gate waits for; `None` when it is off.
+    pub async fn restore_status(&self) -> Result<Option<RestoreStatus>, EngineError> {
+        if !self.hub.restore.is_restored() {
+            return Ok(None);
         }
+        let (waiting, history_wallets) = self.restore_waiting().await?;
+        Ok(Some(RestoreStatus {
+            waiting,
+            history_wallets,
+            clear_failed: self.hub.restore.clear_failed.load(Ordering::SeqCst),
+        }))
+    }
+
+    /// Marks sync when what the gate waits for changed since the last time.
+    async fn publish_restore_status(&self) {
+        let Ok(status) = self.restore_status().await else {
+            return;
+        };
+        let changed = {
+            let mut published =
+                (self.hub.restore.published.lock()).unwrap_or_else(|p| p.into_inner());
+            let changed = *published != status;
+            *published = status;
+            changed
+        };
+        if changed {
+            self.hub.pump.mark_sync();
+        }
+    }
+
+    /// Asks Platform for a full Platform-address pass, and the gate's
+    /// watcher to try the clear at once, a failed clear's delay cut short.
+    /// The shielded pass comes from the Platform loops, which admit it only
+    /// while the session is open. Does nothing while the gate is off.
+    pub async fn restore_retry(self: &Arc<Self>) -> Result<(), EngineError> {
         let gate = &self.hub.restore;
+        if !gate.is_restored() {
+            return Ok(());
+        }
+        gate.retry.store(true, Ordering::SeqCst);
+        gate.wake.notify_one();
+        if !self.platform.enabled() {
+            return Ok(());
+        }
+        let manager = self.manager()?;
+        let sync = manager.platform_address_sync_arc();
+        if !sync.is_syncing() {
+            let handle = self.rt.clone();
+            // The library's pass is not `Send`: it runs on the blocking pool.
+            drop(self.rt.spawn_blocking(move || {
+                handle.block_on(sync.sync_now());
+            }));
+        }
+        Ok(())
+    }
+
+    /// What all-Synced still waits for, and the loaded wallets whose holds
+    /// are not built. Core, Platform and Shielded synced, a service that
+    /// is off counting as synced, and every loaded wallet's holds built.
+    async fn restore_waiting(&self) -> Result<(Vec<RestoreWait>, Vec<WalletId>), EngineError> {
+        let manager = self.manager()?;
+        let unbuilt: Vec<WalletId> = (manager.list_wallet_ids_blocking().into_iter())
+            .map(WalletId)
+            .filter(|id| !(self.hub.history).read_wallet(id, |h| h.restore_holds_built))
+            .collect();
+        let (core, platform) = self.restore_services(&manager).await;
+        let waiting = [
+            (core, RestoreWait::CoreSync),
+            (platform, RestoreWait::PlatformPass),
+            (unbuilt.is_empty(), RestoreWait::HistoryLoad),
+        ];
+        let waiting = (waiting.into_iter())
+            .filter_map(|(done, wait)| (!done).then_some(wait))
+            .collect();
+        Ok((waiting, unbuilt))
+    }
+
+    /// Whether Core, and Platform with Shielded, read as synced.
+    async fn restore_services(&self, manager: &crate::session::Manager) -> (bool, bool) {
+        let gate = &self.hub.restore;
+        #[cfg(test)]
+        if let Some(synced) = *gate.all_synced.lock().unwrap() {
+            return (synced, synced);
+        }
         let (core, masternodes) = {
             let tracker = self.hub.tracker();
             (tracker.caught_up(), tracker.masternodes_synced())
         };
+        #[cfg(test)]
+        let (core, masternodes) =
+            (*gate.core_synced.lock().unwrap()).map_or((core, masternodes), |c| (c, c));
         let platform =
             !self.platform.enabled() || (masternodes && gate.platform_pass.load(Ordering::SeqCst));
         let shielded = !self.platform.enabled()
             || gate.shielded_pass.load(Ordering::SeqCst)
-            || !crate::platform::shielded_pool::runs_sync(&manager).await;
-        Ok(built && core && platform && shielded)
+            || !crate::platform::shielded_pool::runs_sync(manager).await;
+        (core, platform && shielded)
+    }
+
+    async fn restore_all_synced(&self) -> Result<bool, EngineError> {
+        Ok(self.restore_waiting().await?.0.is_empty())
     }
 
     /// H4: at all-Synced, runs one drop-dead pass over every loaded wallet
     /// and then clears the mark. Returns whether it cleared.
     pub(crate) async fn try_clear_restored(self: &Arc<Self>) -> Result<bool, EngineError> {
-        if !self.hub.restore.is_restored() || !self.restore_all_synced().await? {
+        if !self.hub.restore.is_restored() {
+            self.restore_cleared()?;
+            return Ok(true);
+        }
+        if !self.restore_all_synced().await? {
             return Ok(false);
         }
         let _op = self.enter().await?;
@@ -536,6 +705,8 @@ impl NetworkSession {
                 .map_err(|e| EngineError::Storage(format!("restore: build marks: {e}")))?;
             }
             #[cfg(test)]
+            (self.hub.restore.clear_attempts).fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
             let fault = (self.hub.restore.clear_fails)
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok();
@@ -552,12 +723,22 @@ impl NetworkSession {
             };
             cleared?;
         }
+        self.restore_cleared()?;
+        Ok(true)
+    }
+
+    /// Once the mark is gone, however it went (a clear whose last step
+    /// failed after the remove included): what waited for the gate runs.
+    fn restore_cleared(&self) -> Result<(), EngineError> {
+        let manager = self.manager()?;
+        #[cfg(test)]
+        (self.hub.restore.cleared_runs).fetch_add(1, Ordering::SeqCst);
         self.leases.request_resume(None);
         self.hub.pump.mark_sync();
         for id in manager.list_wallet_ids_blocking() {
             self.hub.pump.mark_balances(WalletId(id));
         }
         tracing::info!("restore: the money gate is off");
-        Ok(true)
+        Ok(())
     }
 }

@@ -120,6 +120,7 @@ pub use platform::{
     SpvState, StartupStatus, SyncLoop, SyncLoopStatus,
 };
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
+pub use restore_gate::{RestoreStatus, RestoreWait};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};
 pub use send::{
     BroadcastOutcome, ChangePolicy, CoinSource, ContactRecipient, FeeMode, MAX_TX_FEE,

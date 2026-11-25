@@ -821,6 +821,33 @@ fn a_failed_clear_keeps_the_gate_closed_and_retries_after_a_pass() {
     );
 }
 
+/// Closes the network and opens it again, Platform off when `no_platform`.
+fn reopen_with(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    no_platform: bool,
+) -> Arc<NetworkSession> {
+    *session.close_load_wait.lock().unwrap() = Some(super::LOAD_WAIT);
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap()
+    );
+    let options = crate::SessionOptions {
+        no_platform,
+        ..super::offline()
+    };
+    engine
+        .block_on(engine.open_network(crate::DashNetwork::Regtest, options))
+        .unwrap()
+}
+
+fn waiting(engine: &Engine, session: &NetworkSession) -> Option<Vec<crate::RestoreWait>> {
+    let status = engine.block_on(session.restore_status()).unwrap();
+    status.map(|s| s.waiting)
+}
+
 /// The gate reads on before the network's dir is set.
 #[test]
 fn a_gate_without_its_dir_reads_restored() {
@@ -876,5 +903,116 @@ fn a_proposal_fee_resend_is_refused_while_restored() {
             ))
         ),
         "{refused:?}"
+    );
+}
+
+/// The delay after failed clears doubles from the watcher's look to a
+/// minute.
+#[test]
+fn a_failed_clears_delay_grows_to_a_minute() {
+    let secs: Vec<u64> = (1..=7)
+        .map(|n| crate::restore_gate::clear_backoff(n).as_secs())
+        .collect();
+    assert_eq!(secs, [4, 8, 16, 32, 60, 60, 60]);
+}
+
+/// S2: after a failed clear, wakes do not try it again before its delay;
+/// a retry does, at once, and the status names the failure.
+#[test]
+fn a_failed_clear_waits_out_its_delay_unless_retried() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, _id, _paid, _p) = held_payment();
+    let session = reopen_with(&engine, session, true);
+    let restore = &session.hub.restore;
+    restore.clear_fails.store(u32::MAX, SeqCst);
+    *restore.backoff.lock().unwrap() = Some(std::time::Duration::from_secs(600));
+    all_synced(&session);
+    eventually("the first clear fails", || {
+        restore.clear_attempts.load(SeqCst) == 1
+            && engine
+                .block_on(session.restore_status())
+                .unwrap()
+                .is_some_and(|s| s.clear_failed)
+    });
+    for _ in 0..10 {
+        restore.wake.notify_one();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(
+        restore.clear_attempts.load(SeqCst),
+        1,
+        "a wake tried the clear again within its delay"
+    );
+    assert!(session.restored() && mark_present(&session));
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the retry tries the clear", || {
+        restore.clear_attempts.load(SeqCst) == 2
+    });
+    assert!(session.restored(), "a failed clear opened the gate");
+    restore.clear_fails.store(0, SeqCst);
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the retry clears", || !session.restored());
+    assert!(!mark_present(&session));
+}
+
+/// C3: with Platform on and no Platform pass, the mark stays and the status
+/// names the pass. The same data opened without Platform clears it once
+/// Core has caught up, the loads are built and the drop-dead pass ran.
+/// Opened with Platform again, the gate stays open and the hold stays in
+/// effect.
+#[test]
+fn without_platform_the_mark_clears_on_core_and_the_loads() {
+    use crate::RestoreWait::{CoreSync, PlatformPass};
+    let (_dir, engine, session, id, _paid, p) = held_payment();
+    *session.hub.restore.core_synced.lock().unwrap() = Some(true);
+    session.hub.restore.wake.notify_one();
+    eventually("only Platform's pass is waited for", || {
+        waiting(&engine, &session) == Some(vec![PlatformPass])
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        session.restored() && mark_present(&session),
+        "the mark cleared with no Platform pass"
+    );
+    let session = reopen_with(&engine, session, true);
+    eventually("only Core is waited for", || {
+        waiting(&engine, &session) == Some(vec![CoreSync])
+    });
+    assert!(session.restored() && mark_present(&session));
+    *session.hub.restore.core_synced.lock().unwrap() = Some(true);
+    session.hub.restore.wake.notify_one();
+    eventually("the mark clears without Platform", || !session.restored());
+    assert!(!mark_present(&session));
+    assert_eq!(waiting(&engine, &session), None);
+    let session = reopen_with(&engine, session, false);
+    assert!(!session.restored(), "the gate closed again");
+    assert!(
+        holds(&session, id).contains_key(&p.txid()),
+        "the hold went with the mark"
+    );
+    assert_change_held(&engine, &session, id, &p, "reopened with Platform");
+}
+
+/// A mark gone outside the clear (a clear whose last step failed after the
+/// remove) ends the watcher once, with what waited for the gate let run.
+#[test]
+fn a_mark_gone_outside_the_clear_ends_the_watcher_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, _engine, session, _id, _paid, _p) = held_payment();
+    let restore = &session.hub.restore;
+    std::fs::remove_file(mark_dir(&session).join("RESTORED")).unwrap();
+    assert!(!session.restored());
+    restore.wake.notify_one();
+    eventually("the watcher lets what waited run", || {
+        restore.cleared_runs.load(SeqCst) == 1
+    });
+    for _ in 0..5 {
+        restore.wake.notify_one();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(
+        restore.cleared_runs.load(SeqCst),
+        1,
+        "the watcher kept running"
     );
 }
