@@ -179,6 +179,7 @@ import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
 import type { RescanStart } from "./RescanStart";
 import type { RescanStatus } from "./RescanStatus";
+import type { RestoreStatus } from "./RestoreStatus";
 import type { RevealedMasternodeKey } from "./RevealedMasternodeKey";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
@@ -387,6 +388,30 @@ export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
 }
 
 /**
+ * The way out of a restore that waits for Platform (`restoreStatus`):
+ * closes the active network as `switchNetwork` closes it (refused with
+ * `app.network_busy` while a Platform flow holds a lease, a wallet
+ * mixes or a broadcast has not returned, `draining` when the running
+ * operations do not finish within 2 s, then the engine's own
+ * refusals with [`ErrorData::NetworkCloseRefused`]; a refusal changes
+ * nothing) and opens it again with Platform off, for this session
+ * only: the next start, or `openNetwork` after a close, opens it with
+ * Platform. Without Platform the restore's gate opens once Core has
+ * caught up and every wallet's history has loaded. While the gate is
+ * open, or does not wait for Platform (the network already runs
+ * without it, or only Core or a history load is waited for), it does
+ * nothing and returns the active network. A
+ * failed open reopens the network with Platform and is
+ * `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
+ * `rolledBack` false when that failed too, the window then without a
+ * network). `network_not_open` before `openNetwork`. The renderer
+ * boots again on success.
+ */
+export function finishWithoutPlatform(): Promise<OpenedNetwork> {
+  return invoke<OpenedNetwork>("finish_without_platform");
+}
+
+/**
  * Closes the active network and drops its draft handles; `false` when
  * none was open.
  */
@@ -400,6 +425,23 @@ export function closeNetwork(): Promise<boolean> {
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
+}
+
+/**
+ * What the active network's restore waits for before funds actions
+ * run again; `null` when they run. A change is a `sync` event.
+ */
+export function restoreStatus(): Promise<RestoreStatus | null> {
+  return invoke<RestoreStatus | null>("restore_status");
+}
+
+/**
+ * Asks Platform for a fresh check and the restore to try opening the
+ * gate at once, a failed attempt's delay cut short. Nothing while the
+ * gate is open.
+ */
+export function restoreRetry(): Promise<null> {
+  return invoke<null>("restore_retry");
 }
 
 /**
@@ -3450,8 +3492,11 @@ export type CommandArgs = {
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
+  finish_without_platform: {  };
   close_network: {  };
   active_network: {  };
+  restore_status: {  };
+  restore_retry: {  };
   get_network_choice: {  };
   existing_networks: {  };
   restore_available: { network: string | null };
@@ -3835,8 +3880,11 @@ export type CommandResults = {
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
+  finish_without_platform: OpenedNetwork;
   close_network: boolean;
   active_network: NetworkInfo | null;
+  restore_status: RestoreStatus | null;
+  restore_retry: null;
   get_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
   restore_available: boolean;
@@ -4222,8 +4270,11 @@ export const COMMANDS: Record<CommandName, string> = {
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
+  finish_without_platform: "network",
   close_network: "network",
   active_network: "network",
+  restore_status: "network",
+  restore_retry: "network",
   get_network_choice: "network",
   existing_networks: "network",
   restore_available: "network",

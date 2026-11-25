@@ -16,9 +16,9 @@ use dw_engine::{CloseRefused, DashNetwork, NetworkDataInfo, NetworkSession, Sess
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::dto::{LockStatus, NetworkInfo, parse_network};
+use crate::dto::{LockStatus, NetworkInfo, mirror_enum, parse_network};
 use crate::error::{
-    AppCode, AppError, CloseRefusalReason, ErrorData, StoreLine, UpdateBusyReason,
+    AppCode, AppError, CloseRefusalReason, EngineCode, ErrorData, StoreLine, UpdateBusyReason,
 };
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
@@ -241,6 +241,45 @@ impl From<NetworkDataInfo> for NetworkData {
     }
 }
 
+/// What a restored network waits for before its funds actions run again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreStatus {
+    /// Empty: the gate opens at the engine's next look.
+    pub waiting: Vec<RestoreWait>,
+    /// The loaded wallets whose history has not loaded (`historyLoad`).
+    pub history_wallets: Vec<String>,
+    /// The last attempt to open the gate failed reading or writing its
+    /// mark; it is tried again after a growing delay, at once on
+    /// `restoreRetry`.
+    pub clear_failed: bool,
+}
+
+/// One thing a restored network waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreWait {
+    /// Core has not caught up with the network.
+    CoreSync,
+    /// Platform's first check since the network opened has not completed;
+    /// a network opened with `noPlatform` never waits for it.
+    PlatformPass,
+    /// A wallet's history has not loaded.
+    HistoryLoad,
+}
+
+mirror_enum!(dw_engine::RestoreWait => RestoreWait { CoreSync, PlatformPass, HistoryLoad });
+
+impl From<dw_engine::RestoreStatus> for RestoreStatus {
+    fn from(s: dw_engine::RestoreStatus) -> Self {
+        RestoreStatus {
+            waiting: s.waiting.into_iter().map(Into::into).collect(),
+            history_wallets: s.history_wallets.iter().map(ToString::to_string).collect(),
+            clear_failed: s.clear_failed,
+        }
+    }
+}
+
 commands! {
     /// Makes `network` (a directory name; `null`: the window's network,
     /// the launch network until `switchNetwork` opens another) the active
@@ -281,13 +320,7 @@ commands! {
                     let old = old.network().clone();
                     close_active(&state, &mut slot, engine.close_network(old).await)?;
                 }
-                let s = if network == window {
-                    open_window_network(&state, &network, settings).await?
-                } else {
-                    let s = engine.open_network(network.clone(), settings.over(&state.launch)).await?;
-                    crate::shell::sleep::require_beats(&s);
-                    s
-                };
+                let s = open_any_network(&state, &network, settings).await?;
                 *slot = Some(Arc::clone(&s));
                 s
             }
@@ -406,6 +439,93 @@ commands! {
         })
     }
 
+    /// The way out of a restore that waits for Platform (`restoreStatus`):
+    /// closes the active network as `switchNetwork` closes it (refused with
+    /// `app.network_busy` while a Platform flow holds a lease, a wallet
+    /// mixes or a broadcast has not returned, `draining` when the running
+    /// operations do not finish within 2 s, then the engine's own
+    /// refusals with [`ErrorData::NetworkCloseRefused`]; a refusal changes
+    /// nothing) and opens it again with Platform off, for this session
+    /// only: the next start, or `openNetwork` after a close, opens it with
+    /// Platform. Without Platform the restore's gate opens once Core has
+    /// caught up and every wallet's history has loaded. While the gate is
+    /// open, or does not wait for Platform (the network already runs
+    /// without it, or only Core or a history load is waited for), it does
+    /// nothing and returns the active network. A
+    /// failed open reopens the network with Platform and is
+    /// `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
+    /// `rolledBack` false when that failed too, the window then without a
+    /// network). `network_not_open` before `openNetwork`. The renderer
+    /// boots again on success.
+    #[facade("NetworkSession::restore_status", "Engine::close_network_unless_busy")]
+    fn finish_without_platform(state) -> OpenedNetwork {
+        state.retry_engine_if_failed();
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
+        let mut slot = state.session_slot().await;
+        let Some(session) = slot.clone() else {
+            return Err(AppError::new(EngineCode::NetworkNotOpen, "call open_network first"));
+        };
+        let network = session.network().clone();
+        let waits_for_platform = (session.restore_status().await?)
+            .is_some_and(|s| s.waiting.contains(&dw_engine::RestoreWait::PlatformPass));
+        if !waits_for_platform {
+            return Ok(OpenedNetwork::of(&session, NetworkInfo::opened(&session)));
+        }
+        drop(session);
+        let busy = busy_check(state.broadcasts());
+        let closed = match engine.close_network_unless_busy(network.clone(), SWITCH_DRAIN, busy).await {
+            Ok(closed) => Ok(closed),
+            Err(CloseRefused::Busy(e)) => return Err(e),
+            Err(CloseRefused::Draining) => {
+                return Err(busy_error(Busy {
+                    draining: true,
+                    ..Busy::default()
+                }));
+            }
+            Err(CloseRefused::Engine(e)) => Err(e),
+        };
+        if let Err(e) = close_active(&state, &mut slot, closed) {
+            if slot.is_some() {
+                return Err(close_refusal(e));
+            }
+            eprintln!("dw-app: the close of {} failed: {e}", network.dir_name());
+        }
+        #[cfg(test)]
+        if let Some(seam) = &*state.before_platform_off_open.lock().unwrap() {
+            seam();
+        }
+        let platform_off = SessionSettings {
+            no_platform: true,
+            ..SessionSettings::default()
+        };
+        let session = match open_any_network(&state, &network, platform_off).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("dw-app: {} did not open without Platform: {e}", network.dir_name());
+                #[cfg(test)]
+                if let Some(seam) = &*state.before_rollback.lock().unwrap() {
+                    seam();
+                }
+                let back = open_any_network(&state, &network, SessionSettings::default())
+                    .await
+                    .inspect_err(|e| eprintln!("dw-app: {} did not reopen: {e}", network.dir_name()));
+                let rolled_back = back.is_ok();
+                *slot = back.ok();
+                return Err(AppError::app(
+                    AppCode::NetworkSwitchFailed,
+                    format!("{} did not open without Platform: {e}", network.dir_name()),
+                )
+                .with(ErrorData::NetworkSwitch {
+                    network: NetworkInfo::from(&network),
+                    rolled_back,
+                }));
+            }
+        };
+        *slot = Some(Arc::clone(&session));
+        Ok(OpenedNetwork::of(&session, NetworkInfo::opened(&session)))
+    }
+
     /// Closes the active network and drops its draft handles; `false` when
     /// none was open.
     #[facade("Engine::close_network")]
@@ -430,6 +550,21 @@ commands! {
             .await
             .as_ref()
             .map(|s| NetworkInfo::opened(s)))
+    }
+
+    /// What the active network's restore waits for before funds actions
+    /// run again; `null` when they run. A change is a `sync` event.
+    #[facade("NetworkSession::restore_status")]
+    fn restore_status(state) -> Option<RestoreStatus> {
+        Ok(state.session().await?.restore_status().await?.map(Into::into))
+    }
+
+    /// Asks Platform for a fresh check and the restore to try opening the
+    /// gate at once, a failed attempt's delay cut short. Nothing while the
+    /// gate is open.
+    #[facade("NetworkSession::restore_retry")]
+    fn restore_retry(state) -> () {
+        Ok(state.session().await?.restore_retry().await?)
     }
 
     /// The saved network choice (mainnet or testnet), the window's network
@@ -498,6 +633,25 @@ fn restore_network(state: &AppState, network: Option<String>) -> Result<DashNetw
     })
 }
 
+/// Opens `network`: as the window's ([`open_window_network`]) when it is
+/// the window's network, otherwise with `settings` over the launch flags
+/// and SPV not started.
+async fn open_any_network(
+    state: &AppState,
+    network: &DashNetwork,
+    settings: SessionSettings,
+) -> Result<Arc<NetworkSession>, AppError> {
+    if *network == state.window_network() {
+        return open_window_network(state, network, settings).await;
+    }
+    let engines = state.engine.clone();
+    let s = (engines.wait().await?)
+        .open_network(network.clone(), settings.over(&state.launch))
+        .await?;
+    crate::shell::sleep::require_beats(&s);
+    Ok(s)
+}
+
 /// Opens `network` as the window's: with the launch flags (or, on a
 /// developer network, `settings` over them), and SPV started as the launch
 /// starts it for that network.
@@ -507,7 +661,12 @@ async fn open_window_network(
     settings: SessionSettings,
 ) -> Result<Arc<NetworkSession>, AppError> {
     #[cfg(test)]
-    let settings = state.test_endpoints.lock().unwrap().clone().unwrap_or(settings);
+    let settings = (state.test_endpoints.lock().unwrap().clone())
+        .map(|t| SessionSettings {
+            no_platform: t.no_platform || settings.no_platform,
+            ..t
+        })
+        .unwrap_or(settings);
     state.retry_engine_if_failed();
     let engines = state.engine.clone();
     let s = engines

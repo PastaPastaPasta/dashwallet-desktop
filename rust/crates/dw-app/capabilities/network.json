@@ -16,6 +16,9 @@
     "allow-restore-available",
     "allow-request-restore",
     "allow-keep-current-files",
-    "allow-cancel-restore"
+    "allow-cancel-restore",
+    "allow-restore-status",
+    "allow-restore-retry",
+    "allow-finish-without-platform"
   ]
 }

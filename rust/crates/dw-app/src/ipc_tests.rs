@@ -2917,3 +2917,129 @@ fn the_open_network_says_whether_its_data_was_restored() {
             .is_none()
     );
 }
+
+/// A mainnet window opened with Platform on a network a restore left
+/// restored (its mark written while it was closed).
+fn restored_mainnet() -> Demo {
+    let demo = launched_on_mainnet();
+    if let Some(endpoints) = demo.state().test_endpoints.lock().unwrap().as_mut() {
+        endpoints.no_platform = false;
+    }
+    demo.ok("open_network", json!({}));
+    assert_eq!(demo.ok("close_network", json!({})), true);
+    let dir = demo.data_root().join("mainnet").join("upgrade-backups");
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(dir.join("RESTORED"), "restored\nformat 1\n").unwrap();
+    demo.ok("open_network", json!({}));
+    demo
+}
+
+fn restore_waits_for(demo: &Demo, wait: &str) -> bool {
+    let status = demo.ok("restore_status", json!({}));
+    (status["waiting"].as_array())
+        .unwrap_or_else(|| panic!("not restored: {status}"))
+        .contains(&json!(wait))
+}
+
+/// C3: the restore's way out reopens the network with Platform off, for
+/// this session only: the gate no longer waits for Platform, and the next
+/// open has Platform again.
+#[test]
+fn finishing_without_platform_reopens_the_network_with_platform_off() {
+    let demo = restored_mainnet();
+    assert!(restore_waits_for(&demo, "platformPass"));
+    let opened = demo.ok("finish_without_platform", json!({}));
+    assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("restore_status", json!({}))["waiting"],
+        json!(["coreSync"])
+    );
+    assert_eq!(demo.ok("restore_retry", json!({})), Value::Null);
+    assert_eq!(demo.ok("close_network", json!({})), true);
+    demo.ok("open_network", json!({}));
+    assert!(
+        restore_waits_for(&demo, "platformPass"),
+        "Platform stayed off after a reopen"
+    );
+}
+
+/// C3: closing to finish without Platform would cut what runs on the
+/// network, so it refuses and changes nothing (here a broadcast that has
+/// not returned).
+#[test]
+fn finishing_without_platform_refuses_while_a_broadcast_has_not_returned() {
+    let demo = restored_mainnet();
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let e = demo.err("finish_without_platform", json!({}), "app.network_busy");
+    assert_eq!(e["data"]["kind"], "networkBusy", "{e}");
+    assert_eq!(e["data"]["broadcast"], true);
+    assert_eq!(demo.active(), "mainnet");
+    assert!(
+        restore_waits_for(&demo, "platformPass"),
+        "the refused call reopened the network"
+    );
+    drop(in_flight);
+    demo.ok("finish_without_platform", json!({}));
+    assert!(!restore_waits_for(&demo, "platformPass"));
+}
+
+/// C3: when the network does not open without Platform, it is opened again
+/// with Platform: `app.network_switch_failed`, rolled back.
+#[test]
+fn a_failed_open_without_platform_rolls_back() {
+    let demo = restored_mainnet();
+    let root = demo.data_root();
+    let away = root.join("mainnet.away");
+    {
+        let (root, away) = (root.clone(), away.clone());
+        *demo.state().before_platform_off_open.lock().unwrap() = Some(Box::new(move || {
+            std::fs::rename(root.join("mainnet"), &away).unwrap();
+            std::fs::write(root.join("mainnet"), b"").unwrap();
+        }));
+    }
+    {
+        let (root, away) = (root.clone(), away.clone());
+        *demo.state().before_rollback.lock().unwrap() = Some(Box::new(move || {
+            std::fs::remove_file(root.join("mainnet")).unwrap();
+            std::fs::rename(&away, root.join("mainnet")).unwrap();
+        }));
+    }
+    let e = demo.err(
+        "finish_without_platform",
+        json!({}),
+        "app.network_switch_failed",
+    );
+    assert_eq!(e["data"]["kind"], "networkSwitch", "{e}");
+    assert_eq!(e["data"]["network"]["dirName"], "mainnet");
+    assert_eq!(e["data"]["rolledBack"], true);
+    assert_eq!(demo.active(), "mainnet");
+    assert!(
+        restore_waits_for(&demo, "platformPass"),
+        "the rollback opened without Platform"
+    );
+}
+
+/// With the restore's gate open, finishing without Platform keeps the
+/// session as it is.
+#[test]
+fn finishing_without_platform_with_the_gate_open_does_nothing() {
+    let demo = launched_on_mainnet();
+    if let Some(endpoints) = demo.state().test_endpoints.lock().unwrap().as_mut() {
+        endpoints.no_platform = false;
+    }
+    demo.ok("open_network", json!({}));
+    assert_eq!(demo.ok("restore_status", json!({})), Value::Null);
+    assert_eq!(demo.ok("restore_retry", json!({})), Value::Null);
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let opened = demo.ok("finish_without_platform", json!({}));
+    assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
+    drop(in_flight);
+}
