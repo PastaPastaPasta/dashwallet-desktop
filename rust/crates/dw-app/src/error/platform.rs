@@ -63,6 +63,7 @@ codes! {
         ShieldedNotReady = "registration.shielded_not_ready",
         QuoteChanged = "registration.quote_changed",
         Refunded = "registration.refunded",
+        PaymentConsumed = "registration.payment_consumed",
     }
 }
 
@@ -372,6 +373,7 @@ impl From<RegistrationError> for AppError {
             ),
             R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
             R::Refunded => (RegistrationCode::Refunded, None),
+            R::PaymentConsumed => (RegistrationCode::PaymentConsumed, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
             R::Credits(e) => return e.into(),
@@ -637,6 +639,7 @@ mod tests {
             },
             RegistrationError::QuoteChanged,
             RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
             RegistrationError::Credits(CreditsError::MovePending { id: s() }),

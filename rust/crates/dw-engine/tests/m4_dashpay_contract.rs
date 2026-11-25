@@ -1080,6 +1080,7 @@ fn error_codes_match_the_contract() {
             },
             RegistrationError::QuoteChanged,
             RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
         ],
         RegistrationError::code,
     );

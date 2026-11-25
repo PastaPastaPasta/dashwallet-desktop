@@ -926,7 +926,8 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::NotSynced
         | R::CoinsLocked
         | R::QuoteChanged
-        | R::Refunded => json!({}),
+        | R::Refunded
+        | R::PaymentConsumed => json!({}),
         R::ShieldedNotReady { reason, ready_at } => {
             json!({"reason": reason, "ready_at": ready_at})
         }

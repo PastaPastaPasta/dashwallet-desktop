@@ -2933,15 +2933,29 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             // an identity of the seed at the row's index is the row's, else
             // the penalty was taken and nothing retries. The one the create
             // named was just proved absent, whatever the library recorded.
-            Ok(ShieldedOutcome::Fallback(named)) => match (self.lib.identities().await?)
+            // Consumed: its notes are spent with no identity, by its fallback
+            // or by another spend of them, so it adopts as a fallback does
+            // and otherwise claims no refund.
+            Ok(
+                ref spent @ (ShieldedOutcome::Fallback(ref named)
+                | ShieldedOutcome::Consumed(ref named)),
+            ) => match (self.lib.identities().await?)
                 .into_iter()
-                .find(|(i, id)| *i == index && *id != named)
+                .find(|(i, id)| *i == index && id != named)
             {
                 Some((_, identity)) => self.advance(row, registered(identity)).await,
                 None => {
-                    tracing::warn!(draft = row.id, "a Shielded-funded create was refunded");
-                    let refunded = RegistrationError::Refunded.code();
-                    self.advance(row, unnamed(Some((refunded, false)))).await
+                    let failure = match spent {
+                        ShieldedOutcome::Fallback(_) => RegistrationError::Refunded,
+                        _ => RegistrationError::PaymentConsumed,
+                    };
+                    tracing::warn!(
+                        draft = row.id,
+                        code = failure.code(),
+                        "a Shielded-funded create made no identity"
+                    );
+                    self.advance(row, unnamed(Some((failure.code(), false))))
+                        .await
                 }
             },
             Ok(ShieldedOutcome::Cleared) => self.advance(row, unnamed(None)).await,

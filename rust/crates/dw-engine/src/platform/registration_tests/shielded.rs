@@ -448,6 +448,34 @@ fn a_fallback_adopts_the_index_identity_or_fails_refunded() {
     assert_eq!(f.row(draft).identity, Some(found));
 }
 
+/// F12: a create of two or more notes whose notes were spent with no
+/// identity adopts an identity of the seed at the row's index as a
+/// fallback does, else fails `registration.payment_consumed`, not
+/// retryable and claiming no refund, the name cleared and the row free to
+/// discard.
+#[test]
+fn consumed_notes_adopt_the_index_identity_or_fail_consumed() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let draft = f.insert(shielded_row(Some(created())));
+    lib.w().identities.push((0, created()));
+    script(&lib, [(None, Ok(ShieldedOutcome::Consumed(created())))]);
+    f.drive(&lib, draft, None, false);
+    let row = f.row(draft);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable, named(&row)),
+        (Some("registration.payment_consumed"), false, None)
+    );
+    assert!(!f.status(&lib, draft).funds_committed);
+    f.discard(&lib, draft).unwrap();
+    let draft = f.insert(shielded_row(Some(created())));
+    let found = flow::b58(&dpp::prelude::Identifier::from([0x62u8; 32]));
+    lib.w().identities = vec![(0, found.clone())];
+    script(&lib, [(None, Ok(ShieldedOutcome::Consumed(created())))]);
+    f.drive(&lib, draft, None, false);
+    assert_eq!(f.row(draft).identity, Some(found));
+}
+
 /// F12, F13: Platform's fallback on the pass that created: the library
 /// recorded the identity the create named at the row's index although it
 /// was proved absent, so it is not adopted and the row fails refunded.

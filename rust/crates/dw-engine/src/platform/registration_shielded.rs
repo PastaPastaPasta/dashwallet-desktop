@@ -54,6 +54,12 @@ pub(crate) enum ShieldedOutcome {
     /// payment, less a penalty, to the fallback address, whose record is
     /// written.
     Fallback(String),
+    /// The notes a create of two or more notes selected read spent and the
+    /// identity it named (base58) reads absent at or above that: they are
+    /// gone, by this create's fallback or by another spend of the same
+    /// notes, which no proof tells apart. Its proof is written, so the
+    /// library's hold on them is acknowledged; no refund is claimed.
+    Consumed(String),
     /// It may still execute and no evidence says it did: the row waits.
     Unknown,
     /// The named create never reached the journal, so it was never sent:
@@ -561,8 +567,9 @@ fn create_artifact<'a>(
 /// while its outcome is not acknowledged: in flight, unresolved, or settled
 /// executed with no proof (a success the library resolves unattributable),
 /// so the library's hold on its notes is acknowledged once they read spent
-/// whatever the library resolves. `false` when the proof is not written:
-/// the row then waits on evidence.
+/// whatever the library resolves. `true` when it is written or nothing is
+/// left to prove (acknowledged, settled not executed, or no transition
+/// hash); `false` when the write failed: the row then waits on evidence.
 async fn proved_executed(
     session: &NetworkSession,
     wallet: WalletId,
@@ -607,8 +614,8 @@ async fn by_artifact(
         // or more notes has none: its nullifiers spent may be another
         // spend's of the same notes (another install of the seed), so they
         // prove nothing of this create; only its identity does.
-        Ok(NullifierRead::Spent(_)) if unresolved && unpadded(artifact) => {
-            return Ok(present().await);
+        Ok(NullifierRead::Spent(at)) if unresolved && unpadded(artifact) => {
+            return Ok(consumed(session, wallet, net, (identity, id), (artifact, at)).await);
         }
         Ok(NullifierRead::Spent(at)) => at,
         Ok(NullifierRead::Unspent(_)) if unresolved => {
@@ -642,12 +649,43 @@ async fn by_artifact(
     }
 }
 
+/// An unresolved create of two or more notes whose notes read spent at
+/// `spent_at`: its identity present is [`ShieldedOutcome::Registered`];
+/// read absent at or above `spent_at`, the notes are gone whoever spent
+/// them, so its proof is written as consumed (its artifact stays
+/// unresolved) and the library's hold is acknowledged once they read spent
+/// ([`ShieldedOutcome::Consumed`]). Anything else waits.
+async fn consumed(
+    session: &NetworkSession,
+    wallet: WalletId,
+    net: &impl CreateEvidence,
+    (identity, id): (&str, Identifier),
+    (artifact, spent_at): (&ShieldedArtifact, u64),
+) -> ShieldedOutcome {
+    match net.identity(id).await {
+        Ok((true, _)) => ShieldedOutcome::Registered(identity.to_owned()),
+        Ok((false, at)) if at >= spent_at => {
+            let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+            match artifact.st_hash {
+                Some(st_hash)
+                    if settle_proved(session, wallet, st_hash, unresolved, false).await =>
+                {
+                    ShieldedOutcome::Consumed(identity.to_owned())
+                }
+                _ => ShieldedOutcome::Unknown,
+            }
+        }
+        _ => ShieldedOutcome::Unknown,
+    }
+}
+
 /// The engine's proof of a create the library left unresolved, as the
-/// value of [`dw_appdb::dp_registration_proved`]: executed, or never
-/// executes.
-const PROVED: [(ArtifactStatus, &str); 2] = [
+/// value of [`dw_appdb::dp_registration_proved`]: executed, never executes,
+/// or its notes spent with no identity (it stays unresolved).
+const PROVED: [(ArtifactStatus, &str); 3] = [
     (ArtifactStatus::Executed, "executed"),
     (ArtifactStatus::NotExecuted, "pruned"),
+    (ArtifactStatus::Unresolved { unrecorded: false }, "consumed"),
 ];
 
 /// Writes the engine's proof that create `st_hash` settles as `status`
@@ -726,7 +764,10 @@ pub(crate) async fn proved_creates(
                 let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
                 let value = db.setting(&scope, &key)?;
                 let marked = PROVED.iter().find(|(_, v)| Some(*v) == value.as_deref());
-                let in_flight = !PROVED.iter().any(|(s, _)| *s == status);
+                let in_flight = matches!(
+                    status,
+                    ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
+                );
                 if let Some(&(proved_as, _)) = marked
                     && (in_flight || proved_as == status)
                 {

@@ -266,6 +266,13 @@ pub enum RegistrationError {
     /// on the addresses; nothing retries.
     #[error("the registration's payment was taken without an identity")]
     Refunded,
+    /// A row's failure, never returned by a call: the notes its create of
+    /// two or more notes selected read spent and the identity it named
+    /// reads absent above that (C-funding F12). Another install of the seed
+    /// may have spent them, so nothing says Platform refunded this create;
+    /// nothing retries.
+    #[error("the registration's payment notes were spent without an identity")]
+    PaymentConsumed,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -294,6 +301,7 @@ impl RegistrationError {
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
             Self::Refunded => "registration.refunded",
+            Self::PaymentConsumed => "registration.payment_consumed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Credits(e) => e.code(),

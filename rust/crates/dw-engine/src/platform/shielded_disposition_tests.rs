@@ -586,3 +586,53 @@ fn a_proved_outcome_outlives_the_library_unresolved_listing() {
     );
     assert_eq!(listing(&engine, &session, wallet), Ok(Vec::new()));
 }
+
+/// C4b-2: a create of two or more notes whose notes read spent with its
+/// identity absent above that is proved consumed: its artifact stays
+/// unresolved and the library's hold is acknowledged once the journal reads
+/// its notes spent, never before, so Close Wallet is not refused for good.
+/// Mutant: count a consumed marker only over a journal settled as it.
+#[test]
+fn a_consumed_create_is_acknowledged_once_its_notes_read_spent() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
+    resolve(&engine, &session, wallet, 1, cancelled);
+    let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+    let proved = engine.block_on(registration_shielded::settle_proved(
+        &session,
+        wallet,
+        st_hash(1),
+        unresolved,
+        false,
+    ));
+    assert!(proved);
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash(1)));
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let marker = engine
+        .block_on(session.appdb_op(move |db| db.setting(&scope, &key)))
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("consumed"));
+    let cancelled = stored("unresolved", Some("cancelled"));
+
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (unresolved, cancelled.clone(), false),
+        "its notes not read spent: still held"
+    );
+    assert_eq!(
+        listing(&engine, &session, wallet),
+        Ok(vec![(st_hash(1), nullifiers(1))])
+    );
+
+    spent_seen(&session, wallet, &nullifiers(1));
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (unresolved, cancelled, true)
+    );
+    assert_eq!(listing(&engine, &session, wallet), Ok(Vec::new()));
+}

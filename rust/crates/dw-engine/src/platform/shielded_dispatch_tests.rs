@@ -2457,9 +2457,12 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
 
 /// F12 (as #860's R4): a create of two or more notes publishes no padding,
 /// so its nullifiers read spent may be another spend's of the same notes
-/// (another install of the seed): held or not, they prove nothing of this
-/// create, the row waits and nothing is refunded. Only its identity
-/// settles it. Mutant: count the spend while the library holds the notes.
+/// (another install of the seed): held or not, they never claim a refund.
+/// Its identity present registers it; absent at or above the spent read,
+/// the notes are gone whoever spent them: its proof is written consumed,
+/// its artifact stays unresolved and the row is told so; absent below it
+/// decides nothing. Mutants: refund it as a fallback; consume it on an
+/// absence read below the spend.
 #[test]
 fn an_unpadded_create_spent_never_claims_the_fallback() {
     let h = Hooked::new();
@@ -2470,9 +2473,14 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
     );
     let artifact = h.artifact(12).unwrap();
     assert_eq!(artifact.published.len(), 2, "no padding");
+    let proved = || {
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(
+            artifact.st_hash.unwrap(),
+        )))
+    };
     let ev = Evidence::default();
     *ev.spent.lock().unwrap() = Some(100);
-    *ev.identity.lock().unwrap() = (false, 100);
+    *ev.identity.lock().unwrap() = (false, 99);
     let lib = super::FakeShielded::default();
     for held in [false, true] {
         if held {
@@ -2481,19 +2489,44 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
         assert_eq!(
             h.evidence_with(draft, &id, &ev, &lib),
             ShieldedOutcome::Unknown,
-            "held: {held}"
+            "absent below the spend, held: {held}"
         );
-        assert!(h.refunds().is_empty());
-        assert_eq!(
-            h.artifact(12).unwrap().status,
-            ArtifactStatus::Unresolved { unrecorded: false }
-        );
+        assert_eq!(proved(), None);
     }
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Consumed(id.clone())
+    );
+    assert!(h.refunds().is_empty(), "no refund is claimed");
+    assert_eq!(proved().as_deref(), Some("consumed"));
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Unresolved { unrecorded: false }, false),
+        "acknowledged by the next read of the outcomes once its notes read spent"
+    );
+}
+
+/// F12: a create of two or more notes read spent registers when its
+/// identity reads present, whatever it was proved before.
+#[test]
+fn an_unpadded_create_spent_with_its_identity_registers() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(
+        12,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (true, 101);
+    let lib = super::FakeShielded::default();
     assert_eq!(
         h.evidence_with(draft, &id, &ev, &lib),
         ShieldedOutcome::Registered(id)
     );
+    assert!(h.refunds().is_empty());
     assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
 }
 
