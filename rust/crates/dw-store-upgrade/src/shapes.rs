@@ -225,8 +225,7 @@ pub(crate) fn check(
             continue;
         }
         let upstreams = applied.contains(upstream)
-            && reference.fresh_unreleased.get(table)
-                == Some(&objects_on(conn, table).map_err(&q)?);
+            && reference.fresh_unreleased.get(table) == Some(&objects_on(conn, table).map_err(&q)?);
         if !upstreams {
             return Ok(Some(format!("{table} without fork version {version}")));
         }

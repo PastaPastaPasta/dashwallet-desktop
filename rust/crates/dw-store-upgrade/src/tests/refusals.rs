@@ -219,11 +219,16 @@ fn refuses_an_unreleased_fork_table_no_upstream_migration_made() {
     let f = fixture("v0.1.0");
     exec(
         &f.wallet(),
-        build().fresh_table_sql("core_block_spends").unwrap(),
+        build().fresh_table_sql("core_dismissed_txids").unwrap(),
     );
+    let (_fresh_dir, fresh) = fresh_store();
+    let objects = |path: &Path| {
+        crate::sql::objects_on(&Connection::open(path).unwrap(), "core_dismissed_txids").unwrap()
+    };
+    assert_eq!(objects(&f.wallet()), objects(&fresh), "this build's shape");
     refused(
         &f,
-        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_block_spends without fork version 5"),
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
     );
 }
 
