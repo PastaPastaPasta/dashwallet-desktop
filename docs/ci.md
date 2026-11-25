@@ -73,10 +73,11 @@ schedule, or any failure of `changes` runs every job. GitHub counts a skipped re
 cancelling a run while `changes` is pending skips the four jobs, so `changes` ("What this pull request
 changes") is itself a required check: cancelled or failed, it blocks the merge.
 
-**A red main is a stop.** The full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
-Windows and the release bundles) runs on pushes to `main`; a burst of merges is covered by one run (see the
-concurrency note above). `main-result.yml` runs when a `ci.yml` or
-`release.yml` run on `main` finishes: while the newest finished run of a workflow is red, one open issue
+**A red main is a stop.** CI's full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
+Windows) runs on pushes to `main`; a burst of merges is covered by one run (see the concurrency note above).
+The release bundles build on tags, at 02:47 UTC and on a dispatch, not per merge, so a green merge does not
+mean Release packaged that commit. `main-result.yml` runs when a `ci.yml` push or scheduled run on `main`
+finishes, and when a scheduled `release.yml` run does (a dispatched run is not reported): while the newest finished run of a workflow is red, one open issue
 labelled `nightly-failure` ("Nightly failure: CI on main" or "Nightly failure: Release on main") names its
 failed jobs and the pull requests merged since that workflow's last green run (the batch that broke it); the
 next green run closes it. Main is fixed before anything else merges; the issue says so, and the required
@@ -443,7 +444,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
+On a tag `v*`, the 02:47 UTC schedule and a dispatch; a push to `main` no longer starts it (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
@@ -485,7 +486,8 @@ as `release-v<version>`.
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
 
-**Triggers and publishing (DEC-1058).** The workflow runs on pushes to `main`, on tags `v*`, on pull requests that touch the release paths,
+**Triggers and publishing (DEC-1058).** The workflow runs on tags `v*` (no longer on pushes to `main`; the
+`main`-push publishing path below stays in the script but is historical), on pull requests that touch the release paths,
 on its schedule and on `workflow_dispatch`; all but pull requests build and upload CI artifacts with `contents: read`. Only the `publish` job
 has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
 tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
@@ -501,7 +503,8 @@ or pull request cancels that ref's running release build. Tags are never cancell
 release run. The `publish` job checks
 out the full history, runs `ci/github/release-publish.sh` and publishes:
 
-- push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
+- push to `main` (historical: no `main` push starts Release now, so `continuous` stays at the last merge built
+  before 11-25 and is no longer repaired automatically): an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
   and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
   `SHA256SUMS`. `continuous` is replaced as one generation, with a transaction record (the asset `txn.json`: old and
   new commit, old and new notes, the hash of the new `SHA256SUMS`): recover from an interrupted earlier run (in every
@@ -527,8 +530,8 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
 
 The publish concurrency group is per ref (`release-publish-main`, and one per tag), never cancelling. GitHub
-keeps one pending job per group and cancels the older pending one when another arrives. Main's builds run one at
-a time and a newer pending build replaces an older one, so a burst of pushes skips the immutable release of a
+keeps one pending job per group and cancels the older pending one when another arrives. Historically, main's
+builds ran one at a time and a newer pending build replaces an older one, so a burst of pushes skips the immutable release of a
 middle commit; `continuous` follows the newest build that published (it never moves backwards, and its notes
 name its commit). A tag's
 release cannot be displaced by a main push. Repository setting: "Immutable releases" must stay **off**, since

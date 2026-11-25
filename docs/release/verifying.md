@@ -157,8 +157,8 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
   pushes can skip one), never edited. Since 11-25 a push to `main` builds nothing, so no new ones appear.
 - **`continuous`** was replaced by every push to `main` until 11-25, never by an older commit; its files keep the
   same names. It now stays at the last merge built before then; its notes say which commit it holds.
-  While it is being replaced (tens of seconds) a file can be briefly missing, or newer than its `SHA256SUMS`:
-  if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.
+  Nothing refreshes or repairs it automatically any more: if a file is missing or its checksum does not match
+  `SHA256SUMS`, do not install it. Verify a tagged release instead, and report the broken snapshot.
 - **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
   releases are full releases and ship signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
   Windows Authenticode, plus GitHub build attestations) once detached signatures are attached (enforced by

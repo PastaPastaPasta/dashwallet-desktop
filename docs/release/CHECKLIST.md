@@ -105,8 +105,9 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
 
 ## 5. Tag
 
-- [ ] Before tagging (DEC-1806): a manual Linux testnet smoke on the AppImage that `main` built for the commit to
-      tag: a fresh install and an upgrade from the previous release; create, restore, sync, receive and send, and
+- [ ] Before tagging (DEC-1806): a manual Linux testnet smoke on the AppImage (`dist-linux`) from a Release dispatch at
+      the exact commit to tag, or from a nightly run built from that same commit (a merge to `main` no longer
+      builds one): a fresh install and an upgrade from the previous release; create, restore, sync, receive and send, and
       each of the release's headline features once. The evidence goes in the release pull request and the release
       text, never key material (no phrase, no private key, no passphrase).
 - [ ] Optional dry run of the whole build without publishing: `git tag v0.0.0-rel<N> <sha> && git push origin

@@ -9,8 +9,7 @@ detached-signatures repository, and a zero-secret verification/attach step (`ci/
 `.github/workflows/release-publish-signed.yml`) verifies, re-attaches, attests, and publishes the final
 release.
 
-Keyless release candidates (`vX.Y.Z-rc.N`) and `main` / `continuous` builds remain untouched: CI builds and
-publishes the 8 unsigned assets with GitHub Sigstore build provenance attestations only (no `.asc`, no
+Keyless release candidates (`vX.Y.Z-rc.N`) remain untouched: CI builds and publishes the 8 unsigned assets with GitHub Sigstore build provenance attestations only (no `.asc`, no
 `latest.json`, nothing required even when `DW_SIGNING_REQUIRED=1`).
 
 > **Nightly track:** automated nightly signing (separate macOS Developer ID cert + revocable API key in CI,
