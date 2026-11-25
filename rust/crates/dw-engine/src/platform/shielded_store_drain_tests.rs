@@ -21,7 +21,7 @@ use platform_wallet::wallet::shielded::{
 };
 
 use super::super::errors::{ShieldedError, ShieldedStoreClosed};
-use super::super::shielded_pool::{self as pool, EngineDispatch, on_pool};
+use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::options;
 use super::{NOTE, bound_address, note};
 use dw_appdb::dispatch::DISPATCH_DB_FILE;
