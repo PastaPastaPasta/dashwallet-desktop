@@ -6,6 +6,7 @@
 // read failed as unread: neither is Synced.
 
 import type { DashPaySyncStatus } from "../api/generated/DashPaySyncStatus";
+import type { LockStateName } from "../api/generated/LockStateName";
 import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
@@ -17,9 +18,10 @@ export type SyncItemName = "core" | "platform" | "shielded";
 
 /** `done`; `syncing` (with a percent when known; also a status not read yet); `incomplete`: it
  * stopped short and tries again later; `unread`: its status could not be read; `unlock`: it waits
- * for a (full) unlock; `watchOnly`: this wallet cannot run it; `offline` and `waiting`: the
- * network's own (not running, not read yet). */
-export type SyncItemState = "done" | "syncing" | "incomplete" | "unread" | "unlock" | "watchOnly" | "offline" | "waiting";
+ * for an unlock; `unlockFully`: for a full unlock, the wallet being unlocked for mixing only;
+ * `watchOnly`: this wallet cannot run it; `offline` and `waiting`: the network's own (not running,
+ * not read yet). */
+export type SyncItemState = "done" | "syncing" | "incomplete" | "unread" | "unlock" | "unlockFully" | "watchOnly" | "offline" | "waiting";
 
 export interface SyncItem {
   name: SyncItemName;
@@ -43,14 +45,15 @@ const PLATFORM_INCOMPLETE: ReadonlySet<StartupStatus> = new Set(["discoveryFaile
 
 /** `null`: Platform is not on this network or this session (`--no-platform`), so not waited on.
  * `failed`: the read failed (`s` is then the last reading, if any). The wallet's address balances
- * are synced once its own Platform-address pass succeeded this session. */
-export function platformItem(s: DashPaySyncStatus | null | undefined, failed = false): SyncItem | null {
+ * are synced once its own Platform-address pass succeeded this session. `lock` tells a wallet
+ * unlocked for mixing only from a locked one. */
+export function platformItem(s: DashPaySyncStatus | null | undefined, failed = false, lock?: LockStateName): SyncItem | null {
   if (s === null) return null;
   if (s === undefined) return item("platform", failed ? "unread" : "syncing");
   if (!s.platformEnabled) return null;
   if (s.startup === "starting") return item("platform", "syncing");
   if (PLATFORM_INCOMPLETE.has(s.startup)) return item("platform", "incomplete");
-  if (s.startup === "identityUnsettled") return item("platform", "unlock");
+  if (s.startup === "identityUnsettled") return item("platform", lock === "unlockedMixingOnly" ? "unlockFully" : "unlock");
   if (s.addresses === "pending") return item("platform", "syncing");
   if (s.addresses === "failed") return { ...item("platform", "incomplete"), pass: true };
   return item("platform", "done");
@@ -63,6 +66,7 @@ export function shieldedItem(s: ShieldedSyncInfo | null | undefined, failed = fa
   if (s === null) return null;
   if (s === undefined) return item("shielded", failed ? "unread" : "syncing");
   if (!s.active) return null;
+  if (s.account === "mixingOnly") return item("shielded", "unlockFully");
   const gate = shieldedReceiveGate(s);
   if (gate === "unlock" || gate === "watchOnly") return item("shielded", gate);
   if (s.syncing) return item("shielded", "syncing", scanShare(s.scan));
@@ -101,6 +105,8 @@ export function itemText(i: SyncItem, percent: (p: number) => string): string {
       return t("shell.sync.items.unread");
     case "unlock":
       return t("shell.sync.items.unlock");
+    case "unlockFully":
+      return t("shell.sync.items.unlockFully");
     case "watchOnly":
       return t("shell.sync.items.watchOnly");
     case "offline":
