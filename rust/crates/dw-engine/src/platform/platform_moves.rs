@@ -4649,13 +4649,20 @@ async fn retire_handed_out(
     }))
     .await
     .map_err(PlatformError::from)?;
-    let handed_out = handed_out.and_then(|v| v.parse::<u32>().ok());
+    let index = |value: &str| {
+        value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })
+    };
+    let handed_out = handed_out.as_deref().map(index).transpose()?;
     let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
         Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
         _ => None,
     });
     let deepest = (recorded.iter())
-        .filter_map(|(_, index)| index.parse::<u32>().ok())
+        .map(|(_, value)| index(value))
+        .collect::<Result<Vec<u32>, _>>()?
+        .into_iter()
         .chain(handed_out)
         .max();
     let given = (recorded.into_iter()).filter_map(|(key, _)| {

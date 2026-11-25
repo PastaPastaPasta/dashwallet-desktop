@@ -2055,6 +2055,44 @@ fn a_fallback_after_a_restart_is_above_every_address_handed_out() {
     assert_eq!(w.receive_address(), after, "stable after a second restart");
 }
 
+/// C-funding F13: an unreadable record of what was handed out refuses
+/// every hand-out instead of maybe handing out an address shown before.
+/// Mutants: read either record as absent.
+#[test]
+fn an_unreadable_hand_out_record_refuses_every_hand_out() {
+    for key in [
+        dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT.to_owned(),
+        dw_appdb::dp_registration_fallback("unreadable"),
+    ] {
+        let w = World::new();
+        w.call(move |_, s, _, id| async move {
+            let scope = dw_appdb::local_scope(&id.to_string());
+            s.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("x")))
+                .await
+                .map_err(PlatformError::from)?;
+            Ok(())
+        })
+        .unwrap();
+        let refused = w
+            .call(|net, s, wallet, _| async move {
+                let network = s.vault.network();
+                let receive = receive_address(&*net, &s, &wallet, network).await;
+                let fallback = fallback_address(&s, &wallet, network).await;
+                Ok([
+                    receive.err().map(|e| format!("{e:?}")),
+                    fallback.err().map(|e| format!("{e:?}")),
+                ])
+            })
+            .unwrap();
+        for e in refused {
+            assert!(
+                e.as_deref().is_some_and(|e| e.contains("unreadable")),
+                "{e:?}"
+            );
+        }
+    }
+}
+
 /// A reload that has derived the payment account only up to `last`, with
 /// no address marked: what the account holds before a sync restores it.
 fn reload_derived_to(w: &World, last: u32) {
