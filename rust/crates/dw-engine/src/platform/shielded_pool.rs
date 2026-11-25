@@ -3183,7 +3183,9 @@ impl ShieldedLib for PwShielded {
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
         let wallet = &self.pw.wallet;
-        let receive = super::platform_moves::next_receive_address(wallet, self.network()).await?;
+        let receive =
+            super::platform_moves::next_receive_address(&self.pw.session, wallet, self.network())
+                .await?;
         let receive = super::platform_moves::parse(&receive.address).ok_or_else(|| {
             PlatformError::Internal {
                 detail: "the receive address does not parse".into(),
@@ -3781,7 +3783,10 @@ const UNREADABLE_PER_READ: usize = 16;
 ///   proof, so never acknowledged and nothing of it is re-sent or rebuilt;
 /// - any other `Unresolved`: settled `unresolved` (being confirmed), never
 ///   acknowledged here: its notes stay held until a scan or the user
-///   settles it;
+///   settles it; but one the engine proved (`executed`, `pruned`, or
+///   `consumed`: its notes spent with no identity, left `unresolved`) is
+///   settled as proved and acknowledged as above (`consumed` once its notes
+///   read spent);
 /// - one the library cannot read: acknowledged by its key only once every
 ///   note it holds reads spent in the journal, so nothing it holds becomes
 ///   selectable; until then the wallet's outcomes wait.

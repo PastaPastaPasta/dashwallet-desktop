@@ -3970,8 +3970,7 @@ impl RegistrationLib for PwLib {
 
     async fn fallback_address(&self) -> Result<String, PlatformError> {
         let network = self.session.vault.network();
-        let receive = super::platform_moves::next_receive_address(&self.wallet, network).await?;
-        Ok(receive.address)
+        super::platform_moves::fallback_address(&self.session, &self.wallet, network).await
     }
 
     async fn shielded_fund(

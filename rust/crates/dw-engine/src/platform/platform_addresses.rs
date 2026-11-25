@@ -517,7 +517,10 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            Ok(platform_moves::receive_address(&net, &wallet, session.vault.network()).await?)
+            Ok(
+                platform_moves::receive_address(&net, &session, &wallet, session.vault.network())
+                    .await?,
+            )
         })
         .await
     }

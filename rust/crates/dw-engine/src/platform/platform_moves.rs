@@ -4563,21 +4563,26 @@ async fn own_core_destination(
 /// public key material; the same one until a sync pass sees it funded).
 pub(crate) async fn receive_address(
     net: &impl MoveNet,
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
     address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
-    next_receive_address(wallet, network).await
+    next_receive_address(session, wallet, network).await
 }
 
 /// The payment account's lowest unused address, as [`receive_address`]
-/// names it, with no version check.
+/// names it, with no version check. Never the fallback of one of the
+/// wallet's Shielded-funded registrations (C-funding F13): published beside
+/// the identity it creates, it is marked used first ([`retire_fallbacks`]).
 pub(crate) async fn next_receive_address(
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
+    retire_fallbacks(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
@@ -4597,6 +4602,118 @@ pub(crate) async fn next_receive_address(
         address: bech32m(&address, network),
         index,
     })
+}
+
+/// Marks every fallback the wallet's Shielded-funded registrations were
+/// given ([`fallback_address`]) used in the payment account, so none is
+/// handed out again. Their durable record is the wallet's local scope of
+/// `app.sqlite`, and the rows' own funding for one given before it: the
+/// account keeps such marks in memory only, so each hand-out of an address
+/// marks them again.
+pub(crate) async fn retire_fallbacks(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<(), PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        let recorded =
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?;
+        Ok((db.registration_rows(&id)?, recorded))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
+        Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
+        _ => None,
+    });
+    let given = (recorded.into_iter()).filter_map(|(key, _)| {
+        Some(
+            key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?
+                .to_owned(),
+        )
+    });
+    let fallbacks: Vec<PlatformAddress> = named.chain(given).filter_map(|a| parse(&a)).collect();
+    retire(wallet, &fallbacks).await
+}
+
+/// A new registration's fallback (C-funding F13), published beside the
+/// identity it creates, so never an address handed out before: under one
+/// lock of the account, its lowest unused address (the one Receive may be
+/// showing) and the next are marked used, and the next is the fallback. It
+/// is recorded durably before it is returned.
+pub(crate) async fn fallback_address(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<String, PlatformError> {
+    use key_wallet::KeySource;
+    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+    retire_fallbacks(session, wallet).await?;
+    let internal = |detail: String| PlatformError::Internal { detail };
+    let fallback = {
+        let mut wm = wallet.wallet_manager().write().await;
+        let (core, info) = wm
+            .get_wallet_mut_and_info_mut(&wallet.wallet_id())
+            .ok_or(PlatformError::WalletNotFound)?;
+        let key = PlatformPaymentAccountKey {
+            account: ACCOUNT,
+            key_class: 0,
+        };
+        let xpub = (core.accounts.platform_payment_accounts.get(&key))
+            .map(|a| a.account_xpub)
+            .ok_or_else(|| internal("the wallet has no Platform payment key".into()))?;
+        let source = KeySource::Public(xpub);
+        let account = (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(ACCOUNT)
+            .ok_or_else(|| internal("the wallet has no Platform payment account".into()))?;
+        let mut take = || -> Result<_, PlatformError> {
+            let next = (account.addresses.next_unused_with_info(&source, true))
+                .map_err(|e| internal(e.to_string()))?;
+            account.addresses.mark_index_used(next.index);
+            Ok(next.address)
+        };
+        take()?;
+        PlatformAddress::try_from(take()?).map_err(|e| internal(e.to_string()))?
+    };
+    let address = bech32m(&fallback, network);
+    let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+    let key = dw_appdb::dp_registration_fallback(&address);
+    (session
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
+        .await)
+        .map_err(PlatformError::from)?;
+    Ok(address)
+}
+
+/// Marks `addresses` of the payment account used: none is handed out again.
+async fn retire(
+    wallet: &PlatformWallet,
+    addresses: &[PlatformAddress],
+) -> Result<(), PlatformError> {
+    if addresses.is_empty() {
+        return Ok(());
+    }
+    let paths = pool(wallet).await?;
+    let indices: Vec<u32> = (addresses.iter())
+        .filter_map(|a| paths.get(a)?.as_ref().last().copied())
+        .map(u32::from)
+        .collect();
+    let mut wm = wallet.wallet_manager().write().await;
+    let info = wm
+        .get_wallet_info_mut(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let account = info
+        .core_wallet
+        .platform_payment_managed_account_at_index_mut(ACCOUNT)
+        .ok_or_else(|| PlatformError::Internal {
+            detail: "the wallet has no Platform payment account".into(),
+        })?;
+    for index in indices {
+        account.addresses.mark_index_used(index);
+    }
+    Ok(())
 }
 
 /// The outcome's write; tests make it fail.

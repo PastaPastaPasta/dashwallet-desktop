@@ -456,7 +456,7 @@ impl DashPay {
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
             let network = session.vault.network();
-            credit_transfer::quote(&net, &wallet, network, &identity, amount).await
+            credit_transfer::quote(&net, &session, &wallet, network, &identity, amount).await
         })
         .await
     }

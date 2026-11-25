@@ -1861,9 +1861,9 @@ impl World {
     }
 
     fn receive_address(&self) -> PlatformReceiveAddress {
-        self.call(
-            |net, s, w, _| async move { Ok(receive_address(&*net, &w, s.vault.network()).await?) },
-        )
+        self.call(|net, s, w, _| async move {
+            Ok(receive_address(&*net, &s, &w, s.vault.network()).await?)
+        })
         .unwrap()
     }
 }
@@ -1930,6 +1930,92 @@ fn the_receive_address_is_the_lowest_unused_and_stable() {
     .unwrap();
     let next = w.receive_address();
     assert_eq!((next.index, &next.address), (1, &by_index[&1]));
+}
+
+/// C-funding F13 (mobile parity, on the condition that it is never handed
+/// out again): the fallback a Shielded-funded registration fixed is
+/// published beside its identity, so the receive address skips it. The
+/// row is its record; the account's mark is in memory only, so a wallet
+/// that never marked it (a restart) skips it too. Mutant: hand out an
+/// address without marking the rows' fallbacks.
+#[test]
+fn a_registration_fallback_is_never_the_receive_address() {
+    let w = World::new();
+    let first = w.receive_address();
+    assert_eq!(first.index, 0);
+    let funding = super::super::registration_rows::Funding::Shielded {
+        denomination: DASH,
+        fallback: first.address.clone(),
+        identity: None,
+    }
+    .encode();
+    let row = dw_appdb::NewRegistration {
+        identity_index: Some(0),
+        identity: None,
+        label: "alice".into(),
+        temp_label: None,
+        funding,
+        initial_profile: None,
+        phase: "draft".into(),
+    };
+    w.call(move |_, s, _, id| async move {
+        let wallet = id.to_string();
+        s.appdb_op(move |db| db.insert_registration(&wallet, &row, 1))
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(())
+    })
+    .unwrap();
+    let next = w.receive_address();
+    assert_eq!(next.index, 1, "{next:?}");
+    assert_ne!(next.address, first.address);
+    assert_eq!(w.receive_address(), next, "stable");
+}
+
+/// C-funding F13: a new fallback is never the address Receive may be
+/// showing: that one and the fallback after it are marked used. Its
+/// durable record outlives the account's in-memory mark (a restart) and
+/// its registration's row. Mutants: give the shown address; forget the
+/// record.
+#[test]
+fn a_new_fallback_is_never_an_address_handed_out_before_or_after() {
+    let w = World::new();
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 0);
+    let fallback = w
+        .call(|_, s, wallet, _| async move {
+            Ok(fallback_address(&s, &wallet, s.vault.network()).await?)
+        })
+        .unwrap();
+    let index_of = |address: String| {
+        w.call(move |_, _, wallet, _| async move {
+            let target = parse(&address).unwrap();
+            Ok(pool(&wallet)
+                .await?
+                .get(&target)
+                .map(|p| u32::from(*p.as_ref().last().unwrap())))
+        })
+        .unwrap()
+    };
+    assert_eq!(index_of(fallback.clone()), Some(1), "not the shown address");
+    assert_eq!(w.receive_address().index, 2);
+    // The account's marks of 1 and 2 lost, as at a restart.
+    w.call(|_, _, wallet, _| async move {
+        use key_wallet::managed_account::address_pool::AddressState;
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
+        let account = (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap();
+        for i in [1, 2] {
+            account.addresses.addresses.get_mut(&i).unwrap().state = AddressState::Available;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let next = w.receive_address();
+    assert_eq!(next.index, 2, "{next:?}");
+    assert_ne!(next.address, fallback);
 }
 
 /// Q3: a P2SH Platform address of this network is a recipient, as a
@@ -3244,7 +3330,7 @@ fn sends_and_receive_need_address_funds_and_platform() {
     assert_eq!(
         off(w
             .call(|net, s, wallet, _| async move {
-                Ok(receive_address(&*net, &wallet, s.vault.network()).await?)
+                Ok(receive_address(&*net, &s, &wallet, s.vault.network()).await?)
             })
             .map(drop)),
         "platform_addresses"

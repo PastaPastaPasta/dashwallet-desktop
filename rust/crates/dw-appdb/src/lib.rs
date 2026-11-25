@@ -142,6 +142,17 @@ pub fn dp_registration_proved(st_hash: &str) -> String {
     format!("dp_registration_proved/{st_hash}")
 }
 
+/// The `local:` keys, by address (bech32m), of the fallbacks the wallet's
+/// Shielded-funded registrations were given (C-funding F13): each is
+/// written durably before its registration may name it, and kept after
+/// the registration is gone, so the address is never handed out again.
+pub const DP_REGISTRATION_FALLBACK_PREFIX: &str = "dp_registration_fallback/";
+
+/// [`DP_REGISTRATION_FALLBACK_PREFIX`]'s key of `address`.
+pub fn dp_registration_fallback(address: &str) -> String {
+    format!("{DP_REGISTRATION_FALLBACK_PREFIX}{address}")
+}
+
 /// The `local:` key the shielded dispatch hook writes, durably, once a
 /// payout's artifact is in the journal and before the library may send
 /// it: with it, a missing artifact proves nothing (a lost or older
