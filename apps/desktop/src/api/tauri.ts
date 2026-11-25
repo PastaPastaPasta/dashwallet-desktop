@@ -67,6 +67,7 @@ export class IpcBackend implements Backend {
 
   launchInfo = () => cmd.launchInfo();
   openNetwork = () => cmd.openNetwork(null, null);
+  activeNetwork = () => cmd.activeNetwork();
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
   recentNotices = () => cmd.recentNotices();
@@ -172,6 +173,10 @@ export class IpcBackend implements Backend {
   restartToUpdate = () => cmd.restartToUpdate();
   quitApp = () => absentAsUnavailable(invoke<null>("quit_app"));
   restartApp = () => absentAsUnavailable(invoke<null>("restart_app"));
+  restoreAvailable = () => orAbsent(invoke<boolean>("restore_available", { network: null }));
+  requestRestore = () => absentAsUnavailable(invoke<null>("request_restore", { network: null }));
+  keepCurrentFiles = () => absentAsUnavailable(invoke<unknown>("keep_current_files", { network: null }));
+  cancelRestore = () => absentAsUnavailable(invoke<null>("cancel_restore", { network: null }));
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();
