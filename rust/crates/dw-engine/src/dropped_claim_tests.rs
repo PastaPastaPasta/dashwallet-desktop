@@ -81,16 +81,57 @@ fn assert_payment_kept(
     );
 }
 
-/// After a restart the scan finds the claimed coin, and the next start's
-/// store drops the claim as unsigned (#73): the payment from its change is
-/// dropped with it, and stays dropped.
+/// The store as a build before key-wallet refused unsigned spends left it
+/// once the scan found the claimed coin: the coin is mined and held by a
+/// peer's unsigned claim T on it ([`seed_claim`]), and with the engine's
+/// check off the wallet pays someone (S) from T's change and `extra`.
+/// Returns the session on that store, T and S.
+///
+/// [`seed_claim`]: super::store_repair_tests::seed_claim
+fn payment_on_a_stored_claims_change(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    extra: Option<OutPoint>,
+) -> (Arc<NetworkSession>, Transaction, Transaction) {
+    let (session, _, claim) =
+        super::store_repair_tests::claim_on_a_held_coin(engine, session, id, &[]);
+    skip_unsigned_check(&session);
+    let coins: Vec<OutPoint> = std::iter::once(OutPoint::new(claim.txid(), 1))
+        .chain(extra)
+        .collect();
+    let amount = match extra {
+        Some(_) => CHANGE + PAID / 2,
+        None => CHANGE / 2,
+    };
+    let payment = send(
+        engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins.clone()),
+        amount,
+        false,
+    );
+    assert_eq!(payment.input.len(), coins.len(), "S spends {coins:?}");
+    mempool(engine, &session, id, &payment);
+    let ids: Vec<String> = (rows(engine, &session, id).into_iter())
+        .map(|r| r.0)
+        .collect();
+    assert!(
+        ids.contains(&payment.txid().to_string()),
+        "the payment is listed"
+    );
+    (session, claim, payment)
+}
+
+/// The scan found the claimed coin and the session left the claim to the
+/// store (a build before key-wallet dropped it at once), and the next
+/// start's store drops the claim as unsigned (#73): the payment from its
+/// change is dropped with it, and stays dropped.
 #[test]
 fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
-    let session = reopen(&engine, session);
-    skip_unsigned_check(&session);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    let (session, _claim, payment) = payment_on_a_stored_claims_change(&engine, session, id, None);
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
         "not dropped in the session"
@@ -700,17 +741,19 @@ fn skip_unsigned_check(session: &Arc<NetworkSession>) {
     (session.hub.skip_unsigned_check).store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// The store's open drops the claim, and the load drops S with it: b, which
-/// S also spent, is released through the load's abandon and counts once
-/// when scanned again.
+/// The store an older build left (as in [`payment_on_a_stored_claims_change`]),
+/// S also spending the wallet's coin b: the store's open drops the claim,
+/// and the load drops S with it: b, which S also spent, is released through
+/// the load's abandon and counts once when scanned again.
 #[test]
 fn a_coin_a_payment_on_a_claim_the_store_dropped_spent_is_offered_again() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, funding, claim, payment) =
-        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
-    let session = reopen(&engine, session);
-    skip_unsigned_check(&session);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    let b_to = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let b_funding = super::own_spend_disk_tests::funding(3, &[b_to], PAID);
+    mined(&engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let (session, claim, payment) =
+        payment_on_a_stored_claims_change(&engine, session, id, Some(b));
     assert!(
         !dropped(&engine, &session, id, claim.txid()),
         "not dropped in the session"

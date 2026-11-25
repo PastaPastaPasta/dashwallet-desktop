@@ -221,7 +221,7 @@ fn non_push_only_claim_the_fork_dropped(
     std::path::PathBuf,
 ) {
     let (dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[0x61, 0x01, 0x01]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[0x61, 0x01, 0x01]);
     let network = close(&engine, session);
     fork_drop(&network, id, &claim, pin);
     assert!(!stored(&network, id, claim.txid()), "the fork dropped it");
@@ -266,6 +266,35 @@ fn a_non_push_only_claim_the_fork_dropped_is_held_again_until_abandoned() {
     }
 }
 
+/// L4 with a block's spend (V025): the claim is put back, and its change,
+/// which a block spent by a transaction the store has no record of, comes
+/// back spent.
+#[test]
+fn an_output_a_block_spent_since_comes_back_spent() {
+    for pin in PINS {
+        let (_dir, _engine, id, _, claim, network) = non_push_only_claim_the_fork_dropped(pin);
+        let change = encode_outpoint(&OutPoint::new(claim.txid(), 1));
+        on_store(
+            &network,
+            "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id.0.as_slice(), change, BIRTH - 10, [7u8; 32], [9u8; 32]],
+        );
+        let outcome = repair_closed(&network);
+        assert_eq!(
+            outcome.restored.get(&id),
+            Some(&vec![claim.txid()]),
+            "{pin:?}"
+        );
+        assert!(stored(&network, id, claim.txid()), "{pin:?}: put back");
+        assert_eq!(
+            coin_spent(&network, id, &change).0,
+            1,
+            "{pin:?}: its change comes back spent"
+        );
+    }
+}
+
 /// (b) A push-only unsigned claim whose tree is settled in another loaded
 /// wallet: the claim's change pays S1 to wallet B, whose spend of it is
 /// InstantSend-locked. The fork saw only the claim's own block or lock and
@@ -279,7 +308,7 @@ fn an_unsigned_claim_settled_in_another_wallet_is_held_again() {
         engine
             .block_on(session.set_load_on_startup(other, true))
             .unwrap();
-        let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+        let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
         let to = fresh_address(&engine, &session, other);
         let s1 = send_to(
             &engine,
@@ -330,7 +359,7 @@ fn an_unsigned_claim_settled_in_another_wallet_is_held_again() {
 fn a_push_only_unsigned_claim_the_fork_dropped_stays_dropped() {
     for pin in PINS {
         let (_dir, engine, session, id) = engine_wallet();
-        let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+        let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
         let network = close(&engine, session);
         fork_drop(&network, id, &claim, pin);
         let session = open(&engine);
@@ -565,7 +594,7 @@ fn a_fork_row_whose_record_doesnt_read_holds_its_released_coins_again() {
 fn a_lock_in_a_fork_dropped_childs_row_keeps_its_fork_dropped_parent() {
     for pin in PINS {
         let (_dir, engine, session, id) = engine_wallet();
-        let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+        let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
         let change = OutPoint::new(claim.txid(), 1);
         let child = send(
             &engine,
@@ -589,6 +618,12 @@ fn a_lock_in_a_fork_dropped_childs_row_keeps_its_fork_dropped_parent() {
             [child.txid().as_byte_array().as_slice()],
         );
 
+        repair_closed(&network);
+        assert_eq!(
+            coin_spent(&network, id, &encode_outpoint(&change)).0,
+            1,
+            "{pin:?}: the repair puts X's change back spent by Y"
+        );
         let session = open(&engine);
         let dir = session.data_dir().to_path_buf();
         assert!(stored(&dir, id, claim.txid()), "{pin:?}: X is put back");
@@ -629,6 +664,13 @@ fn a_fork_dropped_claim_the_store_holds_again_has_its_coin_held() {
                 ),
                 [],
             );
+            repair_closed(&network);
+            let a = encode_outpoint(&OutPoint::new(funding.txid(), 0));
+            assert_eq!(
+                coin_spent(&network, id, &a).0,
+                1,
+                "{pin:?} {with_record}: the repair holds A"
+            );
             let session = open(&engine);
             let dir = session.data_dir().to_path_buf();
             let row = transaction_row(&dir, id, claim.txid()).expect("stored");
@@ -659,7 +701,7 @@ fn a_fork_dropped_claim_the_store_holds_again_has_its_coin_held() {
 fn a_lock_from_a_fork_row_goes_back_when_the_store_holds_its_claim_again() {
     for pin in PINS {
         let (_dir, engine, session, id) = engine_wallet();
-        let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+        let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
         let network = close(&engine, session);
         fork_drop(&network, id, &claim, pin);
         on_store(
