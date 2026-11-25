@@ -9,6 +9,7 @@
 // maps that case to `shielded.not_synced`, a platform refusal while the status says not ready is
 // shown as syncing (`syncingRefusal`).
 
+import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_CODES } from "../api/pending";
 import { ago } from "../governance/model";
@@ -30,12 +31,11 @@ export function syncingRefusal(code: string, syncing: boolean): boolean {
   return code === SHIELDED_CODES.notSynced || (syncing && PLATFORM_REFUSALS.includes(code));
 }
 
-/** The first scan's share of the pool's note tree, 0–99.9, while Shielded is not established yet;
- * `null` before the pass knows the pool's size, or once established. The tree is the whole pool's,
- * not the user's notes, so only the share is shown. */
-export function shieldedScanPercent(status: ShieldedStatus | null | undefined): number | null {
-  if (!status?.active || status.ready || !status.scan || status.scan.total <= 0) return null;
-  return Math.min((status.scan.checked / status.scan.total) * 100, MAX_SYNCING_PERCENT);
+/** A pass's share of the pool's note tree, 0–99.9; `null` before a batch proved the pool's size.
+ * The tree is the whole pool's, not the user's notes, so only the share is shown. */
+export function scanShare(scan: ShieldedScanProgress | null | undefined): number | null {
+  if (!scan || scan.total <= 0) return null;
+  return Math.min((scan.checked / scan.total) * 100, MAX_SYNCING_PERCENT);
 }
 
 /** What Receive in Shielded can show: the address (bound; the first scan may still run), a wait
@@ -43,7 +43,7 @@ export function shieldedScanPercent(status: ShieldedStatus | null | undefined): 
  * mixing-only unlock), or the wallet is watch-only. */
 export type ShieldedReceiveGate = "address" | "binding" | "unlock" | "watchOnly";
 
-export function shieldedReceiveGate(status: ShieldedStatus | null | undefined): ShieldedReceiveGate {
+export function shieldedReceiveGate(status: Pick<ShieldedStatus, "account"> | null | undefined): ShieldedReceiveGate {
   switch (status?.account) {
     case "locked":
     case "mixingOnly":
@@ -57,10 +57,28 @@ export function shieldedReceiveGate(status: ShieldedStatus | null | undefined): 
   }
 }
 
+/** Why Send, Add and Transfer wait while the account is not established: the vault's lock or a
+ * watch-only wallet when that holds the viewing key's first bind, else the sync itself. */
+export type ShieldedWait = "syncing" | "locked" | "mixingOnly" | "watchOnly";
+
+/** `null` once established, or while Shielded is not active (`shieldedSyncing`). */
+export function shieldedWait(status: ShieldedStatus | null | undefined): ShieldedWait | null {
+  if (!status || !shieldedSyncing(status)) return null;
+  const a = status.account;
+  return a === "locked" || a === "mixingOnly" || a === "watchOnly" ? a : "syncing";
+}
+
+/** The line for `shieldedWait`, or `null`. */
+export const shieldedWaitText = (status: ShieldedStatus | null | undefined): string | null => {
+  const wait = shieldedWait(status);
+  return wait && SHIELDED_SYNC_COPY.wait(wait);
+};
+
 export const SHIELDED_SYNC_COPY = {
   get syncing() {
     return t("transfer.shielded.sync.syncing");
   },
+  wait: (wait: ShieldedWait) => t(`transfer.shielded.sync.${wait}`),
   /** `percent` formatted, or `null`: "Syncing Shielded…" alone. */
   progress: (percent: string | null) => (percent === null ? t("shell.status.syncingShielded") : t("transfer.shielded.sync.progress", { percent })),
   get scanning() {

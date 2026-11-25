@@ -71,6 +71,22 @@ pub struct DashPaySyncStatus {
     pub pending_contact_crypto: u32,
     pub loops: Vec<SyncLoopStatus>,
     pub quorum_source: QuorumSource,
+    /// The session runs with Platform (not `--no-platform`): without it no
+    /// bring-up or pass runs, and none is waited on.
+    pub platform_enabled: bool,
+    /// The wallet's last Platform-address pass of this session.
+    pub addresses: AddressSync,
+}
+
+/// A wallet's Platform-address pass, as the status bar waits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AddressSync {
+    /// No pass has run for the wallet yet this session.
+    Pending,
+    /// Its last pass failed; the next one tries again.
+    Failed,
+    Done,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +174,8 @@ impl DashPay {
             pending_contact_crypto: startup.contact_accounts_pending,
             loops: s.platform_loops()?,
             quorum_source: s.quorum_source()?,
+            platform_enabled: s.platform.enabled(),
+            addresses: s.hub.platform_addresses(self.wallet_id),
         })
     }
 

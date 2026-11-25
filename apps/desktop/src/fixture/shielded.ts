@@ -7,6 +7,7 @@
 import type { AppError } from "../api/generated/AppError";
 import type { PendingShield } from "../api/generated/PendingShield";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
 import type { ShieldedAccount } from "../api/generated/ShieldedAccount";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
 import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
@@ -23,7 +24,7 @@ import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
 import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
-import { checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import type { PlatformWorld } from "./pending";
 import type { FixtureWallet } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
@@ -57,6 +58,8 @@ export interface ShieldedWorld {
   scan?: ShieldedScanProgress;
   /** The last pass failed. */
   lastPassFailed?: boolean;
+  /** `shielded_sync_info` fails (the status bar's read of it). */
+  syncInfoFails?: boolean;
   /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
   lastSyncAt?: number;
   /** The notes the balance is made of (credits): a spend is then priced per action, as the engine's
@@ -180,6 +183,39 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
 
 /** A drain lock's fee bound (`asset_lock_fee_bound`), in duffs. */
 const drainFee = (inputs: number) => 1_000 + 148 * Math.min(inputs, SHIELD_LOCK_INPUTS);
+
+/** A Core Max's plan (`core_max.rs`): one lock of every final coin of the wallet's main account (not
+ * a CoinJoin coin), the fee out of it, no change. The other accounts' coins stay (`leftDuffs`), as do
+ * the main coins not final yet (`arrivingDuffs`). Refused as the engine refuses, each code under
+ * `domain` (the shield's `shielded.*`, the fund's `credits.*`); below `floor` it names what Max would
+ * move and what stays in the other accounts. */
+export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shielded" | "credits", floor: number) {
+  if (mixerBusy(world, walletId)) raise(`${domain}.mixing_active`, "stop mixing first");
+  const w = wallet(world, walletId);
+  const main = w.coins.filter((u) => u.coinjoinRounds === null && !u.coinjoinDenominated);
+  const final = main.filter((u) => u.confirmations > 0 || u.instantLocked);
+  if (final.some((u) => u.userLocked || u.reserved)) raise(`${domain}.coins_locked`, "coins locked");
+  if (final.length > SHIELD_LOCK_INPUTS) raise(`${domain}.too_many_inputs`, "too many inputs", { kind: "number", value: final.length });
+  const totalDuffs = final.reduce((n, u) => n + u.amount, 0);
+  const feeDuffs = drainFee(final.length);
+  const duffs = Math.max(0, totalDuffs - feeDuffs);
+  const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
+  if (duffs < floor) raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs });
+  const arrivingDuffs = main.filter((u) => !final.includes(u)).reduce((n, u) => n + u.amount, 0);
+  return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
+}
+
+/** A shield's quote of `amount`: an amount with the fee on top, or a Core Max. */
+function shieldQuoteOf(ctx: Ctx, walletId: string, amount: FundAmount): ShieldQuote {
+  if (amount.kind === "duffs") return shieldQuote(ctx, walletId, amount.duffs);
+  const s = shieldedOf(ctx, walletId, "shield_quote");
+  if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
+  const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
+  if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
+  const min = Number(POOL_FEE_CREDITS / CREDITS_PER_DUFF) + 1;
+  const p = coreMaxPlan(ctx.world, walletId, "shielded", min);
+  return { duffs: p.duffs, feeDuffs: p.feeDuffs, totalDuffs: p.totalDuffs, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(p.duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: p.totalDuffs, maxCredits: "0" }, max: p.max };
+}
 
 /** "Move mixed coins" to Shielded (`shield_drain.rs`): the drain's checks, then `plan_of` over every
  * coin of the CoinJoin account, which the lock takes all of. */
@@ -362,20 +398,29 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
 
 export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   shielded_status: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, "shielded_status", false)),
+  // The engine's reads with no read of the note store (shielded_pool.rs `sync_info`).
+  shielded_sync_info: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedSyncInfo => {
+    const s = shieldedOf(ctx, walletId, "shielded_sync_info", false);
+    if (s.syncInfoFails) raise("storage", "the fixture's sync read failed");
+    const st = status(s);
+    return { active: st.active, account: st.account, established: st.ready, syncing: st.syncing, scan: st.scan, lastPassFailed: st.lastPassFailed };
+  },
   shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
     const s = shieldedOf(ctx, walletId, "shielded_receive_address");
     // The viewing key's address: it reads once bound, before the first scan ends.
     if ((s.account ?? "bound") !== "bound") raise(SHIELDED_CODES.notSynced, "the fixture account's viewing key is not bound");
     return { address: s.address, account: 0 };
   },
-  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuote(ctx, walletId, fundDuffs(amount)),
+  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuoteOf(ctx, walletId, amount),
   shield_from_core: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): ShieldOutcome => {
-    const duffs = fundDuffs(amount);
-    const q = shieldQuote(ctx, walletId, duffs);
+    const q = shieldQuoteOf(ctx, walletId, amount);
+    const duffs = q.duffs;
     const s = ctx.world.pending.shielded!;
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "duffs", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
+    // A Core Max's grant is its quote's coins' sum: coins read again to another sum are not the quote's.
+    if (amount.kind === "all" && g.grant.purpose.maxDuffs !== q.totalDuffs) raise(SHIELDED_CODES.coinsChanged, "the coins changed since the quote");
     useGrant(ctx.world, grant);
     // The engine's funding gate: a shield's asset lock waits while Core sync is not caught up.
     if (ctx.world.sync.running && !ctx.world.sync.caughtUp) raise(SHIELDED_CODES.notSynced, "Core sync is not caught up", { kind: "reason", reason: "core" });

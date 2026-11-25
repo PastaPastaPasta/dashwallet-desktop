@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+use dpp::consensus::ConsensusError;
 use dpp::identity::signer::Signer;
 
 use super::super::money_gate_tests::{FakePlatform, Proof, gate_session};
@@ -176,7 +177,9 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: None,
+        rule: HOLD_RULE,
     }
 }
 
@@ -389,17 +392,6 @@ fn a_remainder_too_small_to_move_is_not_movable() {
     assert_eq!(movable(&balances(&[(1, 300), (2, 40)]), &limits()), 292);
 }
 
-/// Opus m2: Platform's structure or signature check refusing is final;
-/// a transport failure is not.
-#[test]
-fn only_a_stateless_refusal_is_final() {
-    use dpp::consensus::basic::state_transition::TransitionNoInputsError;
-    let structure = dash_sdk::Error::from(TransitionNoInputsError::new());
-    assert!(never_valid(&PlatformWalletError::Sdk(structure)));
-    let lost = dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into());
-    assert!(!never_valid(&PlatformWalletError::Sdk(lost)));
-}
-
 // ---- the move against a scripted network ----
 
 /// What the next `withdraw` does.
@@ -413,7 +405,7 @@ pub(crate) enum Act {
     ExecutesUnanswered,
     /// Neither: the broadcast is lost.
     Lost,
-    /// Signed, then refused by the structure check.
+    /// Signed and broadcast; a node answers with a structure error.
     Invalid,
     /// The process stops before anything is signed.
     StopsBeforeSigning,
@@ -429,12 +421,15 @@ pub(crate) enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// The protocol version rises after the pre-check, then a node answers
+    /// the signed call with a structure error.
+    VersionRisesThenInvalid,
     /// Signed and broadcast; Platform answers that an input's balance is
     /// short (a state error: nothing proves it never executes).
     NotEnoughFunds,
     /// The signer refuses every input: the transition, short of its
     /// witnesses, is refused as Platform's checks refuse a malformed one
-    /// (an error `never_valid` reads as definitive), with nothing signed.
+    /// (it fails for good: not every input was signed), with nothing signed.
     Unsigned,
 }
 
@@ -485,6 +480,8 @@ pub(crate) struct FakeMoves {
     pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
     /// The withdrawal document reads made so far.
     withdrawal_reads: AtomicUsize,
+    /// The `MoveNet` calls made so far.
+    calls: AtomicUsize,
 }
 
 impl FakeMoves {
@@ -516,7 +513,13 @@ impl FakeMoves {
             document_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
         })
+    }
+
+    /// The `MoveNet` calls made so far.
+    pub(crate) fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 
     /// The withdrawal document reads made so far: none without a payout.
@@ -754,6 +757,13 @@ impl FakeMoves {
                     TransitionNoInputsError::new().into(),
                 ))
             }
+            Act::VersionRisesThenInvalid => {
+                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                *self.version.lock().unwrap() = raised();
+                Err(PlatformWalletError::Sdk(
+                    TransitionNoInputsError::new().into(),
+                ))
+            }
             Act::SignatureRefused => {
                 use dpp::consensus::signature::InvalidStateTransitionSignatureError;
                 Err(PlatformWalletError::Sdk(
@@ -792,10 +802,12 @@ impl FakeMoves {
 
 impl MoveNet for FakeMoves {
     fn version(&self) -> &'static PlatformVersion {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         *self.version.lock().unwrap()
     }
 
     async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.stop_in_read.swap(false, Ordering::SeqCst) {
             panic!("the process stops");
         }
@@ -824,6 +836,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let effect = Effect::Withdrawal(script.as_bytes().to_vec());
         (self
             .broadcast(inputs, None, (fee_strategy, effect), signer)
@@ -832,6 +845,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.withdrawal_reads.fetch_add(1, Ordering::SeqCst);
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let height = self.height.load(Ordering::SeqCst);
@@ -847,6 +861,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         (self
             .broadcast(inputs, Some(to), (fee_strategy, Effect::Moves), signer)
             .await)
@@ -859,6 +874,7 @@ impl MoveNet for FakeMoves {
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<u64, PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         // dpp's constructor fixes the fee on input 0.
         let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
         (self
@@ -869,6 +885,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.documents_down.load(Ordering::SeqCst) {
             return Err(PlatformError::Unavailable);
         }
@@ -928,7 +945,15 @@ pub(in crate::platform) struct World {
 
 impl World {
     pub(crate) fn new() -> Self {
-        let f = Fixture::new(0);
+        Self::over(Fixture::new(0))
+    }
+
+    /// [`Self::new`] with the session on `network`.
+    pub(crate) fn on(network: crate::DashNetwork) -> Self {
+        Self::over(Fixture::on(network, 0))
+    }
+
+    fn over(f: Fixture) -> Self {
         let net = FakeMoves::new();
         let mut w = Self {
             f,
@@ -1114,23 +1139,129 @@ fn an_unanswered_move_is_done_on_its_nonce() {
     assert_eq!(out.state, PlatformActivityState::Done);
 }
 
-/// Opus m2: refused by the structure check after signing, the move can
-/// never execute: failed at once with that error, and the next one moves.
+/// #471: a node's structure or signature error to a signed move is one
+/// node's answer, not proof. The move keeps its hold: a send is refused
+/// until proof, and the move's exact re-send, the same inputs at the same
+/// nonces, goes out and settles it.
 #[test]
-fn a_structure_refusal_fails_at_once() {
-    let w = World::new();
+fn a_consensus_error_after_signing_keeps_a_moves_hold() {
+    for act in [Act::Invalid, Act::SignatureRefused] {
+        let w = World::new();
+        w.net.fund(w.address(0), 3 * DASH);
+        w.net.then(act);
+        let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
+        assert_eq!(out.state, PlatformActivityState::Pending, "{act:?}");
+        assert!(w.moves()[0].holds(), "{act:?}");
+        w.net.tick();
+        w.activity();
+        let held = w.moves()[0].clone();
+        assert_eq!(
+            (held.state, held.can_land),
+            (PlatformActivityState::Failed, true),
+            "{act:?}"
+        );
+        let (_, to) = w.theirs(9);
+        let one = WithdrawAmount::Credits { credits: DASH };
+        assert_eq!(
+            w.send(one, &to, &w.f.grant(20 * DASH)).unwrap_err().code(),
+            "credits.move_pending",
+            "{act:?}"
+        );
+        assert_eq!(
+            w.net.sent.lock().unwrap().len(),
+            1,
+            "{act:?}: nothing else signed"
+        );
+        let again = w.move_all(&w.f.grant(3 * DASH)).unwrap();
+        assert_eq!(again.state, PlatformActivityState::Done, "{act:?}");
+        assert_same_transition(&w, 0, 1);
+        w.activity();
+        assert!(w.moves().iter().all(|m| !m.holds()), "{act:?}");
+    }
+}
+
+/// #471: a record keeps the outcome rule it was written under. One stored
+/// before the field existed reads as rule 0, one written now as
+/// [`HOLD_RULE`], and both survive a write and a read unchanged.
+#[test]
+fn a_move_record_keeps_its_outcome_rule() {
+    let now = record("m", 1, &[("a", 4)]);
+    let mut stored = serde_json::to_value(&now).unwrap();
+    assert_eq!(stored["rule"], HOLD_RULE);
+    let back: MoveRecord = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(back, now);
+    stored.as_object_mut().unwrap().remove("rule");
+    let legacy: MoveRecord = serde_json::from_value(stored).unwrap();
+    assert_eq!(legacy.rule, 0);
+    let again: MoveRecord = serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+    assert_eq!(again, legacy);
+
+    let mut w = World::new();
     w.net.fund(w.address(0), 3 * DASH);
-    w.net.then(Act::Invalid);
-    assert!(w.move_all(&w.f.grant(3 * DASH)).is_err());
+    w.net.then(Act::Lost);
+    w.move_all(&w.f.grant(3 * DASH)).unwrap();
+    w.reopen();
+    assert_eq!(w.moves()[0].rule, HOLD_RULE, "written and read back");
+}
+
+/// #471: the rule is set when a record is made, never later. A record
+/// stored before the field existed keeps rule 0 through the move that
+/// rewrites every record and through a restart; the new move's record
+/// carries [`HOLD_RULE`].
+#[test]
+fn a_record_stored_before_the_rule_keeps_rule_0() {
+    let mut w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.net.fund(w.address(1), 3 * DASH);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let first = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(first.state, PlatformActivityState::Done);
+    let (db, scope) = w.net.store.lock().unwrap().clone().unwrap();
+    let key = format!("{MOVE_PREFIX}{}", first.id);
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&db.setting(&scope, &key).unwrap().unwrap()).unwrap();
+    stored.as_object_mut().unwrap().remove("rule");
+    db.set_setting_durable(&scope, &key, Some(&stored.to_string()))
+        .unwrap();
+    w.reopen();
+
+    let second = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(second.state, PlatformActivityState::Done);
+    w.reopen();
     let moves = w.moves();
-    assert_eq!(
-        (moves[0].state, moves[0].can_land),
-        (PlatformActivityState::Failed, false)
-    );
-    assert_eq!(
-        w.move_all(&w.f.grant(3 * DASH)).unwrap().state,
-        PlatformActivityState::Done
-    );
+    let rule = |id: &str| moves.iter().find(|m| m.id == id).unwrap().rule;
+    assert_eq!(rule(&first.id), 0, "stored before the rule");
+    assert_eq!(rule(&second.id), HOLD_RULE, "made now");
+}
+
+/// #471: once proof shows the refused move's nonces taken (it executed
+/// through another node), the hold is released and a send goes out.
+#[test]
+fn a_moves_hold_after_a_consensus_error_ends_on_proof() {
+    for act in [Act::Invalid, Act::SignatureRefused] {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        w.net.then(act);
+        w.move_to(
+            WithdrawAmount::Credits { credits: DASH },
+            &w.to.clone(),
+            &w.f.grant(3 * DASH),
+        )
+        .unwrap();
+        let (them, to) = w.theirs(9);
+        let one = WithdrawAmount::Credits { credits: DASH };
+        assert_eq!(
+            w.send(one, &to, &w.f.grant(20 * DASH)).unwrap_err().code(),
+            "credits.move_pending",
+            "{act:?}"
+        );
+        w.lands(0);
+        w.activity();
+        assert_eq!(w.moves()[0].state, PlatformActivityState::Done, "{act:?}");
+        let out = w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+        assert_eq!(out.state, PlatformActivityState::Done, "{act:?}");
+        assert_eq!(w.net.credits(them), DASH, "{act:?}");
+    }
 }
 
 /// Opus m4 and n2: every refusal before the signature keeps the grant
@@ -1475,6 +1606,35 @@ fn differing_terms_settle_as_a_group() {
     assert_eq!(
         (row.credits, row.expected_duffs, row.fee_credits),
         (600, None, None)
+    );
+    // Nothing says which of them executed: every row says so, the newest too.
+    assert!(
+        moves
+            .iter()
+            .all(|m| m.unattributed && m.activity().unattributed)
+    );
+}
+
+/// Moves of one key with equal terms leave the same history whichever
+/// executed: the group names its winner, and no row is unattributed.
+#[test]
+fn equal_terms_settle_attributed() {
+    let mut f = record("f", 1, &[("a", 4)]);
+    f.state = PlatformActivityState::Failed;
+    f.seen_at = Some(5);
+    let mut r = record("r", 2, &[("a", 4)]);
+    (r.answered, r.seen_at) = (true, Some(15));
+    let mut moves = vec![f, r];
+    let landed = Seen {
+        height: 20,
+        at: [("a".into(), Some((4, 300)))].into(),
+    };
+    settle(&mut moves, &landed);
+    assert_eq!(moves[1].state, PlatformActivityState::Done);
+    assert!(
+        moves
+            .iter()
+            .all(|m| !m.unattributed && !m.activity().unattributed)
     );
 }
 
@@ -2129,6 +2289,29 @@ fn a_0_1_move_record_reads_as_to_core() {
     assert_eq!(row.expected_duffs, Some(0));
 }
 
+/// A group's outcome stored before records carried `unattributed` still
+/// shows no named winner; a record with no group outcome stays named.
+#[test]
+fn a_group_outcome_from_before_the_mark_names_no_winner() {
+    let read = |group: bool| {
+        let mut json = serde_json::to_value(record("m", 1, &[("x", 1)])).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("unattributed");
+        if group {
+            let outcome = GroupOutcome {
+                debit: Some(DASH),
+                to: None,
+            };
+            fields.insert("group".into(), serde_json::to_value(outcome).unwrap());
+        }
+        let read: MoveRecord = serde_json::from_value(json).unwrap();
+        assert!(!read.unattributed);
+        read.activity().unattributed
+    };
+    assert!(read(true));
+    assert!(!read(false));
+}
+
 impl World {
     /// A send of `amount` to `to` that goes out and is lost, then a later
     /// read shows it unexecuted: `Failed` by height, able to land.
@@ -2528,8 +2711,8 @@ fn an_answered_send_that_executed_nothing_reads_pending() {
 }
 
 /// A send failed by height may still go through, in Activity too, read
-/// afresh; one Platform refused for good never does; one its identical
-/// retry superseded reads as replaced.
+/// afresh, and so may one a node refused (#471); one its identical retry
+/// superseded reads as replaced.
 #[test]
 fn activity_tells_a_live_send_from_a_refused_or_superseded_one() {
     let w = World::new();
@@ -2551,53 +2734,179 @@ fn activity_tells_a_live_send_from_a_refused_or_superseded_one() {
         (PlatformActivityState::Replaced, false)
     );
 
+    // A node's consensus error settles nothing (#471): it may still land.
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
     w.net.then(Act::Invalid);
     let refused = w.send_quote(one, &to).unwrap();
-    assert!(
-        w.confirm(&refused.operation, &w.f.grant(20 * DASH))
-            .is_err()
-    );
+    w.confirm(&refused.operation, &w.f.grant(20 * DASH))
+        .unwrap();
+    w.net.tick();
     let r = (w.activity().into_iter())
         .find(|r| r.kind == PlatformActivityKind::Send)
         .unwrap();
-    assert_eq!(
-        (r.state, r.may_land),
-        (PlatformActivityState::Failed, false)
+    assert_eq!((r.state, r.may_land), (PlatformActivityState::Failed, true));
+}
+
+/// #471: a node's structure or signature error to a held send's identical
+/// retry releases nothing, whatever version either was signed at. A
+/// different send is refused until proof; the exact retry stays open,
+/// and the recipient is paid once.
+#[test]
+fn a_consensus_error_to_a_sends_retry_keeps_its_hold() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let two = WithdrawAmount::Credits { credits: 2 * DASH };
+    for act in [Act::Invalid, Act::SignatureRefused] {
+        for version in [None, Some(Some(1)), Some(None)] {
+            let w = World::new();
+            w.net.fund(w.address(0), 5 * DASH);
+            let (them, to) = w.theirs(9);
+            let held = w.held_send(one, &to);
+            if let Some(v) = version {
+                let mut r = w.moves()[0].clone();
+                r.version = v;
+                w.store(&[r]);
+            }
+            w.net.then(act);
+            let quote = w.send_quote(one, &to).unwrap();
+            w.confirm(&quote.operation, &w.f.grant(20 * DASH)).unwrap();
+            assert_same_transition(&w, 0, 1);
+            w.net.tick();
+            w.activity();
+            let still = |w: &World| (w.moves().into_iter().find(|m| m.id == held.id)).unwrap();
+            assert!(still(&w).holds(), "{act:?} {version:?}");
+            assert_eq!(
+                w.send(two, &to, &w.f.grant(20 * DASH)).unwrap_err().code(),
+                "credits.move_pending",
+                "{act:?} {version:?}"
+            );
+            assert_eq!(w.net.sent.lock().unwrap().len(), 2, "nothing else signed");
+            let quote = w.send_quote(one, &to).unwrap();
+            let out = w.confirm(&quote.operation, &w.f.grant(20 * DASH)).unwrap();
+            assert_eq!(
+                out.state,
+                PlatformActivityState::Done,
+                "{act:?} {version:?}"
+            );
+            assert_same_transition(&w, 0, 2);
+            w.lands(0);
+            w.activity();
+            assert_eq!(w.net.credits(them), DASH, "paid once");
+            assert!(w.moves().iter().all(|m| !m.holds()), "{act:?} {version:?}");
+        }
+    }
+}
+
+/// A fixture version whose structure check refuses every fee strategy,
+/// which no plan reads: every plan is one Platform would refuse.
+pub(crate) fn no_fee_steps() -> &'static PlatformVersion {
+    let mut v = PlatformVersion::latest().clone();
+    v.dpp.state_transitions.max_address_fee_strategies = 0;
+    Box::leak(Box::new(v))
+}
+
+/// The refusal [`no_fee_steps`] forces: Platform's own structure check
+/// (`FeeStrategyTooManyStepsError`), not an earlier step of the move.
+pub(crate) fn assert_no_fee_steps(e: &CreditsError) {
+    let shown = format!("{e:?}");
+    assert!(
+        shown.contains("Fee strategy has 1 steps, maximum allowed is 0"),
+        "{shown}"
     );
 }
 
-/// An identical retry Platform's stateless checks refuse, at the
-/// version the held send was signed at, releases it; a signer's refusal,
-/// or a held send of another (or no recorded) version, does not.
+/// The latest version, one protocol version higher.
+fn raised() -> &'static PlatformVersion {
+    let mut v = PlatformVersion::latest().clone();
+    v.protocol_version += 1;
+    Box::leak(Box::new(v))
+}
+
+/// #471 T1: a move to Core and a send whose plan Platform's structure check
+/// refuses are refused before anything is signed, recorded or redeemed, and
+/// hold nothing: at the real version both go through.
 #[test]
-fn only_an_identical_definitive_refusal_releases_a_held_send() {
+fn a_plan_the_structure_check_refuses_signs_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
     let one = WithdrawAmount::Credits { credits: DASH };
-    let setup = |act: Act, version: Option<Option<u32>>| {
+    *w.net.version.lock().unwrap() = no_fee_steps();
+    let (move_grant, send_grant) = (w.f.grant(3 * DASH), w.f.grant(20 * DASH));
+    assert_no_fee_steps(&w.move_to(one, &w.to.clone(), &move_grant).unwrap_err());
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_no_fee_steps(&w.confirm(&quote.operation, &send_grant).unwrap_err());
+    assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
+    assert!(w.moves().is_empty(), "nothing recorded");
+    assert!(
+        w.f.unused(&move_grant) && w.f.unused(&send_grant),
+        "nothing redeemed"
+    );
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
+    let out = w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(w.net.credits(them), DASH);
+    let out = w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+}
+
+/// #471 T3: the version rises between the pre-check and the signed call,
+/// and a node answers with a structure error: the move and the send hold,
+/// and nothing but proof releases them.
+#[test]
+fn a_version_rise_after_the_pre_check_releases_nothing() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    for send in [false, true] {
         let w = World::new();
         w.net.fund(w.address(0), 5 * DASH);
         let (_, to) = w.theirs(9);
-        let held = w.held_send(one, &to);
-        if let Some(v) = version {
-            let mut r = w.moves()[0].clone();
-            r.version = v;
-            w.store(&[r]);
+        w.net.then(Act::VersionRisesThenInvalid);
+        if send {
+            w.send(one, &to, &w.f.grant(20 * DASH)).unwrap();
+        } else {
+            w.move_to(one, &w.to.clone(), &w.f.grant(3 * DASH)).unwrap();
         }
-        w.net.then(act);
-        let quote = w.send_quote(one, &to).unwrap();
-        assert!(w.confirm(&quote.operation, &w.f.grant(20 * DASH)).is_err());
-        (w.moves().into_iter().find(|m| m.id == held.id))
-            .unwrap()
-            .holds()
-    };
-    assert!(!setup(Act::Invalid, None), "released");
-    assert!(
-        setup(Act::Unsigned, None),
-        "a signer's refusal says nothing"
-    );
-    assert!(setup(Act::Invalid, Some(Some(1))), "another version");
-    assert!(setup(Act::Invalid, Some(None)), "no recorded version");
+        assert_eq!(w.net.version().protocol_version, raised().protocol_version);
+        for _ in 0..3 {
+            w.net.tick();
+            w.activity();
+            assert!(w.moves()[0].holds(), "send {send}");
+        }
+        w.lands(0);
+        w.activity();
+        assert_eq!(
+            w.moves()[0].state,
+            PlatformActivityState::Done,
+            "send {send}"
+        );
+    }
+}
+
+/// #471: the pre-check refusing a held send's exact retry releases nothing.
+/// Nothing is signed, recorded or redeemed, and the send keeps its hold
+/// until proof; at the real version its retry goes out and settles it.
+#[test]
+fn a_retry_the_structure_check_refuses_signs_nothing() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let (them, to) = w.theirs(9);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let held = w.held_send(one, &to);
+    *w.net.version.lock().unwrap() = no_fee_steps();
+    let quote = w.send_quote(one, &to).unwrap();
+    assert_eq!(quote.retry_of.as_deref(), Some(held.id.as_str()));
+    let grant = w.f.grant(20 * DASH);
+    assert_no_fee_steps(&w.confirm(&quote.operation, &grant).unwrap_err());
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1, "nothing signed");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    assert_eq!(w.moves().len(), 1, "nothing recorded");
+    assert!(w.moves()[0].holds());
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
+    let quote = w.send_quote(one, &to).unwrap();
+    let out = w.confirm(&quote.operation, &w.f.grant(20 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_same_transition(&w, 0, 1);
+    assert_eq!(w.net.credits(them), DASH, "paid once");
 }
 
 /// A payment that arrives at the fee source while a send settles hides
@@ -3629,7 +3938,7 @@ fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
     let at = dashcore::OutPoint::new(txid.parse().unwrap(), 0);
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
     let arming = (w.f.engine)
-        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100).await });
+        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100, false).await });
     assert_eq!(arming, Ok(Arming::Made));
     w.net.fund(a, DASH);
     let rows = w.activity();
@@ -3711,3 +4020,6 @@ mod top_up;
 
 #[path = "platform_register_tests.rs"]
 mod register;
+
+#[path = "platform_mainnet_flag_tests.rs"]
+mod mainnet_flag;

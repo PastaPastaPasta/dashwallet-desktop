@@ -121,6 +121,28 @@ pub struct ShieldedScanProgress {
     pub total: u64,
 }
 
+/// Where the wallet's Shielded sync stands, for the status bar, Sync
+/// progress and Receive: read from the engine's own state, with no read of
+/// the note store and no bind, so it answers while a pass holds the store
+/// (a first scan holds it to the end).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedSyncInfo {
+    /// As [`ShieldedStatus::active`], and the session runs with Platform:
+    /// without it no pass runs.
+    pub active: bool,
+    /// As [`ShieldedStatus::account`]; `Binding` for a key a read of the
+    /// status binds next. `None` while not active.
+    pub account: Option<ShieldedAccount>,
+    /// The account's ledger is established: a pass scanned it this session,
+    /// or a status read found it ready.
+    pub established: bool,
+    /// A pass is running.
+    pub syncing: bool,
+    pub scan: Option<ShieldedScanProgress>,
+    /// The wallet's last pass this session failed, until one succeeds.
+    pub last_pass_failed: bool,
+}
+
 /// A shielded payment address of the wallet, for "Receive" and its QR.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedAddress {
@@ -470,7 +492,11 @@ impl DashPay {
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
-            pool::marked_status(&session, wallet, pool::status(&lib).await?).await
+            let status = pool::status(&lib).await?;
+            if status.ready {
+                session.hub.note_shielded_ready(wallet);
+            }
+            pool::marked_status(&session, wallet, status).await
         })
         .await
     }
@@ -486,9 +512,29 @@ impl DashPay {
         .await
     }
 
-    /// The wallet's shielded receive address.
+    /// Where the wallet's Shielded sync stands ([`ShieldedSyncInfo`]), with
+    /// no read of the note store.
+    pub async fn shielded_sync_info(&self) -> Result<ShieldedSyncInfo, ShieldedError> {
+        let wallet = self.wallet_id;
+        pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            Ok(pool::sync_info(&pw).await)
+        })
+        .await
+    }
+
+    /// The wallet's shielded receive address. A bound key's address reads
+    /// with no read of the note store, so it answers during a pass; the
+    /// first bind goes through the pool.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, |_, lib| async move {
+        let wallet = self.wallet_id;
+        let bound = pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            Ok(pool::bound_address(&pw).await)
+        })
+        .await?;
+        if let Some(address) = bound {
+            return Ok(address);
+        }
+        on_pool(&self.session, wallet, |_, lib| async move {
             pool::receive_address(&lib).await
         })
         .await

@@ -116,6 +116,7 @@ mod unfinished_funds;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;
+mod unfinished_remainder;
 mod unfinished_shields;
 mod users;
 #[cfg(test)]
@@ -130,7 +131,7 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
+    CoreMax, CoreMaxShort, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
     TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote, TopUpState,
     WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
     WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
@@ -181,20 +182,21 @@ pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
     ShieldRepairCost, ShieldState, ShieldedAccount, ShieldedActivity, ShieldedActivityKind,
     ShieldedActivityStatus, ShieldedAddress, ShieldedDirection, ShieldedScanProgress,
-    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncWait,
-    StuckShieldFunding, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo,
+    ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend, UnresolvedSpend,
+    UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
     VaultScanKey,
 };
 pub use startup::{
-    DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility, QuorumSource,
-    StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
+    AddressSync, DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility,
+    QuorumSource, StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
 pub use unfinished::{
-    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
-    UnfinishedTransfers,
+    LockFinish, LockKindId, LockOrigin, RecoverQuote, TransfersReport, UnfinishedLock,
+    UnfinishedState, UnfinishedTransfers,
 };

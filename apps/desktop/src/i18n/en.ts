@@ -17,6 +17,7 @@ import { network } from "./catalog/network";
 import { notifications } from "./catalog/notifications";
 import { onboarding } from "./catalog/onboarding";
 import { pay } from "./catalog/pay";
+import { platform } from "./catalog/platform";
 import { rates } from "./catalog/rates";
 import { receive } from "./catalog/receive";
 import { routes } from "./catalog/routes";
@@ -40,6 +41,7 @@ export const en = {
   activity,
   receive,
   pay,
+  platform,
   contacts,
   dashpay,
   coinjoin,

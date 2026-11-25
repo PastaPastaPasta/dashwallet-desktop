@@ -165,6 +165,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_shield_quote",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
+    "DashPay.shielded_sync_info",
     "DashPay.shielded_sync",
     "DashPay.shielded_receive_address",
     "DashPay.shield_quote",
@@ -183,6 +184,9 @@ const IMPLEMENTED: &[&str] = &[
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
     "DashPay.finish_transfer",
+    // #402: recovering a partly used transfer to Shielded.
+    "DashPay.recover_transfer_quote",
+    "DashPay.recover_transfer",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -290,6 +294,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund.rs",
     "platform_fund_tests.rs",
     "platform_moves.rs",
+    "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
     "platform_register.rs",
     "platform_register_tests.rs",
@@ -336,6 +341,8 @@ const NOT_FACADE: &[&str] = &[
     "unfinished_funds.rs",
     "unfinished_locks.rs",
     "unfinished_locks_tests.rs",
+    "unfinished_remainder.rs",
+    "unfinished_remainder_tests.rs",
     "unfinished_shields.rs",
     "users.rs",
     "users_tests.rs",
@@ -1137,7 +1144,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            CreditsError::BelowMinimum { min: 0 },
+            CreditsError::BelowMinimum { min: 0, max: None },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending {
                 txid: String::new(),
@@ -1182,7 +1189,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::BelowMinimum { min: 0, max: None },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
             ShieldedError::TooManyInputs { inputs: 0, max: 0 },
@@ -1672,6 +1679,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         // 0.1 E1: shielded funds refuse an unknown wallet.
         for refused in [
             dp.shielded_status().await.map(drop),
+            dp.shielded_sync_info().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
             dp.shield_quote(FundAmount::Duffs { duffs: 1 })
@@ -1703,6 +1711,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.finish_transfer(LockKindId::PlatformAddress, s(), 0, s())
                 .await
                 .map(drop),
+            dp.recover_transfer_quote(s(), 0).await.map(drop),
+            dp.recover_transfer(s(), 0, s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

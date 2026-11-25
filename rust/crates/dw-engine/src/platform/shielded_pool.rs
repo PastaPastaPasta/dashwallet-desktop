@@ -162,8 +162,8 @@ use super::shielded::{
     PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedAccount, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
     ShieldedAddress, ShieldedDirection, ShieldedScanProgress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, UnrecordedSpend, UnresolvedSpend,
-    UnshieldToPlatformOutcome,
+    ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo, UnrecordedSpend,
+    UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
@@ -220,6 +220,10 @@ pub(crate) struct SyncState {
 /// the real one, `shielded_tests.rs` scripts a fake.
 pub(crate) trait ShieldedLib: Send + Sync {
     fn network(&self) -> Network;
+    /// The session runs with Platform: without it no pass runs.
+    fn platform_enabled(&self) -> bool {
+        true
+    }
     /// The network's protocol version as the SDK last proved it; no read.
     fn protocol_version(&self) -> u32;
     /// The version after one proved read of Platform's (the one held when
@@ -296,6 +300,10 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
     /// Records the shield lock `txid` settled by a proved apply.
     fn settle(&self, txid: Txid) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// The shield locks Platform proved partly used (a shield refused after
+    /// a penalty, `unfinished_shields`): no longer pending shields; only a
+    /// recover moves what is left (`unfinished_remainder`).
+    fn partly_used(&self) -> impl Future<Output = HashSet<OutPoint>> + Send;
     /// Platform's proved answer whether the lock at `outpoint` is spent
     /// ([`super::unfinished_locks::proved_spent`]).
     fn spent(
@@ -523,7 +531,7 @@ pub(super) fn platform_shield_fee(version: &PlatformVersion) -> Result<u64, Shie
     compute_minimum_shielded_fee(MIN_ACTIONS, version).map_err(internal)
 }
 
-fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
+pub(crate) fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
     if protocol_version < SHIELDED_ACTIVATION_VERSION {
         return Err(ShieldedError::NotActive {
             protocol_version,
@@ -566,7 +574,7 @@ pub(super) fn journal_unread(session: &NetworkSession) -> ShieldedError {
 pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, ShieldedError> {
     let protocol_version = lib.protocol_version();
     let mut status = ShieldedStatus {
-        active: protocol_version >= SHIELDED_ACTIVATION_VERSION,
+        active: lib.platform_enabled() && protocol_version >= SHIELDED_ACTIVATION_VERSION,
         protocol_version,
         activation_version: SHIELDED_ACTIVATION_VERSION,
         ready: false,
@@ -1052,7 +1060,7 @@ pub(crate) async fn send_quote(
     let version = priced_gate(lib).await?;
     shielded_address(lib.network(), to)?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     let fee = spend_fee(lib, version, credits, ShieldedFeeKind::Base).await?;
     Ok(spend_quote(credits, fee, None))
@@ -1081,7 +1089,10 @@ pub(super) async fn unshield_plan(
     let version = priced_gate(lib).await?;
     let rules = Rules::at(version)?;
     if credits < rules.min {
-        return Err(ShieldedError::BelowMinimum { min: rules.min });
+        return Err(ShieldedError::BelowMinimum {
+            min: rules.min,
+            max: None,
+        });
     }
     if credits > rules.max {
         return Err(invalid("the amount is above Platform's largest withdrawal").into());
@@ -1112,7 +1123,7 @@ async fn unshield_to_platform_plan(
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
     let version = priced_gate(lib).await?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     if credits > i64::MAX as u64 {
         return Err(invalid("the amount is above Platform's largest unshield").into());
@@ -1759,13 +1770,16 @@ pub(super) struct OpenShield {
 /// `Consumed` mark does not survive SPV seeing the lock transaction again
 /// in a later session (the row comes back `Broadcast`, then proved), so a
 /// proved apply is also recorded in the dispatch journal (`top_up_settled`,
-/// as `topup.rs` records its own).
+/// as `topup.rs` records its own). A lock Platform proved partly used is
+/// not one ([`ShieldedLib::partly_used`]): a shield of it fails every time.
 pub(super) async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
     let unknown = lib.unknown_locks().await;
+    let partly_used = lib.partly_used().await;
     Ok((lib.shield_locks().await.into_iter())
         .filter(|l| !settled.contains(&l.outpoint.txid))
+        .filter(|l| !partly_used.contains(&l.outpoint))
         .filter_map(|lock| {
             let consumption_unknown = match lock.status {
                 LockStatus::Consumed => return None,
@@ -1827,7 +1841,7 @@ async fn shield_plan(
     let pool_fee = shield_pool_fee(version)?;
     let min = pool_fee / CREDITS_PER_DUFF + 1;
     if duffs < min {
-        return Err(ShieldedError::BelowMinimum { min });
+        return Err(ShieldedError::BelowMinimum { min, max: None });
     }
     no_open_shield(lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -2093,6 +2107,9 @@ pub(super) async fn open_for_funding(
     lib: &impl ShieldedLib,
 ) -> Result<(), ShieldedError> {
     gate(lib).await?;
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         let refusal = held(lib, wait);
         if wait == RegistrationWait::Startup {
@@ -2133,7 +2150,7 @@ pub(super) async fn finish_lock(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
             Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,
@@ -2195,6 +2212,9 @@ pub(super) async fn apply(
                 "a shield's apply may have executed, unproved; its lock stays pending"
             );
             lib.mark_unknown(outpoint.txid).await;
+            // A shield refused after a penalty leaves the lock partly used:
+            // only a recover moves what is left (#402).
+            super::unfinished_shields::read_unproved(session, wallet, lib, outpoint).await;
             ShieldState::ConsumptionUnknown
         }
         // Refused before the lock's key signed a transition: nothing
@@ -2811,6 +2831,103 @@ where
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
 
+/// [`on_pool`] without the pool: `body` gets the wallet's Platform handle
+/// and never the coordinator, whose open reads the note store a pass holds
+/// (a first scan holds it to the end).
+pub(crate) async fn on_wallet<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwLib) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    let session = Arc::clone(session);
+    let rt = session.rt.clone();
+    rt.spawn(async move {
+        let _admitted = session
+            .signing_preflight(false)
+            .await
+            .map_err(PlatformError::from)?;
+        let _op = session.enter().await.map_err(PlatformError::from)?;
+        session
+            .require_wallet(&wallet_id)
+            .map_err(PlatformError::from)?;
+        let (_, pw) = PwLib::open(&session, wallet_id).await?;
+        body(Arc::clone(&session), pw).await
+    })
+    .await
+    .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
+}
+
+/// The network takes shielded transitions and the session runs Platform,
+/// whose loops run the passes.
+fn pool_active(pw: &PwLib) -> bool {
+    pw.session.platform.enabled() && pw.sdk.protocol_version_number() >= SHIELDED_ACTIVATION_VERSION
+}
+
+/// Why an unbound account cannot bind now, read with no prompt and no
+/// derivation: a wallet without a seed is watch-only whatever the vault's
+/// state; a seed behind a lock needs the unlock. `None`: a bind may succeed.
+pub(crate) fn unbindable(vault: &dw_vault::Vault, wallet: WalletId) -> Option<ShieldedAccount> {
+    if !vault.has_wallet_secret(&wallet.0) {
+        return Some(ShieldedAccount::WatchOnly);
+    }
+    match vault.lock_state() {
+        dw_vault::LockState::Locked => Some(ShieldedAccount::Locked),
+        dw_vault::LockState::UnlockedMixingOnly => Some(ShieldedAccount::MixingOnly),
+        _ => None,
+    }
+}
+
+/// [`ShieldedSyncInfo`]: the account from the wallet's bound keys or
+/// [`unbindable`], the pass from the session hub.
+pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
+    let session = &pw.session;
+    let mut info = ShieldedSyncInfo {
+        active: pool_active(pw),
+        account: None,
+        established: false,
+        syncing: false,
+        scan: None,
+        last_pass_failed: false,
+    };
+    if !info.active {
+        return info;
+    }
+    let bound = pw.wallet.is_shielded_bound().await;
+    info.account = Some(if bound {
+        ShieldedAccount::Bound
+    } else {
+        unbindable(&session.vault, pw.wallet_id).unwrap_or(ShieldedAccount::Binding)
+    });
+    let hub = &session.hub;
+    info.established = bound && hub.shielded_established(pw.wallet_id);
+    info.syncing = session
+        .manager()
+        .is_ok_and(|m| m.shielded_sync().is_syncing());
+    info.scan = hub.shielded_scan().filter(|_| info.syncing);
+    info.last_pass_failed = hub.shielded_pass_failed(pw.wallet_id);
+    info
+}
+
+/// The address of an account whose key is bound, read from the wallet's
+/// keys alone; `None` when not bound, or the pool not active, for the
+/// pool's path to answer.
+pub(crate) async fn bound_address(pw: &PwLib) -> Option<ShieldedAddress> {
+    if !pool_active(pw) {
+        return None;
+    }
+    let raw = pw.wallet.shielded_default_address(SHIELDED_ACCOUNT).await?;
+    let address = OrchardAddress::from_raw_bytes(&raw).ok()?;
+    Some(ShieldedAddress {
+        address: address.to_bech32m_string(pw.session.vault.network()),
+        account: SHIELDED_ACCOUNT,
+    })
+}
+
 /// What a first bind the vault refused says: an unlock, a full unlock, or
 /// (watch-only) nothing; any other vault error is the call's.
 pub(crate) fn vault_blocked(e: VaultError) -> Result<ShieldedAccount, PlatformError> {
@@ -2831,6 +2948,10 @@ fn store_error(e: impl std::fmt::Display) -> PlatformError {
 impl ShieldedLib for PwShielded {
     fn network(&self) -> Network {
         self.pw.session.vault.network()
+    }
+
+    fn platform_enabled(&self) -> bool {
+        self.pw.session.platform.enabled()
     }
 
     fn protocol_version(&self) -> u32 {
@@ -2855,10 +2976,21 @@ impl ShieldedLib for PwShielded {
         // hold its status behind every pass.
         let passes = self.pw.session.platform.shielded_passes.write();
         let Ok(_passes) = tokio::time::timeout(BIND_PASS_WAIT, passes).await else {
-            return Ok(ShieldedAccount::Binding);
+            // Held back by a pass: what the user can act on still shows.
+            return Ok(unbindable(&self.pw.session.vault, self.pw.wallet_id)
+                .unwrap_or(ShieldedAccount::Binding));
         };
         if (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await? {
             return Ok(ShieldedAccount::Bound);
+        }
+        if !self
+            .pw
+            .session
+            .vault
+            .has_wallet_secret(&self.pw.wallet_id.0)
+        {
+            // No seed to derive from, whatever the vault's state.
+            return Ok(ShieldedAccount::WatchOnly);
         }
         // First bind: the vault's viewing key, persisted before it is bound
         // (the library's own seed bind's order), so a restart rebinds from
@@ -3082,6 +3214,14 @@ impl ShieldedLib for PwShielded {
         {
             tracing::warn!(%txid, error = %e, "could not record a shield of unknown consumption");
         }
+    }
+
+    async fn partly_used(&self) -> HashSet<OutPoint> {
+        let (session, wallet) = (&self.pw.session, self.pw.wallet_id);
+        let kind = super::unfinished_locks::LockKindId::Shielded;
+        (super::unfinished_locks::remaining_of(session, wallet, kind).await)
+            .into_keys()
+            .collect()
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {

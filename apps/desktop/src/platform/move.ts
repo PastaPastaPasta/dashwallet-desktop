@@ -16,6 +16,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -71,6 +72,17 @@ export const MOVE_COPY = {
     text: (amount: string, fee: string | null) => (fee === null ? t("transfer.move.done.text", { amount }) : t("transfer.move.done.textWithFee", { amount, fee })),
     /** The engine proved the debit but not what arrives. */
     debitOnly: (taken: string) => t("transfer.move.done.debitOnly", { taken }),
+    /** `debitOnly` when nothing says which member of the move's group went through. */
+    debitUnknown: (taken: string) => t("transfer.move.done.debitUnknown", { taken }),
+  },
+  /** The move's group settled with no evidence of which member went through. */
+  settledUnknown: {
+    get title() {
+      return t("transfer.status.settledUnknown.title");
+    },
+    get text() {
+      return t("transfer.status.settledUnknown.text");
+    },
   },
   pending: {
     get title() {
@@ -139,6 +151,17 @@ export const MOVE_COPY = {
   },
 };
 
+/** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
+ * `credits` and `amount` format credits and duffs. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+  const C = MOVE_COPY;
+  if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
+  if (outcome.state === "replaced") return C.replaced;
+  if (failed) return C.failed;
+  if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
+  return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
+}
+
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
  * a move Platform has not confirmed (`pending`). `null`: Move may be offered. */
 export type MoveBlock = "checking" | "failed" | "pending";
@@ -188,7 +211,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
     case "credits.quote_changed":
       return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
-      return t("transfer.move.error.featureOff");
+      return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
@@ -214,6 +237,14 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
  * is taken yet. */
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
   !!activity?.some((a) => holdingKind(a) && a.state === "pending");
+
+/** The moves, contact payments and top-ups from Platform that hold the addresses and Platform has
+ * answered, the newest first: on mainnet, where new moves are off, Move stays offered as their exit (an
+ * unanswered one holds every move until it settles). A held send's exit is its retry, on Pay. */
+export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && a.state !== "pending" && isHeldOp(a)) ?? [];
+
+/** The newest of `heldExitOps`, or `null`. */
+export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => heldExitOps(activity)[0] ?? null;
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>

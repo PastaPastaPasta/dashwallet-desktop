@@ -3,15 +3,17 @@
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { FundAmount } from "./generated/FundAmount";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
-import { creditsToDuffs } from "./pending";
+import { creditsToDuffs, fundAmount } from "./pending";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -50,6 +52,7 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedSyncInfo: (walletId: string) => ["dashpay", "shielded", "syncInfo", walletId] as const,
   shieldedAll: ["dashpay", "shielded"] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
@@ -63,7 +66,7 @@ export const keys = {
   // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
   platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
   platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
-  platformFundQuote: (walletId: string, duffs: number) => ["platformFundQuote", walletId, duffs] as const,
+  platformFundQuote: (walletId: string, amount: FundAmount) => ["platformFundQuote", walletId, amount] as const,
   // Under "dashpay" so the settle invalidation (events.ts) re-reads the unfinished locks.
   pendingPlatformFunds: (walletId: string) => ["dashpay", "pendingPlatformFunds", walletId] as const,
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
@@ -74,6 +77,9 @@ export const keys = {
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
+  /** Outside the history's key, whose queries events.ts rewrites as pages of rows; a history
+   * change invalidates it by name. */
+  droppedNotices: (walletId: string) => ["droppedNotices", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
@@ -173,7 +179,7 @@ export const PENDING_MOVE_REFETCH_MS = 30_000;
 // A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
 // within minutes: look again.
 export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
-  hasPendingMove(data) || data?.some((a) => a.kind === "fromCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
+  hasPendingMove(data) || data?.some((a) => (a.kind === "fromCore" || a.kind === "recovered") && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
@@ -217,13 +223,13 @@ export function usePlatformSendQuote(walletId: string, to: string, amount: Withd
   });
 }
 
-/** What "Add from Dash wallet" of `duffs` costs and adds; `null` duffs: no quote yet. */
-export function usePlatformFundQuote(walletId: string, duffs: number | null) {
+/** What "Add from Dash wallet" of `amount` costs and adds; `null`: no quote yet. */
+export function usePlatformFundQuote(walletId: string, amount: FundAmount | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
-    queryFn: () => b.platformFundQuote(walletId, { kind: "duffs", duffs: duffs! }),
-    enabled: duffs !== null,
+    queryKey: keys.platformFundQuote(walletId, amount ?? { kind: "duffs", duffs: 0 }),
+    queryFn: () => b.platformFundQuote(walletId, amount!),
+    enabled: amount !== null,
     retry: false,
     gcTime: 0,
   });
@@ -260,8 +266,45 @@ export function useShieldedStatus(walletId: string, pollWhileSyncing = false, en
     queryFn: () => b.shieldedStatus(walletId),
     enabled,
     retry: false,
-    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+    refetchInterval: pollWhileSyncing ? (q) => (q.state.status === "error" ? SHIELDED_SCAN_POLL_MS : shieldedStatusRefetchMs(q.state.data)) : false,
   });
+}
+
+/** While a pass runs, the account is not established and nothing but time holds it, or its last
+ * pass failed (the retry's start comes with no event); a failed read is tried again. */
+export function shieldedSyncInfoRefetchMs(info: ShieldedSyncInfo | null | undefined, failed: boolean): number | false {
+  if (failed) return SHIELDED_SCAN_POLL_MS;
+  if (!info?.active) return false;
+  return info.account === "binding" || info.syncing || info.lastPassFailed || (!info.established && info.account === "bound") ? SHIELDED_SCAN_POLL_MS : false;
+}
+
+/** Where the wallet's Shielded sync stands (`ShieldedSyncInfo`); `null` while dw-app has no such
+ * command. It answers while a pass holds the note store, which the full status waits for. */
+export function useShieldedSyncInfo(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedSyncInfo(walletId),
+    queryFn: () => b.shieldedSyncInfo(walletId),
+    enabled,
+    retry: false,
+    refetchInterval: (q) => shieldedSyncInfoRefetchMs(q.state.data, q.state.status === "error"),
+  });
+}
+
+/** An account the full status read may bind: the sync read cannot see a viewing key saved by an
+ * earlier session, which binds with no unlock. */
+export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
+  return !!info?.active && info.account !== null && info.account !== "bound";
+}
+
+/** The full status read binds a bindable account, and the sync read is read again once it binds. */
+export function useShieldedBind(walletId: string, info: ShieldedSyncInfo | null | undefined, enabled = true) {
+  const qc = useQueryClient();
+  const bindable = shieldedBindable(info);
+  const bound = useShieldedStatus(walletId, true, enabled && bindable).data?.account === "bound";
+  useEffect(() => {
+    if (bindable && bound) void qc.invalidateQueries({ queryKey: keys.shieldedSyncInfo(walletId) });
+  }, [bindable, bound, qc, walletId]);
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
@@ -293,7 +336,7 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
     queryFn: async (): Promise<ShieldedQuoteView> => {
       switch (request?.kind) {
         case "add": {
-          return { kind: "add", quote: await b.shieldQuote(walletId, { kind: "duffs", duffs: request.duffs }) };
+          return { kind: "add", quote: await b.shieldQuote(walletId, fundAmount(request)) };
         }
         case "send": {
           return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
@@ -460,6 +503,12 @@ export function useHistory(walletId: string, filter: HistoryFilter, limit: numbe
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
+}
+
+/** The notices of payments Dash Wallet dropped because what they spent was never valid. */
+export function useDroppedNotices(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.droppedNotices(walletId), queryFn: () => b.droppedNotices(walletId) });
 }
 
 export function useTxDetail(walletId: string, txid: string) {

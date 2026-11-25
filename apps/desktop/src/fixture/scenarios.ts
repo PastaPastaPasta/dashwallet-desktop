@@ -26,9 +26,10 @@ import type { ShellSync } from "../api/generated/ShellSync";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { TxDropInfo } from "../api/generated/TxDropInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
@@ -36,7 +37,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
-import { restoredFundLock, restoredLock } from "./recovery";
+import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
@@ -62,6 +63,8 @@ export interface FixtureWallet {
   receive: ReceiveWorld;
   /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
   scanHeight?: number | null;
+  /** Dropped payments whose notice was dismissed. */
+  droppedSeen?: string[];
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -219,6 +222,34 @@ export function emptyWallet(walletId: string, name: string): FixtureWallet {
  * wait dw-vault reports for them (the fixture's clock stands still, so it never runs out). */
 function lockedAfter(w: World, failedAttempts: number): World {
   w.lock = { ...w.lock, state: "locked", failedAttempts, retryAfterSecs: throttleWaitSecs(failedAttempts) || null };
+  return w;
+}
+
+/** Adds a payment Dash Wallet dropped itself for each of `drops`, newest first, an hour apart, to the
+ * first wallet: an abandoned send, not counted (the never-valid transaction itself is a receive). */
+function withDropped(w: World, drops: TxDropInfo[]): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const received = wallet.rows.find((r) => r.category === "received")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const rows: TxRow[] = drops.map((dropped, i) => {
+    const like = dropped.cause === "invalidClaim" ? received : sent;
+    return {
+      ...like,
+      txid: (0xd0 + i).toString(16).repeat(32),
+      recordIndex: 0,
+      timestamp: newest + 3600 * (drops.length - i),
+      blockHeight: null,
+      amount: like.amount < 0 ? -(25_000_000 + i * 1_000_000) - 374 : 40_000_000,
+      fee: like.amount < 0 ? 374 : null,
+      label: null,
+      status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null, dropped },
+      countsTowardBalance: false,
+      counterparty: undefined,
+      fiatThen: undefined,
+    };
+  });
+  wallet.rows = [...rows, ...wallet.rows];
   return w;
 }
 
@@ -540,7 +571,7 @@ function withdrawal(n: number, status: Withdrawal["status"], credits: number, ho
 }
 
 /** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
-function withContest(w: World, state: ContestStatus["state"]): World {
+function withContest(w: World, state: ContestStatus["state"], temporaryName = "alice007"): World {
   const s = w.dashpay.status;
   if (s.kind !== "contestPending") return w;
   const contest: ContestStatus = {
@@ -553,10 +584,19 @@ function withContest(w: World, state: ContestStatus["state"]): World {
     ],
     lockVotes: state.kind === "locked" ? 55 : 3,
     abstainVotes: 2,
-    temporaryName: "alice007",
+    temporaryName,
   };
   w.dashpay.credits = newCreditsWorld({ contest });
   return w;
+}
+
+/** "alice" contested by a registration that asked for the temporary "alice2" beside it (DP1-09
+ * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
+function withInstant(w: World, owned: boolean): World {
+  const c = contestPending(w, 1_900_000_000);
+  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
+  return c;
 }
 
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
@@ -714,6 +754,26 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** One payment Dash Wallet dropped because the Dash it used came from an incoming transaction that
+   * was never valid, its coins back: Home's notice names it. */
+  "dropped-one": (t) => withDropped(base(t), [{ cause: "invalidSource", state: { kind: "released" } }]),
+  /** Two such payments: the notice counts them, and Details opens Activity. */
+  "dropped-several": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "released" } },
+      { cause: "invalidSource", state: { kind: "released" } },
+    ]),
+  /** A dropped row in each state the engine gives, and the never-valid transaction itself; no
+   * notice, since none is back. */
+  "dropped-states": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "releasing" } },
+      { cause: "invalidSource", state: { kind: "rescanNeeded" } },
+      { cause: "invalidSource", state: { kind: "rescanFromHeight", height: 2_103_500 } },
+      { cause: "invalidSource", state: { kind: "awaitingFunding" } },
+      { cause: "replaced", state: { kind: "held" } },
+      { cause: "invalidClaim", state: { kind: "released" } },
+    ]),
   /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
    * offered, and refused until the wallet restarts and rescans. */
   "abandon-rescan-first": (t) => {
@@ -872,6 +932,25 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
+  "platform-move-held-and-rest": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.heldInputs = { "pm-held": p.addresses.map((a) => a.address) };
+    p.addresses.push({ address: "tdash1q3rest7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr", credits: "10000000000" });
+    return w;
+  },
+  /** A move and its retry at the same inputs, both failed by height and able to land: one hold of two records. */
+  "platform-move-held-several": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, mayLand: true, estimated: false } as const;
+    p.activity = [{ ...row, id: "pm-held-2", at: at - 300 }, { ...row, id: "pm-held", at: at - 600 }, ...p.activity];
+    return w;
+  },
   /** The next "Add from Dash wallet" is applied (as the base world does). */
   "paddr-fund-applies": (t) => {
     const w = base(t);
@@ -952,6 +1031,24 @@ const SCENARIOS = {
     ];
     return w;
   },
+  /** Groups that settled with no evidence of which member went through, as the engine marks them: two moves
+   * of other terms at the same inputs, and two exits of a top-up that did not land, of other amounts. Only
+   * each group's newest row carries its debit. */
+  "platform-settled-unknown": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false } as const;
+    p.activity = [
+      { ...row, id: "pm-exit2", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800, winnerKnown: false },
+      { ...row, id: "pm-exit1", kind: "moveToCore", state: "failed", credits: "19000000000", at: at - 2100, winnerKnown: false },
+      { ...row, id: "pt-topup", kind: "toIdentity", state: "failed", credits: "20000000000", at: at - 2400 },
+      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600, winnerKnown: false },
+      { ...row, id: "pm-old", kind: "moveToCore", state: "replaced", credits: "25000000000", at: at - 7200, winnerKnown: false },
+      ...p.activity,
+    ];
+    return w;
+  },
   /** A wallet that starts one block short of the tip and has never been caught up. */
   "sync-one-behind": (t) => {
     const w = base(t);
@@ -975,13 +1072,43 @@ const SCENARIOS = {
     return w;
   },
   /** Shielded's first bind needs an unlock: Receive says so and shows no address; the bar is Synced,
-   * Sync progress says "Unlock to sync". */
+   * Sync progress says "Unlock to sync"; Send, Add and Transfer name the unlock. The vault itself reads
+   * unlocked here: the app shows the lock screen while it is locked, so this shows the engine's
+   * answer alone. */
   "shielded-locked": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "locked";
+    return w;
+  },
+  /** The same while the wallet is unlocked for mixing only: a full unlock binds it. */
+  "shielded-mixing-only": (t) => {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
     w.pending.shielded!.account = "mixingOnly";
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** A watch-only wallet has no viewing key to bind. */
+  "shielded-watch-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "watchOnly";
+    return w;
+  },
+  /** The wallet's last Platform-address pass failed: the bar says Platform did not finish. */
+  "platform-addresses-failed": (t) => {
+    const w = base(t);
+    w.dashpay.addresses = "failed";
+    return w;
+  },
+  /** Shielded's sync status cannot be read: the bar says so, never Synced. */
+  "shielded-sync-unread": (t) => {
+    const w = base(t);
+    w.pending.shielded!.syncInfoFails = true;
     return w;
   },
   /** Shielded is established and its last pass failed: the bar says it did not finish. */
@@ -1132,6 +1259,44 @@ const SCENARIOS = {
   "paddr-recovery-mixed": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.30 DASH left: Home offers Recover. */
+  "recovery-recoverable": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Two refused transfers to Shielded: one with 0.30 DASH left, one with less than the fee left (too small, not on the card). */
+  "recovery-recoverable-small": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A restored lock ready to finish and a refused transfer to Shielded with 0.30 DASH left: the sheet shows both pairs of lines. */
+  "recovery-recoverable-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(4, 25_000_000), partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Only refused transfers to Shielded with less than the fee left: no card. */
+  "recovery-too-small-only": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A refused transfer to Shielded with 0.30 DASH left, on mainnet: listed, never offered a Recover. */
+  "recovery-recoverable-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(3, 40_000_000, 20_000_000_000n)];
+    return w;
+  },
+  /** The first recover may have gone through ("checking"); the next is applied. */
+  "recovery-recover-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** The first finish ends `platform.unavailable`; a retry is applied. */
@@ -1675,6 +1840,19 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
     return w;
   },
+  /** "alice" contested with no temporary name and too few credits for one: Top up (D4 reversed). */
+  "dashpay-contest-instant-short": (t) => {
+    const w = contestPending(base(t), 1_900_000_000);
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null, balance: "1000000", creditLevel: "low" }));
+    return w;
+  },
+  /** DP1-09 D4 reversed: the registration's temporary "alice2" registered beside the contested
+   * "alice" (iOS's success line), or refused (its failure line and Try again). */
+  "dashpay-instant-ok": (t) => withInstant(base(t), true),
+  "dashpay-instant-failed": (t) => withInstant(base(t), false),
+  /** The vote on "alice" won (the main name switches, "alice2" kept) or lost ("alice2" stays main). */
+  "dashpay-instant-won": (t) => withContest(withInstant(base(t), true), { kind: "won" }, "alice2"),
+  "dashpay-instant-lost": (t) => withContest(withInstant(base(t), true), { kind: "lost", winner: IDENTITY.mallory }, "alice2"),
   /** The contest read before the status moved on: won (R3), lost to another user (R4), blocked (R5). */
   "dashpay-contest-won": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "won" }),
   "dashpay-contest-lost": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "lost", winner: IDENTITY.mallory }),

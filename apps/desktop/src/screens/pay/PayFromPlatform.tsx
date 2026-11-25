@@ -6,7 +6,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { hasCode } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
-import type { PlatformSendOutcome } from "../../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../../api/generated/PlatformSendQuote";
 import type { WithdrawAmount } from "../../api/generated/WithdrawAmount";
 import { creditsToDuffs } from "../../api/pending";
@@ -17,8 +16,9 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
+import { addressSendsOff, MAINNET_OFF_COPY } from "../../platform/mainnetOff";
 import { hasUnansweredOp } from "../../platform/move";
-import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
+import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, sendWent, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
 import { GrantSheet } from "../tools/common";
 import { FormField, type useAmountField } from "./form";
 
@@ -34,27 +34,6 @@ function Row({ label, testId, children, total, address }: { label: string; testI
       </dd>
     </div>
   );
-}
-
-/** What the result sheet says: the outcome's own state, unless Activity has since settled it (`settled`).
- * `retried`: the send answered a retry, which may be the earlier payment's own outcome. */
-function outcomeCopy(outcome: PlatformSendOutcome, credits: (c: string) => string, settled: Settled | null, retried: boolean): { title: string; text: string } {
-  if (settled === "went") return C.settled.went;
-  if (settled === "refused") return C.settled.refused;
-  switch (outcome.state) {
-    case "done": {
-      // The balances' figure: a deposit to the fee source while it settled hides part of the fee. Max's inputs gave
-      // exactly their balances (the output paid the fee), so its debit is exact.
-      const text = C.done.text(credits(outcome.credits), !outcome.feeFromAmount);
-      return { title: C.done.title, text: retried ? `${C.went} ${text}` : text };
-    }
-    case "pending":
-      return C.pending;
-    case "failed":
-      return outcome.mayLand ? C.failed : C.settled.refused;
-    case "replaced":
-      return C.replaced;
-  }
 }
 
 function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string) => string }) {
@@ -120,7 +99,7 @@ function SendSheet({
 }) {
   const { step, outcome } = flow;
   const q = confirmed?.quote;
-  const close = () => onClose(step === "done" && (outcome?.state === "done" || settled === "went"));
+  const close = () => onClose(step === "done" && sendWent(outcome, settled));
   // Refused for good: nothing is held, so the payment can be sent again from the form.
   const notSent = settled === "refused" || (outcome?.state === "failed" && !outcome.mayLand);
   return (
@@ -152,10 +131,10 @@ function SendSheet({
         {step === "done" && outcome && (
           <div role="status">
             <p className="topup-title" data-testid="platform-send-outcome-title" data-state={outcome.state}>
-              {outcomeCopy(outcome, credits, settled, flow.retryOf !== null).title}
+              {sendOutcomeCopy(outcome, credits, settled, flow.retryOf !== null).title}
             </p>
             <p className="sheet-text" data-testid="platform-send-outcome-text">
-              {outcomeCopy(outcome, credits, settled, flow.retryOf !== null).text}
+              {sendOutcomeCopy(outcome, credits, settled, flow.retryOf !== null).text}
             </p>
             {flow.noRetry && (
               <p className="form-problem" role="alert" data-testid="platform-send-no-retry">
@@ -163,7 +142,7 @@ function SendSheet({
               </p>
             )}
             <div className="sheet-actions">
-              {outcome.state !== "done" && settled !== "went" && !notSent && (
+              {!sendWent(outcome, settled) && !notSent && (
                 <DashButton variant="tintedGray" size="large" data-testid="platform-send-view" onClick={() => { close(); navigate("activity"); }}>
                   {C.view}
                 </DashButton>
@@ -250,7 +229,9 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   const asked = sendAmount(max, amount.settled ? amount.duffs : undefined);
   // Nothing is quoted behind a result: the send's own events would check its amount against what it left.
   const showing = flow.step === "done";
-  const quote = usePlatformSendQuote(walletId, to, waiting || showing ? null : asked);
+  // On mainnet this version sends nothing new from Platform: only a held payment's retry is offered.
+  const off = addressSendsOff(network, balance.data);
+  const quote = usePlatformSendQuote(walletId, to, off || waiting || showing ? null : asked);
   const empty = balance.data === null || (balance.data !== undefined && BigInt(balance.data.credits) === 0n);
   const sheetOpen = confirmed !== null || flow.running || flow.step !== "confirm";
 
@@ -298,7 +279,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
   };
   const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
   // A send that went ends the form at once, as Pay's Core forms do.
-  const went = flow.step === "done" && (flow.outcome?.state === "done" || settled === "went");
+  const went = flow.step === "done" && sendWent(flow.outcome, settled);
   useEffect(() => {
     if (!went) return;
     amount.setText("");
@@ -311,6 +292,29 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
       <GrantSheet grants={flow.grants} />
     </>
   );
+  const earlier = held?.to && (
+    <div className="field-hint" data-testid="platform-send-earlier">
+      <p>{C.earlier(credits(held.credits), held.to)}</p>
+      <DashButton variant="tintedBlue" size="small" data-testid="platform-send-retry-held" disabled={flow.running} onClick={() => void retryHeld()}>
+        {C.retryThat}
+      </DashButton>
+      {flow.noRetry && flow.step === "confirm" && (
+        <p className="form-problem" role="alert" data-testid="platform-send-no-retry-form">
+          {C.noRetry}
+        </p>
+      )}
+    </div>
+  );
+  if (off)
+    return (
+      <>
+        <p className="field-hint" role="status" data-testid="platform-send-mainnet-off">
+          {MAINNET_OFF_COPY.moveAndSend}
+        </p>
+        {earlier}
+        {sheet}
+      </>
+    );
   // A send that emptied the balance keeps its result sheet up.
   if (empty)
     return (
@@ -352,19 +356,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
           </span>
         )}
       </FormField>
-      {held?.to && (
-        <div className="field-hint" data-testid="platform-send-earlier">
-          <p>{C.earlier(credits(held.credits), held.to)}</p>
-          <DashButton variant="tintedBlue" size="small" data-testid="platform-send-retry-held" disabled={flow.running} onClick={() => void retryHeld()}>
-            {C.retryThat}
-          </DashButton>
-          {flow.noRetry && flow.step === "confirm" && (
-            <p className="form-problem" role="alert" data-testid="platform-send-no-retry-form">
-              {C.noRetry}
-            </p>
-          )}
-        </div>
-      )}
+      {earlier}
       {notice && (
         <p className="field-hint" role="status" data-testid="platform-send-notice">
           {notice}
