@@ -3,11 +3,11 @@
 //! reference, compared as normalized `sqlite_master` rows (columns, types,
 //! NOT NULL, defaults, CHECKs, keys, FKs, indexes, triggers).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
-use crate::adopters::Adopters;
+use crate::adopters::{Adopters, P4_NAME};
 use crate::error::Result;
 use crate::fork;
 use crate::sql::{
@@ -26,6 +26,9 @@ pub(crate) struct Reference {
     instant_locks_v2: Option<String>,
     instant_locks_fresh: Option<String>,
     instant_locks_others: Vec<SchemaObject>,
+    /// This build's own table of each unreleased fork table's name (all
+    /// objects), when its fresh schema has one.
+    fresh_unreleased: BTreeMap<&'static str, Vec<SchemaObject>>,
 }
 
 fn fresh_others(adopters: &Adopters, table: &str) -> Vec<SchemaObject> {
@@ -112,6 +115,9 @@ impl Reference {
             instant_locks_v2,
             instant_locks_fresh: instant_fresh.as_deref().map(normalize_sql),
             instant_locks_others: fresh_others(adopters, fork::INSTANT_LOCKS),
+            fresh_unreleased: (fork::UNRELEASED_TABLES.iter())
+                .filter_map(|(_, table, _)| Some((*table, fresh_objects(adopters, table)?)))
+                .collect(),
         })
     }
 
@@ -130,15 +136,18 @@ impl Reference {
 
 /// The first fork object of `conn` that is not exactly the reference shape,
 /// or a fork table present without its history version. `None` when all
-/// match. `p4_applied`: upstream's P4 already ran on this file, so a
-/// `verified` column without fork V2 is upstream's own.
+/// match. `applied`: the upstream migrations already run on this file. Once
+/// P4 ran, a `verified` column without fork V2 is upstream's own; once the
+/// upstream migration of an unreleased fork table's name ran, that table is
+/// upstream's own if it is this build's fresh table exactly.
 pub(crate) fn check(
     conn: &Connection,
     versions: &BTreeSet<u32>,
     reference: &Reference,
-    p4_applied: bool,
+    applied: &BTreeSet<&str>,
 ) -> Result<Option<String>> {
     let q = map_sqlite("read schema");
+    let p4_applied = applied.contains(P4_NAME);
     if reference
         .fresh_retired_pool
         .as_ref()
@@ -211,8 +220,13 @@ pub(crate) fn check(
             fork::DROPPED_SPENDS
         )));
     }
-    for (version, table) in fork::UNRELEASED_TABLES {
-        if !versions.contains(version) && has_table(conn, table).map_err(&q)? {
+    for (version, table, upstream) in fork::UNRELEASED_TABLES {
+        if versions.contains(version) || !has_table(conn, table).map_err(&q)? {
+            continue;
+        }
+        let upstreams = applied.contains(upstream)
+            && reference.fresh_unreleased.get(table) == Some(&objects_on(conn, table).map_err(&q)?);
+        if !upstreams {
             return Ok(Some(format!("{table} without fork version {version}")));
         }
     }

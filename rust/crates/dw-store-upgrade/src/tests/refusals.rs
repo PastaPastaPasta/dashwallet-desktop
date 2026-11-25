@@ -251,3 +251,42 @@ fn a_copy_that_fails_its_check_beside_a_sound_store_is_retried() {
     );
     assert!(crate::copy::retry_copy_for(&err).is_some());
 }
+
+#[test]
+fn refuses_an_unreleased_fork_table_no_upstream_migration_made() {
+    let f = fixture("v0.1.0");
+    exec(
+        &f.wallet(),
+        build().fresh_table_sql("core_dismissed_txids").unwrap(),
+    );
+    let (_fresh_dir, fresh) = fresh_store();
+    let objects = |path: &Path| {
+        crate::sql::objects_on(&Connection::open(path).unwrap(), "core_dismissed_txids").unwrap()
+    };
+    assert_eq!(objects(&f.wallet()), objects(&fresh), "this build's shape");
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
+    );
+}
+
+#[test]
+fn refuses_an_upstream_made_table_that_is_not_this_builds() {
+    let f = fixture("v0.1.0");
+    let snapshot = crate::snapshot::take_snapshot(&f.net, now()).unwrap();
+    crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
+    drop(open_and_load(&f.net));
+    assert!(matches!(
+        precheck_with(&f.net, build()).unwrap(),
+        Precheck::Fork { .. }
+    ));
+    exec(
+        &f.wallet(),
+        "DROP TABLE core_dismissed_txids; \
+         CREATE TABLE core_dismissed_txids (wallet_id BLOB NOT NULL, txid BLOB NOT NULL)",
+    );
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
+    );
+}

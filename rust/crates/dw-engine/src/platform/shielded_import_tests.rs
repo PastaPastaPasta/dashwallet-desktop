@@ -527,12 +527,13 @@ async fn a_restart_before_the_outcome_keeps_one_row() {
 
 /// An imported spend whose note is free with its row still pending (the
 /// release's failure of the row not in, or its record dropped some other
-/// way) waits: unspent notes prove no spend, so the row reads neither
-/// failed nor done and the journal keeps the artifact open. Its row reads
-/// unknown from then on: a later payment of the free note, which the scan
-/// then reads spent, proves nothing of this spend, so the row never reads
-/// done and the journal still keeps it open. After a restart, with no
-/// record left, no row is saved, and nothing settles it.
+/// way) never settles: unspent notes prove no spend, so the row reads
+/// unknown, neither failed nor done, and the journal marks the artifact
+/// unknown for good ([`FREED`]), again at each reading until the mark is
+/// in. A later payment of the free note, which the scan then reads spent,
+/// proves nothing of this spend, so the row never reads done. The marked
+/// artifact reads nothing and gets no row; after a restart, with no record
+/// left, no row is saved, and nothing settles it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_freed_import_with_a_pending_row_waits() {
     let dir = dw_testutil::private_tempdir();
@@ -547,7 +548,7 @@ async fn a_freed_import_with_a_pending_row_waits() {
     );
     let after = held(&coordinator, &path).await;
     assert!(!after.record && after.reservation.is_none() && after.spendable);
-    assert_eq!(read(&coordinator).await.1, None);
+    assert_eq!(read(&coordinator).await.1, Some(FREED));
 
     assert!(
         (coordinator.store().write().await)
@@ -556,10 +557,12 @@ async fn a_freed_import_with_a_pending_row_waits() {
     );
     coordinator.sync(true, &CancellationToken::new()).await;
     assert!(held(&coordinator, &path).await.spent);
-    let unknown = (vec![row(ShieldedActivityStatus::Unknown)], None);
-    assert_eq!(read(&coordinator).await, unknown);
+    let unknown = vec![row(ShieldedActivityStatus::Unknown)];
+    assert_eq!(read(&coordinator).await, (unknown.clone(), Some(FREED)));
     assert!(!keep(&coordinator, &artifact(OPEN)).await);
-    assert_eq!(read(&coordinator).await, unknown);
+    assert!(!keep(&coordinator, &marked()).await);
+    assert_eq!(outcome(&coordinator, &marked()).await, None);
+    assert_eq!(rows(&coordinator).await, unknown);
     drop(coordinator);
 
     let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
@@ -569,7 +572,117 @@ async fn a_freed_import_with_a_pending_row_waits() {
             .unwrap()
     );
     assert!(!keep(&coordinator, &artifact(OPEN)).await);
+    assert!(!keep(&coordinator, &marked()).await);
+    assert_eq!(outcome(&coordinator, &marked()).await, None);
     assert_eq!(read(&coordinator).await, (Vec::new(), None));
+}
+
+/// An open imported spend the 0.1 build settled unresolved, its record
+/// dropped with no proof of the outcome, reads as one marked [`FREED`]
+/// whatever its reason: no row while the library holds its record, and
+/// nothing once its notes read spent and the record is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zero_one_unresolved_disposition_reads_as_freed() {
+    for reason in [
+        "deserialize_dropped",
+        "purged",
+        "unattributable",
+        "cancelled",
+    ] {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("shielded.sqlite");
+        zero_one_store(&path);
+        let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
+        let zero_one = ShieldedArtifact {
+            disposition: Some(("unresolved".to_owned(), Some(reason.to_owned()))),
+            ..artifact(OPEN)
+        };
+        assert_eq!(held(&coordinator, &path).await, IMPORTED, "{reason}");
+        assert!(!keep(&coordinator, &zero_one).await, "{reason}");
+        assert!(
+            (coordinator.store().write().await)
+                .mark_spent(subwallet(), &NULLIFIER)
+                .unwrap()
+        );
+        assert!(!held(&coordinator, &path).await.record, "{reason}");
+        assert_eq!(outcome(&coordinator, &zero_one).await, None, "{reason}");
+        assert!(rows(&coordinator).await.is_empty(), "{reason}");
+    }
+}
+
+/// The settlement the journal keeps of an imported spend freed with no
+/// proof of its outcome.
+const FREED: SpendOutcome = (OPEN, Some(("unresolved", Some("unattributable"))));
+
+/// The open artifact as the journal holds it once marked [`FREED`].
+fn marked() -> ShieldedArtifact {
+    let (status, disposition) = FREED;
+    ShieldedArtifact {
+        status,
+        disposition: disposition.map(|(k, r)| (k.to_owned(), r.map(str::to_owned))),
+        ..artifact(OPEN)
+    }
+}
+
+/// The outcome the engine reads of `artifact`.
+async fn outcome(
+    coordinator: &NetworkShieldedCoordinator,
+    artifact: &ShieldedArtifact,
+) -> Option<SpendOutcome> {
+    let mut store = coordinator.store().write().await;
+    spend_outcome(&mut *store, subwallet(), artifact).unwrap()
+}
+
+/// The residual of a freed import (M1): its row read unknown and its
+/// artifact marked [`FREED`], the library's delete of its record not on
+/// disk, so the record comes back at the restart (the file as the 0.1 build
+/// left it). The marked artifact gets
+/// no row while the record is held, and once its notes read spent (another
+/// payment's) and the record is dropped, it reads nothing: never pending,
+/// never done, never settled executed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_freed_imports_returning_record_never_reads_done() {
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join("shielded.sqlite");
+    zero_one_store(&path);
+    let decided = {
+        let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
+        assert!(keep(&coordinator, &artifact(OPEN)).await);
+        assert!(
+            (coordinator.store().write().await)
+                .clear_pending(subwallet(), &NULLIFIER)
+                .unwrap()
+        );
+        let (rows, decided) = read(&coordinator).await;
+        assert_eq!(rows, [row(ShieldedActivityStatus::Unknown)]);
+        decided
+    };
+    let settled = match decided {
+        Some((status, disposition)) => ShieldedArtifact {
+            status,
+            disposition: disposition.map(|(k, r)| (k.to_owned(), r.map(str::to_owned))),
+            ..artifact(OPEN)
+        },
+        None => artifact(OPEN),
+    };
+
+    let path = dir.path().join("restarted.sqlite");
+    zero_one_store(&path);
+    let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
+    assert_eq!(held(&coordinator, &path).await, IMPORTED);
+    let kept = keep(&coordinator, &settled).await;
+    {
+        let mut store = coordinator.store().write().await;
+        assert!(store.mark_spent(subwallet(), &NULLIFIER).unwrap());
+        store.clear_pending(subwallet(), &NULLIFIER).unwrap();
+        assert!(store.pending_redrives(subwallet()).unwrap().is_empty());
+    }
+    let after = outcome(&coordinator, &settled).await;
+    assert_eq!(
+        (kept, rows(&coordinator).await, after),
+        (false, Vec::new(), None)
+    );
+    assert_eq!(decided, Some(FREED));
 }
 
 /// A spend the engine dispatched reads its row as the library leaves it:

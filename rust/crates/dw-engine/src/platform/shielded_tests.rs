@@ -227,7 +227,7 @@ pub(crate) struct FakeShielded {
     applied: Mutex<Vec<OutPoint>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
-    /// The library has no key set spend entry point.
+    /// The library's key set spends are off.
     no_keyset: AtomicBool,
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
@@ -3964,6 +3964,87 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
     assert_eq!(address.account, 0);
 }
 
+/// Shielded spends stay off until their funds review, on every network:
+/// through the real library a send and an unshield to Core are
+/// `platform.unavailable` before the grant is redeemed, and the refusal is
+/// the library's key set switch (forced on, the same calls get past it to
+/// later gates). On mainnet an unshield to a Platform address keeps its own
+/// refusal, before it.
+#[test]
+fn shielded_spends_are_off_until_their_funds_review() {
+    use super::journal_tests::{ABANDON_12, Recorder, engine};
+    use super::topup_tests::options;
+    const CREDITS: u64 = 1_000_000;
+    for network in [DashNetwork::Mainnet, DashNetwork::Testnet] {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine(dir.path(), Arc::new(Recorder::default()));
+        let s = engine
+            .block_on(engine.open_network(network.clone(), options()))
+            .unwrap();
+        engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+        let wallet = engine
+            .block_on(s.import_wallet(
+                Zeroizing::new(ABANDON_12.to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions::default(),
+            ))
+            .unwrap();
+        let switch = engine
+            .block_on(on_pool(&s, wallet, |_, lib| async move {
+                Ok(lib.keyset_spends())
+            }))
+            .unwrap();
+        assert!(!switch, "{network:?}");
+        let dp = s.dashpay(wallet);
+        let to = (engine.block_on(dp.shielded_receive_address()))
+            .unwrap()
+            .address;
+        let refusals = |forced: Option<bool>| {
+            if let Some(on) = forced {
+                pool::force_keyset_spends(&s, on);
+            }
+            let grant = (s.vault())
+                .authorize(
+                    dw_vault::GrantPurpose::PlatformOp {
+                        max_duffs: 0,
+                        max_credits: 2 * CREDITS,
+                    },
+                    Some(&wallet.0),
+                    dw_vault::Credential::None,
+                )
+                .unwrap()
+                .id;
+            let sent =
+                engine.block_on(dp.shielded_send(to.clone(), CREDITS, None, grant.clone(), false));
+            let unshielded =
+                engine.block_on(dp.unshield_to_core(CREDITS, None, grant.clone(), false));
+            let kept = (s.vault())
+                .grant_purpose(&grant, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+                .is_ok();
+            (
+                sent.unwrap_err().code(),
+                unshielded.unwrap_err().code(),
+                kept,
+            )
+        };
+        let (sent, unshielded, kept) = refusals(None);
+        assert_eq!(
+            (sent, unshielded, kept),
+            ("platform.unavailable", "platform.unavailable", true),
+            "{network:?}"
+        );
+        if network == DashNetwork::Mainnet {
+            let to_platform =
+                engine.block_on(dp.unshield_to_platform(CREDITS, None, "g".into(), false));
+            assert_eq!(to_platform.unwrap_err().code(), "platform.feature_off");
+        }
+        let (sent, unshielded, kept) = refusals(Some(true));
+        assert_ne!(sent, "platform.unavailable", "{network:?} forced on");
+        assert_ne!(unshielded, "platform.unavailable", "{network:?} forced on");
+        assert!(kept, "{network:?}: refused before the grant");
+    }
+}
+
 /// X1b-1 / DEC-1032 (owner, M3): a shield's lock spends at most 50 coins
 /// whatever key-wallet's selection picks. Through the real build
 /// (platform-wallet's `create_funded_asset_lock_proof`, key-wallet's
@@ -4768,13 +4849,12 @@ fn a_spend_is_refused_while_the_hook_is_not_set() {
     assert_eq!(sent.unwrap().state, ShieldedSpendState::Done);
 }
 
-/// With no key set spend entry point in the library (P13c) a send, a
-/// withdrawal and an unshield are `platform.unavailable` before anything
-/// else: nothing is quoted, no receive address is issued, no key leaves
-/// the vault, nothing is stored, reserved or recorded, and the grant is
-/// kept.
+/// While the library's key set spends are off a send, a withdrawal and an
+/// unshield are `platform.unavailable` before anything else: nothing is
+/// quoted, no receive address is issued, no key leaves the vault, nothing is
+/// stored, reserved or recorded, and the grant is kept.
 #[test]
-fn a_spend_is_unavailable_without_a_key_set_entry_point() {
+fn a_spend_is_unavailable_while_key_set_spends_are_off() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeShielded::default());
     let wallet = fx.wallet;
