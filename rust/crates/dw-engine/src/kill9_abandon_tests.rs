@@ -1,10 +1,11 @@
 //! H-03 row R6 (a): an Abandon of a pending Core payment killed with
 //! SIGKILL in a child process once its abandoned mark and its rescan record
 //! are stored, before its sweep is stored and the rescan starts. The next
-//! launch shows the payment abandoned, refuses Resend, offers its coins and
-//! keeps the rescan of their block back to the tip it had; once the scan
-//! passes that block, and on a launch after, the rescan stays until the
-//! scan passes that tip, and then it is done.
+//! launch shows the payment abandoned, refuses Resend, and keeps the rescan
+//! of their block back to the tip it had. Its coins wait for that rescan
+//! (#818): neither counted nor offered once the scan passes their block, nor
+//! on a launch after, until the scan passes that tip. Then the rescan is
+//! done and the coins are offered.
 
 use std::collections::BTreeSet;
 use std::str::FromStr;
@@ -131,6 +132,7 @@ struct Seen {
     abandoned: bool,
     can_resend: bool,
     free: bool,
+    waiting: BTreeSet<OutPoint>,
     synced: u32,
     total: u64,
     replay: Option<crate::replay_record::ReplayRecord>,
@@ -167,6 +169,7 @@ fn seen(
                 ))
             ),
         free: inputs.is_subset(&free),
+        waiting: session.hub.rescan_held(&id),
         synced: synced(engine, session, id),
         total: balances(session, id).total,
         replay,
@@ -185,9 +188,23 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
         .collect();
     let funding_txid = Txid::from_str(lines[3]).unwrap();
     let whole = COINS as u64 * COIN;
-    let settled = |seen: &Seen, when: &str| {
+    let abandoned = |seen: &Seen, when: &str| {
         assert!(seen.abandoned, "{when}: not shown abandoned: {seen:?}");
         assert!(!seen.can_resend, "{when}: Resend offered: {seen:?}");
+    };
+    let waiting = |seen: &Seen, when: &str| {
+        abandoned(seen, when);
+        assert_eq!(seen.waiting, inputs, "{when}: the coins waiting: {seen:?}");
+        assert!(!seen.free, "{when}: its coins are offered: {seen:?}");
+        assert_eq!(
+            seen.total,
+            whole - inputs.len() as u64 * COIN,
+            "{when}: {seen:?}"
+        );
+    };
+    let settled = |seen: &Seen, when: &str| {
+        abandoned(seen, when);
+        assert!(seen.waiting.is_empty(), "{when}: {seen:?}");
         assert!(seen.free, "{when}: its coins are held: {seen:?}");
         assert_eq!(seen.total, whole, "{when}: {seen:?}");
     };
@@ -203,7 +220,7 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
 
     let (engine, session) = kill9::engine_at(dir.path(), PASS, false);
     let first = seen(&engine, &session, id, txid, &inputs);
-    settled(&first, "relaunched");
+    waiting(&first, "relaunched");
     pending(&first, "relaunched");
     assert!(
         first.synced < FUNDED_AT,
@@ -212,19 +229,24 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
     let funding_tx = (session.hub.history.get(&id, &funding_txid)).unwrap().tx;
     mined(&engine, &session, id, FUNDED_AT, vec![funding_tx]);
     let rescanned = seen(&engine, &session, id, txid, &inputs);
-    settled(&rescanned, "past the coins' block");
+    waiting(&rescanned, "past the coins' block");
     pending(&rescanned, "past the coins' block");
     assert!(rescanned.synced >= FUNDED_AT, "{rescanned:?}");
     kill9::close(engine);
 
     let (engine, session) = kill9::engine_at(dir.path(), PASS, false);
     let again = seen(&engine, &session, id, txid, &inputs);
-    settled(&again, "relaunched again");
+    waiting(&again, "relaunched again");
     pending(&again, "relaunched again");
     mined(&engine, &session, id, TIP + 1, vec![funding(10, &[], 0)]);
     kill9::eventually("the rescan is done past the tip", || {
-        seen(&engine, &session, id, txid, &inputs).replay.is_none()
+        let now = seen(&engine, &session, id, txid, &inputs);
+        now.replay.is_none() && now.waiting.is_empty()
     });
+    settled(
+        &seen(&engine, &session, id, txid, &inputs),
+        "the rescan passed the tip",
+    );
     kill9::close(engine);
 
     let (engine, session) = kill9::engine_at(dir.path(), PASS, false);
