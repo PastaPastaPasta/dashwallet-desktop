@@ -99,7 +99,9 @@ rust/crates/dw-app/src/api/masternodes.rs
 rust/crates/dw-app/src/api/governance.rs
 rust/crates/dw-app/src/api/identity.rs
 rust/crates/dw-app/src/api/identity/**
+rust/crates/dw-app/src/api/social.rs
 rust/crates/dw-app/src/api/social/payments.rs
+rust/crates/dw-app/src/api/history.rs
 rust/crates/dw-ffi/src/api/send*.rs
 rust/crates/dw-ffi/src/api/psbt.rs
 rust/crates/dw-ffi/src/api/vault*.rs
@@ -132,10 +134,32 @@ apps/desktop/src/masternodes/registration*
 apps/desktop/src/masternodes/shared*
 apps/desktop/src/masternodes/changeKeys*
 apps/desktop/src/masternodes/operations*
-apps/desktop/src/screens/masternodes/CreateProposalSheet.tsx
+apps/desktop/src/dashpay/wizard.ts
+apps/desktop/src/platform/**
+apps/desktop/src/tools/psbt*
+apps/desktop/src/tools/coins*
+apps/desktop/src/tools/signVerify*
+apps/desktop/src/tools/grant*
+apps/desktop/src/tools/console*
 
-# Swift app: amounts, send, PSBT, coin control, mixed-coin sweep, vault and signing.
+# Renderer screens that build money requests: the pay view-models (not the form views), and the masternode
+# sheets that register, release collateral, set shared fees and create proposals.
+apps/desktop/src/screens/pay/*.ts
+!apps/desktop/src/screens/pay/scan.ts
+!apps/desktop/src/screens/pay/contactQueries.ts
+apps/desktop/src/screens/masternodes/CreateProposalSheet.tsx
+apps/desktop/src/screens/masternodes/RegisterSheet.tsx
+apps/desktop/src/screens/masternodes/ReleaseSheet.tsx
+apps/desktop/src/screens/masternodes/Shared.tsx
+
+# Swift app: the engine bridge, amounts, send, PSBT, coin control, mixed-coin sweep, vault, spending cap
+# and signing.
 Sources/DashKit/Amount.swift
+Sources/DashKit/EngineModels.swift
+Sources/DashKit/EngineClient.swift
+Sources/DashKit/EngineClient+M2.swift
+Sources/WalletRuntime/M2/EngineToolAdapters.swift
+Sources/WalletRuntime/M2/QuickUnlockService.swift
 Sources/WalletRuntime/Services/ToolServices.swift
 Sources/WalletRuntime/Services/TransactionSender.swift
 Sources/WalletRuntime/Services/VaultService.swift

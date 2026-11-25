@@ -243,8 +243,8 @@ A pull request that changes a funds path merges only with two records for its **
 funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
 `ci/funds-paths.txt` (send, coin selection and control, fees, keys and the vault, backup and restore, CoinJoin,
 Platform credits, asset locks, top-ups, withdrawals, shielded, transfers and unfinished locks, masternode
-collateral and payouts, the app.sqlite hold and barrier records, the bridges that carry these to the UI, the
-renderer's amount and send logic, the dependency pins, and the gate itself). Check a branch with
+collateral and payouts, the app.sqlite hold and barrier records, the bridges that carry these to the UI (Tauri commands, the Swift engine bridge), the
+renderer's amount and send logic and the screen view-models that build money requests, the dependency pins, and the gate itself). Check a branch with
 `git diff --name-only origin/main... | ci/github/funds-gate.py match`.
 
 A record is an HTML comment in a pull request comment by the repository's owner, a member or a collaborator

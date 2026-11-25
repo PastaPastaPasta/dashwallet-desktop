@@ -55,6 +55,12 @@ class Paths(unittest.TestCase):
             "Sources/WalletRuntime/Services/TransactionSender.swift",
             "Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift",
             "apps/desktop/src/masternodes/changeKeys.ts",
+            "apps/desktop/src/screens/pay/model.ts",
+            "apps/desktop/src/platform/mainnetOff.ts",
+            "apps/desktop/src/tools/psbt.ts",
+            "rust/crates/dw-app/src/api/social.rs",
+            "rust/crates/dw-app/src/api/history.rs",
+            "Sources/DashKit/EngineModels.swift",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -69,6 +75,9 @@ class Paths(unittest.TestCase):
             "rust/crates/dw-appdb/src/avatar.rs",
             "apps/desktop/src/screens/Overview.tsx",
             "apps/desktop/src/format/amountish/x.ts",
+            "apps/desktop/src/screens/pay/form.tsx",
+            "apps/desktop/src/screens/pay/scan.ts",
+            "apps/desktop/src/masternodes/keys.ts",
         ]:
             self.assertFalse(gate.is_funds(f, RULES), f)
 
