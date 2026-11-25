@@ -17,7 +17,7 @@ import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
 import type { UpdatePhase } from "../api/generated/UpdatePhase";
 import { startingPhase, UPDATE_FAULTS, type UpdateFault } from "./updates";
-import { isErrorClass, sampleError, type ErrorClass } from "./errors";
+import { isErrorClass, sampleError, STORE_SCREEN_NAMES, STORE_SCREENS, type ErrorClass, type StoreScreenName } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
@@ -26,7 +26,7 @@ import { receivePayment, type PaymentSource } from "./send";
 import { FIXTURE_NOW } from "./wallet";
 import { ui } from "../app/ui";
 import { isLanguage } from "../i18n";
-import { isLanguageTag } from "./settings";
+import { FIXTURE_DATA_DIR, isLanguageTag } from "./settings";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
 export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
@@ -56,6 +56,12 @@ export interface FixtureOptions {
   updateServes?: string;
   updatePhase?: UpdatePhase["kind"];
   updateFault?: UpdateFault;
+  /** `openRefused=<screen>`: `open_network` refuses the wallet data with one of `screen_for`'s screens
+   * (a fresh world only). */
+  openRefused?: StoreScreenName;
+  /** `storageInUse=retry|restart`: `open_network` finds the data still held, once or until a restart
+   * (a fresh world only). */
+  storageInUse?: "retry" | "restart";
 }
 
 export interface FixtureHandle {
@@ -142,6 +148,8 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
     world.networkForced = true;
   }
+  if (!carried && opts.openRefused) world.openRefusal = STORE_SCREENS[opts.openRefused](`${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`);
+  if (!carried && opts.storageInUse) world.storageHeld = { retryable: opts.storageInUse === "retry" };
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
@@ -152,7 +160,11 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
   const startReleases = new Map<string, () => void>();
   for (const c of opts.holds ?? []) startReleases.set(c, startHold(c));
-  const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event) };
+  const relaunch = () => {
+    sessionStorage.setItem(RELAUNCH_KEY, JSON.stringify(world));
+    location.reload();
+  };
+  const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event), relaunch };
 
   const UNDELAYED = new Set(["launch_info", "ui_settings"]);
   mockIPC(
@@ -200,10 +212,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     release: (command) => void startReleases.get(command)?.(),
     advanceRegistration: (draft, walletId = FIXTURE_WALLET_ID) => registrationRun.advance(ctx, walletId, draft),
     failRegistration: (draft, code, retryable, walletId = FIXTURE_WALLET_ID) => registrationRun.fail(ctx, walletId, draft, code, retryable),
-    relaunch: () => {
-      sessionStorage.setItem(RELAUNCH_KEY, JSON.stringify(world));
-      location.reload();
-    },
+    relaunch,
     calls,
     landPlatformSend: (id) => {
       if (world.pending.platform) landSend(world.pending.platform, id);
@@ -213,7 +222,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>&openRefused=<screen>&storageInUse=retry|restart`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -254,5 +263,8 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const updatePhase = oneOf(p, "updatePhase", UPDATE_PHASES);
   const updateFault = oneOf(p, "updateFault", UPDATE_FAULTS);
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, language, savedLanguage, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  const openRefused = oneOf(p, "openRefused", STORE_SCREEN_NAMES);
+  const storageInUse = oneOf(p, "storageInUse", ["retry", "restart"] as const);
+  return { scenario, theme, network, failures, holds, language, savedLanguage, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined, openRefused, storageInUse };
+
 }

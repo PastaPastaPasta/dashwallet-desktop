@@ -22,6 +22,7 @@ import { receive } from "./catalog/receive";
 import { routes } from "./catalog/routes";
 import { settings } from "./catalog/settings";
 import { shell } from "./catalog/shell";
+import { storeUpgrade } from "./catalog/storeUpgrade";
 import { tools } from "./catalog/tools";
 import { transfer } from "./catalog/transfer";
 
@@ -35,6 +36,7 @@ export const en = {
   settings,
   components,
   app,
+  storeUpgrade,
   onboarding,
   home,
   activity,

@@ -16,6 +16,7 @@ import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
+import type { StoreRefusedData } from "../api/storeOpen";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
@@ -72,7 +73,7 @@ export interface World {
   networkForced?: boolean;
   /** Row 74: what the next `switch_network` to the other network does instead of switching: refuse
    * (`busy`, or close's own refusal `closeRefused`), or fail after the close (`fail`; when it did
-   * not roll back, the next `open_network` fails once too, `reopenFails`). */
+   * not roll back, every `open_network` fails too until `restart_app`, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
     closeRefused?: "wallet" | "shielded_spend_unresolved";
@@ -81,6 +82,14 @@ export interface World {
     /** The switch goes through but its choice is not written. */
     saveFails?: boolean;
   };
+  /** `open_network` refuses the wallet data as the engine does when it can't open it safely (it
+   * changed nothing): every open, a restart's included. */
+  openRefusal?: StoreRefusedData;
+  /** `open_network` fails with StorageInUse: `retryable`, once (Try again opens it); otherwise
+   * every open until `restart_app`. */
+  storageHeld?: { retryable: boolean };
+  /** `quit_app` and `restart_app` calls, in order (the fixture quits nothing). */
+  appExits?: ("quit" | "restart")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;

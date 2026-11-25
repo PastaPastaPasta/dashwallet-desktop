@@ -56,6 +56,7 @@ import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
+import { storageInUseError, storeRefusedError } from "./errors";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
@@ -63,6 +64,8 @@ import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from ".
 export interface Ctx {
   world: World;
   emit(event: AppEvent): void;
+  /** Quits and relaunches the page as `FixtureHandle.relaunch` does (absent outside a page). */
+  relaunch?(): void;
 }
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
@@ -782,10 +785,14 @@ export const HANDLERS: Handlers = {
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
-    // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
-    if (world.networkSwitch?.reopenFails) {
-      world.networkSwitch.reopenFails = false;
-      throw { code: "storage_in_use", message: `fixture: reopening ${world.launch.network.dirName} failed`, data: null } satisfies AppError;
+    if (world.openRefusal) throw storeRefusedError(world.openRefusal);
+    // Row 74: the network a failed switch left did not reopen; at this pin the store stays held until a
+    // restart (`storageInUse=retry` is the build where trying again frees it).
+    if (world.networkSwitch?.reopenFails) throw storageInUseError(false, `fixture: reopening ${world.launch.network.dirName} failed`);
+    if (world.storageHeld) {
+      const { retryable } = world.storageHeld;
+      if (retryable) world.storageHeld = undefined;
+      throw storageInUseError(retryable);
     }
     return { network: world.launch.network, lock: world.lock };
   },

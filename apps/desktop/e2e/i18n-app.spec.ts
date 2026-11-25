@@ -3,8 +3,8 @@ import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
-// Localization (MP-14): the app's own text under the two pseudo-locales (./pseudo.ts): the splash
-// and the wallet list's loading and failed states, File ▸ Open URI… with a refused link, About,
+// Localization (MP-14): the app's own text under the two pseudo-locales (./pseudo.ts): the splash,
+// a refused store and StorageInUse, and the wallet list's loading and failed states, File ▸ Open URI… with a refused link, About,
 // Pay's tabs, "Links you opened" at each age boundary, amount entry in fiat and its notes, and
 // Pay's fee warning.
 
@@ -62,6 +62,9 @@ interface State {
 export const STATES: Record<string, State> = {
   "splash-loading": { scenario: "funded", extra: "&hold=open_network", roots: ["splash"], go: (page) => page.getByTestId("splash").getByRole("status").waitFor() },
   "splash-failed": { scenario: "funded", extra: "&fail=open_network:retryAfter", roots: ["splash"], go: (page) => page.getByTestId("splash").getByRole("alert").waitFor() },
+  "store-refused": { scenario: "funded", extra: "&openRefused=cantOpen", roots: ["store-refused"], go: (page) => page.getByTestId("store-refused").waitFor() },
+  "storage-in-use": { scenario: "funded", extra: "&storageInUse=retry", roots: ["storage-in-use"], go: (page) => page.getByTestId("storage-in-use-retry").waitFor() },
+  "storage-in-use-restart": { scenario: "funded", extra: "&storageInUse=restart", roots: ["storage-in-use"], go: (page) => page.getByTestId("storage-in-use-restart").waitFor() },
   "wallets-loading": { scenario: "funded", extra: "&hold=list_wallets", roots: ["wallets-loading"], go: (page) => page.getByTestId("wallets-loading").waitFor() },
   "wallets-failed": { scenario: "funded", extra: "&fail=list_wallets:none", roots: ["wallets-error"], go: (page) => page.getByTestId("wallets-error").waitFor() },
   "open-uri": {
