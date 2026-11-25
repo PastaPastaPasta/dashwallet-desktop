@@ -19,10 +19,10 @@ async function open(page: Page, scenario: string, theme: Theme) {
   return errors;
 }
 
-/** The wallet behind the lock screen a restart leaves, unlocked. */
-async function unlockIfLocked(page: Page) {
-  await page.locator("[data-testid=hero], [data-testid=lock-screen]").first().waitFor();
-  if ((await page.getByTestId("lock-screen").count()) === 0) return;
+/** The wallet behind the lock screen a restart leaves (it reloads the page with the vault locked), unlocked.
+ * Waits for that lock screen itself: the page before the reload still shows Home. */
+async function unlockAfterRestart(page: Page) {
+  await page.getByTestId("lock-screen").waitFor();
   await page.getByTestId("lock-field").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("lock-field").press("Enter");
   await expect(page.getByTestId("lock-screen")).toHaveCount(0);
@@ -67,7 +67,7 @@ for (const theme of THEMES) {
 test("Restart starts again, and the notice goes once Shielded opens", async ({ page }) => {
   const errors = await open(page, "shielded-closed-in-use", "light");
   await page.getByTestId("shielded-closed-restart").click();
-  await unlockIfLocked(page);
+  await unlockAfterRestart(page);
   await page.getByTestId("hero").waitFor();
   expect((await world(page)).appExits).toEqual(["restart"]);
   await expect(page.getByTestId("shielded-closed-notice")).toHaveCount(0);
