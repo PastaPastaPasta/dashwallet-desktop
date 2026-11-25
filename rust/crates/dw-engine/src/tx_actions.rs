@@ -909,6 +909,16 @@ where
             .any(|o| is(&o.txid))
 }
 
+/// The asset locks every loaded wallet tracks: a payment between two of
+/// them funds the recipient's lock as much as the sender's.
+fn loaded_locks(
+    wm: &platform_wallet::key_wallet_manager::WalletManager<platform_wallet::PlatformWalletInfo>,
+) -> Vec<&platform_wallet::TrackedAssetLock> {
+    (wm.get_all_wallet_infos().values())
+        .flat_map(|i| i.tracked_asset_locks.values())
+        .collect()
+}
+
 /// Abandons `root`, then each of `descendants` key-wallet's own walk did
 /// not reach; nothing when it refuses `root`.
 fn abandon_with(
@@ -1669,11 +1679,12 @@ impl NetworkSession {
         if offer {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
+            let locks = loaded_locks(&wm);
             f.platform_funding = (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
                 let (descendants, _) = (self.hub.history).read(&wallet, |txs| {
                     unmined_descendants(txs, &i.core_wallet, txid)
                 });
-                funds_a_pending_lock(i.tracked_asset_locks.values(), |t| {
+                funds_a_pending_lock(locks.iter().copied(), |t| {
                     *t == txid || descendants.contains(t)
                 })
             });
@@ -1954,6 +1965,8 @@ impl NetworkSession {
                 let infos = wm.get_all_wallet_infos().iter();
                 self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
             };
+            let locks: Vec<platform_wallet::TrackedAssetLock> =
+                (loaded_locks(&wm).into_iter()).cloned().collect();
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
@@ -1988,9 +2001,7 @@ impl NetworkSession {
                 &settled,
             )?;
             // A drop's are dead: the network refuses a resume's send of one.
-            if dead_drop.is_none()
-                && funds_a_pending_lock(info.tracked_asset_locks.values(), |t| planned.contains(t))
-            {
+            if dead_drop.is_none() && funds_a_pending_lock(&locks, |t| planned.contains(t)) {
                 return Err(EngineError::TxActionRefused(
                     TxActionRefusal::PlatformFunding,
                 ));

@@ -6478,6 +6478,42 @@ fn a_built_lock_never_sent_keeps_the_payment_it_spends_from() {
     assert_kept(&engine, &session, id, parent.txid());
 }
 
+/// A payment between two loaded wallets whose receipt funds the recipient's
+/// lock, not yet sent, is kept in the sender's wallet too: the recipient's
+/// catch-up would send the lock on the payment's output.
+#[test]
+fn a_lock_on_a_receipt_in_another_wallet_keeps_the_senders_payment() {
+    use platform_wallet::AssetLockStatus::Built;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other);
+    let coins = vec![OutPoint::new(paid.txid(), 0)];
+    let payment = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        &to.to_string(),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    wait_stored(&session, other, &[payment.txid()]);
+    let vout = (payment.output.iter())
+        .position(|o| o.script_pubkey == to.script_pubkey())
+        .unwrap() as u32;
+    let receipt = OutPoint::new(payment.txid(), vout);
+    let funding = super::spend_of(receipt, vec![(to.script_pubkey(), COIN / 4)]);
+    start_spv(&engine, &session);
+    track_lock(&engine, &session, other, &funding, Built);
+
+    assert_funding_refused(&engine, &session, id, payment.txid());
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, payment.txid());
+}
+
 /// Tracks `funding` as the wallet's top-up lock at `status`, replacing any
 /// row at its outpoint.
 fn track_lock(
