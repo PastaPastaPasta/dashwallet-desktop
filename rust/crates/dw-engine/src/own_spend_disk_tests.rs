@@ -3215,6 +3215,31 @@ fn abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spen
     );
 }
 
+/// Waits up to 20 s for wallet.sqlite to hold `outpoint` as `want` (spent,
+/// unspent, or no row): key-wallet's changes reach the store through the
+/// persister's own event task, so a row read right after an event can still
+/// be the one before it.
+fn wait_stored_row(
+    session: &NetworkSession,
+    id: WalletId,
+    outpoint: OutPoint,
+    want: Option<bool>,
+    what: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let row = stored_row(session, id, outpoint).map(|r| r.0);
+        if row == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: stored {row:?}, want {want:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// What wallet.sqlite holds for `outpoint` of `id`: whether it is spent,
 /// and whether it is a sweep's placeholder claim. The store keys a coin by
 /// its outpoint in bincode varint: the txid's length, the txid, then the
@@ -5858,6 +5883,7 @@ fn a_lock_arriving_after_the_funding_block_leaves_the_coin_spent() {
         "the lock claims A"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    store_settled(&engine, &session, id);
     assert_eq!(
         stored_row(&session, id, a).map(|r| r.0),
         Some(true),
@@ -6541,6 +6567,7 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         held(&engine, &session, id).contains(&c),
         "nothing claims C again"
     );
+    store_settled(&engine, &session, id);
     assert_eq!(
         stored_row(&session, id, c).map(|r| r.0),
         Some(false),
@@ -6585,30 +6612,45 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
         held(&engine, &session, id).contains(&change),
         "P2's change is counted before the lock"
     );
+    wait_stored_row(&session, id, change, Some(false), "P2's change is stored");
 
     instant_lock(&engine, &session, id, &payment);
     lock_reruns_done(&engine, &session);
-    let gone = |session: &Arc<NetworkSession>, state: &str| {
+    // Right after the lock the persister's event task may still be applying
+    // its events; after a restart it has.
+    let gone = |session: &Arc<NetworkSession>, state: &str, settle: bool| {
         assert_holds(&engine, session, id, &want, state);
         assert!(
             !spendable_for(&engine, session, id, change, COIN / 10),
             "{state}: P2's change is not offered"
         );
+        assert!(
+            session.hub.history.get(&id, &p2.txid()).is_none(),
+            "{state}: the history drops P2"
+        );
+        if settle {
+            wait_stored_row(
+                session,
+                id,
+                change,
+                None,
+                &format!("{state}: P2's change is not stored"),
+            );
+            eventually(&format!("{state}: P2's record leaves the store"), || {
+                !stored_record(session, id, p2.txid())
+            });
+        }
         assert_eq!(
             stored_row(session, id, change),
             None,
             "{state}: P2's change is not stored"
         );
         assert!(
-            session.hub.history.get(&id, &p2.txid()).is_none(),
-            "{state}: the history drops P2"
-        );
-        assert!(
             !stored_record(session, id, p2.txid()),
             "{state}: the store drops P2"
         );
     };
-    gone(&session, "the lock");
+    gone(&session, "the lock", true);
     assert!(
         !abandoned(&engine, &session, id, payment.txid()),
         "the lock outranks the abandon"
@@ -6616,7 +6658,7 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 
     let session = reopen(&engine, session);
-    gone(&session, "a restart");
+    gone(&session, "a restart", false);
     mined(&engine, &session, id, TIP, vec![paid]);
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert!(
