@@ -8,7 +8,8 @@
 //! [`PENDING_MG`] or start with [`PLACEHOLDER`].
 //!
 //! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
-//! family, sha256 8c2c34db…0da2) is title + "{intro}: {detail} {unchanged}
+//! family, sha256 8c2c34db…0da2, with its Q107 C1 damaged-store keys,
+//! sha256 e74ef931…0049, wayOut v2) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version. "{unchanged}" says Dash Wallet changed
@@ -82,6 +83,10 @@ const REFUSED_KEEP: Line = line(
 const QUIT: Button = button("storeUpgrade.refused.quit", "Quit");
 const REPORT: Button = button("storeUpgrade.refused.report", "Report a problem");
 const RESTORE: Button = button("storeUpgrade.refused.restore", "Restore earlier data");
+const RECOVER: Button = button(
+    "storeUpgrade.refused.recover",
+    "Set up from recovery phrase",
+);
 
 /// The screen "Restore earlier data" opens: the R3 confirm, the only way to
 /// a restore (MG (D)).
@@ -109,12 +114,15 @@ pub enum RefusedCause {
     /// as a full disk (Q98 98-3): only a file proved not yet upgraded may go
     /// back to the earlier version.
     SelfCheck,
+    /// [`StoreUpgradeError::SnapshotSourceDamaged`]: a store SQLite can't
+    /// read whole, refused before any upgrade step wrote anything.
+    Damaged,
     /// Every other error that leaves the files unchanged and is not retried.
     Unexpected,
 }
 
 impl RefusedCause {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::ForkUnsupported,
         Self::ShapeMismatch,
         Self::RehearsalFailed,
@@ -123,6 +131,7 @@ impl RefusedCause {
         Self::HistoryMismatch,
         Self::ContactsTable,
         Self::SelfCheck,
+        Self::Damaged,
         Self::Unexpected,
     ];
 
@@ -146,6 +155,7 @@ impl RefusedCause {
             E::SchemaHistoryMismatch { .. } => Self::HistoryMismatch,
             E::RetiredPoolWithoutAdopter { .. } => Self::ContactsTable,
             E::P9aBroken { .. } => Self::SelfCheck,
+            E::SnapshotSourceDamaged { .. } => Self::Damaged,
             E::StoreHeld { .. }
             | E::SnapshotFailed { .. }
             | E::Sqlite { .. }
@@ -157,7 +167,6 @@ impl RefusedCause {
             | E::RestoreAfterOpen => return None,
             E::WalletFileUnsupported { .. }
             | E::UpgradeCopyUnwritable { .. }
-            | E::SnapshotSourceDamaged { .. }
             | E::NonStrictOpen { .. }
             | E::OpenConfigUnsupported { .. }
             | E::ProbeNotRun
@@ -201,6 +210,10 @@ impl RefusedCause {
             Self::SelfCheck => line(
                 "storeUpgrade.refused.detail.selfCheck",
                 "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+            ),
+            Self::Damaged => line(
+                "storeUpgrade.refused.detail.damaged",
+                "it can't be read as wallet data, so it may be damaged.",
             ),
             Self::Unexpected => line(
                 "storeUpgrade.refused.detail.unexpected",
@@ -361,10 +374,13 @@ pub enum WayOut {
     SelfCheck,
     /// [`RefusedCause::SelfCheck`], the file proved not yet upgraded.
     SelfCheckNotMigrated,
+    /// [`RefusedCause::Damaged`] only, whatever the proved state: set the
+    /// wallet up again from its recovery phrase, or report a problem.
+    Damaged,
 }
 
 impl WayOut {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Previous,
         Self::Newer,
         Self::Restore,
@@ -373,6 +389,7 @@ impl WayOut {
         Self::SupportMigrated,
         Self::SelfCheck,
         Self::SelfCheckNotMigrated,
+        Self::Damaged,
     ];
 
     /// MG's cause → allowed ways out, by the proved state.
@@ -386,6 +403,7 @@ impl WayOut {
         };
         match cause {
             C::TooNew => Self::Newer,
+            C::Damaged => Self::Damaged,
             C::SelfCheck if state.migrated == Some(false) => Self::SelfCheckNotMigrated,
             C::SelfCheck => Self::SelfCheck,
             C::ForkUnsupported | C::RehearsalFailed => match state.migrated {
@@ -436,15 +454,22 @@ impl WayOut {
                 "storeUpgrade.refused.wayOut.selfCheckNotMigrated",
                 "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
             ),
+            Self::Damaged => line(
+                "storeUpgrade.refused.wayOut.damaged",
+                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+            ),
         }
     }
 
-    /// Restore earlier data (only with [`Self::Restore`]), Report a problem
+    /// Restore earlier data (only with [`Self::Restore`]), Set up from
+    /// recovery phrase (only with [`Self::Damaged`]), Report a problem
     /// (except with [`Self::Previous`] and [`Self::Newer`]), Quit always.
     fn buttons(self) -> Vec<Button> {
         let mut out = Vec::new();
-        if self == Self::Restore {
-            out.push(RESTORE);
+        match self {
+            Self::Restore => out.push(RESTORE),
+            Self::Damaged => out.push(RECOVER),
+            _ => {}
         }
         if self.reports() {
             out.push(REPORT);
