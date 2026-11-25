@@ -515,8 +515,8 @@ fn nothing_signed_returns_the_address_to_the_pair() {
 /// answer, not proof, so the signed payout holds, the contact stays locked
 /// and its address is consumed; its way out ("Move to Dash wallet" at its
 /// inputs and nonces) settles it not sent. Mutant: read the refusal as
-/// definitive (`never_valid`): the address goes back while the signed
-/// bytes may still execute.
+/// definitive: the address goes back while the signed bytes may still
+/// execute.
 #[test]
 fn a_refusal_after_signing_holds_until_evidence() {
     let f = fixture(false);
