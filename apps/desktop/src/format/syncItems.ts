@@ -45,17 +45,18 @@ const PLATFORM_INCOMPLETE: ReadonlySet<StartupStatus> = new Set(["discoveryFaile
 
 /** `null`: Platform is not on this network or this session (`--no-platform`), so not waited on.
  * `failed`: the read failed (`s` is then the last reading, if any). The wallet's address balances
- * are synced once its own Platform-address pass succeeded this session. `lock` tells a wallet
- * unlocked for mixing only from a locked one. */
+ * are synced once its own Platform-address pass succeeded this session; that pass runs without the
+ * full unlock, so its outcome comes before DashPay's wait for one. `lock` tells a wallet unlocked
+ * for mixing only from a locked one. */
 export function platformItem(s: DashPaySyncStatus | null | undefined, failed = false, lock?: LockStateName): SyncItem | null {
   if (s === null) return null;
   if (s === undefined) return item("platform", failed ? "unread" : "syncing");
   if (!s.platformEnabled) return null;
   if (s.startup === "starting") return item("platform", "syncing");
   if (PLATFORM_INCOMPLETE.has(s.startup)) return item("platform", "incomplete");
-  if (s.startup === "identityUnsettled") return item("platform", lock === "unlockedMixingOnly" ? "unlockFully" : "unlock");
   if (s.addresses === "pending") return item("platform", "syncing");
   if (s.addresses === "failed") return { ...item("platform", "incomplete"), pass: true };
+  if (s.startup === "identityUnsettled") return item("platform", lock === "unlockedMixingOnly" ? "unlockFully" : "unlock");
   return item("platform", "done");
 }
 
