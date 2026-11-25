@@ -309,6 +309,9 @@ pub struct Balances {
     /// The fully mixed CoinJoin balance once computed; before that, the
     /// spendable balance of the CoinJoin accounts.
     pub coinjoin: u64,
+    /// Coins kept out of every bucket above, and out of spending, while
+    /// the payment they come from may never confirm: shown as pending.
+    pub withheld: u64,
     /// The wallet is still catching up (its scan has not reached the birth
     /// block): the buckets hold what it has seen so far, payments seen in
     /// the mempool or locked by InstantSend included, and can miss coins in
@@ -327,6 +330,7 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
         } = b;
         Balances {
@@ -336,6 +340,7 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
         }
     }

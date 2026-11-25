@@ -189,6 +189,51 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
   return errorMessage(e);
 }
 
+/** Whether the engine withholds an output of this transaction: it, or a payment it was built on,
+ * may never confirm, so its coin is pending (`coins.pendingUnproven`). */
+export const withholds = (x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined): boolean => (x?.withheldOutputs.length ?? 0) > 0;
+
+/** The pending coin's line, under the status, while the engine withholds it. */
+export function PendingUnprovenLine({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined }) {
+  if (!withholds(x)) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-pending-unproven">
+      {t("coins.pendingUnproven")}
+    </p>
+  );
+}
+
+/** Abandon's hint on a payment whose coin is pending, while Abandon is offered. */
+export function UnprovenAbandonHint({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs" | "canAbandon"> }) {
+  if (!x.canAbandon || !withholds(x)) return null;
+  return (
+    <p className="tx-actions-question" data-testid="tx-abandon-unproven-hint">
+      {t("activity.abandon.unprovenParentHint")}
+    </p>
+  );
+}
+
+/** An abandoned payment's line while the engine's rescan checks a coin it spent before giving it
+ * back; it goes when the engine reports the check done. */
+export function CheckingSpentCoinsLine({ x }: { x: Pick<TxDetailExtrasInfo, "abandoned" | "checkingSpentCoins"> | undefined }) {
+  if (!x?.abandoned || !x.checkingSpentCoins) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-checking-spent-coins">
+      {t("activity.abandon.checkingSpentCoins")}
+    </p>
+  );
+}
+
+function CoinLines({ walletId, txid }: { walletId: string; txid: string }) {
+  const x = useTxDetailExtras(walletId, txid).data;
+  return (
+    <>
+      <PendingUnprovenLine x={x} />
+      <CheckingSpentCoinsLine x={x} />
+    </>
+  );
+}
+
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
 function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const b = useBackend();
@@ -250,6 +295,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
           </span>
         )
       )}
+      {!confirming && <UnprovenAbandonHint x={x} />}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">
           {note.text}
@@ -385,6 +431,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
               : droppedLine(d.status.dropped)}
           </p>
         )}
+        <CoinLines walletId={walletId} txid={d.txid} />
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">

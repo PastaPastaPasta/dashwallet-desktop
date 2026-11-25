@@ -960,7 +960,8 @@ impl MixView {
     }
 }
 
-/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580).
+/// Core's balances over `coins` (wallet/coinjoin.cpp:500-580). An
+/// excluded coin (`crate::withhold`) counts in none.
 fn compute_balances(
     coins: &[MixViewCoin],
     network: dashcore::Network,
@@ -968,7 +969,10 @@ fn compute_balances(
 ) -> (CoinJoinBalances, f32) {
     let view = MixView {
         height: u32::MAX,
-        coins: coins.to_vec(),
+        coins: (coins.iter())
+            .filter(|c| c.coin.excluded.is_none())
+            .cloned()
+            .collect(),
         balances: CoinJoinBalances::default(),
         total: 0,
         average_rounds: 0.0,
@@ -1314,7 +1318,10 @@ impl NetworkSession {
             })
             .collect();
         let (balances, average_rounds) = compute_balances(&coins, network, settings.rounds);
-        let total = coins.iter().map(MixViewCoin::value).sum();
+        let total = (coins.iter())
+            .filter(|c| c.coin.excluded.is_none())
+            .map(MixViewCoin::value)
+            .sum();
         Ok(MixView {
             height: snapshot.height,
             coins,
@@ -4765,6 +4772,7 @@ mod tests {
                 lock_input: false,
                 unresolved_lock: false,
                 awaiting_history: false,
+                excluded: None,
             },
             path: Some(path.parse().unwrap()),
             rounds,
