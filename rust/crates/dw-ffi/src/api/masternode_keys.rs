@@ -142,7 +142,7 @@ impl From<dw_engine::EngineError> for MasternodeError {
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_)
+            E::StorageInUse { .. }
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)

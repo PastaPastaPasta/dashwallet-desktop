@@ -505,7 +505,7 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
         EngineError::InvalidArgument(m) | EngineError::InvalidConfig(m) if m.contains("DAPI") => {
             "invalid or missing --dapi value"
         }
-        EngineError::StorageInUse(_) => "--datadir is in use by another process",
+        EngineError::StorageInUse { .. } => "--datadir is in use by another process",
         EngineError::Storage(_) | EngineError::Io(_) | EngineError::Vault(_) => {
             "--datadir could not be opened"
         }
@@ -552,7 +552,7 @@ fn run(cli: Cli) -> Result<(), RunError> {
     )
     .map_err(|e| {
         let fixed = match e {
-            EngineError::StorageInUse(_) => "--datadir is in use by another process",
+            EngineError::StorageInUse { .. } => "--datadir is in use by another process",
             _ => "--datadir could not be opened",
         };
         setup_error(fixed)(e.to_string())

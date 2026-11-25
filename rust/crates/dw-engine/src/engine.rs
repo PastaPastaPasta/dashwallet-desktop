@@ -121,7 +121,7 @@ impl Engine {
         mark("data-root");
         let instance =
             dw_fs::instance::InstanceLock::share(&config.data_root).map_err(|e| match e {
-                dw_fs::instance::InstanceError::Busy => EngineError::StorageInUse(format!(
+                dw_fs::instance::InstanceError::Busy => EngineError::storage_in_use(format!(
                     "{} is in use by another process",
                     config.data_root.display()
                 )),

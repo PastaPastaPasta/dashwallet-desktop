@@ -1,11 +1,10 @@
 //! The M3 store upgrade through the real `Engine::open_network`: every
 //! refusal class leaves the network directory byte-identical (MG condition
-//! B), an accepted fork file upgrades and opens, and `storage_in_use`'s
-//! `retryable` matches what a reopen in this process does.
+//! B), an accepted fork file upgrades and opens, and a network closed
+//! cleanly reopens in this process.
 
 mod store_upgrade_common;
 
-use dw_engine::store_upgrade::STORAGE_IN_USE_RETRYABLE;
 use dw_engine::{DashNetwork, EngineError, ImportOptions};
 use store_upgrade_common::*;
 use zeroize::Zeroizing;
@@ -136,7 +135,7 @@ fn every_released_fork_file_upgrades_through_the_open() {
         let s = loop {
             match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
                 Ok(s) => break s,
-                Err(EngineError::StorageInUse(_)) if std::time::Instant::now() < deadline => {
+                Err(EngineError::StorageInUse { .. }) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => panic!("{version} second start: {e:?}"),
@@ -172,11 +171,10 @@ fn every_released_fork_file_upgrades_through_the_open() {
     }
 }
 
-/// `storage_in_use` is retryable exactly when a network closed with a
-/// wallet loaded reopens in the same process (the persister-release fix,
-/// P16); without it the persister stays held until the process ends.
+/// A network closed cleanly with a wallet loaded reopens in the same
+/// process: a held store's `storage_in_use` is retryable.
 #[test]
-fn storage_in_use_retryable_matches_an_in_process_reopen() {
+fn a_clean_close_then_reopen_works_in_process() {
     let dir = dw_testutil::private_tempdir();
     let engine = engine(dir.path());
     let s = engine
@@ -204,17 +202,7 @@ fn storage_in_use_retryable_matches_an_in_process_reopen() {
             .unwrap()
     );
     let reopen = engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts()));
-    match &reopen {
-        Ok(_) => {}
-        Err(EngineError::StorageInUse(_)) => {}
-        Err(e) => panic!("{e:?}"),
-    }
-    assert_eq!(
-        STORAGE_IN_USE_RETRYABLE,
-        reopen.is_ok(),
-        "storage_in_use's retryable doesn't match a reopen in this process: {:?}",
-        reopen.as_ref().err()
-    );
+    assert!(reopen.is_ok(), "{:?}", reopen.as_ref().err());
     drop(reopen);
     engine.block_on(engine.shutdown()).unwrap();
 }
