@@ -139,14 +139,14 @@ pub fn reconcile_fork_store(
         open_existing(wallet_db).map_err(StoreUpgradeError::sqlite("open wallet.sqlite", true))?;
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(StoreUpgradeError::sqlite("lock wallet.sqlite", true))?;
-    let written = snapshot::require_reusable(snapshot, &conn, network_dir)
-        .and_then(|()| {
-            config
-                .auto_backup_dir
-                .as_deref()
-                .map_or(Ok(()), ensure_backup_dir)
-        })
-        .and_then(|()| write_in_transaction(&conn, adopters, &versions));
+    let written = snapshot::require_reusable(snapshot, &conn, network_dir).and_then(|()| {
+        write_in_transaction(
+            &conn,
+            adopters,
+            &versions,
+            config.auto_backup_dir.as_deref(),
+        )
+    });
     match written {
         Ok(outcome) => {
             conn.execute_batch("COMMIT")
@@ -162,10 +162,13 @@ pub fn reconcile_fork_store(
     }
 }
 
+/// The writes under the lock. `backup_dir` is checked only when upstream
+/// will still migrate, and so back up, at the open that follows.
 fn write_in_transaction(
     conn: &Connection,
     adopters: &Adopters,
     versions: &BTreeSet<u32>,
+    backup_dir: Option<&Path>,
 ) -> Result<Outcome> {
     let state: ForkState = match classify(conn, adopters)? {
         Classification::Fork(state) if &state.versions == versions => state,
@@ -184,6 +187,11 @@ fn write_in_transaction(
             });
         }
     };
+    if !state.history_complete
+        && let Some(dir) = backup_dir
+    {
+        ensure_backup_dir(dir)?;
+    }
     if state.column_present {
         conn.execute_batch(DROP_SQL)
             .map_err(StoreUpgradeError::sqlite(

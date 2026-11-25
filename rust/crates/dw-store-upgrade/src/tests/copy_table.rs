@@ -8,10 +8,13 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::copy::{
-    BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut, migrated, screen_for,
+    BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut, migrated, restore_screen_for,
+    screen_for,
 };
 use crate::error::StoreUpgradeError;
 use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
+use crate::restore::{IncompleteCause, RefusalCause};
+use crate::snapshot::MissingSnapshot;
 
 const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 
@@ -50,6 +53,10 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
         HistoryMismatch => (
             "historyMismatch",
             "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+        ),
+        SnapshotMissing => (
+            "snapshotMissing",
+            "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
         ),
         ContactsTable => (
             "contactsTable",
@@ -108,7 +115,7 @@ fn way_out(w: WayOut) -> (&'static str, String) {
 /// MG's cause → allowed ways out. A cause whose table entry is `previous`
 /// alone also allows `support` / `supportMigrated` for a state not proved
 /// unmigrated (MG (A)). A failed self check has its own two ways out
-/// (Q98 98-3).
+/// (Q98 98-3). A part-done upgrade is migrated whatever the state says.
 fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
     use RefusedCause::*;
     use WayOut::*;
@@ -118,6 +125,7 @@ fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
             [Restore, Unverified, Support, SupportMigrated].into()
         }
         TooNew => [Newer].into(),
+        SnapshotMissing => [Unverified, SupportMigrated].into(),
         ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
         RefusedCause::SelfCheck => [WayOut::SelfCheck, WayOut::SelfCheckNotMigrated].into(),
     }
@@ -150,6 +158,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let s = RefusedScreen::new(cause, state);
             let w = s.way_out;
             let at = format!("{cause:?} {state:?} -> {w:?}");
+            let part_done = cause == RefusedCause::SnapshotMissing;
             assert!(allowed(cause).contains(&w), "{at}");
             reached.insert((cause, w));
 
@@ -162,11 +171,13 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                     "{at}"
                 ),
                 WayOut::Unverified => assert_eq!(
-                    (state.migrated, state.backup),
-                    (Some(true), Some(BackupState::Unverified)),
+                    (part_done || state.migrated == Some(true), state.backup),
+                    (true, Some(BackupState::Unverified)),
                     "{at}"
                 ),
-                WayOut::SupportMigrated => assert_eq!(state.migrated, Some(true), "{at}"),
+                WayOut::SupportMigrated => {
+                    assert!(part_done || state.migrated == Some(true), "{at}")
+                }
                 WayOut::Support => assert_ne!(state.migrated, Some(true), "{at}"),
                 WayOut::SelfCheck => {
                     assert_eq!(cause, RefusedCause::SelfCheck, "{at}");
@@ -295,6 +306,33 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
             Some(ContactsTable),
         ),
         (E::P9aBroken { detail: "x".into() }, Some(SelfCheck)),
+        (
+            E::UpgradeSnapshotMissing {
+                state: MissingSnapshot::Absent,
+                dir: PathBuf::from("x"),
+            },
+            Some(SnapshotMissing),
+        ),
+        (
+            E::WalletFileUnsupported { detail: "x".into() },
+            Some(Unexpected),
+        ),
+        (
+            E::RestoreRefused {
+                cause: RefusalCause::MissingBackup,
+            },
+            None,
+        ),
+        (E::RestoreNoSpace { needed: None }, None),
+        (
+            E::RestoreIncomplete {
+                cause: IncompleteCause::Other,
+                journal_written: false,
+                detail: String::new(),
+            },
+            None,
+        ),
+        (E::RestoreAfterOpen, None),
         (
             E::NonStrictOpen {
                 policy: "Recovery".into(),
@@ -488,6 +526,21 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
         result.err().expect("refused without the probe")
     });
+    let f = fixture("v0.1.0");
+    let snapshot = crate::prepare_with(&f.net, build(), now())
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert!(matches!(
+        crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
+        crate::reconcile::Outcome::Pending { .. }
+    ));
+    fs::remove_dir_all(snapshot.dir()).unwrap();
+    let s = shows_unchanged(&f, SnapshotMissing, |f| {
+        crate::prepare_with(&f.net, build(), later(60)).unwrap_err()
+    });
+    assert_eq!(s.way_out, WayOut::SupportMigrated, "part-upgraded");
+    seen.insert(SnapshotMissing);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
 }
 
@@ -623,6 +676,21 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             unchanged: true,
             source: std::io::Error::other("disk full"),
         },
+        E::RestoreRefused {
+            cause: RefusalCause::MissingBackup,
+        },
+        E::RestoreNoSpace { needed: Some(1) },
+        E::RestoreIncomplete {
+            cause: IncompleteCause::Other,
+            journal_written: true,
+            detail: String::new(),
+        },
+        E::RestoreAfterOpen,
+        E::UpgradeSnapshotMissing {
+            state: MissingSnapshot::Mismatch,
+            dir: PathBuf::from("x"),
+        },
+        E::WalletFileUnsupported { detail: "x".into() },
         E::InjectedFault("x"),
     ]
 }
@@ -648,6 +716,12 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::PersisterOpen { .. } => "PersisterOpen",
         E::Sqlite { .. } => "Sqlite",
         E::Io { .. } => "Io",
+        E::RestoreRefused { .. } => "RestoreRefused",
+        E::RestoreNoSpace { .. } => "RestoreNoSpace",
+        E::RestoreIncomplete { .. } => "RestoreIncomplete",
+        E::RestoreAfterOpen => "RestoreAfterOpen",
+        E::UpgradeSnapshotMissing { .. } => "UpgradeSnapshotMissing",
+        E::WalletFileUnsupported { .. } => "WalletFileUnsupported",
         E::InjectedFault(_) => "InjectedFault",
     }
 }
@@ -657,14 +731,23 @@ fn every_refusal_variant_has_a_screen() {
     let all = every_variant();
     let names: BTreeSet<&str> = all.iter().map(variant).collect();
     assert_eq!(names.len(), all.len(), "each variant listed once");
-    assert_eq!(names.len(), 19, "every variant in `variant` is listed");
+    assert_eq!(names.len(), 25, "every variant in `variant` is listed");
     let mut refusals = 0;
+    let mut unexpected = BTreeSet::new();
     for e in &all {
+        let refused = screen_for(e, ProvedState::default());
+        let restore = restore_screen_for(e);
+        assert!(
+            refused.is_none() || restore.is_none(),
+            "{}: one screen at most",
+            variant(e)
+        );
         if e.is_refusal() {
             refusals += 1;
-            let s = screen_for(e, ProvedState::default())
-                .unwrap_or_else(|| panic!("{} is a refusal with no screen", variant(e)));
-            assert_ne!(s.cause, RefusedCause::Unexpected, "{}", variant(e));
+            let s = refused.unwrap_or_else(|| panic!("{} is a refusal with no screen", variant(e)));
+            if s.cause == RefusedCause::Unexpected {
+                unexpected.insert(variant(e));
+            }
             assert_ne!(
                 s.way_out,
                 WayOut::Previous,
@@ -673,7 +756,12 @@ fn every_refusal_variant_has_a_screen() {
             );
         }
     }
-    assert_eq!(refusals, 8);
+    assert_eq!(refusals, 10);
+    assert_eq!(unexpected, ["WalletFileUnsupported"].into());
+    for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
+        let e = all.iter().find(|e| variant(e) == name).unwrap();
+        assert!(restore_screen_for(e).is_some(), "{name}");
+    }
     let io = all
         .iter()
         .find(|e| matches!(e, StoreUpgradeError::Io { .. }))

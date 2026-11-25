@@ -147,7 +147,13 @@ fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
     let before = tree(&f.root);
     let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
     assert!(
-        matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
+        matches!(
+            err,
+            StoreUpgradeError::UpgradeSnapshotMissing {
+                state: crate::snapshot::MissingSnapshot::Absent,
+                ..
+            }
+        ),
         "{err:?}"
     );
     assert!(err.file_unchanged());
