@@ -1800,8 +1800,8 @@ fn a_beaten_payment_goes_when_a_chainlock_forgets_its_winner_after_the_proof_was
 /// found, which waits for its recheck while the ChainLock of `TIP + 2`
 /// forgets both spends. The fallback can't carry B's spend at another
 /// height than A's, so nothing is dropped, as when nothing beat it: the
-/// payment stays, nothing is rewound, and neither A nor B is listed,
-/// counted or offered, after a restart too.
+/// payment stays, nothing is rewound, neither A nor B is listed, counted
+/// or offered, and the payment's change is withheld, after a restart too.
 #[test]
 fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heights() {
     coins_spent_at_two_heights_keep_the_payment(false);
@@ -1924,8 +1924,18 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
                 "{state}: {coin} is not offered"
             );
         }
-        let total = balances(session, id).total;
-        assert_eq!(total, held.iter().map(|(_, v)| v).sum::<u64>(), "{state}");
+        let change: u64 = (held.iter())
+            .filter(|(o, _)| o.txid == payment.txid())
+            .map(|(_, v)| v)
+            .sum();
+        assert!(change > 0, "{state}: the payment's change is a coin");
+        let b = balances(session, id);
+        assert_eq!(b.withheld, change, "{state}: its change is withheld: {b:?}");
+        assert_eq!(
+            b.total + b.withheld,
+            held.iter().map(|(_, v)| v).sum::<u64>(),
+            "{state}: {b:?}"
+        );
     };
     kept(&session, "the drop released");
     let session = reopen(&engine, session);
