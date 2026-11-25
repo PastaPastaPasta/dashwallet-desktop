@@ -24,7 +24,7 @@ type LooseTranslate = (key: string, values?: Record<string, string>) => string;
 
 /** The catalog's text for a `storeUpgrade.*` key in the language in use; for any other key, or one the
  * catalog lacks, the engine's English: never other copy. */
-function textFor(tr: Translate, key: string, english: string, folder: string): string {
+export function textFor(tr: Translate, key: string, english: string, folder: string): string {
   return inCatalog(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
 }
 

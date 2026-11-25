@@ -12,7 +12,8 @@ use std::time::SystemTime;
 use dw_store_upgrade::copy::{ProvedState, RefusedScreen, restore_foreign, screen_for};
 use dw_store_upgrade::{
     Adopters, IncompleteCause, PendingRestore, PersisterOpened, Precheck, RefusalCause,
-    RestoreInfo, SnapshotState, StoreUpgradeError, prepare_with, reconcile_fork_store,
+    RestoreInfo, SnapshotState, StoreUpgradeError, UpgradeNotice, prepare_with,
+    reconcile_fork_store,
 };
 use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
 
@@ -153,11 +154,12 @@ fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, Engine
 /// root's instance lock and before any store of `network_dir` opens: a
 /// pending restore, this build's probe, the refusal check and snapshot, and
 /// the reconcile straight after with `config`. A refusal changes nothing in
-/// `network_dir`.
+/// `network_dir`. The notice is for the session to carry once the
+/// persister has opened and the wallets have loaded ([`copy::notice_line`]).
 pub(crate) fn prepare_and_reconcile(
     network_dir: &Path,
     config: &SqlitePersisterConfig,
-) -> Result<(), EngineError> {
+) -> Result<Option<UpgradeNotice>, EngineError> {
     let data_root = network_dir
         .parent()
         .ok_or_else(|| EngineError::Internal(format!("{} has no parent", network_dir.display())))?;
@@ -175,7 +177,7 @@ pub(crate) fn prepare_and_reconcile(
     let failed = |stage, e| map_error(network_dir, stage, e, wrote);
     order::record(network_dir, order::Step::Prepare);
     match prepared.precheck {
-        Precheck::NotForked => Ok(()),
+        Precheck::NotForked => Ok(None),
         Precheck::Refuse { reason } => Err(failed(StoreUpgradeStage::Prepare, reason)),
         Precheck::NeedsLockedCheck => Err(EngineError::Internal(
             "store upgrade: prepare left the locked check undone".into(),
@@ -189,7 +191,7 @@ pub(crate) fn prepare_and_reconcile(
             order::record(network_dir, order::Step::Reconcile);
             tracing::info!(?versions, ?outcome, snapshot = %snapshot.dir().display(),
                 "store upgrade: fork store reconciled");
-            Ok(())
+            Ok(outcome.notice())
         }
     }
 }

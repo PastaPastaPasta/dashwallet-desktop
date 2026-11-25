@@ -102,6 +102,7 @@ fn every_released_fork_file_upgrades_through_the_open() {
             .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
             .unwrap_or_else(|e| panic!("{version}: {e:?}"));
         assert!(!s.wallet_infos().unwrap().is_empty(), "{version}");
+        assert_eq!(s.upgrade_notice(), None, "{version}");
         drop(s);
         engine.block_on(engine.shutdown()).unwrap();
         drop(engine);
@@ -147,6 +148,77 @@ fn every_released_fork_file_upgrades_through_the_open() {
             snapshot.dir(),
             "{version}"
         );
+    }
+}
+
+/// Q107 107-1: the open of a between-state store whose before-upgrade
+/// snapshot doesn't check out, or is of other data, carries the notice once
+/// its wallets have loaded; one with a snapshot to restore, or none at all,
+/// carries none, and so does the next start, past the between state.
+#[test]
+fn an_open_without_a_snapshot_to_restore_carries_its_notice() {
+    use dw_store_upgrade::test_support::{BeforeSnapshot, between_state};
+    for (before, key) in [
+        (
+            BeforeSnapshot::Unverified,
+            Some("storeUpgrade.notice.snapshotDamaged"),
+        ),
+        (
+            BeforeSnapshot::Mismatch,
+            Some("storeUpgrade.notice.snapshotOther"),
+        ),
+        (BeforeSnapshot::Present, None),
+        (BeforeSnapshot::Absent, None),
+    ] {
+        let tmp = dw_testutil::private_tempdir();
+        let root = tmp.path().join("data");
+        {
+            let mut b = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            b.create(&root).unwrap();
+        }
+        between_state(
+            &root.join("regtest"),
+            before,
+            false,
+            std::time::SystemTime::now(),
+        )
+        .unwrap_or_else(|e| panic!("{before:?}: {e:?}"));
+
+        let engine = self::engine(&root);
+        let s = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .unwrap_or_else(|e| panic!("{before:?}: {e:?}"));
+        assert!(!s.wallet_infos().unwrap().is_empty(), "{before:?}");
+        let notice = s.upgrade_notice();
+        assert_eq!(notice.map(|l| l.key), key, "{before:?}");
+        if let Some(line) = notice {
+            assert!(line.text.contains("upgrade-backups"), "{before:?}");
+        }
+        assert_eq!(
+            s.upgrade_notice(),
+            notice,
+            "{before:?}: the same all session"
+        );
+        drop(s);
+        engine.block_on(engine.shutdown()).unwrap();
+        drop(engine);
+
+        let engine = self::engine(&root);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let s = loop {
+            match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+                Ok(s) => break s,
+                Err(EngineError::StorageInUse { .. }) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => panic!("{before:?} second start: {e:?}"),
+            }
+        };
+        assert_eq!(s.upgrade_notice(), None, "{before:?} second start");
+        drop(s);
+        engine.block_on(engine.shutdown()).unwrap();
     }
 }
 

@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData, UpdateBusyReason};
+use crate::error::{
+    AppCode, AppError, CloseRefusalReason, ErrorData, StoreLine, UpdateBusyReason,
+};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 use crate::state::AppState;
@@ -188,6 +190,25 @@ pub struct NetworkSwitch {
 pub struct OpenedNetwork {
     pub network: NetworkInfo,
     pub lock: LockStatus,
+    /// The store upgrade's notice for this session, shown once over the
+    /// wallet and dismissed there: `Some` when its open upgraded the wallet
+    /// data without a before-upgrade copy it can restore
+    /// ([`NetworkSession::upgrade_notice`]). Every call while the session is
+    /// open returns it.
+    pub notice: Option<StoreLine>,
+}
+
+impl OpenedNetwork {
+    fn of(session: &NetworkSession, network: NetworkInfo) -> Self {
+        Self {
+            network,
+            lock: session.vault().status().into(),
+            notice: session.upgrade_notice().map(|l| StoreLine {
+                key: l.key.into(),
+                text: l.text.into(),
+            }),
+        }
+    }
 }
 
 /// A network with data under the data root (IOS-009).
@@ -229,7 +250,11 @@ commands! {
     /// starts SPV on mainnet and testnet unless the app was launched with
     /// `--no-sync`, and on another network with `--sync`; a failed start
     /// leaves the network open, readable offline.
-    #[facade("Engine::open_network", "Engine::close_network")]
+    #[facade(
+        "Engine::open_network",
+        "Engine::close_network",
+        "NetworkSession::upgrade_notice"
+    )]
     fn open_network(
         state,
         network: Option<String>,
@@ -267,10 +292,7 @@ commands! {
                 s
             }
         };
-        Ok(OpenedNetwork {
-            network: NetworkInfo::opened(&session),
-            lock: session.vault().status().into(),
-        })
+        Ok(OpenedNetwork::of(&session, NetworkInfo::opened(&session)))
     }
 
     /// Moves the window to `network` (onboarding, Settings), saving the
@@ -376,10 +398,10 @@ commands! {
             eprintln!("dw-app: the network choice was not saved: {e}");
         }
         Ok(NetworkSwitch {
-            opened: Some(OpenedNetwork {
-                network: NetworkInfo::from(session.network()),
-                lock: session.vault().status().into(),
-            }),
+            opened: Some(OpenedNetwork::of(
+                &session,
+                NetworkInfo::from(session.network()),
+            )),
             choice: NetworkChoiceView::read(&state),
         })
     }

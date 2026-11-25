@@ -807,7 +807,7 @@ export const HANDLERS: Handlers = {
       if (retryable) world.storageHeld = undefined;
       throw storageInUseError(retryable);
     }
-    return { network: restoredNetwork(world), lock: world.lock };
+    return { network: restoredNetwork(world), lock: world.lock, notice: world.upgradeNotice ?? null };
   },
   active_network: (_, { world }) => restoredNetwork(world),
 

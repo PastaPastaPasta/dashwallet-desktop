@@ -25,6 +25,8 @@ import {
   storeRefusedError,
   storeRestoreError,
   storeRetryError,
+  UPGRADE_NOTICE_NAMES,
+  UPGRADE_NOTICES,
 } from "../fixture/errors";
 import { HANDLERS } from "../fixture/handlers";
 import { PENDING_HANDLERS } from "../fixture/pending";
@@ -47,6 +49,8 @@ import {
   StoreRetryView,
 } from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
+import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
+import type { StoreLine } from "../api/generated/StoreLine";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
 vi.mock("react", async (importOriginal) => {
@@ -829,6 +833,50 @@ describe("the restored banner", () => {
     expect(renderBanner(false)).toBe("");
     expect(renderBanner(undefined)).toBe("");
     sameInBothThemes(() => renderBanner(true));
+  });
+});
+
+describe("the upgrade notice", () => {
+  const COPY_RS = () => readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+  function renderNotice(notice: StoreLine | null | undefined) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    if (notice !== undefined) client.setQueryData(keys.upgradeNotice, notice);
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(UpgradeNoticeBanner)));
+  }
+
+  it("has notice_line's keys and English in its catalog verbatim, and the fixture sends them", () => {
+    const body = /pub fn notice_line[\s\S]*?\n}\n/.exec(COPY_RS())![0];
+    const lines = [...body.matchAll(/line\(\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map(([, key, text]) => [key, text]);
+    expect(lines.map(([key]) => key)).toEqual(["storeUpgrade.notice.snapshotDamaged", "storeUpgrade.notice.snapshotOther"]);
+    for (const [key, text] of lines) expect(ENGLISH.get(key), key).toBe(text);
+    expect([...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.notice.")).sort()).toEqual([
+      "storeUpgrade.notice.dismiss",
+      "storeUpgrade.notice.snapshotDamaged",
+      "storeUpgrade.notice.snapshotOther",
+    ]);
+    expect(Object.values(UPGRADE_NOTICES).map((n) => [n.key, n.text])).toEqual(lines);
+  });
+
+  for (const theme of THEMES)
+    for (const name of UPGRADE_NOTICE_NAMES)
+      it(`in ${theme}, shows the ${name} line with Dismiss, blocking nothing`, () => {
+        ui.set({ theme });
+        const html = renderNotice(UPGRADE_NOTICES[name]);
+        expect(html).toContain(`data-testid="upgrade-notice" data-key="storeUpgrade.notice.${name}"`);
+        expect(html).toContain(`data-testid="upgrade-notice-text">${escaped(en.storeUpgrade.notice[name])}</p>`);
+        expect(button(html, "upgrade-notice-dismiss")?.label).toBe(en.storeUpgrade.notice.dismiss);
+        expect(html).not.toContain("alertdialog");
+        expectStyledClasses(html);
+      });
+
+  it("shows the engine's English for a key the catalog lacks", () => {
+    expect(renderNotice({ key: "storeUpgrade.notice.later", text: "A later notice." })).toContain('data-testid="upgrade-notice-text">A later notice.</p>');
+  });
+
+  it("is gone with no notice or once dismissed, and the same in light and dark", () => {
+    expect(renderNotice(undefined)).toBe("");
+    expect(renderNotice(null)).toBe("");
+    sameInBothThemes(() => renderNotice(UPGRADE_NOTICES.snapshotDamaged));
   });
 });
 

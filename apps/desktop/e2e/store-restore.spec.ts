@@ -182,3 +182,43 @@ test.describe("the restored banner", () => {
     await expect(page.getByTestId("restored-banner")).toHaveCount(0);
   });
 });
+
+test.describe("the upgrade notice", () => {
+  const NOTICES = {
+    snapshotDamaged:
+      "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+    snapshotOther:
+      "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+  };
+  for (const theme of ["light", "dark"] as const)
+    for (const [name, text] of Object.entries(NOTICES))
+      test(`shows over the wallet until dismissed, blocking nothing (${name}, ${theme})`, async ({ page }) => {
+        const errors = trackPageErrors(page);
+        await page.goto(fixtureUrl("funded", theme, `&upgradeNotice=${name}`));
+        await unlockIfLocked(page);
+        await expect(page.getByTestId("upgrade-notice-text")).toHaveText(text);
+        await expect(page.getByTestId("hero")).toBeVisible();
+        await page.getByTestId("upgrade-notice-dismiss").click();
+        await expect(page.getByTestId("upgrade-notice")).toHaveCount(0);
+        await expect(page.getByTestId("hero")).toBeVisible();
+        expect(errors).toEqual([]);
+      });
+
+  test("waits through the lock screen and shows once the wallet is unlocked", async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("locked", "light", "&upgradeNotice=snapshotOther"));
+    await page.getByTestId("lock-screen").waitFor();
+    await expect(page.getByTestId("upgrade-notice")).toHaveCount(0);
+    await unlockIfLocked(page);
+    await expect(page.getByTestId("upgrade-notice-text")).toHaveText(NOTICES.snapshotOther);
+    await page.getByTestId("upgrade-notice-dismiss").click();
+    await expect(page.getByTestId("upgrade-notice")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("is not there after an open with no notice", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light"));
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("upgrade-notice")).toHaveCount(0);
+  });
+});

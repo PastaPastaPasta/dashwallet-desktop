@@ -2443,6 +2443,7 @@ dependencies = [
  "dw-fs",
  "dw-message",
  "dw-psbt",
+ "dw-store-upgrade",
  "dw-testutil",
  "dw-units",
  "dw-uri",

@@ -418,6 +418,9 @@ pub struct NetworkSession {
     /// The previous session of this network did not close cleanly (its
     /// marker file was still there at open).
     pub(crate) unclean_previous: bool,
+    /// This open upgraded the wallet data without a before-upgrade copy it
+    /// can restore ([`NetworkSession::upgrade_notice`]).
+    upgrade_notice: Option<dw_store_upgrade::UpgradeNotice>,
     /// dash-qt's load-on-startup wallet list; `None` = load every wallet.
     pub(crate) startup_list: Mutex<Option<std::collections::BTreeSet<WalletId>>>,
     /// The console `walletpassphrase` relock timer (review L1): one per
@@ -517,14 +520,14 @@ impl NetworkSession {
             None => None,
         };
         let persister_config = crate::store_upgrade::persister_config(&data_dir);
-        {
+        let upgrade_notice = {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
                 crate::fsutil::refuse_insecure_root(&dir)?;
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
-            .await??;
-        }
+            .await??
+        };
         create_owned_dir(&data_dir, Path::new(""))?;
         crate::store_upgrade::stores_opening(&data_dir);
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
@@ -870,6 +873,7 @@ impl NetworkSession {
             withdrawal_nonces: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
+            upgrade_notice,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             backups: Default::default(),
@@ -1077,6 +1081,16 @@ impl NetworkSession {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// What to tell the user about the store upgrade this session's open
+    /// ran, once its persister opened and its wallets loaded: `Some` when it
+    /// upgraded the wallet data without a before-upgrade copy it can restore
+    /// (Q107 107-1). It never blocks anything and is the same for the whole
+    /// session; nothing on disk records that it was shown.
+    pub fn upgrade_notice(&self) -> Option<crate::store_upgrade::copy::Line> {
+        self.upgrade_notice
+            .map(crate::store_upgrade::copy::notice_line)
     }
 
     /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could

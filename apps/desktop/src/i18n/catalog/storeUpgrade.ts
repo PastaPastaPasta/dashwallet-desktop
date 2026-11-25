@@ -3,7 +3,9 @@ import type { Tree } from "../core";
 /** The screens the engine gives for a refused open, by their keys; each value is the engine's English
  * (dw-store-upgrade's copy), `refused` the refusal screen's lines and buttons. The screen shows the
  * engine's own text for a key missing here. `folder` is the network's data folder. `retry` is the
- * screen for an upgrade that stopped on the machine (`copy::retry_copy_for`). `restore` and
+ * screen for an upgrade that stopped on the machine (`copy::retry_copy_for`). `notice` is the banner over
+ * the wallet once an upgrade opened it without a before-upgrade copy it can restore (`copy::notice_line`);
+ * its `dismiss` is the renderer's own. `restore` and
  * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
  * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. */
 export const storeUpgrade = {
@@ -54,6 +56,13 @@ export const storeUpgrade = {
       title: "Dash Wallet couldn't finish upgrading your wallet data",
       text: "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
     },
+  },
+  notice: {
+    snapshotDamaged:
+      "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+    snapshotOther:
+      "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+    dismiss: "Dismiss",
   },
   restored: {
     text: "Dash Wallet is using your wallet data from before the upgrade, so anything that happened since the upgrade is missing. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent, so anything that moves your funds is paused until then.",

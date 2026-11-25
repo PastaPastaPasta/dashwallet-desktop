@@ -6,6 +6,8 @@
 
 import type { AppError } from "../api/generated/AppError";
 import type { ErrorData } from "../api/generated/ErrorData";
+import type { StoreLine } from "../api/generated/StoreLine";
+import { storeUpgrade } from "../i18n/catalog/storeUpgrade";
 import { RESTORE_CAUSES, type RestoreState, type StoreOpenError, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
 
 export type ErrorClass = ErrorData["kind"] | "none";
@@ -241,6 +243,14 @@ export const storeRetryError = (folder: string): StoreOpenError => ({
   message: `fixture: the upgrade of the wallet data in ${folder} stopped: disk full`,
   data: { kind: "retry", folder },
 });
+
+/** The store upgrade's notices `open_network` can carry (`copy::notice_line`), by name. */
+export const UPGRADE_NOTICES = {
+  snapshotDamaged: { key: "storeUpgrade.notice.snapshotDamaged", text: storeUpgrade.notice.snapshotDamaged },
+  snapshotOther: { key: "storeUpgrade.notice.snapshotOther", text: storeUpgrade.notice.snapshotOther },
+} as const satisfies Record<string, StoreLine>;
+export type UpgradeNoticeName = keyof typeof UPGRADE_NOTICES;
+export const UPGRADE_NOTICE_NAMES = Object.keys(UPGRADE_NOTICES) as UpgradeNoticeName[];
 
 /** `storage_in_use` as `open_network` rejects with it. */
 export const storageInUseError = (retryable: boolean, message = "fixture: the wallet data is still held by the session before"): StoreOpenError => ({

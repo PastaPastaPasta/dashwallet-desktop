@@ -2857,6 +2857,35 @@ fn every_broadcast_command_counts_while_it_runs() {
     }
 }
 
+/// Q107 107-1: `openNetwork`'s notice is the store upgrade's line (key and
+/// English text) when its open upgraded the wallet data without a
+/// before-upgrade copy it can restore, at every call while that session is
+/// open; `null` for any other open.
+#[test]
+fn the_open_network_carries_the_store_upgrade_notice() {
+    assert_eq!(Demo::new().open()["notice"], Value::Null);
+    let demo = Demo::launched(|_, dir| {
+        let root = dir.join("data");
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(&root).unwrap();
+        dw_store_upgrade::test_support::between_state(
+            &root.join("regtest"),
+            dw_store_upgrade::test_support::BeforeSnapshot::Unverified,
+            false,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    });
+    let line = dw_engine::store_upgrade::copy::notice_line(
+        dw_store_upgrade::UpgradeNotice::SnapshotDamaged,
+    );
+    let notice = json!({ "key": line.key, "text": line.text });
+    assert_eq!(demo.open()["notice"], notice);
+    assert_eq!(demo.ok("open_network", json!({}))["notice"], notice);
+}
+
 /// `restored` follows the network's RESTORED mark at each `openNetwork` and
 /// `activeNetwork`: absent, false; present, true; a mark that can't be
 /// checked, true. Nothing here clears it.

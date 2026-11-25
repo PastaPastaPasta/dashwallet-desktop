@@ -64,6 +64,7 @@ export const STATES: Record<string, State> = {
   "splash-failed": { scenario: "funded", extra: "&fail=open_network:retryAfter", roots: ["splash"], go: (page) => page.getByTestId("splash").getByRole("alert").waitFor() },
   "store-refused": { scenario: "funded", extra: "&openRefused=refusedPrevious", roots: ["store-refused"], go: (page) => page.getByTestId("store-refused").waitFor() },
   "store-retry": { scenario: "funded", extra: "&openRetry=yes", roots: ["store-retry"], go: (page) => page.getByTestId("store-retry").waitFor() },
+  "upgrade-notice": { scenario: "funded", extra: "&upgradeNotice=snapshotDamaged", roots: ["upgrade-notice"], go: (page) => page.getByTestId("upgrade-notice").waitFor() },
   "storage-in-use": { scenario: "funded", extra: "&storageInUse=retry", roots: ["storage-in-use"], go: (page) => page.getByTestId("storage-in-use-retry").waitFor() },
   "storage-in-use-restart": { scenario: "funded", extra: "&storageInUse=restart", roots: ["storage-in-use"], go: (page) => page.getByTestId("storage-in-use-restart").waitFor() },
   "wallets-loading": { scenario: "funded", extra: "&hold=list_wallets", roots: ["wallets-loading"], go: (page) => page.getByTestId("wallets-loading").waitFor() },

@@ -17,6 +17,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
+import type { StoreLine } from "../api/generated/StoreLine";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
@@ -95,6 +96,8 @@ export interface World {
   openRestore?: StoreRestoreData;
   /** `open_network` stops on the machine while it upgrades the store, every time. */
   openRetry?: boolean;
+  /** The store upgrade's notice every `open_network` carries (`OpenedNetwork.notice`). */
+  upgradeNotice?: StoreLine;
   /** A verified snapshot is there (`restore_available`); `request_restore` refuses without one. */
   restoreAvailable?: boolean;
   /** `request_restore` asked for a restore: the next `restart_app` runs it. */

@@ -636,10 +636,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       // Saved last, as dw-app saves it; `saveFails` keeps the choice the switch started from.
       world.pending.networkChoice = knobs.saveFails ? before : { chosen: network, saved: true };
       keepWorlds(world);
-      return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+      return { opened: { network: world.launch.network, lock: world.lock, notice: world.upgradeNotice ?? null }, choice: networkView(world) };
     }
     world.pending.networkChoice = { chosen: network, saved: true };
-    return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+    return { opened: { network: world.launch.network, lock: world.lock, notice: world.upgradeNotice ?? null }, choice: networkView(world) };
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,

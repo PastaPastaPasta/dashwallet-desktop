@@ -21,7 +21,7 @@ mod nested;
 mod platform;
 mod rates;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::governance::{GovernanceSyncPhaseName, ProposalFieldName};
@@ -582,8 +582,9 @@ pub struct StoreButton {
     pub default_focus: bool,
 }
 
-/// One keyed line of a [`StoreScreen`]'s text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+/// One keyed line of a [`StoreScreen`]'s text, or the store upgrade's
+/// notice (`OpenedNetwork::notice`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StoreLine {
     pub key: String,
