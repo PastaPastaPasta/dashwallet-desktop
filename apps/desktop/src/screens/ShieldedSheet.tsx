@@ -97,7 +97,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
       className="topup-form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!ready || syncing) return;
+        if (!ready || syncing || spendsOff) return;
         if (kind === "add") flow.next({ kind: "add", duffs: amount });
         else {
           const credits = String(BigInt(amount) * CREDITS_PER_DUFF);
@@ -183,7 +183,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
         <DashButton variant="tintedGray" size="large" type="button" data-testid="shielded-cancel" onClick={() => flow.close()}>
           {C.form.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready || syncing} why={nextWhy}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="shielded-next" disabled={!ready || syncing || spendsOff} why={nextWhy}>
           {C.form.next}
         </DashButton>
       </div>

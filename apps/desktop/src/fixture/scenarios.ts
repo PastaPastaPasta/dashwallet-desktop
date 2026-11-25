@@ -1385,6 +1385,14 @@ const SCENARIOS = {
     attributePayments(w);
     return w;
   },
+  /** `dashpay-registered` where this build cannot spend from Shielded: Pay a contact's Shielded row says so. */
+  "dashpay-registered-spends-off": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    attributePayments(w);
+    w.pending.shielded!.spendsAvailable = false;
+    return w;
+  },
   /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */
   "dashpay-avatar": (t) => withAvatar(t),
   /** DP4-03: `dashpay-avatar` with a picture for nearly everyone the lists show (contacts,

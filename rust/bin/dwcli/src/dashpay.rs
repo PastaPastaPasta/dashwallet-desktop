@@ -3843,6 +3843,19 @@ mod tests {
                 assert!(ready.is_boolean(), "{line}");
                 *ready = json!(false);
             }
+            // A build that cannot spend from Shielded reads false; the row is
+            // the same either way.
+            if let Some(spends) = line
+                .get_mut("result")
+                .and_then(|r| r.get_mut("spends_available"))
+            {
+                assert_eq!(
+                    *spends,
+                    json!(dw_engine::platform::SHIELDED_SPENDS_AVAILABLE),
+                    "{line}"
+                );
+                *spends = json!(true);
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();
