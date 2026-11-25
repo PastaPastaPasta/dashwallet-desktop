@@ -19,6 +19,7 @@ codes! {
         StorageTooNew = "storage_too_new",
         StorageRefused = "storage_refused",
         StorageRestore = "storage_restore",
+        StorageRetry = "storage_retry",
         WalletNotFound = "wallet_not_found",
         InvalidMnemonic = "invalid_mnemonic",
         WalletAlreadyExists = "wallet_already_exists",
@@ -169,6 +170,12 @@ impl From<EngineError> for AppError {
                     folder: r.folder.display().to_string(),
                 }),
             ),
+            E::StoreRetry(r) => (
+                EngineCode::StorageRetry.into(),
+                Some(ErrorData::Retry {
+                    folder: r.folder.display().to_string(),
+                }),
+            ),
             E::RetryableIo(_) => (
                 EngineCode::Io.into(),
                 Some(ErrorData::Io { retryable: true }),
@@ -275,7 +282,9 @@ mod tests {
     use super::*;
 
     use dw_engine::store_upgrade::copy::{BackupState, ProvedState, RefusedCause, RefusedScreen};
-    use dw_engine::store_upgrade::{RestoreFailure, RestoreState, StoreRefusal, StoreUpgradeStage};
+    use dw_engine::store_upgrade::{
+        RestoreFailure, RestoreState, RetryFailure, StoreRefusal, StoreUpgradeStage,
+    };
 
     /// A migrated development-build file with a verified backup: the
     /// refusal that offers Restore earlier data.
@@ -352,6 +361,24 @@ mod tests {
             format!("{}: {}", lines[0], lines[1..].join(" ")),
             text,
             "the text is its lines joined"
+        );
+    }
+
+    /// An upgrade that stopped on the machine rides as `storage_retry` with
+    /// the folder alone: the renderer's retry screen has no other input.
+    #[test]
+    fn a_stopped_upgrade_rides_as_storage_retry() {
+        let e = serde_json::to_value(AppError::from(EngineError::StoreRetry(Box::new(
+            RetryFailure {
+                folder: "/data/regtest".into(),
+                detail: "disk full".into(),
+            },
+        ))))
+        .unwrap();
+        assert_eq!(e["code"], "storage_retry");
+        assert_eq!(
+            e["data"],
+            serde_json::json!({ "kind": "retry", "folder": "/data/regtest" })
         );
     }
 
@@ -449,6 +476,10 @@ mod tests {
                 state: RestoreState::Refused,
                 cause: "missingBackup",
                 needed_bytes: None,
+                folder: "/data".into(),
+                detail: s(),
+            })),
+            E::StoreRetry(Box::new(RetryFailure {
                 folder: "/data".into(),
                 detail: s(),
             })),

@@ -129,6 +129,7 @@ const SAMPLES: Samples = {
       cause: "RetiredPoolWithoutAdopter",
     },
   },
+  retry: { code: "storage_retry", data: { kind: "retry", folder: "/data/testnet" } },
   restore: { code: "storage_restore", data: { kind: "restore", state: "notStarted", cause: "permissionDenied", neededBytes: null, folder: "/data/testnet" } },
   storageInUse: { code: "storage_in_use", data: { kind: "storageInUse", retryable: true } },
   io: { code: "io", data: { kind: "io", retryable: true } },
@@ -232,6 +233,13 @@ export const storeRefusedError = (data: StoreRefusedData): StoreOpenError => ({
   code: "storage_refused",
   message: `fixture: the wallet data in ${data.folder} was refused (${data.cause})`,
   data,
+});
+
+/** `storage_retry` as `open_network` rejects with it. */
+export const storeRetryError = (folder: string): StoreOpenError => ({
+  code: "storage_retry",
+  message: `fixture: the upgrade of the wallet data in ${folder} stopped: disk full`,
+  data: { kind: "retry", folder },
 });
 
 /** `storage_in_use` as `open_network` rejects with it. */

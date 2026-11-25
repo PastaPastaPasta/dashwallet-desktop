@@ -69,9 +69,11 @@ impl From<dw_engine::EngineError> for EngineError {
             E::StorageInUse { .. } => Self::StorageInUse { detail },
             // The frozen Swift shells have no code for it: `storage`, with
             // the newer-build text as its detail (DP3-04b D35).
-            E::Storage(_) | E::StorageTooNew(_) | E::StoreRefused(_) | E::StoreRestore(_) => {
-                Self::Storage { detail }
-            }
+            E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::StoreRestore(_)
+            | E::StoreRetry(_) => Self::Storage { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },

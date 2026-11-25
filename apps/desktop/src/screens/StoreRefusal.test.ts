@@ -15,14 +15,36 @@ import { BackendContext, keys } from "../api/queries";
 import { RESTORE_CAUSES, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { App } from "../app/App";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { RESTORE_FAILURE_NAMES, restoreFailure, STORE_COPY, STORE_SCREEN_NAMES, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import {
+  RESTORE_FAILURE_NAMES,
+  restoreFailure,
+  STORE_COPY,
+  STORE_SCREEN_NAMES,
+  STORE_SCREENS,
+  storageInUseError,
+  storeRefusedError,
+  storeRestoreError,
+  storeRetryError,
+} from "../fixture/errors";
 import { HANDLERS } from "../fixture/handlers";
 import { PENDING_HANDLERS } from "../fixture/pending";
 import { buildWorld } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { flatten } from "../i18n/core";
 import { en } from "../i18n/en";
-import { buttonAction, OpenFailureActions, RESTORE_BUTTONS, restoreButtonKey, RestoreConfirmView, screenText, StorageInUseView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
+import {
+  buttonAction,
+  OpenFailureActions,
+  RESTORE_BUTTONS,
+  restoreButtonKey,
+  RestoreConfirmView,
+  RETRY_BUTTONS,
+  screenText,
+  StorageInUseView,
+  StoreRefusalView,
+  StoreRestoreView,
+  StoreRetryView,
+} from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
@@ -275,6 +297,47 @@ describe("the store refusal screen", () => {
   });
 });
 
+describe("the retry screen", () => {
+  const COPY_RS = () => readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+  const renderRetry = (problem: string | null = null) => renderToStaticMarkup(createElement(StoreRetryView, { problem, onAction: noop }));
+
+  it("has the engine's retry copy in its catalog verbatim, with its buttons in copy.rs's order", () => {
+    const rust = COPY_RS();
+    const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(rust)?.[1];
+    expect([en.storeUpgrade.retry.noSpace.title, en.storeUpgrade.retry.noSpace.text]).toEqual(["RETRY_NO_SPACE_TITLE", "RETRY_NO_SPACE_TEXT"].map(constant));
+    const retry = /pub fn retry_copy_for[\s\S]*?\n}\n/.exec(rust)![0];
+    expect(retry).toContain('("storeUpgrade.retry.noSpace.title", RETRY_NO_SPACE_TITLE)');
+    expect(retry).toContain('("storeUpgrade.retry.noSpace.text", RETRY_NO_SPACE_TEXT)');
+    expect(retry).toContain("vec![REPORT, QUIT]");
+    expect(retry).toContain("hint: Some((ISSUES_HINT.key, ISSUES_HINT.text))");
+    const key = (name: string) => new RegExp(`const ${name}: Button = button\\("([^"]+)"`).exec(rust)?.[1];
+    expect(RETRY_BUTTONS).toEqual([key("REPORT"), key("QUIT")]);
+    for (const k of RETRY_BUTTONS) expect(buttonAction(k), k).not.toBeNull();
+    expect([...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.retry.")).sort()).toEqual(["storeUpgrade.retry.noSpace.text", "storeUpgrade.retry.noSpace.title"]);
+  });
+
+  for (const theme of THEMES)
+    it(`shows the catalog's copy, Report a problem first with the issues warning, and Quit (${theme})`, () => {
+      ui.set({ theme });
+      const html = renderRetry();
+      expect(html).toContain(`>${escaped(en.storeUpgrade.retry.noSpace.title)}</h1>`);
+      expect(html).toContain(`data-testid="store-retry-text">${escaped(en.storeUpgrade.retry.noSpace.text)}</p>`);
+      expect(button(html, "store-retry-button-storeUpgrade.refused.report")?.tag).toContain("dash-button-filledBlue");
+      expect(button(html, "store-retry-button-storeUpgrade.refused.quit")?.label).toBe("Quit");
+      expect(html.match(/<button/g)).toHaveLength(2);
+      expect(html).toContain(`data-testid="store-retry-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+      expect(html).not.toContain("disabled");
+      expectNoWalletFallthrough(html);
+      expectStyledClasses(html);
+    });
+
+  it("renders the same markup in light and dark", () => sameInBothThemes(() => renderRetry()));
+
+  it("shows a failed action's problem", () => {
+    expect(renderRetry("This is not available in this build.")).toContain('data-testid="store-retry-problem">This is not available in this build.</p>');
+  });
+});
+
 describe("the StorageInUse screen", () => {
   for (const theme of THEMES) {
     it(`in ${theme}, offers Try again and Restart when trying again can help`, () => {
@@ -368,6 +431,13 @@ describe("the app while the open is refused or held", () => {
     const html = renderAppFailed(storageInUseError(retryable));
     expect(html).toContain('data-testid="storage-in-use"');
     expect(html.includes('data-testid="storage-in-use-retry"')).toBe(retryable);
+    expect(html).not.toContain('data-testid="splash"');
+    expectNoWalletFallthrough(html);
+  });
+
+  it("shows the retry screen for an upgrade that stopped on the machine, not the shell or onboarding", () => {
+    const html = renderAppFailed(storeRetryError(FOLDER));
+    expect(html).toContain('data-testid="store-retry"');
     expect(html).not.toContain('data-testid="splash"');
     expectNoWalletFallthrough(html);
   });

@@ -145,8 +145,9 @@ fn every_refusal_has_a_screen() {
 /// Each crate error's engine error: a refusal with a screen as
 /// `storage_refused`, one without as `internal` naming it (never a generic
 /// screen); a held store as `storage_in_use`; the machine's failures (the
-/// rehearsal's I/O included) as retryable `io`; upstream's open error by
-/// its own mapping; the rest as `internal`.
+/// rehearsal's I/O included) as `storage_retry` while the open upgrades,
+/// or as retryable `io` when the crate names no retry screen for them;
+/// upstream's open error by its own mapping; the rest as `internal`.
 #[test]
 fn crate_errors_map_to_their_engine_errors() {
     let dir = dw_testutil::private_tempdir();
@@ -187,7 +188,10 @@ fn crate_errors_map_to_their_engine_errors() {
                 },
                 "StoreHeld",
             ) => {}
-            (EngineError::RetryableIo(_), "SnapshotFailed" | "Sqlite" | "Io") => {}
+            (EngineError::StoreRetry(r), "SnapshotFailed" | "Io") => {
+                assert_eq!(r.folder, dir.path())
+            }
+            (EngineError::RetryableIo(_), "Sqlite") => {}
             (EngineError::StorageTooNew(_), "PersisterOpen") => {}
             (
                 EngineError::Internal(m),
@@ -204,7 +208,8 @@ fn crate_errors_map_to_their_engine_errors() {
 }
 
 /// A wallet file that isn't a database, or is corrupt, is `storage` (no
-/// retry helps); any other SQLite failure stays retryable `io`.
+/// retry helps); a disk or I/O fault while the open upgrades is the retry
+/// screen, and any other SQLite failure stays retryable `io`.
 #[test]
 fn a_damaged_wallet_file_is_storage_not_retryable_io() {
     let dir = dw_testutil::private_tempdir();
@@ -220,9 +225,85 @@ fn a_damaged_wallet_file_is_storage_not_retryable_io() {
             "{code}"
         );
     }
+    for code in [rusqlite::ffi::SQLITE_IOERR, rusqlite::ffi::SQLITE_FULL] {
+        assert!(
+            matches!(map(sqlite(code)), EngineError::StoreRetry(_)),
+            "{code}"
+        );
+    }
     assert!(matches!(
-        map(sqlite(rusqlite::ffi::SQLITE_IOERR)),
+        map(sqlite(rusqlite::ffi::SQLITE_MISUSE)),
         EngineError::RetryableIo(_)
+    ));
+}
+
+/// The retry screen is the open's alone: the same machine fault in a
+/// restore command (request, keep, cancel) or the restore step stays a
+/// retryable io error, never "couldn't finish upgrading".
+#[test]
+fn a_machine_fault_is_the_retry_screen_only_while_the_open_upgrades() {
+    let dir = dw_testutil::private_tempdir();
+    let io = || StoreUpgradeError::Io {
+        context: "write the snapshot",
+        unchanged: true,
+        source: std::io::Error::from(std::io::ErrorKind::StorageFull),
+    };
+    for stage in [
+        StoreUpgradeStage::Prepare,
+        StoreUpgradeStage::Reconcile,
+        StoreUpgradeStage::Open,
+    ] {
+        assert!(
+            matches!(
+                map_error(dir.path(), stage, io(), false),
+                EngineError::StoreRetry(_)
+            ),
+            "{stage:?}"
+        );
+    }
+    assert!(matches!(
+        map_error(dir.path(), StoreUpgradeStage::Restore, io(), false),
+        EngineError::RetryableIo(_)
+    ));
+}
+
+/// The persister's open failing to write (its auto-backup directory) is the
+/// retry screen while the open upgrades, and keeps upstream's own mapping in
+/// the restore commands; one that read a newer schema stays `StorageTooNew`.
+#[test]
+fn a_persister_open_that_cannot_write_is_the_retry_screen_only_while_the_open_upgrades() {
+    let dir = dw_testutil::private_tempdir();
+    let unwritable = || StoreUpgradeError::PersisterOpen {
+        dir: dir.path().into(),
+        source: Box::new(
+            platform_wallet_storage::WalletStorageError::AutoBackupDirUnwritable {
+                dir: dir.path().join("backups"),
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            },
+        ),
+    };
+    for stage in [StoreUpgradeStage::Open, StoreUpgradeStage::Prepare] {
+        match map_error(dir.path(), stage, unwritable(), false) {
+            EngineError::StoreRetry(r) => assert_eq!(r.folder, dir.path(), "{stage:?}"),
+            other => panic!("{stage:?}: {other:?}"),
+        }
+    }
+    assert!(!matches!(
+        map_error(dir.path(), StoreUpgradeStage::Restore, unwritable(), false),
+        EngineError::StoreRetry(_)
+    ));
+    let newer = StoreUpgradeError::PersisterOpen {
+        dir: dir.path().into(),
+        source: Box::new(
+            platform_wallet_storage::WalletStorageError::SchemaVersionUnsupported {
+                found: 99,
+                max_supported: 31,
+            },
+        ),
+    };
+    assert!(matches!(
+        map_error(dir.path(), StoreUpgradeStage::Open, newer, false),
+        EngineError::StorageTooNew(_)
     ));
 }
 

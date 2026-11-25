@@ -93,6 +93,8 @@ export interface World {
   /** `open_network` stops at a restore the user asked for: `refused` and `noSpace` once (the request is
    * cleared), the others until it is cancelled. */
   openRestore?: StoreRestoreData;
+  /** `open_network` stops on the machine while it upgrades the store, every time. */
+  openRetry?: boolean;
   /** A verified snapshot is there (`restore_available`); `request_restore` refuses without one. */
   restoreAvailable?: boolean;
   /** `request_restore` asked for a restore: the next `restart_app` runs it. */

@@ -36,12 +36,17 @@ const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
  * cause (MG (n), (q)). `neededBytes` is the space the copies need, `noSpace` only. */
 export type StoreRestoreData = Extract<ErrorData, { kind: "restore" }>;
 
-/** The open's refusals: a store refusal, StorageInUse with its `retryable`, or a pending restore that
- * stopped the open. */
+/** `storage_retry`'s data: the open's store upgrade stopped on the machine (the disk full or not writable,
+ * an I/O fault) and runs again at the next start. `folder` is the network's data folder. */
+export type StoreRetryData = Extract<ErrorData, { kind: "retry" }>;
+
+/** The open's refusals: a store refusal, StorageInUse with its `retryable`, a pending restore that
+ * stopped the open, or an upgrade that stopped on the machine. */
 export type StoreOpenError =
   | { code: "storage_refused"; message: string; data: StoreRefusedData }
   | { code: "storage_in_use"; message: string; data: StorageInUseData | null }
-  | { code: "storage_restore"; message: string; data: StoreRestoreData };
+  | { code: "storage_restore"; message: string; data: StoreRestoreData }
+  | { code: "storage_retry"; message: string; data: StoreRetryData };
 
 const object = (e: unknown): e is { code?: unknown; data?: unknown } => typeof e === "object" && e !== null;
 
@@ -85,6 +90,16 @@ export function storeRestore(e: unknown): StoreRestoreData | null {
   const neededBytes = d.neededBytes ?? null;
   const bytes = neededBytes === null || (typeof neededBytes === "number" && Number.isSafeInteger(neededBytes) && neededBytes >= 0);
   return d.kind === "restore" && RESTORE_STATES.includes(d.state as RestoreState) && isText(d.cause) && isText(d.folder) && bytes ? { ...(d as StoreRestoreData), neededBytes } : null;
+}
+
+/** Whether `e` is a `storage_retry`, whatever its data. */
+export const isStoreRetryCode = (e: unknown): e is { code: "storage_retry"; data?: unknown } => object(e) && e.code === "storage_retry";
+
+/** The upgrade stop `e` carries, when it is `storage_retry` with whole data; a malformed one is `null`. */
+export function storeRetry(e: unknown): StoreRetryData | null {
+  if (!isStoreRetryCode(e) || !object(e.data)) return null;
+  const d = e.data as Partial<StoreRetryData>;
+  return d.kind === "retry" && isText(d.folder) ? (d as StoreRetryData) : null;
 }
 
 /** The network as `open_network` and `active_network` give it, with whether its wallet data was restored

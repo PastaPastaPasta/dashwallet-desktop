@@ -55,8 +55,8 @@ import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./top
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
-import { isClosed, settingsHandlers } from "./settings";
-import { storageInUseError, storeRefusedError, storeRestoreError } from "./errors";
+import { FIXTURE_DATA_DIR, isClosed, settingsHandlers } from "./settings";
+import { storageInUseError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -798,6 +798,7 @@ export const HANDLERS: Handlers = {
       throw storeRestoreError(restore);
     }
     if (world.openRefusal) throw storeRefusedError(world.openRefusal);
+    if (world.openRetry) throw storeRetryError(`${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`);
     // Row 74: the network a failed switch left did not reopen; at this pin the store stays held until a
     // restart (`storageInUse=retry` is the build where trying again frees it).
     if (world.networkSwitch?.reopenFails) throw storageInUseError(false, `fixture: reopening ${world.launch.network.dirName} failed`);

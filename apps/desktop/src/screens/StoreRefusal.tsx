@@ -322,6 +322,31 @@ export function StoreRestoreView({ restore, problem, failedLink = null, busy = f
   );
 }
 
+/** The retry screen's buttons, as `copy::retry_copy_for` gives them: Report a problem, then Quit. */
+export const RETRY_BUTTONS = ["storeUpgrade.refused.report", "storeUpgrade.refused.quit"] as const;
+
+export interface StoreRetryViewProps {
+  problem: string | null;
+  failedLink?: string | null;
+  busy?: boolean;
+  onAction: (action: ButtonAction) => void;
+}
+
+/** The open's store upgrade stopped on the machine (`storage_retry`): free up space, then quit and open
+ * again; never the earlier version, as the file may be part-upgraded. The issues warning is under the
+ * buttons. */
+export function StoreRetryView({ problem, failedLink = null, busy = false, onAction }: StoreRetryViewProps) {
+  const tr = useT();
+  const say = tr as unknown as LooseTranslate;
+  const id = useId();
+  const buttons = RETRY_BUTTONS.map((key, i): ShownButton => ({ key, label: say(key), destructive: false, defaultFocus: i === 0, action: buttonAction(key) }));
+  return (
+    <Panel id={id} testId="store-retry" title={tr("storeUpgrade.retry.noSpace.title")} text={tr("storeUpgrade.retry.noSpace.text")} problem={problem} failedLink={failedLink}>
+      <Buttons id={id} testId="store-retry" buttons={buttons} hint={tr(ISSUES_HINT)} busy={busy} onAction={onAction} />
+    </Panel>
+  );
+}
+
 export interface RestoreConfirmViewProps {
   folder: string;
   busy: boolean;
@@ -395,6 +420,11 @@ export function StoreRefusalScreen({ refusal, onReopen, retrying }: OpenFailureS
 export function StoreRestoreScreen({ restore, onReopen, retrying }: OpenFailureScreenProps & { restore: StoreRestoreData }) {
   const exit = useActions();
   return <StoreRestoreView restore={restore} problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, onReopen)} />;
+}
+
+export function StoreRetryScreen({ retrying }: { retrying: boolean }) {
+  const exit = useActions();
+  return <StoreRetryView problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, () => {})} />;
 }
 
 export interface StorageInUseViewProps {

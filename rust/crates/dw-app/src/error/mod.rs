@@ -509,6 +509,11 @@ pub enum ErrorData {
         needed_bytes: Option<u64>,
         folder: String,
     },
+    /// `storage_retry`: the open's store upgrade stopped on the machine (the
+    /// disk full or not writable, an I/O fault) and runs again at the next
+    /// start: the `storeUpgrade.retry.noSpace.*` screen, never the earlier
+    /// version; `folder` is the network directory.
+    Retry { folder: String },
     /// `storage_in_use`: whether trying again in this process may succeed;
     /// false means only a restart clears it.
     StorageInUse { retryable: bool },

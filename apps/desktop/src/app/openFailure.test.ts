@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { restoreFailure, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import { restoreFailure, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError, storeRetryError } from "../fixture/errors";
 import { openFailure } from "./openFailure";
 
 // DP3-04b D35: a wallet file from a newer build is its own, recoverable, refusal.
@@ -44,6 +44,12 @@ describe("the splash's open failure", () => {
     for (const data of broken) expect(openFailure({ code: "storage_restore", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
     const { neededBytes: _, ...withoutBytes } = whole;
     expect(openFailure({ code: "storage_restore", message: "stopped", data: withoutBytes })).toEqual({ kind: "restore", restore: whole });
+  });
+
+  it("gives an upgrade that stopped on the machine its own screen; without whole data, the engine's text and no retry", () => {
+    expect(openFailure(storeRetryError("/data"))).toEqual({ kind: "retry", retry: { kind: "retry", folder: "/data" } });
+    for (const data of [null, { kind: "retry" }, { kind: "retry", folder: 3 }, { kind: "restore", folder: "/data" }])
+      expect(openFailure({ code: "storage_retry", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
   });
 
   it("does not take a storage_refused without its screen for a refusal", () => {

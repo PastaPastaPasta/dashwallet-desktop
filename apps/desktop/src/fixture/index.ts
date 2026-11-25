@@ -65,6 +65,8 @@ export interface FixtureOptions {
   /** `openRestore=<state>:<cause>`: `open_network` stops at a restore the user asked for (a fresh world
    * only). */
   openRestore?: string;
+  /** `openRetry=yes`: `open_network` stops on the machine while it upgrades the store (a fresh world only). */
+  openRetry?: boolean;
   /** `restoreAvailable=yes|no`: whether a verified snapshot is there to restore (a fresh world only). */
   restoreAvailable?: boolean;
   /** `restored=yes`: the network's wallet data was restored and RESTORED is still set (a fresh world only). */
@@ -159,6 +161,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   if (!carried && opts.openRefused) world.openRefusal = STORE_SCREENS[opts.openRefused](dataDir);
   if (!carried && opts.storageInUse) world.storageHeld = { retryable: opts.storageInUse === "retry" };
   if (!carried && opts.openRestore) world.openRestore = restoreFailure(opts.openRestore, dataDir);
+  if (!carried && opts.openRetry) world.openRetry = true;
   if (!carried && opts.restoreAvailable !== undefined) world.restoreAvailable = opts.restoreAvailable;
   if (!carried && opts.restored) world.restored = true;
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
@@ -278,6 +281,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const storageInUse = oneOf(p, "storageInUse", ["retry", "restart"] as const);
   const openRestore = oneOf(p, "openRestore", RESTORE_FAILURE_NAMES);
   const available = oneOf(p, "restoreAvailable", ["yes", "no"] as const);
+  const openRetry = oneOf(p, "openRetry", ["yes"] as const) === "yes" || undefined;
   const restored = oneOf(p, "restored", ["yes"] as const) === "yes" || undefined;
   return {
     scenario,
@@ -295,6 +299,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     openRefused,
     storageInUse,
     openRestore,
+    openRetry,
     restoreAvailable: available === undefined ? undefined : available === "yes",
     restored,
   };

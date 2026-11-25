@@ -33,6 +33,25 @@ test.describe("a refused store", () => {
   });
 });
 
+test.describe("an upgrade that stopped on the machine", () => {
+  for (const theme of ["light", "dark"] as const)
+    test(`says to free up space and open again, never the earlier version, and quits (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("funded", theme, "&openRetry=yes"));
+      const screen = page.getByTestId("store-retry");
+      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet couldn't finish upgrading your wallet data");
+      await expect(page.getByTestId("store-retry-text")).toHaveText(
+        "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
+      );
+      await expect(page.getByTestId("store-retry-button-storeUpgrade.refused.report")).toBeFocused();
+      await expect(page.getByTestId("store-retry-hint")).toHaveText("Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.");
+      await expectNoWallet(page);
+      await page.getByTestId("store-retry-button-storeUpgrade.refused.quit").click();
+      await expect.poll(() => appExits(page)).toEqual(["quit"]);
+      expect(errors).toEqual([]);
+    });
+});
+
 test.describe("StorageInUse", () => {
   test("Try again opens the wallet once the session before lets go", async ({ page }) => {
     await page.goto(fixtureUrl("funded", "light", "&storageInUse=retry"));

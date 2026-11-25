@@ -2,7 +2,8 @@ import type { Tree } from "../core";
 
 /** The screens the engine gives for a refused open, by their keys; each value is the engine's English
  * (dw-store-upgrade's copy), `refused` the refusal screen's lines and buttons. The screen shows the
- * engine's own text for a key missing here. `folder` is the network's data folder. `restore` and
+ * engine's own text for a key missing here. `folder` is the network's data folder. `retry` is the
+ * screen for an upgrade that stopped on the machine (`copy::retry_copy_for`). `restore` and
  * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
  * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. */
 export const storeUpgrade = {
@@ -46,6 +47,12 @@ export const storeUpgrade = {
         "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
       selfCheckNotMigrated:
         "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+    },
+  },
+  retry: {
+    noSpace: {
+      title: "Dash Wallet couldn't finish upgrading your wallet data",
+      text: "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
     },
   },
   restored: {

@@ -74,6 +74,16 @@ pub enum RestoreState {
     Foreign,
 }
 
+/// An open whose store upgrade stopped on the machine and runs again at the
+/// next start (`copy::retry_copy_for`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetryFailure {
+    /// The network directory.
+    pub folder: PathBuf,
+    /// The crate's error text, for logs.
+    pub detail: String,
+}
+
 /// A restore that stopped the open, or a refused restore command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoreFailure {
@@ -373,8 +383,11 @@ fn restore_state(e: &StoreUpgradeError) -> Option<(RestoreState, &'static str, O
 /// - a wallet file that isn't a database, or is corrupt, as `Storage` when
 ///   SQLite reports it outside the snapshot step (the snapshot step reports
 ///   a damaged store as `SnapshotSourceDamaged`, a refusal);
-/// - a failure of the machine (disk, I/O, the snapshot, the rehearsal's
-///   I/O) as a retryable io error, never a refusal;
+/// - a failure of the machine (disk full or not writable, an I/O fault)
+///   while the open upgrades the store (prepare, reconcile, the persister
+///   open) as [`EngineError::StoreRetry`], the crate's retry screen
+///   (`copy::retry_copy_for`); any other, and any in the restore commands,
+///   as a retryable io error; never a refusal;
 /// - upstream's own open error by its usual mapping;
 /// - a caller-side state (non-Strict open, probe not run, a config the
 ///   reconcile didn't rehearse, a snapshot that doesn't fit, a pending
@@ -406,6 +419,17 @@ pub(crate) fn map_error(
             state,
             cause,
             needed_bytes,
+            folder: network_dir.to_path_buf(),
+            detail: e.to_string(),
+        }));
+    }
+    let damaged = matches!(&e, E::Sqlite { source, .. } if is_damaged(source));
+    let upgrading = matches!(
+        stage,
+        StoreUpgradeStage::Prepare | StoreUpgradeStage::Reconcile | StoreUpgradeStage::Open
+    );
+    if upgrading && !damaged && dw_store_upgrade::copy::retry_copy_for(&e).is_some() {
+        return EngineError::StoreRetry(Box::new(RetryFailure {
             folder: network_dir.to_path_buf(),
             detail: e.to_string(),
         }));
