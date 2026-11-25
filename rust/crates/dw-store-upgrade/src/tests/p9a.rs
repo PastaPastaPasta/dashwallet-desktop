@@ -8,11 +8,13 @@ use crate::precheck::{Precheck, precheck_with};
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::take_snapshot;
 
+/// A5: the pinned build carries P9a, so the probe reads Present with every
+/// control passing.
 #[test]
-fn probe_reads_absent_at_d902b51() {
+fn probe_reads_present_with_p9a() {
     assert_eq!(
         build().p9a_status(),
-        &P9aStatus::Absent,
+        &P9aStatus::Present,
         "{:#?}",
         build().observations()
     );
@@ -31,24 +33,12 @@ fn probe_reads_absent_at_d902b51() {
 }
 
 #[test]
-#[ignore = "A5: needs a platform pin with P9a (integration-3 SHA)"]
-fn probe_reads_present_with_p9a() {
-    assert_eq!(
-        build().p9a_status(),
-        &P9aStatus::Present,
-        "{:#?}",
-        build().observations()
-    );
-}
-
-#[test]
 fn rotated_contact_fork_file_is_refused_without_p9a() {
     let f = fixture("v0.1.0");
     add_retired_row(&f.wallet());
-    let adopters = build();
-    assert_ne!(adopters.p9a_status(), &P9aStatus::Present);
+    let adopters = build().with_p9a(P9aStatus::Absent);
     let before = tree(&f.root);
-    let found = precheck_with(&f.net, adopters).unwrap();
+    let found = precheck_with(&f.net, &adopters).unwrap();
     let Precheck::Refuse { reason } = found else {
         panic!("expected a refusal, got {found:?}");
     };
@@ -90,7 +80,6 @@ fn rotated_contact_refusal_comes_before_the_drop_and_any_migration() {
 }
 
 #[test]
-#[ignore = "needs a platform pin with P9a (integration-3 SHA): the probe must read Present"]
 fn rotated_contact_fork_file_counts_correctly_with_p9a() {
     assert_eq!(
         build().p9a_status(),
