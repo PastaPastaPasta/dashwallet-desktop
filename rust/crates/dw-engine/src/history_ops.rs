@@ -6,6 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, LabelKind};
@@ -397,6 +398,77 @@ impl ViewParts {
     }
 }
 
+/// The spend claims a load chooses for `h` from the payments this app sent
+/// (`sent`), under the guard that installs them, and the claimants the
+/// history holds locked. Spends key-wallet holds a record of this session,
+/// or swept, are left to it.
+fn claim_choice(
+    h: &crate::history::WalletHistory,
+    sent: &crate::tx_actions::Sent,
+    chainlock: Option<u32>,
+) -> (Vec<(OutPoint, Txid)>, HashSet<Txid>) {
+    let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
+    claims.retain(|(_, spender)| !h.session_held.contains(spender) && !h.swept.contains(spender));
+    let locked = crate::history::locked_claimants(&h.txs, &claims);
+    (claims, locked)
+}
+
+/// The last load's sent marks of `h` that the app database still holds
+/// (`current`, when it read) and that were not dropped since, and the
+/// payments `txid`'s lock can revive: `txid` and its unlocked descendants
+/// out of a block. None when the load restored no claim or none of them
+/// has a mark.
+fn revived_marks(
+    h: &crate::history::WalletHistory,
+    txid: Txid,
+    current: Option<&HashSet<Txid>>,
+) -> Option<(crate::tx_actions::Sent, HashSet<Txid>)> {
+    let marks = h.claim_marks.as_ref()?;
+    let mut revived: HashSet<Txid> = crate::history::unmined_children(&h.txs, &[txid])
+        .into_iter()
+        .collect();
+    revived.insert(txid);
+    let kept = |t: &Txid| current.is_none_or(|c| c.contains(t)) && !h.drops.contains_key(t);
+    if !revived.iter().any(|t| marks.contains_key(t) && kept(t)) {
+        return None;
+    }
+    let sent = (marks.iter())
+        .filter(|(t, _)| kept(t))
+        .map(|(t, m)| (*t, m.clone()))
+        .collect();
+    Some((sent, revived))
+}
+
+/// Stores `lock` for `wallet` when its store holds `txid`'s record out of a
+/// block: the history load reads that record locked.
+async fn store_lock(
+    persister: Arc<platform_wallet_storage::SqlitePersister>,
+    wallet: WalletId,
+    txid: Txid,
+    lock: InstantLock,
+) {
+    let stored = tokio::task::spawn_blocking(move || {
+        match persister.get_core_tx_record(wallet.0, &txid)? {
+            Some(record) if record.block_info().is_none() => {}
+            _ => return Ok(false),
+        }
+        let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
+            core: Some(platform_wallet::changeset::CoreChangeSet {
+                instant_locks_for_non_final_records: BTreeMap::from([(txid, lock)]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        persister.store(wallet.0, changeset)?;
+        persister.flush(wallet.0)?;
+        Ok::<_, platform_wallet::changeset::PersistenceError>(true)
+    })
+    .await;
+    if !matches!(stored, Ok(Ok(_))) {
+        tracing::warn!(%wallet, %txid, ?stored, "could not store an InstantSend lock no event named");
+    }
+}
+
 /// A wallet's stored history and the payments this app sent, read before
 /// the wallet is loaded.
 pub(crate) type StoredSpends = (crate::history::WalletHistory, crate::tx_actions::Sent);
@@ -724,6 +796,9 @@ impl NetworkSession {
     ) {
         if !claims {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
+            self.hub
+                .history
+                .with_wallet(wallet, |h| h.claim_marks = None);
             self.apply_spend_claims(manager, wallet, |_, _| (Vec::new(), HashSet::new()))
                 .await;
             return;
@@ -734,16 +809,13 @@ impl NetworkSession {
                 for t in core.instant_send_locks() {
                     h.set_instant_locked(t);
                 }
+                let choice = claim_choice(h, sent, chainlock);
                 own = (core.metadata.last_applied_chain_lock.as_ref())
                     .map(|c| (c.block_height, c.block_hash));
                 candidates =
                     crate::history::settled_candidates(&h.txs, sent, stored, own.map(|c| c.0));
-                let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
-                claims.retain(|(_, spender)| {
-                    !h.session_held.contains(spender) && !h.swept.contains(spender)
-                });
-                let locked = crate::history::locked_claimants(&h.txs, &claims);
-                (claims, locked)
+                h.claim_marks = Some(sent.clone());
+                choice
             })
         })
         .await;
@@ -765,6 +837,76 @@ impl NetworkSession {
                     tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments")
                 }
             }
+        }
+    }
+
+    /// Hands the hub what follows a lock that wallets learned of without an
+    /// event of theirs ([`Self::rerun_locked_claims`]).
+    pub(crate) fn attach_lock_rerun(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let rt = self.rt.clone();
+        #[cfg(test)]
+        let hub = Arc::downgrade(&self.hub);
+        self.hub
+            .attach_lock_rerun(Box::new(move |txid, lock, wallets| {
+                let task = weak.clone();
+                let run = rt.spawn(async move {
+                    if let Some(session) = task.upgrade() {
+                        session.rerun_locked_claims(txid, lock, wallets).await;
+                    }
+                });
+                #[cfg(test)]
+                if let Some(hub) = hub.upgrade() {
+                    hub.lock_reruns
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(run);
+                }
+                #[cfg(not(test))]
+                drop(run);
+            }));
+    }
+
+    /// `txid`'s InstantSend lock reached `wallets`' histories with no event
+    /// of theirs (#828): each chooses again, under the guard that installs
+    /// them, the spend claims of the payments the lock can revive (`txid`
+    /// and its unlocked descendants out of a block) as its last load would
+    /// have with the lock known, from that load's sent marks still held and
+    /// not dropped since, and stores the lock for the next load. A wallet whose
+    /// last load restored no claim chooses none.
+    async fn rerun_locked_claims(&self, txid: Txid, lock: InstantLock, wallets: Vec<WalletId>) {
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let history = &self.hub.history;
+        for wallet in wallets {
+            let current = self
+                .appdb_op(move |db| Ok(crate::tx_actions::read_sent(db, wallet)))
+                .await;
+            let current: Option<HashSet<Txid>> = match current {
+                Ok((sent, read)) if read != crate::tx_actions::SentRead::Failed => {
+                    Some(sent.into_keys().collect())
+                }
+                _ => {
+                    tracing::warn!(%wallet, %txid, "sent marks unread: the load's are used after a lock");
+                    None
+                }
+            };
+            let current = current.as_ref();
+            if history.read_wallet(&wallet, |h| revived_marks(h, txid, current).is_some()) {
+                self.apply_spend_claims(&live.manager, wallet, |_, chainlock| {
+                    history.with_wallet(wallet, |h| match revived_marks(h, txid, current) {
+                        Some((sent, revived)) => {
+                            let (mut claims, locked) = claim_choice(h, &sent, chainlock);
+                            claims.retain(|(_, spender)| revived.contains(spender));
+                            (claims, locked)
+                        }
+                        None => (Vec::new(), HashSet::new()),
+                    })
+                })
+                .await;
+            }
+            store_lock(Arc::clone(&live.persister), wallet, txid, lock.clone()).await;
         }
     }
 
