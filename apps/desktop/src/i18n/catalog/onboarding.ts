@@ -175,7 +175,7 @@ export const onboarding = {
     wallet_not_found: "This wallet is not open.",
     shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
     last_startup_wallet: "At least one wallet opens at start.",
-    restore_only: "Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
+    restore_only: "Nothing was added. Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
     io: "The file could not be read or written.",

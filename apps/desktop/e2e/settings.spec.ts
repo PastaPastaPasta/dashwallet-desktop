@@ -595,6 +595,35 @@ test.describe("Backups", () => {
   });
 });
 
+test.describe("restore-only (RESTORED set)", () => {
+  test("Settings offers no way to add a wallet but the phrase, and the others come back once the mark clears", async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("funded", "light", "&restored=yes"));
+    await page.getByTestId("toolbar").waitFor();
+    await command(page, { kind: "navigate", route: "settings" });
+    await page.getByTestId("settings-tabs-wallets").click();
+    await expect(page.getByTestId("settings-add-wallet")).toBeVisible();
+    await expect(page.getByTestId("settings-wallets")).toBeVisible();
+    await expect(page.getByTestId("settings-add-watch-only")).toHaveCount(0);
+    await page.getByTestId("settings-tabs-backups").click();
+    await expect(page.getByTestId("settings-automatic-backups")).toBeVisible();
+    await expect(page.getByTestId("settings-import-card")).toHaveCount(0);
+    await expect(page.getByTestId("settings-import-file")).toHaveCount(0);
+    await expect(page.getByTestId("settings-import-keys")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.restored = false;
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("settings-import-file")).toBeVisible();
+    await expect(page.getByTestId("settings-import-keys")).toBeVisible();
+    await page.getByTestId("settings-tabs-wallets").click();
+    await expect(page.getByTestId("settings-add-watch-only")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+});
+
 test.describe("About", () => {
   test("QT001_QT002_versionsNetworkAndFolders", async ({ page }) => {
     await settings(page, "about");

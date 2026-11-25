@@ -68,10 +68,10 @@ describe("the restore-only Welcome (Q107 C1)", () => {
       expect(html).not.toContain(escaped(RESTORE_ONLY_ADD));
     });
 
-  it("a refused way in says why, in the first sentence of MG's Add a wallet line", () => {
-    const text = failureText({ code: "restore_only", message: "x", data: null });
-    expect(text).toBe("Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.");
-    expect(RESTORE_ONLY_ADD.startsWith(text)).toBe(true);
+  it("a refused way in says nothing was added and why, in MG's words", () => {
+    expect(failureText({ code: "restore_only", message: "x", data: null })).toBe(
+      "Nothing was added. Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
+    );
   });
 
   it("the fixture refuses every way to add a wallet but the phrase while RESTORED is set, and none after", () => {
