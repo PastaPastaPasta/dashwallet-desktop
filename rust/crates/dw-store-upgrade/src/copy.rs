@@ -623,10 +623,6 @@ const NOT_STARTED_TITLE: &str =
     "[MG placeholder] Dash Wallet couldn't start restoring your wallet data";
 const NOT_STARTED_TEXT: &str = "[MG placeholder] Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed. Restart Dash Wallet to try again.";
 
-const KEEP_CURRENT_TITLE: &str =
-    "[MG placeholder] Dash Wallet couldn't finish restoring your wallet data";
-const KEEP_CURRENT_TEXT: &str = "[MG placeholder] Another version of Dash Wallet changed the wallet data in {folder} after the earlier data was put back. You can keep the wallet data as it is now. Every set of wallet data is kept in the upgrade-backups folder inside {folder}: don't delete anything there.";
-
 /// `storeUpgrade.restore.confirm.*` (MG FINAL with R3 (1) and (ii)): every
 /// path to a restore goes through it.
 pub fn restore_confirm() -> ScreenCopy {
@@ -698,29 +694,6 @@ pub fn restore_not_started(_cause: IncompleteCause) -> ScreenCopy {
     )
 }
 
-/// `storeUpgrade.restore.keepCurrent.*`: S4 refused (Q92 S4-2); the keep
-/// button runs [`crate::keep_current_files`].
-pub fn restore_keep_current() -> ScreenCopy {
-    ScreenCopy {
-        hint: Some((ISSUES_HINT.key, ISSUES_HINT.text)),
-        ..screen(
-            ("storeUpgrade.restore.keepCurrent.title", KEEP_CURRENT_TITLE),
-            ("storeUpgrade.restore.keepCurrent.text", KEEP_CURRENT_TEXT),
-            vec![
-                button(
-                    "storeUpgrade.restore.keepCurrent.keep",
-                    "[MG placeholder] Keep the current wallet data",
-                ),
-                button(
-                    "storeUpgrade.restore.keepCurrent.report",
-                    "Report a problem",
-                ),
-                button("storeUpgrade.restore.keepCurrent.quit", "Quit"),
-            ],
-        )
-    }
-}
-
 /// The restore flow's screen for an error from this crate, if it has one.
 /// Every error has at most one of this and [`screen_for`].
 pub fn restore_screen_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
@@ -728,14 +701,9 @@ pub fn restore_screen_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
         StoreUpgradeError::RestoreRefused { cause } => restore_refused(*cause),
         StoreUpgradeError::RestoreNoSpace { .. } => restore_no_space(),
         StoreUpgradeError::RestoreIncomplete {
-            cause: IncompleteCause::S4OtherLineage,
+            cause: IncompleteCause::S4OtherLineage | IncompleteCause::S4OldBuildWrote,
             ..
         } => restore_foreign::screen(),
-        StoreUpgradeError::RestoreIncomplete {
-            cause: IncompleteCause::S4OldBuildWrote,
-            journal_written: true,
-            ..
-        } => restore_keep_current(),
         StoreUpgradeError::RestoreIncomplete {
             cause,
             journal_written: true,
@@ -755,7 +723,6 @@ pub fn all_screens() -> Vec<ScreenCopy> {
         restore_incomplete(IncompleteCause::Other),
         restore_no_space(),
         restore_not_started(IncompleteCause::Other),
-        restore_keep_current(),
         restore_foreign::screen(),
     ];
     v.dedup();

@@ -577,15 +577,21 @@ fn s4_refuse_policy_changes_nothing() {
     S4_FOR_TEST.with(|p| p.set(Some(S4Policy::Refuse)));
     let err = u.run(later(60));
     S4_FOR_TEST.with(|p| p.set(None));
+    let err = err.unwrap_err();
     assert!(matches!(
         err,
-        Err(StoreUpgradeError::RestoreIncomplete {
+        StoreUpgradeError::RestoreIncomplete {
             cause: IncompleteCause::S4OldBuildWrote,
             journal_written: true,
             ..
-        })
+        }
     ));
     assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+    assert_eq!(
+        copy::restore_screen_for(&err),
+        Some(copy::restore_foreign::screen()),
+        "MG: keepCurrent is superseded by foreign"
+    );
 }
 
 /// A wallet with the before set's version and wallets ids, but another
@@ -1205,13 +1211,7 @@ fn placeholders_are_only_the_keys_mg_has_not_written() {
         .map(|s| s.title_key)
         .collect();
     keys.sort();
-    assert_eq!(
-        keys,
-        [
-            "storeUpgrade.restore.keepCurrent.title",
-            "storeUpgrade.restore.notStarted.title",
-        ]
-    );
+    assert_eq!(keys, ["storeUpgrade.restore.notStarted.title"]);
 }
 
 #[test]
