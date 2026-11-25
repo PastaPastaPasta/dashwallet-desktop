@@ -156,8 +156,7 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
 - **Per-build releases** are named `v<version>-dev.<run>+<short commit>`: one for each push to `main` (a burst of
   pushes can skip one), never edited. Since 11-25 a push to `main` builds nothing, so no new ones appear.
 - **`continuous`** was replaced by every push to `main` until 11-25, never by an older commit; its files keep the
-  same names.
-  After a burst of pushes it can sit one commit behind until the next push; its notes say which commit it holds.
+  same names. It now stays at the last merge built before then; its notes say which commit it holds.
   While it is being replaced (tens of seconds) a file can be briefly missing, or newer than its `SHA256SUMS`:
   if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.
 - **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
