@@ -2550,7 +2550,7 @@ impl NetworkSession {
                     };
                     let observed = core.observed_spent_outpoints();
                     let now: HashMap<Txid, Winner> =
-                        beaten_unrecorded(&h.txs, &recorded, observed, chainlock, pays)
+                        beaten_unrecorded(&h.txs, recorded, observed, chainlock, pays)
                             .into_iter()
                             .collect();
                     let mut groups: BTreeMap<Winner, Vec<Txid>> = BTreeMap::new();

@@ -26,6 +26,21 @@ export const transfer = {
   invalidAmount: "Enter an amount.",
   notEnoughSpendable: "Not enough spendable Dash: {amount} available.",
   why: { amount: "Enter an amount first.", max: "Working out the most you can move…" },
+  /** Max from the Dash wallet (one lock of every coin in its main account, the fee out of it): what it
+   * leaves there, before Confirm. */
+  maxLeft: "{left} stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  maxArriving: "{arriving} still arriving stays in your Dash wallet. Move it once it confirms.",
+  /** Why Max from the Dash wallet can't run. */
+  maxLocked: "Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.",
+  /** `count` is how many coins the wallet's main account holds. */
+  maxTooMany: "Max needs at most 50 coins; this wallet has {count}. Enter an amount instead.",
+  maxMixing: "Max can't run while mixing. Stop mixing first, or enter an amount.",
+  maxMoveRunning: "Another move of your coins is running. Try Max again when it's done.",
+  maxChanged: "Your Dash wallet changed since this was worked out. Review the amount again.",
+  /** Max from the Dash wallet below the smallest amount: `amount` is what Max can move, `min` the
+   * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
+  maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
@@ -153,6 +168,8 @@ export const transfer = {
     confirm: {
       quoting: "Working out the fee…",
       quoteFailed: "The fee could not be worked out.",
+      /** Max from the Dash wallet: `total` is everything the lock spends, `fee` its network fee. */
+      maxAll: "Move {total} from your Dash wallet to your Platform address? That's everything Max can move. The network fee (about {fee}) comes out of it.",
       rows: {
         from: "From",
         fromValue: "Your Dash wallet",
@@ -250,6 +267,8 @@ export const transfer = {
     confirm: {
       quoting: "Working out the fee…",
       quoteFailed: "The fee could not be worked out.",
+      /** Max from the Dash wallet: `total` is everything the lock spends, `fee` its network fee. */
+      maxAll: "Move {total} from your Dash wallet to Shielded? That's everything Max can move. The network fee (about {fee}) comes out of it.",
       amount: "Amount",
       fee: "Network fee",
       coreFee: "Core network fee",
