@@ -265,13 +265,16 @@ impl ProvedState {
             migrated: upgrade.map(|u| u != Upgrade::NotStarted),
             backup: crate::snapshot::snapshot_state(network_dir)
                 .ok()
-                .map(|s| match s {
-                    SnapshotState::Verified(info)
-                        if crate::snapshot::of_live(network_dir, &info) != Some(true) =>
-                    {
-                        BackupState::Unverified
-                    }
-                    s => BackupState::from(&s),
+                .and_then(|s| match s {
+                    SnapshotState::Verified(info) => crate::snapshot::of_live(network_dir, &info)
+                        .map(|of| {
+                            if of {
+                                BackupState::Verified
+                            } else {
+                                BackupState::Unverified
+                            }
+                        }),
+                    s => Some(BackupState::from(&s)),
                 }),
             unchanged: match (upgrade, wrote) {
                 (Some(Upgrade::NotStarted), true) => None,

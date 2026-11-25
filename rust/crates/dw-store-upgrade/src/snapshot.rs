@@ -419,13 +419,19 @@ pub(crate) fn live_state(
     } else {
         0
     };
-    let fork_versions = if has_table(wallet, fork::FORK_HISTORY)? {
-        wallet
-            .prepare(&format!("SELECT version FROM {}", fork::FORK_HISTORY))?
-            .query_map([], |r| r.get::<_, u32>(0))?
-            .collect::<rusqlite::Result<_>>()?
+    let history = if has_table(wallet, fork::FORK_HISTORY)? {
+        Some(fork::FORK_HISTORY)
+    } else if has_table(wallet, fork::FORK_HISTORY_RETIRED)? {
+        Some(fork::FORK_HISTORY_RETIRED)
     } else {
-        BTreeSet::new()
+        None
+    };
+    let fork_versions = match history {
+        Some(table) => wallet
+            .prepare(&format!("SELECT version FROM {table}"))?
+            .query_map([], |r| r.get::<_, u32>(0))?
+            .collect::<rusqlite::Result<_>>()?,
+        None => BTreeSet::new(),
     };
     let between = !fork_versions.is_empty()
         && refinery_max <= fork::FORK_REFINERY_MAX

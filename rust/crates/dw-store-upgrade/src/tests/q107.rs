@@ -214,6 +214,11 @@ fn t4_the_true_snapshot_is_reused_and_restores() {
     let reused = start_opens(&f, None, true);
     assert_eq!(reused.dir(), s.dir());
     assert_plain_reopen(&f);
+    assert_eq!(
+        ProvedState::read(&f.net, false).backup,
+        Some(crate::copy::BackupState::Verified),
+        "still this wallet's backup once the fork history is retired"
+    );
     let SnapshotState::Verified(newest) = snapshot_state(&f.net).unwrap() else {
         panic!("the true snapshot stays verified");
     };
