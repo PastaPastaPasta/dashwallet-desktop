@@ -40,6 +40,7 @@ const SAMPLES: Samples = {
     data: { kind: "networkBusy", flows: ["registration"], stalled: false, mixing: false, broadcast: false, draining: false },
   },
   networkCloseRefused: { code: "wallet", data: { kind: "networkCloseRefused", reason: "walletOpening" } },
+  shieldedHold: { code: "shielded_spend_unresolved", data: { kind: "shieldedHold", reason: "inFlight" } },
   updateBusy: { code: "app.update_busy", data: { kind: "updateBusy", reason: "payment" } },
   networkSwitch: {
     code: "app.network_switch_failed",

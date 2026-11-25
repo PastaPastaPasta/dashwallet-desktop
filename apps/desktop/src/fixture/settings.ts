@@ -102,6 +102,10 @@ export interface SettingsWorld {
   /** Why the next `unload_wallet` is refused (DEC-1046, E1 r2): a shielded payment is still being
    * confirmed, or a wallet is still opening. `null`: it closes. */
   unloadRefusal: "unresolved" | "opening" | null;
+  /** Why the next `remove_wallet` is refused (Q86 Q-PURGE C2): its `shieldedHold` reason, or
+   * `keysRemoved` for the last check's refusal, with none, after the seed was deleted. `null`: it
+   * removes. */
+  removeRefusal: "inFlight" | "carriedOver" | "keysRemoved" | null;
   /** Wallets left out of the load-on-startup list. */
   notAtStartup: string[];
   backups: BackupSummary[];
@@ -131,6 +135,7 @@ export function newSettingsWorld(): SettingsWorld {
     ui: { ...DEFAULT_UI_SETTINGS },
     closed: [],
     unloadRefusal: null,
+    removeRefusal: null,
     notAtStartup: [],
     backups: [],
     backupFailures: [],
@@ -311,6 +316,14 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       const { world } = ctx;
       wallet(world, walletId);
       if (!grant(world, grantId, walletId, ["wipe"])) throw fail("vault.grant_invalid", "grant invalid");
+      const held = world.settings.removeRefusal;
+      if (held === "keysRemoved") {
+        useGrant(world, grantId);
+        delete world.phrases[walletId];
+        world.lock = { ...world.lock, walletsWithSecrets: world.lock.walletsWithSecrets.filter((id) => id !== walletId) };
+        throw fail("shielded_spend_unresolved", "a shielded payment is still being confirmed");
+      }
+      if (held) throw fail("shielded_spend_unresolved", "a shielded payment from this wallet may still be going through", { kind: "shieldedHold", reason: held });
       useGrant(world, grantId);
       world.wallets = world.wallets.filter((x) => x.summary.walletId !== walletId);
       delete world.phrases[walletId];

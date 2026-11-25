@@ -243,6 +243,7 @@ impl From<dw_engine::EngineError> for WalletError {
             | E::StuckFunding(_)
             // The frozen Swift shells have no shielded funds (DEC-1046).
             | E::ShieldedSpendUnresolved
+            | E::ShieldedSpendHeld(_)
             | E::Internal(_) => Self::Internal { detail },
         }
     }

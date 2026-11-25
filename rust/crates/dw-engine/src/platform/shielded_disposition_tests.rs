@@ -151,11 +151,10 @@ fn an_unread_outcome_holds_the_close_until_a_pass_reads_it() {
     refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
     assert!(session.live().is_ok(), "the session stays open");
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(engine.block_on(async move {
-        (s.platform
-            .remove_from_manager(&s.leases, &m, wallet, StoredSpends::Refuse))
-        .await
-    }));
+    refused(
+        engine
+            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
+    );
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
     for n in [1, 2] {
         assert_eq!(
@@ -315,11 +314,10 @@ fn an_unread_journal_holds_the_close() {
     assert!(!session.leases.journal_ready());
     refused(engine.block_on(session.unload_wallet(wallet)));
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(engine.block_on(async move {
-        (s.platform
-            .remove_from_manager(&s.leases, &m, wallet, StoredSpends::Refuse))
-        .await
-    }));
+    refused(
+        engine
+            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
+    );
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
 
     session.leases.load_journal(journal, Vec::new(), Vec::new());
@@ -336,11 +334,11 @@ fn an_unread_journal_holds_the_close() {
 /// A row of the fork's `shielded_spend_dispositions`: transition `n`
 /// (activity `[n; 32]`), its disposition and reason, the notes it holds
 /// and `released_by_scan`.
-type ForkRow = (u8, &'static str, Option<&'static str>, Vec<[u8; 32]>, i64);
+pub(crate) type ForkRow = (u8, &'static str, Option<&'static str>, Vec<[u8; 32]>, i64);
 
 /// Writes `rows` of `wallet` into the fork's table in the shielded store,
 /// created with the fork's schema.
-fn fork_dispositions(path: &Path, wallet: WalletId, rows: &[ForkRow]) {
+pub(crate) fn fork_dispositions(path: &Path, wallet: WalletId, rows: &[ForkRow]) {
     let db = rusqlite::Connection::open(path).unwrap();
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS shielded_spend_dispositions (
@@ -389,7 +387,7 @@ fn fork_dispositions(path: &Path, wallet: WalletId, rows: &[ForkRow]) {
 }
 
 /// Every row of the fork's table, as stored.
-fn fork_rows(path: &Path) -> Vec<(Vec<u8>, Vec<u8>, i64)> {
+pub(crate) fn fork_rows(path: &Path) -> Vec<(Vec<u8>, Vec<u8>, i64)> {
     let db = rusqlite::Connection::open(path).unwrap();
     let mut rows = db
         .prepare(
@@ -451,11 +449,10 @@ fn a_fork_held_spend_holds_the_close_after_the_upgrade() {
     refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
     assert!(session.live().is_ok(), "the session stays open");
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(engine.block_on(async move {
-        (s.platform
-            .remove_from_manager(&s.leases, &m, wallet, StoredSpends::Refuse))
-        .await
-    }));
+    refused(
+        engine
+            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
+    );
 
     spent_seen(&session, wallet, &unresolved);
     assert_eq!(markers(&engine, &session, wallet), [[2; 32]]);

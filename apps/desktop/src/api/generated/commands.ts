@@ -741,6 +741,9 @@ export function importWatchOnly(xpub: string, options: WatchOnlyOptions): Promis
 /**
  * Deletes the wallet's vault records, then unloads it and deletes its
  * state and metadata (QT-101, IOS-109). Needs a `wipe` grant for it.
+ * Refused with `shielded_spend_unresolved` (data `shieldedHold`: why)
+ * before anything changes while the wallet holds a shielded payment
+ * whose result is not known.
  */
 export function removeWallet(walletId: string, grantId: string): Promise<null> {
   return invoke<null>("remove_wallet", { walletId, grantId });

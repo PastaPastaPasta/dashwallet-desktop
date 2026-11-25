@@ -787,8 +787,15 @@ checkpoint does not run; the WAL replays at the next open. The next launch rehyd
 reservations and all: its stored transition, decodable as the library's re-send decodes it, its `unresolved_spends`
 entry and its journal record (not its history row, above). dw-ffi, frozen in 0.1, reports `shielded_spend_unresolved`
 as `wallet` (`EngineError`) or `internal` (`WalletError`), with the same detail. Removing the wallet (the
-user's `remove_wallet`, under its wipe grant) deletes its spends with it. Item 1, on the fork line, replaces this with
-an upstream detach.
+user's `remove_wallet`, under its wipe grant) is refused the same way while it holds such a spend (Q86 Q-PURGE C2), and
+also while `shielded.sqlite` has a `shielded_pending_spends` row of the wallet, read from disk so a store not opened
+this session counts, or cannot be read: `shielded_spend_unresolved` with data `shieldedHold`, `inFlight` (a stored or
+reserved spend) or `carriedOver` (a DEC-1057 or fork-held mark, or a marker, journal, outcome or store that does not
+read, or a row the open store did not load), checked after the grant is checked and before anything of the wallet is
+revoked, redeemed or deleted, and again before its vault records go. A fork disposition the open's drain moved into
+the journal (`shielded_drained_hold`) does not refuse it: the removal leaves those rows, a later bind of the wallet
+holds their notes again, and the dispatch hook refuses any spend of them. Item 1,
+on the fork line, replaces this with an upstream detach.
 
 **While the dispatch journal is unavailable** (version 69: `dispatch.sqlite` could not be opened or is of a newer
 schema; the session still opens), the calls that change which wallets the session knows are refused with `storage`
@@ -813,7 +820,8 @@ keeps it. `shielded_status.unrecorded_spends` names each marker (`activity_id`, 
 restart may still go through; confirm to send anyway", before any quote, note selection or key use. Shields
 (`shield_from_core`, `resume_shield`) are not gated. A marker clears only when the wallet's store receives a proved
 scan's `nullifiers_spent` covering every one of its nullifiers (spent notes found by the sync pass, or a later spend's
-proved result); a partial set clears nothing. The user's `remove_wallet` deletes it; nothing else does.
+proved result); a partial set clears nothing. Nothing else does: the user's `remove_wallet` is refused while one
+stands (above).
 
 **Still syncing (DEC-1058 #4).** A shielded call refused for something that is not established yet, a wait rather than
 a Platform failure, is `shielded.not_synced{reason}`, never a Platform refusal, so the UI shows "Shielded is still syncing; try again
@@ -4359,7 +4367,7 @@ renames or reshapes them takes the next version bump:
     `platform.broadcast_unknown`. The marker refuses Close Wallet and the network close or switch
     (`shielded_spend_unresolved`), shows in `ShieldedStatus.unrecorded_spends` (`UnrecordedSpend`), and gates every
     send and unshield of the wallet behind `confirm_unrecorded` (`shielded.unrecorded_spend`); it clears only when a
-    proved scan reports all its nullifiers spent, or with the user's removal (§2.13 "Unrecorded spends").
+    proved scan reports all its nullifiers spent (§2.13 "Unrecorded spends"); the user's removal is refused meanwhile.
 74. **Shielded still syncing (DEC-1058 #4, version 48).** `shielded.not_synced` carries `reason` (`ShieldedSyncWait`:
     `account`, `tree`, `journal`, `core`, `startup`; `account` for now also covers a first bind a locked, mixing-only
     or watch-only vault cannot serve, which needs the user and gets its own refusal in 0.1.x), and the refusals that wait for something still syncing use it

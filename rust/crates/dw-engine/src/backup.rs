@@ -949,12 +949,7 @@ impl NetworkSession {
         // A wallet holding a stored shielded spend stays (DEC-1046), as does
         // one with a marked spend (DEC-1057).
         let removal = (self.platform)
-            .remove_from_manager(
-                &self.leases,
-                &live.manager,
-                id,
-                crate::platform::runtime::StoredSpends::Refuse,
-            )
+            .remove_from_manager(&self.leases, &live.manager, id)
             .await;
         // Again, now that it is out of the manager (or failed to leave it):
         // a scan begun since the first forget passed the wallet check, and a

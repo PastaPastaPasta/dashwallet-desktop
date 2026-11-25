@@ -187,9 +187,16 @@ export const settings = {
     removeTitle: "Remove wallet",
     removeConfirm: "Remove wallet",
     removeQuestion:
-      "Remove the wallet {name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back. A shielded payment it already sent may still go through, and its pending record is deleted with the wallet.",
+      "Remove the wallet {name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back.",
     removeWatchOnlyQuestion: "Remove the watch-only wallet {name} from this computer? Its history and settings are deleted. Its extended public key adds it again.",
     removed: "{name} was removed.",
+    removeHeldTitle: "This wallet can't be removed yet",
+    removeHeldInFlight: "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed.",
+    removeHeldCarriedOver:
+      "Dash Wallet doesn't know whether a Shielded payment this wallet made in an earlier test build went through, so nothing was removed. You can remove this wallet once this version can send from Shielded.",
+    removeHeldKeysRemoved:
+      "This wallet's keys were removed from this computer, but the wallet stays until Dash Wallet knows what happened to a Shielded payment from it. Try removing it again later.",
+    removeHeldOk: "OK",
     xpubTitle: "Extended public key",
     xpubHint: "Anyone with this key can see every address and payment of this account, but cannot spend.",
     xpubQr: "QR code of the extended public key of {name}",

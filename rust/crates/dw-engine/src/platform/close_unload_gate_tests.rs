@@ -21,16 +21,16 @@ use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
 };
 
-const ACTIVITY: [u8; 32] = [0x51; 32];
-const ANCHOR: [u8; 32] = [0xa5; 32];
-const NULLIFIER: [u8; 32] = [0x15; 32];
+pub(super) const ACTIVITY: [u8; 32] = [0x51; 32];
+pub(super) const ANCHOR: [u8; 32] = [0xa5; 32];
+pub(super) const NULLIFIER: [u8; 32] = [0x15; 32];
 
 struct NullSink;
 impl crate::EventSink for NullSink {
     fn emit(&self, _: crate::EngineEvent) {}
 }
 
-fn engine_at(root: &Path) -> Engine {
+pub(super) fn engine_at(root: &Path) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: root.join("data"),
@@ -46,12 +46,12 @@ fn engine_at(root: &Path) -> Engine {
     .unwrap()
 }
 
-fn open(engine: &Engine) -> Result<Arc<NetworkSession>, EngineError> {
+pub(super) fn open(engine: &Engine) -> Result<Arc<NetworkSession>, EngineError> {
     engine.block_on(engine.open_network(DashNetwork::Regtest, options()))
 }
 
 /// A new vault and the "abandon … about" wallet, its viewing key bound.
-fn launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
+pub(super) fn launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
     let session = open(engine).unwrap();
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
@@ -74,7 +74,7 @@ fn launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
     (session, wallet)
 }
 
-fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
+pub(super) fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
     engine
         .block_on(on_pool(session, wallet, |_, lib| async move {
             Ok(pool::ShieldedLib::bind(&lib).await?)
@@ -82,12 +82,12 @@ fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> boo
         .unwrap()
 }
 
-fn subwallet(wallet: WalletId) -> SubwalletId {
+pub(super) fn subwallet(wallet: WalletId) -> SubwalletId {
     SubwalletId::new(wallet.0, dw_vault::SHIELDED_ACCOUNT)
 }
 
 /// One shielded transfer of unknown result, as the library stores it.
-fn redrive() -> PendingRedrive {
+pub(super) fn redrive() -> PendingRedrive {
     PendingRedrive {
         activity_id: ACTIVITY,
         st_bytes: transfer(),
@@ -126,11 +126,11 @@ fn transfer() -> Vec<u8> {
 }
 
 /// The reservation [`redrive`] holds.
-fn reservation() -> StalePendingSpend {
+pub(super) fn reservation() -> StalePendingSpend {
     (NULLIFIER, ANCHOR, Some(ACTIVITY), Some(ANCHOR_HEIGHT))
 }
 
-fn with_store<T: Send + 'static>(
+pub(super) fn with_store<T: Send + 'static>(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     f: impl FnOnce(&mut FileBackedShieldedStore) -> T + Send + 'static,
@@ -144,7 +144,7 @@ fn with_store<T: Send + 'static>(
 }
 
 /// Stores [`redrive`] for `wallet` as the library's spend call does.
-fn store_redrive(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+pub(super) fn store_redrive(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
     with_store(engine, session, move |store| {
         reserve_and_record(store, subwallet(wallet), redrive());
     });
@@ -152,7 +152,7 @@ fn store_redrive(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletI
 
 /// `wallet`'s rows of `shielded_pending_spends` on disk: activity, anchor,
 /// nullifiers, transition, attempts.
-fn stored_rows(data_dir: &Path, wallet: WalletId) -> Vec<StoredRow> {
+pub(super) fn stored_rows(data_dir: &Path, wallet: WalletId) -> Vec<StoredRow> {
     let db = rusqlite::Connection::open_with_flags(
         data_dir.join(pool::SHIELDED_DB_FILE),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -172,10 +172,10 @@ fn stored_rows(data_dir: &Path, wallet: WalletId) -> Vec<StoredRow> {
     .collect()
 }
 
-type StoredRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64);
+pub(super) type StoredRow = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64);
 
 /// The row [`store_redrive`] writes.
-fn redrive_row() -> Vec<StoredRow> {
+pub(super) fn redrive_row() -> Vec<StoredRow> {
     let r = redrive();
     vec![(
         r.activity_id.to_vec(),
@@ -207,7 +207,7 @@ fn both_refuse(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId,
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
 }
 
-fn holds(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
+pub(super) fn holds(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move { pool::holds_unresolved(&s.leases, &m, wallet).await })
 }
