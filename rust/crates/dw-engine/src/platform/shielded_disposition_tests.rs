@@ -448,7 +448,7 @@ fn a_proved_outcome_outlives_the_library_unresolved_listing() {
     let (session, wallet) = first_launch(&engine);
     store_spends(&engine, &session, wallet);
     let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
-    resolve(&engine, &session, wallet, 1, cancelled.clone());
+    resolve(&engine, &session, wallet, 1, cancelled);
     resolve(&engine, &session, wallet, 2, cancelled);
     pass(&engine, &session);
     let library_like = engine.block_on(session.leases.settle_shielded_artifact(
