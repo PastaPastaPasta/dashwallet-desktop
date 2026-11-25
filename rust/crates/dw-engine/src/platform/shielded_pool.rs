@@ -2628,8 +2628,9 @@ impl ShieldedDispatch for EngineDispatch {
     /// Accepts a spend before its first broadcast: the session is open,
     /// each note it selected is a note of the account (a padding action's
     /// nullifier is not one) and they are exactly the notes the library
-    /// reserved for it, and its artifact is in the dispatch journal when
-    /// this returns `Ok`.
+    /// reserved for it, none of them is named by an imported spend whose
+    /// outcome the journal has not recorded yet ([`undecided_import_note`]),
+    /// and its artifact is in the dispatch journal when this returns `Ok`.
     async fn dispatch(&self, payload: ShieldedDispatchPayload) -> Result<(), DispatchRefused> {
         let (session, coordinator) = self.open()?;
         let subwallet = Self::account(payload.wallet_id, payload.account_index)?;
@@ -2681,6 +2682,12 @@ impl ShieldedDispatch for EngineDispatch {
                 "the spend is not the one the library stored for the activity",
             ));
         }
+        let wallet = WalletId(payload.wallet_id);
+        if undecided_import_note(&session, &coordinator, wallet, subwallet, &selected).await? {
+            return Err(refused(
+                "the spend takes a note of an imported spend whose outcome is not recorded yet",
+            ));
+        }
         let from_shielded = match payload.kind {
             ShieldedDispatchKind::Unshield => Some(unshield_record(&session, &payload)?),
             _ => None,
@@ -2698,7 +2705,6 @@ impl ShieldedDispatch for EngineDispatch {
             selected: selected.into_iter().collect(),
             published: payload.published_nullifiers,
         };
-        let wallet = WalletId(payload.wallet_id);
         // A contact payout's row names the transition before its artifact
         // exists (C-funding P6).
         let named = (session
@@ -3741,6 +3747,45 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
         return Ok(Some(FREED_UNKNOWN));
     }
     Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// Whether a spend selecting `selected` takes a note named by an open
+/// imported spend of `wallet` that the journal has not marked
+/// [`FREED_UNKNOWN`], while the library's store has a history row of it
+/// (#931). That row lives in memory only: until the journal holds the
+/// spend's settlement, a restart can bring its record back from disk over
+/// notes the new spend spent, and read it executed. So the new spend waits
+/// for the pass that writes the mark. With no row (a restart with no record
+/// left), nothing reads the import again and its notes are free. A
+/// journal or store that cannot be read refuses the spend.
+async fn undecided_import_note(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: WalletId,
+    subwallet: SubwalletId,
+    selected: &BTreeSet<[u8; 32]>,
+) -> Result<bool, DispatchRefused> {
+    let artifacts = (session.leases.shielded_artifacts(wallet).await)
+        .map_err(|e| refused(format!("the shielded artifacts could not be read: {e}")))?;
+    let store = coordinator.store().read().await;
+    for artifact in artifacts
+        .iter()
+        .filter(|a| imported(a) && !freed_unknown(a))
+    {
+        let row = (store.get_activity_by_entry_id(subwallet, &artifact.activity)).map_err(|e| {
+            refused(format!(
+                "an imported spend's history row could not be read: {e}"
+            ))
+        })?;
+        let Some(row) = row else {
+            continue;
+        };
+        let named = (artifact.selected.iter().map(|(n, _)| n)).chain(&row.spent_nullifiers);
+        if named.into_iter().any(|n| selected.contains(n)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The journal's settlement of an imported spend whose notes came free with
