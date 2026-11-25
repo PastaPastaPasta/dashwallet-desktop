@@ -205,12 +205,12 @@ fn a_claim_the_rule_cant_decide_is_kept_after_a_restart() {
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
     let coin = OutPoint::new(funding.txid(), 0);
     assert_eq!(
-        key_wallet::transaction_checking::verify_input_authorization(
+        crate::input_authorization::verify_input_authorization(
             &claim,
             0,
             &funding.output[coin.vout as usize],
         ),
-        Err(key_wallet::transaction_checking::SpendAuthorizationError::UnsupportedScriptSig)
+        Err(crate::input_authorization::SpendAuthorizationError::UnsupportedScriptSig)
     );
     mempool(&engine, &session, id, &claim);
     let payment = send(
@@ -253,7 +253,7 @@ fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
     let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
     assert_eq!(
-        key_wallet::transaction_checking::verify_input_authorization(&claim, 0, &funding.output[0]),
+        crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
         Ok(false)
     );
     mempool(&engine, &session, id, &claim);

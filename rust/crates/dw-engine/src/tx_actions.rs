@@ -790,7 +790,7 @@ fn settled_in_tree(
 }
 
 /// Whether every instruction of `script` parses and pushes bytes, as
-/// [`key_wallet::transaction_checking::verify_input_authorization`] reads
+/// [`crate::input_authorization::verify_input_authorization`] reads
 /// a push-only input script.
 pub(crate) fn push_only(script: &dashcore::Script) -> bool {
     (script.instructions()).all(|i| {
@@ -810,7 +810,7 @@ pub(crate) fn push_only(script: &dashcore::Script) -> bool {
 /// not push-only, whose key or signature the script could build as it
 /// runs, keeps the claim.
 ///
-/// [`verify_input_authorization`]: key_wallet::transaction_checking::verify_input_authorization
+/// [`verify_input_authorization`]: crate::input_authorization::verify_input_authorization
 fn unsigned_claim(
     txs: &HashMap<Txid, TxEntry>,
     core: &ManagedWalletInfo,
@@ -837,7 +837,7 @@ fn unsigned_claim(
         else {
             return false;
         };
-        key_wallet::transaction_checking::verify_input_authorization(&e.tx, n, output) == Ok(false)
+        crate::input_authorization::verify_input_authorization(&e.tx, n, output) == Ok(false)
     })
 }
 
