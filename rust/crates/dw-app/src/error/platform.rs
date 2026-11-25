@@ -127,6 +127,8 @@ codes! {
         CoinsChanged = "credits.coins_changed",
         MixingActive = "credits.mixing_active",
         MoveRunning = "credits.move_running",
+        PreflightRefused = "credits.preflight_refused",
+        RulesUnsupported = "credits.rules_unsupported",
     }
 }
 
@@ -536,6 +538,8 @@ impl From<CreditsError> for AppError {
             C::CoinsChanged => (CreditsCode::CoinsChanged, None),
             C::MixingActive => (CreditsCode::MixingActive, None),
             C::MoveRunning => (CreditsCode::MoveRunning, None),
+            C::PreflightRefused => (CreditsCode::PreflightRefused, None),
+            C::RulesUnsupported => (CreditsCode::RulesUnsupported, None),
             C::Shielded(e) => return e.into(),
             C::Platform(e) => return e.into(),
         };
@@ -725,6 +729,8 @@ mod tests {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::PreflightRefused,
+            CreditsError::RulesUnsupported,
             CreditsError::Shielded(ShieldedError::NotActive {
                 protocol_version: 11,
                 activation_version: 12,
