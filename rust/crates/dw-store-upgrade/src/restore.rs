@@ -1212,6 +1212,17 @@ fn release_attempt(root: &Path, after: &Path) -> io::Result<()> {
             .collect();
         fsx::write_durable(&mark, kept.as_bytes())?;
     }
+    remove_record(root)
+}
+
+/// Remove the attempt record; a failure must stop the run (Q102 102-1).
+fn remove_record(root: &Path) -> io::Result<()> {
+    fault("restore.remove_record").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "injected record removal failure",
+        )
+    })?;
     fsx::remove_durable(&root.join(RESTORE_ATTEMPT))
 }
 
@@ -1780,8 +1791,7 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
 /// Resume from the journal, before any store opens (design §5).
 fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
     let root = root(network_dir);
-    fsx::remove_durable(&root.join(RESTORE_ATTEMPT))
-        .map_err(|e| incomplete(&e, "remove a stale attempt record"))?;
+    remove_record(&root).map_err(|e| incomplete(&e, "remove a stale attempt record"))?;
     sweep_keep_scratch(&root);
     let (journal, snapshot) = load_journal(network_dir, now)?;
     match s4_state(network_dir, &journal, &snapshot)

@@ -822,6 +822,57 @@ fn seed_earlier_restore(u: &Upgraded) {
     }
 }
 
+/// Q102 102-1: a record that can't be removed stops the run with the journal
+/// still there, wherever a run removes it after the journal (finish, a
+/// resume's stale record, keep); the next start finishes and leaves no record
+/// behind.
+#[test]
+fn a_record_removal_failure_is_restore_incomplete() {
+    let fails = |u: &Upgraded, skip: u32, at: SystemTime, what: &str| {
+        arm_fault("restore.remove_record", skip);
+        let err = u.run(at).unwrap_err();
+        disarm_fault();
+        assert!(
+            matches!(
+                err,
+                StoreUpgradeError::RestoreIncomplete {
+                    journal_written: true,
+                    ..
+                }
+            ),
+            "{what}: {err:?}"
+        );
+        assert!(u.root().join(RESTORE_JOURNAL).exists(), "{what}");
+    };
+    let finishes = |u: &Upgraded, what: &str| {
+        let info = u.run(later(180)).unwrap().unwrap();
+        assert!(info.resumed, "{what}");
+        for gone in [RESTORE_JOURNAL, RESTORE_ATTEMPT, RESTORE_REQUESTED] {
+            assert!(!u.root().join(gone).exists(), "{what}: {gone}");
+        }
+        assert!(u.root().join(RESTORED_MARK).exists(), "{what}");
+        assert!(!info.after_dir.join("ATTEMPT-ID").exists(), "{what}");
+        info
+    };
+
+    let u = upgraded();
+    u.request();
+    fails(&u, 0, now(), "finish");
+    write_attempt_record(&u, &[]);
+    fails(&u, 0, later(60), "a resume's stale record");
+    assert!(u.root().join(RESTORE_ATTEMPT).exists(), "resume");
+    let info = finishes(&u, "after finish and resume");
+    assert_eq!(u.live(), u.before());
+    assert!(!info.kept_live);
+
+    let u = upgraded();
+    u.stop_at_s4();
+    pay_in_wal_only(&u.wallet());
+    fails(&u, 1, later(60), "keep");
+    let info = finishes(&u, "after keep");
+    assert!(info.kept_live);
+}
+
 /// C1: a record that outlived a finished restore (a failed unlink, or put
 /// there by hand) never removes that restore's after set or its mark.
 #[test]
