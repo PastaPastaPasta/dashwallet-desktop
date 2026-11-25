@@ -2774,7 +2774,13 @@ impl NetworkSession {
                 tracing::info!(%wallet, root = %t, "a beaten payment kept to recheck is void");
                 continue;
             }
-            work.push((vec![t], winner, BTreeSet::new(), Some(r), Default::default()));
+            work.push((
+                vec![t],
+                winner,
+                BTreeSet::new(),
+                Some(r),
+                Default::default(),
+            ));
         }
         work
     }
