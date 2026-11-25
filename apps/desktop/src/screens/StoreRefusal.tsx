@@ -11,8 +11,8 @@ import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { Model, useModel } from "../onboarding/model";
-import { t, useT, type Translate } from "../i18n";
-import { flatten } from "../i18n/core";
+import { currentLanguage, t, useT, type Translate } from "../i18n";
+import { acrossParagraphs, flatten } from "../i18n/core";
 import { en } from "../i18n/en";
 import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
@@ -25,14 +25,26 @@ type LooseTranslate = (key: string, values?: Record<string, string>) => string;
 /** The catalog's text for a `storeUpgrade.*` key in the language in use; for any other key, or one the
  * catalog lacks, the engine's English: never other copy. */
 function textFor(tr: Translate, key: string, english: string, folder: string): string {
-  return key.startsWith("storeUpgrade.") && ENGLISH.has(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
+  return inCatalog(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
 }
 
-/** A refusal's text in the language: its lines by their keys, joined as the engine joins them; the
- * engine's text when it sends no lines. */
-function screenText(tr: Translate, screen: StoreScreen, folder: string): string {
-  const [intro, ...rest] = screen.lines.map((l) => textFor(tr, l.key, l.text, folder));
-  return intro === undefined ? textFor(tr, screen.textKey, screen.text, folder) : `${intro}: ${rest.join(" ")}`;
+const inCatalog = (key: string) => key.startsWith("storeUpgrade.") && ENGLISH.has(key);
+
+/** Left-to-right isolate (U+2066 … U+2069), around English standing in for a right-to-left language. */
+const LRI = "\u2066";
+const PDI = "\u2069";
+
+/** Lines joined as the engine joins a refusal's (`RefusedScreen::text`); `null` for none. */
+const joined = (texts: readonly string[]): string | null => (texts.length === 0 ? null : `${texts[0]}: ${texts.slice(1).join(" ")}`);
+
+/** A refusal's text in the language: its lines by their keys, joined as the engine joins them. A line the
+ * catalog lacks keeps the engine's English, isolated left to right in a right-to-left language. The
+ * engine's text, unchanged, when it sends no lines or lines that don't join to it. */
+export function screenText(tr: Translate, screen: StoreScreen, folder: string, rtl: boolean): string {
+  const lines = screen.lines ?? [];
+  if (joined(lines.map((l) => l.text)) !== screen.text) return screen.text;
+  const english = (text: string) => (rtl ? `${LRI}${acrossParagraphs(text, LRI, PDI)}${PDI}` : text);
+  return joined(lines.map((l) => (inCatalog(l.key) ? textFor(tr, l.key, l.text, folder) : english(l.text)))) ?? screen.text;
 }
 
 export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore";
@@ -264,7 +276,7 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
   // Report a problem always has the issues warning under it (MG); a screen whose one hint is another line gets it too.
   const warn = buttons.some((b) => b.action === "report") && screen.hint?.key !== ISSUES_HINT;
   return (
-    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={screenText(tr, screen, folder)} problem={problem} failedLink={failedLink}>
+    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={screenText(tr, screen, folder, currentLanguage().dir === "rtl")} problem={problem} failedLink={failedLink}>
       <Buttons id={id} testId="store-refused" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {warn && (
         <p className="field-hint" data-testid="store-refused-issues-hint">

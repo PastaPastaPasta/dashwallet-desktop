@@ -22,7 +22,7 @@ import { buildWorld } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { flatten } from "../i18n/core";
 import { en } from "../i18n/en";
-import { buttonAction, OpenFailureActions, RESTORE_BUTTONS, restoreButtonKey, RestoreConfirmView, StorageInUseView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
+import { buttonAction, OpenFailureActions, RESTORE_BUTTONS, restoreButtonKey, RestoreConfirmView, screenText, StorageInUseView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
@@ -146,11 +146,13 @@ describe("the store refusal screen", () => {
     for (const [key, english] of named) expect(ENGLISH.get(key), key).toBe(english);
   });
 
-  it("joins the text's lines as the engine does", () => {
-    for (const [, { screen }] of FIXTURES) {
-      const [intro, ...rest] = screen.lines.map((l) => l.text);
-      expect(`${intro}: ${rest.join(" ")}`).toBe(screen.text);
-    }
+  it("marks the keys copy.rs lists as pending MG as pending in its catalog", () => {
+    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+    const catalog = readFileSync(resolve(import.meta.dirname, "../i18n/catalog/storeUpgrade.ts"), "utf8");
+    const pending = [.../pub const PENDING_MG: &\[&str\] = &\[([^\]]*)\]/.exec(rust)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const marked = [...catalog.matchAll(/\/\/ Pending MG: [^\n]*\n\s*(\w+):/g)].map((m) => m[1]);
+    expect(pending.map((k) => k.split(".").pop()).sort()).toEqual(marked.sort());
+    for (const key of pending) expect(ENGLISH.has(key), key).toBe(true);
   });
 
   it("has the engine's restore copy in its catalog verbatim, the keys copy.rs names included", () => {
@@ -215,6 +217,53 @@ describe("the store refusal screen", () => {
     expect(html).toContain(FOLDER);
     expect(html).toContain('data-testid="store-refused-hint">A later hint.</p>');
   });
+
+  it("joins its lines as the engine does, each in the language", () => {
+    const screen: StoreScreen = {
+      ...STORE_SCREENS.refusedSupport(FOLDER).screen,
+      text: "An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.",
+      lines: [
+        { key: "storeUpgrade.later.intro", text: "An intro" },
+        { key: "storeUpgrade.refused.detail.tooNew", text: "it was written by a newer version of Dash Wallet." },
+        { key: "storeUpgrade.refused.wayOut.support", text: "Choose Report a problem." },
+      ],
+    };
+    expect(screenText(t, screen, FOLDER, false)).toBe("An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.");
+    expect(screenText(t, screen, FOLDER, true)).toBe("\u2066An intro\u2069: it was written by a newer version of Dash Wallet. Choose Report a problem.");
+  });
+
+  it("shows the engine's text unchanged for no lines, one line, or lines that don't join to it", () => {
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    const whole = STORE_SCREENS.refusedPrevious(FOLDER);
+    const screens: StoreScreen[] = [
+      { ...whole.screen, lines: [] },
+      { ...whole.screen, text: "A later text.", lines: [{ key: "storeUpgrade.refused.intro", text: "A later text." }] },
+      { ...whole.screen, lines: whole.screen.lines.slice(1) },
+    ];
+    for (const screen of screens) {
+      expect(screenText(t, screen, FOLDER, false)).toBe(screen.text);
+      expect(renderRefusal({ ...whole, screen })).toContain(`data-testid="store-refused-text">${escaped(screen.text)}</p>`);
+    }
+  });
+
+  for (const language of ["en-XA", "ar-XB"] as const)
+    it(`translates every line the catalog has under ${language}, and keeps the engine's English for the one it lacks`, () => {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+      const whole = STORE_SCREENS.refusedPrevious(FOLDER);
+      const lines = whole.screen.lines.map((l, i) => (i === 1 ? { ...l, key: "storeUpgrade.later.detail" } : l));
+      const html = renderRefusal({ ...whole, screen: { ...whole.screen, lines } });
+      const kept = escaped(lines[1].text);
+      expect(html).toContain(language === "ar-XB" ? `\u2066${kept}\u2069` : kept);
+      if (language === "en-XA") expect(html).not.toContain("\u2066");
+      const translated = [lines[0], lines[2], lines[3]];
+      if (language === "en-XA") for (const line of translated) expect(html).not.toContain(escaped(line.text));
+      else {
+        // ar-XB draws the catalog's English right to left (U+202E … U+202C); only the kept line is isolated left to right.
+        expect(html).toContain(`\u202e${escaped(lines[3].text)}\u202c`);
+        for (const line of translated) expect(html).not.toContain(`\u2066${escaped(line.text)}`);
+        expect(html.split("\u2066")).toHaveLength(2);
+      }
+    });
 
   it("never depends on the cause", () => {
     const refusal = STORE_SCREENS.refusedPrevious(FOLDER);

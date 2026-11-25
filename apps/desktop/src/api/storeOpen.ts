@@ -8,9 +8,10 @@ import type { ErrorData } from "./generated/ErrorData";
 import type { RestoreStateName } from "./generated/RestoreStateName";
 import type { StoreButton } from "./generated/StoreButton";
 import type { StoreHint } from "./generated/StoreHint";
+import type { StoreLine } from "./generated/StoreLine";
 import type { StoreScreen } from "./generated/StoreScreen";
 
-export type { StoreButton, StoreHint, StoreScreen };
+export type { StoreButton, StoreHint, StoreLine, StoreScreen };
 
 /** `cause` is the engine's error variant, for tests and logs only: the screen never depends on it. */
 export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
@@ -51,11 +52,12 @@ const isText = (v: unknown): v is string => typeof v === "string";
 const isButton = (b: unknown): b is StoreButton =>
   object(b) && isText((b as StoreButton).key) && isText((b as StoreButton).label) && typeof (b as StoreButton).destructive === "boolean" && typeof (b as StoreButton).defaultFocus === "boolean";
 const isHint = (h: unknown): h is StoreHint => object(h) && isText((h as StoreHint).key) && isText((h as StoreHint).text);
+const isLine: (l: unknown) => l is StoreLine = isHint;
 
 function isScreen(s: unknown): s is StoreScreen {
   if (!object(s)) return false;
   const v = s as Partial<StoreScreen>;
-  return isText(v.titleKey) && isText(v.title) && isText(v.textKey) && isText(v.text) && Array.isArray(v.lines) && v.lines.every(isHint) && Array.isArray(v.buttons) && v.buttons.every(isButton) && (v.hint === null || isHint(v.hint));
+  return isText(v.titleKey) && isText(v.title) && isText(v.textKey) && isText(v.text) && Array.isArray(v.lines) && v.lines.length > 0 && v.lines.every(isLine) && Array.isArray(v.buttons) && v.buttons.every(isButton) && (v.hint === null || isHint(v.hint));
 }
 
 /** The refusal `e` carries, when it is `storage_refused` with a whole screen; a malformed one is `null`. */

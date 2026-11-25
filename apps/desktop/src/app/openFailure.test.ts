@@ -55,6 +55,9 @@ describe("the splash's open failure", () => {
       { ...whole, screen: { ...whole.screen, buttons: [{ key: "storeUpgrade.refused.quit", label: 3, destructive: false, defaultFocus: false }] } },
       { ...whole, screen: { ...whole.screen, title_key: "storeUpgrade.refused.title", titleKey: undefined } },
       { ...whole, screen: { ...whole.screen, hint: { key: "x" } } },
+      { ...whole, screen: { ...whole.screen, lines: undefined } },
+      { ...whole, screen: { ...whole.screen, lines: [] } },
+      { ...whole, screen: { ...whole.screen, lines: [{ key: "storeUpgrade.refused.intro", text: 3 }] } },
       { ...whole, folder: null },
     ];
     for (const data of broken) expect(openFailure({ code: "storage_refused", message: "x", data })).toMatchObject({ kind: "message", retry: false });
