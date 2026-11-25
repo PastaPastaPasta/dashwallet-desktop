@@ -94,7 +94,11 @@ impl Excluded {
         self.balance.total()
     }
 
-    /// `balance` without `share` (`None`: nothing), bucket by bucket.
+    /// `balance` without `share` (`None`: nothing), bucket by bucket. What
+    /// a bucket can't cover comes out of the others (locked, unconfirmed,
+    /// confirmed, immature): key-wallet's cached buckets may predate
+    /// a flag the share was read with (a funding's temporary lock), and the
+    /// excluded coins are counted in none of them either way.
     pub(crate) fn subtract(
         balance: &WalletCoreBalance,
         share: Option<&WalletCoreBalance>,
@@ -102,12 +106,26 @@ impl Excluded {
         let Some(s) = share else {
             return *balance;
         };
-        WalletCoreBalance::new(
-            balance.confirmed().saturating_sub(s.confirmed()),
-            balance.unconfirmed().saturating_sub(s.unconfirmed()),
-            balance.immature().saturating_sub(s.immature()),
-            balance.locked().saturating_sub(s.locked()),
-        )
+        let mut left = [
+            balance.locked(),
+            balance.unconfirmed(),
+            balance.confirmed(),
+            balance.immature(),
+        ];
+        let want = [s.locked(), s.unconfirmed(), s.confirmed(), s.immature()];
+        let mut owed = 0u64;
+        for (b, w) in left.iter_mut().zip(want) {
+            let taken = w.min(*b);
+            *b -= taken;
+            owed += w - taken;
+        }
+        for b in &mut left {
+            let taken = owed.min(*b);
+            *b -= taken;
+            owed -= taken;
+        }
+        let [locked, unconfirmed, confirmed, immature] = left;
+        WalletCoreBalance::new(confirmed, unconfirmed, immature, locked)
     }
 }
 
@@ -170,7 +188,8 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// history that is not abandoned, and not an unspent coin of key-wallet's
 /// (only the payment's own claim holds it). The root's outputs that
 /// key-wallet holds unspent are withheld, and so is every output of an
-/// unmined, unabandoned transaction built on a withheld one.
+/// unmined transaction built on a withheld one that is neither abandoned
+/// nor InstantSend-locked (a lock on it proves its inputs).
 pub(crate) fn pending_unproven(core: &ManagedWalletInfo, h: &WalletHistory) -> BTreeSet<OutPoint> {
     let txs = &h.txs;
     if !txs.values().any(withholding_candidate) {
@@ -217,7 +236,7 @@ pub(crate) fn pending_unproven(core: &ManagedWalletInfo, h: &WalletHistory) -> B
     let mut todo: Vec<Txid> = withheld.iter().copied().collect();
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     for (t, e) in txs.iter() {
-        if e.context.block_info().is_none() && !e.abandoned {
+        if withholding_candidate(e) && !locks.contains(t) {
             for i in &e.tx.input {
                 children.entry(i.previous_output.txid).or_default().push(*t);
             }
@@ -235,4 +254,38 @@ pub(crate) fn pending_unproven(core: &ManagedWalletInfo, h: &WalletHistory) -> B
         .filter(|o| withheld.contains(&o.txid))
         .copied()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(confirmed: u64, unconfirmed: u64, immature: u64, locked: u64) -> WalletCoreBalance {
+        WalletCoreBalance::new(confirmed, unconfirmed, immature, locked)
+    }
+
+    #[test]
+    fn a_share_comes_out_of_its_own_buckets() {
+        let got = Excluded::subtract(&b(10, 7, 3, 2), Some(&b(4, 5, 0, 2)));
+        assert_eq!(got, b(6, 2, 3, 0));
+    }
+
+    #[test]
+    fn a_coin_read_locked_while_its_bucket_counts_it_unlocked_is_still_taken_out() {
+        let got = Excluded::subtract(&b(10, 5, 0, 0), Some(&b(0, 0, 0, 5)));
+        assert_eq!(got.total(), 10);
+        assert_eq!(got, b(10, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_coin_read_unlocked_while_its_bucket_counts_it_locked_is_still_taken_out() {
+        let got = Excluded::subtract(&b(10, 0, 0, 5), Some(&b(0, 5, 0, 0)));
+        assert_eq!(got, b(10, 0, 0, 0));
+    }
+
+    #[test]
+    fn nothing_goes_below_zero() {
+        let got = Excluded::subtract(&b(1, 1, 0, 0), Some(&b(5, 5, 0, 0)));
+        assert_eq!(got, b(0, 0, 0, 0));
+    }
 }

@@ -976,16 +976,21 @@ impl NetworkSession {
     }
 
     /// Hands the hub what reads a wallet's balances again
-    /// ([`Self::reread_balances`]).
+    /// ([`Self::reread_balances`]), on the runtime: the event that asks
+    /// for it holds the hub's unload guard.
     pub(crate) fn attach_balance_reread(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
         self.hub.attach_balance_reread(Box::new(move |id| {
             let weak = weak.clone();
+            #[cfg(test)]
+            let running = weak.upgrade().map(|s| s.hub.reread_started());
             rt.spawn(async move {
                 if let Some(session) = weak.upgrade() {
                     session.reread_balances(id).await;
                 }
+                #[cfg(test)]
+                drop(running);
             });
         }));
     }

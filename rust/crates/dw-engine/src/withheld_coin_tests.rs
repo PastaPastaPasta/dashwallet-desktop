@@ -17,8 +17,8 @@ use super::own_spend_balance_tests::{
     foreign_winner, funded_wallet_and_funding, live_in_history, reconciled,
 };
 use super::own_spend_disk_tests::{
-    Accept, COIN, TIP, change_of, coins, eventually, own_scripts, prepare, send, spendable_for,
-    wait_stored,
+    Accept, COIN, TIP, change_of, coins, eventually, fresh_address, funding, own_scripts, prepare,
+    send, spendable_for, wait_stored,
 };
 use super::{balances, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -365,6 +365,26 @@ fn s2a_a_beaten_payments_change_is_withheld_when_the_chainlock_comes_in_the_bloc
 #[test]
 fn s2b_a_beaten_payments_change_is_withheld_when_the_chainlock_comes_while_the_reconcile_waits() {
     s2(Order::ChainLockWhileTheReconcileWaits);
+}
+
+/// A wallet event while a coin is withheld: its balance is read with the
+/// withheld share at once, never applied without it, and the next read
+/// counts the payment it brought.
+#[test]
+fn an_event_while_a_coin_is_withheld_is_read_with_its_share() {
+    let (s, _) = beaten(Order::ChainLockInTheBlocksOp, false);
+    let (engine, session, id) = (&s.engine, &s.session, s.id);
+    let pending = value_of(engine, session, id, s.change);
+    eventually("the change withheld", || {
+        pending_amount(session, id) == pending
+    });
+    let before = balances(session, id);
+    let incoming = funding(93, &[fresh_address(engine, session, id)], COIN);
+    mempool(engine, session, id, &incoming);
+    let b = balances(session, id);
+    assert_eq!(b.withheld, pending, "{b:?}");
+    assert_eq!(b.total, before.total + COIN, "{b:?}");
+    assert_eq!(b.confirmed + b.unconfirmed + b.immature + b.locked, b.total);
 }
 
 /// A payment built on the beaten payment's change before the restart: its

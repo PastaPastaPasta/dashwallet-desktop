@@ -520,6 +520,9 @@ fn chained_own_payments_count_each_coin_once_after_a_restart() {
         .map(|v| OutPoint::new(second.txid(), v))
         .collect();
     assert_eq!(second_change.len(), 1);
+    let pending: u64 = (second_change.iter())
+        .map(|o| second.output[o.vout as usize].value)
+        .sum();
     let spent: BTreeSet<OutPoint> = first.input.iter().map(|i| i.previous_output).collect();
     let want: BTreeSet<OutPoint> = (0..paid.output.len() as u32)
         .map(|v| OutPoint::new(paid.txid(), v))
@@ -533,12 +536,15 @@ fn chained_own_payments_count_each_coin_once_after_a_restart() {
     let session = reopen(&engine, session);
     let b = assert_holds(&engine, &session, id, &want, "after a restart");
     assert_change_pending(&b, sent.total, "after a restart");
+    assert_eq!(b.withheld, pending, "after a restart");
     mined(&engine, &session, id, TIP, vec![paid]);
     let b = assert_holds(&engine, &session, id, &want, "funding scanned");
     assert_change_pending(&b, sent.total, "funding scanned");
+    assert_eq!(b.withheld, pending, "funding scanned");
     mined(&engine, &session, id, TIP + 1, vec![first]);
     let b = assert_holds(&engine, &session, id, &want, "first mined");
     assert_change_pending(&b, sent.total, "first mined");
+    assert_eq!(b.withheld, pending, "first mined");
     mined(&engine, &session, id, TIP + 2, vec![second]);
     let b = assert_holds(&engine, &session, id, &want, "second mined");
     assert_change_counted(&b, sent.total, "second mined");
@@ -578,6 +584,9 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
     let change = (0..payment.output.len() as u32)
         .filter(|v| own.contains(&payment.output[*v as usize].script_pubkey))
         .map(|v| OutPoint::new(payment.txid(), v));
+    let pending: u64 = (change.clone())
+        .map(|o| payment.output[o.vout as usize].value)
+        .sum();
     let want: BTreeSet<OutPoint> = (0..paid.output.len() as u32)
         .map(|v| OutPoint::new(paid.txid(), v))
         .filter(|o| *o != a && *o != b)
@@ -587,10 +596,12 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
     let scanned = assert_holds(&engine, &session, id, &want, "funding scanned");
     let counted = scanned.total + scanned.withheld;
     assert_change_pending(&scanned, counted, "funding scanned");
+    assert_eq!(scanned.withheld, pending, "funding scanned");
 
     let session = reopen(&engine, session);
     let restarted = assert_holds(&engine, &session, id, &want, "a second restart");
     assert_change_pending(&restarted, counted, "a second restart");
+    assert_eq!(restarted.withheld, pending, "a second restart");
     mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
     let b = assert_holds(&engine, &session, id, &want, "mined");
     assert_change_counted(&b, counted, "mined");
