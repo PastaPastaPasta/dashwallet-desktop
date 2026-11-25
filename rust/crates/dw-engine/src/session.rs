@@ -843,6 +843,7 @@ impl NetworkSession {
         session.attach_dead_claims();
         session.attach_sweep_resend();
         session.attach_balance_reread();
+        session.attach_lock_rerun();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -1011,7 +1012,7 @@ impl NetworkSession {
         self.context.is_ready()
     }
 
-    fn not_open(&self) -> EngineError {
+    pub(crate) fn not_open(&self) -> EngineError {
         EngineError::NetworkNotOpen(self.network.to_string())
     }
 

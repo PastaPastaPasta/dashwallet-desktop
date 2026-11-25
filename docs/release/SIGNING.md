@@ -11,7 +11,9 @@ release.
 
 Keyless release candidates (`vX.Y.Z-rc.N`) and `main` / `continuous` builds remain untouched: CI builds and
 publishes the 8 unsigned assets with GitHub Sigstore build provenance attestations only (no `.asc`, no
-`latest.json`, nothing required even when `DW_SIGNING_REQUIRED=1`).
+`latest.json`, nothing required even when `DW_SIGNING_REQUIRED=1`). A candidate opts in to this signed path
+with the repository variable `DW_SIGN_RC=1` set before its tag is pushed; it then publishes 9 assets (signed
+`.dmg` and `.exe`, `SHA256SUMS.asc`, no updater feed). The runbook for that is [`RC-SIGNING.md`](RC-SIGNING.md).
 
 > **Nightly track:** automated nightly signing (separate macOS Developer ID cert + revocable API key in CI,
 > unsigned Windows, separate CI updater key, separate bundle ID and app name `"Dash Wallet Nightly"` for

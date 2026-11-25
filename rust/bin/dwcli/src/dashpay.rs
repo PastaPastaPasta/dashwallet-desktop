@@ -985,7 +985,9 @@ fn credits_params(e: &CreditsError) -> Value {
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
         | CreditsError::MixingActive
-        | CreditsError::MoveRunning => json!({}),
+        | CreditsError::MoveRunning
+        | CreditsError::PreflightRefused
+        | CreditsError::RulesUnsupported => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
