@@ -28,6 +28,7 @@ from pathlib import Path
 PATHS_FILE = Path(__file__).resolve().parent.parent / "funds-paths.txt"
 STATUS_CONTEXT = "Funds review gate"
 KINDS = ("funds", "review")
+LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
 RECORD = re.compile(r"<!--\s*dwd-review\s+([^>]*?)\s*-->")
@@ -105,10 +106,9 @@ def evaluate(head, files, comments, rules, complete=True):
     lines = [f"Funds paths changed ({len(funds)}):"] + [f"  {f}" for f in funds[:25]]
     if len(funds) > 25:
         lines.append(f"  … and {len(funds) - 25} more")
-    records = parse_records(comments)
     latest = {}
     stale = 0
-    for r in records:
+    for r in parse_records(comments):
         if r.get("kind") not in KINDS:
             continue
         if r.get("sha") != head:
@@ -118,7 +118,7 @@ def evaluate(head, files, comments, rules, complete=True):
     ok = True
     for kind in KINDS:
         r = latest.get(kind)
-        label = "funds-reviewer verdict" if kind == "funds" else "Opus review"
+        label = LABELS[kind]
         if r is None:
             lines.append(f"MISSING {label} (kind={kind}) for head {head}.")
             ok = False
