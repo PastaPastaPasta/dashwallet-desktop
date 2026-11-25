@@ -50,6 +50,8 @@ pub(crate) mod journal;
 #[cfg(test)]
 mod journal_tests;
 pub mod keys_policy;
+#[cfg(test)]
+mod known_wallets_tests;
 pub mod lease;
 mod lock_inputs;
 pub(crate) mod money_gate;

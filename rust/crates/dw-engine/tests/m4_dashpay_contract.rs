@@ -273,6 +273,7 @@ const NOT_FACADE: &[&str] = &[
     "journal.rs",
     "journal_tests.rs",
     "keys_policy.rs",
+    "known_wallets_tests.rs",
     "lease",
     "lock_inputs.rs",
     "lock_inputs_tests.rs",
