@@ -47,6 +47,12 @@ pub const NOT_THIS_WALLET: &str = "NOT-THIS-WALLET";
 /// this names it and the live file holds exactly those wallets.
 pub const UPGRADED_FROM: &str = "UPGRADED-FROM";
 const UPGRADED_FROM_HEADER: &str = "dw-store-upgrade upgraded from";
+/// Written in `upgrade-backups/` by the start that takes a `part-upgraded`
+/// copy of an upgraded store: the copy's directory name and manifest
+/// sha256. The only `part-upgraded` copy kept or counted
+/// ([`upgrade_copy_present`]); one copied in never is.
+pub const PART_UPGRADED_BY: &str = "PART-UPGRADED-BY";
+const PART_UPGRADED_BY_HEADER: &str = "dw-store-upgrade part-upgraded copy";
 const MARKER_HEADER: &str = "dw-store-upgrade snapshot";
 const MARKER_FORMAT: u32 = 1;
 
@@ -643,9 +649,9 @@ pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
 }
 
 /// Whether an upgrade copy of `store` (one of [`STORE_FILES`]) exists: the
-/// newest verified before-upgrade snapshot lists it, or a `part-upgraded`
-/// copy with its marker that verifies does. A copy marked
-/// [`NOT_THIS_WALLET`] never counts. Reads only.
+/// newest verified before-upgrade snapshot lists it, or the `part-upgraded`
+/// copy [`PART_UPGRADED_BY`] records verifies with that manifest and does.
+/// A copy marked [`NOT_THIS_WALLET`] never counts. Reads only.
 pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool> {
     let lists = |info: &SnapshotInfo| info.files.iter().any(|f| f.name == store);
     if let SnapshotState::Verified(info) = snapshot_state(network_dir)?
@@ -653,9 +659,55 @@ pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool>
     {
         return Ok(true);
     }
-    Ok(dirs_named(network_dir, UNRESTORABLE_PREFIX)?
-        .iter()
-        .any(|dir| dir.join(MARKER).exists() && read_snapshot(dir, true).is_ok_and(|i| lists(&i))))
+    let Some((name, manifest)) = recorded_part(network_dir)? else {
+        return Ok(false);
+    };
+    let dir = backups_dir(network_dir).join(name);
+    Ok(dir.join(MARKER).exists()
+        && read_snapshot(&dir, true).is_ok_and(|i| i.manifest_sha256 == manifest && lists(&i)))
+}
+
+/// The copy [`PART_UPGRADED_BY`] records: `None` with no record, or one
+/// that doesn't parse or can't be read for its permissions. A fault that
+/// may pass is returned.
+fn recorded_part(network_dir: &Path) -> io::Result<Option<(String, String)>> {
+    let text = match fs::read_to_string(backups_dir(network_dir).join(PART_UPGRADED_BY)) {
+        Ok(text) => text,
+        Err(e) => {
+            return match snapshot_fault(PART_UPGRADED_BY)(e) {
+                SnapshotFault::Defect(_) => Ok(None),
+                SnapshotFault::Io(e) => Err(e),
+            };
+        }
+    };
+    let mut lines = text.lines();
+    let record = (lines.next() == Some(PART_UPGRADED_BY_HEADER)
+        && lines.next() == Some("format 1"))
+    .then(|| lines.next()?.strip_prefix("copy ")?.split_once(' '))
+    .flatten()
+    .filter(|(name, manifest)| {
+        name.starts_with(&format!("{UNRESTORABLE_PREFIX}-"))
+            && !name.contains(['/', '\\', ' '])
+            && manifest.len() == 64
+    })
+    .map(|(name, manifest)| (name.to_string(), manifest.to_string()));
+    Ok(record.filter(|_| lines.next().is_none()))
+}
+
+/// Record `info`, a `part-upgraded` copy just taken and verified, as this
+/// upgrade's. Never while a restore is requested or part-done.
+pub(crate) fn record_part(network_dir: &Path, info: &SnapshotInfo) -> Result<()> {
+    crate::restore::refuse_if_restore_pending(network_dir)?;
+    let text = format!(
+        "{PART_UPGRADED_BY_HEADER}\nformat 1\ncopy {} {}\n",
+        name_of(&info.dir),
+        info.manifest_sha256
+    );
+    fsx::write_durable(
+        &backups_dir(network_dir).join(PART_UPGRADED_BY),
+        text.as_bytes(),
+    )
+    .map_err(StoreUpgradeError::io("record the part-upgraded copy", true))
 }
 
 /// The newest completed snapshot, its files checked against their sha256.
@@ -951,9 +1003,14 @@ fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
 /// none to keep ([`MissingSnapshot`]) a verified `part-upgraded` copy is
 /// kept or one is taken, never offered for restore. The named directory
 /// without its marker is the true snapshot with its marker lost and counts
-/// as `Unverified`; it is never deleted. Only before a new snapshot of a
-/// store that is not upgraded is a directory an interrupted run left
-/// without its marker discarded and redone.
+/// as `Unverified`; it is never deleted. Only the `part-upgraded` copy
+/// [`PART_UPGRADED_BY`] records is kept; any other with its marker is left
+/// as it is. Before a new copy, a directory of its kind without its marker
+/// (an interrupted run's) is discarded. A new copy is verified once taken:
+/// one that doesn't verify is a retried
+/// [`StoreUpgradeError::SnapshotFailed`] and no other is taken that start,
+/// so faulty copies add up one per fault, never one per start. A
+/// `part-upgraded` copy that verifies is then recorded.
 ///
 /// Before the upgrade, a fault reading a `before-upgrade` directory never
 /// hides an older one that is this upgrade's, and is passed over. Once
@@ -991,12 +1048,18 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
                 Ok(info) => return Ok(*info),
                 Err(state) => state,
             };
-            for dir in list(UNRESTORABLE_PREFIX)?.iter().rev() {
-                if let Ok(Found::Reusable(mut info)) = inspect(dir, live) {
-                    info.missing = Some(state);
-                    info.between = live.between;
-                    return Ok(*info);
-                }
+            let recorded = recorded_part(network_dir).map_err(StoreUpgradeError::io(
+                "read the part-upgraded copy record",
+                true,
+            ))?;
+            if let Some((name, manifest)) = recorded
+                && let Ok(Found::Reusable(mut info)) =
+                    inspect(&backups_dir(network_dir).join(name), live)
+                && info.manifest_sha256 == manifest
+            {
+                info.missing = Some(state);
+                info.between = live.between;
+                return Ok(*info);
             }
             tracing::warn!(
                 ?state,
@@ -1086,6 +1149,31 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     fsx::write_durable(&dir.join(MARKER), text.as_bytes())
         .map_err(|e| failed(format!("write marker: {e}")))?;
     fsx::fsync_dir(&root).map_err(|e| failed(format!("fsync {UPGRADE_BACKUPS_DIR}: {e}")))?;
+    #[cfg(test)]
+    if fault("snapshot.corrupt_copy").is_err() {
+        let first = dir.join(&info.files[0].name);
+        let mut bytes = fs::read(&first).unwrap();
+        bytes[100] ^= 1;
+        fs::write(&first, bytes).unwrap();
+    }
+    match check_snapshot(&dir, true) {
+        Ok(_) => {}
+        Err(SnapshotFault::Defect(detail)) => {
+            return Err(failed(format!(
+                "{} does not verify once taken: {detail}",
+                dir.display()
+            )));
+        }
+        Err(SnapshotFault::Io(e)) => {
+            return Err(StoreUpgradeError::io(
+                "verify the new upgrade snapshot",
+                true,
+            )(e));
+        }
+    }
+    if prefix == UNRESTORABLE_PREFIX {
+        record_part(network_dir, &info)?;
+    }
     tracing::info!(dir = %dir.display(), "store upgrade: snapshot complete");
     Ok(info)
 }

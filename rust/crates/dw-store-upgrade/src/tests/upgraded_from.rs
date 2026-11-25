@@ -344,3 +344,76 @@ fn the_backup_check_reads_rows_only_in_the_wal_and_writes_nothing_beside_them() 
     assert!(!shm.exists(), "no -shm beside the live file");
     assert_eq!(tree(&f.root), before, "nothing written, never checkpointed");
 }
+
+fn part_dirs(f: &Fixture) -> Vec<std::path::PathBuf> {
+    let mut dirs: Vec<_> = fs::read_dir(f.net.join(UPGRADE_BACKUPS_DIR))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("part-upgraded-")
+        })
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// L5: a new copy that doesn't verify once taken is retried and kept as it
+/// is; the next start takes one more and later starts keep that one.
+#[test]
+fn a_copy_that_fails_to_verify_once_taken_adds_one_copy_per_fault() {
+    let (f, s) = failed_open();
+    fs::remove_dir_all(s.dir()).unwrap();
+    arm_fault("snapshot.corrupt_copy", 0);
+    let err = start(&f, later(30)).unwrap_err();
+    disarm_fault();
+    assert!(
+        matches!(err, StoreUpgradeError::SnapshotFailed { .. }),
+        "{err:?}"
+    );
+    assert!(crate::copy::retry_copy_for(&err).is_some());
+    let [faulty] = &part_dirs(&f)[..] else {
+        panic!("one copy");
+    };
+    let kept = tree(faulty);
+    let part = start(&f, later(60)).unwrap().snapshot.unwrap();
+    assert!(matches!(
+        reconcile_fork_store(&config(&f.net), &part, build()).unwrap(),
+        Outcome::Pending { .. }
+    ));
+    let again = start(&f, later(90)).unwrap().snapshot.unwrap();
+    assert_eq!(again.dir(), part.dir());
+    assert_eq!(part_dirs(&f).len(), 2);
+    assert_eq!(&tree(faulty), &kept, "never deleted, never changed");
+    assert!(read_snapshot(part.dir(), true).is_ok());
+}
+
+/// Q110 110-1: only the part-upgraded copy this upgrade took counts and is
+/// kept; one copied in, verified and listing shielded.sqlite, never is.
+#[test]
+fn a_part_upgraded_copy_copied_in_is_never_kept_or_counted() {
+    let (g, gs) = failed_open();
+    fs::remove_dir_all(gs.dir()).unwrap();
+    let other = start(&g, later(30)).unwrap().snapshot.unwrap();
+    let (f, s) = failed_open();
+    fs::remove_dir_all(s.dir()).unwrap();
+    let foreign = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join("part-upgraded-20991231T000000Z");
+    fs::create_dir(&foreign).unwrap();
+    for entry in fs::read_dir(other.dir()).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), foreign.join(entry.file_name())).unwrap();
+    }
+    let copied = read_snapshot(&foreign, true).unwrap();
+    assert!(copied.files().iter().any(|x| x.name == "shielded.sqlite"));
+    let untouched = tree(&foreign);
+    assert!(!upgrade_copy_present(&f.net, "shielded.sqlite").unwrap());
+    let part = start(&f, later(60)).unwrap().snapshot.unwrap();
+    assert_ne!(part.dir(), foreign.as_path());
+    assert!(upgrade_copy_present(&f.net, "shielded.sqlite").unwrap());
+    assert_eq!(tree(&foreign), untouched);
+}
