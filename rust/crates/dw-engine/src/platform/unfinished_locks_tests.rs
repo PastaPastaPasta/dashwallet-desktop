@@ -293,20 +293,14 @@ fn only_already_consumed_of_the_same_outpoint_reads_already_consumed() {
     }
 }
 
-/// The library's refusal to record Platform's "already consumed" (a
-/// restored wallet's persister attests no `WALLET_RESTORE`) is that answer
+/// The library's refusal to record Platform's "already consumed" (at a
+/// persister that does not attest asset-lock reconciliation) is that answer
 /// for the applied outpoint, for both kinds.
 #[test]
 fn the_librarys_unrecorded_consumed_report_reads_already_consumed() {
     use super::shielded_pool::{Applied, applied_from};
     let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
-    let refusal = || {
-        PlatformWalletError::Persistence(
-            "asset-lock reconciliation requires persistence capabilities \
-             [\"wallet_restore\"] (missing mask 0x80)"
-                .into(),
-        )
-    };
+    let refusal = conformance::unrecorded_consumed;
     assert_eq!(
         reply_from(Err(refusal()), at, true).unwrap(),
         ApplyReply::AlreadyConsumed
