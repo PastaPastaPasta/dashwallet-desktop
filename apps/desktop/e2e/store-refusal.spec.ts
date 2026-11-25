@@ -70,7 +70,7 @@ test.describe("a data folder others can change", () => {
         `Other accounts on this computer can change files in ${ROOT}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.`,
       );
       await expect(page.getByTestId("store-not-private-reason")).toHaveText("Your group can write to it.");
-      await expect(page.getByTestId("store-not-private-fix")).toHaveText("Change the folder's permissions so only you can write to it, then try again. Nothing in the folder was changed.");
+      await expect(page.getByTestId("store-not-private-fix")).toHaveText("Change the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.");
       await expect(button(page, "retry")).toBeFocused();
       await expectNoWallet(page);
 

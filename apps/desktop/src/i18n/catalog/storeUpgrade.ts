@@ -9,7 +9,7 @@ import type { Tree } from "../core";
 export const storeUpgrade = {
   notPrivate: {
     title: "Dash Wallet can't use this data folder",
-    text: "Other accounts on this computer can change files in {folder}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.\n\nChange the folder's permissions so only you can write to it, then try again. Nothing in the folder was changed.",
+    text: "Other accounts on this computer can change files in {folder}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.\n\nChange the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.",
     reason: {
       groupWritable: "Your group can write to it.",
       otherWritable: "Every account can write to it.",
