@@ -13,8 +13,7 @@ use crate::error::StoreUpgradeError;
 use crate::precheck::{LOAD_FOR_TEST, Precheck, precheck_locked_with, precheck_with};
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::{
-    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MissingSnapshot, SnapshotInfo, SnapshotState,
-    snapshot_state,
+    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MissingSnapshot, SnapshotInfo,
 };
 #[cfg(unix)]
 use crate::sql::sha256_file;
@@ -94,32 +93,6 @@ fn a_part_done_upgrade_whose_snapshot_is_of_other_data_is_refused_as_mismatch() 
         "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)",
     );
     assert_missing(&f, MissingSnapshot::Mismatch);
-}
-
-#[test]
-fn absent_can_be_switched_to_proceed_without_a_restorable_snapshot() {
-    let (f, s) = between();
-    fs::remove_dir_all(s.dir()).unwrap();
-    ABSENT_POLICY_FOR_TEST.with(|p| p.set(Some(AbsentSnapshotPolicy::ProceedUnrestorable)));
-    let first = crate::prepare_with(&f.net, build(), later(60));
-    let again = crate::prepare_with(&f.net, build(), later(120));
-    ABSENT_POLICY_FOR_TEST.with(|p| p.set(None));
-    let part = first.unwrap().snapshot.unwrap();
-    assert!(
-        part.dir()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("part-upgraded-")
-    );
-    assert_eq!(again.unwrap().snapshot.unwrap().dir(), part.dir(), "reused");
-    assert_eq!(snapshot_state(&f.net).unwrap(), SnapshotState::None);
-    assert!(crate::restore::request_restore(&f.net, &part).is_err());
-    assert!(matches!(
-        reconcile_fork_store(&config(&f.net), &part, build()).unwrap(),
-        Outcome::Pending { .. }
-    ));
-    drop(open_and_load(&f.net));
 }
 
 #[test]

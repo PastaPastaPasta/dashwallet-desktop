@@ -98,10 +98,12 @@ pub enum StoreUpgradeError {
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
 
-    /// An upgrade that stopped after R1's drop, and no before-upgrade
-    /// snapshot this upgrade can keep: none at all, none that verifies, or
-    /// none of this wallet (`storeUpgrade.refused.detail.snapshotMissing`).
-    /// The file stays as the earlier start left it; nothing more is written.
+    /// An upgraded store (R1's drop committed, or upstream migrated and the
+    /// fork history not yet retired) and no before-upgrade snapshot this
+    /// upgrade can keep: none at all, none that verifies, or none of this
+    /// wallet from before the upgrade
+    /// (`storeUpgrade.refused.detail.snapshotMissing`). The file stays as
+    /// the earlier start left it; nothing more is written.
     #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
     UpgradeSnapshotMissing {
         state: crate::snapshot::MissingSnapshot,

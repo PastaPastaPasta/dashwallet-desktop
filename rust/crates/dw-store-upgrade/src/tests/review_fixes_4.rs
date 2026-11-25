@@ -3,7 +3,13 @@
 
 use super::review_fixes_3::{assert_missing, between};
 use super::*;
-use crate::snapshot::{ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MARKER, MissingSnapshot};
+use crate::copy;
+use crate::error::StoreUpgradeError;
+use crate::reconcile::{Outcome, reconcile_fork_store};
+use crate::snapshot::{
+    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MARKER, MissingSnapshot, SnapshotInfo,
+    SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state,
+};
 
 #[test]
 fn a_lost_marker_after_the_drop_is_unverified_and_the_copy_is_kept() {
@@ -17,5 +23,134 @@ fn a_lost_marker_after_the_drop_is_unverified_and_the_copy_is_kept() {
         assert_missing(&f, MissingSnapshot::Unverified);
         ABSENT_POLICY_FOR_TEST.with(|p| p.set(None));
         assert!(s.dir().join("wallet.sqlite").is_file(), "{policy:?}");
+    }
+}
+
+fn prepare_under(
+    f: &Fixture,
+    policy: AbsentSnapshotPolicy,
+    at: SystemTime,
+) -> crate::Result<crate::Prepared> {
+    ABSENT_POLICY_FOR_TEST.with(|p| p.set(Some(policy)));
+    let got = crate::prepare_with(&f.net, build(), at);
+    ABSENT_POLICY_FOR_TEST.with(|p| p.set(None));
+    got
+}
+
+fn before_upgrade_dirs(f: &Fixture) -> Vec<String> {
+    fs::read_dir(f.net.join(UPGRADE_BACKUPS_DIR))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("before-upgrade-"))
+        .collect()
+}
+
+fn assert_absent(got: &crate::Result<crate::Prepared>) {
+    assert!(
+        matches!(
+            got,
+            Err(StoreUpgradeError::UpgradeSnapshotMissing {
+                state: MissingSnapshot::Absent,
+                ..
+            })
+        ),
+        "{got:?}"
+    );
+}
+
+/// The before-upgrade snapshot is gone after R1's drop; upstream migrates
+/// the file (the persister opens), then a third start prepares.
+fn migrated_without_a_snapshot(policy: AbsentSnapshotPolicy) -> (Fixture, Option<SnapshotInfo>) {
+    let (f, s) = between();
+    fs::remove_dir_all(s.dir()).unwrap();
+    let first = prepare_under(&f, policy, later(60));
+    let again = prepare_under(&f, policy, later(120));
+    let part = match policy {
+        AbsentSnapshotPolicy::Refuse => {
+            assert_absent(&first);
+            assert_absent(&again);
+            None
+        }
+        AbsentSnapshotPolicy::ProceedUnrestorable => {
+            let part = first.unwrap().snapshot.unwrap();
+            assert!(
+                part.dir()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("part-upgraded-")
+            );
+            assert_eq!(again.unwrap().snapshot.unwrap().dir(), part.dir(), "reused");
+            assert!(crate::restore::request_restore(&f.net, &part).is_err());
+            assert!(matches!(
+                reconcile_fork_store(&config(&f.net), &part, build()).unwrap(),
+                Outcome::Pending { .. }
+            ));
+            Some(part)
+        }
+    };
+    drop(open_and_load(&f.net));
+    assert_eq!(copy::migrated(&f.net), Some(true));
+    (f, part)
+}
+
+#[test]
+fn a_migrated_file_without_a_snapshot_is_refused_and_never_copied_as_a_backup() {
+    let (f, _) = migrated_without_a_snapshot(AbsentSnapshotPolicy::Refuse);
+    let before = tree(&f.root);
+    let third = prepare_under(&f, AbsentSnapshotPolicy::Refuse, later(180));
+    assert_absent(&third);
+    assert_eq!(tree(&f.root), before, "nothing written");
+    assert_eq!(snapshot_state(&f.net).unwrap(), SnapshotState::None);
+    assert_eq!(before_upgrade_dirs(&f), Vec::<String>::new());
+}
+
+#[test]
+fn absent_can_be_switched_to_proceed_without_a_restorable_snapshot() {
+    let policy = AbsentSnapshotPolicy::ProceedUnrestorable;
+    let (f, part) = migrated_without_a_snapshot(policy);
+    let part = part.unwrap();
+    let before = tree(&f.root);
+    let kept = prepare_under(&f, policy, later(180))
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert_eq!(kept.dir(), part.dir(), "the part-upgraded copy is kept");
+    assert_eq!(tree(&f.root), before, "nothing written");
+    assert_eq!(snapshot_state(&f.net).unwrap(), SnapshotState::None);
+    assert_eq!(before_upgrade_dirs(&f), Vec::<String>::new());
+    assert!(matches!(
+        reconcile_fork_store(&config(&f.net), &kept, build()).unwrap(),
+        Outcome::Retired { .. }
+    ));
+    assert_eq!(snapshot_state(&f.net).unwrap(), SnapshotState::None);
+}
+
+#[test]
+fn a_part_upgraded_copy_renamed_after_the_migration_is_never_kept() {
+    let (f, part) = migrated_without_a_snapshot(AbsentSnapshotPolicy::ProceedUnrestorable);
+    let posing = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join("before-upgrade-20991231T000000Z");
+    fs::rename(part.unwrap().dir(), &posing).unwrap();
+    assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
+    for policy in [
+        AbsentSnapshotPolicy::Refuse,
+        AbsentSnapshotPolicy::ProceedUnrestorable,
+    ] {
+        let before = tree(&f.root);
+        let got = prepare_under(&f, policy, later(180));
+        assert!(
+            matches!(
+                got,
+                Err(StoreUpgradeError::UpgradeSnapshotMissing {
+                    state: MissingSnapshot::Mismatch,
+                    ..
+                })
+            ),
+            "{policy:?}: {got:?}"
+        );
+        assert_eq!(tree(&f.root), before, "{policy:?}");
     }
 }
