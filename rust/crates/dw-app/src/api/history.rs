@@ -55,6 +55,13 @@ pub struct TxDetailExtrasInfo {
     pub can_resend: bool,
     /// Dust-locked outputs of this transaction.
     pub dust_locked_outputs: Vec<OutPoint>,
+    /// Outputs of this transaction shown as pending, kept out of spending
+    /// and every balance while it, or one it was built on, may never
+    /// confirm.
+    pub withheld_outputs: Vec<OutPoint>,
+    /// Abandoned, with a coin it spent still being checked by a rescan
+    /// before it comes back.
+    pub checking_spent_coins: bool,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
 }
@@ -74,6 +81,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs,
+            withheld_outputs,
+            checking_spent_coins,
             last_announced_at,
         } = x;
         TxDetailExtrasInfo {
@@ -89,6 +98,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs: dust_locked_outputs.into_iter().map(Into::into).collect(),
+            withheld_outputs: withheld_outputs.into_iter().map(Into::into).collect(),
+            checking_spent_coins,
             last_announced_at,
         }
     }

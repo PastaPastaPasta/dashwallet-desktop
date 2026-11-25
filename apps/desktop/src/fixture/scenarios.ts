@@ -254,6 +254,74 @@ function withDropped(w: World, drops: TxDropInfo[]): World {
   return w;
 }
 
+/** The txid of `withPendingUnproven`'s payment. */
+export const PENDING_UNPROVEN_TXID = "e7".repeat(32);
+/** Its change, which the engine withholds. */
+export const PENDING_UNPROVEN_CHANGE = 74_999_774;
+
+/** Adds to the first wallet an unconfirmed payment the engine withholds the change of: the change is
+ * listed, not spendable and in no balance bucket, and the balances report it as withheld. */
+function withPendingUnproven(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: PENDING_UNPROVEN_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    amount: -25_000_226,
+    fee: 226,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [
+    ...wallet.coins,
+    {
+      ...wallet.coins[0],
+      outpoint: { txid: PENDING_UNPROVEN_TXID, vout: 1 },
+      amount: PENDING_UNPROVEN_CHANGE,
+      confirmations: 0,
+      blockHeight: null,
+      instantLocked: false,
+      chainLocked: false,
+      label: null,
+      isChange: true,
+      reserved: true,
+      spendable: false,
+      excluded: "pendingUnproven",
+    },
+  ];
+  wallet.summary = { ...wallet.summary, balances: { ...(wallet.summary.balances ?? FUNDED_BALANCES), withheld: PENDING_UNPROVEN_CHANGE } };
+  return w;
+}
+
+/** The txid of `withAbandonChecking`'s payment. */
+export const ABANDON_CHECKING_TXID = "e8".repeat(32);
+
+/** Adds to the first wallet a payment the user abandoned, a coin of which the engine's rescan is
+ * still checking before giving it back. */
+function withAbandonChecking(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: ABANDON_CHECKING_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    countsTowardBalance: false,
+    status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  w.send.checkingSpentCoins = [ABANDON_CHECKING_TXID];
+  return w;
+}
+
 function base(theme: ThemeName | null, variant: HistoryVariant = "default", plainWords = false): World {
   const main = wallet(variant, plainWords);
   return {
@@ -775,6 +843,13 @@ const SCENARIOS = {
       { cause: "replaced", state: { kind: "held" } },
       { cause: "invalidClaim", state: { kind: "released" } },
     ]),
+  /** An unconfirmed payment the engine can't yet tell will confirm (Q100 E1): its change is
+   * withheld, out of every balance and of spending, and shown as pending; Abandon is offered with
+   * its hint. */
+  "pending-unproven": (t) => withPendingUnproven(base(t)),
+  /** A payment the user abandoned while the engine's rescan checks a coin it spent (Q100 E2): its
+   * details say so until the check ends. */
+  "abandon-checking": (t) => withAbandonChecking(base(t)),
   /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
    * offered, and refused until the wallet restarts and rescans. */
   "abandon-rescan-first": (t) => {

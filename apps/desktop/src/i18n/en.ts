@@ -6,6 +6,7 @@ import type { Tree } from "./core";
 import { activity } from "./catalog/activity";
 import { app } from "./catalog/app";
 import { coinjoin } from "./catalog/coinjoin";
+import { coins } from "./catalog/coins";
 import { common } from "./catalog/common";
 import { components } from "./catalog/components";
 import { contacts } from "./catalog/contacts";
@@ -41,6 +42,7 @@ export const en = {
   activity,
   receive,
   pay,
+  coins,
   platform,
   contacts,
   dashpay,

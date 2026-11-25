@@ -2321,6 +2321,9 @@ impl Fixture {
                 height,
             },
         );
+        // A coin a replay gives back is released by the reread the height
+        // starts (`crate::rescan_hold`).
+        self.session.hub.settle_rereads();
     }
 
     /// The wallet's own transaction `seed`, spending `inputs`, in `context`.
@@ -4872,7 +4875,7 @@ mod normal_payment_beside_mixing {
                 let entry = TxEntry {
                     tx,
                     context: TransactionContext::Mempool,
-                    instant_locked: false,
+                    instant_locked: true,
                     first_seen: None,
                     own_inputs,
                     abandoned: false,

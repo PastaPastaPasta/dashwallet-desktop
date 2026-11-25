@@ -201,7 +201,8 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const duffs = Math.max(0, totalDuffs - feeDuffs);
   const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
   if (duffs < floor) raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs });
-  const arrivingDuffs = main.filter((u) => !final.includes(u)).reduce((n, u) => n + u.amount, 0);
+  // A coin the engine withholds counts nowhere, not even as arriving.
+  const arrivingDuffs = main.filter((u) => !final.includes(u) && u.excluded === null).reduce((n, u) => n + u.amount, 0);
   return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
 }
 

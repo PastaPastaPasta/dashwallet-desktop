@@ -9,7 +9,8 @@ use std::sync::Arc;
 use dashcore::{OutPoint, Transaction, Txid};
 
 use super::own_spend_disk_tests::{
-    COIN, TIP, abandon, assert_holds, coins, send, spendable, synced, wallet_funded_unmined,
+    COIN, TIP, abandon, assert_holds, assert_holds_waiting, coins, send, spendable, synced,
+    wallet_funded_unmined,
 };
 use super::{instant_lock, mempool, mined, reopen, rows, wait_stored_locked};
 use crate::send::CoinSource;
@@ -1168,11 +1169,13 @@ fn an_abandoned_payment_seen_again_after_a_restart_applies_its_balance() {
 
     let session = reopen(&engine, session);
     let before = held(&engine, &session, id);
-    assert_holds(&engine, &session, id, &before, "reopened");
+    // A waits for the abandon's rescan (#818).
+    let waiting = BTreeSet::from([a]);
+    assert_holds_waiting(&engine, &session, id, &before, &waiting, "reopened");
     mempool(&engine, &session, id, &payment);
     let after = held(&engine, &session, id);
     assert_ne!(before, after, "key-wallet didn't count it again");
-    assert_holds(&engine, &session, id, &after, "seen again");
+    assert_holds_waiting(&engine, &session, id, &after, &waiting, "seen again");
 }
 
 /// A height-only row without a height (an unconfirmed coin's) beside a
