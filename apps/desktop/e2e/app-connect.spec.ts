@@ -178,7 +178,7 @@ test("a Deny after keys not confirmed doesn't say nothing was added", async ({ p
   await expect(page.getByTestId("connect-quote-error")).toBeVisible();
   await page.getByTestId("connect-deny").click();
   await expect(page.getByTestId("connect-denied")).toHaveText(
-    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
   );
 });
 
@@ -190,7 +190,7 @@ test("a Deny after keys not confirmed on a typed request shows the denied state 
   await expect(page.getByTestId("connect-quote-error")).toBeVisible();
   await page.getByTestId("connect-deny").click();
   await expect(page.getByTestId("connect-denied")).toHaveText(
-    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
   );
   await expect(page.getByTestId("connect-return")).toHaveCount(0);
   await page.getByTestId("connect-close").click();

@@ -325,7 +325,7 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("denied");
     expect(flow.attempted).not.toBeNull();
     expect(t("dashpay.connect.deniedAfterApprove")).toBe(
-      "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+      "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
     );
     expect(t("dashpay.connect.denied")).toBe("You declined this sign-in request. Nothing was added to your identity.");
   });
