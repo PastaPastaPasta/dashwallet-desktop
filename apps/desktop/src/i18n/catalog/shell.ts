@@ -33,6 +33,17 @@ export const shell = {
     offline: "Offline",
     synced: "Synced",
     syncing: "Syncing",
+    /** The sync button while a Platform or Shielded sync did not finish (nothing still syncing). */
+    incomplete: "Incomplete",
+    /** The status bar's state while the network is up to date and Platform's first sync runs. */
+    syncingPlatform: "Syncing Platform…",
+    /** The status bar's state while the network is up to date and Shielded's first scan runs. */
+    syncingShielded: "Syncing Shielded…",
+    platformIncomplete: "Platform sync didn't finish",
+    shieldedIncomplete: "Shielded sync didn't finish",
+    /** Platform's or Shielded's sync status could not be read. */
+    platformUnread: "Couldn't check Platform's sync",
+    shieldedUnread: "Couldn't check Shielded's sync",
     unlockFully: "Unlock fully",
     lock: {
       noVault: "No keys",
@@ -47,6 +58,22 @@ export const shell = {
   },
   /** Sync progress (IOS-023): each SPV phase, the latest block, the peers. */
   sync: {
+    /** Sync progress's list of the syncs the wallet waits on, above the network's phases. */
+    items: {
+      title: "Syncs",
+      core: "Dash network",
+      platform: "Platform",
+      shielded: "Shielded",
+      syncing: "Syncing…",
+      /** Shielded's first scan; `percent` is formatted. */
+      scan: "{percent} scanned",
+      unlock: "Unlock to sync",
+      watchOnly: "Not available in a watch-only wallet",
+      platformIncomplete: "Didn't finish. It tries again the next time you start Dash Wallet.",
+      /** A failed Shielded or Platform-address pass: the next one retries it. */
+      shieldedIncomplete: "The last pass failed. It tries again shortly.",
+      unread: "Couldn't check this sync. It tries again shortly.",
+    },
     phase: {
       headers: "Block headers",
       filterHeaders: "Filter headers",

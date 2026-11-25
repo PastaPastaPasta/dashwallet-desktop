@@ -193,6 +193,9 @@ pub(crate) struct ReplayRecords {
     /// Tests: holds the next commit's note before it is applied.
     #[cfg(test)]
     pub(crate) pause_commit: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next truncation's note before it is applied.
+    #[cfg(test)]
+    pub(crate) pause_truncated: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: a close clears nothing, as a crash.
     #[cfg(test)]
     pub(crate) crash_on_close: std::sync::atomic::AtomicBool,
@@ -229,6 +232,8 @@ impl ReplayRecords {
             lifts: Default::default(),
             #[cfg(test)]
             pause_commit: Default::default(),
+            #[cfg(test)]
+            pause_truncated: Default::default(),
             #[cfg(test)]
             crash_on_close: Default::default(),
             #[cfg(test)]
@@ -880,6 +885,8 @@ impl ReplayRecords {
 
     /// Applies the truncations noted for `wallet` (its record's read does).
     async fn truncated(&self, wallet: WalletId) {
+        #[cfg(test)]
+        crate::coins::pause_at(&self.pause_truncated).await;
         let mut records = self.records.lock().await;
         if let Err(e) = self.load(&mut records, wallet).await {
             tracing::error!(error = %e, wallet = %wallet, "could not apply the replay record of a fork: a reopen may scan from the old chain's checkpoint");
