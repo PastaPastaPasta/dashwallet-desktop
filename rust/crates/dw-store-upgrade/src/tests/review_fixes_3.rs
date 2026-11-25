@@ -304,3 +304,43 @@ fn a_wallet_file_another_user_owns_is_refused_before_the_drop() {
     crate::precheck::EUID_FOR_TEST.with(|u| u.set(None));
     assert!(matches!(checked(&f).unwrap(), Precheck::Fork { .. }));
 }
+
+/// A refused `wallet.sqlite` that is a symlink or another user's: the
+/// unexpected-state screen, the tree byte-equal, and with the state
+/// unproved no earlier version.
+#[cfg(unix)]
+fn assert_unexpected_screen(f: &Fixture, needle: &str) {
+    let before = tree(&f.root);
+    assert_file_refused(f, needle);
+    let Precheck::Refuse { reason } = checked(f).unwrap() else {
+        panic!("refused")
+    };
+    for state in [ProvedState::default(), ProvedState::read(&f.net, false)] {
+        let screen = copy::screen_for(&reason, state).unwrap();
+        assert_eq!(screen.cause, RefusedCause::Unexpected);
+        if state.migrated.is_none() {
+            assert_ne!(screen.way_out, copy::WayOut::Previous, "{state:?}");
+        }
+    }
+    assert_eq!(tree(&f.root), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_or_foreign_wallet_file_shows_the_unexpected_screen() {
+    use std::os::unix::fs::MetadataExt;
+    let f = fixture("v0.1.0");
+    let real = f.root.join("elsewhere.sqlite");
+    fs::rename(f.wallet(), &real).unwrap();
+    std::os::unix::fs::symlink(&real, f.wallet()).unwrap();
+    assert_unexpected_screen(&f, "symbolic link");
+
+    let g = fixture("v0.1.0");
+    let mine = fs::metadata(g.wallet()).unwrap().uid();
+    if mine == 0 {
+        return;
+    }
+    crate::precheck::EUID_FOR_TEST.with(|u| u.set(Some(mine + 1)));
+    assert_unexpected_screen(&g, "is owned by uid");
+    crate::precheck::EUID_FOR_TEST.with(|u| u.set(None));
+}
