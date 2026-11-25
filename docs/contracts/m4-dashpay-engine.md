@@ -2766,7 +2766,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed`, `registration.refunded` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed`, `registration.refunded`, `registration.payment_consumed` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
@@ -4968,7 +4968,11 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
 
 109. **Registration from the Shielded balance: the funding step (C4b-2; F11–F13, F16; version 98).** A
     `start_registration` with `Shielded` that passes item 94's checks writes the row (funding `shielded`, `fallback`
-    the wallet's own Platform receive address) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
+    one of the wallet's own Platform addresses never handed out: under one lock of the payment account its lowest
+    unused address, which Receive may be showing, and the next are marked used and the next is the fallback, recorded
+    durably in the wallet's local scope (`dp_registration_fallback/<address>`) before it is named; every later hand-out
+    of a Platform address, Receive's included, first marks the recorded fallbacks and those the wallet's rows name
+    used, so none is offered again, across restarts and after its row is discarded) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
     Platform's pool must hold at least `ShieldedReadiness.pool_required` notes (250, the protocol's floor for an
     outgoing spend) before an identity create, and `pool_notes` is the count the engine read (a proved count read at
     most 5 minutes ago, else read again within 5 s; an unknown count passes, and Platform's own refusal then decides).
@@ -4982,17 +4986,22 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     one, or one whose denomination, fallback or identity id differ from the row's is refused, and while it is armed
     no other shielded spend of the wallet is sent. The hook names the identity in the row's funding (with the
     activity's height at that moment) durably before the spend's dispatch artifact, and records the dispatch after
-    it; a dispatch it cannot record is settled not sent. A named row settles by evidence alone: the identity proved
-    present is `IdentityRegistered`; an artifact not executed, or no artifact with the row named and no dispatch
+    it; a dispatch it cannot record is settled not sent. A create the library sends again from its store records the
+    dispatch first, and is refused if it cannot. The step reads the notes and their rest only once no shielded pass
+    runs. A named row settles by evidence alone: the identity proved present, with the engine's proof of it written,
+    is `IdentityRegistered` (a proof not written leaves it `payment_unknown` until the next check writes it); an artifact not executed, or no artifact with the row named and no dispatch
     recorded, clears the name and the row tries again (a refused send fails it, retryable, so it never loops; so
     does a create the hook named and then refused); an artifact executed or unresolved (the library resolves every
     failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
     bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
     adopts an identity of the seed at the row's index other than the one the create named, else fails the row
-    `registration.refunded` (not retryable); an unresolved bundle of two or more notes, which has no padding, only
-    while the library still lists its outcome unacknowledged, read after the spent read (another spend of the same
-    notes reads the same; another install's is not told apart); a create in flight or unresolved whose identity reads present,
-    or so proved, is settled `executed`. An unresolved one
+    `registration.refunded` (not retryable). An unresolved bundle of two or more notes has no padding, so its
+    nullifiers read spent may be another install's spend of the same notes: it never claims a refund. Its identity
+    proved present registers it; proved absent at or above h, its notes are gone whoever spent them, so the engine
+    writes its proof `consumed` (the artifact stays `unresolved`) and the row adopts an identity of the seed at the
+    row's index other than the one named, else fails `registration.payment_consumed` (not retryable). A create in
+    flight, unresolved, or settled `executed` and not acknowledged (a success the library resolves unattributable)
+    whose identity reads present is proved `executed`. An unresolved one
     whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
     the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
     no proof), and none of whose published nullifiers is spent by a proved read at or above p never executed and
@@ -5002,7 +5011,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     strings, written back by the next read of its outcomes), and that read settles a transition so proved as proved
     over the library's later `unresolved` listing, a journal still in flight or unresolved after a crash included,
     and acknowledges it: `not_executed` at once (a failed acknowledgement is repeated), `executed` once the journal
-    reads its notes spent; a journal status without the proof is not acted on and its outcome stays unacknowledged.
+    reads its notes spent, and so `consumed` (left `unresolved`); a journal status without the proof is not acted on
+    and its outcome stays unacknowledged.
     A bundle of two or more notes signed again over the same notes names the same identity: of its artifacts, one
     not settled `not_executed` answers first. Anything
     else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an absence read below h, a
@@ -5014,5 +5024,6 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);
     it absorbs the rise of the first read after it only when no read of the addresses happened since the create was
     named, else it claims nothing and the rise reads `Incoming`. `RegistrationStatus` gains `from_shielded`, true
-    for a row whose stored funding is `shielded`. Top-ups from Shielded and the Platform-address funding on mainnet
+    for a row whose stored funding is `shielded`. After a restart a named row waiting `payment_unknown` runs again
+    only on a `resume_registration` with no grant, which checks its evidence and signs nothing. Top-ups from Shielded and the Platform-address funding on mainnet
     are unchanged.
