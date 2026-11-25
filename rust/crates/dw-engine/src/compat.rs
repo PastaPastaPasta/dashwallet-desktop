@@ -1077,20 +1077,6 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    /// [`Self::cover_issued`] for wallet `id`'s stored counters, if any.
-    /// Upstream pools keep the gap past used addresses only, so this runs
-    /// again after each lookahead raise.
-    pub(crate) async fn cover_stored_issued(
-        &self,
-        manager: &crate::session::Manager,
-        id: WalletId,
-    ) -> Result<(), EngineError> {
-        match self.stored_issued(id).await? {
-            Some(issued) => self.cover_issued(manager, id, issued).await,
-            None => Ok(()),
-        }
-    }
-
     /// Wallet `id`'s stored legacy counters, if stored; `Err` when they
     /// cannot be read or are malformed.
     pub(crate) async fn stored_issued(
