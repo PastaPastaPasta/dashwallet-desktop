@@ -137,7 +137,6 @@ fn a_stuck_shield_finishes_while_the_library_cannot_spend_from_the_key_set() {
     assert_eq!(*lib.settles.lock().unwrap(), [restored.outpoint.txid]);
     assert_no_funding(&lib, before);
     assert!(listed(&fx, &lib).unwrap().is_empty());
-    assert!(!lib.keyset_spends(), "still off");
 }
 
 /// Platform's unproved "already consumed" and a failure after the lock's

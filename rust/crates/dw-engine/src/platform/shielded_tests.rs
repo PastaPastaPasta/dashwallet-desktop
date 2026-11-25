@@ -5032,7 +5032,8 @@ fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the
 
 /// Through the real library: while it cannot spend from the key set the
 /// facade issues no address, neither a bound key's (read during a pass)
-/// nor a first bind's; when it can again, the same address.
+/// nor a first bind's, and quotes no shield from the Platform addresses;
+/// when it can again, the same address.
 #[test]
 fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set() {
     use super::topup_tests::fixture;
@@ -5049,7 +5050,19 @@ fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set(
     off.store(true, Ordering::SeqCst);
     let first_dp = fresh.session.dashpay(fresh.wallet);
     let first = fresh.engine.block_on(first_dp.shielded_receive_address());
-    assert_eq!(code(first), "platform.unavailable", "a first bind's");
+    assert_eq!(
+        code(first),
+        "platform.unavailable",
+        "a first bind's, by either check"
+    );
+    let quote = f
+        .engine
+        .block_on(dp.platform_shield_quote(super::WithdrawAmount::All));
+    assert_eq!(
+        quote.unwrap_err().code(),
+        "platform.unavailable",
+        "no shield from Platform"
+    );
     let status = (f.engine)
         .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
             pool::status(&lib).await
