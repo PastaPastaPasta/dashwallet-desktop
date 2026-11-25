@@ -33,7 +33,7 @@ LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
 RECORD = re.compile(r"<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
-MARKER = re.compile(r"<!--\s*dwd-review\s+([^>]*?)\s*-->")
+MARKER = re.compile(r"<!--\s*dwd-review\s+(.*?)\s*-->", re.S)
 FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -107,8 +107,8 @@ def parse_records(comments):
         # Blocks go last so that, within one comment, a block wins.
         strict = [RECORD.fullmatch(line) for in_code, line in record_lines(body) if not in_code]
         found = [fields_of(m) for m in strict if m]
-        found = [f for f in found if f.get("verdict") != "block"]
-        found += [f for f in map(fields_of, MARKER.finditer(body)) if f.get("verdict") == "block"]
+        found = [f for f in found if f.get("verdict", "").lower() != "block"]
+        found += [f for f in map(fields_of, MARKER.finditer(body)) if f.get("verdict", "").lower() == "block"]
         for fields in found:
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")
@@ -234,9 +234,8 @@ def cmd_match(args):
     return 0
 
 
-def policy_unchanged(repo, pr, paths):
+def policy_unchanged(repo, base, paths):
     """A retry may only classify with the patterns it loaded if the new base carries the same list."""
-    base = fetch_pr(repo, pr)["base"]["sha"]
     if gh("-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/ci/funds-paths.txt?ref={base}") != Path(paths).read_text():
         raise RuntimeError(f"ci/funds-paths.txt changed at base {base} during the check; run it again")
 
@@ -250,6 +249,8 @@ def cmd_check(args):
             if args.sha and args.sha != head:
                 print(f"REFUSED #{args.pr}: head is {head}, expected {args.sha}.")
                 return 1
+            if attempt:
+                policy_unchanged(args.repo, info["base"]["sha"], args.paths)
             # The status is keyed by commit, not pull request: only a pull request into the default branch
             # writes it, so a stacked pull request at the same commit cannot turn it green.
             post = args.status and info["base"]["ref"] == info["base"]["repo"]["default_branch"]
@@ -264,7 +265,6 @@ def cmd_check(args):
                 if attempt == 2:
                     raise
                 print(f"funds gate: {e}; reading it again", file=sys.stderr)
-                policy_unchanged(args.repo, args.pr, args.paths)
     except (RuntimeError, json.JSONDecodeError, KeyError) as e:
         print(f"funds gate: {e}", file=sys.stderr)
         return 2

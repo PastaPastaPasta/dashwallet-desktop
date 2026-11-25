@@ -249,6 +249,14 @@ class Gate(unittest.TestCase):
             later = comment(body, at="2026-11-25T06:00:00Z", cid=2)
             self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0], body)
 
+    def test_block_marker_edge_cases(self):
+        for body in [
+            "<!-- dwd-review kind=funds verdict=block sha=" + HEAD + " model=claude-opus-5-5 why=a>b -->",
+            "see <!-- dwd-review kind=funds verdict=BLOCK sha=" + HEAD + " model=claude-opus-5-5 -->",
+        ]:
+            later = comment(body, at="2026-11-25T06:00:00Z", cid=2)
+            self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0], body)
+
     def test_block_beats_approve_in_one_comment(self):
         body = record("funds") + "\n" + record("review") + "\n> " + record("funds", verdict="block")
         self.assertFalse(self.run_gate([comment(body)])[0])
@@ -316,6 +324,27 @@ class Check(unittest.TestCase):
     def test_policy_change_during_retry_leaves_pending(self):
         self.assertEqual(self.check(comments=[comment(BOTH)], moves=1, policy="rust/**\n"), 2)
         self.assertEqual(self.posted, ["pending"])
+
+    def test_policy_is_compared_at_the_base_the_retry_reads(self):
+        bases = iter([OLD, "c" * 40, "d" * 40])
+        gate.fetch_pr = lambda repo, pr: {"head": {"sha": HEAD}, "base": {"sha": next(bases), "ref": "main", "repo": {"default_branch": "main"}}}
+        moved = [True]
+        classified = []
+
+        def fetch(repo, pr, info):
+            if moved.pop() if moved else False:
+                raise gate.Moved("base moved")
+            classified.append(info["base"]["sha"])
+            return [FUNDS_FILE], True, [comment(BOTH)]
+
+        text = gate.PATHS_FILE.read_text()
+        asked = []
+        gate.gh = lambda *a, **k: asked.append(a[-1]) or ("rust/**\n" if "d" * 40 in a[-1] else text)
+        gate.fetch = fetch
+        args = gate.argparse.Namespace(repo="o/r", pr=1, sha=None, status=True, paths=gate.PATHS_FILE)
+        self.assertEqual(gate.cmd_check(args), 0)
+        self.assertEqual(len(classified), 1)
+        self.assertTrue(any(classified[0] in q for q in asked), (classified, asked))
 
     def test_sha_mismatch_posts_no_status(self):
         self.assertEqual(self.check(sha=OLD), 1)
