@@ -872,6 +872,17 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("an Abandon refused while the wallet catches up after a fork says to wait", async ({ page }) => {
+    const errors = await open(page, "abandon-catching-up");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5b".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. You can abandon this payment once it has finished.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
   test("a recordUnreadable refusal says a saved transaction doesn't read, and what to do", async ({ page }) => {
     const errors = await open(page, "abandon-record-unreadable-two-wallets");
     await page.getByTestId("sidebar-activity").click();

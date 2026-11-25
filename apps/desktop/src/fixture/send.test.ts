@@ -309,6 +309,12 @@ describe("fixture send engine", () => {
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
     clearMocks();
+    installFixture({ scenario: "abandon-catching-up" });
+    const catching = "5b".repeat(32);
+    expect(await cmd.txDetailExtras(W, catching)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, catching)).rejects.toMatchObject({ code: "rescan_in_progress" });
+    await expect(cmd.dropUnconfirmed(null)).rejects.toMatchObject({ code: "rescan_in_progress" });
+    clearMocks();
     installFixture({ scenario: "abandon-settled-child-hidden" });
     expect(await cmd.txDetailExtras(W, "5d".repeat(32))).toMatchObject({ canAbandon: false, abandoned: false });
     clearMocks();

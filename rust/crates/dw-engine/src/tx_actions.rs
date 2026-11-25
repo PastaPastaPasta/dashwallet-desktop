@@ -2441,7 +2441,8 @@ impl NetworkSession {
             .filter(|o| !freed.contains(*o))
             .map(|o| (*o, None))
             .collect();
-        let held = core.restore_spent_outpoints(&claims);
+        let held = crate::history_ops::restore_spent_claims(info, &claims);
+        let core = &mut info.core_wallet;
         for account in core.accounts.all_funding_accounts_mut() {
             for o in &held {
                 account.utxos.remove(o);

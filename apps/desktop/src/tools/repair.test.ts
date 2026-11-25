@@ -14,7 +14,7 @@ import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, summary, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
-import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
+import { RepairModel, repairErrorText, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
 
 const reg = (draft: string, waiting: RegistrationStatus["waiting"]): RegistrationStatus => ({
   draft,
@@ -109,6 +109,22 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     api.rescan.mockRejectedValueOnce(appError("rescan_in_progress"));
     await model.rescan({ kind: "walletBirth" });
     expect(model.state).toEqual({ kind: "failed", text: "Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait." });
+  });
+
+  it("says Remove Unconfirmed refused while the wallet catches up after a fork can be tried once it has", async () => {
+    const { model, api } = setup();
+    api.dropUnconfirmed.mockRejectedValueOnce(appError("rescan_in_progress"));
+    model.ask("dropUnconfirmed");
+    await model.confirm();
+    expect(model.state).toEqual({
+      kind: "failed",
+      text: "The wallet is catching up with the network. You can remove unconfirmed transactions once it has finished.",
+    });
+  });
+
+  it("keeps Rescan's own text when a rescan is refused while one runs", () => {
+    expect(repairErrorText(appError("rescan_in_progress"))).toBe("Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait.");
+    expect(repairErrorText(appError("rescan_in_progress"), "resetChainData")).toBe("Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait.");
   });
 
   it("QT148_resetChainDataAsksFirst", async () => {

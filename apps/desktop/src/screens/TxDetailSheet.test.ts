@@ -86,6 +86,16 @@ describe("a refused abandon", () => {
     expect(actionProblem(refused("rescanFirst", "engine text"))).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
   });
 
+  it("says an Abandon refused while the wallet catches up after a fork can be tried once it has", () => {
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null })).toBe(
+      "The wallet is catching up with the network. You can abandon this payment once it has finished.",
+    );
+  });
+
+  it("keeps the engine's text for a Resend refused while the wallet catches up", () => {
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null }, [], "resend")).toBe("a rescan is in progress");
+  });
+
   it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",

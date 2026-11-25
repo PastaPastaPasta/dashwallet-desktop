@@ -371,6 +371,11 @@ impl OpGate {
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
+
+    /// Returns once the gate closes.
+    pub(crate) async fn until_closed(&self) {
+        self.until(|g| g.closed.load(Ordering::SeqCst)).await;
+    }
 }
 
 /// Tests: one wait on a pause, counted while it lasts.
