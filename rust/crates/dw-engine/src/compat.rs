@@ -994,7 +994,6 @@ impl NetworkSession {
                 }
             }
         }
-        managed.bump_monitor_revision();
         Ok(())
     }
 

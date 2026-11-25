@@ -489,14 +489,11 @@ fn narrow_coinjoin(engine: &Engine, session: &NetworkSession, id: WalletId) {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
         let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
-        let mut fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+        let fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
             wallet.accounts.account_of_type(cj()).unwrap(),
         )
         .unwrap();
         let accounts = &mut info.core_wallet.accounts.coinjoin_accounts;
-        for _ in 0..=accounts[&0].monitor_revision() {
-            fresh.bump_monitor_revision();
-        }
         *accounts.get_mut(&0).unwrap() = fresh;
     });
     assert_eq!(gap(engine, session, id, cj()), 100);

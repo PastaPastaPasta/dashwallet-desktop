@@ -1893,13 +1893,16 @@ impl NetworkSession {
                 _ => return Err(EngineError::Internal("not a CoinJoin account".into())),
             };
             for _ in 0..count {
-                out.push(
-                    pool.next_unused_and_reserve(&KeySource::Public(xpub), now)
-                        .map_err(|e| EngineError::Internal(format!("CoinJoin address: {e}")))?,
-                );
+                let address = (pool.next_unused(&KeySource::Public(xpub)))
+                    .map_err(|e| EngineError::Internal(format!("CoinJoin address: {e}")))?;
+                if !pool.reserve(&address, now) {
+                    return Err(EngineError::Internal(format!(
+                        "CoinJoin address: {address} not reservable"
+                    )));
+                }
+                out.push(address);
             }
         }
-        account.bump_monitor_revision();
         Ok(out)
     }
 

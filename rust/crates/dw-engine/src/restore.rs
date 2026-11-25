@@ -230,7 +230,6 @@ fn search(
         let Some(a) = info.accounts.funds_account_mut(&account) else {
             continue;
         };
-        let mut extended = false;
         for pool in a.managed_account_type_mut().address_pools_mut() {
             if wanted.is_empty() {
                 break;
@@ -289,10 +288,6 @@ fn search(
                 }
             }
             found += hits.len();
-            extended = true;
-        }
-        if extended {
-            a.bump_monitor_revision();
         }
     }
     found
