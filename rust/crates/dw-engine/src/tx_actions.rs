@@ -1967,20 +1967,17 @@ impl NetworkSession {
             .into_iter()
             .flatten()
             .min();
-            let mut target = None;
+            let mut holds: BTreeMap<OutPoint, RescanHold> = BTreeMap::new();
             if let Some(checkpoint) = checkpoint {
-                target = Some(self.record_rewind_locked(wallet, info, checkpoint).await?);
+                let target = self.record_rewind_locked(wallet, info, checkpoint).await?;
                 *recorded = (*recorded).into_iter().chain([checkpoint]).min();
+                // No processed block's spend and no stored transaction is
+                // evidence the coins are unspent: each waits for the rewind's
+                // rescan (#818).
+                holds = (released.iter())
+                    .map(|o| (*o, RescanHold::new(checkpoint, target)))
+                    .collect();
             }
-            // No processed block's spend and no stored transaction is
-            // evidence the coins are unspent: each waits for the rewind's
-            // rescan (#818).
-            let holds: BTreeMap<OutPoint, RescanHold> = match (checkpoint, target) {
-                (Some(c), Some(t)) => (released.iter())
-                    .map(|o| (*o, RescanHold::new(c, t)))
-                    .collect(),
-                _ => BTreeMap::new(),
-            };
             let txs: Vec<(Txid, Transaction)> = (planned.iter())
                 .filter_map(|t| {
                     let tx = (self.hub.history.get(&wallet, t).map(|e| e.tx))
@@ -2031,16 +2028,7 @@ impl NetworkSession {
                     crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
                 let undo = crate::rescan_hold::undo_marks(&holds, &previous);
-                let scope = wallet.to_string();
-                if let Err(e) = (self.appdb_op(move |db| {
-                    let writes: Vec<(&str, Option<&str>)> = undo
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.as_deref()))
-                        .collect();
-                    db.set_settings_durable(&scope, &writes)
-                }))
-                .await
-                {
+                if let Err(e) = self.write_marks(wallet, undo).await {
                     tracing::warn!(%wallet, error = %e, "could not drop the hold marks of a refused abandon");
                 }
             } else {
@@ -2398,15 +2386,7 @@ impl NetworkSession {
                 })
                 .chain(crate::rescan_hold::undo_marks(&rescan_holds, &previous))
                 .collect();
-            let scope = wallet.to_string();
-            self.appdb_op(move |db| {
-                let writes: Vec<(&str, Option<&str>)> = undo
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_deref()))
-                    .collect();
-                db.set_settings_durable(&scope, &writes)
-            })
-            .await?;
+            self.write_marks(wallet, undo).await?;
             return Ok(abandoned);
         }
         // key-wallet took another than planned: nothing comes back.
@@ -2706,6 +2686,16 @@ impl NetworkSession {
         if (self.hub.fail_abandon_mark).swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err(EngineError::Storage("abandon: test mark failure".into()));
         }
+        self.write_marks(wallet, rows).await
+    }
+
+    /// Writes `rows` of `wallet`'s scope durably in one write (a `None`
+    /// value deletes its key).
+    pub(crate) async fn write_marks(
+        &self,
+        wallet: WalletId,
+        rows: Vec<(String, Option<String>)>,
+    ) -> Result<(), EngineError> {
         let scope = wallet.to_string();
         self.appdb_op(move |db| {
             let writes: Vec<(&str, Option<&str>)> = (rows.iter())

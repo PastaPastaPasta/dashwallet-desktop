@@ -1001,15 +1001,8 @@ impl NetworkSession {
         }
         let held = self.hub.rescan_held(&id);
         let keys = crate::rescan_hold::hold_keys(released.iter().filter(|o| !held.contains(*o)));
-        let scope = id.to_string();
-        let dropped = self
-            .appdb_op(move |db| {
-                let writes: Vec<(&str, Option<&str>)> =
-                    keys.iter().map(|k| (k.as_str(), None)).collect();
-                db.set_settings_durable(&scope, &writes)
-            })
-            .await;
-        if let Err(e) = dropped {
+        let rows = keys.into_iter().map(|k| (k, None)).collect();
+        if let Err(e) = self.write_marks(id, rows).await {
             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of coins whose rescan is back");
         }
     }
