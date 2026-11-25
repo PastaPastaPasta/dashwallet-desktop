@@ -418,12 +418,40 @@ mod tests {
         assert_eq!(outpoints(&core.spent_utxos), [coin(9).outpoint]);
     }
 
+    /// A re-scan's coins are judged the same way: one with a verdict is
+    /// left out, whatever the verdict, and the others stay.
+    #[test]
+    fn rescan_coins_the_wallet_did_not_credit_are_not_stored() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: vec![coin(4)],
+                rescan_utxos: (0..4).map(coin).collect(),
+                utxo_credit_verdicts: [
+                    (coin(1).outpoint, UtxoCreditVerdict::Uncredited),
+                    (
+                        coin(2).outpoint,
+                        UtxoCreditVerdict::ObservedSpent { height: 9 },
+                    ),
+                    (coin(3).outpoint, UtxoCreditVerdict::Doomed),
+                ]
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        drop_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.rescan_utxos), [coin(0).outpoint]);
+        assert_eq!(outpoints(&core.new_utxos), [coin(4).outpoint]);
+    }
+
     /// Without verdicts, or without a core part, nothing changes.
     #[test]
     fn a_batch_without_verdicts_is_stored_as_given() {
         let mut changeset = PlatformWalletChangeSet {
             core: Some(CoreChangeSet {
                 new_utxos: (0..2).map(coin).collect(),
+                rescan_utxos: vec![coin(3)],
                 ..Default::default()
             }),
             ..Default::default()
@@ -431,6 +459,7 @@ mod tests {
         drop_uncredited(&mut changeset);
         let core = changeset.core.unwrap();
         assert_eq!(outpoints(&core.new_utxos), [0, 1].map(|v| coin(v).outpoint));
+        assert_eq!(outpoints(&core.rescan_utxos), [coin(3).outpoint]);
         assert!(core.spent_utxos.is_empty());
 
         let mut empty = PlatformWalletChangeSet::default();
