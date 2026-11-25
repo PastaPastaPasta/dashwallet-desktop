@@ -305,7 +305,7 @@ async fn plan(
     let fee = fee_credits(rules);
     let min = minimum_duffs(rules);
     if duffs < min {
-        return Err(CreditsError::BelowMinimum { min });
+        return Err(CreditsError::BelowMinimum { min, max: None });
     }
     no_open_fund(session, wallet, lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -583,7 +583,7 @@ pub(crate) async fn fund(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => CreditsError::CoinsLocked,
             Err(FundError::CoinsChanged) => CreditsError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => CreditsError::TooManyInputs {
                 inputs: max + 1,

@@ -131,7 +131,7 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
+    CoreMax, CoreMaxShort, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
     TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote, TopUpState,
     WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
     WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,

@@ -453,6 +453,10 @@ struct DrainCap {
     /// Per path, the sighashes signed there; and their values' sum.
     signed: std::sync::Mutex<(SignedByPath, u64)>,
     refusal: std::sync::Mutex<Option<DrainRefusal>>,
+    /// The last build the builder showed it, for the tests that read the
+    /// real library's.
+    #[cfg(test)]
+    shown: std::sync::Mutex<Option<Transaction>>,
 }
 
 impl DrainCap {
@@ -476,6 +480,8 @@ impl DrainCap {
             instant_locked: plan.instant_locked,
             signed: std::sync::Mutex::default(),
             refusal: std::sync::Mutex::default(),
+            #[cfg(test)]
+            shown: std::sync::Mutex::default(),
         }
     }
 
@@ -630,6 +636,18 @@ impl CountingFundingSigner {
         *drain.refusal.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The last build the builder showed the drain cap, approved or not,
+    /// before any signature.
+    #[cfg(test)]
+    pub(crate) fn drain_shown(&self) -> Option<Transaction> {
+        let drain = self.drain.as_ref()?;
+        drain
+            .shown
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     /// Signs at most `max` inputs (a shield's lock, whose InstantSend proof
     /// stops fitting a transition from about 65 inputs). A build of more is
     /// refused when the builder shows it, before any signature
@@ -729,6 +747,10 @@ impl key_wallet::Signer for CountingFundingSigner {
     }
 
     async fn approve_inputs(&self, tx: &Transaction, inputs: &[Utxo]) -> Result<(), SignerError> {
+        #[cfg(test)]
+        if let Some(drain) = &self.drain {
+            *drain.shown.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx.clone());
+        }
         if let Some(drain) = &self.drain
             && let Err(refusal) = drain.approve(tx, inputs)
         {

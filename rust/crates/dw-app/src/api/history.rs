@@ -1,13 +1,14 @@
 //! Transaction history, the detail sheet and the actions on a transaction
 //! (abandon, resend, drop, CSV export, notification rows, the explorer).
 
-use dw_engine::{DashNetwork, TxDetailExtras, TxNotice};
+use dw_engine::{DashNetwork, DroppedNotice, TxDetailExtras, TxNotice};
 use dw_units::Unit;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::history::{
-    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxDetails, TxTypeName,
+    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxCounterparty, TxDetails,
+    TxTypeName,
 };
 use crate::dto::{OutPoint, mirror_enum, parse_txid};
 use crate::error::{AppCode, AppError};
@@ -135,6 +136,45 @@ impl From<TxNotice> for TxNoticeRow {
     }
 }
 
+/// A payment Dash Wallet dropped because the Dash it spent came from an
+/// incoming transaction that was never valid, once the wallet's own coins
+/// it used are back, until dismissed: one per payee.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedNoticeRow {
+    pub txid: String,
+    pub record_index: u32,
+    /// What it paid this payee, in duffs, without the fee.
+    pub amount: u64,
+    pub timestamp: Option<u64>,
+    pub address: Option<String>,
+    pub label: Option<String>,
+    pub counterparty: Option<TxCounterparty>,
+}
+
+impl From<DroppedNotice> for DroppedNoticeRow {
+    fn from(n: DroppedNotice) -> Self {
+        let DroppedNotice {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty,
+        } = n;
+        DroppedNoticeRow {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty: counterparty.map(Into::into),
+        }
+    }
+}
+
 commands! {
     #[facade("NetworkSession::history_page")]
     fn history_page(state, wallet_id: String, request: HistoryRequest) -> HistoryRows {
@@ -254,6 +294,30 @@ commands! {
             .collect::<Result<Vec<_>, _>>()?;
         let notices = state.session().await?.tx_notices(id, txids).await?;
         Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// The notices of payments Dash Wallet dropped because what they spent
+    /// came from a transaction that was never valid, not yet dismissed.
+    #[facade("NetworkSession::dropped_notices")]
+    fn dropped_notices(state, wallet_id: String) -> Vec<DroppedNoticeRow> {
+        let id = parse_wallet_id(&wallet_id)?;
+        let notices = state.session().await?.dropped_notices(id).await?;
+        Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// Dismisses the notices of the dropped payments `txids` for good.
+    #[facade("NetworkSession::dismiss_dropped_notices")]
+    fn dismiss_dropped_notices(state, wallet_id: String, txids: Vec<String>) -> () {
+        let id = parse_wallet_id(&wallet_id)?;
+        let txids = txids
+            .iter()
+            .map(|t| parse_txid(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(state
+            .session()
+            .await?
+            .dismiss_dropped_notices(id, txids)
+            .await?)
     }
 
     /// Whether a record type is a CoinJoin mixing, denomination or
