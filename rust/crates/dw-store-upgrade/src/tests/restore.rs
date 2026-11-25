@@ -786,7 +786,8 @@ fn crash_after_record_before_create_cleans_cleanly() {
 /// MG (x): Cancel restore before the journal removes the request and what
 /// the stopped attempt made, leaving the network dir as before the request;
 /// with a journal it refuses and changes nothing; with nothing pending it
-/// does nothing.
+/// does nothing; a stale record never lets it remove a finished restore's
+/// after dir or its mark.
 #[test]
 fn cancel_restore_before_the_journal_only() {
     let u = upgraded();
@@ -828,10 +829,30 @@ fn cancel_restore_before_the_journal_only() {
         "{err:?}"
     );
     assert_eq!(tree_diff(&mid, &tree(&u.net)), Vec::<String>::new());
-    assert!(
-        u.run(later(60)).unwrap().is_some(),
-        "the restore still finishes"
-    );
+    let info = u.run(later(60)).unwrap().unwrap();
+
+    // A stale record naming the finished restore's after dir and claiming
+    // its mark: a cancel never removes either.
+    let after = file_name(&info.after_dir);
+    for id in ["", "id anything"] {
+        let mut entries = vec!["mark-created".to_string(), format!("path {after}")];
+        if !id.is_empty() {
+            entries.insert(0, id.to_string());
+        }
+        write_attempt_record(&u, &entries);
+        u.request();
+        let after_tree = tree(&info.after_dir);
+        let mark = fs::read(u.root().join(RESTORED_MARK)).unwrap();
+        crate::restore::cancel_restore(&u.net).unwrap();
+        assert_eq!(tree(&info.after_dir), after_tree, "{id:?}");
+        assert_eq!(
+            fs::read(u.root().join(RESTORED_MARK)).unwrap(),
+            mark,
+            "{id:?}"
+        );
+        assert_eq!(crate::restore::pending_restore(&u.net).unwrap(), None);
+        assert!(!u.root().join(RESTORE_ATTEMPT).exists(), "{id:?}");
+    }
 }
 
 /// A crash mid-copy leaves its dirs, a partial copy and a mark it created;
