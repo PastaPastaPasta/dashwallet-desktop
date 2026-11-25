@@ -636,3 +636,6 @@ fn a_consumed_create_is_acknowledged_once_its_notes_read_spent() {
     );
     assert_eq!(listing(&engine, &session, wallet), Ok(Vec::new()));
 }
+
+#[path = "shielded_release_tests.rs"]
+mod release_tests;

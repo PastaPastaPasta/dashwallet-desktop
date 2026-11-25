@@ -98,6 +98,7 @@ mod shielded;
 mod shielded_close_tests;
 pub(crate) mod shielded_payout;
 pub(crate) mod shielded_pool;
+pub(crate) mod shielded_release;
 #[cfg(test)]
 pub(crate) mod shielded_tests;
 pub mod signers;
@@ -183,9 +184,9 @@ pub use shielded::{
     HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome,
     ShieldQuote, ShieldRepairCost, ShieldState, ShieldedAccount, ShieldedActivity,
     ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress, ShieldedDirection,
-    ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
-    ShieldedStatus, ShieldedSyncInfo, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
-    UnresolvedSpend, UnshieldToPlatformOutcome,
+    ShieldedRefusal, ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote,
+    ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo, ShieldedSyncWait, StuckShieldFunding,
+    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,

@@ -319,6 +319,14 @@ pub struct Balances {
     /// scanned: a wallet born long ago is still behind the tip while the
     /// sync status says so.
     pub catching_up: bool,
+    /// The coins held while what beat a payment that can never confirm is
+    /// unfinished, summed: in no bucket above.
+    pub held_unfinished: u64,
+    /// The held coins whose value is unknown, not in `heldUnfinished`.
+    pub held_unvalued: u32,
+    /// A held coin awaits a transaction that isn't final yet: no way out
+    /// is offered until it is.
+    pub held_awaiting: bool,
 }
 
 impl From<WalletBalances> for Balances {
@@ -332,6 +340,9 @@ impl From<WalletBalances> for Balances {
             coinjoin,
             withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         } = b;
         Balances {
             confirmed,
@@ -342,6 +353,9 @@ impl From<WalletBalances> for Balances {
             coinjoin,
             withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         }
     }
 }
@@ -355,6 +369,9 @@ pub struct WalletSummary {
     pub watch_only: bool,
     /// The vault holds the wallet's recovery phrase.
     pub has_mnemonic: bool,
+    /// Imported from a Dash Core wallet.dat with legacy issued address
+    /// ranges, which a recovery phrase doesn't restore.
+    pub legacy_issued: bool,
     pub hd: bool,
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
@@ -371,6 +388,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
@@ -381,6 +399,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,

@@ -110,6 +110,107 @@ fn note(position: u64, value: u64) -> ShieldedNote {
     }
 }
 
+/// A signed shielded transfer `n` publishing `nullifiers` against `anchor`,
+/// as the dispatch hook decodes it.
+pub(super) fn signed_transfer(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
+    use platform_wallet::wallet::shielded::ShieldedDispatchKind;
+    signed_spend(n, &ShieldedDispatchKind::Transfer, anchor, nullifiers)
+}
+
+/// The signed transition of spend `n` of `kind`'s family, publishing
+/// `nullifiers` against `anchor`.
+pub(super) fn signed_spend(
+    n: u8,
+    kind: &platform_wallet::wallet::shielded::ShieldedDispatchKind,
+    anchor: [u8; 32],
+    nullifiers: &[[u8; 32]],
+) -> Vec<u8> {
+    use dpp::identity::core_script::CoreScript;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::shielded::SerializedAction;
+    use dpp::state_transition::StateTransition;
+    use dpp::state_transition::identity_top_up_from_shielded_pool_transition::IdentityTopUpFromShieldedPoolTransition;
+    use dpp::state_transition::identity_top_up_from_shielded_pool_transition::v0::IdentityTopUpFromShieldedPoolTransitionV0;
+    use dpp::state_transition::shielded_transfer_transition::ShieldedTransferTransition;
+    use dpp::state_transition::shielded_transfer_transition::v0::ShieldedTransferTransitionV0;
+    use dpp::state_transition::shielded_withdrawal_transition::ShieldedWithdrawalTransition;
+    use dpp::state_transition::shielded_withdrawal_transition::v0::ShieldedWithdrawalTransitionV0;
+    use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::IdentityCreateFromShieldedPoolTransition;
+    use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::v0::IdentityCreateFromShieldedPoolTransitionV0;
+    use dpp::state_transition::unshield_transition::UnshieldTransition;
+    use dpp::state_transition::unshield_transition::v0::UnshieldTransitionV0;
+    use platform_wallet::wallet::shielded::ShieldedDispatchKind as K;
+    let actions: Vec<SerializedAction> = (nullifiers.iter())
+        .map(|&nullifier| SerializedAction {
+            nullifier,
+            rk: [n; 32],
+            cmx: [0x30 + n; 32],
+            encrypted_note: vec![0x40 + n; 216],
+            cv_net: [0x50 + n; 32],
+            spend_auth_sig: [0x60 + n; 64],
+        })
+        .collect();
+    let (proof, binding_signature) = (vec![0x70; 512], [0x71; 64]);
+    let st = match kind {
+        K::Transfer => StateTransition::ShieldedTransfer(ShieldedTransferTransition::V0(
+            ShieldedTransferTransitionV0 {
+                actions,
+                value_balance: 1_000 + u64::from(n),
+                anchor,
+                proof,
+                binding_signature,
+            },
+        )),
+        K::Unshield => StateTransition::Unshield(UnshieldTransition::V0(UnshieldTransitionV0 {
+            output_address: PlatformAddress::P2pkh([0x51; 20]),
+            actions,
+            unshielding_amount: 100_000_000 + u64::from(n),
+            anchor,
+            proof,
+            binding_signature,
+        })),
+        K::Withdraw => StateTransition::ShieldedWithdrawal(ShieldedWithdrawalTransition::V0(
+            ShieldedWithdrawalTransitionV0 {
+                actions,
+                unshielding_amount: 100_000_000 + u64::from(n),
+                anchor,
+                proof,
+                binding_signature,
+                core_fee_per_byte: 1,
+                pooling: dpp::withdrawal::Pooling::Never,
+                output_script: CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]),
+            },
+        )),
+        K::IdentityTopUp { identity_id } => StateTransition::IdentityTopUpFromShieldedPool(
+            IdentityTopUpFromShieldedPoolTransition::V0(
+                IdentityTopUpFromShieldedPoolTransitionV0 {
+                    identity_id: (*identity_id).into(),
+                    actions,
+                    top_up_amount: 100_000_000 + u64::from(n),
+                    anchor,
+                    proof,
+                    binding_signature,
+                },
+            ),
+        ),
+        K::IdentityCreate { identity_id } => StateTransition::IdentityCreateFromShieldedPool(
+            IdentityCreateFromShieldedPoolTransition::V0(
+                IdentityCreateFromShieldedPoolTransitionV0 {
+                    public_keys: Vec::new(),
+                    denomination: 100_000_000,
+                    actions,
+                    anchor,
+                    proof,
+                    binding_signature,
+                    send_to_address_on_creation_failure: PlatformAddress::P2pkh([0x52; 20]),
+                    identity_id: (*identity_id).into(),
+                },
+            ),
+        ),
+    };
+    st.serialize_to_bytes().unwrap()
+}
+
 fn entry(kind: Kind, amount: u64, status: Status) -> ShieldedActivityEntry {
     ShieldedActivityEntry {
         id: [amount as u8; 32],
@@ -3802,9 +3903,9 @@ fn a_pass_records_spends_stored_before_the_hook_and_leaves_hooked_ones_to_their_
     let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
     assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
-    let hooked_bytes = b"a hooked transition".to_vec();
-    let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
     let selected_note = note(6, NOTE);
+    let hooked_bytes = signed_transfer(5, [0; 32], &[selected_note.nullifier, [0xee; 32]]);
+    let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
     let s = Arc::clone(session);
     let m = Arc::clone(&manager);
     engine.block_on(async move {

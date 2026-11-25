@@ -180,6 +180,9 @@ jobs:
       - name: Tracked paths are valid on Windows
         working-directory: .
         run: ci/github/windows-paths.py
+      - name: Funds review gate and ci/funds-paths.txt (docs/ci.md, "Funds review gate")
+        working-directory: .
+        run: python3 ci/github/funds-gate-test.py
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.

@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::{self, PASS, options};
-use super::{NOTE, bound_address, core_address, note, payee};
+use super::{NOTE, bound_address, core_address, note, payee, signed_spend};
 use crate::{DashNetwork, EngineError, ImportOptions, NetworkSession};
 
 /// A nullifier no note of the account has: a padding action's.
@@ -53,6 +53,9 @@ struct Hooked {
     f: topup_tests::Fixture,
     coordinator: Arc<NetworkShieldedCoordinator>,
     hook: Arc<EngineDispatch>,
+    /// The notes each spend `n` last took and its kind, which its signed
+    /// bytes spend.
+    signed: std::sync::Mutex<std::collections::HashMap<u8, (Vec<u64>, ShieldedDispatchKind)>>,
 }
 
 impl Hooked {
@@ -66,6 +69,7 @@ impl Hooked {
             f,
             coordinator,
             hook,
+            signed: Default::default(),
         }
     }
 
@@ -88,12 +92,18 @@ impl Hooked {
     /// Stores spend `n` unsent, as the library does before it asks the
     /// hook, reserving the notes at `positions`.
     fn store_unsent(&self, n: u8, positions: &[u64]) {
+        self.store_unsent_as(n, positions, ShieldedDispatchKind::Transfer);
+    }
+
+    /// [`Self::store_unsent`] of a spend of `kind`.
+    fn store_unsent_as(&self, n: u8, positions: &[u64], kind: ShieldedDispatchKind) {
+        self.sign(n, positions, kind);
         let (coordinator, id) = (Arc::clone(&self.coordinator), self.subwallet());
         let redrive = PendingRedrive {
             activity_id: [n; 32],
             anchor: [0xa0; 32],
             nullifiers: positions.iter().map(|p| note(*p, NOTE).nullifier).collect(),
-            st_bytes: st_bytes(n),
+            st_bytes: self.st_bytes(n),
             attempts: 0,
             identity_nonce_finalized: false,
             identity_user_abandoned: false,
@@ -108,6 +118,16 @@ impl Hooked {
     /// The payload the library hands the hook for spend `n` selecting the
     /// notes at `positions`: one note is padded to two actions.
     fn payload(&self, n: u8, positions: &[u64]) -> ShieldedDispatchPayload {
+        self.payload_as(n, positions, ShieldedDispatchKind::Transfer)
+    }
+
+    /// [`Self::payload`] of a spend of `kind`.
+    fn payload_as(
+        &self,
+        n: u8,
+        positions: &[u64],
+        kind: ShieldedDispatchKind,
+    ) -> ShieldedDispatchPayload {
         let selected_notes: Vec<_> = (positions.iter())
             .map(|p| note(*p, NOTE))
             .map(|n| DispatchedNote {
@@ -117,29 +137,36 @@ impl Hooked {
                 position: n.position,
             })
             .collect();
-        let mut published: Vec<_> = selected_notes.iter().map(|n| n.nullifier).collect();
-        if published.len() == 1 {
-            published.push(PADDING);
-        }
+        self.sign(n, positions, kind);
         ShieldedDispatchPayload {
-            kind: ShieldedDispatchKind::Transfer,
+            kind,
             wallet_id: self.f.wallet.0,
             account_index: SHIELDED_ACCOUNT,
             activity_id: [n; 32],
-            st_hash: st_hash(n),
-            st_bytes: st_bytes(n),
+            st_hash: self.st_hash(n),
+            st_bytes: self.st_bytes(n),
             anchor: [0xa0; 32],
             selected_notes,
-            published_nullifiers: published,
+            published_nullifiers: published(positions),
         }
     }
 
     /// Notes, the stored spend and the payload of spend `n` taking the
     /// notes at `positions`, all consistent.
     fn staged(&self, n: u8, positions: &[u64]) -> ShieldedDispatchPayload {
+        self.staged_as(n, positions, ShieldedDispatchKind::Transfer)
+    }
+
+    /// [`Self::staged`] of a spend of `kind`.
+    fn staged_as(
+        &self,
+        n: u8,
+        positions: &[u64],
+        kind: ShieldedDispatchKind,
+    ) -> ShieldedDispatchPayload {
         self.hold_notes(positions);
-        self.store_unsent(n, positions);
-        self.payload(n, positions)
+        self.store_unsent_as(n, positions, kind);
+        self.payload_as(n, positions, kind)
     }
 
     fn dispatch(&self, payload: ShieldedDispatchPayload) -> Result<(), String> {
@@ -158,6 +185,22 @@ impl Hooked {
 
     fn artifact(&self, n: u8) -> Option<ShieldedArtifact> {
         artifact(&self.f, n)
+    }
+
+    /// The signed bytes of spend `n`, of the notes it last took (none if
+    /// it took none).
+    fn st_bytes(&self, n: u8) -> Vec<u8> {
+        let signed = self.signed.lock().unwrap().get(&n).cloned();
+        let (positions, kind) = signed.unwrap_or((Vec::new(), ShieldedDispatchKind::Transfer));
+        signed_spend(n, &kind, [0xa0; 32], &published(&positions))
+    }
+
+    fn st_hash(&self, n: u8) -> [u8; 32] {
+        Sha256::digest(self.st_bytes(n)).into()
+    }
+
+    fn sign(&self, n: u8, positions: &[u64], kind: ShieldedDispatchKind) {
+        (self.signed.lock().unwrap()).insert(n, (positions.to_vec(), kind));
     }
 
     /// Rewrites the journal row of spend `n` in place, as a later writer
@@ -250,12 +293,14 @@ impl Hooked {
     }
 }
 
-fn st_bytes(n: u8) -> Vec<u8> {
-    format!("signed transition {n}").into_bytes()
-}
-
-fn st_hash(n: u8) -> [u8; 32] {
-    Sha256::digest(st_bytes(n)).into()
+/// The nullifiers spend `n` taking the notes at `positions` publishes: a
+/// one-note spend is padded to two actions.
+fn published(positions: &[u64]) -> Vec<[u8; 32]> {
+    let mut published = nullifiers(positions);
+    if published.len() == 1 {
+        published.push(PADDING);
+    }
+    published
 }
 
 fn artifact(f: &topup_tests::Fixture, n: u8) -> Option<ShieldedArtifact> {
@@ -323,15 +368,27 @@ fn h1_refuses_when_selected_differs_from_redrive() {
     // The library stored nothing for activity 2.
     let refused = h.dispatch(h.payload(2, &[1, 2])).unwrap_err();
     assert!(refused.contains("stored no spend"), "{refused}");
-    // The stored transition is another one.
+    // The stored transition is another one: other bytes, with the same
+    // anchor and nullifiers, so only the stored hash tells them apart.
     let mut other = h.payload(1, &[1, 2]);
-    other.st_bytes = st_bytes(9);
-    other.st_hash = st_hash(9);
-    assert!(h.dispatch(other).is_err());
+    other.st_bytes = signed_spend(
+        9,
+        &ShieldedDispatchKind::Transfer,
+        [0xa0; 32],
+        &published(&[1, 2]),
+    );
+    other.st_hash = Sha256::digest(&other.st_bytes).into();
+    assert_ne!(other.st_hash, h.st_hash(1));
+    let refused = h.dispatch(other).unwrap_err();
+    assert!(
+        refused.contains("not the one the library stored"),
+        "{refused}"
+    );
     // The hash is not that of the bytes.
     let mut forged = h.payload(1, &[1, 2]);
-    forged.st_hash = st_hash(9);
-    assert!(h.dispatch(forged).is_err());
+    forged.st_hash = h.st_hash(9);
+    let refused = h.dispatch(forged).unwrap_err();
+    assert!(refused.contains("not that of its bytes"), "{refused}");
     // Another account than the engine's.
     let mut account = h.payload(1, &[1, 2]);
     account.account_index = SHIELDED_ACCOUNT + 1;
@@ -385,7 +442,7 @@ fn settle_evidence_reads_real_note_nullifiers_only() {
     assert_eq!(h.artifact(1), Some(written));
     assert_eq!(h.attempts(1), Some(0), "the stored spend stands");
     h.lease();
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 }
 
 /// The artifact is in the journal when the hook returns `Ok`, never after:
@@ -433,7 +490,7 @@ fn h1_writes_the_artifact_before_returning_ok() {
         ),
         (
             ArtifactOrigin::Dispatched,
-            Some(st_hash(1)),
+            Some(h.st_hash(1)),
             Some(ArtifactKind::Transfer),
             Some([0xa0; 32])
         )
@@ -459,6 +516,95 @@ fn h1_writes_the_artifact_before_returning_ok() {
     assert_eq!(h.artifact(2), None);
 }
 
+/// Platform's anchors as the hook reads them: `None`, the read fails.
+struct Anchors {
+    read: Option<(Vec<[u8; 32]>, u64)>,
+    verified: bool,
+}
+
+impl super::super::shielded_release::ReleaseNet for Anchors {
+    fn anchors(
+        &self,
+    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Proved<Vec<[u8; 32]>>>>
+    {
+        let read =
+            (self.read.clone()).map(|(value, height)| super::super::shielded_release::Proved {
+                value,
+                height,
+                time_ms: 0,
+                verified: false,
+            });
+        let verified = self.verified;
+        Box::pin(async move {
+            super::super::trust::note_lookup(verified);
+            read
+        })
+    }
+
+    fn nullifiers(
+        &self,
+        _: Vec<[u8; 32]>,
+    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Statuses>> {
+        Box::pin(async { None })
+    }
+}
+
+/// Q80 R1: before anything of a spend is written or sent, the hook reads
+/// Platform's anchors. A read that fails, or finds the spend's anchor not
+/// recorded, refuses it with no artifact; one that finds it keeps that
+/// height for the spend (its Hp, the release's chain order) when its proof
+/// is SPV-verified, and an unverified one sends with no Hp kept, so a
+/// refusal of it stays held.
+#[test]
+fn the_hook_proves_the_anchor_recorded_before_the_artifact() {
+    let h = Hooked::new();
+    let reads = |read: Option<(Vec<[u8; 32]>, u64)>, verified: bool| {
+        let net: Arc<dyn super::super::shielded_release::ReleaseNet> =
+            Arc::new(Anchors { read, verified });
+        *h.f.session.platform.release_net.lock().unwrap() = Some(net);
+    };
+    let presence = |n: u8| {
+        let (s, w, st_hash) = (Arc::clone(&h.f.session), h.f.wallet, h.st_hash(n));
+        (h.f.engine)
+            .block_on(async move { super::super::shielded_release::presence(&s, w, st_hash).await })
+            .unwrap()
+    };
+    let payload = h.staged(1, &[1, 2]);
+
+    reads(None, true);
+    let refused = h.dispatch(payload.clone()).unwrap_err();
+    assert!(refused.contains("could not be read"), "{refused}");
+    assert_eq!(h.artifact(1), None);
+
+    reads(Some((vec![[0xbb; 32]], 40)), true);
+    let refused = h.dispatch(payload.clone()).unwrap_err();
+    assert!(refused.contains("not recorded"), "{refused}");
+    assert_eq!(h.artifact(1), None);
+    assert_eq!(presence(1), None);
+
+    reads(Some((vec![[0xbb; 32], [0xa0; 32]], 40)), true);
+    assert_eq!(h.dispatch(payload), Ok(()));
+    assert!(h.artifact(1).is_some());
+    assert_eq!(presence(1), Some(40));
+
+    let unverified = h.staged(2, &[3]);
+    reads(Some((vec![[0xa0; 32]], 41)), false);
+    assert_eq!(h.dispatch(unverified), Ok(()));
+    assert!(h.artifact(2).is_some());
+    assert_eq!(presence(2), None, "unverified: no Hp");
+
+    h.f.session.trust.set_trusted_only(true);
+    let trusted_only = h.staged(3, &[4]);
+    reads(Some((vec![[0xa0; 32]], 42)), false);
+    assert_eq!(h.dispatch(trusted_only), Ok(()));
+    assert_eq!(
+        presence(3),
+        None,
+        "unverified under the trusted-only toggle: no Hp"
+    );
+    h.f.session.trust.set_trusted_only(false);
+}
+
 /// A pass may re-send only what the hook accepted: the artifact's wallet,
 /// activity and hash. Another hash, an activity with no artifact, another
 /// account and a journal that cannot be read are refused, and the stored
@@ -468,24 +614,24 @@ fn admit_refuses_an_unknown_st_hash() {
     let h = Hooked::new();
     h.lease();
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 
-    assert!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(2)).is_err());
-    let unknown = h.admit(SHIELDED_ACCOUNT, 2, st_hash(1)).unwrap_err();
+    assert!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(2)).is_err());
+    let unknown = h.admit(SHIELDED_ACCOUNT, 2, h.st_hash(1)).unwrap_err();
     assert!(unknown.contains("no artifact"), "{unknown}");
-    assert!(h.admit(SHIELDED_ACCOUNT + 1, 1, st_hash(1)).is_err());
+    assert!(h.admit(SHIELDED_ACCOUNT + 1, 1, h.st_hash(1)).is_err());
     // A spend the library stored and the hook never accepted.
     h.hold_notes(&[2]);
     h.store_unsent(3, &[2]);
-    assert!(h.admit(SHIELDED_ACCOUNT, 3, st_hash(3)).is_err());
+    assert!(h.admit(SHIELDED_ACCOUNT, 3, h.st_hash(3)).is_err());
 
     let journal = h.f.session.leases.journal.get();
     h.f.session.leases.journal.set(None);
-    let unread = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+    let unread = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
     assert!(unread.contains("could not be read"), "{unread}");
     h.f.session.leases.journal.set(journal);
 
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
     assert_eq!((h.attempts(1), h.attempts(3)), (Some(0), Some(0)));
 }
 
@@ -503,7 +649,7 @@ fn admit_refuses_an_imported_row() {
         let imported = NewShieldedArtifact {
             activity: [n; 32],
             origin,
-            st_hash: Some(st_hash(n)),
+            st_hash: Some(h.st_hash(n)),
             kind: None,
             anchor: Some([0xa0; 32]),
             identity_id: None,
@@ -523,17 +669,17 @@ fn admit_refuses_an_imported_row() {
             (
                 origin,
                 ArtifactStatus::Unresolved { unrecorded: false },
-                Some(st_hash(n)),
+                Some(h.st_hash(n)),
                 None
             )
         );
-        let refused = h.admit(SHIELDED_ACCOUNT, n, st_hash(n)).unwrap_err();
+        let refused = h.admit(SHIELDED_ACCOUNT, n, h.st_hash(n)).unwrap_err();
         assert!(refused.contains("does not allow"), "{refused}");
     }
     // The same state written by the hook is re-sent.
     assert_eq!(h.dispatch(h.staged(3, &[3])), Ok(()));
     h.rewrite(3, "status = 'unresolved', status_reason = NULL");
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 3, st_hash(3)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 3, h.st_hash(3)), Ok(()));
 }
 
 /// An artifact the library's verdict is written on is never re-sent,
@@ -556,11 +702,11 @@ fn admit_refuses_an_artifact_with_a_disposition() {
         let row = h.artifact(1).unwrap();
         assert_eq!(row.status, ArtifactStatus::Registered);
         assert!(row.disposition.is_some());
-        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
         assert!(refused.contains("does not allow"), "{kind}: {refused}");
     }
     h.rewrite(1, "disposition_kind = NULL, disposition_reason = NULL");
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
     assert_eq!(h.attempts(1), Some(0));
 }
 
@@ -589,7 +735,7 @@ fn admit_refuses_an_archived_or_settled_artifact() {
             (row.origin, row.status, row.disposition),
             (ArtifactOrigin::Dispatched, status, None)
         );
-        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
         assert!(refused.contains("does not allow"), "{status:?}: {refused}");
     }
     for set in [
@@ -597,7 +743,7 @@ fn admit_refuses_an_archived_or_settled_artifact() {
         "status = 'registered', status_reason = NULL",
     ] {
         h.rewrite(1, set);
-        assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+        assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
     }
     assert_eq!(h.attempts(1), Some(0));
 }
@@ -624,11 +770,11 @@ fn admit_refuses_without_the_wallets_lease() {
     let h = Hooked::new();
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
     h.lease();
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 
     h.f.engine.block_on(h.f.session.lock_vault()).unwrap();
     assert!(h.f.session.leases.background(&h.f.wallet).is_none());
-    let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+    let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
     assert!(refused.contains("background lease"), "{refused}");
     assert_eq!(h.attempts(1), Some(0));
 
@@ -639,7 +785,7 @@ fn admit_refuses_without_the_wallets_lease() {
         )
         .unwrap();
     h.lease();
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 }
 
 /// A marked spend can let the pass scan while the vault is locked, but its
@@ -654,7 +800,7 @@ fn a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook() {
     h.f.engine.block_on(async move {
         assert!(pool::admit_pass(&s, &manager).await.is_ok());
     });
-    let refused = h.admit(SHIELDED_ACCOUNT, 8, st_hash(8)).unwrap_err();
+    let refused = h.admit(SHIELDED_ACCOUNT, 8, h.st_hash(8)).unwrap_err();
     assert!(refused.contains("background lease"), "{refused}");
     // No pass runs here: this pins only that `admit` itself sends nothing.
     assert_eq!(h.attempts(8), Some(0));
@@ -671,7 +817,7 @@ fn a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook() {
     h.f.engine.block_on(async move {
         assert!(pool::admit_pass(&s, &manager).await.is_ok());
     });
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 8, st_hash(8)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 8, h.st_hash(8)), Ok(()));
 }
 
 /// Any unmarked (pre-hook) record keeps the wallet-wide lease hold, including
@@ -756,11 +902,11 @@ fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
     h.lease();
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
     let unsent = h.staged(2, &[2]);
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 
     h.during_a_held_quit(|| {
         assert!(h.f.session.leases.background(&h.f.wallet).is_some());
-        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
         assert!(refused.contains("closing"), "{refused}");
         let refused = h.dispatch(unsent).unwrap_err();
         assert!(refused.contains("closing"), "{refused}");
@@ -768,7 +914,7 @@ fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
         assert_eq!(h.artifact(2), None);
     });
     assert!(!h.f.session.is_open());
-    let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+    let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
     assert!(refused.contains("closing"), "{refused}");
 }
 
@@ -853,7 +999,7 @@ fn a_drain_of_the_passes_refuses_the_hook() {
         // The drain's write is queued behind the pass.
         wait_until(|| passes.try_read().is_err(), "the drain never began");
         assert!(h.f.session.leases.background(&h.f.wallet).is_some());
-        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)).unwrap_err();
         assert!(refused.contains("drain"), "{refused}");
         let refused = h.dispatch(h.payload(2, &[2])).unwrap_err();
         assert!(refused.contains("drain"), "{refused}");
@@ -861,7 +1007,7 @@ fn a_drain_of_the_passes_refuses_the_hook() {
         drop(in_flight);
         close.join().unwrap().unwrap();
     });
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
     assert_eq!(h.dispatch(h.payload(2, &[2])), Ok(()));
 }
 
@@ -911,9 +1057,9 @@ fn close_during_dispatch_is_refused_and_dispatch_completes() {
     assert!(h.f.session.is_open());
     assert_eq!(
         h.artifact(1).map(|a| (a.origin, a.st_hash)),
-        Some((ArtifactOrigin::Dispatched, Some(st_hash(1))))
+        Some((ArtifactOrigin::Dispatched, Some(h.st_hash(1))))
     );
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, h.st_hash(1)), Ok(()));
 }
 
 /// A quit begun while a dispatch is past its first check (here waiting to
@@ -1218,8 +1364,7 @@ fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
     assert!(h.artifact(1).is_none());
     assert_eq!(payout_hash(&h.f, "sh-a"), None);
 
-    let mut withdrawal = h.staged(2, &[2]);
-    withdrawal.kind = ShieldedDispatchKind::Withdraw;
+    let withdrawal = h.staged_as(2, &[2], ShieldedDispatchKind::Withdraw);
     let pause = Arc::new(crate::coins::TestPause::default());
     *session.platform.payments.hold_st_hash.lock().unwrap() = Some(Arc::clone(&pause));
     let hook = Arc::clone(&h.hook);
@@ -1238,11 +1383,10 @@ fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
         dispatched(&h.f, "sh-a"),
         "recorded before the hook returned"
     );
-    assert_eq!(payout_hash(&h.f, "sh-a"), Some(hex::encode(st_hash(2))));
-    assert_eq!(h.artifact(2).unwrap().st_hash, Some(st_hash(2)));
+    assert_eq!(payout_hash(&h.f, "sh-a"), Some(hex::encode(h.st_hash(2))));
+    assert_eq!(h.artifact(2).unwrap().st_hash, Some(h.st_hash(2)));
 
-    let mut again = h.staged(3, &[3]);
-    again.kind = ShieldedDispatchKind::Withdraw;
+    let again = h.staged_as(3, &[3], ShieldedDispatchKind::Withdraw);
     assert!(h.dispatch(again).unwrap_err().contains("accepted already"));
     assert!(h.artifact(3).is_none());
     drop(arm);
@@ -1257,8 +1401,7 @@ fn a_payout_spend_is_named_in_its_row_before_its_artifact() {
     payout_row(&h.f, "sh-b");
     settle("sh-b", "not_sent");
     let _arm = session.arm_payout(wallet, "sh-b");
-    let mut settled = h.staged(4, &[4]);
-    settled.kind = ShieldedDispatchKind::Withdraw;
+    let settled = h.staged_as(4, &[4], ShieldedDispatchKind::Withdraw);
     assert!(h.dispatch(settled).unwrap_err().contains("not pending"));
     assert!(
         h.artifact(4).is_none(),
@@ -1278,13 +1421,12 @@ fn a_payout_spend_whose_dispatch_is_not_recorded_is_refused_unsent() {
     let _arm = session.arm_payout(wallet, "sh-c");
     (session.platform.payments.fail_dispatch_record)
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let mut withdrawal = h.staged(5, &[5]);
-    withdrawal.kind = ShieldedDispatchKind::Withdraw;
+    let withdrawal = h.staged_as(5, &[5], ShieldedDispatchKind::Withdraw);
     let refused = h.dispatch(withdrawal).unwrap_err();
     assert!(refused.contains("dispatch was not recorded"), "{refused}");
     assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::NotExecuted);
     assert!(!dispatched(&h.f, "sh-c"));
-    assert_eq!(payout_hash(&h.f, "sh-c"), Some(hex::encode(st_hash(5))));
+    assert_eq!(payout_hash(&h.f, "sh-c"), Some(hex::encode(h.st_hash(5))));
 }
 
 // ---- C-routes C1b-2: the unshield's FromShielded record ----
@@ -1494,7 +1636,7 @@ fn unshield_hook_refuses_without_or_against_its_intent() {
     assert!(h.records().is_empty());
     // Bytes that are no unshield: refused too.
     h.intend(own_platform(), NOTE / 2);
-    let payload = h.staged_unshield(9, &[9], st_bytes(9));
+    let payload = h.staged_unshield(9, &[9], h.st_bytes(9));
     assert!(h.dispatch(payload).is_err());
     assert_eq!(h.artifact(9), None);
 }
@@ -1629,7 +1771,17 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
     assert_eq!(fee, quote.fee_credits, "the builder's fee is the quote's");
 
     h.intend_total(own_platform(), quote.credits, quote.total_credits);
-    let payload = h.staged_unshield(1, &[1], st.serialize_to_bytes().unwrap());
+    let mut payload = h.staged_unshield(1, &[1], st.serialize_to_bytes().unwrap());
+    // As the library hands them: the bundle's anchor and action nullifiers.
+    payload.anchor = anchor.to_bytes();
+    payload.published_nullifiers = {
+        use dpp::state_transition::StateTransition;
+        use dpp::state_transition::unshield_transition::accessors::UnshieldTransitionAccessorsV0;
+        let StateTransition::Unshield(unshield) = &st else {
+            panic!("an unshield")
+        };
+        unshield.actions().iter().map(|a| a.nullifier).collect()
+    };
     assert_eq!(h.dispatch(payload), Ok(()));
     let records = h.records();
     assert_eq!(
@@ -2892,4 +3044,66 @@ fn a_create_resent_by_a_pass_records_its_dispatch_first() {
     (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = false;
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 11, st_hash), Ok(()));
     assert!(h.setting(key).is_some());
+}
+
+// ---- #444 D1: the signed bytes carry the anchor and the nullifiers ----
+
+/// Each family the engine sends is accepted when its signed bytes decode
+/// to the anchor and the nullifiers the library hands the hook: a transfer,
+/// a withdrawal (a contact payout's family too), an identity top-up and an
+/// identity creation from the pool. (An unshield's acceptance is
+/// `unshield_hook_arms_its_record_after_the_artifact`.)
+#[test]
+fn each_family_whose_bytes_match_is_accepted() {
+    let h = Hooked::new();
+    let kinds = [
+        ShieldedDispatchKind::Transfer,
+        ShieldedDispatchKind::Withdraw,
+        ShieldedDispatchKind::IdentityTopUp {
+            identity_id: [0x41; 32],
+        },
+        ShieldedDispatchKind::IdentityCreate {
+            identity_id: [0x42; 32],
+        },
+    ];
+    for (i, kind) in kinds.into_iter().enumerate() {
+        let n = 1 + i as u8;
+        let payload = h.staged_as(n, &[u64::from(n)], kind);
+        assert!(pool_bundle_matches(&payload), "case {n}");
+        assert_eq!(h.dispatch(payload), Ok(()), "case {n}");
+        assert_eq!(h.artifact(n).unwrap().st_hash, Some(h.st_hash(n)));
+    }
+}
+
+fn pool_bundle_matches(payload: &ShieldedDispatchPayload) -> bool {
+    super::super::shielded_release::bundle_matches(payload)
+}
+
+/// Bytes whose bundle is another anchor, other nullifiers (another order
+/// included), another family, or that do not decode, are refused before
+/// anything is written.
+#[test]
+fn bytes_whose_bundle_differs_are_refused() {
+    let h = Hooked::new();
+    h.hold_notes(&[1, 2]);
+    h.store_unsent(1, &[1, 2]);
+    type Tamper = (&'static str, fn(&mut ShieldedDispatchPayload));
+    let cases: [Tamper; 5] = [
+        ("anchor", |p| p.anchor = [0xa9; 32]),
+        ("nullifiers", |p| p.published_nullifiers[1] = [0x99; 32]),
+        ("order", |p| p.published_nullifiers.reverse()),
+        ("family", |p| p.kind = ShieldedDispatchKind::Withdraw),
+        ("bytes", |p| {
+            p.st_bytes = b"not a transition".to_vec();
+            p.st_hash = Sha256::digest(&p.st_bytes).into();
+        }),
+    ];
+    for (case, change) in cases {
+        let mut payload = h.payload(1, &[1, 2]);
+        change(&mut payload);
+        let refused = h.dispatch(payload).unwrap_err();
+        assert!(refused.contains("bundle"), "{case}: {refused}");
+        assert_eq!(h.artifact(1), None, "{case}");
+    }
+    assert_eq!(h.dispatch(h.payload(1, &[1, 2])), Ok(()));
 }
