@@ -249,13 +249,21 @@ describe("the flow over the fixture", () => {
     expect(flow.phase).toBe("done");
   });
 
-  it("a sheet opened again after an approval that didn't finish knows about it", async () => {
+  it("a sheet opened again after an approval that didn't finish keeps that approval's choice", async () => {
     const { flow } = await open("notConfirmed");
-    expect(flow.sheet!.earlierApproval).toBe(false);
+    expect(flow.sheet!.earlierApproval).toBeNull();
+    flow.setLimit("0.02");
+    flow.toggle(flow.sheet!.bindings[1]!);
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    const approved = flow.choice();
     await approve(flow);
     const again = new ConnectFlow(new IpcBackend("fixture"), FIXTURE_WALLET_ID, flow.linkId, flow.returnsTo, vi.fn());
     await again.load();
-    expect([again.attempted, again.sheet!.earlierApproval]).toEqual([null, true]);
+    expect([again.sheet!.earlierApproval, again.attempted, again.choice()]).toEqual([approved, approved, approved]);
+    expect([again.editable, again.limit, again.selected(again.sheet!.bindings[1]!)]).toEqual([false, "0.02", false]);
+    await again.deny();
+    expect(again.phase).toBe("denied");
+    expect(again.attempted).toEqual(approved);
   });
 
   it("a Deny after an approval that didn't finish doesn't say nothing was added", async () => {

@@ -215,3 +215,29 @@ fn a_recoverable_refusal_leaves_the_request_open() {
     assert_eq!(inbox.connect.get(&id).unwrap().answer, None);
     assert!(inbox.connect.start(&id).is_some());
 }
+
+/// An approval that stops where the user can retry re-opens the request;
+/// one that kept a response for "Retry sending" keeps it started.
+#[test]
+fn only_a_retryable_refusal_reopens_a_started_request() {
+    let not_confirmed = ConnectError::Failed {
+        failure: ConnectFailure::NotConfirmed,
+    };
+    let scope = ConnectError::Failed {
+        failure: ConnectFailure::ScopeChanged,
+    };
+    assert!(not_confirmed.keeps_open());
+    assert!(ConnectError::Platform(PlatformError::Timeout).keeps_open());
+    assert!(!ConnectError::SendFailed.keeps_open());
+    assert!(!scope.keeps_open());
+    let inbox = Inbox::default();
+    let id = link_id(&take(&inbox, &connect_uri(true), LinkOrigin::Os));
+    for (e, reopens) in [(not_confirmed, true), (ConnectError::SendFailed, false)] {
+        assert!(inbox.connect.start(&id).is_some());
+        if e.keeps_open() {
+            inbox.connect.unstart(&id);
+        }
+        assert_eq!(inbox.connect.start(&id).is_some(), reopens, "{e:?}");
+        inbox.connect.unstart(&id);
+    }
+}

@@ -36,7 +36,7 @@ use super::app_connect_plan::{
     MIN_PROTOCOL_VERSION,
 };
 use super::dashpay::DashPay;
-use super::errors::{ConnectError, ConnectFailure, PlatformError};
+use super::errors::{ConnectError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind};
 use super::identity_writes::identity_locks;
 use super::keys_policy::key_path;
@@ -72,6 +72,25 @@ const MAX_PENDING: usize = 8;
 /// until its keys ruling; there every call is `connect.mainnet_off`.
 pub(crate) fn enabled_on(network: &DashNetwork) -> bool {
     *network != DashNetwork::Mainnet
+}
+
+/// Why an App Connect login stopped after it was approved, from a fixed
+/// list: the host shows its own words for each, never Platform's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectFailure {
+    /// A key this login derives is on the identity with other limits.
+    KeyConflict,
+    /// Platform did not show every added key in time. The request stays
+    /// open: approving it again re-reads the identity, reusing what landed.
+    NotConfirmed,
+    /// The identity has no key the wallet holds that may sign the response.
+    NoResponseKey,
+    /// No unsent response of this request is kept (a lock ended it).
+    NothingToSend,
+    /// A group or encryption key changed after the keys were added: the
+    /// response is not sent.
+    ScopeChanged,
 }
 
 /// What the user sets: one funding limit for the connection, one expiry
@@ -181,7 +200,8 @@ pub struct ConnectSheet {
     pub max_funding_limit: u64,
     /// An approval of this request went to Platform from this wallet and
     /// no response to it is published: its keys may be on the identity.
-    pub earlier_approval: bool,
+    /// Approving it again with this choice reuses them.
+    pub earlier_approval: Option<ConnectChoice>,
     pub block_time_ms: u64,
 }
 
@@ -381,6 +401,9 @@ pub(crate) struct ConnectRecord {
     pub(crate) connection_id: Option<String>,
     pub(crate) session_keys: Vec<KeyID>,
     pub(crate) encryption_keys: Vec<KeyID>,
+    /// The bindings approved, by index.
+    #[serde(default)]
+    pub(crate) selection: Vec<u8>,
     pub(crate) funding_limit: u64,
     pub(crate) expires_at_ms: u64,
     pub(crate) state: RecordState,
@@ -621,17 +644,17 @@ struct Prepared {
     digest: [u8; 32],
 }
 
-/// Whether this wallet submitted an approval of `request`; one whose
-/// response Platform holds answered it (`connect.answered`).
+/// The choice of this wallet's last submitted approval of `request`; one
+/// whose response Platform holds answered it (`connect.answered`).
 async fn earlier_approval(
     net: &impl ConnectNet,
     session: &NetworkSession,
     wallet: WalletId,
     request: &AppConnectRequest,
-) -> Result<bool, ConnectError> {
+) -> Result<Option<ConnectChoice>, ConnectError> {
     let hash = request.request_hash();
     let this = hex::encode(hash);
-    let mut found = false;
+    let mut found = None;
     for r in records(session, wallet).await? {
         if r.request != this {
             continue;
@@ -639,7 +662,14 @@ async fn earlier_approval(
         if net.response_exists(hash, parse_identity(&r.identity)?).await? {
             return Err(ConnectError::Answered);
         }
-        found = true;
+        found = Some(ConnectChoice {
+            identity: r.identity,
+            selection: r.selection,
+            terms: ConnectTerms {
+                funding_limit: r.funding_limit,
+                expires_at_ms: r.expires_at_ms,
+            },
+        });
     }
     Ok(found)
 }
@@ -1145,7 +1175,8 @@ pub(crate) async fn approve(
         connection_id: request.connection_id.map(hex::encode),
         session_keys: plan.session_ids.clone(),
         encryption_keys: plan.encryption_ids.clone(),
-        funding_limit: p.budgets.iter().sum(),
+        selection: p.selection.clone(),
+        funding_limit: p.terms.funding_limit,
         expires_at_ms: p.terms.expires_at_ms,
         state: RecordState::Submitted,
         created_ms: super::balances::now_ms(),

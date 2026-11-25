@@ -211,9 +211,9 @@ impl ConnectLinks {
         .flatten()
     }
 
-    /// An approval ended in a refusal the user can retry (`plan_changed`,
-    /// `credits`, `not_confirmed`, a Platform error): Approve and Deny
-    /// answer again. Keys may already be on the identity.
+    /// An approval ended in a refusal that keeps the request open
+    /// (`ConnectError::keeps_open`): Approve and Deny answer again. Keys may
+    /// already be on the identity.
     pub fn unstart(&self, id: &str) {
         self.with(id, |l| l.started = false);
     }

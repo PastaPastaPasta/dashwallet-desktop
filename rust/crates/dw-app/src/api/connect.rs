@@ -110,8 +110,9 @@ pub struct ConnectSheet {
     #[serde(with = "crate::dto::credits")]
     pub max_funding_limit: u64,
     /// An approval of this request went to Platform from this wallet and no
-    /// response to it is published: its keys may be on the identity.
-    pub earlier_approval: bool,
+    /// response to it is published: its keys may be on the identity, and
+    /// approving again with this choice reuses them.
+    pub earlier_approval: Option<ConnectChoice>,
     /// UNIX milliseconds: Platform's block time the sheet was read at.
     #[ts(type = "number")]
     pub block_time_ms: u64,
@@ -211,6 +212,16 @@ impl From<ConnectTerms> for engine::ConnectTerms {
     }
 }
 
+impl From<engine::ConnectChoice> for ConnectChoice {
+    fn from(c: engine::ConnectChoice) -> Self {
+        Self {
+            identity: c.identity,
+            selection: c.selection,
+            terms: c.terms.into(),
+        }
+    }
+}
+
 impl From<ConnectChoice> for engine::ConnectChoice {
     fn from(c: ConnectChoice) -> Self {
         Self {
@@ -246,7 +257,7 @@ fn sheet_of(s: engine::ConnectSheet, link: &ConnectLink) -> ConnectSheet {
         encryption: s.encryption,
         terms: s.terms.into(),
         max_funding_limit: s.max_funding_limit,
-        earlier_approval: s.earlier_approval,
+        earlier_approval: s.earlier_approval.map(Into::into),
         block_time_ms: s.block_time_ms,
     }
 }
@@ -341,10 +352,7 @@ commands! {
         let dashpay = state.dashpay(&wallet_id).await?;
         let link = links.start(&link_id).ok_or(engine::ConnectError::Answered)?;
         let done = dashpay.app_connect_approve(link.uri.clone(), choice.into(), grant).await;
-        if let Err(e) = &done
-            && e.status().is_none()
-            && *e != engine::ConnectError::SendFailed
-        {
+        if done.as_ref().is_err_and(engine::ConnectError::keeps_open) {
             links.unstart(&link_id);
         }
         let done = answered(links, &link_id, &link, done)?;

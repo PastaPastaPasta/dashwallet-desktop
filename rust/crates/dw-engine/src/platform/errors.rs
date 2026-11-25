@@ -8,6 +8,7 @@
 //! a `platform.*` code reaches the host whichever domain the call belongs to;
 //! `platform()` finds it again.
 
+use super::app_connect::ConnectFailure;
 use super::contacts::Eligibility;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
@@ -503,25 +504,6 @@ impl InvitationError {
     }
 }
 
-/// Why an App Connect login stopped after it was approved, from a fixed
-/// list: the host shows its own words for each, never Platform's text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectFailure {
-    /// A key this login derives is on the identity with other limits.
-    KeyConflict,
-    /// Platform did not show every added key in time. The request stays
-    /// open: approving it again re-reads the identity, reusing what landed.
-    NotConfirmed,
-    /// The identity has no key the wallet holds that may sign the response.
-    NoResponseKey,
-    /// No unsent response of this request is kept (a lock ended it).
-    NothingToSend,
-    /// A group or encryption key changed after the keys were added: the
-    /// response is not sent.
-    ScopeChanged,
-}
-
 /// App Connect (DASHPAY F24): a refusal before anything is signed, or how
 /// an approved login stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -586,6 +568,12 @@ impl ConnectError {
             Self::Platform(e) => Some(e),
             _ => None,
         }
+    }
+
+    /// The request stays open for another approval or Deny: a refusal the
+    /// user can retry, and none that kept a response for "Retry sending".
+    pub fn keeps_open(&self) -> bool {
+        self.status().is_none() && *self != Self::SendFailed
     }
 
     /// The status the app's return link carries for this refusal (DIP

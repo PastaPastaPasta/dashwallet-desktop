@@ -123,6 +123,7 @@ test("a send that failed says so; Retry sending signs in", async ({ page }) => {
   await expect(page.getByTestId("connect-send-failed")).toHaveText(
     "The keys were added to your identity, but the app hasn't received them yet. Retry sending, or return to the app and start again.",
   );
+  await expect(page.getByTestId("connect-return")).toHaveCount(0);
   await page.getByTestId("connect-retry").click();
   await expect(page.getByTestId("connect-done")).toBeVisible();
   expect((await link(page, "sendFailed"))?.answer).toBe("ok");
@@ -163,6 +164,18 @@ test("keys not confirmed in time leave the sheet open, and approving again finis
   await page.getByTestId("connect-approve").click();
   await authorize(page);
   await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
+test("a Deny after keys not confirmed doesn't say nothing was added", async ({ page }) => {
+  await openConnect(page, "notConfirmed");
+  await quoted(page);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-quote-error")).toBeVisible();
+  await page.getByTestId("connect-deny").click();
+  await expect(page.getByTestId("connect-denied")).toHaveText(
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+  );
 });
 
 test("a request that arrives while locked opens once the wallet is unlocked", async ({ page }) => {

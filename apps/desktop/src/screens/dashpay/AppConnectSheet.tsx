@@ -87,7 +87,7 @@ function BindingRow({ flow, binding }: { flow: ConnectFlow; binding: ConnectBind
           type="checkbox"
           data-testid="connect-binding-check"
           checked={flow.selected(binding)}
-          disabled={binding.primary || flow.busy || flow.attempted !== null}
+          disabled={binding.primary || !flow.editable}
           onChange={() => flow.toggle(binding)}
         />
         <span>{bindingText(binding)}</span>
@@ -127,7 +127,7 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
       )}
       <label className="form-field">
         {t("dashpay.connect.signInAs")}
-        <select data-testid="connect-identity" value={flow.attempted?.identity ?? flow.identity ?? ""} disabled={flow.busy || flow.attempted !== null} onChange={(e) => flow.setIdentity(e.target.value)}>
+        <select data-testid="connect-identity" value={flow.identity ?? ""} disabled={!flow.editable} onChange={(e) => flow.setIdentity(e.target.value)}>
           {sheet.identities.map((i) => (
             <option key={i.identity} value={i.identity}>
               {i.username}
@@ -164,7 +164,7 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
           spellCheck={false}
           autoComplete="off"
           value={flow.limit}
-          disabled={flow.busy || flow.attempted !== null}
+          disabled={!flow.editable}
           aria-invalid={limitProblem !== null}
           aria-describedby={`${id}-limit-hint ${id}-limit-problem`}
           onChange={(e) => flow.setLimit(e.target.value)}
@@ -299,8 +299,9 @@ function Body({ flow, network }: { flow: ConnectFlow; network: string }) {
           {returnFailed}
           <EndActions
             flow={flow}
+            noReturn
             primary={
-              <DashButton variant={flow.returnsTo === null ? "filledBlue" : "tintedBlue"} size="large" data-testid="connect-retry" onClick={() => void flow.retrySend()}>
+              <DashButton variant="filledBlue" size="large" data-testid="connect-retry" onClick={() => void flow.retrySend()}>
                 {t("dashpay.connect.retrySend")}
               </DashButton>
             }
@@ -321,7 +322,7 @@ function Body({ flow, network }: { flow: ConnectFlow; network: string }) {
       return (
         <>
           <p className="sheet-text" role="status" data-testid="connect-denied">
-            {t(flow.attempted || flow.sheet?.earlierApproval ? "dashpay.connect.deniedAfterApprove" : "dashpay.connect.denied")}
+            {t(flow.attempted ? "dashpay.connect.deniedAfterApprove" : "dashpay.connect.denied")}
           </p>
           {returnFailed}
           <EndActions flow={flow} />

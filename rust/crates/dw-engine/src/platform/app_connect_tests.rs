@@ -26,7 +26,7 @@ use platform_wallet::{DpnsNameInfo, PlatformWallet};
 
 use super::super::app_connect_net::{ConnectNet, Response};
 use super::super::app_connect_plan::{ContractFacts, DAY_MS, GroupFacts, MAX_FUNDING};
-use super::super::errors::{ConnectError, ConnectFailure, PlatformError};
+use super::super::errors::{ConnectError, PlatformError};
 use super::super::journal_tests::{engine, id, session};
 use super::super::requests::tests::{identity, keys, vault_keys};
 use super::super::signers::VaultIdentitySigner;
@@ -580,7 +580,7 @@ fn the_sheet_shows_the_group_and_signs_nothing() {
     assert_eq!(sheet.bindings[1].scope, ConnectScope::Profile);
     assert_eq!(sheet.terms.funding_limit, 51_000_000_000);
     assert_eq!(sheet.max_funding_limit, MAX_FUNDING);
-    assert!(!sheet.earlier_approval);
+    assert_eq!(sheet.earlier_approval, None);
     f.quote(&l, &Fixture::choice()).unwrap();
     assert!(f.net.signed().is_empty());
     assert!(f.net.updates.lock().unwrap().is_empty());
@@ -1102,7 +1102,11 @@ fn approving_again_after_not_confirmed_reuses_keys_that_landed_late() {
         }
     );
     assert_eq!(failed.status(), None);
-    assert!(f.sheet(&l).unwrap().earlier_approval, "keys may be on the identity");
+    assert_eq!(
+        f.sheet(&l).unwrap().earlier_approval,
+        Some(Fixture::choice()),
+        "keys may be on the identity"
+    );
     let added = f.net.updates.lock().unwrap()[0].0.clone();
     assert!(!added.is_empty());
     *f.net.stale.lock().unwrap() = None;
@@ -1116,6 +1120,43 @@ fn approving_again_after_not_confirmed_reuses_keys_that_landed_late() {
         let copies = (me.public_keys().values()).filter(|on| on.data() == k.data());
         assert_eq!(copies.count(), 1, "key {}", k.id());
     }
+    assert_eq!(f.net.published.lock().unwrap().len(), 1);
+}
+
+/// A sheet opened again after `not_confirmed`, with a later block time
+/// and so other default terms, offers the earlier choice: approving it
+/// reuses the keys that landed instead of conflicting with them.
+#[test]
+fn a_reopened_sheet_offers_the_earlier_choice() {
+    let f = Fixture::new();
+    let mut r = request();
+    for b in &mut r.auth_bindings {
+        b.expires_at_ms = None;
+    }
+    let l = devnet(r);
+    *f.net.stale.lock().unwrap() = Some(f.net.me());
+    let first = f.sheet(&l).unwrap().terms;
+    let earlier = ConnectChoice {
+        terms: first,
+        ..Fixture::choice()
+    };
+    let grant = f.quoted_grant(&l, &earlier);
+    assert_eq!(
+        f.approve(&l, &earlier, &grant).unwrap_err(),
+        ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed
+        }
+    );
+    *f.net.stale.lock().unwrap() = None;
+    *f.net.block_time.lock().unwrap() = NOW + 5 * 60 * 1000;
+    let sheet = f.sheet(&l).unwrap();
+    assert_ne!(sheet.terms, first, "the defaults moved with the block time");
+    let offered = sheet.earlier_approval.expect("an earlier approval");
+    assert_eq!(offered, earlier);
+    let again = f.quoted_grant(&l, &offered);
+    let done = f.approve(&l, &offered, &again).unwrap();
+    assert!(done.keys_added.is_empty());
+    assert_eq!(f.net.updates.lock().unwrap().len(), 1, "no second update");
     assert_eq!(f.net.published.lock().unwrap().len(), 1);
 }
 

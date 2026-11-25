@@ -197,8 +197,9 @@ export class ConnectFlow extends Model {
   retryFailed = false;
   /** The return link did not open. */
   returnFailed = false;
-  /** An approval of this request reached the engine and did not finish: keys may be on the
-   * identity, so the choice is kept as it was approved and Deny claims nothing about them. */
+  /** An approval of this request reached the engine and did not finish, here or on an earlier
+   * sheet: keys may be on the identity, so the choice is kept as it was approved and Deny claims
+   * nothing about them. */
   attempted: ConnectChoice | null = null;
   done: ConnectDone | null = null;
   readonly grants: GrantModel;
@@ -237,12 +238,24 @@ export class ConnectFlow extends Model {
       if (!sheet.identities.some((i) => i.identity === this.identity)) this.identity = sheet.identities[0]?.identity ?? null;
       this.#off = new Set(sheet.bindings.filter((b) => !b.primary && this.#off.has(b.index)).map((b) => b.index));
       if (!again || !this.limitValid()) this.limit = limitText(sheet.terms.fundingLimit);
+      const earlier = this.attempted ?? sheet.earlierApproval;
+      if (earlier) {
+        this.attempted = earlier;
+        this.identity = earlier.identity;
+        this.#off = new Set(sheet.bindings.filter((b) => !b.primary && !earlier.selection.includes(b.index)).map((b) => b.index));
+        this.limit = limitText(earlier.terms.fundingLimit);
+      }
       this.phase = "sheet";
       this.changed();
       void this.requote();
     } catch (e) {
       this.#fail(e);
     }
+  }
+
+  /** The choice may still change: the sheet is open and no approval of it is outstanding. */
+  get editable(): boolean {
+    return this.phase === "sheet" && !this.busy && this.attempted === null;
   }
 
   /** The limit as typed is within the sheet's maximum. */
@@ -256,20 +269,20 @@ export class ConnectFlow extends Model {
 
   /** Ticks or unticks a binding; the primary one stays. */
   toggle(b: ConnectBinding) {
-    if (b.primary || this.phase !== "sheet" || this.busy || this.attempted) return;
+    if (b.primary || !this.editable) return;
     if (this.#off.has(b.index)) this.#off.delete(b.index);
     else this.#off.add(b.index);
     void this.requote();
   }
 
   setIdentity(identity: string) {
-    if (this.phase !== "sheet" || this.busy || this.attempted) return;
+    if (!this.editable) return;
     this.identity = identity;
     void this.requote();
   }
 
   setLimit(text: string) {
-    if (this.phase !== "sheet" || this.busy || this.attempted) return;
+    if (!this.editable) return;
     this.limit = text;
     clearTimeout(this.#typing);
     this.#quotes++;

@@ -42,6 +42,8 @@ export interface FixtureConnect {
   /** The request was read again since Platform changed it (`planChanged`), or its first approval
    * went unconfirmed (`notConfirmed`). */
   reread: boolean;
+  /** The choice of an approval that went unconfirmed, which a sheet read again offers. */
+  earlier: ConnectChoice | null;
   /** `app_connect_return` opened its return link. */
   returned: boolean;
   /** `app_connect_dismiss` forgot it (kept here for the tests to read). */
@@ -77,7 +79,7 @@ const connectOf = (w: World) => (w.connect ??= {});
 export function takeConnect(w: World, route: LinkRoute): LinkRoute {
   if (route.kind !== "appConnect") return route;
   const outcome = (Object.keys(CONNECT_LINKS) as ConnectOutcome[]).find((k) => CONNECT_LINKS[k] === route.linkId) ?? "ok";
-  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, returned: false, dismissed: false };
+  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, earlier: null, returned: false, dismissed: false };
   return route;
 }
 
@@ -141,7 +143,7 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       encryption: true,
       terms: { fundingLimit: FUNDING_LIMIT, expiresAtMs: now + 30 * DAY_MS },
       maxFundingLimit: MAX_FUNDING_LIMIT,
-      earlierApproval: l.outcome === "notConfirmed" && l.reread,
+      earlierApproval: l.earlier,
       blockTimeMs: now,
     };
   };
@@ -186,6 +188,7 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       if (l.outcome === "failed") throw refuse(l, fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "keyConflict" }));
       if (l.outcome === "notConfirmed" && !l.reread) {
         l.reread = true;
+        l.earlier = choice;
         l.started = false;
         throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       }
