@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 95
+Contract-Version: 96
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -978,7 +978,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8cf3fe227e31a7711f3f9ee160b8a14a2fabf84b26e37573ee752637943e62fe version: 95 -->
+<!-- surface-sha256: fc0b2f9bb3ca92e7f9a63eeccb9c6c08cffe408c4fb893e54836d7d5c240b98b version: 96 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2403,6 +2403,8 @@ pub struct ShieldedStatus {
     pub pending: u64,
     pub pending_shields: Vec<PendingShield>,
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    pub held_spends: Vec<HeldSpend>,
+    pub held: u64,
     pub unrecorded_spends: Vec<UnrecordedSpend>,
     pub synced_index: Option<u64>,
     pub last_sync_at: Option<u64>,
@@ -2487,6 +2489,12 @@ pub struct UnresolvedSpend {
     pub activity_id: String,
     pub transition: String,
     pub attempts: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldSpend {
+    pub activity_id: String,
+    pub transition: String,
+    pub credits: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
