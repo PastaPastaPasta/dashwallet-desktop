@@ -1,7 +1,7 @@
 //! G1: an InstantSend lock dash-spv has not validated never makes a payment
-//! final in the engine: not in the history, the balances or the coin list,
-//! not in the wallet store, and not after the engine reopens the network
-//! through its real load.
+//! final in the engine: not in its detail, the history, the balances, the
+//! coin list or what a send without coin control may spend, not in the wallet
+//! store, and not after the engine reopens the network through its real load.
 //!
 //! dash-spv's `DashSpvClient`, with its InstantSend and mempool managers,
 //! runs over `MockNetworkManager` against the session's own wallet manager;
@@ -224,7 +224,11 @@ fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txi
         .unwrap()
         .status
         .instant_locked;
-    // Before the fence: a send takes it too.
+    let payment_rows = (rows(engine, session, id).into_iter())
+        .filter(|(t, ..)| *t == txid.to_string())
+        .map(|(_, kind, locked, amount)| (kind, locked, amount))
+        .collect();
+    // Before the fence: max_spendable takes it too.
     let auto_spendable = engine
         .block_on(session.max_spendable(
             id,
@@ -246,10 +250,7 @@ fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txi
     };
     View {
         detail_locked,
-        rows: (rows(engine, session, id).into_iter())
-            .filter(|(t, ..)| *t == txid.to_string())
-            .map(|(_, kind, locked, amount)| (kind, locked, amount))
-            .collect(),
+        rows: payment_rows,
         confirmed: b.confirmed,
         unconfirmed: b.unconfirmed,
         coins: listed
@@ -501,9 +502,9 @@ fn assert_final(v: &View, amount: u64, what: &str) {
         v.confirmed, amount,
         "{what}: the payment is confirmed balance"
     );
-    assert!(
-        v.auto_spendable > 0,
-        "{what}: a send without coin control may spend it; got {v:?}"
+    assert_eq!(
+        v.auto_spendable, amount,
+        "{what}: a send without coin control may spend it"
     );
 }
 
