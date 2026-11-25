@@ -1154,7 +1154,7 @@ export const HANDLERS: Handlers = {
     if (funding.kind === "shielded") {
       // registration_shielded.rs `FEATURE`: off on mainnet before any read.
       if (world.launch.network.kind === "mainnet") throw shieldedOff();
-      return shieldedQuote(label, world.pending.shielded);
+      return shieldedQuote(label, world.pending.shielded, request.temporaryLabel);
     }
     checkTemporary(request);
     if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));

@@ -182,6 +182,12 @@ describe("the fixture's Shielded quote", () => {
     expect(quote).toMatchObject({ totalDuffs: 0, availableDuffs: 0, grant: { maxDuffs: 0, maxCredits } });
     expect(shieldedQuote("alice-77", undefined).grant.maxCredits).toBe(String(costs("alice-77").credits));
   });
+
+  it("asks a grant for the temporary name too, as the start does", () => {
+    const maxCredits = String(costs("alice", "alice2").credits + SHIELDED_DENOMINATION);
+    expect(costs("alice", "alice2").credits).toBeGreaterThan(costs("alice").credits);
+    expect(shieldedQuote("alice", world(), "alice2").grant.maxCredits).toBe(maxCredits);
+  });
 });
 
 describe("the Shielded readiness quote's cache key", () => {

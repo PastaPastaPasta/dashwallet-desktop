@@ -280,8 +280,8 @@ export function shieldedReadiness(s: ShieldedWorld | null | undefined): Shielded
 
 /** A Shielded-funded quote (registration.rs `shielded_plan`): nothing in duffs; the grant covers
  * the denomination and the names. */
-export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined): RegistrationQuote {
-  const { contested, credits } = costs(label);
+export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined, temporaryLabel: string | null = null): RegistrationQuote {
+  const { contested, credits } = costs(label, temporaryLabel);
   const readiness = shieldedReadiness(s);
   const denomination = readiness.denomination === null ? 0n : BigInt(readiness.denomination);
   const held = denomination > CREATE_CREDITS ? denomination - CREATE_CREDITS : 0n;
@@ -899,7 +899,7 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       const outcome = dp.shieldedCreates?.shift() ?? "registered";
       const s = world.pending.shielded;
       // A named create's check spends nothing again.
-      if (s && row.waiting !== "paymentUnknown") {
+      if (s && !row.fundsCommitted) {
         s.balance = String(BigInt(s.balance) - SHIELDED_DENOMINATION);
         if (s.notes) s.notes = [s.balance];
         ctx.emit({ kind: "platform", network, walletId, change: { domain: "shielded" } });
