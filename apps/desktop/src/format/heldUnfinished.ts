@@ -19,10 +19,12 @@ type WayOutWallet = { walletId: string; name: string; watchOnly: boolean; hasMne
 
 /** What to do for the wallet `walletId` among the open `wallets`, chosen from the engine's facts
  * about it: a signing wallet with no recovery phrase, or one with legacy address ranges a phrase
- * doesn't restore, is kept (no phrase wins when both apply); a watch-only wallet is added again from
- * its key; any other is restored from its phrase. The single-wallet texts only when exactly one is
- * open (an empty list is a failed read, not a lone wallet). `null` when `walletId` isn't listed. */
-export function heldWayOutText(walletId: string, wallets: readonly WayOutWallet[]): string | null {
+ * doesn't restore, is kept (no phrase wins when both apply); any other waits while a held coin
+ * `awaiting` a transaction that isn't final (the engine's `heldAwaiting`), then a watch-only wallet
+ * is added again from its key and any other restored from its phrase. The single-wallet texts only
+ * when exactly one is open (an empty list is a failed read, not a lone wallet). `null` when
+ * `walletId` isn't listed. */
+export function heldWayOutText(walletId: string, wallets: readonly WayOutWallet[], awaiting: boolean): string | null {
   const own = wallets.find((w) => w.walletId === walletId);
   if (!own) return null;
   const place = {
@@ -41,8 +43,9 @@ export function heldWayOutText(walletId: string, wallets: readonly WayOutWallet[
     coinSelection: t("tools.tabs.coinSelection"),
   };
   const single = wallets.length === 1;
+  if (!own.watchOnly && !own.hasMnemonic) return t("home.heldUnfinished.keepNoPhrase", place);
+  if (!own.watchOnly && own.legacyIssued) return t("home.heldUnfinished.keepLegacy", place);
+  if (awaiting) return t("home.heldUnfinished.waiting", place);
   if (own.watchOnly) return t(single ? "home.heldUnfinished.wayOutWatchOnlySingle" : "home.heldUnfinished.wayOutWatchOnly", place);
-  if (!own.hasMnemonic) return t("home.heldUnfinished.keepNoPhrase", place);
-  if (own.legacyIssued) return t("home.heldUnfinished.keepLegacy", place);
   return t(single ? "home.heldUnfinished.wayOutSingle" : "home.heldUnfinished.wayOut", place);
 }

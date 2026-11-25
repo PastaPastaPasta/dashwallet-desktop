@@ -2,18 +2,19 @@ import { expect, test, type Page } from "@playwright/test";
 import { artifactPath, fixtureUrl, THEMES } from "./helpers";
 
 /** Coins a dropped payment holds, set on the fixture's first wallet: `valued` duffs summed, and
- * `unvalued` coins of unknown value; `kind` patches the engine's facts about that wallet. */
-async function hold(page: Page, valued: number, unvalued: number, kind: { watchOnly?: boolean; hasMnemonic?: boolean; legacyIssued?: boolean } = {}) {
+ * `unvalued` coins of unknown value; `kind` patches the engine's facts about that wallet, and
+ * `awaiting` says a held coin awaits a transaction that isn't final. */
+async function hold(page: Page, valued: number, unvalued: number, kind: { watchOnly?: boolean; hasMnemonic?: boolean; legacyIssued?: boolean } = {}, awaiting = false) {
   await expect(page.getByTestId("hero-amount")).toBeVisible();
   await page.evaluate(
-    ([valued, unvalued, kind]) => {
+    ([valued, unvalued, kind, awaiting]) => {
       const f = window.__dwFixture!;
       const w = f.world.wallets[0]!;
       Object.assign(w.summary, kind);
-      w.summary.balances = { ...w.summary.balances!, heldUnfinished: valued, heldUnvalued: unvalued };
+      w.summary.balances = { ...w.summary.balances!, heldUnfinished: valued, heldUnvalued: unvalued, heldAwaiting: awaiting };
       f.emit({ kind: "eventsOverflowed" });
     },
-    [valued, unvalued, kind] as const,
+    [valued, unvalued, kind, awaiting] as const,
   );
 }
 
@@ -96,6 +97,18 @@ for (const theme of THEMES) {
     await expect(text).toContainText("Then, in Settings ▸ Wallet, remove Main and add it again with Add watch-only wallet… and that key.");
     await expect(text).not.toContainText("add another wallet");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-watch-only-several.png`) });
+  });
+
+  test(`What can I do? waits while a held coin's transaction isn't final, then gives the way out (${theme})`, async ({ page }, info) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await hold(page, 150_000_000, 0, {}, true);
+    const text = await openWayOut(page);
+    await expect(text).toHaveText(
+      "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. A transaction that uses some of these coins isn't final on the network yet. When it is, Dash Wallet shows here how to get back any coins the payment didn't spend. Until then, don't remove or restore Main.",
+    );
+    await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-waiting.png`) });
+    await hold(page, 150_000_000, 0, {}, false);
+    await expect(text).toContainText("restore it from its recovery phrase");
   });
 
   test(`What can I do? keeps a wallet added from a seed without a phrase (${theme})`, async ({ page }, info) => {

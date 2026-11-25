@@ -70,13 +70,13 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
 
 /** The coins a dropped payment holds back, and a link to how to get them back. Shown whenever any
  * coin is held, in discreet mode too (with the amount masked). */
-function HeldLine({ text, walletId }: { text: string; walletId: string }) {
+function HeldLine({ text, walletId, awaiting }: { text: string; walletId: string; awaiting: boolean }) {
   const tr = useT();
   const wallets = useWallets();
   const [open, setOpen] = useState(false);
   const textId = useId();
   // The variant depends on how many wallets are open: none is chosen before the list is read.
-  const wayOut = wallets.isPending ? null : heldWayOutText(walletId, wallets.data ?? []);
+  const wayOut = wallets.isPending ? null : heldWayOutText(walletId, wallets.data ?? [], awaiting);
   return (
     <>
       <p className="hero-held" data-testid="hero-held">
@@ -165,7 +165,7 @@ function BalanceHero({ walletId, balances, shielded, platform, network, hero }: 
           })}
         </div>
       )}
-      {held && <HeldLine text={held} walletId={walletId} />}
+      {held && balances && <HeldLine text={held} walletId={walletId} awaiting={balances.heldAwaiting} />}
     </section>
   );
 }
