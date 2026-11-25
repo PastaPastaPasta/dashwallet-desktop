@@ -110,7 +110,9 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
 - [ ] Optional dry run of the whole build without publishing: `git tag v0.0.0-rel<N> <sha> && git push origin
       v0.0.0-rel<N>`. A tag that is not `vX.Y.Z[-rc.N]` builds and never starts the publish job. Delete it after.
 - [ ] Release candidate: `git tag -a vX.Y.Z-rc.N <sha> -m "Dash Wallet Desktop X.Y.Z-rc.N"`, push it. It becomes a
-      prerelease, never Latest.
+      prerelease, never Latest. To have the candidate signed by the release signer instead of keyless, set the
+      repository variable `DW_SIGN_RC=1` **before** pushing the tag and follow [`RC-SIGNING.md`](RC-SIGNING.md)
+      (the pinned identities and the version bump must already be on `main`).
 - [ ] Final: create a PGP-signed tag with the release key on the same commit as the last candidate (unless a fix landed
       since, in which case cut a new candidate first):
 
@@ -143,6 +145,10 @@ The Release run on the tag (`.github/workflows/release.yml`, zero signing secret
        `dash-wallet-X.Y.Z-rc.N-linux-x86_64.flatpak`;
      - `dash-wallet-X.Y.Z-rc.N-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-rc.N-sbom-npm.cdx.json` (CycloneDX JSON);
      - `SHA256SUMS`.
+   - **On `vX.Y.Z-rc.N` with `DW_SIGN_RC=1` (signed candidate, [`RC-SIGNING.md`](RC-SIGNING.md)):** like a final
+     tag below, attests the unsigned build inputs (including `dash-wallet-X.Y.Z-rc.N-macos-unsigned.tar.gz` and
+     `unsigned.SHA256SUMS`) and publishes nothing. `release-publish-signed.yml` later publishes the prerelease with
+     9 assets: the 8 above with the `.dmg` and `.exe` signed, plus `SHA256SUMS.asc`; no updater feed.
    - **On final `vX.Y.Z` (fail-closed default):** attests the unsigned build inputs (so the signer and
      `release-publish-signed.yml` can `gh attestation verify` them) and holds back publishing until detached
      signatures are attached. An explicit `DW_ALLOW_UNSIGNED_STABLE=1` repository variable overrides this only
@@ -182,6 +188,8 @@ Rollout steps before 1.0 (full commands in [`SIGNING.md`](SIGNING.md)):
       on the secret-less `release` environment.
 - [ ] **Keyless release candidates:** ordinary `-rc.N` tags continue to ship the 8 keyless assets with the keyless
       Install notes (ad-hoc macOS Gatekeeper right-click ▸ Open, unsigned Windows SmartScreen More info ▸ Run anyway).
+      With `DW_SIGN_RC=1` a candidate is signed like a final tag instead ([`RC-SIGNING.md`](RC-SIGNING.md)), and its
+      notes use the signed wording.
 
 ## 7. Verify what was published
 

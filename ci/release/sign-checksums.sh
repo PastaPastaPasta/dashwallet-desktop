@@ -4,7 +4,8 @@
 #
 # Writes SHA256SUMS over all 9 final release files (5 bundles, 2 SBOMs, latest.json, and macOS
 # .app.tar.gz), signs it into SHA256SUMS.asc with `gpg --detach-sign --armor`, and verifies the
-# signature against --gpg-key.
+# signature against --gpg-key. For a release candidate (--version X.Y.Z-rc.N) there is no updater
+# feed: SHA256SUMS lists the 7 bundles and SBOMs and --feed-dir is ignored.
 #
 #   ci/release/sign-checksums.sh \
 #     --version <X.Y.Z> \
@@ -33,8 +34,11 @@ done
 
 die() { echo "sign-checksums: $*" >&2; exit 1; }
 
-[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be X.Y.Z"
-[[ -d "$dist_dir" && -d "$feed_dir" ]] || die "--dist-dir and --feed-dir must exist"
+[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--version must be X.Y.Z or X.Y.Z-rc.N"
+rc=0
+[[ "$version" != *-rc.* ]] || rc=1
+[[ -d "$dist_dir" ]] || die "--dist-dir must exist"
+((rc)) || [[ -d "$feed_dir" ]] || die "--feed-dir must exist"
 [[ -n "$sigs_dir" && -n "$gpg_key" ]] || die "--sigs-dir and --gpg-key are required"
 
 sha256_line() {
@@ -88,10 +92,12 @@ for name in "${dist_names[@]}"; do
   [[ -f "$dist_dir/$name" ]] || die "missing $dist_dir/$name"
   sha256_line "$dist_dir" "$name" >> "$sums"
 done
-for name in "${feed_names[@]}"; do
-  [[ -f "$feed_dir/$name" ]] || die "missing $feed_dir/$name"
-  sha256_line "$feed_dir" "$name" >> "$sums"
-done
+if ((!rc)); then
+  for name in "${feed_names[@]}"; do
+    [[ -f "$feed_dir/$name" ]] || die "missing $feed_dir/$name"
+    sha256_line "$feed_dir" "$name" >> "$sums"
+  done
+fi
 LC_ALL=C sort -k2 "$sums" -o "$sums"
 
 rm -f "$asc"
