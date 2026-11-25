@@ -425,6 +425,39 @@ pub(super) fn assert_holds(
     b
 }
 
+/// [`assert_holds`] while the coins of `waiting` wait for the rescan an
+/// abandon or a drop owes them (#818): key-wallet holds those of `want`,
+/// but the balance counts none of them.
+pub(super) fn assert_holds_waiting(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    want: &BTreeSet<OutPoint>,
+    waiting: &BTreeSet<OutPoint>,
+    state: &str,
+) -> WalletBalances {
+    let held = coins(engine, session, id);
+    let got: BTreeSet<OutPoint> = held.iter().map(|(o, _)| *o).collect();
+    assert_eq!(
+        got.len(),
+        held.len(),
+        "{state}: an outpoint held twice: {held:?}"
+    );
+    assert_eq!(&got, want, "{state}: {held:?}");
+    assert_eq!(
+        &session.hub.rescan_held(&id),
+        waiting,
+        "{state}: the coins waiting for their rescan"
+    );
+    let b = balances(session, id);
+    let counted: u64 = (held.iter())
+        .filter(|(o, _)| !waiting.contains(o))
+        .map(|(_, v)| v)
+        .sum();
+    assert_eq!(b.total, counted, "{state}: {b:?}");
+    b
+}
+
 /// Another device of the wallet spends `paid`'s output `vout`, paying half
 /// to someone else and the rest less a fee back to the wallet.
 pub(super) fn rival(
@@ -629,7 +662,8 @@ fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restar
     let session = reopen(&engine, session);
     let mut want = outputs(&paid);
     want.remove(&b);
-    assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    let waiting = BTreeSet::from([a]);
+    assert_holds_waiting(&engine, &session, id, &want, &waiting, "abandoned, then a restart");
     mined(&engine, &session, id, TIP, vec![winner]);
     assert_holds(&engine, &session, id, &want, "replayed after a restart");
     assert!(!spendable(&engine, &session, id, b), "B is not offered");

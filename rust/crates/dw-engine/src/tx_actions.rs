@@ -2554,14 +2554,6 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         if let Some(checkpoint) = checkpoint {
             self.rewind_recorded(manager, wallet, checkpoint).await?;
-            // The scan is at the checkpoint or below: the end of its replay
-            // has reprocessed each held coin's funding block since the coin
-            // came back.
-            self.hub.history.with_wallet(wallet, |h| {
-                for hold in h.rescan_holds.values_mut() {
-                    hold.armed |= hold.checkpoint >= checkpoint;
-                }
-            });
         }
         self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();

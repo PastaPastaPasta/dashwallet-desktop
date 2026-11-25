@@ -378,8 +378,9 @@ fn payment_on_a_claims_change_and_a_coin(
 }
 
 /// T4 and T5: S also spent b. When the claim is found unsigned after a
-/// restart, S goes and b is released: scanned again it counts once, also
-/// when its block comes twice, and after a restart S doesn't come back
+/// restart, S goes and b is released: b and the coin the claim spent wait
+/// for the drop's rescan (#818), also when b's block comes twice; once the
+/// rescan is back b counts once, and after a restart S doesn't come back
 /// and b isn't held again.
 #[test]
 fn a_coin_a_dropped_payment_also_spent_is_offered_again_once() {
@@ -396,7 +397,8 @@ fn a_coin_a_dropped_payment_also_spent_is_offered_again_once() {
 
     for _ in 0..2 {
         mined(&engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
-        assert_eq!(balances(&session, id).total, 2 * PAID, "b counts once");
+        assert_eq!(balances(&session, id).total, 0, "they wait for the rescan");
+        assert!(!spendable(&engine, &session, id, b), "b waits for the rescan");
     }
     b_scanned_again(&engine, &session, id, &b_funding);
 
@@ -702,7 +704,8 @@ fn a_locked_sibling_keeps_a_pending_payment_on_a_dropped_claim() {
 
 /// S spent b, and after a restart a transaction from another device of the
 /// wallet that spends b too is mined. When the claim is found unsigned and
-/// S goes, b stays spent.
+/// S goes, b stays spent; the coin the claim spent counts once the drop's
+/// rescan is back (#818).
 #[test]
 fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -722,13 +725,21 @@ fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
         spend_of(b, vec![(elsewhere(), PAID - 1_000)]),
     );
     let session = reopen(&engine, session);
-    mined(&engine, &session, id, BIRTH - 30, vec![other]);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    mined(&engine, &session, id, BIRTH - 30, vec![other.clone()]);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     super::own_spend_disk_tests::eventually("the claim and S are dropped", || {
         dropped(&engine, &session, id, claim.txid())
             && dropped(&engine, &session, id, payment.txid())
     });
     assert!(!spendable(&engine, &session, id, b), "b stays spent");
+    assert_eq!(
+        balances(&session, id).total,
+        0,
+        "the claimed coin waits for the rescan"
+    );
+    mined(&engine, &session, id, BIRTH - 30, vec![other]);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert!(!spendable(&engine, &session, id, b), "b stays spent, rescanned");
     assert_eq!(balances(&session, id).total, PAID, "b doesn't count");
     let session = reopen(&engine, session);
     assert!(
@@ -1332,8 +1343,9 @@ fn a_dropped_payment_shows_releasing_while_its_rescan_runs() {
 }
 
 /// The drop's rewind fails: no scan brings b back, so S asks for one,
-/// here from below the birth height b's block is under; a later scan
-/// that brings b back makes it Released.
+/// here from below the birth height b's block is under. b's block coming
+/// with no rewind brings nothing back: b waits for a rescan (#818). The
+/// rescan a lower birth height starts brings b back and makes S Released.
 #[test]
 fn a_dropped_payment_whose_rewind_failed_asks_for_a_rescan() {
     use crate::history::DropState;
@@ -1342,6 +1354,18 @@ fn a_dropped_payment_whose_rewind_failed_asks_for_a_rescan() {
     let state = settled_state(&engine, &session, id, payment.txid());
     assert_eq!(state, DropState::RescanFromHeight { height: BIRTH - 40 });
     assert!(notices(&engine, &session, id).is_empty());
+    mined(&engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
+    assert_eq!(balances(&session, id).total, 0, "no rescan ran");
+    assert_eq!(
+        drop_of(&engine, &session, id, payment.txid())
+            .unwrap()
+            .state,
+        DropState::RescanFromHeight { height: BIRTH - 40 }
+    );
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, BIRTH - 50))
+        .unwrap();
     b_scanned_again(&engine, &session, id, &b_funding);
     assert_eq!(
         drop_of(&engine, &session, id, payment.txid())
@@ -1406,15 +1430,15 @@ fn a_cancelled_rescan_leaves_a_dropped_payment_asking_for_one() {
         .unwrap()
         .state;
     assert_eq!(state, DropState::RescanNeeded);
-    // A later scan brings b back; spends still wait for the rescan the
-    // cancel left owed.
+    // A later block brings b back to key-wallet, but b waits for the
+    // rescan the cancel left owed (#818).
     mined(&engine, &session, id, BIRTH - 40, vec![b_funding]);
-    assert_eq!(balances(&session, id).total, 2 * PAID, "b counts once");
+    assert_eq!(balances(&session, id).total, 0, "they wait for the rescan");
     assert_eq!(
         drop_of(&engine, &session, id, payment.txid())
             .unwrap()
             .state,
-        DropState::Released
+        DropState::RescanNeeded
     );
 }
 

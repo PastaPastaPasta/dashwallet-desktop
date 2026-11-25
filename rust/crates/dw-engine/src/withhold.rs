@@ -61,6 +61,10 @@ pub(crate) struct Excluded {
     /// The value of those shown as pending ([`ExclusionReason::listed`]):
     /// a coin waiting for its rescan is kept out without being shown.
     pub pending: u64,
+    /// Each coin's share, with its account and whether it is shown as
+    /// pending: a coin released before the next read leaves at once
+    /// ([`Self::release`]).
+    pub coins: BTreeMap<OutPoint, (AccountType, WalletCoreBalance, bool)>,
 }
 
 impl Excluded {
@@ -74,30 +78,47 @@ impl Excluded {
         }
         let height = core.last_processed_height();
         for account in core.accounts.all_funding_accounts() {
-            let (mut confirmed, mut unconfirmed, mut immature, mut locked) = (0u64, 0u64, 0, 0);
+            let t = account.managed_account_type().to_account_type();
             for u in (account.utxos.values()).filter(|u| coins.contains_key(&u.outpoint)) {
                 let value = u.txout.value;
-                if coins.get(&u.outpoint).is_some_and(|r| r.listed()) {
+                let listed = coins.get(&u.outpoint).is_some_and(|r| r.listed());
+                if listed {
                     out.pending += value;
                 }
-                if u.is_locked {
-                    locked += value;
+                let share = if u.is_locked {
+                    WalletCoreBalance::new(0, 0, 0, value)
                 } else if !u.is_mature(height) {
-                    immature += value;
+                    WalletCoreBalance::new(0, 0, value, 0)
                 } else if u.is_confirmed || u.is_instantlocked || u.is_trusted {
-                    confirmed += value;
+                    WalletCoreBalance::new(value, 0, 0, 0)
                 } else {
-                    unconfirmed += value;
+                    WalletCoreBalance::new(0, value, 0, 0)
+                };
+                if share.total() > 0 {
+                    out.balance += share;
+                    *out.accounts.entry(t).or_default() += share;
+                    out.coins.insert(u.outpoint, (t, share, listed));
                 }
-            }
-            let share = WalletCoreBalance::new(confirmed, unconfirmed, immature, locked);
-            if share.total() > 0 {
-                out.balance += share;
-                let t = account.managed_account_type().to_account_type();
-                *out.accounts.entry(t).or_default() += share;
             }
         }
         out
+    }
+
+    /// Lets `gone` back into the balances until the next read recomputes
+    /// the share.
+    pub(crate) fn release(&mut self, gone: &BTreeSet<OutPoint>) {
+        for o in gone {
+            let Some((t, share, listed)) = self.coins.remove(o) else {
+                continue;
+            };
+            self.balance = Self::subtract(&self.balance, Some(&share));
+            if let Some(a) = self.accounts.get_mut(&t) {
+                *a = Self::subtract(a, Some(&share));
+            }
+            if listed {
+                self.pending = self.pending.saturating_sub(share.total());
+            }
+        }
     }
 
     /// The excluded coins' value.

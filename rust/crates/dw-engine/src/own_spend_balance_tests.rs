@@ -12,7 +12,7 @@ use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
+    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, assert_holds_waiting, change_of, coins, eventually, foreign,
     fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
     start_offline_spv, store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
 };
@@ -704,8 +704,9 @@ fn coins_freed_by_an_abandon_after_their_funding_block_load_after_a_restart() {
         synced(&engine, &session, id) < TIP,
         "the replay is still due"
     );
-    let b = assert_holds(&engine, &session, id, &all, "abandoned, then a restart");
-    assert_eq!(b.total, 12 * COIN);
+    let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+    let b = assert_holds_waiting(&engine, &session, id, &all, &spent, "abandoned, then a restart");
+    assert_eq!(b.total, (12 - spent.len() as u64) * COIN, "they wait for the replay");
     mined(&engine, &session, id, TIP, vec![paid]);
     assert_eq!(
         assert_holds(&engine, &session, id, &all, "replayed").total,
@@ -1073,31 +1074,39 @@ fn abandoning_a_payment_whose_winners_spend_was_forgotten_holds_its_coins_until_
 }
 
 /// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend
-/// of B is mined at `TIP + 2`. The drop of P it starts frees A, which no
-/// evidence holds spent any more: A is not listed, counted or offered
-/// before the drop's rescan passes W's block at `TIP + 1`, which spends it.
+/// of B, paying the wallet change, is mined at `TIP + 2`. The drop of P it
+/// starts knows that winner's inputs and frees A, which no evidence holds
+/// spent any more: A is not listed, counted or offered before the drop's
+/// rescan passes W's block at `TIP + 1`, which spends it.
 #[test]
 fn a_drop_after_a_forgotten_spend_holds_the_coin_until_its_rescan_passes_the_spend() {
     let (_dir, engine, session, id, (a, b), paid, p, w) =
         beaten_after_its_winners_spend_was_forgotten();
-    let change = change_of(&p, &own_scripts(&engine, &session, id));
-    let all = COINS as u64 * COIN;
+    let scripts = own_scripts(&engine, &session, id);
+    let change = change_of(&p, &scripts);
+    let rival = rival(&engine, &session, id, &paid, 1);
+    let back: u64 = (rival.output.iter())
+        .filter(|o| scripts.contains(&o.script_pubkey))
+        .map(|o| o.value)
+        .sum();
+    assert!(back > 0, "the rival pays the wallet change");
+    let total = COINS as u64 * COIN - 2 * COIN + back;
     let held = [(a, "A"), (b, "B"), (change, "the change")];
-    let rival = foreign_winner(&engine, &session, id, &paid, &[b]);
     mined(&engine, &session, id, TIP + 2, vec![rival.clone()]);
     reconciled(&engine, &session, id);
     assert!(!live_in_history(&session, id, p.txid()), "the drop took P");
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "dropped");
+    kept_out(&engine, &session, id, &held, total, "dropped");
 
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+    kept_out(&engine, &session, id, &held, total, "the rescan at the coins' block");
     let session = reopen(&engine, session);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "restarted in the rescan");
+    kept_out(&engine, &session, id, &held, total, "restarted in the rescan");
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    kept_out(&engine, &session, id, &held, total, "the resumed rescan at the coins' block");
     mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
     assert!(in_history(&session, id, w.txid()), "the rescan records W");
     mined(&engine, &session, id, TIP + 2, vec![rival]);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan is back");
+    kept_out(&engine, &session, id, &held, total, "the rescan is back");
 }
 
 /// The mark of a payment this app sent, mined in a session that ended
@@ -1548,7 +1557,8 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     let session = reopen(&engine, session);
     let partial = held(&engine, &session, id);
     assert!(partial.contains(&a), "not dropped: {partial:?}");
-    assert_holds(&engine, &session, id, &partial, "the mark unread");
+    let waiting = BTreeSet::from([a]);
+    assert_holds_waiting(&engine, &session, id, &partial, &waiting, "the mark unread");
     assert!(stored_unspent(&session, id, a), "not stored spent");
     assert!(sent_marks(&session, id).contains(&payment.txid()));
 

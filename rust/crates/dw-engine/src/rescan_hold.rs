@@ -36,9 +36,9 @@ pub(crate) struct RescanHold {
     /// The height the rescan must be back at: the replay's target when
     /// the coin was given back.
     pub target: u32,
-    /// The rewind is applied (or a later open resumes its replay): an
-    /// end of a replay can release the hold. Before it, the scan's height
-    /// still predates the give-back.
+    /// A rewind to `checkpoint` or below was applied since the give-back
+    /// (or a later open resumes its replay): an end of a replay can release
+    /// the hold. Before it, the scan's height still predates the give-back.
     pub armed: bool,
 }
 

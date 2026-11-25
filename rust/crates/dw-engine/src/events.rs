@@ -1505,13 +1505,17 @@ impl SessionHub {
             return;
         }
         let held = self.rescan_held(&id);
-        let released = self.history.with_wallet(id, |h| {
-            let before = h.rescan_holds.len();
+        let released: BTreeSet<dashcore::OutPoint> = self.history.with_wallet(id, |h| {
+            let gone = (h.rescan_holds.keys())
+                .filter(|o| !held.contains(*o))
+                .copied()
+                .collect();
             h.rescan_holds.retain(|o, _| held.contains(o));
-            before != h.rescan_holds.len()
+            gone
         });
-        if released {
-            tracing::info!(wallet = %id, "coins given back are released: their rescan is back");
+        if !released.is_empty() {
+            tracing::info!(wallet = %id, coins = released.len(), "coins given back are released: their rescan is back");
+            self.update_wallet_state(id, |s| s.excluded.release(&released));
             if let Some(reread) = self.balance_reread.get() {
                 reread(id);
             }

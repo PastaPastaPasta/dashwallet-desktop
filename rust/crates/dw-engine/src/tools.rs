@@ -509,6 +509,15 @@ impl NetworkSession {
         if flipped {
             self.hub.pump.mark_balances(wallet);
         }
+        // The scan is at or below `checkpoint` now: the end of its replay
+        // has reprocessed the funding block of each coin given back that
+        // waits from there (`crate::rescan_hold`).
+        let from = checkpoint.min(current);
+        self.hub.history.with_wallet(wallet, |h| {
+            for hold in h.rescan_holds.values_mut() {
+                hold.armed |= hold.checkpoint >= from;
+            }
+        });
         Ok(Some(target))
     }
 
