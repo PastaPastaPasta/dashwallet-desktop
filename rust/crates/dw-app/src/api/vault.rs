@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use dw_engine::platform::RevokeCause;
 use dw_engine::{EngineError, NetworkSession};
+use dw_engine::platform::RevokeCause;
 use dw_vault::mnemonic::{Checksum, Language};
 use dw_vault::{Credential, GrantPurpose, MnemonicError, UnlockScope};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Vault::signing_window_allowed",
         "internal: tests read the choice the engine gave the vault",
     ),
+
     (
         "Vault::stash_link",
         "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
@@ -172,7 +173,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Vault::open",
         "internal: the engine opens the vault when it opens a network",
     ),
-    ("Vault::dir", "internal: a path the engine owns"),
+    (
+        "Vault::dir",
+        "internal: a path the engine owns",
+    ),
     (
         "Vault::vault_id",
         "internal: keys the engine's per-vault settings (`paymentAuthentication`); the id itself means nothing to the UI",
@@ -332,11 +336,7 @@ const MAX_RELOCK_SECS: u64 = 100_000_000;
 
 /// What a grant authorizes (E0-04 design §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum GrantPurposeSpec {
     /// `TxDraft::prepare`; the transaction may debit at most `max_duffs`.
     Spend { max_duffs: u64 },
@@ -452,11 +452,7 @@ impl From<GrantPurpose> for GrantPurposeSpec {
 
 /// The credential presented to `authorize`.
 #[derive(Deserialize, TS)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum CredentialSpec {
     /// The vault passphrase.
     Passphrase { passphrase: String },
@@ -547,10 +543,7 @@ async fn issue_grants(
     session: Arc<NetworkSession>,
     purposes: &[GrantPurpose],
     credential: OwnedCredential,
-    issue: impl FnOnce(
-        &dw_vault::Vault,
-        Credential<'_>,
-    ) -> Result<Vec<dw_vault::AuthGrant>, dw_vault::VaultError>
+    issue: impl FnOnce(&dw_vault::Vault, Credential<'_>) -> Result<Vec<dw_vault::AuthGrant>, dw_vault::VaultError>
     + Send
     + 'static,
 ) -> Result<Vec<dw_vault::AuthGrant>, AppError> {
@@ -830,11 +823,10 @@ fn mnemonic_error(e: MnemonicError) -> AppError {
 
 /// A fresh phrase as text; the vault-side buffer is zeroed on drop.
 fn generated_phrase(word_count: u8, language: Language) -> Result<String, AppError> {
-    let phrase =
-        dw_vault::mnemonic::generate(word_count.into(), language).map_err(mnemonic_error)?;
-    std::str::from_utf8(&phrase)
-        .map(str::to_owned)
-        .map_err(|_| AppError::new(EngineCode::Internal, "the generated phrase is not UTF-8"))
+    let phrase = dw_vault::mnemonic::generate(word_count.into(), language).map_err(mnemonic_error)?;
+    std::str::from_utf8(&phrase).map(str::to_owned).map_err(|_| {
+        AppError::new(EngineCode::Internal, "the generated phrase is not UTF-8")
+    })
 }
 
 commands! {
@@ -1242,10 +1234,7 @@ mod tests {
         };
         assert!(pays(&[withdraw]));
         assert!(pays(&[GrantPurpose::SignMessage, withdraw]));
-        assert!(!pays(&[
-            GrantPurpose::SignMessage,
-            GrantPurpose::IdentityScan
-        ]));
+        assert!(!pays(&[GrantPurpose::SignMessage, GrantPurpose::IdentityScan]));
     }
 
     #[test]

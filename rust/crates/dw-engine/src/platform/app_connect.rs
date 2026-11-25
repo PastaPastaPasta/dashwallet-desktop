@@ -727,9 +727,10 @@ fn contract_keys(
     })
 }
 
-/// What each encryption binding gets. No app key goes on the DashPay contract
-/// or becomes the identity's only key of a DashPay purpose: platform-wallet
-/// picks contact-request keys by purpose and id, not by bounds.
+/// What each encryption binding gets. No app key goes on the DashPay contract,
+/// and none is added or shared unless a lower-id key of its purpose comes
+/// first: platform-wallet picks contact-request keys by purpose and id, not
+/// by bounds.
 async fn encryption_plans(
     net: &impl ConnectNet,
     request: &AppConnectRequest,
@@ -746,13 +747,15 @@ async fn encryption_plans(
             current.and_then(|id| identity.public_keys().get(&id).filter(|k| !k.is_disabled()));
         out.push(match current {
             _ if contract == dashpay_contract::ID => EncPlan::Omit,
-            Some(key) => match key.key_type() {
-                KeyType::ECDSA_SECP256K1 => EncPlan::Share {
+            Some(key)
+                if key.key_type() == KeyType::ECDSA_SECP256K1 && picked_first(identity, key) =>
+            {
+                EncPlan::Share {
                     key_id: key.id(),
                     rotation: None,
-                },
-                _ => EncPlan::Omit,
-            },
+                }
+            }
+            Some(_) => EncPlan::Omit,
             None if contract_keys(identity, contract, purpose).next().is_some()
                 || missing_dashpay_purposes(identity.public_keys().values()).contains(&purpose) =>
             {
@@ -762,6 +765,17 @@ async fn encryption_plans(
         });
     }
     Ok(out)
+}
+
+/// Whether an enabled ECDSA key of `key`'s purpose has a lower id than `key`,
+/// so platform-wallet's contact-request selectors take that one, not `key`.
+fn picked_first(identity: &Identity, key: &IdentityPublicKey) -> bool {
+    identity.public_keys().values().any(|k| {
+        k.id() < key.id()
+            && k.purpose() == key.purpose()
+            && k.key_type() == KeyType::ECDSA_SECP256K1
+            && !k.is_disabled()
+    })
 }
 
 /// The doc key a response is signed with: an enabled ECDSA AUTHENTICATION

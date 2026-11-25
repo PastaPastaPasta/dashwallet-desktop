@@ -900,6 +900,51 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
     assert_eq!(plans, vec![EncPlan::Omit; 2], "the DashPay contract");
 }
 
+/// A current app key that holds the lowest id of its purpose is the key
+/// platform-wallet picks for contact requests: it is not shared. Behind a
+/// lower-id key of its purpose, it is.
+#[test]
+fn an_app_key_first_in_line_for_contact_requests_is_not_shared() {
+    for (keep_dashpay_key, expected) in [
+        (false, EncPlan::Omit),
+        (
+            true,
+            EncPlan::Share {
+                key_id: 6,
+                rotation: None,
+            },
+        ),
+    ] {
+        let f = Fixture::new();
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            if !keep_dashpay_key {
+                me.public_keys_mut()
+                    .retain(|_, k| k.purpose() != Purpose::ENCRYPTION);
+            }
+            let mut app_key = master_key(me).unwrap().clone();
+            app_key.set_id(6);
+            app_key.set_purpose(Purpose::ENCRYPTION);
+            app_key.set_security_level(SecurityLevel::MEDIUM);
+            if let IdentityPublicKey::V0(v) = &mut app_key {
+                v.contract_bounds = Some(ContractBounds::SingleContract { id: app() });
+            }
+            me.public_keys_mut().insert(6, app_key);
+        }
+        (f.net.current.lock().unwrap()).insert((id(ME), app(), Purpose::ENCRYPTION), 6);
+        let plans = f
+            .engine
+            .block_on(encryption_plans(&*f.net, &request(), &f.net.me()))
+            .unwrap();
+        assert_eq!(
+            plans,
+            vec![expected],
+            "DashPay key kept: {keep_dashpay_key}"
+        );
+    }
+}
+
 #[test]
 fn an_existing_encryption_key_is_shared_not_registered() {
     let f = Fixture::new();
