@@ -180,6 +180,7 @@ export class IpcBackend implements Backend {
   restoreStatus = () => cmd.restoreStatus();
   restoreRetry = () => cmd.restoreRetry();
   finishWithoutPlatform = () => cmd.finishWithoutPlatform();
+  recoverInFreshFolder = () => cmd.recoverInFreshFolder();
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

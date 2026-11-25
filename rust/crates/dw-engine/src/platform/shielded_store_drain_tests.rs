@@ -20,6 +20,7 @@ use platform_wallet::wallet::shielded::{
     ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedStore, SubwalletId,
 };
 
+use super::super::close_unload_gate_tests::stored_rows;
 use super::super::errors::{ShieldedError, ShieldedStoreClosed};
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::options;
@@ -33,6 +34,9 @@ use crate::{DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, NetworkSe
 const MAIN: &str = "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add";
 /// The fixture's vault passphrase.
 const PASS: &[u8] = b"upgrade fixture passphrase";
+/// "Fixture main"'s recovery phrase (`expected.json`).
+const MAIN_PHRASE: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 fn main_wallet() -> WalletId {
     let mut id = [0; 32];
@@ -311,6 +315,83 @@ impl Opened {
             .unwrap()
     }
 
+    /// The activities of the main wallet's marked spends (DEC-1057).
+    fn markers(&self) -> Vec<[u8; 32]> {
+        let s = Arc::clone(&self.session);
+        (self
+            .engine
+            .block_on(async move { s.leases.unrecorded_spends(main_wallet()).await }))
+        .unwrap()
+        .into_iter()
+        .map(|m| m.activity)
+        .collect()
+    }
+
+    /// Saves a note of the account with `nullifier`, read spent when
+    /// `spent`, with no changeset: the persister's tap does not see it.
+    fn store_note(&self, c: &Arc<NetworkShieldedCoordinator>, nullifier: [u8; 32], spent: bool) {
+        let c = Arc::clone(c);
+        self.engine.block_on(async move {
+            let mut store = c.store().write().await;
+            let note = platform_wallet::wallet::shielded::ShieldedNote {
+                position: u64::from(nullifier[0]),
+                cmx: [nullifier[0].wrapping_add(1); 32],
+                nullifier,
+                block_height: 1,
+                is_spent: false,
+                value: 1_000,
+                note_data: vec![0; 115],
+            };
+            store.save_note(subwallet(), &note).unwrap();
+            if spent {
+                assert!(store.mark_spent(subwallet(), &nullifier).unwrap());
+            }
+        });
+    }
+
+    /// Close Wallet is refused: a spend of the wallet is unresolved.
+    fn unload_refused(&self) {
+        let r = self
+            .engine
+            .block_on(self.session.unload_wallet(main_wallet()));
+        assert!(
+            matches!(r, Err(crate::EngineError::ShieldedSpendUnresolved)),
+            "{r:?}"
+        );
+    }
+
+    /// The engine's dispatch hook's answer to the first send of a transfer
+    /// `[n; 32]` of the main wallet selecting the test note at `position`.
+    fn dispatch(
+        &self,
+        c: &Arc<NetworkShieldedCoordinator>,
+        n: u8,
+        position: u64,
+    ) -> Result<(), String> {
+        let hook = EngineDispatch::new(&self.session, c);
+        let note = note(position, NOTE);
+        let st_bytes = format!("signed transition {n}").into_bytes();
+        let payload = ShieldedDispatchPayload {
+            kind: ShieldedDispatchKind::Transfer,
+            wallet_id: main_wallet().0,
+            account_index: SHIELDED_ACCOUNT,
+            activity_id: [n; 32],
+            st_hash: sha2::Sha256::digest(&st_bytes).into(),
+            st_bytes,
+            anchor: [0xa0; 32],
+            selected_notes: vec![DispatchedNote {
+                nullifier: note.nullifier,
+                cmx: note.cmx,
+                value: note.value,
+                position: note.position,
+            }],
+            published_nullifiers: vec![note.nullifier, [0xee; 32]],
+        };
+        (self.engine)
+            .block_on(async move { hook.dispatch(payload).await })
+            .map_err(|e| e.reason)
+    }
+
     /// One forced shielded pass.
     fn pass(&self) -> bool {
         let (s, m) = (Arc::clone(&self.session), self.session.manager().unwrap());
@@ -401,6 +482,92 @@ fn a_refused_drain_keeps_the_shielded_store_closed_until_a_start_drains() {
     o.save_notes(&c, &[1, 2]);
     assert_eq!(o.selectable(&c), (vec![nf(2)], NOTE));
     o.close();
+}
+
+/// M1 on the store upgrade's real states: a fork hold whose notes the
+/// library's store already reads spent, with no changeset the persister's
+/// tap saw, is flagged spent from the store at the next pass. A hold all of
+/// whose notes it reads spent is cleared; one with a note it reads unspent,
+/// or does not hold, stays (a partial set clears nothing), and the close
+/// stays refused until the store reads every one spent.
+///
+/// A drain retires the fork's table before the holds are read, so the
+/// holds come from a start whose drain refused: the first start finds a
+/// reason it can't decode and keeps the store closed, the holds are
+/// marked, and the app quits. The next start, the row readable again,
+/// drains and opens the store, and the marks stay until the store reads
+/// their notes spent.
+#[test]
+fn a_fork_hold_over_notes_the_store_reads_spent_clears_at_the_next_pass() {
+    let hold = |st, kind, reason, nullifiers: &[[u8; 32]]| ForkRow::Disposition {
+        st,
+        kind,
+        reason,
+        nullifiers: nullifiers.to_vec(),
+    };
+    let root = Root::new(&[
+        hold(1, "unresolved", Some("cancelled"), &[[61; 32]]),
+        hold(2, "executed", None, &[[62; 32], [63; 32]]),
+        hold(3, "unresolved", Some("cancelled"), &[[64; 32]]),
+    ]);
+    root.damage_reason(1);
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Err(ShieldedStoreClosed::Damaged)));
+    assert_eq!(o.markers(), [[1; 32], [2; 32], [3; 32]]);
+    o.close();
+    root.repair_reason(1);
+
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Ok(())));
+    assert!(!root.fork_rows_live(), "the drain retired the fork rows");
+    let c = o.bound();
+    assert_eq!(o.markers(), [[1; 32], [2; 32], [3; 32]]);
+    o.store_note(&c, [61; 32], true);
+    o.store_note(&c, [62; 32], true);
+    o.store_note(&c, [63; 32], false);
+    assert_eq!(
+        o.markers(),
+        [[1; 32], [2; 32], [3; 32]],
+        "the tap saw nothing"
+    );
+
+    assert!(o.pass());
+    assert_eq!(o.markers(), [[2; 32], [3; 32]]);
+    let s = Arc::clone(&o.session);
+    let flags: Vec<_> = (o.engine)
+        .block_on(async move { s.leases.unrecorded_spends(main_wallet()).await })
+        .unwrap()
+        .into_iter()
+        .map(|m| m.nullifiers)
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            vec![([62; 32], true), ([63; 32], false)],
+            vec![([64; 32], false)]
+        ]
+    );
+    o.unload_refused();
+
+    o.store_note(&c, [64; 32], true);
+    assert!(o.pass());
+    assert_eq!(o.markers(), [[2; 32]], "unspent stays");
+    o.unload_refused();
+
+    o.store_note(&c, [63; 32], true);
+    assert!(o.pass());
+    assert!(o.markers().is_empty(), "all spent");
+    (o.engine)
+        .block_on(o.session.unload_wallet(main_wallet()))
+        .unwrap();
+    drop(c);
+    let Opened { engine, session } = o;
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
 }
 
 /// DRAIN rev 4 test 3: a record the fork stored and never sent is retired
@@ -566,37 +733,12 @@ fn dispatch_refuses_a_spend_of_a_drained_note() {
     let o = root.open();
     let c = o.bound();
     o.save_notes(&c, &[1, 2]);
-    let hook = Arc::new(EngineDispatch::new(&o.session, &c));
-    let dispatch = |n: u8, position: u64| {
-        let note = note(position, NOTE);
-        let st_bytes = format!("signed transition {n}").into_bytes();
-        let payload = ShieldedDispatchPayload {
-            kind: ShieldedDispatchKind::Transfer,
-            wallet_id: main_wallet().0,
-            account_index: SHIELDED_ACCOUNT,
-            activity_id: [n; 32],
-            st_hash: sha2::Sha256::digest(&st_bytes).into(),
-            st_bytes,
-            anchor: [0xa0; 32],
-            selected_notes: vec![DispatchedNote {
-                nullifier: note.nullifier,
-                cmx: note.cmx,
-                value: note.value,
-                position: note.position,
-            }],
-            published_nullifiers: vec![note.nullifier, [0xee; 32]],
-        };
-        let hook = Arc::clone(&hook);
-        (o.engine)
-            .block_on(async move { hook.dispatch(payload).await })
-            .map_err(|e| e.reason)
-    };
     assert_eq!(
-        dispatch(7, 1),
+        o.dispatch(&c, 7, 1),
         Err("the spend takes a note a drained fork disposition holds".into())
     );
     assert_eq!(
-        dispatch(8, 2),
+        o.dispatch(&c, 8, 2),
         Err("the library stored no spend for the activity".into())
     );
     o.close();
@@ -916,5 +1058,130 @@ fn a_drain_between_a_pass_and_its_settle_releases_nothing() {
     assert_eq!(o.release_row(1), Some((None, true)));
     assert_eq!(o.holds(), vec![]);
     drop(c);
+    o.close();
+}
+
+/// The user's removal of the main wallet, with a wipe grant: its result,
+/// and the grant.
+fn remove_main(o: &Opened) -> (Result<(), crate::EngineError>, String) {
+    let grant = (o.session.vault)
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&main_wallet().0),
+            dw_vault::Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let removed = o
+        .engine
+        .block_on(o.session.remove_wallet(main_wallet(), grant.clone()));
+    (removed, grant)
+}
+
+/// Q86 Q-PURGE C2 after the drain: a fork build's stored spend of the main
+/// wallet (its `shielded_pending_spends` row, which the drain keeps) and
+/// the unresolved disposition the drain moved into the journal. The user's
+/// removal is refused, with upstream's store not opened and once it is,
+/// and changes nothing: the raw row, the drained hold, the seed and the
+/// grant all stay, across a restart too.
+#[test]
+fn a_drained_fork_spend_and_its_stored_row_refuse_the_removal() {
+    let root = Root::new(&[
+        unresolved(1, &[1]),
+        ForkRow::Pending {
+            activity: 1,
+            nullifiers: vec![nf(1)],
+            st_bytes: b"fork-era spend".to_vec(),
+            unsent: false,
+        },
+    ]);
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Ok(())));
+    assert!(!root.fork_rows_live(), "the drain retired the fork rows");
+    let raw = stored_rows(&root.net(), main_wallet());
+    assert_eq!(raw.len(), 1, "the drain keeps a sent record");
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    for open_store in [false, true] {
+        if open_store {
+            o.bound();
+        }
+        let (removed, grant) = remove_main(&o);
+        assert!(
+            matches!(
+                removed,
+                Err(crate::EngineError::ShieldedSpendHeld(
+                    crate::ShieldedHold::InFlight
+                ))
+            ),
+            "open_store={open_store}: {removed:?}"
+        );
+        assert!(o.session.require_wallet(&main_wallet()).is_ok());
+        assert!(o.session.vault.has_wallet_secret(&main_wallet().0));
+        assert!(
+            (o.session.vault)
+                .check_grant(&grant, dw_vault::GrantKind::Wipe, Some(&main_wallet().0))
+                .is_ok(),
+            "the grant is not redeemed"
+        );
+        assert_eq!(stored_rows(&root.net(), main_wallet()), raw, "the raw row");
+        assert_eq!(o.holds(), vec![(0, nf(1))], "the drained hold");
+    }
+    o.close();
+    assert_eq!(stored_rows(&root.net(), main_wallet()), raw);
+    let o = root.open();
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    let (removed, _) = remove_main(&o);
+    assert!(
+        matches!(removed, Err(crate::EngineError::ShieldedSpendHeld(_))),
+        "{removed:?}"
+    );
+    o.close();
+}
+
+/// What the removal does with a drained hold alone (the fork's unresolved
+/// disposition, no stored record left): `holds_unresolved` does not read
+/// the journal's drained holds, so the removal goes through, upstream's
+/// store open and the hold's reservation purged with the wallet. The hold
+/// stays in the journal under the wallet's id: a re-import of the same
+/// seed holds the note again at its bind, and the dispatch hook refuses
+/// any spend of it.
+#[test]
+fn a_drained_hold_alone_leaves_the_removal_and_stays_in_the_journal() {
+    let root = Root::new(&[unresolved(1, &[1])]);
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Ok(())));
+    assert!(stored_rows(&root.net(), main_wallet()).is_empty());
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.selectable(&c), (vec![nf(2)], NOTE));
+    drop(c);
+
+    let (removed, _) = remove_main(&o);
+    removed.unwrap();
+    assert!(o.session.require_wallet(&main_wallet()).is_err(), "removed");
+    assert_eq!(o.holds(), vec![(0, nf(1))], "the drained hold stays");
+
+    let imported = o.engine.block_on(o.session.import_wallet(
+        zeroize::Zeroizing::new(MAIN_PHRASE.as_bytes().to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            core_compat: false,
+            ..Default::default()
+        },
+    ));
+    assert_eq!(imported.unwrap(), main_wallet(), "the same seed");
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.selectable(&c), (vec![nf(2)], NOTE), "held again");
+    assert_eq!(
+        o.dispatch(&c, 7, 1),
+        Err("the spend takes a note a drained fork disposition holds".into())
+    );
+    drop(c);
+    o.close();
+    let o = root.open();
+    assert_eq!(o.holds(), vec![(0, nf(1))], "and at the next start");
     o.close();
 }

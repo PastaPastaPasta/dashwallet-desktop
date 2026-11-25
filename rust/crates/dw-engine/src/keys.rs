@@ -943,10 +943,12 @@ impl NetworkSession {
     /// (12, 15, 18, 21 or 24). The seed is stored in the vault exactly as
     /// [`Self::import_wallet`] stores it; the phrase is also returned so a
     /// headless host can show it. Needs a vault that holds its data key.
+    /// `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn create_wallet(
         self: &Arc<Self>,
         word_count: u8,
     ) -> Result<CreatedWallet, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         let phrase =
             mnemonic::generate(word_count.into(), Language::English).map_err(mnemonic_error)?;
         let secret = Zeroizing::new(phrase.to_vec());

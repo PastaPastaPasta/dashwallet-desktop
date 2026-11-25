@@ -88,6 +88,8 @@ mod registration_platform;
 mod registration_rows;
 #[cfg(test)]
 mod registration_tests;
+#[cfg(test)]
+mod removal_gate_tests;
 mod requests;
 mod reverify;
 pub(crate) mod runtime;

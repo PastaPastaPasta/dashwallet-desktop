@@ -1174,6 +1174,13 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
                 failed(format!("read copy: {e}"))
             }
         };
+        #[cfg(test)]
+        if fault("snapshot.copy_read").is_err() {
+            let copied = dir.join(STORE_FILES[0]);
+            let mut bytes = fs::read(&copied).unwrap();
+            bytes[..100].fill(0x5a);
+            fs::write(&copied, bytes).unwrap();
+        }
         let conn = sql::open_immutable(&dir.join(STORE_FILES[0])).map_err(copy)?;
         snapshot_state = Some(live_state(&conn, &dir, sql::open_immutable).map_err(copy)?);
     }

@@ -915,7 +915,10 @@ fn clearing_an_uncheckable_mark_is_an_error() {
     u.request();
     u.run(now()).unwrap().unwrap();
     crate::token::reset_opened_for_test();
-    let (store, opened) = super::open_and_load(&u.net);
+    // Its own backup folder: reopening re-migrates the restored wallet, and
+    // the fixture's pre-migration backup can carry the same second.
+    let cfg = super::config(&u.net).with_auto_backup_dir(Some(u.net.join("clear-test-backups")));
+    let (store, opened) = crate::PersisterOpened::open(cfg).expect("upstream open");
     let aside = u.net.join("upgrade-backups.aside");
     fs::rename(u.root(), &aside).unwrap();
     fs::write(u.root(), b"not a folder").unwrap();

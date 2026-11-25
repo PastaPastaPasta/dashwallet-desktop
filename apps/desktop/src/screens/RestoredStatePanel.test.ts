@@ -363,12 +363,12 @@ describe("the panel's actions", () => {
     expect(html).toContain(`data-testid="restored-state-problem">${escaped(actions.problem!)}</p>`);
   });
 
-  it("every money gate reads RESTORED through the gate: only the banner, this panel and the gate read restored itself", () => {
+  it("every money gate reads RESTORED through the gate: only the banner, this panel, the gate and the restore-only add-wallet screens read restored itself", () => {
     const src = resolve(import.meta.dirname, "..");
     const readers = readdirSync(src, { recursive: true, encoding: "utf8" })
       .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
       .filter((f) => /(?<!function )useRestored\(\)/.test(readFileSync(resolve(src, f), "utf8")));
-    expect(readers.sort()).toEqual(["api/restoreGate.ts", "screens/RestoredBanner.tsx", "screens/RestoredStatePanel.tsx"]);
+    expect(readers.sort()).toEqual(["api/restoreGate.ts", "screens/Onboarding.tsx", "screens/RestoredBanner.tsx", "screens/RestoredStatePanel.tsx", "screens/settings/Backups.tsx", "screens/settings/Wallets.tsx"]);
     for (const file of ["screens/TxDetailSheet.tsx", "screens/tools/CoinSelection.tsx"]) expect(readFileSync(resolve(src, file), "utf8"), file).toContain("useRestoredGate()");
   });
 

@@ -4,7 +4,8 @@
 // menu does, the last open wallet cannot be closed, and the last wallet on the startup list stays
 // on it (issue 113).
 
-import type { Backend } from "../api/backend";
+import { hasCode, type Backend } from "../api/backend";
+import type { ShieldedHoldReason } from "../api/generated/ShieldedHoldReason";
 import { withTable } from "../dashpay/status";
 import { messageTable, t } from "../i18n";
 import { LockModel } from "../onboarding/lock";
@@ -24,14 +25,20 @@ export const WalletsText = withTable(
     "xpubHint",
     "watchOnlyEmpty",
     "unnamed",
+    "removeHeldTitle",
+    "removeHeldOk",
   ]),
   {
     get oneOpensAtStart() {
       return t("onboarding.failure.last_startup_wallet");
     },
-    /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
+    /** IOS-110. A wallet holding a shielded payment is not removed (Q86 Q-PURGE C2): `removeHeld`. */
     removeQuestion: (name: string, watchOnly: boolean) => t(watchOnly ? "settings.wallets.removeWatchOnlyQuestion" : "settings.wallets.removeQuestion", { name }),
     removed: (name: string) => t("settings.wallets.removed", { name }),
+    /** Why `remove_wallet` refused (`shielded_spend_unresolved`, its `shieldedHold` reason). One
+     * without a reason is the removal's last check, after the wallet's keys were deleted. */
+    removeHeld: (reason: ShieldedHoldReason | null) =>
+      t(reason === "inFlight" ? "settings.wallets.removeHeldInFlight" : reason === "carriedOver" ? "settings.wallets.removeHeldCarriedOver" : "settings.wallets.removeHeldKeysRemoved"),
     watchOnlyAdded: (name: string) => t("settings.wallets.watchOnlyAdded", { name }),
   },
 );
@@ -189,9 +196,12 @@ type RemoveApi = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "a
 /** Remove wallet (IOS-110, D18): the confirmation, the passphrase for a `wipe` grant, then
  * `removeWallet`. */
 export class RemoveWalletModel extends Model {
-  step: "confirm" | "working" | "done" = "confirm";
+  /** `held`: the engine refused, a shielded payment of the wallet unresolved; nothing was removed. */
+  step: "confirm" | "working" | "done" | "held" = "confirm";
   encrypted = true;
   error: string | null = null;
+  /** Why it was refused, once `held`. */
+  held: string | null = null;
   readonly lock: LockModel;
 
   constructor(
@@ -264,8 +274,13 @@ export class RemoveWalletModel extends Model {
       this.step = "done";
     } catch (e) {
       this.api.revokeGrant(grant).catch(() => {});
-      this.error = failureText(e);
-      this.step = "confirm";
+      if (hasCode(e, "shielded_spend_unresolved")) {
+        this.held = WalletsText.removeHeld(e.data?.kind === "shieldedHold" ? e.data.reason : null);
+        this.step = "held";
+      } else {
+        this.error = failureText(e);
+        this.step = "confirm";
+      }
     }
     this.changed();
   }

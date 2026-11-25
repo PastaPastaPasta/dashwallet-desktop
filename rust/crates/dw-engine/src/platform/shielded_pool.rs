@@ -4507,6 +4507,101 @@ pub(crate) async fn holds_unresolved(
     }
 }
 
+/// Why the user's removal of wallet `id` is refused, if it is (Q86 Q-PURGE
+/// C2): whenever [`holds_unresolved`] holds, as for Close Wallet, and
+/// whenever `shielded.sqlite` has a `shielded_pending_spends` row of the
+/// wallet. The disk read covers a store not opened this session (no
+/// coordinator: [`holds_unresolved`] sees no stored spend there, and the
+/// store's next open would rehydrate the row for a re-import) and a row the
+/// open did not load; the library's purge deletes exactly these rows
+/// (`file_store.rs` `purge_wallet`). A store that cannot be read holds.
+///
+/// A fork disposition the open's drain moved into the journal
+/// (`shielded_drained_hold`) does not hold: the removal leaves those rows
+/// (`erase_wallet`), a later bind of the wallet holds its notes again
+/// ([`sync_drained_holds`]), and the dispatch hook refuses any spend of them.
+///
+/// `CarriedOver` when a confirmation alone does not clear it: a DEC-1057 or
+/// fork-held mark, a marker, journal, outcome or store that does not read,
+/// or a row on disk the open store did not load (a damaged record the
+/// library keeps but never re-sends) ([`ShieldedHold`]). `InFlight`
+/// otherwise.
+pub(crate) async fn removal_hold(
+    session: &NetworkSession,
+    manager: &Manager,
+    id: WalletId,
+) -> Option<crate::ShieldedHold> {
+    let path = session.data_dir().join(SHIELDED_DB_FILE);
+    let on_disk = (session.rt)
+        .spawn_blocking(move || stored_on_disk(&path, id))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    if let Err(e) = &on_disk {
+        tracing::warn!(wallet_id = %id, error = %e, "the stored shielded spends could not be read; the removal is refused");
+    }
+    let leases = &session.leases;
+    if !holds_unresolved(leases, manager, id).await && on_disk == Ok(false) {
+        return None;
+    }
+    let (unread, unloaded) = match manager.shielded_coordinator().await {
+        Some(coordinator) => (
+            reported_outcome(leases, &coordinator, id).await.is_none(),
+            on_disk == Ok(true) && !holds_stored_spends(manager, id).await,
+        ),
+        None => (false, false),
+    };
+    Some(
+        if on_disk.is_err() || unread || unloaded || leases.marks_unrecorded(id).await {
+            crate::ShieldedHold::CarriedOver
+        } else {
+            crate::ShieldedHold::InFlight
+        },
+    )
+}
+
+/// Tests: the data directories whose next [`stored_on_disk`] read fails.
+#[cfg(test)]
+pub(crate) static FAIL_DISK_READ_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Whether `shielded.sqlite` at `path` has a `shielded_pending_spends` row of
+/// `wallet`. None with no store or no table. Read only.
+fn stored_on_disk(path: &std::path::Path, wallet: WalletId) -> Result<bool, String> {
+    use rusqlite::OpenFlags;
+    #[cfg(test)]
+    if (path.parent()).is_some_and(|dir| crate::keys::take_test_failure(&FAIL_DISK_READ_IN, dir)) {
+        return Err("test: the shielded store does not read".into());
+    }
+    if !path.try_exists().map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    let db = rusqlite::Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| e.to_string())?;
+    db.busy_timeout(Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    let table: bool = db
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+             WHERE type = 'table' AND name = 'shielded_pending_spends')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !table {
+        return Ok(false);
+    }
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM shielded_pending_spends WHERE wallet_id = ?1)",
+        [&wallet.0[..]],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// After this long a drain logs that a shielded pass in flight is still
 /// running ([`drain_passes`]), and keeps waiting.
 pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);

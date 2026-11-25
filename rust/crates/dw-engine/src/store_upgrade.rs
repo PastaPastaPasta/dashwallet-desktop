@@ -221,6 +221,16 @@ pub fn restored(network_dir: &Path) -> bool {
     dw_store_upgrade::restored_mark_present(network_dir)
 }
 
+/// [`EngineError::RestoreOnly`] while [`restored`] reads the mark set: a
+/// new wallet, a file or key import and a watch-only wallet wait for the
+/// mark to clear; a wallet comes only from its recovery phrase.
+pub fn refuse_while_restored(network_dir: &Path) -> Result<(), EngineError> {
+    if restored(network_dir) {
+        return Err(EngineError::RestoreOnly);
+    }
+    Ok(())
+}
+
 /// Whether `network_dir` has a verified before-upgrade snapshot to restore.
 pub(crate) fn restore_available(network_dir: &Path) -> Result<bool, EngineError> {
     dw_store_upgrade::snapshot_present(network_dir)

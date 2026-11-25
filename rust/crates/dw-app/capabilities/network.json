@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "network",
-  "description": "Opening and closing networks, and restoring a network's wallet data from before the upgrade at the next start. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "description": "Opening and closing networks, restoring a network's wallet data from before the upgrade at the next start, and starting a refused network over in a new folder. Granted to the main window only; `probe_unlisted` is never granted (U6).",
   "windows": [
     "main"
   ],
@@ -19,6 +19,7 @@
     "allow-cancel-restore",
     "allow-restore-status",
     "allow-restore-retry",
-    "allow-finish-without-platform"
+    "allow-finish-without-platform",
+    "allow-recover-in-fresh-folder"
   ]
 }
