@@ -238,6 +238,22 @@ test.describe("Transfer quotes", () => {
     await expect.poll(focused).toBe("transfer-to");
   });
 
+  // MG: Add and Transfer name the cause when the vault's lock or a watch-only wallet holds the account.
+  for (const [scenario, line] of [
+    ["shielded-locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes."],
+    ["shielded-mixing-only", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes."],
+    ["shielded-watch-only", "Shielded isn't available in a watch-only wallet."],
+  ])
+    test(`Add and Transfer out of Shielded name the cause in ${scenario}`, async ({ page }) => {
+      await open(page, scenario);
+      for (const route of ["coreToShielded", "shieldedToCore"] as const) {
+        await openTransfer(page, route);
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText(line);
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+      }
+    });
+
   test("Home offers Transfer from its shortcut without duplicate pool cards", async ({ page }) => {
     await open(page, "funded");
     await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
@@ -258,7 +274,7 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
     expect(await callsOf(page, "shield_quote")).toBe(1);
     await ready(false);
-    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
     await expect(page.getByTestId("transfer-fee")).toHaveText("");
     await ready(true);
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { fixtureUrl, openTransfer } from "./helpers";
 
-const SYNCING = "Shielded is still syncing; try again when it finishes.";
+const SYNCING = "Shielded is still syncing. Try again when it finishes.";
 
 /** The visible text a disabled control is described by. */
 async function reasonOf(page: Page, testId: string) {

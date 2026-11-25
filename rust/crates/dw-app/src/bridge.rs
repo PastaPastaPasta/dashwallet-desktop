@@ -259,7 +259,8 @@ pub enum PlatformChangeName {
     Startup,
     /// The wallet's Platform-address balances or their activity.
     PlatformAddresses,
-    /// The wallet's shielded account (`shielded_status`, `shielded_history`).
+    /// The wallet's shielded account (`shielded_status`, `shielded_sync_info`,
+    /// `shielded_history`).
     Shielded,
 }
 

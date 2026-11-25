@@ -2548,6 +2548,21 @@ input[type="radio"]:disabled {
   margin: 0;
 }
 
+/* Receive in Shielded without the viewing key: why, and the unlock. Under the address while the
+   first scan runs: its progress, and that a payment is safe to receive now. */
+.shielded-receive-why,
+.shielded-receive-scan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+}
+
+.shielded-receive-why p,
+.shielded-receive-scan p {
+  margin: 0;
+}
+
 .request-form .card-actions {
   justify-content: flex-end;
 }
