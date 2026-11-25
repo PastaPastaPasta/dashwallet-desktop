@@ -21,7 +21,7 @@ import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
 import { INSTANT_COPY, type TemporaryOutcome } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
-import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, waitLine, withTable, type CardStep } from "./status";
+import { awaitsContinue, checksAgain, COPY, failureText, heldWithBoth, stepOf, waitLine, withTable, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -370,6 +370,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
 
   if (row.waiting === "paymentHeld")
     return base("held", progressTitle, [REG_COPY.progress.message(label), heldWithBoth()], [act("continue", REG_COPY.progress.continue), act("moveToCore", REG_COPY.progress.moveToCore)]);
+  if (checksAgain(row)) return base("paused", progressTitle, [REG_COPY.progress.message(label), waitLine(row) ?? ""], [act("continue", REG_COPY.progress.continue)]);
   if (awaitsContinue(row)) return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
   if (row.waiting === "unlock") return base("unlock", progressTitle, [REG_COPY.progress.unlock(label)], [act("unlock", REG_COPY.progress.unlockAction)]);
 
@@ -433,7 +434,7 @@ function doneScreen(label: string): ScreenModel {
 
 /** A row a run drives: the progress screen re-reads it on a timer (D15). */
 export function isRunning(row: RegistrationStatus | undefined): boolean {
-  if (!row || row.failure || row.phase === "done" || row.phase === "contested" || row.phase === "failed" || awaitsContinue(row)) return false;
+  if (!row || row.failure || row.phase === "done" || row.phase === "contested" || row.phase === "failed" || awaitsContinue(row) || checksAgain(row)) return false;
   return row.waiting !== "unlock" && row.waiting !== "fundingUnknown" && row.waiting !== "needsFinish";
 }
 

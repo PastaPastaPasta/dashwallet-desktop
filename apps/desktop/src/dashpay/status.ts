@@ -223,9 +223,16 @@ export const WAITS = {
   needsFinish: null,
 } satisfies Record<RegistrationWaitName, string | null>;
 
+/** A Shielded payment of unknown outcome that no run is checking (the app reopened since): Continue
+ * checks it again, with no grant. */
+export function checksAgain(r: Pick<RegistrationStatus, "waiting" | "fromShielded" | "running" | "failure">): boolean {
+  return r.waiting === "paymentUnknown" && r.fromShielded && !r.running && !r.failure;
+}
+
 /** What `r` waits for, as a line (`null`: nothing to say, or its own card): a payment whose outcome
  * is unknown names the balance it left. */
-export function waitLine(r: Pick<RegistrationStatus, "waiting" | "fromShielded">): string | null {
+export function waitLine(r: Pick<RegistrationStatus, "waiting" | "fromShielded" | "running" | "failure">): string | null {
+  if (checksAgain(r)) return t("dashpay.wait.paymentUnknownShieldedIdle");
   if (r.waiting === "paymentUnknown" && r.fromShielded) return t("dashpay.wait.paymentUnknownShielded");
   return r.waiting ? WAITS[r.waiting] : null;
 }
@@ -369,6 +376,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
       action: action("continue", COPY.continue),
       secondary: action("moveToCore", COPY.moveToCore),
     });
+  if (checksAgain(r)) return card("creatingPaused", "problem", title, [t("dashpay.wait.paymentUnknownShieldedIdle")], { step, action: action("continue", COPY.continue) });
   if (r.failure || awaitsContinue(r)) {
     const why = r.failure ? failureText(r.failure, i.amount, i.discreet, r.fromPlatform, r.fromShielded) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });

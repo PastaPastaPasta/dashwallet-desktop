@@ -20,7 +20,7 @@ import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { CLAIM_KEPT, claimFoundIdentity } from "./claim";
 import { LIVE_SOURCES, type PaySource } from "./payWith";
-import { QUOTE_REQUEST } from "./status";
+import { checksAgain, QUOTE_REQUEST } from "./status";
 
 export type WizardApi = Pick<
   Backend,
@@ -351,6 +351,12 @@ export class RegistrationWizard extends Model {
    * Platform-funded row's own grant (`registration_resume_grant`), then `resume_registration`. */
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
+      // A Shielded payment no run is checking is checked again by its evidence alone: no grant.
+      if (checksAgain(row)) {
+        await this.api.resumeRegistration(this.walletId, row.draft, null);
+        this.draft = row.draft;
+        return;
+      }
       // A claim row's grant is the row's (D20): its invitation's quote refuses a claim that landed.
       // A Platform-funded row's too: a quote of its addresses refuses while its payment
       // holds them, and a Core quote's grant carries duffs; a Shielded-funded row's lease takes none.

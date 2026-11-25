@@ -509,6 +509,16 @@ describe("the source step (C-funding F18, F19, mobile parity)", () => {
     expect(wiz.error).toMatchObject({ code: "registration.quote_changed" });
   });
 
+  it("F12: a Shielded payment no run checks is checked again with no grant", async () => {
+    const { wiz, api, vault } = setup();
+    await wiz.resume(row({ waiting: "paymentUnknown", running: false, fundsCommitted: true, fromShielded: true }));
+    expect(api.registrationResumeGrant).not.toHaveBeenCalled();
+    expect(api.registrationQuote).not.toHaveBeenCalled();
+    expect(vault.calls.authorize).toEqual([]);
+    expect(api.resumeRegistration).toHaveBeenCalledTimes(1);
+    expect(api.resumeRegistration.mock.calls[0][2]).toBeNull();
+  });
+
   it("a Shielded row resumes under its own grant and reconfirms on Shielded", async () => {
     const { wiz, api } = setup();
     await wiz.resume(row({ waiting: "authorize", running: false, fundsCommitted: false, fromShielded: true }));

@@ -95,6 +95,8 @@ export const dashpay = {
     authorize: "Waiting for your approval to continue.",
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
     paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
+    /** Shown beside Continue, which checks again. */
+    paymentUnknownShieldedIdle: "The payment from your Shielded balance hasn't been checked since the app reopened. Continue checks it again.",
     paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
     paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",

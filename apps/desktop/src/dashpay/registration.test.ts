@@ -24,7 +24,7 @@ import {
 } from "./registration";
 import { INSTANT_COPY } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
-import { COPY, heldWithBoth } from "./status";
+import { COPY, heldWithBoth, waitLine } from "./status";
 import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
@@ -197,6 +197,22 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
       { kind: "continue", label: "Continue" },
       { kind: "moveToCore", label: "Move to Dash wallet" },
     ]);
+  });
+
+  it("F12: a Shielded payment no run checks (after a relaunch) is paused, Continue; a run's is progress", () => {
+    const idle = row({ waiting: "paymentUnknown", running: false, fundsCommitted: true, fromShielded: true });
+    const m = screenModel(idle, I);
+    expect(m).toMatchObject({ kind: "paused", busy: false });
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), waitLine(idle)]);
+    expect(waitLine(idle)).toMatch(/Continue checks it again/);
+    expect(m.actions).toEqual([{ kind: "continue", label: "Continue" }]);
+    expect(isRunning(idle)).toBe(false);
+    const running = { ...idle, running: true };
+    expect(kinds(running)).toEqual(["progress", "home"]);
+    expect(waitLine(running)).toBe("Checking whether the payment from your Shielded balance went through.");
+    expect(isRunning(running)).toBe(true);
+    // A Platform payment's unknown outcome is unchanged.
+    expect(kinds({ ...idle, fromShielded: false, fromPlatform: true })[0]).toBe("progress");
   });
 
   it("D21, D26: an idle row waiting for a proof (after a relaunch) is paused, Continue", () => {
