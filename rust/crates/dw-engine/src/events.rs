@@ -620,6 +620,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next wallet close just before the hub lets it go.
+    #[cfg(test)]
+    pub(crate) pause_unload: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: runs once, when a load or watch-only import has published a
     /// wallet and before it widens the wallet's pools.
     #[cfg(test)]
@@ -909,6 +912,8 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_unload: Mutex::new(None),
             #[cfg(test)]
             on_published: Mutex::new(None),
             #[cfg(test)]

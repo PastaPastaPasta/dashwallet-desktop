@@ -1183,6 +1183,12 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // A wallet closed by an operation admitted before the gate sealed
+        // let drops wait on it whose own drain the sealed gate refused:
+        // they run now, before the stores close.
+        if let Ok(live) = self.live() {
+            self.drain_deferred_drops(&live.manager).await;
+        }
         // No vault operation is admitted from here, so no unlock can follow:
         // the data key and every grant go now, not with the session's last
         // reference (an in-app network switch keeps the process running).
