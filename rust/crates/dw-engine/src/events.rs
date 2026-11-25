@@ -1207,7 +1207,8 @@ impl SessionHub {
         mine.into_iter().map(|((_, t), d)| (t, d)).collect()
     }
 
-    /// The roots wallet `id` keeps to recheck.
+    /// The roots wallet `id` keeps to recheck (tests only).
+    #[cfg(test)]
     pub(crate) fn carried_drop_roots(&self, id: WalletId) -> BTreeSet<Txid> {
         let carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
         (carried.keys())

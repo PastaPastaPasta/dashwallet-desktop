@@ -2788,7 +2788,9 @@ fn a_child_of_a_payment_swept_while_another_wallet_opens_goes_when_the_open_ends
         live_in_history(&session, id, c.txid()),
         "C waits for the other wallet's open"
     );
-    assert!(session.hub.deferred_drop_wallets().contains(&id));
+    eventually("the drop of C waits for the other wallet's open", || {
+        session.hub.deferred_drop_wallets().contains(&id)
+    });
     pause.release.notify_one();
     engine.block_on(opening).unwrap().unwrap();
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "the open ended");
@@ -2817,7 +2819,9 @@ fn a_child_of_a_payment_swept_while_another_wallet_opens_stays_after_a_fork() {
             account_balances: Default::default(),
         });
     reconciled(&engine, &session, id);
-    assert!(session.hub.deferred_drop_wallets().contains(&id));
+    eventually("the drop of C waits for the other wallet's open", || {
+        session.hub.deferred_drop_wallets().contains(&id)
+    });
     let heard = session.hub.truncations();
     super::deliver(&engine, &session, id, |wm| {
         Box::pin(async move {
