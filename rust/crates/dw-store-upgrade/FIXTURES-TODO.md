@@ -28,6 +28,9 @@ copies only and records the fork rev and each file's sha256.
   (PROVENANCE.md). `tests::v3_dropped` runs it through the whole upgrade, a
   Strict open and a stored changeset with `core_dropped_unsigned_spends`
   byte-equal, its released coins unspent and loaded, and wallet removal
-  deleting only that wallet's rows (Q93 T3 a–d). The table stays unadopted
-  until P8. `data/fork-v3-no-accounts` (no account registrations) is kept
+  deleting only that wallet's rows (Q93 T3 a–d). The same tests run over
+  `data/fork-v3-dropped-v030`, made the same way at v0.3.0's pin 373342cb3,
+  whose drop writes a kept row's absent `spent_in_txid` as `""` where
+  c5917e6bd writes null: a P8 reader must accept both. The table stays
+  unadopted until P8. `data/fork-v3-no-accounts` (no account registrations) is kept
   only to show such a store is refused at the rehearsal.
