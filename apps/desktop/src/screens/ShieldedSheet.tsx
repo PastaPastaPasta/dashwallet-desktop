@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, useShieldedBind, useRereadWhenBound, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
+import { keys, shieldedDuffs, shieldedHold, useBackend, useShieldedBind, useRereadWhenBound, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { ui, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -63,6 +63,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const to = flow.to.trim();
   const ready = amount !== null && amount > 0 && amountProblem === null && (kind !== "send" || (to !== "" && !memoTooLong));
   const available = shieldedDuffs(status);
+  const hold = shieldedHold(status);
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
   const waitText = shieldedWaitText(status);
@@ -105,6 +106,11 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
     >
       <p className="sheet-text">{C.form[kind]}</p>
       {kind !== "add" && available !== null && <p className="field-hint">{C.form.available(fmt(available))}</p>}
+      {kind !== "add" && hold && (
+        <p className="field-hint" data-testid="shielded-held">
+          {C.held(fmt(hold.duffs), hold.count)}
+        </p>
+      )}
       {kind === "send" && (
         <span className="sr-only" role="status" data-testid="shielded-sync-status">
           {scanning ? syncLine : ""}

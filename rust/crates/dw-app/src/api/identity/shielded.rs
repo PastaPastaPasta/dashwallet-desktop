@@ -47,6 +47,14 @@ pub struct ShieldedStatus {
     /// Spends whose result is not confirmed yet (`pending`), until a sync
     /// pass resolves each. Offer no retry.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends that may still go through, whose notes stay held (out of
+    /// `balance`) until the network shows they can no longer go through.
+    /// Offer no retry.
+    pub held_spends: Vec<HeldSpend>,
+    /// Credits the `heldSpends` hold; "0" when nothing is held.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub held: u64,
     /// Spends from before a restart whose result is not known and whose
     /// record was lost: one may still go through, so every send and
     /// unshield needs `confirmUnrecorded` until a sync shows all its notes
@@ -155,6 +163,8 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields,
             unresolved_spends,
+            held_spends,
+            held,
             unrecorded_spends,
             synced_index,
             last_sync_at,
@@ -173,6 +183,8 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields: pending_shields.into_iter().map(Into::into).collect(),
             unresolved_spends: unresolved_spends.into_iter().map(Into::into).collect(),
+            held_spends: held_spends.into_iter().map(Into::into).collect(),
+            held,
             unrecorded_spends: unrecorded_spends.into_iter().map(Into::into).collect(),
             synced_index,
             last_sync_at,
@@ -704,6 +716,36 @@ impl From<engine::UnresolvedSpend> for UnresolvedSpend {
             activity_id,
             transition,
             attempts,
+        }
+    }
+}
+
+/// A spend that may still go through, whose notes are held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldSpend {
+    /// Its history row's id.
+    pub activity_id: String,
+    /// Platform's hash of its signed state transition (hex).
+    pub transition: String,
+    /// Credits of the unspent notes it holds; "0" once all are spent. Two
+    /// spends that hold one note both count it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+}
+
+impl From<engine::HeldSpend> for HeldSpend {
+    fn from(h: engine::HeldSpend) -> Self {
+        let engine::HeldSpend {
+            activity_id,
+            transition,
+            credits,
+        } = h;
+        HeldSpend {
+            activity_id,
+            transition,
+            credits,
         }
     }
 }

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 97
+Contract-Version: 98
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -200,7 +200,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 |---|---|---|---|
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. Reads memory and app.sqlite only, never Platform, so it answers offline; the rules are item 49. `StartupIncomplete` only while no identity is on file. Changes are signalled as `Platform{Startup}` (bring-up, `set_main_identity`), `Platform{Registration}`, `Platform{Identities}`, `Platform{Names}`; `WaitingForSync` ends with sync, which has its own events. **Implemented (BL-153).** | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source, `platform_enabled` and `addresses` (the wallet's last Platform-address pass, `AddressSync`). **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
-| `NetworkSession.protocol_compatibility()` | sync | Platform protocol compatibility of the open network (1.0 C2): `ProtocolCompatibility{network_version, supported_version}`. `supported_version` is `PlatformVersion::latest().protocol_version` (highest version this build knows); `network_version` is the highest active version proved on this session (`ExtendedEpochInfo::fetch_current`'s unclamped epoch version, or a proved response metadata ratchet), `None` before Platform has answered or with `no_platform`. Refreshed in the background when the Platform loops start and every 60 s while SPV runs, and whenever `refresh_protocol_version` runs (invitations, shielded pool, platform fund); never blocks any action (`refresh_protocol_version` stays clamped at `<= supported_version`). Signalled on each loaded wallet's `Platform{Startup}` when `network_version` advances. **Implemented (1.0 C2).** | `PlatformError` |
+| `NetworkSession.protocol_compatibility()` | sync | Platform protocol compatibility of the open network (1.0 C2): `ProtocolCompatibility{network_version, supported_version}`. `supported_version` is `PlatformVersion::latest().protocol_version` (highest version this build knows); `network_version` is the highest active version proved on this session under SPV-verified quorum keys only (`ExtendedEpochInfo::fetch_current`'s unclamped epoch version, when every quorum key its proofs used was SPV-verified; #855): a version proved under a key the trusted service served (Degraded mode), or ratcheted by another response's metadata, is logged and never reported, so it neither shows the upgrade notice nor makes a pre-check refusal `credits.rules_unsupported`. `None` before such a read has answered or with `no_platform`. Refreshed in the background when the Platform loops start and every 60 s while SPV runs, and whenever `refresh_protocol_version` runs (invitations, shielded pool, platform fund); never blocks any action (`refresh_protocol_version` stays clamped at `<= supported_version`). Signalled on each loaded wallet's `Platform{Startup}` when `network_version` advances. **Implemented (1.0 C2).** | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. `names_check` (item 51) is `Pending` or `Failed` while `main_name` is `None` and Platform has not said this session that the identity owns no name: it may still own one. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. Signalled `Platform{Identities}` and `Platform{Startup}` (the list's `is_main`, `status`'s main; DP6-01). **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
@@ -864,7 +864,7 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing`, `prover_ready`, `account` (`ShieldedAccount`: `bound`, or what holds the first bind of the viewing key: `binding` while a pass holds it back, `locked` and `mixing_only` until a full unlock, `watch_only` for good; `None` while not active; once bound the receive address reads before any scan), `scan` (`ShieldedScanProgress { checked, total }`: the running pass's network-wide progress through the pool's note tree, `None` between passes and before a batch proved the pool's size) and `last_pass_failed` (the wallet's last pass this session failed, until one succeeds); and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
+| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, (version 97) `held_spends` (the spends the library resolved with no proof of either outcome, whose notes it holds: each may still go through) and `held` (credits of the unspent notes they hold, each note once, not in `balance`; 0 with no hold). Both are read only, and a read of them that fails shows no hold. Then `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing`, `prover_ready`, `account` (`ShieldedAccount`: `bound`, or what holds the first bind of the viewing key: `binding` while a pass holds it back, `locked` and `mixing_only` until a full unlock, `watch_only` for good; `None` while not active; once bound the receive address reads before any scan), `scan` (`ShieldedScanProgress { checked, total }`: the running pass's network-wide progress through the pool's note tree, `None` between passes and before a batch proved the pool's size) and `last_pass_failed` (the wallet's last pass this session failed, until one succeeds); and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
 | `shielded_sync_info()` | async | `ShieldedSyncInfo` for the status bar, Sync progress and Receive, read with no read of the note store and no bind, so it answers while a pass holds the store (a first scan holds it to the end): `active` (as `shielded_status`, and the session runs with Platform), `account` (`bound` from the wallet's keys; else, with no prompt, `watch_only` for a wallet without a seed, `locked` or `mixing_only` for the vault's state, and `binding` for a key the next `shielded_status` binds; `None` while not active), `established` (a pass scanned the account this session, or a `shielded_status` found it `ready`), `syncing`, `scan` and `last_pass_failed`. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
 | `shielded_sync()` | async | Runs a pass of the wallet's notes now (bypassing the 30 s skip), then returns `shielded_status`. The gate; `platform.unavailable` while the Platform side is not running. | `ShieldedError` |
 | `shielded_receive_address()` | async | `ShieldedAddress{address, account}`: the account's default payment address, bech32m (`dash1z…`/`tdash1z…`, dpp `OrchardAddress::to_bech32m_string`), for "Receive" and its QR. The gate; `shielded.not_synced{account}` until the keys are bound. | `ShieldedError` |
@@ -979,7 +979,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 7110b11f2c857897eae4d84f31287c86fdb31c0945358cd82ca58b110994ad5d version: 97 -->
+<!-- surface-sha256: f3fdae8d6228c1dfecc76187123ec030bbb80bb874b08d41fb5b116bb35ec50e version: 98 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2406,6 +2406,8 @@ pub struct ShieldedStatus {
     pub pending: u64,
     pub pending_shields: Vec<PendingShield>,
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    pub held_spends: Vec<HeldSpend>,
+    pub held: u64,
     pub unrecorded_spends: Vec<UnrecordedSpend>,
     pub synced_index: Option<u64>,
     pub last_sync_at: Option<u64>,
@@ -2519,6 +2521,12 @@ pub struct UnresolvedSpend {
     pub activity_id: String,
     pub transition: String,
     pub attempts: u32,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldSpend {
+    pub activity_id: String,
+    pub transition: String,
+    pub credits: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -4992,7 +5000,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     Nothing else changes: the codes, the plan, the refusal's place before any lease, grant or signature, and what a
     Max spends.
 
-109. **Shielded's sync as the status bar reads it (version 97).** `ShieldedStatus` gains `account`
+109. **Shielded's sync as the status bar reads it (version 98).** `ShieldedStatus` gains `account`
     (`ShieldedAccount`), `scan` (`ShieldedScanProgress`) and `last_pass_failed`. `account` is what the bind of the
     viewing key answered: `bound`; `binding` while a pass held the first bind back (a later read binds it);
     `locked`, `mixing_only` and `watch_only` when the vault refused the first bind's viewing key (`Locked`,

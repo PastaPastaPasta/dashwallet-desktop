@@ -40,6 +40,7 @@ import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type Setting
 import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
+import { holdShielded } from "./shielded";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
@@ -1153,6 +1154,19 @@ const SCENARIOS = {
   "shielded-unrecorded": (t) => {
     const w = base(t);
     w.pending.shielded!.unrecorded = [{ activityId: "sh-9", since: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3600 }];
+    return w;
+  },
+  /** A payment Platform refused at broadcast may still go through: its notes are held, out of the
+   * balance, and Activity shows it as "May still go through". */
+  "shielded-held": (t) => {
+    const w = base(t);
+    holdShielded(w.pending.shielded!, 1);
+    return w;
+  },
+  /** Two such payments. */
+  "shielded-held-two": (t) => {
+    const w = base(t);
+    holdShielded(w.pending.shielded!, 2);
     return w;
   },
   /** Shielded is ready and holds nothing: Send and Move wait for a balance. */

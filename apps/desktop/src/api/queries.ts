@@ -341,6 +341,20 @@ export function shieldedDuffs(status: ShieldedStatus | null): number | null {
   return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
 }
 
+/** What payments that may still go through hold of the Shielded balance (not in `balance`): how
+ * many still hold notes, and the held total in credits and duffs. `null` when nothing is held: a
+ * held spend whose notes a scan saw spent holds nothing. */
+export interface ShieldedHold {
+  count: number;
+  credits: string;
+  duffs: number;
+}
+
+export function shieldedHold(status: ShieldedStatus | null | undefined): ShieldedHold | null {
+  if (!status?.active || BigInt(status.held) === 0n) return null;
+  return { count: status.heldSpends.filter((h) => BigInt(h.credits) > 0n).length, credits: status.held, duffs: creditsToDuffs(status.held) };
+}
+
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
 export function useShieldedQuote(walletId: string, request: ShieldedRequest | null) {
   const b = useBackend();
@@ -386,6 +400,7 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: poolReading(shielded, shieldedReading),
+    shieldedHold: shieldedHold(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */
