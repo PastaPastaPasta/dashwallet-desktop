@@ -847,3 +847,34 @@ fn the_withdrawal_recheck_starts_behind_the_gate() {
         "a recheck ran while restored"
     );
 }
+
+/// The asset-lock catch-up's resume does not run while restored, and does
+/// once the mark clears.
+#[test]
+fn an_asset_lock_resume_waits_for_the_clear() {
+    use crate::platform::lease::resume::{Resumed, Resumer};
+    let (_dir, engine, session, id, _paid, _p) = held_payment();
+    let tracked = crate::platform::lease::mode_b::SessionTracked {
+        session: Arc::downgrade(&session),
+    };
+    let txid = Txid::from_byte_array([0x31; 32]);
+    assert_eq!(engine.block_on(tracked.resume(id, txid)), Resumed::NotRun);
+    cleared(&session);
+    assert_eq!(engine.block_on(tracked.resume(id, txid)), Resumed::Ran);
+}
+
+/// A proposal fee's resend is refused while restored.
+#[test]
+fn a_proposal_fee_resend_is_refused_while_restored() {
+    let (_dir, engine, session, id, _paid, _p) = held_payment();
+    let refused = engine.block_on(session.governance().resend_fee(id, &[0x42; 32]));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::governance::GovernanceError::Engine(
+                EngineError::Restored
+            ))
+        ),
+        "{refused:?}"
+    );
+}
