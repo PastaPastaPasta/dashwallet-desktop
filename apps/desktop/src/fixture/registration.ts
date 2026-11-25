@@ -574,7 +574,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const failed = readiness.checks.find((c) => !c.ready);
     if (failed && ["poolActive", "featureOn", "denomination"].includes(failed.check)) throw shieldedOff();
     if (failed)
-      throw fail("registration.shielded_not_ready", "not ready", { kind: "shieldedNotReady", reason: failed.check, readyAt: failed.check === "rested" ? readiness.readyAt : null });
+      throw fail("registration.shielded_not_ready", "shielded readiness failed", { kind: "shieldedNotReady", reason: failed.check, readyAt: failed.check === "rested" ? readiness.readyAt : null });
     if (denomination !== readiness.denomination) throw fail("registration.quote_changed", "the quote changed");
     const credits = BigInt(denomination) + costs(request.label, request.temporaryLabel).credits;
     const g = d.grant(world, grantId, walletId, ["platformOp"]);
