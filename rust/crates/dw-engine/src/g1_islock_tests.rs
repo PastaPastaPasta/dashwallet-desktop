@@ -18,9 +18,9 @@
 //! manager's own events, not the handlers, and the other handlers act only on
 //! a validated `InstantLockReceived` or a `TransactionInstantLocked`.
 //!
-//! A lock stored unverified (a store written before locks were checked)
-//! is not final after the reopen either. A control runs the same checks on a
-//! lock the wallet takes directly, so each check is shown able to fail.
+//! A control runs the same checks on a lock the wallet takes directly, so
+//! each check is shown able to fail. A lock row stored unverified, and a lock
+//! a live quorum validates, are `tests/g1_unvalidated_islock.rs`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -47,8 +47,6 @@ use crate::{Engine, WalletId};
 
 const BARRIER: Duration = Duration::from_secs(60);
 const SETTLE: Duration = Duration::from_secs(3);
-/// The positive case waits for a DKG cycle on a loaded machine.
-const QUORUM_BARRIER: Duration = Duration::from_secs(300);
 
 /// The client owns its network by value; the test keeps a handle to inject
 /// messages through it.
@@ -267,16 +265,12 @@ fn not_final_violation(v: &View) -> Option<String> {
     })
 }
 
-fn wait_for(what: &str, barrier: Duration, mut ready: impl FnMut() -> bool) {
+fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ready() {
-        assert!(start.elapsed() < barrier, "timed out waiting for {what}");
+        assert!(start.elapsed() < BARRIER, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(25));
     }
-}
-
-fn wait_until(what: &str, ready: impl FnMut() -> bool) {
-    wait_for(what, BARRIER, ready);
 }
 
 fn instantsend_pending(engine: &Engine, client: &Client) -> usize {
@@ -462,42 +456,6 @@ fn g1_engine_unvalidated_lock_after_its_transaction_is_never_final() {
     run(Order::TxFirst);
 }
 
-/// A lock row a store holds unverified, beside the payment's record, is not
-/// final once the engine loads the store.
-#[test]
-fn g1_engine_stored_unverified_lock_is_not_final_after_a_reopen() {
-    let (_dir, engine, session, id) = engine_wallet();
-    let (tx, spv) = deliver_unvalidated(&engine, &session, id, Order::TxFirst);
-    let txid = tx.txid();
-    let forwarded = spv.forwarded(&engine, &txid);
-    spv.stop(&engine);
-    assert_eq!(forwarded, None, "the seeded row is the only lock");
-    let db = session.data_dir().join(WALLET_DB_FILE);
-    *session.close_load_wait.lock().unwrap() = Some(super::LOAD_WAIT);
-    drop(session);
-    assert!(
-        engine
-            .block_on(engine.close_network(crate::DashNetwork::Regtest))
-            .unwrap()
-    );
-    let blob =
-        bincode::serde::encode_to_vec(unvalidatable_lock(&tx), bincode::config::standard())
-            .unwrap();
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.pragma_update(None, "foreign_keys", true).unwrap();
-    conn.execute(
-        "INSERT OR REPLACE INTO core_instant_locks (wallet_id, txid, islock_blob, verified) \
-         VALUES (?1, ?2, ?3, 0)",
-        rusqlite::params![id.0.as_slice(), AsRef::<[u8]>::as_ref(&txid), blob],
-    )
-    .unwrap();
-    drop(conn);
-    let session = super::open(&engine);
-    assert_eq!(lock_rows(&session, id, &txid), [0], "the unverified row stays");
-    let (_, reopened) = settled_violations(&engine, &session, id, &txid);
-    assert_none("stored unverified", vec![("engine, after reopen", reopened)]);
-}
-
 /// The payment is InstantSend-final in the engine: its row is locked, its
 /// one coin locked, trusted and selectable, and its amount confirmed balance
 /// (key-wallet counts an InstantSend-locked coin as confirmed).
@@ -535,65 +493,4 @@ fn g1_engine_control_a_lock_the_wallet_takes_is_final() {
     let session = reopen(&engine, session);
     assert_eq!(lock_rows(&session, id, &txid), [1], "after reopen: the verified row");
     assert_final(&view(&engine, &session, id, &txid), PAID, "after reopen");
-}
-
-/// A lock the engine's own SPV client validates against a live regtest
-/// quorum is final, stored verified, and final again after a reopen.
-#[test]
-#[ignore = "needs dashd and rust-dashcore's regtest-mn data (DASHD_PATH, DASHD_MN_DATADIR)"]
-fn g1_engine_validated_lock_is_final_and_survives_a_reopen() {
-    use dash_spv::test_utils::MasternodeTestContext;
-    const AMOUNT: u64 = 25_000_000;
-    let probe = tokio::runtime::Runtime::new().unwrap();
-    let mut mn = probe
-        .block_on(MasternodeTestContext::new(false))
-        .expect("a dashd masternode network (unset SKIP_DASHD_TESTS)");
-    let options = crate::SessionOptions {
-        spv_peers: vec![mn.controller_addr.to_string()],
-        ..super::offline()
-    };
-    let (_dir, engine, session, id, _) = super::engine_wallet_on(options);
-    engine.block_on(session.start_spv()).unwrap();
-    let masternodes_synced = || {
-        session.sync_snapshot().is_ok_and(|s| {
-            s.running
-                && (s.phases.iter())
-                    .any(|p| p.phase == crate::sync::SyncPhase::Masternodes && p.done)
-        })
-    };
-    wait_for("masternode sync", QUORUM_BARRIER, masternodes_synced);
-    // The pre-generated quorums are in the past; a DKG cycle forms one that
-    // signs locks now. A lock that arrives before the client has the new
-    // quorum waits pending and is validated once it does.
-    mn.mine_dkg_cycle().expect("DKG cycle");
-    let address = receive_address(&engine, &session, id);
-    let txid = mn
-        .controller
-        .send_to_address(&address, dashcore::Amount::from_sat(AMOUNT));
-    mn.bump_mocktime(30);
-    wait_for("the controller's lock", QUORUM_BARRIER, || {
-        let locked = (mn.controller)
-            .try_rpc_call("getrawtransaction", &[txid.to_string().into(), 1.into()])
-            .and_then(|raw| raw.get("instantlock").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-        if !locked {
-            std::thread::sleep(Duration::from_millis(225));
-        }
-        locked
-    });
-    let final_in_engine = || {
-        let v = view(&engine, &session, id, &txid);
-        v.rows.iter().any(|(_, locked, _)| *locked) && v.coins.iter().all(|c| c.listed_locked)
-    };
-    wait_for("the payment InstantSend-final in the engine", QUORUM_BARRIER, final_in_engine);
-    wait_until("a verified lock row", || {
-        session.live().unwrap().persister.flush(id.0).unwrap();
-        lock_rows(&session, id, &txid) == [1]
-    });
-    assert_final(&view(&engine, &session, id, &txid), AMOUNT, "live");
-    engine.block_on(session.stop_spv()).unwrap();
-    let session = reopen(&engine, session);
-    assert_eq!(lock_rows(&session, id, &txid), [1], "after reopen: the verified row");
-    assert_final(&view(&engine, &session, id, &txid), AMOUNT, "after reopen");
-    drop(mn);
 }
