@@ -3507,14 +3507,17 @@ fn mode_b_a_lock_signed_for_a_wallet_that_left_leaves_its_step_maybe_sent() {
             }
         }))
         .unwrap();
-    let unconfirmed = match result {
-        Err(e @ platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_)) => e,
-        other => panic!("the pinned library reports a wallet that left unconfirmed: {other:?}"),
-    };
-    assert!(matches!(
-        PlatformError::from(unconfirmed),
-        PlatformError::BroadcastUnknown { .. }
-    ));
+    // P10 (the fork's asset-lock build guard) is post-RC: until then the library reports it unconfirmed.
+    match result {
+        Err(platform_wallet::PlatformWalletError::WalletRemovedBeforeSend(_)) => {}
+        Err(e @ platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_)) => {
+            assert!(matches!(
+                PlatformError::from(e),
+                PlatformError::BroadcastUnknown { .. }
+            ));
+        }
+        other => panic!("a wallet that left is refused or reported unconfirmed: {other:?}"),
+    }
     assert!(permit.signatures().released() > 0);
     assert!(
         s.leases.signed_lock_txids(f.wallet, STEP).is_empty(),

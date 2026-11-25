@@ -18,6 +18,8 @@ mod banner;
 #[cfg(test)]
 mod banner_tests;
 mod bringup;
+#[cfg(test)]
+mod close_unload_gate_tests;
 mod contact_names;
 pub(crate) mod contact_payout;
 mod contacts;
