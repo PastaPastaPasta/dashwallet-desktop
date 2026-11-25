@@ -14,6 +14,7 @@ mod review_fixes_2;
 mod review_fixes_3;
 mod review_fixes_4;
 mod startup_order;
+mod support;
 mod upgrade_copy;
 mod upgraded_from;
 mod v3;
