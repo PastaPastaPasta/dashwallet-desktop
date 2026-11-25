@@ -1353,6 +1353,21 @@ impl SessionHub {
             .collect()
     }
 
+    /// Queues again the children of a swept payment whose drop only
+    /// key-wallet's processed height voided, with their truncation stamp
+    /// (#891): the next drop takes them, and a fork counted meanwhile still
+    /// voids them.
+    pub(crate) fn requeue_dead_children(
+        &self,
+        id: WalletId,
+        truncations: u64,
+        children: Vec<Txid>,
+        (winner, swept): (crate::history::Winner, BTreeSet<Txid>),
+    ) {
+        let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
+        queued.push((id, truncations, children, winner, swept));
+    }
+
     /// Keeps `work`, drops of wallet `id` that wait for another wallet's
     /// open, found with `truncations` applied; one already waiting is kept
     /// once.

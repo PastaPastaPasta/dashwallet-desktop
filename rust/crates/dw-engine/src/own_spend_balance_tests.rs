@@ -3417,6 +3417,8 @@ fn a_swept_payments_child_stays_when_a_fork_after_its_take_leaves_the_payment_un
 fn a_swept_payments_child_stays_when_a_fork_the_hub_has_not_heard_passes_its_height() {
     swept_child_after_its_take(|engine, session, id, _| {
         let heard = session.hub.truncations();
+        // Straight to key-wallet, not through `deliver`: the hub must not
+        // hear this fork or these blocks.
         let manager = session.manager().unwrap();
         engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
@@ -3483,6 +3485,27 @@ fn a_swept_payments_child_goes_when_nothing_changes_after_its_take() {
     mined(&engine, &session, id, TIP + 1, vec![foreign()]);
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
     session.hub.apply_wallet_event(&swept(id, &p, &winner));
+    eventually("C goes", || !live_in_history(&session, id, c.txid()));
+}
+
+/// #891: a block without P lands after the drop took C. Key-wallet's
+/// processed height moved, so that drop leaves C; the drop the block's
+/// reconcile runs takes C again and drops it.
+#[test]
+fn a_swept_payments_child_goes_when_a_block_after_its_take_leaves_the_payment_unmined() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_drop_child.lock().unwrap() = Some(Arc::clone(&pause));
+    session.hub.apply_wallet_event(&swept(id, &p, &winner));
+    eventually("the drop took C", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let heard = session.hub.truncations();
+    mined(&engine, &session, id, TIP + 2, vec![unrelated(11)]);
+    assert_eq!(session.hub.truncations(), heard, "no fork is counted");
+    pause.release.notify_one();
     eventually("C goes", || !live_in_history(&session, id, c.txid()));
 }
 

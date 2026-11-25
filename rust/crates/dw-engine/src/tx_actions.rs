@@ -2360,8 +2360,9 @@ impl NetworkSession {
     ) {
         let _gate = self.hub.drop_gate.lock().await;
         let truncations = self.hub.truncations();
-        // Key-wallet's processed height before the take: a fork the hub has
-        // not counted yet moves it (#891).
+        // Key-wallet's processed height before the take, and before
+        // `carried_drops` reads anything: a fork the hub has not counted
+        // yet moves it (#891).
         let processed = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -2701,6 +2702,14 @@ impl NetworkSession {
             let moved = processed != Some(core.last_processed_height());
             if truncations != since || moved || !held_again.is_empty() {
                 tracing::warn!(%wallet, ?roots, ?held_again, moved, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
+                // Only a block since the take: the drop that block's
+                // reconcile runs decides them again, with the stamp they
+                // were queued with.
+                if truncations == since && held_again.is_empty() {
+                    let found = (winner, links.clone());
+                    self.hub
+                        .requeue_dead_children(wallet, since, roots.to_vec(), found);
+                }
                 return Ok(BTreeSet::new());
             }
         }
