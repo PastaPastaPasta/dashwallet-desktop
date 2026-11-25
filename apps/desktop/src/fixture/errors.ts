@@ -47,7 +47,7 @@ const SAMPLES: Samples = {
     data: { kind: "identityCredits", identity: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF", needed: "120000000", available: "4000000" },
   },
   limit: { code: "vault.quick_unlock_limit_exceeded", data: { kind: "limit", duffs: 10_000_000 } },
-  maxMinimum: { code: "credits.below_minimum", data: { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs: 10_000_100 } },
+  maxMinimum: { code: "credits.below_minimum", data: { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs: 10_000_100, arrivingDuffs: 0, arrivingClears: false } },
   fee: { code: "send.amount_with_fee_exceeds_balance", data: { kind: "fee", fee: 374, available: 3_019_698_287 } },
   spendCap: { code: "send.grant_exceeded", data: { kind: "spendCap", maxDuffs: 100_000_000, outflow: 150_000_000 } },
   recipient: { code: "send.invalid_address", data: { kind: "recipient", index: 1 } },
