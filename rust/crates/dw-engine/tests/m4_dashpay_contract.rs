@@ -1165,6 +1165,8 @@ fn error_codes_match_the_contract() {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::PreflightRefused,
+            CreditsError::RulesUnsupported,
         ],
         CreditsError::code,
     );
