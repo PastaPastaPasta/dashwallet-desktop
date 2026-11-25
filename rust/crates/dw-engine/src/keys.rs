@@ -1630,14 +1630,6 @@ impl NetworkSession {
                 Err(EngineError::Internal("test: ranges not applied".into())),
             );
         }
-        let covered = match self.stored_issued(id).await {
-            Ok(Some(issued)) => self.cover_issued(manager, id, issued).await,
-            Ok(None) => Ok(()),
-            Err(e) => Err(e),
-        };
-        if let Err(e) = &covered {
-            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
-        }
         let lookahead = self.stored_lookahead(id).await;
         let raised = match &lookahead {
             Ok(Some(gap)) => match manager.get_wallet(&id.0).await {
@@ -1649,6 +1641,15 @@ impl NetworkSession {
         };
         if let Err(e) = &raised {
             tracing::warn!(wallet_id = %id, error = %e, "could not raise the loaded wallet's lookahead");
+        }
+        // After the lookahead: the gap past Core's counters is the pools'.
+        let covered = match self.stored_issued(id).await {
+            Ok(Some(issued)) => self.cover_issued(manager, id, issued).await,
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = &covered {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
         }
         (!matches!(lookahead, Ok(None)), covered.and(raised))
     }

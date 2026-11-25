@@ -1955,6 +1955,93 @@ mod tests {
         engine.block_on(engine.shutdown()).unwrap();
     }
 
+    /// After a restart, a wallet imported from Core watches its whole stored
+    /// range, each counter plus the stored lookahead, not just the
+    /// library's default gap past the counter, and a payment to the last
+    /// address of that range counts.
+    #[test]
+    fn a_reloaded_core_wallet_watches_its_stored_range_and_counts_a_payment_in_it() {
+        use dash_spv::EventHandler;
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        const PAID: u64 = 3 * 100_000_000;
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        let last = |chain| match chain {
+            AddressChain::Receiving => 1000 + CORE_COMPAT_LOOKAHEAD,
+            _ => 1 + CORE_COMPAT_LOOKAHEAD,
+        };
+        let range: Vec<(AddressChain, u32, String)> = (addresses_of(&engine, &s, id).into_iter())
+            .filter(|a| a.index <= last(a.chain))
+            .map(|a| (a.chain, a.index, a.address))
+            .collect();
+        for chain in [AddressChain::Receiving, AddressChain::Change] {
+            let derived = range.iter().filter(|(c, ..)| *c == chain).count();
+            assert_eq!(
+                derived,
+                last(chain) as usize + 1,
+                "{chain:?} in the session"
+            );
+        }
+
+        let s = reopen(&engine, s);
+        let manager = s.manager().unwrap();
+        let watched = engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+                .monitored_addresses()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<std::collections::HashSet<_>>()
+        });
+        let unwatched: Vec<_> = (range.iter())
+            .filter(|(.., a)| !watched.contains(a))
+            .map(|(c, i, _)| (*c, *i))
+            .collect();
+        assert!(
+            unwatched.is_empty(),
+            "not watched after the restart: {unwatched:?}"
+        );
+
+        let (_, _, to) = (range.iter())
+            .find(|(c, i, _)| *c == AddressChain::Receiving && *i == last(*c))
+            .unwrap();
+        let to = (to.parse::<dashcore::Address<dashcore::address::NetworkUnchecked>>())
+            .unwrap()
+            .assume_checked();
+        let tx = dashcore::Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: dashcore::OutPoint::new(
+                    dashcore::Txid::from_byte_array([9; 32]),
+                    0,
+                ),
+                ..Default::default()
+            }],
+            output: vec![dashcore::TxOut {
+                value: PAID,
+                script_pubkey: to.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let events: Vec<_> = engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let mut rx = wm.subscribe_events();
+            let result = wm.process_mempool_transaction(&tx, None).await;
+            assert!(result.is_relevant, "the payment is the wallet's");
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        });
+        for event in &events {
+            s.hub.on_wallet_event(event);
+        }
+        let balances = s.balances(&id).unwrap().unwrap();
+        assert_eq!(balances.total, PAID, "the payment counts");
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// Review L4: what the guard's drop runs replaces the private key.
     #[test]
     fn master_key_guard_erases_the_private_key() {
