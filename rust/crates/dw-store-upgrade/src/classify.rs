@@ -151,8 +151,8 @@ pub(crate) fn classify(conn: &Connection, adopters: &Adopters) -> Result<Classif
         return Ok(Classification::Refuse(refusal));
     }
     let reference = crate::shapes::Reference::build(adopters)?;
-    let p4_applied = history.iter().any(|r| r.name == P4_NAME);
-    if let Some(object) = crate::shapes::check(conn, &versions, &reference, p4_applied)? {
+    let applied: BTreeSet<&str> = history.iter().map(|r| r.name.as_str()).collect();
+    if let Some(object) = crate::shapes::check(conn, &versions, &reference, &applied)? {
         return Ok(mismatch(object));
     }
     let retired_rows = count_rows(conn, fork::RETIRED_POOL).map_err(&q)?;

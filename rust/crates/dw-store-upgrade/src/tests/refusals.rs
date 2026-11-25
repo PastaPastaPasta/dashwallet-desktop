@@ -213,3 +213,37 @@ fn reconcile_refusal_leaves_the_store_unchanged() {
     assert!(err.file_unchanged());
     assert_eq!(tree(&f.net), before);
 }
+
+#[test]
+fn refuses_an_unreleased_fork_table_no_upstream_migration_made() {
+    let f = fixture("v0.1.0");
+    exec(
+        &f.wallet(),
+        build().fresh_table_sql("core_block_spends").unwrap(),
+    );
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_block_spends without fork version 5"),
+    );
+}
+
+#[test]
+fn refuses_an_upstream_made_table_that_is_not_this_builds() {
+    let f = fixture("v0.1.0");
+    let snapshot = crate::snapshot::take_snapshot(&f.net, now()).unwrap();
+    crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
+    drop(open_and_load(&f.net));
+    assert!(matches!(
+        precheck_with(&f.net, build()).unwrap(),
+        Precheck::Fork { .. }
+    ));
+    exec(
+        &f.wallet(),
+        "DROP TABLE core_dismissed_txids; \
+         CREATE TABLE core_dismissed_txids (wallet_id BLOB NOT NULL, txid BLOB NOT NULL)",
+    );
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
+    );
+}

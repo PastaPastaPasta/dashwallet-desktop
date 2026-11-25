@@ -29,9 +29,12 @@ pub(crate) const VERIFIED: &str = "verified";
 /// whose refinery history goes no further has not been migrated by upstream.
 pub(crate) const FORK_REFINERY_MAX: i64 = 18;
 
-/// Tables later fork versions create (dev builds only; never released).
-pub(crate) const UNRELEASED_TABLES: &[(u32, &str)] =
-    &[(4, "core_dismissed_txids"), (5, "core_block_spends")];
+/// Tables later fork versions create (dev builds only; never released), and
+/// the upstream migration that creates a table of the same name.
+pub(crate) const UNRELEASED_TABLES: &[(u32, &str, &str)] = &[
+    (4, "core_dismissed_txids", "core_dismissed_txids"),
+    (5, "core_block_spends", "core_block_spends"),
+];
 
 /// The name the fork recorded in `dw_fork_schema_history`, and its checksum.
 pub(crate) struct KnownForkMigration {
