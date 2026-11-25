@@ -60,7 +60,8 @@ first candidate.
 
 Test the commit that will ship: tag a release candidate (section 5) and test its `-rc.N` files, or, for a version
 that skips candidates, the `dist-<os>` artifacts of a release.yml dispatch at the chosen commit (section 1; they
-show the test-build warning; nothing else differs). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
+show the test-build warning, and they leave out the updater feed URL that a signed stable tag build embeds
+with `DW_ENABLE_UPDATER=1`, so this test does not exercise the updater; section 7 checks it). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
 published files once more.
 
 The minimal bar (RELEASE-PLAN §1), on public testnet, funded with the `dash-faucet` skill, on the Linux AppImage:
