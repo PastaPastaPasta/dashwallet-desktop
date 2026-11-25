@@ -416,6 +416,20 @@ export function existingNetworks(): Promise<Array<NetworkData>> {
   return invoke<Array<NetworkData>>("existing_networks");
 }
 
+/**
+ * The refused open's way back to the funds (Q107 C1): the window's
+ * network starts over in a new, empty folder beside its own, with the
+ * restore's RESTORED mark, so the wallet set up there from its recovery
+ * phrase stays held until its first full sync. Nothing in the refused
+ * folder changes. The next start opens the new folder; the renderer
+ * restarts the app after this (`restart_app`). `invalid_argument`
+ * unless the network's last open was refused by the store-upgrade
+ * check, and while it is open.
+ */
+export function recoverInFreshFolder(): Promise<null> {
+  return invoke<null>("recover_in_fresh_folder");
+}
+
 export function lockStatus(): Promise<LockStatus> {
   return invoke<LockStatus>("lock_status");
 }
@@ -3415,6 +3429,7 @@ export type CommandArgs = {
   active_network: {  };
   get_network_choice: {  };
   existing_networks: {  };
+  recover_in_fresh_folder: {  };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };
@@ -3796,6 +3811,7 @@ export type CommandResults = {
   active_network: NetworkInfo | null;
   get_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
+  recover_in_fresh_folder: null;
   lock_status: LockStatus;
   unlock: LockStatus;
   unlock_mixing_only: LockStatus;
@@ -4179,6 +4195,7 @@ export const COMMANDS: Record<CommandName, string> = {
   active_network: "network",
   get_network_choice: "network",
   existing_networks: "network",
+  recover_in_fresh_folder: "network",
   lock_status: "vault",
   unlock: "vault",
   unlock_mixing_only: "vault",

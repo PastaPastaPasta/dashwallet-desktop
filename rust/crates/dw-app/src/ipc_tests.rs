@@ -355,6 +355,17 @@ fn engine_and_session_commands_over_ipc() {
 }
 
 #[test]
+fn recover_in_fresh_folder_reaches_the_engine_only_after_a_refused_open() {
+    let demo = Demo::new();
+    let root = demo.app.state::<crate::state::AppState>().data_root.clone();
+    demo.err("recover_in_fresh_folder", json!({}), "invalid_argument");
+    demo.open();
+    demo.err("recover_in_fresh_folder", json!({}), "invalid_argument");
+    assert!(!root.join("network-folders.json").exists());
+    assert!(!root.join("regtest-recovered-1").exists());
+}
+
+#[test]
 fn a_missing_argument_is_tauris_refusal() {
     let demo = Demo::new();
     // A string, not an AppError.

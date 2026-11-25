@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "network",
-  "description": "Opening and closing networks. Granted to the main window only; `probe_unlisted` is never granted (U6).",
+  "description": "Opening and closing networks, and starting a refused network over in a new folder. Granted to the main window only; `probe_unlisted` is never granted (U6).",
   "windows": [
     "main"
   ],
@@ -12,6 +12,7 @@
     "allow-active-network",
     "allow-existing-networks",
     "allow-get-network-choice",
-    "allow-switch-network"
+    "allow-switch-network",
+    "allow-recover-in-fresh-folder"
   ]
 }
