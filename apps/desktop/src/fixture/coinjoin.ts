@@ -474,6 +474,21 @@ export function coinjoinScenarios(base: Base) {
       w.pending.shielded = null;
       return w;
     },
+    /** "Move mixed coins" where this build cannot spend from Shielded: the move to Shielded says what it means. */
+    "coinjoin-move-spends-off": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.pending.shielded!.spendsAvailable = false;
+      return w;
+    },
+    /** Tools ▸ Repair where this build cannot spend from Shielded: a possibly sent move of mixed coins
+     * Repair sends back, and a shield it can never settle. Neither line points to moving into Shielded again. */
+    "repair-shield-spends-off": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.pending.shielded!.spendsAvailable = false;
+      w.pending.shielded!.shieldUnknown = "blocked";
+      w.coinjoin.drainUnknown = "stuck";
+      return w;
+    },
     /** "Move mixed coins" while Shielded's account waits for an unlock (the vault reads unlocked, as
      * in shielded-locked): the card's Move to Shielded waits and offers Unlock. */
     "coinjoin-move-shielded-locked": (t: ThemeName | null) => withShieldedAccount(base(t), "locked"),

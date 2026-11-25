@@ -562,7 +562,7 @@ fn every_nullifier_spent_settles_executed() {
 }
 
 /// A Shielded-funded identity create is not the release's: its
-/// registration's evidence settles it (§7 item 111), where an unpadded
+/// registration's evidence settles it (§7 item 112), where an unpadded
 /// create read executed here would read as Platform's fallback and arm a
 /// refund that never came. Every nullifier spent, or its anchor pruned with
 /// none spent, leaves it held, unsettled and unacknowledged. Mutant: let the

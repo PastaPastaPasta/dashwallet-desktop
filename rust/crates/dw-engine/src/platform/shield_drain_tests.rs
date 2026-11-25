@@ -143,6 +143,40 @@ fn a_drain_plan_refuses_a_held_or_unconfirmed_coin_too_many_coins_or_too_little(
     drain::plan_of(&at(min), fee).unwrap();
 }
 
+/// A library that cannot spend from the key set refuses the drain before
+/// anything else: the grant is kept, no coin is drained and no lock is
+/// funded. When it can again, the same drain runs.
+#[test]
+fn a_drain_is_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = drainer(&fx, coins());
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let grant = spend_grant(&fx, total(&coins()));
+    let refused = drain_with(&fx, &lib, grant.clone());
+    assert_eq!(refused.unwrap_err().code(), "platform.unavailable");
+    (fx.s.vault)
+        .grant_purpose(&grant, dw_vault::GrantKind::Spend, Some(&fx.wallet.0))
+        .expect("the refusal keeps the grant");
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "nothing was quoted"
+    );
+    assert!(
+        lib.drained.lock().unwrap().is_empty(),
+        "no coin was drained"
+    );
+    assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let outcome = drain_with(&fx, &lib, grant).unwrap();
+    assert!(
+        matches!(outcome.state, ShieldState::Applied { .. }),
+        "{outcome:?}"
+    );
+}
+
 /// The drain: one lock of every planned coin under a `Spend` grant of
 /// their sum, applied; the lease charged the sum, fee included.
 #[test]

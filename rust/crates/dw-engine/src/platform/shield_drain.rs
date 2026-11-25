@@ -146,6 +146,7 @@ pub(crate) async fn quote(
     wallet: WalletId,
     lib: &impl ShieldedLib,
 ) -> Result<MixedShieldQuote, ShieldedError> {
+    pool::keyset_closed(lib)?;
     let pool_fee = precheck(session, wallet, lib).await?;
     let fence = session
         .coin_fence(wallet)
@@ -244,6 +245,7 @@ pub(crate) async fn drain(
     lib: &impl ShieldedLib,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
+    pool::keyset_closed(lib)?;
     pool::open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;

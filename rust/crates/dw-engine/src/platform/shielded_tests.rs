@@ -314,7 +314,7 @@ pub(crate) struct FakeShielded {
     version: u32,
     /// What a proved read of the version returns.
     refreshed: u32,
-    refreshes: AtomicU32,
+    pub(crate) refreshes: AtomicU32,
     bound: bool,
     /// What a bind says while not `bound`.
     unbound_as: ShieldedAccount,
@@ -342,8 +342,6 @@ pub(crate) struct FakeShielded {
     proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
-    /// The library cannot spend from a lease's key set.
-    pub(super) no_keyset: AtomicBool,
     /// What the next `sync_now` does before it returns (a pass's writes).
     pub(super) on_sync: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Platform's shielded note count; unknown when `None`.
@@ -354,6 +352,8 @@ pub(crate) struct FakeShielded {
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
     hook_reads: Mutex<std::collections::VecDeque<bool>>,
+    /// The library cannot spend from the key set.
+    pub(super) no_keyset_spends: AtomicBool,
     /// The spends the library resolved unproved and holds the notes of.
     held: Mutex<HashSet<[u8; 32]>>,
     /// What `holds` reads; `held` is not derived from it.
@@ -578,11 +578,11 @@ impl Default for FakeShielded {
             applied: Mutex::default(),
             proof_hold: Mutex::default(),
             unhooked: AtomicBool::new(false),
-            no_keyset: AtomicBool::new(false),
             on_sync: Mutex::default(),
             pool_notes: Mutex::new(None),
             create_hook: Mutex::new(None),
             hook_reads: Mutex::default(),
+            no_keyset_spends: AtomicBool::new(false),
             held: Mutex::default(),
             holds: Mutex::default(),
             all_notes: Mutex::default(),
@@ -1153,15 +1153,15 @@ impl ShieldedLib for FakeShielded {
         Ok(())
     }
 
-    fn keyset_spends(&self) -> bool {
-        !self.no_keyset.load(Ordering::SeqCst)
-    }
-
     async fn hooked(&self) -> bool {
         if let Some(answer) = self.hook_reads.lock().unwrap().pop_front() {
             return answer;
         }
         !self.unhooked.load(Ordering::SeqCst)
+    }
+
+    fn keyset_spends(&self) -> bool {
+        !self.no_keyset_spends.load(Ordering::SeqCst)
     }
 
     async fn rest_clock(&self) -> Result<pool::RestClock, PlatformError> {
@@ -3911,6 +3911,7 @@ fn a_watch_only_wallet_is_watch_only_in_every_vault_state() {
         .block_on(session.dashpay(watch).shielded_sync_info())
         .unwrap();
     assert_eq!(info.account, Some(ShieldedAccount::WatchOnly));
+    assert!(info.spends_available && status.spends_available);
 }
 
 /// Review: a session without Platform (`--no-platform`) runs no pass, so
@@ -3927,6 +3928,8 @@ fn shielded_is_not_active_in_a_session_without_platform() {
     let info = engine.block_on(dp.shielded_sync_info()).unwrap();
     assert!(!info.active);
     assert_eq!(info.account, None);
+    assert!(status.spends_available, "this pin's library spends");
+    assert_eq!(info.spends_available, status.spends_available, "one switch");
     let sync = dp.sync_status().unwrap();
     assert!(!sync.platform_enabled);
 }
@@ -5038,15 +5041,31 @@ fn shield_refused_after_the_signature(end: FundEnd) {
     assert!(lib.funded.lock().unwrap().is_empty());
 }
 
-/// While the library cannot spend from a lease's key set no spend starts:
-/// a send and an unshield are refused before anything else, the grant kept
-/// and no key out of the vault.
+/// A library that cannot spend from the key set: the status says so, active
+/// or not, and a send, an unshield and their quotes (a contact payment's
+/// too) are refused before anything else, so
+/// nothing is quoted, no receive address is issued, the grant is kept and no
+/// key leaves the vault. When it can again, the same send runs.
 #[test]
-fn a_spend_is_refused_without_keyset_spends() {
+fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeShielded::default());
     let wallet = fx.wallet;
-    lib.no_keyset.store(true, Ordering::SeqCst);
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let status = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(!status.spends_available);
+    let below = Arc::new(FakeShielded::at(11, 11));
+    below.no_keyset_spends.store(true, Ordering::SeqCst);
+    let inactive = run(&fx, &below, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(!inactive.active);
+    assert!(
+        !inactive.spends_available,
+        "read on an inactive network too"
+    );
     for unshield in [false, true] {
         let grant = fx.grant(10 * NOTE);
         let g = grant.clone();
@@ -5060,12 +5079,225 @@ fn a_spend_is_refused_without_keyset_spends() {
         assert_eq!(refused, "platform.unavailable");
         assert!(fx.unused(&grant), "the refusal keeps the grant");
     }
+    let quotes = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::send_quote(lib, &payee_text(), NOTE).await),
+            code(pool::unshield_quote(lib, NOTE, None).await),
+            code(pool::unshield_to_platform_quote(lib, NOTE, None).await),
+            (super::shielded_payout::quote(lib, NOTE).await)
+                .unwrap_err()
+                .code(),
+        ]
+    });
+    assert_eq!(quotes, ["platform.unavailable"; 4], "no quote either");
     assert!(lib.spent().is_empty(), "no key left the vault");
     assert_eq!(
         lib.refreshes.load(Ordering::SeqCst),
         0,
         "the refusal quoted nothing"
     );
+    assert_eq!(
+        lib.issued.load(Ordering::SeqCst),
+        0,
+        "the refusal issued no receive address"
+    );
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    let status = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(status.spends_available);
+    run(&fx, &lib, |_, lib| async move {
+        pool::send_quote(&*lib, &payee_text(), NOTE).await.unwrap()
+    });
+    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+    let sent = run(&fx, &lib, move |s, lib| async move {
+        pool::send(
+            &s,
+            wallet,
+            &*lib,
+            (&payee_text(), NOTE),
+            None,
+            &lease,
+            false,
+        )
+        .await
+    });
+    assert_eq!(sent.unwrap().state, ShieldedSpendState::Done);
+}
+
+/// A library that cannot spend from the key set refuses a new move into the
+/// pool before anything else: no quote, no lock, the grant kept. When it can
+/// again, the same shield runs.
+#[test]
+fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    let wallet = fx.wallet;
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let quoted = run(&fx, &lib, |s, lib| async move {
+        code(pool::shield_quote(&s, &*lib, 1_000_000).await)
+    });
+    assert_eq!(quoted, "platform.unavailable");
+    let max = run(&fx, &lib, move |s, lib| async move {
+        code(pool::shield_max_quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(max, "platform.unavailable");
+    let mixed = run(&fx, &lib, move |s, lib| async move {
+        code(super::shield_drain::quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(mixed, "platform.unavailable");
+    let grant = shield_grant(&fx, 2_000_000);
+    let g = grant.clone();
+    let shielded = run(&fx, &lib, move |s, lib| async move {
+        code(
+            pool::shield(
+                &s,
+                wallet,
+                &*lib,
+                FundAmount::Duffs { duffs: 1_000_000 },
+                &g,
+            )
+            .await,
+        )
+    });
+    assert_eq!(shielded, "platform.unavailable");
+    assert!(fx.unused(&grant), "the refusal keeps the grant");
+    assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    shield_on(&fx, &lib);
+}
+
+/// A shield already sent still finishes while the library cannot spend from
+/// the key set: only a new move into the pool is refused, so what is locked
+/// for Shielded is never stranded.
+#[test]
+fn a_shield_already_sent_finishes_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    let (outpoint, state) = shield_on(&fx, &lib);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let state = check_again(&fx, &lib, outpoint);
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    assert_eq!(*lib.applied.lock().unwrap(), vec![outpoint; 2]);
+}
+
+/// A library that cannot spend from the key set issues no receive address
+/// and quotes no shield from the Platform addresses: both refuse
+/// `platform.unavailable` before any read. When it can again, both answer.
+#[test]
+fn no_way_in_opens_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::at(11, 12));
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let refused = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::receive_address(lib).await),
+            code(pool::platform_shield_gate(lib).await),
+        ]
+    });
+    assert_eq!(refused, ["platform.unavailable"; 2]);
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "refused before any read"
+    );
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    let (address, version) = run(&fx, &lib, |_, lib| async move {
+        let address = pool::receive_address(&*lib).await.unwrap();
+        let version = pool::platform_shield_gate(&*lib).await.unwrap();
+        (address, version.protocol_version)
+    });
+    assert_eq!((address.address, version), (payee_text(), 12));
+}
+
+/// A payment to an address given out before the library lost key-set
+/// spends still lands: the pass finds it and the status shows it in the
+/// balance, while no new address is issued.
+#[test]
+fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let early = run(&fx, &lib, |_, lib| async move {
+        pool::receive_address(&*lib).await.unwrap()
+    });
+    assert_eq!(early.address, payee_text());
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.scan_ledger.lock().unwrap() = Some(Ledger {
+        spendable: NOTE,
+        synced_index: None,
+    });
+    let (status, again) = run(&fx, &lib, |_, lib| async move {
+        lib.sync_now().await;
+        let status = pool::status(&*lib).await.unwrap();
+        (status, code(pool::receive_address(&*lib).await))
+    });
+    assert_eq!(status.balance, NOTE);
+    assert!(!status.spends_available);
+    assert_eq!(again, "platform.unavailable");
+}
+
+/// Through the real library: while it cannot spend from the key set the
+/// facade issues no address, neither a bound key's (read during a pass)
+/// nor a first bind's, and quotes no shield from the Platform addresses
+/// (refused first, where with spends on a later gate refuses it); when it
+/// can again, the same address.
+#[test]
+fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set() {
+    use super::topup_tests::fixture;
+    let f = fixture(true);
+    let dp = f.session.dashpay(f.wallet);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
+    let address = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+
+    f.session.keyset_spends_off.store(true, Ordering::SeqCst);
+    let refused = f.engine.block_on(dp.shielded_receive_address());
+    assert_eq!(code(refused), "platform.unavailable", "the bound key's");
+    let fresh = fixture(true);
+    let off = &fresh.session.keyset_spends_off;
+    off.store(true, Ordering::SeqCst);
+    let first_dp = fresh.session.dashpay(fresh.wallet);
+    let first = fresh.engine.block_on(first_dp.shielded_receive_address());
+    assert_eq!(
+        code(first),
+        "platform.unavailable",
+        "a first bind's, by either check"
+    );
+    // A wallet never bound, with the vault locked: with spends on, a later
+    // gate refuses its Platform shield quote with another code.
+    fresh.session.vault.lock();
+    let shield_quote = || {
+        let all = super::WithdrawAmount::All;
+        let quote = fresh.engine.block_on(first_dp.platform_shield_quote(all));
+        quote.unwrap_err().code()
+    };
+    assert_eq!(
+        shield_quote(),
+        "platform.unavailable",
+        "no shield from Platform"
+    );
+    off.store(false, Ordering::SeqCst);
+    assert_eq!(shield_quote(), "shielded.not_synced", "a later gate's");
+    let status = (f.engine)
+        .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
+            pool::status(&lib).await
+        }))
+        .unwrap();
+    assert!(!status.spends_available, "the status reads the same switch");
+
+    f.session.keyset_spends_off.store(false, Ordering::SeqCst);
+    let again = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+    assert_eq!(again, address);
 }
 
 /// Without the dispatch hook no spend starts: a send and an unshield are

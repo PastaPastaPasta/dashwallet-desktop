@@ -262,6 +262,15 @@ export const transfer = {
       /** `when` is how long ago, as "5 min ago". */
       lastChecked: "Last checked {when}",
     },
+    /** Where this version cannot send from Shielded (shielded/spends.ts). `source`: a "Pay from" row. */
+    spends: {
+      unavailable: "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
+      source: "Not available in this version",
+    },
+    /** Where a move into Shielded would be, while this version cannot send from Shielded (shielded/spends.ts). */
+    shieldInUnavailable: "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.",
+    /** Receive's Shielded tab, in place of the address, while this version cannot send from Shielded. */
+    receiveUnavailable: "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.",
     card: {
       inactive: "Shielded is not active on this network yet.",
       finish: "Finish",

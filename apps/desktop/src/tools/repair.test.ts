@@ -376,6 +376,44 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(text).not.toMatch(/\byet\b|registration/);
   });
 
+  it("where this build cannot send from Shielded, a sent-back or unsettleable move names no move into Shielded again", async () => {
+    expect(shieldBlockedText({ reason: "noKnownLock", retryLater: false }, true)).toBe(
+      "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back.",
+    );
+    const retry = { reason: "spendUnsettled", retryLater: true } as const;
+    expect(shieldBlockedText(retry, true)).toBe(shieldBlockedText(retry));
+    expect(RepairText.resolvedShield("ab".repeat(32), true)).toBe(`The coins were sent back to your wallet (transaction ${"ab".repeat(32)}).`);
+    expect(RepairText.stuckShieldsHint(true)).toBe(
+      "Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
+    expect(RepairText.stuckShieldsHint()).toBe(
+      "Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
+    expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH.",
+    );
+    expect(RepairText.shieldRepair(false, 1, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the one spendable coin of your main balance (1.1 DASH) back to your wallet, at a network fee of 0.0000034 DASH.",
+    );
+    for (const [mixed, n] of [[true, 1], [true, 2], [false, 1], [false, 2]] as const) {
+      const on = RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH");
+      expect(on).toMatch(/ You can move Dash into Shielded again once that payment is confirmed\.$/);
+      expect(RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH", true)).toBe(on.replace(" You can move Dash into Shielded again once that payment is confirmed.", ""));
+    }
+
+    const { api, vault } = setup({ encrypted: false });
+    let spendsOff = false;
+    const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => spendsOff);
+    const stuck: StuckShieldFunding = { step: "shield/0/funding", state: "maybeSent", repair: { mixed: true, inputs: 2, totalDuffs: 110_001_100, feeDuffs: 340 }, blocked: null };
+    api.stuckShieldFundings.mockResolvedValue([stuck]);
+    await model.refresh();
+    model.ask("resolveStuck", model.stuckShields[0]);
+    api.stuckShieldFundings.mockResolvedValue([]);
+    spendsOff = true;
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedShield("ab".repeat(32), true) });
+  });
+
   it("a failed read of the stuck moves into Shielded is said, not hidden", async () => {
     const { model, api } = setup();
     api.stuckShieldFundings.mockRejectedValueOnce(appError("platform.unavailable"));

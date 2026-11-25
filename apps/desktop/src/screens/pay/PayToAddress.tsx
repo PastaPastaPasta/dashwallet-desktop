@@ -16,6 +16,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
 import { ShieldedPayButton } from "../ShieldedSheet";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { CoinControl } from "./CoinControl";
@@ -143,6 +144,7 @@ export function PayToAddress({
   // A Shielded address is paid with Send from Shielded while Shielded is on (the page's link).
   const shieldedStatus = useShieldedStatus(walletId).data ?? null;
   const shieldedRoute = shieldedStatus?.active ? shieldedStatus : null;
+  const spendsOff = shieldedSpendsOff(shieldedStatus);
   const shieldedTo = shieldedRoute !== null && checkedAddr !== "" && addrClass.data?.kind === "shielded";
   const addrError = checkedAddr !== "" && addrClass.data && !shieldedTo ? addressProblem(addrClass.data) : null;
   // A Platform address is paid from the Platform balance (platform/send.ts), not by a Core draft.
@@ -196,7 +198,7 @@ export function PayToAddress({
           </p>
         )}
         <section className="pay-card card-l1">
-          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")} hint={shieldedTo ? t("pay.address.shieldedRoute") : undefined}>
+          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")} hint={shieldedTo && !spendsOff ? t("pay.address.shieldedRoute") : undefined}>
             {(p) => (
               <span className="amount-entry">
                 <input
@@ -286,7 +288,7 @@ export function PayToAddress({
               number={i + 2}
               network={network}
               shown={shown}
-              shieldedRoute={shieldedRoute !== null}
+              shieldedRoute={shieldedRoute !== null && !spendsOff}
               fieldError={(f) => fieldError(f, i + 1)}
               onChange={(r, amount, settled) => setMore((rows) => rows.map((x) => (x.id === row.id ? { ...x, recipient: r, amount, settled } : x)))}
               onSubtractFee={(on) => setRowSubtractFee(row.id, on)}

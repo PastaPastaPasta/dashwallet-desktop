@@ -2537,7 +2537,7 @@ fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
     let h = Hooked::new();
     let draft = h.shielded_row();
     let lib = paying(None);
-    lib.no_keyset
+    lib.no_keyset_spends
         .store(true, std::sync::atomic::Ordering::SeqCst);
     *lib.pool_notes.lock().unwrap() = Some(10);
     let ev = Evidence::default();
@@ -2565,7 +2565,7 @@ fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
     let lib = super::FakeShielded::default();
-    lib.no_keyset
+    lib.no_keyset_spends
         .store(true, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
         h.evidence_with(named, &id, &ev, &lib),
