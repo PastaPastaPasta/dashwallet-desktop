@@ -140,6 +140,25 @@ pub mod base64 {
     }
 }
 
+/// Fixed-size bytes as lower-case hex: `#[ts(type = "string")]
+/// #[serde(with = "crate::dto::hex_array")]`.
+pub mod hex_array {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer, const N: usize>(v: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[u8; N], D::Error> {
+        let bytes = hex::decode(String::deserialize(d)?).map_err(D::Error::custom)?;
+        bytes
+            .try_into()
+            .map_err(|_| D::Error::custom(format!("expected {N} bytes")))
+    }
+}
+
 /// A transaction output reference, `txid:vout`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

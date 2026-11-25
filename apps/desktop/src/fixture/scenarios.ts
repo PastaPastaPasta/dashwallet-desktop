@@ -17,6 +17,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { FixtureConnect } from "./connect";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -119,6 +120,8 @@ export interface World {
   links: LinkRoute[];
   /** The engine's link stash (DP5-01): links kept for after onboarding, and invitations. */
   stash: FixtureStashedLink[];
+  /** dw-app's App Connect requests by inbox id (fixture/connect.ts). */
+  connect?: Record<string, FixtureConnect>;
   /** DP5-03: `invitation_status` of a stashed invitation by its id; absent: valid, from Bob. */
   invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */

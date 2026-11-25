@@ -31,6 +31,10 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 import type { CoinJoinStatus } from "./CoinJoinStatus";
 import type { CoinSelectionSummary } from "./CoinSelectionSummary";
 import type { CoinSource } from "./CoinSource";
+import type { ConnectChoice } from "./ConnectChoice";
+import type { ConnectDone } from "./ConnectDone";
+import type { ConnectQuote } from "./ConnectQuote";
+import type { ConnectSheet } from "./ConnectSheet";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
@@ -2581,6 +2585,63 @@ export function setLoadContactPictures(on: boolean): Promise<null> {
 }
 
 /**
+ * The approval sheet of the App Connect request `link_id` for the
+ * wallet `wallet_id`. A refusal answers the request (its status goes
+ * back with the return link).
+ */
+export function appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet> {
+  return invoke<ConnectSheet>("app_connect_sheet", { walletId, linkId });
+}
+
+/**
+ * What approving `choice` costs and the `appConnect` grant to ask
+ * for, bound to what this quote read.
+ */
+export function appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote> {
+  return invoke<ConnectQuote>("app_connect_quote", { walletId, linkId, choice });
+}
+
+/**
+ * Approves `choice` under `grant` (an `appConnect` grant from this
+ * request's quote): adds the keys and sends the app its response.
+ */
+export function appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_approve", { walletId, linkId, choice, grant });
+}
+
+/**
+ * Sends the response an approval could not send.
+ */
+export function appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_retry_send", { walletId, linkId });
+}
+
+/**
+ * The user denied the request: nothing is read, derived or signed.
+ * Refused once an approval started (`connect.answered`).
+ */
+export function appConnectDeny(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_deny", { linkId });
+}
+
+/**
+ * Opens the return link of an answered request the OS delivered, with
+ * its answer, in the system browser, after the user's click. A request
+ * typed, pasted or scanned, or not answered yet, opens nothing:
+ * `invalid_argument`.
+ */
+export function appConnectReturn(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_return", { linkId });
+}
+
+/**
+ * Forgets the request: the sheet closed.
+ */
+export function appConnectDismiss(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_dismiss", { linkId });
+}
+
+/**
  * Every console command, sorted by name.
  */
 export function consoleCommands(): Promise<Array<ConsoleCommand>> {
@@ -3709,6 +3770,13 @@ export type CommandArgs = {
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
   load_contact_pictures: {  };
   set_load_contact_pictures: { on: boolean };
+  app_connect_sheet: { walletId: string; linkId: string };
+  app_connect_quote: { walletId: string; linkId: string; choice: ConnectChoice };
+  app_connect_approve: { walletId: string; linkId: string; choice: ConnectChoice; grant: string };
+  app_connect_retry_send: { walletId: string; linkId: string };
+  app_connect_deny: { linkId: string };
+  app_connect_return: { linkId: string };
+  app_connect_dismiss: { linkId: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -4093,6 +4161,13 @@ export type CommandResults = {
   dashpay_avatar: AvatarThumbnail | null;
   load_contact_pictures: boolean;
   set_load_contact_pictures: null;
+  app_connect_sheet: ConnectSheet;
+  app_connect_quote: ConnectQuote;
+  app_connect_approve: ConnectDone;
+  app_connect_retry_send: ConnectDone;
+  app_connect_deny: null;
+  app_connect_return: null;
+  app_connect_dismiss: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -4479,6 +4554,13 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar: "social",
   load_contact_pictures: "social",
   set_load_contact_pictures: "social",
+  app_connect_sheet: "connect",
+  app_connect_quote: "connect",
+  app_connect_approve: "connect",
+  app_connect_retry_send: "connect",
+  app_connect_deny: "connect",
+  app_connect_return: "connect",
+  app_connect_dismiss: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
@@ -4818,6 +4900,20 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "invitation.claimed",
   "invitation.expired",
   "invitation.already_has_identity",
+  "connect.network",
+  "connect.mainnet_off",
+  "connect.unsupported",
+  "connect.invalid",
+  "connect.stale",
+  "connect.protocol",
+  "connect.no_identity",
+  "connect.hint",
+  "connect.owner",
+  "connect.answered",
+  "connect.credits",
+  "connect.plan_changed",
+  "connect.send_failed",
+  "connect.failed",
   "avatar.too_large",
   "avatar.unsupported",
   "avatar.fetch_failed",
