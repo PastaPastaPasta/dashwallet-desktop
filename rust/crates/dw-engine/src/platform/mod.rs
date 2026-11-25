@@ -128,8 +128,8 @@ pub(crate) mod withdrawal;
 
 pub use app_connect::{
     ConnectBinding, ConnectChoice, ConnectDocumentType, ConnectDone, ConnectFailure, ConnectGroup,
-    ConnectIdentity,
-    ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms, ConnectToken,
+    ConnectIdentity, ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms,
+    ConnectToken,
 };
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
@@ -146,8 +146,8 @@ pub use credits::{
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
-    AvatarError, ConnectError, ContactError, CreditsError, IdentityError,
-    InvitationError, NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ContactError, CreditsError, IdentityError, InvitationError,
+    NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,

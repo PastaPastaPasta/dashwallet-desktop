@@ -1114,7 +1114,11 @@ fn approving_again_after_not_confirmed_reuses_keys_that_landed_late() {
     let done = f.approve(&l, &Fixture::choice(), &again).unwrap();
     assert!(done.keys_added.is_empty());
     assert_eq!(f.net.updates.lock().unwrap().len(), 1, "no second update");
-    assert_eq!(f.sheet(&l).unwrap_err(), ConnectError::Answered, "its response is published");
+    assert_eq!(
+        f.sheet(&l).unwrap_err(),
+        ConnectError::Answered,
+        "its response is published"
+    );
     let me = f.net.me();
     for k in &added {
         let copies = (me.public_keys().values()).filter(|on| on.data() == k.data());
@@ -1191,7 +1195,10 @@ fn approving_again_after_not_confirmed_adds_keys_that_never_landed() {
     let updates = f.net.updates.lock().unwrap();
     assert_eq!(updates.len(), 2);
     assert_eq!(updates[0].0, updates[1].0, "the same keys, at the same ids");
-    assert_eq!(done.keys_added, updates[1].0.iter().map(|k| k.id()).collect::<Vec<_>>());
+    assert_eq!(
+        done.keys_added,
+        updates[1].0.iter().map(|k| k.id()).collect::<Vec<_>>()
+    );
     let me = f.net.me();
     for k in &updates[1].0 {
         let copies = (me.public_keys().values()).filter(|on| on.data() == k.data());
@@ -1212,7 +1219,10 @@ fn no_response_key_is_refused_before_the_update() {
         let answering: Vec<KeyID> = (me.public_keys().values())
             .filter(|k| {
                 k.purpose() == Purpose::AUTHENTICATION
-                    && matches!(k.security_level(), SecurityLevel::HIGH | SecurityLevel::CRITICAL)
+                    && matches!(
+                        k.security_level(),
+                        SecurityLevel::HIGH | SecurityLevel::CRITICAL
+                    )
             })
             .map(|k| k.id())
             .collect();
@@ -1245,9 +1255,16 @@ fn starting_again_after_nothing_to_send_adds_a_second_set_and_disables_the_first
         let l = devnet(first);
         let grant = f.quoted_grant(&l, &Fixture::choice());
         f.net.fail_publish.store(true, Ordering::SeqCst);
-        assert_eq!(f.approve(&l, &Fixture::choice(), &grant), Err(ConnectError::SendFailed));
+        assert_eq!(
+            f.approve(&l, &Fixture::choice(), &grant),
+            Err(ConnectError::SendFailed)
+        );
         f.net.fail_publish.store(false, Ordering::SeqCst);
-        drop(f.s.platform.app_connect.take(f.wallet, l.request.request_hash()));
+        drop(
+            f.s.platform
+                .app_connect
+                .take(f.wallet, l.request.request_hash()),
+        );
         assert_eq!(
             f.retry(&l),
             Err(ConnectError::Failed {
@@ -1261,14 +1278,19 @@ fn starting_again_after_nothing_to_send_adds_a_second_set_and_disables_the_first
         let mut again = request();
         again.connection_id = connection;
         again.app_eph_pub =
-            PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+            PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap())
+                .serialize();
         let l2 = devnet(again);
         let grant = f.quoted_grant(&l2, &Fixture::choice());
         let done = f.approve(&l2, &Fixture::choice(), &grant).unwrap();
         let updates = f.net.updates.lock().unwrap().clone();
         assert_eq!(updates.len(), 2, "one more update");
         let (add, disable) = &updates[1];
-        assert_eq!(add.len(), 2, "a second set of session keys, no second encryption key");
+        assert_eq!(
+            add.len(),
+            2,
+            "a second set of session keys, no second encryption key"
+        );
         assert!(add.iter().all(|k| k.purpose() == Purpose::AUTHENTICATION));
         assert!(add.iter().all(|k| !unsent.contains(&k.id())));
         assert_eq!(done.keys_added.len(), 2);

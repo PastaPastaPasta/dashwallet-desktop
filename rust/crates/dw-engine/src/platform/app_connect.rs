@@ -661,7 +661,10 @@ async fn earlier_approval(
         if r.request != this {
             continue;
         }
-        if net.response_exists(hash, parse_identity(&r.identity)?).await? {
+        if net
+            .response_exists(hash, parse_identity(&r.identity)?)
+            .await?
+        {
             return Err(ConnectError::Answered);
         }
         if r.selection.is_empty() {
