@@ -279,6 +279,14 @@ fn presence_key(st_hash: [u8; 32]) -> String {
     format!("shielded_anchor_recorded/{}", hex::encode(st_hash))
 }
 
+/// A stored height: digits only, as app.sqlite's raise reads one.
+fn stored_height(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 /// The highest height the anchor of `wallet`'s spend `st_hash` was proved
 /// recorded at (`Some(None)`: none); `None` when it cannot be read.
 pub(crate) async fn presence(
@@ -298,10 +306,11 @@ pub(crate) async fn presence(
 /// Records that the anchor of `wallet`'s spend `st_hash` was proved recorded
 /// at `height`, keeping the highest, durably against power loss once it
 /// returns `Ok` (the library's refusal is durable in its own store, and a
-/// lost height would hold the spend for good). A stored value that is not
-/// a height is replaced: any one proved height orders the release, so the
-/// spend's pass is not stuck on it. An error when what is stored after is
-/// not a height of at least `height`.
+/// lost height would hold the spend for good). A stored height at least
+/// `height` is left as it is, with no write. A stored value that is not a
+/// height (digits only) is replaced, as any one proved height orders the
+/// release; until then the wallet's pass reads nothing (#912). An error
+/// when what is stored after is not a height of at least `height`.
 pub(crate) async fn record_presence(
     session: &NetworkSession,
     wallet: WalletId,
@@ -311,8 +320,13 @@ pub(crate) async fn record_presence(
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let key = presence_key(st_hash);
     let stored = (session.appdb_op(move |db| {
+        if let Some(known) = db.setting(&scope, &key)?
+            && stored_height(&known).is_some_and(|k| k >= height)
+        {
+            return Ok(known);
+        }
         let stored = db.raise_setting_durable(&scope, &key, height)?;
-        if stored.parse::<u64>().is_ok() {
+        if stored_height(&stored).is_some() {
             return Ok(stored);
         }
         let height = height.to_string();
@@ -321,8 +335,8 @@ pub(crate) async fn record_presence(
     }))
     .await
     .map_err(|e| e.to_string())?;
-    match stored.parse::<u64>() {
-        Ok(kept) if kept >= height => Ok(()),
+    match stored_height(&stored) {
+        Some(kept) if kept >= height => Ok(()),
         _ => Err(format!(
             "the stored height is {stored:?}, not at least {height}"
         )),

@@ -518,6 +518,7 @@ fn every_nullifier_spent_settles_executed() {
         spent: nullifiers(1).into_iter().collect(),
         ..Default::default()
     });
+    f.save_failed_row();
     f.pass();
     assert_eq!(
         f.settlement(),
@@ -553,6 +554,59 @@ fn every_nullifier_spent_settles_executed() {
     );
     assert!(!f.listing().contains(&st_hash(1)));
     assert_eq!(f.row(), (Shown::Unknown, None));
+}
+
+/// A release-settled execution that published a padding nullifier, which no
+/// other spend can publish, proves this transition: its row reads confirmed.
+#[test]
+fn a_padded_execution_reads_confirmed() {
+    let f = Fixture::new(Platform {
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        ..Default::default()
+    });
+    let (real, pad) = ([0x77; 32], [0x78; 32]);
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    f.engine.block_on(async move {
+        let m = s.manager().unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let mut r = spends().remove(0);
+        r.activity_id = [6; 32];
+        r.nullifiers = vec![real];
+        r.st_bytes = transition(1, r.anchor, &[real, pad]);
+        assert!(store.mark_pending(subwallet(w), &real).unwrap());
+        store.arm_redrive(subwallet(w), r.clone()).unwrap();
+        s.leases
+            .record_shielded_artifact(
+                w,
+                NewShieldedArtifact {
+                    activity: r.activity_id,
+                    origin: ArtifactOrigin::Dispatched,
+                    st_hash: Some(Sha256::digest(&r.st_bytes).into()),
+                    kind: Some(ArtifactKind::Transfer),
+                    anchor: Some(r.anchor),
+                    identity_id: None,
+                    selected: vec![real],
+                    published: vec![real, pad],
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .resolve_redrive(
+                subwallet(w),
+                &[6; 32],
+                ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled),
+            )
+            .unwrap();
+    });
+    f.save_failed_row_of(6);
+    f.platform().spent = [real, pad].into_iter().collect();
+    f.pass();
+    let settled = settlement(&f.engine, &f.session, f.wallet, 6);
+    assert_eq!(settled.0, ArtifactStatus::Executed);
+    assert_eq!(f.row_of(6), (Shown::Confirmed, None));
 }
 
 /// ASK-2, some but not all published nullifiers proved spent: it never
