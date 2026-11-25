@@ -596,7 +596,9 @@ pub(crate) async fn sheet(
         }
     }
     let first = identities.first().ok_or(ConnectError::NoIdentity)?;
-    let earlier_approval = earlier_approval(net, session, wallet, request).await?;
+    let earlier_approval = (earlier_approval(net, session, wallet, request).await?).filter(|c| {
+        parse_identity(&c.identity).is_ok_and(|id| identities.iter().any(|i| i.id == id))
+    });
     let facts = request_facts(net, request).await?;
     let (_, block_time_ms) = net.identity(first.id).await?;
     check_age(request, block_time_ms)?;
@@ -661,6 +663,9 @@ async fn earlier_approval(
         }
         if net.response_exists(hash, parse_identity(&r.identity)?).await? {
             return Err(ConnectError::Answered);
+        }
+        if r.selection.is_empty() {
+            continue;
         }
         found = Some(ConnectChoice {
             identity: r.identity,

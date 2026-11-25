@@ -1151,6 +1151,18 @@ fn a_reopened_sheet_offers_the_earlier_choice() {
     *f.net.block_time.lock().unwrap() = NOW + 5 * 60 * 1000;
     let sheet = f.sheet(&l).unwrap();
     assert_ne!(sheet.terms, first, "the defaults moved with the block time");
+    let defaults = ConnectChoice {
+        terms: sheet.terms,
+        ..Fixture::choice()
+    };
+    let conflicting = f.quoted_grant(&l, &defaults);
+    assert_eq!(
+        f.approve(&l, &defaults, &conflicting).unwrap_err(),
+        ConnectError::Failed {
+            failure: ConnectFailure::KeyConflict
+        },
+        "the new defaults conflict with the keys that landed"
+    );
     let offered = sheet.earlier_approval.expect("an earlier approval");
     assert_eq!(offered, earlier);
     let again = f.quoted_grant(&l, &offered);

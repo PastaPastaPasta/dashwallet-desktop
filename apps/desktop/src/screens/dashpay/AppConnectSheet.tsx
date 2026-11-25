@@ -188,7 +188,7 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
         <div className="detail-row">
           <dt className="detail-label">{t("dashpay.connect.expiry")}</dt>
           <dd className="detail-value" data-testid="connect-expiry">
-            {t("dashpay.connect.expiryValue", { days: expiryDays(sheet) })}
+            {t("dashpay.connect.expiryValue", { days: expiryDays({ blockTimeMs: sheet.blockTimeMs, terms: (flow.attempted ?? sheet).terms }) })}
           </dd>
         </div>
       </dl>
@@ -296,7 +296,6 @@ function Body({ flow, network }: { flow: ConnectFlow; network: string }) {
           <p className="form-problem" role="alert" data-testid="connect-send-failed" data-again={flow.retryFailed || undefined}>
             {t("dashpay.connect.sendFailed")}
           </p>
-          {returnFailed}
           <EndActions
             flow={flow}
             noReturn

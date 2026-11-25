@@ -571,8 +571,8 @@ impl ConnectError {
         }
     }
 
-    /// The request stays open for another approval or Deny: a refusal the
-    /// user can retry, and none that kept a response for "Retry sending".
+    /// The inbox reopens the request: a refusal that answers the app
+    /// nothing and kept no response for "Retry sending".
     pub fn keeps_open(&self) -> bool {
         self.status().is_none() && *self != Self::SendFailed
     }
