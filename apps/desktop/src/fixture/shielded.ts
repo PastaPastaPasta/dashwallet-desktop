@@ -388,7 +388,7 @@ function creditPlatform(p: PlatformWorld, address: string, credits: bigint) {
 
 /** Where this build cannot spend from Shielded, a spend is refused before anything is proved or sent. */
 function refuseSpendsOff(ctx: Ctx, walletId: string, call: string) {
-  if (shieldedOf(ctx, walletId, call).spendsAvailable === false) raise("platform.unavailable", "this build cannot spend from Shielded");
+  if (shieldedOf(ctx, walletId, call, false).spendsAvailable === false) raise("platform.unavailable", "this build cannot spend from Shielded");
 }
 
 /** While the wallet holds an unrecorded spend, a send or unshield needs the user's confirmation (DEC-1057). */

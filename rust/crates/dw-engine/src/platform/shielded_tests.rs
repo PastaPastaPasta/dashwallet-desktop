@@ -4943,6 +4943,10 @@ fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
         code(pool::shield_quote(&s, &*lib, 1_000_000).await)
     });
     assert_eq!(quoted, "platform.unavailable");
+    let max = run(&fx, &lib, move |s, lib| async move {
+        code(pool::shield_max_quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(max, "platform.unavailable");
     let mixed = run(&fx, &lib, move |s, lib| async move {
         code(super::shield_drain::quote(&s, wallet, &*lib).await)
     });

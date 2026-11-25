@@ -5046,9 +5046,10 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
 111. **Spends from Shielded can be off (version 100).** `ShieldedStatus` and `ShieldedSyncInfo` gain
     `spends_available`, read on active and inactive networks from one source: the library's `keyset_spends`
     (`true` at this pin). While it is false, `shielded_send`, `unshield_to_core`, `unshield_to_platform` and
-    `contact_pay` from Shielded refuse `platform.unavailable` first (`unhooked`), and so do their quotes
-    (`shielded_send_quote`, `unshield_quote`, `unshield_to_platform_quote` after its mainnet refusal, and
-    `contact_pay_quote` from Shielded; `keyset_closed`). So does every way into the pool: a new shield and its quote
+    `contact_pay` from Shielded refuse `platform.unavailable` (`unhooked`), and so do their quotes
+    (`shielded_send_quote`, `unshield_quote`, `unshield_to_platform_quote` and `contact_pay_quote` from Shielded;
+    `keyset_closed`), each after only the refusals that already come before its source: the mainnet refusals,
+    and for a contact payment the payee and the pair's lock. So does every way into the pool: a new shield and its quote
     (`shield_quote`, `shield_from_core`, `shield_mixed_quote`, `shield_mixed_coins`) and `platform_shield_quote`
     (`keyset_closed`), and `shielded_receive_address` (`keyset_spends` before a bound key's address is read, and
     `keyset_closed` on the pool's path), before any quote, grant, address, lock or proof. `resume_shield`, Repair's
