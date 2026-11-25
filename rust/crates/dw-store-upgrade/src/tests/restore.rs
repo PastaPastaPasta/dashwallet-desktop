@@ -13,7 +13,8 @@ use crate::reconcile::reconcile_fork_store;
 use crate::restore::{
     FAIL_CLEANUP, IncompleteCause, KEPT, MOVE_SIDES_ON_KEEP, RESTORE_ATTEMPT, RESTORE_JOURNAL,
     RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, S4_FOR_TEST, S4Policy,
-    SAFE_TO_DELETE, keep_current_files, request_restore, restored_mark, run_pending_restore,
+    SAFE_TO_DELETE, SIDE_BEFORE_REPLACE, keep_current_files, request_restore, restored_mark,
+    run_pending_restore,
 };
 use crate::snapshot::{
     STORE_FILES, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot,
@@ -349,7 +350,7 @@ fn v1_copy_first_keeps_every_write_at_each_sub_step() {
             assert!(kept.contains(w), "{point}/{skip}: a write was lost");
         }
         let first = during_dirs(&u);
-        let info = u.run(later(120)).unwrap().expect("resumed");
+        let info = u.run(later(60)).unwrap().expect("resumed");
         assert_restored(&u, &was_live, &info);
         let all = during_dirs(&u);
         let mut kept = std::collections::BTreeSet::new();
@@ -373,7 +374,7 @@ fn v1_copy_first_keeps_every_write_at_each_sub_step() {
 }
 
 /// The fail-first for V1's side handling: with the side files left in place
-/// the resume can't finish.
+/// the resume can't finish, and no live main file is touched.
 #[test]
 fn skipping_the_side_files_leaves_the_restore_unfinished() {
     let u = upgraded();
@@ -385,9 +386,61 @@ fn skipping_the_side_files_leaves_the_restore_unfinished() {
     crate::restore::SKIP_SIDE_MOVE.with(|s| s.set(true));
     let live = u.run(later(60));
     crate::restore::SKIP_SIDE_MOVE.with(|s| s.set(false));
-    let info = live.unwrap().unwrap();
-    assert!(!u.sides().is_empty(), "the old build's log is still live");
-    assert!(info.during_dirs.is_empty(), "and no copy of it was kept");
+    assert!(
+        matches!(
+            live,
+            Err(StoreUpgradeError::RestoreIncomplete {
+                journal_written: true,
+                ..
+            })
+        ),
+        "{live:?}"
+    );
+    assert_eq!(u.sides().len(), 2, "the old build's logs are still live");
+    assert_all_live(&u);
+    assert!(during_dirs(&u).is_empty(), "and no copy of them was kept");
+}
+
+/// S4-4: a side file that appears beside a store just before its replace
+/// stops the fresh run with the journal kept; the resume copies it aside.
+#[test]
+fn a_side_file_before_a_replace_is_kept_aside() {
+    for store in [
+        "app.sqlite",
+        "dispatch.sqlite",
+        "shielded.sqlite",
+        "wallet.sqlite",
+    ] {
+        let u = upgraded();
+        let was_live = u.live();
+        u.request();
+        SIDE_BEFORE_REPLACE.with(|s| s.set(Some(store)));
+        let err = u.run(now());
+        SIDE_BEFORE_REPLACE.with(|s| s.set(None));
+        assert!(
+            matches!(
+                err,
+                Err(StoreUpgradeError::RestoreIncomplete {
+                    journal_written: true,
+                    ..
+                })
+            ),
+            "{store}: {err:?}"
+        );
+        assert_all_live(&u);
+        let info = u.run(later(60)).unwrap().unwrap();
+        assert_restored(&u, &was_live, &info);
+        let kept: std::collections::BTreeSet<String> =
+            info.during_dirs.iter().flat_map(|d| contents(d)).collect();
+        let want = {
+            use sha2::Digest;
+            sha2::Sha256::digest(b"written mid-replace")
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        };
+        assert!(kept.contains(&want), "{store}: the side file was kept");
+    }
 }
 
 #[test]
@@ -409,7 +462,7 @@ fn pay(conn: &Connection) -> (Vec<u8>, Vec<u8>) {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    let txid = vec![0xab; 32];
+    let txid: Vec<u8> = (1u8..=32).collect();
     conn.execute(
         "INSERT INTO core_transactions (wallet_id, txid, height, finalized) VALUES (?1, ?2, NULL, 0)",
         (&wid, &txid),
@@ -574,6 +627,7 @@ fn s4_other_lineage_refuses_with_keep_action() {
                 fs::copy(after.join("wallet.sqlite"), u.wallet()).unwrap();
             }
         }
+        fs::write(u.net.join("app.sqlite-wal"), b"another build's log").unwrap();
         let before = tree(&u.net);
         let err = u.run(later(60)).unwrap_err();
         assert!(
@@ -690,10 +744,12 @@ fn crash_after_record_before_create_cleans_cleanly() {
     let was_live = u.live();
     let made = u.root().join("after-upgrade-20261125T004000Z");
     crate::fsx::create_private_dir(&made).unwrap();
+    fs::write(made.join("ATTEMPT-ID"), "t1\n").unwrap();
     fs::write(made.join("app.sqlite.partial"), b"partial").unwrap();
     write_attempt_record(
         &u,
         &[
+            "id t1".into(),
             "mark-created".into(),
             "path after-upgrade-20261125T004000Z".into(),
             "path restore-staging-20261125T004000Z".into(),
@@ -714,17 +770,19 @@ fn a_crashed_attempt_is_swept_by_the_next_start() {
     let was_live = u.live();
     let left = u.root().join("after-upgrade-20261125T004000Z");
     crate::fsx::create_private_dir(&left).unwrap();
+    fs::write(left.join("ATTEMPT-ID"), "t1\n").unwrap();
     fs::write(left.join("app.sqlite"), b"partial").unwrap();
     fs::write(left.join("dispatch.sqlite.partial"), b"partial").unwrap();
     fs::write(
         u.root().join(RESTORED_MARK),
-        "dw-store-upgrade restored\nformat 1\n",
+        "dw-store-upgrade restored\nformat 1\nattempt t1\n",
     )
     .unwrap();
     fs::write(u.root().join("RESTORED.partial"), b"partial").unwrap();
     write_attempt_record(
         &u,
         &[
+            "id t1".into(),
             "mark-created".into(),
             "path after-upgrade-20261125T004000Z".into(),
         ],
@@ -736,12 +794,53 @@ fn a_crashed_attempt_is_swept_by_the_next_start() {
     assert!(!u.root().join("RESTORED.partial").exists());
 }
 
+/// An earlier restore's after set and during dir (design §3: a failed
+/// attempt must leave them alone).
+fn seed_earlier_restore(u: &Upgraded) {
+    for dir in [
+        "after-upgrade-20261124T000000Z",
+        "during-restore-20261124T000000Z",
+    ] {
+        let d = u.root().join(dir);
+        crate::fsx::create_private_dir(&d).unwrap();
+        fs::write(d.join("wallet.sqlite"), format!("earlier {dir}")).unwrap();
+    }
+}
+
+/// C1: a record that outlived a finished restore (a failed unlink, or put
+/// there by hand) never removes that restore's after set or its mark.
+#[test]
+fn a_stale_record_never_removes_a_finished_restore() {
+    let u = upgraded();
+    u.request();
+    let info = u.run(now()).unwrap().unwrap();
+    let after = file_name(&info.after_dir);
+    let after_tree = tree(&info.after_dir);
+    assert!(!info.after_dir.join("ATTEMPT-ID").exists());
+    let mark = fs::read_to_string(u.root().join(RESTORED_MARK)).unwrap();
+    assert!(!mark.contains("attempt "), "{mark}");
+    for id in ["", "id anything"] {
+        let mut entries = vec!["mark-created".to_string(), format!("path {after}")];
+        if !id.is_empty() {
+            entries.insert(0, id.to_string());
+        }
+        write_attempt_record(&u, &entries);
+        let snap = latest_snapshot(&u.net).unwrap().unwrap();
+        request_restore(&u.net, &snap).unwrap();
+        let again = u.run(later(3600)).unwrap().unwrap();
+        assert_eq!(tree(&info.after_dir), after_tree, "{id:?}");
+        assert!(u.root().join(RESTORED_MARK).exists(), "{id:?}");
+        assert_ne!(again.after_dir, info.after_dir);
+    }
+}
+
 /// ENOSPC before the journal: RestoreNoSpace, the request cleared, and
 /// nothing else in the network dir changed.
 #[test]
 fn enospc_cleanup_removes_only_this_attempts_copies() {
     for skip in [0, 2, 6] {
         let u = upgraded();
+        seed_earlier_restore(&u);
         u.request();
         let start = tree(&u.net);
         arm_fault("restore.copy", skip);
@@ -765,6 +864,7 @@ fn enospc_cleanup_removes_only_this_attempts_copies() {
 fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
     let u = upgraded();
     let was_live = u.live();
+    seed_earlier_restore(&u);
     u.request();
     arm_fault("restore.copy", 6);
     FAIL_CLEANUP.with(|f| f.set(true));
@@ -779,13 +879,14 @@ fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
         .map(|e| e.unwrap().path())
         .filter(|p| p.join(SAFE_TO_DELETE).exists())
         .collect();
-    assert_eq!(notes.len(), 2, "after-upgrade and restore-staging");
+    assert_eq!(
+        notes.len(),
+        1,
+        "the partial staging dir; never a complete after set"
+    );
     for d in &notes {
         let name = file_name(d);
-        assert!(
-            name.starts_with("after-upgrade-") || name.starts_with("restore-staging-"),
-            "{name}"
-        );
+        assert!(name.starts_with("restore-staging-"), "{name}");
         let text = fs::read_to_string(d.join(SAFE_TO_DELETE)).unwrap();
         assert!(
             text.starts_with("This folder is an unfinished copy"),

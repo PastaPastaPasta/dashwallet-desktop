@@ -351,7 +351,8 @@ pub fn run_pending_restore(network_dir: &Path, now: SystemTime) -> Result<Option
     let Some(pending) = pending else {
         return Ok(None);
     };
-    gates(network_dir)?;
+    let _locks = gates(network_dir)?;
+    sweep_keep_scratch(&root(network_dir));
     match pending {
         PendingRestore::InProgress => resume(network_dir, now).map(Some),
         PendingRestore::Requested => {
@@ -369,7 +370,7 @@ pub fn restore(
     snapshot: &SnapshotInfo,
     now: SystemTime,
 ) -> Result<RestoreInfo> {
-    gates(network_dir)?;
+    let _locks = gates(network_dir)?;
     let pending = pending_restore(network_dir)
         .map_err(StoreUpgradeError::io("read the restore marker", true))?;
     if pending != Some(PendingRestore::Requested) {
@@ -379,7 +380,8 @@ pub fn restore(
         });
     }
     let verified = verify_request(network_dir).map_err(|c| refuse(network_dir, c))?;
-    if verified.manifest_sha256() != snapshot.manifest_sha256() || verified.dir() != snapshot.dir()
+    if verified.manifest_sha256() != snapshot.manifest_sha256()
+        || verified.dir().file_name() != snapshot.dir().file_name()
     {
         return Err(refuse(network_dir, RefusalCause::MismatchedBackup));
     }
@@ -431,11 +433,17 @@ fn refuse(network_dir: &Path, cause: RefusalCause) -> StoreUpgradeError {
 
 /// F4-a/F4-b: no store has opened in this process, none is held, and no
 /// store lock is taken. Touches nothing.
-fn gates(network_dir: &Path) -> Result<()> {
+/// The store locks, held for the whole run so no build opens a store while
+/// the restore copies and renames.
+#[must_use]
+struct StoreLocks(#[allow(dead_code)] Vec<fs::File>);
+
+fn gates(network_dir: &Path) -> Result<StoreLocks> {
     if crate::token::stores_opened_in_process() {
         return Err(StoreUpgradeError::RestoreAfterOpen);
     }
     crate::token::refuse_if_held(network_dir)?;
+    let mut held = Vec::new();
     for lock in STORE_LOCKS {
         let path = network_dir.join(lock);
         let file = match fs::OpenOptions::new().read(true).write(true).open(&path) {
@@ -444,7 +452,7 @@ fn gates(network_dir: &Path) -> Result<()> {
             Err(e) => return Err(StoreUpgradeError::io("open a store lock", true)(e)),
         };
         match file.try_lock() {
-            Ok(()) => drop(file),
+            Ok(()) => held.push(file),
             Err(fs::TryLockError::WouldBlock) => {
                 return Err(StoreUpgradeError::StoreHeld { path });
             }
@@ -453,7 +461,7 @@ fn gates(network_dir: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(StoreLocks(held))
 }
 
 fn not_started(e: &io::Error, what: &str) -> StoreUpgradeError {
@@ -550,19 +558,27 @@ fn partial_of(dest: &Path) -> PathBuf {
 /// removed).
 fn verified_copy(src: &Path, dest: &Path, sha: &str) -> io::Result<bool> {
     let tmp = partial_of(dest);
+    let copied = copy_checked(src, &tmp, dest, sha);
+    if copied.is_err() {
+        let _ = remove_if_file(&tmp);
+    }
+    copied
+}
+
+fn copy_checked(src: &Path, tmp: &Path, dest: &Path, sha: &str) -> io::Result<bool> {
     fault_io("restore.copy")?;
-    fs::copy(src, &tmp)?;
+    fs::copy(src, tmp)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(tmp, fs::Permissions::from_mode(0o600))?;
     }
-    fsx::fsync_file(&tmp)?;
-    if sha256_file(&tmp)? != sha {
-        fs::remove_file(&tmp)?;
+    fsx::fsync_file(tmp)?;
+    if sha256_file(tmp)? != sha {
+        fs::remove_file(tmp)?;
         return Ok(false);
     }
-    fs::rename(&tmp, dest)?;
+    fs::rename(tmp, dest)?;
     Ok(true)
 }
 
@@ -571,11 +587,18 @@ fn verified_copy(src: &Path, dest: &Path, sha: &str) -> io::Result<bool> {
 /// created the mark, so a failure or a crash removes exactly these.
 struct Attempt {
     root: PathBuf,
+    id: Option<String>,
     created: Vec<String>,
+    complete: Vec<String>,
     mark_created: bool,
 }
 
 const MARK_CREATED: &str = "mark-created";
+
+/// Written into each dir an attempt creates and into the mark it creates,
+/// naming the attempt; removed when a journal takes them over. A record
+/// removes only what still carries its id.
+const ATTEMPT_ID: &str = "ATTEMPT-ID";
 
 /// The text of [`SAFE_TO_DELETE`] (MG, Q93 §2).
 const SAFE_TO_DELETE_TEXT: &str = "This folder is an unfinished copy that Dash Wallet made while \
@@ -626,9 +649,19 @@ fn remove_if_file(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether `dir` is a plain folder carrying attempt `id`.
+fn carries_id(dir: &Path, id: Option<&str>) -> bool {
+    fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir())
+        && id.is_some_and(|id| {
+            fs::read_to_string(dir.join(ATTEMPT_ID)).is_ok_and(|t| t.trim_end() == id)
+        })
+}
+
 /// Remove one of an attempt's dirs: only the store copies and their partial
-/// files in it, then the dir. A symlink or a non-folder is refused and left.
-fn remove_attempt_dir(dir: &Path) -> io::Result<()> {
+/// files in it, then the dir. A symlink, a non-folder, or a folder that
+/// doesn't carry the attempt's id (an empty one excepted) is refused and
+/// left.
+fn remove_attempt_dir(dir: &Path, id: Option<&str>) -> io::Result<()> {
     match fs::symlink_metadata(dir) {
         Ok(m) if m.is_dir() => {}
         Ok(_) => {
@@ -639,11 +672,23 @@ fn remove_attempt_dir(dir: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e),
     }
+    if !carries_id(dir, id) {
+        return match fs::remove_dir(dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {
+                tracing::warn!(path = %dir.display(),
+                    "store upgrade: refused to remove a folder that isn't this attempt's");
+                Ok(())
+            }
+            r => r,
+        };
+    }
     for name in STORE_FILES {
         let file = dir.join(name);
         remove_if_file(&partial_of(&file))?;
         remove_if_file(&file)?;
     }
+    remove_if_file(&dir.join(ATTEMPT_ID))?;
     match fs::remove_dir(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         r => r,
@@ -651,10 +696,24 @@ fn remove_attempt_dir(dir: &Path) -> io::Result<()> {
 }
 
 impl Attempt {
-    fn new(root: &Path) -> Self {
+    fn new(root: &Path, now: SystemTime) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let id = format!("{}-{}-{nanos}", fsx::utc_stamp(now), std::process::id());
+        Self {
+            id: Some(id),
+            ..Self::empty(root)
+        }
+    }
+
+    fn empty(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
+            id: None,
             created: Vec::new(),
+            complete: Vec::new(),
             mark_created: false,
         }
     }
@@ -663,7 +722,7 @@ impl Attempt {
     /// is refused and logged.
     fn left_over(root: &Path) -> Option<Self> {
         let text = fs::read_to_string(root.join(RESTORE_ATTEMPT)).ok()?;
-        let mut attempt = Self::new(root);
+        let mut attempt = Self::empty(root);
         let mut lines = text.lines();
         if lines.next() != Some(ATTEMPT_HEADER) || lines.next() != Some("format 1") {
             tracing::warn!("store upgrade: refused an unreadable restore attempt record");
@@ -672,6 +731,14 @@ impl Attempt {
         for line in lines {
             if line == MARK_CREATED {
                 attempt.mark_created = true;
+                continue;
+            }
+            if let Some(id) = line.strip_prefix("id ") {
+                attempt.id = Some(id.to_string());
+                continue;
+            }
+            if let Some(rel) = line.strip_prefix("complete ") {
+                attempt.complete.push(rel.to_string());
                 continue;
             }
             match line.strip_prefix("path ") {
@@ -687,6 +754,9 @@ impl Attempt {
 
     fn save(&self) -> io::Result<()> {
         let mut text = format!("{ATTEMPT_HEADER}\nformat {FORMAT}\n");
+        if let Some(id) = &self.id {
+            text += &format!("id {id}\n");
+        }
         if self.mark_created {
             text += MARK_CREATED;
             text.push('\n');
@@ -694,7 +764,26 @@ impl Attempt {
         for p in &self.created {
             text += &format!("path {p}\n");
         }
+        for p in &self.complete {
+            text += &format!("complete {p}\n");
+        }
         fsx::write_durable(&self.root.join(RESTORE_ATTEMPT), text.as_bytes())
+    }
+
+    /// Create the recorded dir `rel` and give it this attempt's id.
+    fn create(&self, rel: &str) -> io::Result<PathBuf> {
+        let dir = self.root.join(rel);
+        fsx::create_private_dir(&dir)?;
+        if let Some(id) = &self.id {
+            fsx::write_durable(&dir.join(ATTEMPT_ID), format!("{id}\n").as_bytes())?;
+        }
+        Ok(dir)
+    }
+
+    /// Record durably that the dir `rel` holds a complete verified set.
+    fn completed(&mut self, rel: &str) -> io::Result<()> {
+        self.complete.push(rel.to_string());
+        self.save()
     }
 
     /// Record the dir `rel` (directly under `upgrade-backups/`) durably
@@ -721,26 +810,28 @@ impl Attempt {
         }
         for rel in self.created.iter().rev() {
             fault_cleanup()?;
-            remove_attempt_dir(&self.root.join(rel))?;
+            remove_attempt_dir(&self.root.join(rel), self.id.as_deref())?;
         }
         for name in ["RESTORED.partial", "RESTORE-IN-PROGRESS.partial"] {
             remove_if_file(&self.root.join(name))?;
         }
-        if self.mark_created {
-            remove_if_file(&self.root.join(RESTORED_MARK))?;
+        let mark = self.root.join(RESTORED_MARK);
+        if self.mark_created && mark_attempt(&mark).is_some() && mark_attempt(&mark) == self.id {
+            remove_if_file(&mark)?;
         }
         fsx::fsync_dir(&self.root)?;
         fsx::remove_durable(&self.root.join(RESTORE_ATTEMPT))
     }
 
-    /// The cleanup failed: mark each of this attempt's dirs safe to delete
-    /// (never when a journal exists), then drop the record so no later run
-    /// removes them.
+    /// The cleanup failed: mark each of this attempt's partial dirs safe to
+    /// delete (never a complete after set, nor when a journal exists; MG Q93
+    /// (6)), then drop the record so no later run removes them.
     fn leave_safe_to_delete(&self, cause: &str) {
         if !exists(&self.root.join(RESTORE_JOURNAL)) {
             for rel in &self.created {
                 let dir = self.root.join(rel);
-                if !fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+                let complete_after = rel.starts_with(AFTER_PREFIX) && self.complete.contains(rel);
+                if complete_after || !carries_id(&dir, self.id.as_deref()) {
                     continue;
                 }
                 let text = format!("{SAFE_TO_DELETE_TEXT}\ncause: {cause}\n");
@@ -814,7 +905,7 @@ fn copy_sets(
         let staging = dir_name == &j.staging;
         let dir = root.join(dir_name);
         attempt.will_create(dir_name.clone()).map_err(io(what))?;
-        fsx::create_private_dir(&dir).map_err(io(what))?;
+        attempt.create(dir_name).map_err(io(what))?;
         for e in &j.stores {
             let (src, sha) = match (staging, &e.before, &e.after) {
                 (true, Some(sha), _) => (snapshot.dir().join(&e.name), sha),
@@ -835,6 +926,7 @@ fn copy_sets(
             }
         }
         fsx::fsync_dir(&dir).map_err(io(what))?;
+        attempt.completed(dir_name).map_err(io(what))?;
     }
     fsx::fsync_dir(&root).map_err(io("fsync upgrade-backups"))
 }
@@ -878,7 +970,7 @@ fn fresh(network_dir: &Path, snapshot: &SnapshotInfo, now: SystemTime) -> Result
         stores,
     };
     let needed = space_needed(network_dir, snapshot);
-    let mut attempt = Attempt::new(&root);
+    let mut attempt = Attempt::new(&root, now);
     match copy_sets(network_dir, snapshot, &journal, &mut attempt) {
         Ok(()) => {}
         Err(CopyStop::Mismatch) => {
@@ -927,6 +1019,13 @@ fn replace(network_dir: &Path, j: &Journal) -> io::Result<()> {
     let staging = root(network_dir).join(&j.staging);
     for e in &j.stores {
         let live = network_dir.join(&e.name);
+        side_before_replace(network_dir, &e.name);
+        if let Some(side) = sides_of(network_dir, &e.name).first() {
+            return Err(io::Error::other(format!(
+                "{} appeared beside a store mid-restore",
+                file_name_of(side)
+            )));
+        }
         match (&e.before, &e.after) {
             (Some(_), _) => {
                 fault_rename()?;
@@ -963,7 +1062,7 @@ fn pending_payments_in(conn: &rusqlite::Connection) -> rusqlite::Result<Payments
     let mut stmt = conn.prepare(
         "SELECT t.txid, u.outpoint FROM core_transactions t \
          JOIN core_utxos u ON u.wallet_id = t.wallet_id AND u.spent_in_txid = t.txid \
-         WHERE t.height IS NULL ORDER BY t.txid, u.outpoint",
+         WHERE (t.height IS NULL OR t.height = 0) ORDER BY t.txid, u.outpoint",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -1051,10 +1150,18 @@ fn write_mark(
                 .collect()
         })
         .unwrap_or_default();
+    let mut binding = None;
     if let (Some(attempt), false) = (attempt, exists(&path)) {
         attempt.will_create_mark()?;
+        binding = attempt.id.clone();
     }
     for (txid, inputs) in payments {
+        if !payment_decodes(&txid, &inputs) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("an unreadable pending payment {}", hex(&txid)),
+            ));
+        }
         let inputs: Vec<String> = inputs.iter().map(|o| hex(o)).collect();
         let line = format!("pending {} {}", hex(&txid), inputs.join(","));
         if !lines.contains(&line) {
@@ -1066,11 +1173,46 @@ fn write_mark(
         fsx::utc_stamp(now),
         file_name_of(snapshot.dir())
     );
+    if let Some(id) = binding {
+        text += &format!("attempt {id}\n");
+    }
     for l in lines {
         text += &l;
         text.push('\n');
     }
     fsx::write_durable(&path, text.as_bytes())
+}
+
+/// Whether [`restored_mark`] can read this payment back.
+fn payment_decodes(txid: &[u8], inputs: &[Vec<u8>]) -> bool {
+    txid.len() == 32 && !inputs.is_empty() && inputs.iter().all(|o| decode_outpoint(o).is_some())
+}
+
+/// The attempt id a mark carries while the attempt that created it has no
+/// journal yet.
+fn mark_attempt(mark: &Path) -> Option<String> {
+    let text = fs::read_to_string(mark).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("attempt "))
+        .map(str::to_string)
+}
+
+/// Once a journal (or a keep) takes over: the after dir and the mark stop
+/// carrying the attempt's id, and the attempt record goes, so no record can
+/// remove them later.
+fn release_attempt(root: &Path, after: &Path) -> io::Result<()> {
+    remove_if_file(&after.join(ATTEMPT_ID))?;
+    let mark = root.join(RESTORED_MARK);
+    if mark_attempt(&mark).is_some() {
+        let text = fs::read_to_string(&mark)?;
+        let kept: String = text
+            .lines()
+            .filter(|l| !l.starts_with("attempt "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        fsx::write_durable(&mark, kept.as_bytes())?;
+    }
+    fsx::remove_durable(&root.join(RESTORE_ATTEMPT))
 }
 
 /// Whether the money gate's mark is set.
@@ -1192,6 +1334,35 @@ thread_local! {
     pub(crate) static MOVE_SIDES_ON_KEEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Every attempt cleanup fails, alongside an armed fault point.
     pub(crate) static FAIL_CLEANUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Another build writes a side file beside this store before its replace.
+    pub(crate) static SIDE_BEFORE_REPLACE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test hook: another build writes a side file just before a replace.
+fn side_before_replace(network_dir: &Path, name: &str) {
+    #[cfg(test)]
+    if SIDE_BEFORE_REPLACE.with(|s| s.get()) == Some(name) {
+        let _ = fs::write(side_path(network_dir, name, "-wal"), b"written mid-replace");
+    }
+    #[cfg(not(test))]
+    let _ = (network_dir, name);
+}
+
+/// Remove `.keep-read-*` scratch copies a crashed keep left.
+fn sweep_keep_scratch(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with(".keep-read-")
+            && e.file_type().is_ok_and(|t| t.is_dir())
+            && let Err(err) = fs::remove_dir_all(e.path())
+        {
+            tracing::warn!(error = %err, "store upgrade: could not remove a keep scratch copy");
+        }
+    }
 }
 
 fn skip_side_move() -> bool {
@@ -1295,7 +1466,6 @@ fn ensure_staged(
     if hash_opt(&staged)?.as_deref() == Some(sha) {
         return Ok(staged);
     }
-    remove_if_file(&staged)?;
     fsx::ensure_private_dir(staging_dir)?;
     if !verified_copy(&snapshot_dir.join(name), &staged, sha)? {
         return Err(io::Error::new(
@@ -1381,7 +1551,7 @@ fn finish(
     for e in &j.stores {
         let live = hash_opt(&network_dir.join(&e.name)).map_err(fail)?;
         let side_left = !sides_of(network_dir, &e.name).is_empty();
-        if live != e.before || (side_left && !skip_side_move()) {
+        if live != e.before || side_left {
             return Err(incomplete_other(format!(
                 "{} is not the before-upgrade file",
                 e.name
@@ -1392,16 +1562,22 @@ fn finish(
         fsx::fsync_dir(dir).map_err(fail)?;
     }
     let staging = root.join(&j.staging);
-    if staging.exists() {
+    if fs::symlink_metadata(&staging).is_ok_and(|m| m.is_dir()) {
         for e in &j.stores {
             let staged = staging.join(&e.name);
             if e.before.is_some() && hash_opt(&staged).map_err(fail)? == e.before {
                 fs::remove_file(&staged).map_err(fail)?;
             }
+            remove_if_file(&partial_of(&staged)).map_err(fail)?;
         }
-        fs::remove_dir(&staging).map_err(fail)?;
+        remove_if_file(&staging.join(ATTEMPT_ID)).map_err(fail)?;
+        if let Err(e) = fs::remove_dir(&staging) {
+            tracing::warn!(dir = %staging.display(), error = %e,
+                "store upgrade: left the restore staging folder");
+        }
         fsx::fsync_dir(&root).map_err(fail)?;
     }
+    release_attempt(&root, &after_dir).map_err(fail)?;
     fsx::remove_durable(&root.join(RESTORE_REQUESTED)).map_err(fail)?;
     fault("restore.before_journal_removal")?;
     fsx::remove_durable(&root.join(RESTORE_JOURNAL)).map_err(fail)?;
@@ -1501,6 +1677,7 @@ fn keep_live(
     j: &Journal,
     snapshot: &SnapshotInfo,
     now: SystemTime,
+    user_chosen: bool,
 ) -> Result<RestoreInfo> {
     let root = root(network_dir);
     let fail = |e: io::Error| incomplete(&e, "keep the wallet data in place");
@@ -1512,7 +1689,25 @@ fn keep_live(
             fs::rename(&side, dest).map_err(fail)?;
         }
     }
-    let payments = live_pending_payments(&root, &wallet).map_err(fail)?;
+    let payments = match live_pending_payments(&root, &wallet) {
+        Ok(p) => p,
+        Err(e) if user_chosen => {
+            tracing::warn!(error = %e,
+                "store upgrade: kept wallet data whose pending payments can't be read");
+            Vec::new()
+        }
+        Err(e) => return Err(fail(e)),
+    };
+    let payments = payments
+        .into_iter()
+        .filter(|(txid, inputs)| {
+            let ok = payment_decodes(txid, inputs);
+            if !ok {
+                tracing::warn!(txid = %hex(txid), "store upgrade: skipped an unreadable pending payment");
+            }
+            ok
+        })
+        .collect();
     write_mark(network_dir, snapshot, now, payments, None).map_err(fail)?;
     during.note(KEPT_LIVE.into()).map_err(fail)?;
     for e in &j.stores {
@@ -1534,6 +1729,7 @@ fn keep_live(
             ))
             .map_err(fail)?;
     }
+    release_attempt(&root, &root.join(&j.after)).map_err(fail)?;
     fsx::remove_durable(&root.join(RESTORE_REQUESTED)).map_err(fail)?;
     fsx::remove_durable(&root.join(RESTORE_JOURNAL)).map_err(fail)?;
     tracing::warn!("store upgrade: restore finished keeping what another build wrote");
@@ -1584,9 +1780,9 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
 /// Resume from the journal, before any store opens (design §5).
 fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
     let root = root(network_dir);
-    if let Err(e) = fsx::remove_durable(&root.join(RESTORE_ATTEMPT)) {
-        tracing::warn!(error = %e, "store upgrade: could not remove a stale attempt record");
-    }
+    fsx::remove_durable(&root.join(RESTORE_ATTEMPT))
+        .map_err(|e| incomplete(&e, "remove a stale attempt record"))?;
+    sweep_keep_scratch(&root);
     let (journal, snapshot) = load_journal(network_dir, now)?;
     match s4_state(network_dir, &journal, &snapshot)
         .map_err(|e| incomplete(&e, "read the wallet"))?
@@ -1600,7 +1796,7 @@ fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
                     detail: "the wallet data was already restored and another build wrote to it"
                         .into(),
                 }),
-                S4Policy::KeepLive => keep_live(network_dir, &journal, &snapshot, now),
+                S4Policy::KeepLive => keep_live(network_dir, &journal, &snapshot, now, false),
             };
         }
         S4::OtherLineage => {
@@ -1633,12 +1829,13 @@ fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
 /// when no restore is part-done or it is not at S4: nothing is kept, and the
 /// next start resumes as before.
 pub fn keep_current_files(network_dir: &Path, now: SystemTime) -> Result<Option<RestoreInfo>> {
-    gates(network_dir)?;
+    let _locks = gates(network_dir)?;
     let pending = pending_restore(network_dir)
         .map_err(StoreUpgradeError::io("read the restore marker", true))?;
     if pending != Some(PendingRestore::InProgress) {
         return Ok(None);
     }
+    sweep_keep_scratch(&root(network_dir));
     let (journal, snapshot) = load_journal(network_dir, now)?;
     match s4_state(network_dir, &journal, &snapshot)
         .map_err(|e| incomplete(&e, "read the wallet"))?
@@ -1646,7 +1843,7 @@ pub fn keep_current_files(network_dir: &Path, now: SystemTime) -> Result<Option<
         S4::No => Ok(None),
         S4::Clean => finish(network_dir, &journal, Vec::new(), true).map(Some),
         S4::InLineage | S4::OtherLineage => {
-            keep_live(network_dir, &journal, &snapshot, now).map(Some)
+            keep_live(network_dir, &journal, &snapshot, now, true).map(Some)
         }
     }
 }
