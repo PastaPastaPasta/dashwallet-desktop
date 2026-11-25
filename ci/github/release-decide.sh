@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitHub Actions (release.yml, `decide` job, read-only): what this run builds and whether it may publish.
-# Appends build=, publish= and signing=true|false to $GITHUB_OUTPUT.
+# Appends build=, publish= and stable_tag=true|false to $GITHUB_OUTPUT.
 #
 #   ci/github/release-decide.sh
 #
@@ -8,21 +8,18 @@
 # full history (fetch-depth: 0). DECIDE_BASE is the commit the change is measured from: the push's
 # `before` or the pull request's base.
 #
-# publish   a push to main or a release tag (release-publish.sh classify), in this repository, whose
-#           commit is an ancestor of a freshly fetched origin/main. A release tag on a commit outside
-#           main therefore never starts the job that holds write permissions. This check runs in the
-#           read-only job; release-publish.sh repeats it. It is code of the pushed commit like the
-#           workflow itself, so it cannot stand against a tag whose workflow was edited: that needs an
-#           environment deployment policy or a tag ruleset (repository settings).
-# signing   publish, on a stable tag vX.Y.Z (or a release candidate vX.Y.Z-rc.N when the repository
-#           variable DW_SIGN_CANDIDATES=1 is set for the one-time signed-candidate dry run): the only
-#           runs whose jobs use the `release` environment and its signing keys (docs/release/CHECKLIST.md,
-#           docs/release/updater.md). Never dry-run, main, branch, PR, schedule or dispatch.
-# build     always, except a branch push or pull request that changes only documentation and files no
-#           release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
-#           tags and dispatch always build. A branch push is measured from its merge base with origin/main
-#           (not from the previous push: a docs-only push must not cancel a code push's build and then
-#           skip its own); a pull request from its base. An unknown base builds.
+# publish     a push to main or a release tag (release-publish.sh classify), in this repository, whose
+#             commit is an ancestor of a freshly fetched origin/main. A release tag on a commit outside
+#             main therefore never starts the job that holds write permissions. This check runs in the
+#             read-only job; release-publish.sh repeats it.
+# stable_tag     publish, on a final stable tag vX.Y.Z (never rc, dry-run, main or dispatch).
+# signed_stable  stable_tag, unless DW_ALLOW_UNSIGNED_STABLE=1 is set (and DW_SIGNING_REQUIRED != 1).
+#                Only signed_stable=true embeds the stable updater feed URL, packs unsigned-macos /
+#                unsigned.SHA256SUMS, and waits for detached signatures; under DW_ALLOW_UNSIGNED_STABLE=1
+#                the build ships without an updater endpoint so it never trusts an unrotated key.
+# build       always, except a branch push or pull request that changes only documentation and files no
+#             release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
+#             tags and dispatch always build.
 set -euo pipefail
 
 event=${GITHUB_EVENT_NAME:?}
@@ -64,18 +61,20 @@ if [[ "$ref" != refs/heads/main && "$ref" != refs/tags/* ]] && [[ -n "$base" ]] 
   fi
 fi
 
-signing=false
-if [[ "$publish" == true && "$event" == push ]]; then
-  if [[ "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    signing=true
-  elif [[ "${DW_SIGN_CANDIDATES:-}" == 1 && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
-    signing=true
-  fi
+stable_tag=false
+if [[ "$publish" == true && "$event" == push && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  stable_tag=true
 fi
 
-echo "decide: kind=$kind publish=$publish build=$build signing=$signing"
+signed_stable=false
+if [[ "$stable_tag" == true ]] && [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
+  signed_stable=true
+fi
+
+echo "decide: kind=$kind publish=$publish build=$build stable_tag=$stable_tag signed_stable=$signed_stable"
 {
   echo "publish=$publish"
   echo "build=$build"
-  echo "signing=$signing"
+  echo "stable_tag=$stable_tag"
+  echo "signed_stable=$signed_stable"
 } >> "${GITHUB_OUTPUT:?}"

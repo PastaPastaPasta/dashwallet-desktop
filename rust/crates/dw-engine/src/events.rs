@@ -14,7 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::SyncProgress;
+use dash_spv::sync::{SyncEvent, SyncProgress};
+use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
@@ -557,6 +558,13 @@ pub(crate) struct SessionHub {
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Chooses the spend claims of the wallets again that learned of an
+    /// InstantSend lock no event of theirs named, and stores the lock for
+    /// them ([`Self::fan_out_lock`]); unset in hub-only tests.
+    lock_rerun: OnceLock<Box<LockRerun>>,
+    /// The InstantSend locks a wallet learned of without an event of its
+    /// own whose store failed, run again at the next lock heard.
+    unstored_locks: Mutex<HashMap<(WalletId, Txid), InstantLock>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -602,6 +610,9 @@ pub(crate) struct SessionHub {
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the claim choices a lock started again, to wait for.
+    #[cfg(test)]
+    pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The session's replay records, told of each fork truncation.
     replay: OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Tests: holds the next first-seen write before it runs.
@@ -892,6 +903,8 @@ impl SessionHub {
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            lock_rerun: OnceLock::new(),
+            unstored_locks: Mutex::new(HashMap::new()),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -908,6 +921,8 @@ impl SessionHub {
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
@@ -999,6 +1014,52 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Sets what chooses the spend claims again after a lock (once).
+    pub(crate) fn attach_lock_rerun(&self, run: Box<LockRerun>) {
+        let _ = self.lock_rerun.set(run);
+    }
+
+    /// Tests: the claim choices a lock started again so far.
+    #[cfg(test)]
+    pub(crate) fn take_lock_reruns(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(&mut *self.lock_reruns.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    fn unstored_locks(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, Txid), InstantLock>> {
+        self.unstored_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Keeps `lock` of `txid` for `wallet` until its store takes it.
+    pub(crate) fn note_unstored_lock(&self, wallet: WalletId, txid: Txid, lock: InstantLock) {
+        self.unstored_locks().insert((wallet, txid), lock);
+    }
+
+    /// The locks whose store failed so far, taken to be written again.
+    pub(crate) fn take_unstored_locks(&self) -> HashMap<(WalletId, Txid), InstantLock> {
+        std::mem::take(&mut *self.unstored_locks())
+    }
+
+    /// A verified InstantSend lock of `txid`: each loaded wallet but those
+    /// `unloaded` whose history holds it out of a block without a lock
+    /// shows it locked, and its spend claims are chosen again as at its
+    /// load. key-wallet tells only the wallets holding the transaction's
+    /// record or coins, and no wallet when it pays none of them (#828).
+    /// The locks whose store failed before are written again.
+    fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
+        let wallets = self.history.note_instant_lock(&txid, unloaded);
+        if wallets.is_empty() && self.unstored_locks().is_empty() {
+            return;
+        }
+        for id in &wallets {
+            self.pump.mark_history(*id, Some(&[txid]));
+        }
+        if let Some(rerun) = self.lock_rerun.get() {
+            rerun(txid, lock.clone(), wallets);
+        }
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -1782,12 +1843,14 @@ impl SessionHub {
                 }
                 // First seen through its InstantSend lock: evidence. In
                 // the mempool: none (BL-76).
-                if matches!(record.context, TransactionContext::InstantSend(_)) {
+                if let TransactionContext::InstantSend(lock) = &record.context {
                     self.note_seen(id, [record.txid]);
+                    self.fan_out_lock(record.txid, lock, &unloaded);
                 }
             }
             WalletEvent::TransactionInstantLocked {
                 txid,
+                instant_lock,
                 balance,
                 account_balances,
                 ..
@@ -1799,6 +1862,7 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
+                self.fan_out_lock(*txid, instant_lock, &unloaded);
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -2072,6 +2136,9 @@ impl SessionHub {
     }
 }
 
+/// Chooses the spend claims of `wallets` again after `txid`'s lock.
+pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
+
 /// Children of swept payments queued for a drop: their wallet, their
 /// txids, the winner, and the swept payments.
 type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
@@ -2104,6 +2171,20 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
 }
 
 impl EventHandler for SessionHub {
+    /// A verified InstantSend lock, which the mempool manager hands the
+    /// wallet as well: a payment to no loaded wallet's address raises no
+    /// wallet event (#828).
+    fn on_sync_event(&self, event: &SyncEvent) {
+        if let SyncEvent::InstantLockReceived {
+            instant_lock,
+            validated: true,
+        } = event
+        {
+            let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+            self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
+        }
+    }
+
     fn on_progress(&self, progress: &SyncProgress) {
         #[cfg(test)]
         if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
