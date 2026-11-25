@@ -107,6 +107,17 @@ describe("the lock gate", () => {
     expect(refusedWhileLocked({ code: "vault.locked", message: "", data: null })).toBe(false);
   });
 
+  it("lets Quit and Restart through a gate that never opened, as on a refused or held store", async () => {
+    resetWalletGate(true);
+    const asked: string[] = [];
+    const ask = (name: string) => async () => (asked.push(name), null);
+    const backend = guardWhileLocked({ quitApp: ask("quitApp"), restartApp: ask("restartApp"), balance: ask("balance") } as unknown as Backend);
+    await expect(backend.balance("w")).rejects.toMatchObject({ code: "vault.locked" });
+    expect(await backend.quitApp()).toBeNull();
+    expect(await backend.restartApp()).toBeNull();
+    expect(asked).toEqual(["quitApp", "restartApp"]);
+  });
+
   it("stays closed from the start until a status says the vault is not locked", () => {
     resetWalletGate(true);
     const client = new QueryClient();
