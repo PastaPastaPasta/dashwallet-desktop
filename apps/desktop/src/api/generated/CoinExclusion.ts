@@ -3,4 +3,4 @@
 /**
  * Why a coin is kept out of spending and every balance.
  */
-export type CoinExclusion = "pendingUnproven";
+export type CoinExclusion = "pendingUnproven" | "rescanHold";

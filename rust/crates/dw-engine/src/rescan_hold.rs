@@ -13,7 +13,8 @@
 //! Each hold is stored as a [`RESCAN_HOLD_PREFIX`] mark in the same write
 //! as the abandon's marks, after the rewind's replay record
 //! (`crate::replay_record`). A later open reads them back and resumes that
-//! replay, so a hold outlives a restart until its rescan ends.
+//! replay, so a hold outlives a restart until its rescan ends. A released
+//! hold's mark goes (`NetworkSession::forget_released_holds`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
@@ -21,8 +22,8 @@ use std::str::FromStr;
 use dashcore::OutPoint;
 use dw_appdb::AppDb;
 
-use crate::events::WalletState;
 use crate::WalletId;
+use crate::events::WalletState;
 
 /// Settings key prefix (wallet scope) of a coin given back that waits for
 /// its rescan; the value is `checkpoint,target` ([`RescanHold::encode`]).
@@ -63,10 +64,18 @@ impl RescanHold {
             let (c, t) = v.split_once(',')?;
             Some((c.parse().ok()?, t.parse().ok()?))
         });
-        let (checkpoint, target) = parsed.unwrap_or((0, u32::MAX));
-        Self {
+        parsed.map_or_else(Self::unread, |(checkpoint, target)| Self {
             checkpoint,
             target,
+            armed: true,
+        })
+    }
+
+    /// A hold whose mark does not read: it keeps its coin for the session.
+    pub(crate) fn unread() -> Self {
+        Self {
+            checkpoint: 0,
+            target: u32::MAX,
             armed: true,
         }
     }
@@ -169,7 +178,10 @@ mod tests {
         assert!(hold.holds(Some(&state(200, 200)), false), "not armed");
         hold.armed = true;
         assert!(hold.holds(Some(&state(150, 200)), false), "replaying");
-        assert!(hold.holds(Some(&state(150, 150)), false), "below the target");
+        assert!(
+            hold.holds(Some(&state(150, 150)), false),
+            "below the target"
+        );
         assert!(hold.holds(Some(&state(200, 200)), true), "rescanning");
         assert!(hold.holds(None, false), "no state");
         assert!(!hold.holds(Some(&state(200, 200)), false));

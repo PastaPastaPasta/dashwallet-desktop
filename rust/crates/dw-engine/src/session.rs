@@ -980,8 +980,35 @@ impl NetworkSession {
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
         self.hub.release_settled(id, waiting);
+        let released = self.hub.settle_rescan_holds(id, Some(synced));
         drop(wm);
-        self.hub.settle_rescan_holds(id, Some(synced));
+        self.forget_released_holds(id, released).await;
+    }
+
+    /// Drops the marks of the `released` holds of wallet `id` that no new
+    /// hold took again: a later open finding a replay record keeps every
+    /// hold whose mark stays (`crate::rescan_hold::load_for_open`).
+    pub(crate) async fn forget_released_holds(
+        &self,
+        id: WalletId,
+        released: std::collections::BTreeSet<dashcore::OutPoint>,
+    ) {
+        if released.is_empty() {
+            return;
+        }
+        let held = self.hub.rescan_held(&id);
+        let keys = crate::rescan_hold::hold_keys(released.iter().filter(|o| !held.contains(*o)));
+        let scope = id.to_string();
+        let dropped = self
+            .appdb_op(move |db| {
+                let writes: Vec<(&str, Option<&str>)> =
+                    keys.iter().map(|k| (k.as_str(), None)).collect();
+                db.set_settings_durable(&scope, &writes)
+            })
+            .await;
+        if let Err(e) = dropped {
+            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of coins whose rescan is back");
+        }
     }
 
     pub fn network(&self) -> &DashNetwork {

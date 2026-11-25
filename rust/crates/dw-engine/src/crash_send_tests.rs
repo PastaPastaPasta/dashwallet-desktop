@@ -9,7 +9,8 @@ use std::sync::Arc;
 use dashcore::{OutPoint, Transaction, Txid};
 
 use super::own_spend_disk_tests::{
-    COIN, TIP, abandon, assert_holds, assert_holds_waiting, coins, send, spendable, synced, wallet_funded_unmined,
+    COIN, TIP, abandon, assert_holds, assert_holds_waiting, coins, send, spendable, synced,
+    wallet_funded_unmined,
 };
 use super::{instant_lock, mempool, mined, reopen, rows, wait_stored_locked};
 use crate::send::CoinSource;

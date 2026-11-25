@@ -518,8 +518,10 @@ impl NetworkSession {
                         match crate::rescan_hold::load_for_open(&appdb, wallet) {
                             Ok(holds) => (holds, true),
                             Err(e) => {
-                                tracing::warn!(%wallet, error = %e, "could not read the coins waiting for a rescan");
-                                (BTreeMap::new(), false)
+                                tracing::warn!(%wallet, error = %e, "could not read the coins waiting for a rescan: every coin an abandoned payment spent waits");
+                                let spent = (abandoned.copies.iter())
+                                    .flat_map(|(_, tx)| tx.input.iter().map(|i| i.previous_output));
+                                (spent.map(|o| (o, crate::rescan_hold::RescanHold::unread())).collect(), false)
                             }
                         };
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);

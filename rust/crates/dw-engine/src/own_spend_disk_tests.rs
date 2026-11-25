@@ -663,7 +663,14 @@ fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restar
     let mut want = outputs(&paid);
     want.remove(&b);
     let waiting = BTreeSet::from([a]);
-    assert_holds_waiting(&engine, &session, id, &want, &waiting, "abandoned, then a restart");
+    assert_holds_waiting(
+        &engine,
+        &session,
+        id,
+        &want,
+        &waiting,
+        "abandoned, then a restart",
+    );
     mined(&engine, &session, id, TIP, vec![winner]);
     assert_holds(&engine, &session, id, &want, "replayed after a restart");
     assert!(!spendable(&engine, &session, id, b), "B is not offered");

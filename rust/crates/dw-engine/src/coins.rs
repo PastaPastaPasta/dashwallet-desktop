@@ -974,9 +974,9 @@ impl NetworkSession {
         };
         let core = &info.core_wallet;
         (self.hub).apply_balance_read(id, core);
-        let synced = core.synced_height();
+        let released = self.hub.settle_rescan_holds(id, Some(core.synced_height()));
         drop(wm);
-        self.hub.settle_rescan_holds(id, Some(synced));
+        self.forget_released_holds(id, released).await;
     }
 
     /// Hands the hub what reads a wallet's balances again

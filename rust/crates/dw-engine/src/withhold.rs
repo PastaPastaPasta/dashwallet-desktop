@@ -201,7 +201,8 @@ impl SessionHub {
         excluded
             || (self.history).read_wallet(id, |h| {
                 !h.rescan_holds.is_empty()
-                    || (h.txs.iter()).any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
+                    || (h.txs.iter())
+                        .any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
             })
     }
 }

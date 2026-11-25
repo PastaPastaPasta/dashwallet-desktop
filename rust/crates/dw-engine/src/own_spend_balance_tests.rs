@@ -12,9 +12,10 @@ use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, assert_holds_waiting, change_of, coins, eventually, foreign,
-    fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
-    start_offline_spv, store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
+    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, assert_holds_waiting, change_of, coins,
+    eventually, foreign, fresh_address, funding, own_scripts, rival, second_wallet, send,
+    sent_marks, spendable, start_offline_spv, store_raw, synced, utxo, wait_stored,
+    wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -733,8 +734,19 @@ fn coins_freed_by_an_abandon_after_their_funding_block_load_after_a_restart() {
         "the replay is still due"
     );
     let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-    let b = assert_holds_waiting(&engine, &session, id, &all, &spent, "abandoned, then a restart");
-    assert_eq!(b.total, (12 - spent.len() as u64) * COIN, "they wait for the replay");
+    let b = assert_holds_waiting(
+        &engine,
+        &session,
+        id,
+        &all,
+        &spent,
+        "abandoned, then a restart",
+    );
+    assert_eq!(
+        b.total,
+        (12 - spent.len() as u64) * COIN,
+        "they wait for the replay"
+    );
     mined(&engine, &session, id, TIP, vec![paid]);
     assert_eq!(
         assert_holds(&engine, &session, id, &all, "replayed").total,
@@ -973,9 +985,12 @@ fn listed_coins(
         fully_mixed_only: false,
         min_confirmations: None,
     };
-    (engine.block_on(session.utxos(id, filter)).unwrap().into_iter())
-        .map(|c| c.outpoint)
-        .collect()
+    (engine
+        .block_on(session.utxos(id, filter))
+        .unwrap()
+        .into_iter())
+    .map(|c| c.outpoint)
+    .collect()
 }
 
 /// The scan reaches `height`, whose block holds `txs`, with the block's
@@ -1054,14 +1069,20 @@ fn kept_out(
 ) {
     let listed = listed_coins(engine, session, id);
     for (coin, name) in coins {
-        assert!(!listed.contains(coin), "{state}: {name} is listed: {listed:?}");
+        assert!(
+            !listed.contains(coin),
+            "{state}: {name} is listed: {listed:?}"
+        );
         assert!(
             !spendable(engine, session, id, *coin),
             "{state}: {name} is offered"
         );
     }
     let b = balances(session, id);
-    assert_eq!(b.total, total, "{state}: the total counts a held coin: {b:?}");
+    assert_eq!(
+        b.total, total,
+        "{state}: the total counts a held coin: {b:?}"
+    );
     assert_eq!(
         b.confirmed + b.unconfirmed,
         total,
@@ -1089,19 +1110,60 @@ fn abandoning_a_payment_whose_winners_spend_was_forgotten_holds_its_coins_until_
     );
     kept_out(&engine, &session, id, &held, all - 2 * COIN, "abandoned");
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        all - 2 * COIN,
+        "the rescan at the coins' block",
+    );
 
     let session = reopen(&engine, session);
-    assert!(synced(&engine, &session, id) < TIP + 1, "the rescan resumes");
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "restarted in the rescan");
+    assert!(
+        synced(&engine, &session, id) < TIP + 1,
+        "the rescan resumes"
+    );
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        all - 2 * COIN,
+        "restarted in the rescan",
+    );
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the resumed rescan at the coins' block");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        all - 2 * COIN,
+        "the resumed rescan at the coins' block",
+    );
     mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
 
     assert!(in_history(&session, id, w.txid()), "the rescan records W");
-    kept_out(&engine, &session, id, &held[..1], all - COIN, "the rescan is back");
-    kept_out(&engine, &session, id, &held[2..], all - COIN, "the rescan is back");
-    assert!(listed_coins(&engine, &session, id).contains(&b), "B is back");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held[..1],
+        all - COIN,
+        "the rescan is back",
+    );
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held[2..],
+        all - COIN,
+        "the rescan is back",
+    );
+    assert!(
+        listed_coins(&engine, &session, id).contains(&b),
+        "B is back"
+    );
     assert!(spendable(&engine, &session, id, b), "B is offered");
 }
 
@@ -1121,14 +1183,135 @@ fn a_stale_height_event_after_the_abandons_rewind_releases_nothing() {
         wallet_id: id.0,
         height: TIP + 1,
     });
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "a stale height event");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        all - 2 * COIN,
+        "a stale height event",
+    );
     assert_eq!(session.hub.rescan_held(&id), BTreeSet::from([a, b]));
 
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
-    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        all - 2 * COIN,
+        "the rescan at the coins' block",
+    );
     mined(&engine, &session, id, TIP + 1, vec![w]);
-    kept_out(&engine, &session, id, &held[..1], all - COIN, "the rescan is back");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held[..1],
+        all - COIN,
+        "the rescan is back",
+    );
     assert!(spendable(&engine, &session, id, b), "B is offered");
+}
+
+/// A filter batch from `from` applies the blocks of `blocks`, each under
+/// its own ChainLock, and is not committed yet: key-wallet's synced height
+/// stays at `from` while its processed height rises.
+fn applied_in_a_batch(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    from: u32,
+    blocks: Vec<(u32, Vec<Transaction>)>,
+) {
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            if let Some(info) = wm.get_wallet_info_mut(&id.0) {
+                use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+                info.core_wallet.update_synced_height(from);
+            }
+            for (height, txs) in blocks {
+                let block = super::block_with(txs);
+                wm.apply_chain_lock(dashcore::ChainLock {
+                    block_height: height,
+                    block_hash: block.block_hash(),
+                    signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+                });
+                wm.process_block_for_wallets(
+                    &block,
+                    block.block_hash(),
+                    height,
+                    &BTreeSet::from([id.0]),
+                )
+                .await;
+            }
+        })
+    });
+}
+
+/// #818 (Q100 E2): P is abandoned while a filter batch from below A's
+/// funding block has applied that block and W's, under W's ChainLock, but
+/// is not committed: the scan is not past A's funding block. Key-wallet
+/// keeps W's spend of A until the batch commits, so A is never listed,
+/// counted or offered, before or after the abandon's rescan records W.
+#[test]
+fn abandoning_mid_batch_never_lists_a_coin_the_batch_saw_spent() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = reopen(&engine, session);
+    let w = foreign_winner(&engine, &session, id, &paid, &[a]);
+    let all = COINS as u64 * COIN;
+    applied_in_a_batch(
+        &engine,
+        &session,
+        id,
+        FUNDED_AT - 1,
+        vec![(FUNDED_AT, vec![paid.clone()]), (TIP + 1, vec![w.clone()])],
+    );
+
+    abandon(&engine, &session, id, p.txid());
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &[(a, "A")],
+        all - 2 * COIN,
+        "abandoned mid-batch",
+    );
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &[(a, "A")],
+        all - 2 * COIN,
+        "the rescan at the coins' block",
+    );
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    assert!(in_history(&session, id, w.txid()), "the rescan records W");
+    assert!(session.hub.rescan_held(&id).is_empty(), "B's hold is back");
+    assert!(
+        !listed_coins(&engine, &session, id).contains(&a),
+        "the rescan is back: A is listed"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "the rescan is back: A is offered"
+    );
+    assert!(
+        balances(&session, id).total <= all - COIN,
+        "the rescan is back: A is counted"
+    );
 }
 
 /// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend
@@ -1156,17 +1339,45 @@ fn a_drop_after_a_forgotten_spend_holds_the_coin_until_its_rescan_passes_the_spe
     kept_out(&engine, &session, id, &held, total, "dropped");
 
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(&engine, &session, id, &held, total, "the rescan at the coins' block");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        total,
+        "the rescan at the coins' block",
+    );
     let session = reopen(&engine, session);
-    kept_out(&engine, &session, id, &held, total, "restarted in the rescan");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &held,
+        total,
+        "restarted in the rescan",
+    );
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
     // B, which the stored rival spends in a block above, is no give-back: it
     // comes back with its block until the rival's block spends it again.
     let resumed = [held[0], held[2]];
-    kept_out(&engine, &session, id, &resumed, total + COIN, "the resumed rescan at the coins' block");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &resumed,
+        total + COIN,
+        "the resumed rescan at the coins' block",
+    );
     mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
     assert!(in_history(&session, id, w.txid()), "the rescan records W");
-    kept_out(&engine, &session, id, &resumed, total + COIN, "the rescan past W");
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &resumed,
+        total + COIN,
+        "the rescan past W",
+    );
     mined(&engine, &session, id, TIP + 2, vec![rival]);
     kept_out(&engine, &session, id, &held, total, "the rescan is back");
 }

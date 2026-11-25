@@ -1975,9 +1975,10 @@ impl NetworkSession {
             // No processed block's spend and no stored transaction is
             // evidence the coins are unspent: each waits for the rewind's
             // rescan (#818).
+            let processed = info.core_wallet.last_processed_height();
             let holds: BTreeMap<OutPoint, RescanHold> = match (checkpoint, target) {
                 (Some(c), Some(t)) => (released.iter())
-                    .map(|o| (*o, RescanHold::new(c, t)))
+                    .map(|o| (*o, RescanHold::new(c, t.max(processed))))
                     .collect(),
                 _ => BTreeMap::new(),
             };
@@ -2030,10 +2031,26 @@ impl NetworkSession {
                 self.hub.history.with_wallet(wallet, |h| {
                     h.rescan_holds.retain(|o, _| !holds.contains_key(o));
                 });
+                let keys = hold_keys(holds.keys());
+                let scope = wallet.to_string();
+                if let Err(e) = (self.appdb_op(move |db| {
+                    let writes: Vec<(&str, Option<&str>)> =
+                        keys.iter().map(|k| (k.as_str(), None)).collect();
+                    db.set_settings_durable(&scope, &writes)
+                }))
+                .await
+                {
+                    tracing::warn!(%wallet, error = %e, "could not drop the hold marks of a refused abandon");
+                }
             } else {
                 info.core_wallet.update_balance();
             }
-            debug_assert!(abandoned.is_empty() || abandoned == planned);
+            // key-wallet took another set than planned: nothing planned is
+            // stored released.
+            if !abandoned.is_empty() && abandoned != planned {
+                tracing::warn!(%wallet, %root, "key-wallet abandoned another set than planned: no coin is released");
+                released.clear();
+            }
             (abandoned, released, overridden.is_some(), txs, links)
         };
         #[cfg(test)]
@@ -2325,6 +2342,7 @@ impl NetworkSession {
             .min();
             if let Some(checkpoint) = checkpoint {
                 let target = self.record_rewind_locked(wallet, info, checkpoint).await?;
+                let target = target.max(info.core_wallet.last_processed_height());
                 // What the drop frees no processed block spent and no stored
                 // transaction spends: it waits for the rewind's rescan (#818).
                 rescan_holds = (plan.freed.iter())
@@ -2358,7 +2376,8 @@ impl NetworkSession {
             .collect();
         self.write_abandoned_marks(wallet, marks).await?;
         self.hub.history.with_wallet(wallet, |h| {
-            h.rescan_holds.extend(rescan_holds.iter().map(|(o, r)| (*o, *r)));
+            h.rescan_holds
+                .extend(rescan_holds.iter().map(|(o, r)| (*o, *r)));
         });
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");

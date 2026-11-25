@@ -190,8 +190,15 @@ fn a_claim_found_unsigned_after_a_restart_goes_with_the_payment_on_its_change() 
         !session.hub.abandon_batch_pending(&id)
     });
     let coin = OutPoint::new(funding.txid(), 0);
-    assert_eq!(session.hub.rescan_held(&id), std::collections::BTreeSet::from([coin]));
-    assert_eq!(balances(&session, id).total, 0, "the coin waits for the rescan");
+    assert_eq!(
+        session.hub.rescan_held(&id),
+        std::collections::BTreeSet::from([coin])
+    );
+    assert_eq!(
+        balances(&session, id).total,
+        0,
+        "the coin waits for the rescan"
+    );
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
     mined(
         &engine,
@@ -413,7 +420,10 @@ fn a_coin_a_dropped_payment_also_spent_is_offered_again_once() {
     for _ in 0..2 {
         mined(&engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
         assert_eq!(balances(&session, id).total, 0, "they wait for the rescan");
-        assert!(!spendable(&engine, &session, id, b), "b waits for the rescan");
+        assert!(
+            !spendable(&engine, &session, id, b),
+            "b waits for the rescan"
+        );
     }
     b_scanned_again(&engine, &session, id, &b_funding);
 
@@ -770,7 +780,10 @@ fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
         BIRTH + 1,
         vec![super::own_spend_disk_tests::foreign()],
     );
-    assert!(!spendable(&engine, &session, id, b), "b stays spent, rescanned");
+    assert!(
+        !spendable(&engine, &session, id, b),
+        "b stays spent, rescanned"
+    );
     assert_eq!(balances(&session, id).total, PAID, "b doesn't count");
     let session = reopen(&engine, session);
     assert!(

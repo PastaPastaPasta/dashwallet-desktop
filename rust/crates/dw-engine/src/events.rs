@@ -1546,7 +1546,7 @@ impl SessionHub {
         if !txids.is_empty() {
             self.pump.mark_history(id, Some(&txids));
         }
-        self.settle_rescan_holds(id, None);
+        let _ = self.settle_rescan_holds(id, None);
     }
 
     /// The coins of wallet `id` given back that still wait for their
@@ -1560,29 +1560,33 @@ impl SessionHub {
     /// height, read under the manager's lock: the hub's can be raised past
     /// a rewind by a height event queued before it. Without it, a hold the
     /// hub's state shows back asks for the balance reread, which reads it.
-    /// Their marks go at the next
-    /// open that finds no replay record (`crate::rescan_hold`).
-    pub(crate) fn settle_rescan_holds(&self, id: WalletId, synced: Option<u32>) {
+    /// Returns the released coins, whose marks the caller drops
+    /// (`NetworkSession::forget_released_holds`).
+    pub(crate) fn settle_rescan_holds(
+        &self,
+        id: WalletId,
+        synced: Option<u32>,
+    ) -> BTreeSet<dashcore::OutPoint> {
         let holds = self.history.read_wallet(&id, |h| h.rescan_holds.clone());
         if holds.is_empty() {
-            return;
+            return BTreeSet::new();
         }
         let state = self.wallet_state(&id);
         let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(&id));
         let back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
         if back.is_empty() {
-            return;
+            return BTreeSet::new();
         }
         if synced.is_none() {
             if let Some(reread) = self.balance_reread.get() {
                 reread(id);
             }
-            return;
+            return BTreeSet::new();
         }
         let released: BTreeSet<dashcore::OutPoint> = self.history.with_wallet(id, |h| {
             let mut gone = BTreeSet::new();
             for o in back {
-                if h.rescan_holds.get(&o).is_some() && h.rescan_holds.get(&o) == holds.get(&o) {
+                if h.rescan_holds.contains_key(&o) && h.rescan_holds.get(&o) == holds.get(&o) {
                     h.rescan_holds.remove(&o);
                     gone.insert(o);
                 }
@@ -1597,6 +1601,7 @@ impl SessionHub {
             }
             self.pump.mark_balances(id);
         }
+        released
     }
 
     /// Advances the wallet's scan heights. Returns whether the wallet
@@ -2091,6 +2096,9 @@ impl SessionHub {
                 if let Some(rescan) = self.rescan().as_mut() {
                     rescan.note_height(&id, *height);
                 }
+                // A rescan's last height may change no balance: its holds
+                // are settled once the rescan has noted it (`crate::rescan_hold`).
+                let _ = self.settle_rescan_holds(id, None);
                 // A reader of the wallet's checkpoint is told of every advance:
                 // the last one can come after the last progress report.
                 self.pump.mark_sync();
