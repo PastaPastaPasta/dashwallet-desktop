@@ -166,14 +166,18 @@ export const STORE_COPY = {
   "storeUpgrade.refused.detail.contactsTable": "it holds contact data that this version can't read yet.",
   "storeUpgrade.refused.detail.shapeMismatch": "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
   "storeUpgrade.refused.detail.devBuild": "it was written by a development build of Dash Wallet.",
+  "storeUpgrade.refused.detail.damaged": "it can't be read as wallet data, so it may be damaged.",
   "storeUpgrade.refused.wayOut.previous":
     "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
   "storeUpgrade.refused.wayOut.support": "Choose Report a problem.",
+  "storeUpgrade.refused.wayOut.damaged":
+    "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
   "storeUpgrade.refused.wayOut.restore":
     "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
   "storeUpgrade.refused.quit": "Quit",
   "storeUpgrade.refused.report": "Report a problem",
   "storeUpgrade.refused.restore": "Restore earlier data",
+  "storeUpgrade.refused.recover": "Set up from recovery phrase",
   "settings.about.links.issuesHint": "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
   "storeUpgrade.restore.foreign.title": "These wallet files don't match the restore",
   "storeUpgrade.restore.foreign.text":
@@ -188,11 +192,12 @@ type CopyKey = keyof typeof STORE_COPY;
 
 const button = (key: CopyKey, label: string = STORE_COPY[key]) => ({ key, label, destructive: false, defaultFocus: false });
 
-type Detail = "contactsTable" | "shapeMismatch" | "devBuild";
-type WayOut = "previous" | "support" | "restore";
+type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged";
+type WayOut = "previous" | "support" | "restore" | "damaged";
 
 /** `screen_for`'s screen for a refusal with `detail`, a file this start changed nothing in, and `wayOut`:
- * its buttons Restore earlier data (restore only), Report a problem (except previous) and Quit; the issues
+ * its buttons Set up from recovery phrase (damaged only), Restore earlier data (restore only), Report a
+ * problem (except previous) and Quit; the issues
  * hint with Report a problem. Its text key is its way out's. */
 const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: WayOut): StoreRefusedData => {
   const line = (key: CopyKey) => STORE_COPY[key];
@@ -211,6 +216,7 @@ const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: Wa
       text: text.replaceAll("{folder}", folder),
       lines,
       buttons: [
+        ...(wayOut === "damaged" ? [button("storeUpgrade.refused.recover")] : []),
         ...(wayOut === "restore" ? [button("storeUpgrade.refused.restore")] : []),
         ...(reports ? [button("storeUpgrade.refused.report")] : []),
         button("storeUpgrade.refused.quit"),
@@ -221,12 +227,13 @@ const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: Wa
 };
 
 /** `screen_for`'s screens, each with the variant that gives it: a fork file this build can't read yet, for
- * the version before (Quit only); one whose layout is off (Report a problem); and a migrated file with a
- * verified backup (Restore earlier data). */
+ * the version before (Quit only); one whose layout is off (Report a problem); a migrated file with a
+ * verified backup (Restore earlier data); and a damaged store (Set up from recovery phrase, Q107 C1). */
 export const STORE_SCREENS = {
   refusedPrevious: (folder: string) => refusedScreen(folder, "RetiredPoolWithoutAdopter", "contactsTable", "previous"),
   refusedSupport: (folder: string) => refusedScreen(folder, "ForkStoreShapeMismatch", "shapeMismatch", "support"),
   refusedRestore: (folder: string) => refusedScreen(folder, "PreHistoryFork", "devBuild", "restore"),
+  damaged: (folder: string) => refusedScreen(folder, "SnapshotSourceDamaged", "damaged", "damaged"),
 };
 
 export type StoreScreenName = keyof typeof STORE_SCREENS;

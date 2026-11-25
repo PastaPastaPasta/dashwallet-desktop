@@ -46,6 +46,7 @@ mod mempool_sync_tests;
 mod multiwallet;
 mod network;
 pub mod network_choice;
+mod network_folders;
 pub mod platform;
 mod pump;
 pub mod rates;

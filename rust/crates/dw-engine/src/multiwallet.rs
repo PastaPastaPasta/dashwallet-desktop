@@ -182,8 +182,10 @@ pub(crate) fn watch_only_wallet_id(xpub: &ExtendedPubKey, network: dashcore::Net
 
 impl crate::Engine {
     /// Every network with data under the data root (IOS-009), in
-    /// `DashNetwork` order, devnets by name. Reads files and the OS secret
-    /// store only.
+    /// `DashNetwork` order, devnets by name, each in its folder
+    /// ([`Self::network_dir`]): a network that started over is listed by its
+    /// new folder, and the folder it left is not listed. Reads files and the
+    /// OS secret store only.
     pub async fn existing_networks(&self) -> Result<Vec<NetworkDataInfo>, EngineError> {
         let root = self.config().data_root.clone();
         let os_store = Arc::clone(&self.config().vault.os_store);
@@ -195,8 +197,14 @@ impl crate::Engine {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
                 Err(e) => return Err(e.into()),
             };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
+            let redirects = crate::network_folders::redirects(&root)?;
+            let mut names: BTreeSet<String> = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| !redirects.values().any(|folder| folder == name))
+                .collect();
+            names.extend(redirects.keys().cloned());
+            for name in names {
                 let network = match name.as_str() {
                     "mainnet" => DashNetwork::Mainnet,
                     "testnet" => DashNetwork::Testnet,
@@ -208,10 +216,11 @@ impl crate::Engine {
                         _ => continue,
                     },
                 };
-                if !entry.path().is_dir() {
+                let dir = root.join(redirects.get(&name).unwrap_or(&name));
+                if !dir.is_dir() {
                     continue;
                 }
-                let info = inspect_network_dir(&entry.path(), network, &*os_store);
+                let info = inspect_network_dir(&dir, network, &*os_store);
                 if info.has_wallet_state || info.has_vault || info.has_os_store_key {
                     match info.network {
                         DashNetwork::Devnet { .. } => devnets.push(info),
@@ -714,12 +723,14 @@ impl NetworkSession {
 
     /// Registers a watch-only wallet from a BIP44 account xpub (QT-114):
     /// no vault record, so sends fail with `send.watch_only`. Returns its
-    /// id. Refused (`Storage`) while the dispatch journal is unavailable.
+    /// id. Refused (`Storage`) while the dispatch journal is unavailable,
+    /// and `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_watch_only(
         self: &Arc<Self>,
         xpub: String,
         options: WatchOnlyOptions,
     ) -> Result<WalletId, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         let network = self.network.core_network();
         let (key, account) = parse_account_xpub(&xpub, network)?;
         let name = options.name.as_deref().map(validate_name).transpose()?;

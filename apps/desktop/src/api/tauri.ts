@@ -177,6 +177,7 @@ export class IpcBackend implements Backend {
   requestRestore = () => absentAsUnavailable(invoke<null>("request_restore", { network: null }));
   keepCurrentFiles = () => absentAsUnavailable(invoke<unknown>("keep_current_files", { network: null }));
   cancelRestore = () => absentAsUnavailable(invoke<null>("cancel_restore", { network: null }));
+  recoverInFreshFolder = () => cmd.recoverInFreshFolder();
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

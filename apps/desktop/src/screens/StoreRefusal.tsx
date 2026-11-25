@@ -4,7 +4,8 @@
 // other accounts can change (the engine read nothing below it); and StorageInUse (the session before
 // still holds the data). Each replaces the shell, so none ever shows onboarding, an empty wallet list or
 // a zero balance. A restore only ever runs at the next start: "Restore earlier data" asks for it and
-// restarts.
+// restarts. A damaged store's "Set up from recovery phrase" moves the network to a new folder and
+// restarts: onboarding then shows there, restore only.
 
 import { useId, useState, type ReactNode } from "react";
 import type { Backend } from "../api/backend";
@@ -49,11 +50,12 @@ export function screenText(tr: Translate, screen: StoreScreen, folder: string, r
   return joined(lines.map((l) => (inCatalog(l.key) ? textFor(tr, l.key, l.text, folder) : english(l.text)))) ?? screen.text;
 }
 
-export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore";
+export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore" | "recover";
 
 const ACTIONS: Record<string, ButtonAction> = {
   "storeUpgrade.restore.foreign.keep": "keep",
   "storeUpgrade.refused.restore": "restore",
+  "storeUpgrade.refused.recover": "recover",
   "storeUpgrade.restore.refused.ok": "reopen",
   "storeUpgrade.restore.noSpace.ok": "reopen",
   "storeUpgrade.restore.notStarted.cancel": "cancelRestore",
@@ -92,7 +94,7 @@ export function restoreButtonKey(state: RestoreState, k: string): string {
   return state === "foreign" && k === "report" ? "settings.about.links.issues" : `storeUpgrade.restore.${state}.${k}`;
 }
 
-type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "openProjectLink">;
+type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "recoverInFreshFolder" | "openProjectLink">;
 
 /** What a failed action shows: a refused restore request in MG's words, an `Error`'s message, else the
  * generic line. */
@@ -111,6 +113,8 @@ export class OpenFailureActions extends Model {
   running = false;
   /** RESTORE-REQUESTED is written and the restart that runs it has not happened yet. */
   requested = false;
+  /** The network moved to its new folder and the restart that opens it has not happened yet. */
+  recovered = false;
 
   constructor(private readonly api: ActionsApi) {
     super();
@@ -125,6 +129,12 @@ export class OpenFailureActions extends Model {
   restore = async () => {
     if (!this.requested) this.requested = await this.#run(() => this.api.requestRestore());
     if (this.requested) await this.#run(() => this.api.restartApp());
+  };
+  /** The recover confirm's Restart and set up: the new folder, then the restart that opens it; after a
+   * failed restart, only the restart again. */
+  recover = async () => {
+    if (!this.recovered) this.recovered = await this.#run(() => this.api.recoverInFreshFolder());
+    if (this.recovered) await this.#run(() => this.api.restartApp());
   };
   /** The confirm closed: a request whose restart failed is dropped, so closing it leaves nothing asked. */
   dismissRestore = async () => {
@@ -287,7 +297,14 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
   // Report a problem always has the issues warning under it (MG); a screen whose one hint is another line gets it too.
   const warn = buttons.some((b) => b.action === "report") && screen.hint?.key !== ISSUES_HINT;
   return (
-    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={screenText(tr, screen, folder, currentLanguage().dir === "rtl")} problem={problem} failedLink={failedLink}>
+    <Panel
+      id={id}
+      testId="store-refused"
+      title={textFor(tr, screen.titleKey, screen.title, folder)}
+      text={screenText(tr, screen, folder, currentLanguage().dir === "rtl")}
+      problem={problem}
+      failedLink={failedLink}
+    >
       <Buttons id={id} testId="store-refused" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {warn && (
         <p className="field-hint" data-testid="store-refused-issues-hint">
@@ -435,6 +452,36 @@ export function RestoreConfirmView({ folder, busy, problem, onConfirm, onClose }
   );
 }
 
+export interface RecoverConfirmViewProps {
+  folder: string;
+  busy: boolean;
+  problem: string | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}
+
+/** Set up from recovery phrase's confirm: Cancel has the focus and writes nothing; Restart and set up
+ * moves the network to a new folder and restarts. `folder` is the refused folder. */
+export function RecoverConfirmView({ folder, busy, problem, onConfirm, onClose }: RecoverConfirmViewProps) {
+  const tr = useT();
+  return (
+    <Sheet title={tr("storeUpgrade.recover.confirm.title")} width="medium" testId="recover-confirm" closable={!busy} onClose={onClose}>
+      <p className="sheet-text" data-testid="recover-confirm-text">
+        {tr("storeUpgrade.recover.confirm.text", { folder })}
+      </p>
+      <Problem text={problem} testId="recover-confirm-problem" />
+      <div className="sheet-actions">
+        <DashButton variant="tintedGray" data-autofocus disabled={busy} data-testid="recover-confirm-cancel" onClick={onClose}>
+          {tr("storeUpgrade.recover.confirm.cancel")}
+        </DashButton>
+        <DashButton variant="filledBlue" disabled={busy} aria-busy={busy} data-testid="recover-confirm-confirm" onClick={onConfirm}>
+          {tr("storeUpgrade.recover.confirm.confirm")}
+        </DashButton>
+      </div>
+    </Sheet>
+  );
+}
+
 export interface OpenFailureScreenProps {
   /** Tries the open again: after Keep the current files, Cancel restore or OK. */
   onReopen: () => void;
@@ -446,15 +493,17 @@ export function StoreRefusalScreen({ refusal, onReopen, retrying }: OpenFailureS
   const exit = useActions();
   const offersRestore = refusal.screen.buttons.some((b) => buttonAction(b.key) === "restore");
   const restoreAvailable = useRestoreAvailable(offersRestore).data === true;
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<"restore" | "recover" | null>(null);
   const busy = exit.running || retrying;
-  const confirm = () => {
+  const confirm = (which: "restore" | "recover") => {
     exit.clear();
-    setConfirming(true);
+    setConfirming(which);
   };
   const close = () => {
-    setConfirming(false);
-    void exit.dismissRestore();
+    const which = confirming;
+    setConfirming(null);
+    if (which === "restore") void exit.dismissRestore();
+    else exit.clear();
   };
   return (
     <>
@@ -464,9 +513,10 @@ export function StoreRefusalScreen({ refusal, onReopen, retrying }: OpenFailureS
         failedLink={exit.failedLink}
         restoreAvailable={restoreAvailable}
         busy={busy}
-        onAction={(action) => (action === "restore" ? confirm() : perform(exit, action, onReopen))}
+        onAction={(action) => (action === "restore" || action === "recover" ? confirm(action) : perform(exit, action, onReopen))}
       />
-      {confirming && <RestoreConfirmView folder={refusal.folder} busy={busy} problem={exit.problem} onConfirm={() => void exit.restore()} onClose={close} />}
+      {confirming === "restore" && <RestoreConfirmView folder={refusal.folder} busy={busy} problem={exit.problem} onConfirm={() => void exit.restore()} onClose={close} />}
+      {confirming === "recover" && <RecoverConfirmView folder={refusal.folder} busy={busy} problem={exit.problem} onConfirm={() => void exit.recover()} onClose={close} />}
     </>
   );
 }

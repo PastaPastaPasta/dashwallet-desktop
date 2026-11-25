@@ -343,11 +343,14 @@ impl Engine {
         Ok(self.inner.shutdown().await?)
     }
 
-    /// Data directory used for `network` ("Open data folder").
-    pub fn network_dir(&self, network: DashNetwork) -> String {
-        self.inner
-            .network_dir(&network.into())
+    /// Data directory used for `network` ("Open data folder"): the folder
+    /// `network-folders.json` names once the network started over. A record
+    /// that can't be read is an error, never the default folder.
+    pub fn network_dir(&self, network: DashNetwork) -> Result<String, EngineError> {
+        Ok(self
+            .inner
+            .network_dir(&network.into())?
             .to_string_lossy()
-            .into_owned()
+            .into_owned())
     }
 }

@@ -57,10 +57,10 @@ import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./top
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
-import { FIXTURE_DATA_DIR, isClosed, settingsHandlers } from "./settings";
+import { FIXTURE_DATA_DIR, isClosed, restoreOnly, settingsHandlers } from "./settings";
 import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
-import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
@@ -819,6 +819,13 @@ export const HANDLERS: Handlers = {
     return openedNetwork(world, restoredNetwork(world));
   },
   active_network: (_, { world }) => restoredNetwork(world),
+  // Engine::recover_in_fresh_folder: only after a refused open; the next open is the new folder's.
+  recover_in_fresh_folder: (_, { world }) => {
+    if (!world.openRefusal) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
+    (world.restoreCalls ??= []).push("recoverInFreshFolder");
+    startOverInNewFolder(world);
+    return null;
+  },
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one
@@ -861,7 +868,8 @@ export const HANDLERS: Handlers = {
     setLock(ctx, passphrase === null ? "noKeys" : "unlocked");
     return world.lock;
   },
-  generate_mnemonic: ({ wordCount, language }) => {
+  generate_mnemonic: ({ wordCount, language }, { world }) => {
+    if (world.restored) throw restoreOnly();
     if (language !== "english" || (wordCount !== 12 && wordCount !== 24)) throw fail("invalid_argument", "the fixture makes English phrases of 12 or 24 words");
     return wordCount === 12 ? CREATED_12 : CREATED_24;
   },

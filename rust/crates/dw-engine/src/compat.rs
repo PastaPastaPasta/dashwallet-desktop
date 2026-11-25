@@ -479,11 +479,13 @@ impl NetworkSession {
     }
 
     /// dash-qt "Import dumpwallet" (QT-107). See the module doc.
+    /// `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_dump_wallet(
         self: &Arc<Self>,
         path: PathBuf,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let dump = self
             .on_runtime(async move {
@@ -577,13 +579,15 @@ impl NetworkSession {
     }
 
     /// dash-qt "Restore wallet" from a `wallet.dat` (QT-106): SQLite
-    /// descriptor wallets and legacy Berkeley DB wallets.
+    /// descriptor wallets and legacy Berkeley DB wallets. `RestoreOnly`
+    /// while the network's RESTORED mark is set.
     pub async fn import_wallet_dat(
         self: &Arc<Self>,
         path: PathBuf,
         wallet_passphrase: Option<Zeroizing<Vec<u8>>>,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
         let WalletDatImport {
@@ -700,12 +704,13 @@ impl NetworkSession {
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
-    /// (QT-108).
+    /// (QT-108). `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_key_material(
         self: &Arc<Self>,
         material: KeyMaterial,
         options: ImportOptions,
     ) -> Result<ImportReport, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let root = match material {
             KeyMaterial::HdSeed(seed) => {

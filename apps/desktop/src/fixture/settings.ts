@@ -185,6 +185,8 @@ export function withAutomaticBackups(s: SettingsWorld, walletId: string, phrase:
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
+/** The engine's refusal of every way to add a wallet but its recovery phrase while RESTORED is set (Q107 C1). */
+export const restoreOnly = () => fail("restore_only", "the wallet data is a restore not yet synced; add a wallet from its recovery phrase");
 
 function backupFile(wallets: NonNullable<FixtureFile["wallets"]>, passphrase: string, createdAt: number, automatic: boolean): FixtureFile {
   return {
@@ -340,6 +342,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return null;
     },
     import_watch_only: ({ xpub, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const x = xpub.trim();
       if (!/^tpub[1-9A-HJ-NP-Za-km-z]{100,}$/.test(x)) throw fail("invalid_xpub", "not a testnet account xpub");
       if (options.lookahead !== null && (options.lookahead < 1 || options.lookahead > 1000)) throw fail("invalid_argument", "lookahead must be 1 to 1000");
@@ -371,6 +374,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     restore_backup: ({ path, passphrase }, ctx) => {
       const { world } = ctx;
+      if (world.restored) throw restoreOnly();
       const f = file(world, path, "io");
       if (f.info.kind !== "dwBackup" || !f.wallets) throw fail("backup.corrupt", "not a backup");
       if (f.info.network?.dirName !== network(world)) throw fail("backup.network_mismatch", "a backup of another network");
@@ -434,6 +438,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return f.info;
     },
     import_dump_wallet: ({ path, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "dumpWallet") throw fail("compat.unsupported_format", "not a dumpwallet file");
       if (f.info.network && f.info.network.dirName !== network(ctx.world))
@@ -442,6 +447,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return coreImport(ctx, path, options, f);
     },
     import_wallet_dat: ({ path, walletPassphrase, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "walletDatSqlite" && f.info.kind !== "walletDatBdb") throw fail("compat.unsupported_format", "not a wallet.dat");
       if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
@@ -453,6 +459,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       return coreImport(ctx, path, options, f);
     },
     import_key_material: ({ material, options }, ctx) => {
+      if (ctx.world.restored) throw restoreOnly();
       const ok =
         material.kind === "hdSeed"
           ? /^([0-9a-f]{2}){16,64}$/i.test(material.seedHex.trim())

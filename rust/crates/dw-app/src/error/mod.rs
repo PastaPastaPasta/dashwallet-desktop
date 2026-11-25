@@ -537,7 +537,9 @@ pub enum ErrorData {
     /// `storage_refused`: the open's store-upgrade check refused the
     /// network's wallet data and changed nothing in it. `screen` is the
     /// store upgrade's own screen with `{folder}` filled in; `folder` is the
-    /// network directory; `cause` names the refusal for tests and logs only.
+    /// network directory; `cause` names the refusal, for tests and logs, and
+    /// for a way out the screen doesn't carry yet (the renderer's
+    /// `LOCAL_WAYS_OUT`).
     StoreRefused {
         screen: Box<StoreScreen>,
         folder: String,

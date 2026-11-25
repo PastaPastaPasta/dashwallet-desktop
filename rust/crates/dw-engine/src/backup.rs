@@ -720,12 +720,14 @@ impl NetworkSession {
     /// each wallet's secrets under this vault's key (seed-safety order),
     /// registers it and inserts its app metadata. Returns the wallet ids.
     /// Refused (`Storage`) before any bundle is opened while the dispatch
-    /// journal is unavailable.
+    /// journal is unavailable, and `RestoreOnly` while the network's
+    /// RESTORED mark is set.
     pub async fn restore_backup(
         self: &Arc<Self>,
         path: PathBuf,
         passphrase: Option<Zeroizing<Vec<u8>>>,
     ) -> Result<Vec<WalletId>, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         drop(self.try_enter()?);
         let this = Arc::clone(self);
         self.on_runtime(async move { this.restore_backup_inner(path, passphrase).await })
