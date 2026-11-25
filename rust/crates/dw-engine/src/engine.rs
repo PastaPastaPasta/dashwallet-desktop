@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -292,6 +292,48 @@ impl Engine {
                 Ok(session)
             })
             .await?
+    }
+
+    /// Runs `f` on `network`'s directory on the blocking pool, while no
+    /// session of this engine opens or closes.
+    async fn with_network_dir<T: Send + 'static>(
+        &self,
+        network: &DashNetwork,
+        f: fn(&Path) -> Result<T, EngineError>,
+    ) -> Result<T, EngineError> {
+        network.validate()?;
+        let _sessions = self.shared.sessions.lock().await;
+        let dir = self.network_dir(network)?;
+        self.handle.spawn_blocking(move || f(&dir)).await?
+    }
+
+    /// Whether `network` has a verified before-upgrade snapshot to restore.
+    pub async fn restore_available(&self, network: &DashNetwork) -> Result<bool, EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::restore_available)
+            .await
+    }
+
+    /// Asks for the restore of `network`'s verified before-upgrade snapshot
+    /// at the next start of the app; nothing is restored in this process.
+    /// Without a verified snapshot it is refused with `storage_restore`
+    /// (`refused`, missingBackup).
+    pub async fn request_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::request_restore)
+            .await
+    }
+
+    /// The foreign-lineage screen's Keep: ends `network`'s part-done
+    /// restore keeping its live files as they are; then open it again.
+    pub async fn keep_current_files(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::keep_current_files)
+            .await
+    }
+
+    /// Drops `network`'s restore request while it hasn't begun replacing
+    /// files; once it has, `storage_restore` (`incomplete`).
+    pub async fn cancel_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
+        self.with_network_dir(network, crate::store_upgrade::cancel_restore)
+            .await
     }
 
     /// The open session for `network`, if any.

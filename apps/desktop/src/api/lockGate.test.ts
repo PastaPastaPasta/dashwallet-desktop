@@ -34,7 +34,7 @@ afterEach(() => resetWalletGate());
 describe("forgetWalletContent", () => {
   it("keeps the lock screen's reads and the network, and drops everything else", () => {
     const client = new QueryClient();
-    const kept = [keys.network, keys.lockStatus, keys.lastLockReport, [...keys.lockReconcile, { flows: [] }], keys.lockDrain];
+    const kept = [keys.network, keys.lockStatus, keys.lastLockReport, [...keys.lockReconcile, { flows: [] }], keys.lockDrain, keys.upgradeNotice];
     const dropped = [keys.wallets, keys.balance("w"), keys.history("w", {} as never, 20), keys.receiveAddress("w"), keys.contactsAll("w"), keys.sync, ["qr", "dash:x"]];
     for (const k of [...kept, ...dropped]) client.setQueryData(k, "x");
     forgetWalletContent(client);

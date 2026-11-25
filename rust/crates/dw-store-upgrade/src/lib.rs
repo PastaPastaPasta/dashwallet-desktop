@@ -3,12 +3,18 @@
 //!
 //! Startup order for one network directory `{folder}`, all under the data
 //! root's instance lock and before any store opens, in `spawn_blocking`:
-//! 0. [`sweep_stale_scratch`], once per start, before any check.
-//! 1. [`prepare`]: the refusal check ([`precheck`], [`precheck_locked`]),
+//! 0. [`sweep_stale_scratch`], once per start, before any check: removes the
+//!    checks' and the probe's private directories a crash left under the
+//!    data root. The probe ([`Adopters::for_build`]) runs inside the first
+//!    check and removes its own directory before it returns.
+//! 1. [`prepare`]: a requested or part-done restore first
+//!    ([`run_pending_restore`]), then the refusal check ([`precheck`],
+//!    [`precheck_locked`]),
 //!    the upgrade rehearsed on a private copy, then the snapshot
-//!    ([`take_snapshot`]) for a fork file. A refusal writes, renames and
-//!    locks nothing in `{folder}`. A pending restore keeps every store
-//!    closed ([`StoreUpgradeError::RestorePending`]).
+//!    ([`take_snapshot`]) for a fork file. The refusal check itself writes,
+//!    renames and locks nothing in `{folder}`; a restore before it may have.
+//!    A restore that stops keeps every store closed until a start finishes
+//!    it.
 //! 2. [`reconcile_fork_store`] straight after, before any store opens, with
 //!    the `SqlitePersisterConfig` step 4 will use: the upgrade is rehearsed
 //!    again with those settings, and the snapshot must fingerprint all four
@@ -34,6 +40,8 @@ mod snapshot;
 mod sql;
 mod token;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
 
@@ -45,17 +53,26 @@ pub use error::{Result, StoreUpgradeError};
 pub use precheck::{
     Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with, sweep_stale_scratch,
 };
-pub use reconcile::{Outcome, reconcile_fork_store};
-pub use restore::{PendingRestore, RESTORE_JOURNAL, RESTORE_REQUESTED, pending_restore};
+pub use reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
+pub use restore::{
+    IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT, RESTORE_JOURNAL,
+    RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
+    SAFE_TO_DELETE, cancel_restore, clear_restored_mark_on_first_all_synced, keep_current_files,
+    pending_restore, request_restore, restore, restored_mark, restored_mark_present,
+    run_pending_restore, touched_paths,
+};
 pub use snapshot::{
-    STORE_FILES, SnapshotFile, SnapshotInfo, UPGRADE_BACKUPS_DIR, latest_snapshot,
-    snapshot_present, take_snapshot,
+    MissingSnapshot, NOT_THIS_WALLET, PART_UPGRADED_BY, STORE_FILES, SnapshotFile, SnapshotInfo,
+    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present,
+    snapshot_state, take_snapshot, upgrade_copy_present,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 
 /// What [`prepare`] found and did.
 #[derive(Debug)]
 pub struct Prepared {
+    /// A restore this start finished, before the check.
+    pub restored: Option<RestoreInfo>,
     pub precheck: Precheck,
     /// The pre-upgrade snapshot, for a fork file.
     pub snapshot: Option<SnapshotInfo>,
@@ -70,9 +87,11 @@ pub fn prepare(network_dir: &Path, now: SystemTime) -> Result<Prepared> {
     )
 }
 
-/// Step 1 for `adopters`: the refusal check, then the snapshot. A refusal is
-/// returned as [`Precheck::Refuse`] with nothing in `{folder}` written.
+/// Step 1 for `adopters`: a pending restore, the refusal check, then the
+/// snapshot. A refusal is returned as [`Precheck::Refuse`] with nothing in
+/// `{folder}` written.
 pub fn prepare_with(network_dir: &Path, adopters: &Adopters, now: SystemTime) -> Result<Prepared> {
+    let restored = run_pending_restore(network_dir, now)?;
     let mut checked = precheck_with(network_dir, adopters)?;
     if matches!(checked, Precheck::NeedsLockedCheck) {
         checked = precheck_locked_with(network_dir, adopters)?;
@@ -82,6 +101,7 @@ pub fn prepare_with(network_dir: &Path, adopters: &Adopters, now: SystemTime) ->
         _ => None,
     };
     Ok(Prepared {
+        restored,
         precheck: checked,
         snapshot,
     })

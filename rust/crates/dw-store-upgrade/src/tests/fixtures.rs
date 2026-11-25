@@ -83,7 +83,8 @@ fn upgrade(version: &str, want: &[u32]) {
     assert_eq!(
         outcome,
         Outcome::Pending {
-            versions: versions.clone()
+            versions: versions.clone(),
+            notice: None,
         }
     );
     let conn = Connection::open(f.wallet()).unwrap();

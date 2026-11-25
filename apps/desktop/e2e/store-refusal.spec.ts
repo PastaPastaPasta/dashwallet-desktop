@@ -17,22 +17,42 @@ test.describe("a refused store", () => {
   for (const scenario of ["funded", "no-wallet"])
     test(`shows the engine's screen and quits, never onboarding (${scenario})`, async ({ page }) => {
       const errors = trackPageErrors(page);
-      await page.goto(fixtureUrl(scenario, "light", "&openRefused=cantOpenWithoutBackup"));
+      await page.goto(fixtureUrl(scenario, "light", "&openRefused=refusedPrevious"));
       const screen = page.getByTestId("store-refused");
-      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't open this wallet data");
-      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet. Nothing in it was changed. Your funds");
+      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't open this wallet data safely");
+      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet: it holds contact data that this version can't read yet. Dash Wallet didn't change anything in it.");
       await expectNoWallet(page);
-      await page.getByTestId("store-refused-button-storeUpgrade.cantOpen.quit").click();
+      await page.getByTestId("store-refused-button-storeUpgrade.refused.quit").click();
       await expect.poll(() => appExits(page)).toEqual(["quit"]);
       await expect(page.getByTestId("store-refused-problem")).toHaveCount(0);
       expect(errors).toEqual([]);
     });
 
-  test("names the backup folder when a verified backup exists", async ({ page }) => {
-    await page.goto(fixtureUrl("funded", "dark", "&openRefused=cantOpen"));
-    await expect(page.getByTestId("store-refused-text")).toContainText("is still in the upgrade-backups folder inside /home/user/.local/share/dashwallet/testnet");
+  test("offers Report a problem when the way out is support", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "dark", "&openRefused=refusedSupport"));
+    await expect(page.getByTestId("store-refused-text")).toContainText("Choose Report a problem.");
+    await expect(page.getByTestId("store-refused-button-storeUpgrade.refused.report")).toHaveText("Report a problem");
     await expectNoWallet(page);
   });
+});
+
+test.describe("an upgrade that stopped on the machine", () => {
+  for (const theme of ["light", "dark"] as const)
+    test(`says to free up space and open again, never the earlier version, and quits (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("funded", theme, "&openRetry=yes"));
+      const screen = page.getByTestId("store-retry");
+      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet couldn't finish upgrading your wallet data");
+      await expect(page.getByTestId("store-retry-text")).toHaveText(
+        "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.",
+      );
+      await expect(page.getByTestId("store-retry-button-storeUpgrade.refused.report")).toBeFocused();
+      await expect(page.getByTestId("store-retry-hint")).toHaveText("Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.");
+      await expectNoWallet(page);
+      await page.getByTestId("store-retry-button-storeUpgrade.refused.quit").click();
+      await expect.poll(() => appExits(page)).toEqual(["quit"]);
+      expect(errors).toEqual([]);
+    });
 });
 
 test.describe("StorageInUse", () => {

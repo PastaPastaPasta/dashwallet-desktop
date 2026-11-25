@@ -39,6 +39,8 @@ mod own_spend_disk_tests;
 mod removed_payment_way_out_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
+#[path = "store_repair_tests.rs"]
+mod store_repair_tests;
 
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";

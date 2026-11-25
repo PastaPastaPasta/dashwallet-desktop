@@ -15,7 +15,21 @@ import { BackendContext, keys } from "../api/queries";
 import { NOT_PRIVATE_REASONS, RESTORE_CAUSES, type NotPrivateData, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { App } from "../app/App";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { notPrivateFailure, RESTORE_FAILURE_NAMES, restoreFailure, STORE_COPY, STORE_SCREEN_NAMES, STORE_SCREENS, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import {
+  notPrivateFailure,
+  RESTORE_FAILURE_NAMES,
+  restoreFailure,
+  STORE_COPY,
+  STORE_SCREEN_NAMES,
+  STORE_SCREENS,
+  storageInUseError,
+  storeNotPrivateError,
+  storeRefusedError,
+  storeRestoreError,
+  storeRetryError,
+  UPGRADE_NOTICE_NAMES,
+  UPGRADE_NOTICES,
+} from "../fixture/errors";
 import { HANDLERS } from "../fixture/handlers";
 import { PENDING_HANDLERS } from "../fixture/pending";
 import { buildWorld } from "../fixture/scenarios";
@@ -30,13 +44,19 @@ import {
   RecoverConfirmView,
   refusalButtons,
   RESTORE_BUTTONS,
+  restoreButtonKey,
   RestoreConfirmView,
+  RETRY_BUTTONS,
+  screenText,
   StorageInUseView,
   StoreNotPrivateView,
   StoreRefusalView,
   StoreRestoreView,
+  StoreRetryView,
 } from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
+import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
+import type { StoreLine } from "../api/generated/StoreLine";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
 vi.mock("react", async (importOriginal) => {
@@ -49,6 +69,11 @@ const FOLDER = "/home/user/.local/share/dashwallet/testnet";
 const THEMES = ["light", "dark"] as const;
 const S = en.app.storageInUse;
 const ENGLISH = flatten(en);
+const COPY_RS = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+/** copy.rs's `pub fn name`, through its closing brace. */
+const fnBody = (name: string) => new RegExp(`pub fn ${name}\\([\\s\\S]*?\\n}\\n`).exec(COPY_RS)![0];
+/** copy.rs's `const name: &str`, its escaped newlines read as newlines. */
+const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(COPY_RS)?.[1]?.replace(/\\n/g, "\n");
 
 afterEach(() => ui.set({ theme: null, prefs: DEFAULT_PREFS }));
 
@@ -94,7 +119,7 @@ function expectStyledClasses(html: string) {
 }
 
 /** Every catalog key and English text a screen carries. */
-const texts = (s: StoreScreen): [string, string][] => [[s.titleKey, s.title], [s.textKey, s.text], ...s.buttons.map((b): [string, string] => [b.key, b.label]), ...(s.hint ? [[s.hint.key, s.hint.text] as [string, string]] : [])];
+const texts = (s: StoreScreen): [string, string][] => [[s.titleKey, s.title], ...s.lines.map((l): [string, string] => [l.key, l.text]), ...s.buttons.map((b): [string, string] => [b.key, b.label]), ...(s.hint ? [[s.hint.key, s.hint.text] as [string, string]] : [])];
 
 const FIXTURES = STORE_SCREEN_NAMES.map((name) => [name, STORE_SCREENS[name](FOLDER)] as const);
 
@@ -123,13 +148,11 @@ describe("the store refusal screen", () => {
     for (const [, refusal] of FIXTURES) sameInBothThemes(() => renderRefusal(refusal));
   });
 
-  it("covers today's screens: cantOpen with and without a backup, the foreign lineage's, one that offers Restore earlier data, and a damaged store's before and after Q107 C1", () => {
+  it("covers today's screens: the refusal family with the way out to the version before, to support, to Restore earlier data and a damaged store's", () => {
     expect(FIXTURES.map(([, r]) => r.screen.textKey)).toEqual([
-      "storeUpgrade.cantOpen.text",
-      "storeUpgrade.cantOpen.textWithoutBackup",
-      "storeUpgrade.restore.foreign.text",
-      "storeUpgrade.refused.wayOut.restore",
+      "storeUpgrade.refused.wayOut.previous",
       "storeUpgrade.refused.wayOut.support",
+      "storeUpgrade.refused.wayOut.restore",
       "storeUpgrade.refused.wayOut.damaged",
     ]);
   });
@@ -141,20 +164,45 @@ describe("the store refusal screen", () => {
   it("carries the engine's English for each key, so the catalog's text is the DTO's", () => {
     for (const [, { screen, folder }] of FIXTURES)
       for (const [key, english] of texts(screen)) {
-        // The cantOpen family's keys (`storeUpgrade.refused.*`) come with its catalog; until then the screen shows the DTO's.
-        if (key.startsWith("storeUpgrade.refused.")) continue;
         expect(ENGLISH.has(key), key).toBe(true);
         expect((t as unknown as (k: string, v: object) => string)(key, { folder }), key).toBe(english);
       }
   });
 
   it("keeps the fixture's copy dw-store-upgrade's, verbatim", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
-    const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(rust)?.[1];
-    expect(constant("CANT_OPEN_TITLE")).toBe(STORE_COPY.cantOpenTitle);
-    expect(constant("CANT_OPEN_TEXT")).toBe(STORE_COPY.cantOpenText);
-    expect(constant("CANT_OPEN_TEXT_WITHOUT_BACKUP")).toBe(STORE_COPY.cantOpenTextWithoutBackup);
-    expect(rust).toContain('button("storeUpgrade.cantOpen.quit", "Quit")');
+    const pattern = (key: string) => new RegExp(`(?:line|button)\\(\\s*"${key.replace(/\./g, "\\.")}",\\s*"((?:[^"\\\\]|\\\\.)*)",?\\s*\\)`, "g");
+    for (const [key, english] of Object.entries(STORE_COPY)) {
+      const found = [...COPY_RS.matchAll(pattern(key))].map((m) => m[1]);
+      expect(found, key).toEqual([english]);
+    }
+    expect(COPY_RS).toContain('button("settings.about.links.issues", "Report a problem")');
+    expect(COPY_RS).not.toContain("storeUpgrade.cantOpen.");
+  });
+
+  it("has every refusal line and button copy.rs names in its catalog, verbatim", () => {
+    const named = new Map([...COPY_RS.matchAll(/(?:line|button)\(\s*"(storeUpgrade\.refused\.[\w.]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map((m) => [m[1], m[2]]));
+    const catalog = [...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.refused."));
+    expect(named.size).toBeGreaterThan(20);
+    expect(catalog.sort()).toEqual([...named.keys()].sort());
+    for (const [key, english] of named) expect(ENGLISH.get(key), key).toBe(english);
+  });
+
+  it("marks the keys copy.rs lists as pending MG as pending in its catalog", () => {
+    const catalog = readFileSync(resolve(import.meta.dirname, "../i18n/catalog/storeUpgrade.ts"), "utf8");
+    const pending = [.../pub const PENDING_MG: &\[&str\] = &\[([^\]]*)\]/.exec(COPY_RS)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const marked = [...catalog.matchAll(/\/\/ Pending MG: [^\n]*\n\s*(\w+):/g)].map((m) => m[1]);
+    expect(pending.map((k) => k.split(".").pop()).sort()).toEqual(marked.sort());
+    for (const key of pending) expect(ENGLISH.has(key), key).toBe(true);
+  });
+
+  it("has the engine's restore copy in its catalog verbatim, the keys copy.rs names included", () => {
+    const R = en.storeUpgrade.restore;
+    expect([R.confirm.title, R.confirm.text, R.refused.title, R.refused.text, R.incomplete.title, R.incomplete.text, R.noSpace.title, R.noSpace.text, R.notStarted.title, R.notStarted.text]).toEqual(
+      ["CONFIRM_TITLE", "CONFIRM_TEXT", "RESTORE_REFUSED_TITLE", "RESTORE_REFUSED_TEXT", "INCOMPLETE_TITLE", "INCOMPLETE_TEXT", "NO_SPACE_TITLE", "NO_SPACE_TEXT", "NOT_STARTED_TITLE", "NOT_STARTED_TEXT"].map(constant),
+    );
+    for (const key of ["title", "text", "keep", "keepMeaning", "quit"] as const) expect(R.foreign[key]).toBe(STORE_COPY[`storeUpgrade.restore.foreign.${key}`]);
+    expect(COPY_RS).not.toContain("keepCurrent");
+    expect([...ENGLISH.keys()].filter((k) => k.includes("keepCurrent"))).toEqual([]);
   });
 
   it("shows the engine's English for a key the catalog lacks, never other copy, and disables a button it can't run", () => {
@@ -166,7 +214,11 @@ describe("the store refusal screen", () => {
         titleKey: "storeUpgrade.later.title",
         title: "A later title",
         textKey: "storeUpgrade.later.text",
-        text: `A later text about ${FOLDER}.`,
+        text: `A later intro: a later text about ${FOLDER}.`,
+        lines: [
+          { key: "storeUpgrade.later.intro", text: "A later intro" },
+          { key: "storeUpgrade.later.text", text: `a later text about ${FOLDER}.` },
+        ],
         buttons: [
           { key: "storeUpgrade.later.report", label: "A later button", destructive: false, defaultFocus: true },
           { key: "storeUpgrade.later.quit", label: "Leave", destructive: true, defaultFocus: false },
@@ -176,7 +228,7 @@ describe("the store refusal screen", () => {
     };
     const html = renderRefusal(refusal);
     expect(html).toContain(">A later title</h1>");
-    expect(html).toContain(`data-testid="store-refused-text">A later text about ${FOLDER}.</p>`);
+    expect(html).toContain(`data-testid="store-refused-text">A later intro: a later text about ${FOLDER}.</p>`);
     const later = button(html, "store-refused-button-storeUpgrade.later.report");
     expect(later?.label).toBe("A later button");
     expect(later?.tag).toContain("dash-button-filledBlue");
@@ -193,20 +245,109 @@ describe("the store refusal screen", () => {
 
   it("follows the language for a key the catalog has, and keeps the engine's English for one it lacks", () => {
     ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
-    const refusal = STORE_SCREENS.cantOpen(FOLDER);
-    const html = renderRefusal({ ...refusal, screen: { ...refusal.screen, hint: { key: "storeUpgrade.later.hint", text: "A later hint." } } });
+    const refusal = STORE_SCREENS.refusedPrevious(FOLDER);
+    const html = renderRefusal({
+      ...refusal,
+      screen: { ...refusal.screen, titleKey: "storeUpgrade.restore.foreign.title", title: en.storeUpgrade.restore.foreign.title, hint: { key: "storeUpgrade.later.hint", text: "A later hint." } },
+    });
     expect(html).not.toContain(escaped(refusal.screen.title));
+    for (const line of refusal.screen.lines) expect(html).not.toContain(escaped(line.text));
     expect(html).toContain(FOLDER);
     expect(html).toContain('data-testid="store-refused-hint">A later hint.</p>');
   });
 
+  it("joins its lines as the engine does, each in the language", () => {
+    const screen: StoreScreen = {
+      ...STORE_SCREENS.refusedSupport(FOLDER).screen,
+      text: "An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.",
+      lines: [
+        { key: "storeUpgrade.later.intro", text: "An intro" },
+        { key: "storeUpgrade.refused.detail.tooNew", text: "it was written by a newer version of Dash Wallet." },
+        { key: "storeUpgrade.refused.wayOut.support", text: "Choose Report a problem." },
+      ],
+    };
+    expect(screenText(t, screen, FOLDER, false)).toBe("An intro: it was written by a newer version of Dash Wallet. Choose Report a problem.");
+    expect(screenText(t, screen, FOLDER, true)).toBe("\u2066An intro\u2069: it was written by a newer version of Dash Wallet. Choose Report a problem.");
+  });
+
+  it("shows the engine's text unchanged for no lines, one line, or lines that don't join to it", () => {
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    const whole = STORE_SCREENS.refusedPrevious(FOLDER);
+    const screens: StoreScreen[] = [
+      { ...whole.screen, lines: [] },
+      { ...whole.screen, text: "A later text.", lines: [{ key: "storeUpgrade.refused.intro", text: "A later text." }] },
+      { ...whole.screen, lines: whole.screen.lines.slice(1) },
+    ];
+    for (const screen of screens) {
+      expect(screenText(t, screen, FOLDER, false)).toBe(screen.text);
+      expect(renderRefusal({ ...whole, screen })).toContain(`data-testid="store-refused-text">${escaped(screen.text)}</p>`);
+    }
+  });
+
+  for (const language of ["en-XA", "ar-XB"] as const)
+    it(`translates every line the catalog has under ${language}, and keeps the engine's English for the one it lacks`, () => {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+      const whole = STORE_SCREENS.refusedPrevious(FOLDER);
+      const lines = whole.screen.lines.map((l, i) => (i === 1 ? { ...l, key: "storeUpgrade.later.detail" } : l));
+      const html = renderRefusal({ ...whole, screen: { ...whole.screen, lines } });
+      const kept = escaped(lines[1].text);
+      expect(html).toContain(language === "ar-XB" ? `\u2066${kept}\u2069` : kept);
+      if (language === "en-XA") expect(html).not.toContain("\u2066");
+      const translated = [lines[0], lines[2], lines[3]];
+      if (language === "en-XA") for (const line of translated) expect(html).not.toContain(escaped(line.text));
+      else {
+        // ar-XB draws the catalog's English right to left (U+202E … U+202C); only the kept line is isolated left to right.
+        expect(html).toContain(`\u202e${escaped(lines[3].text)}\u202c`);
+        for (const line of translated) expect(html).not.toContain(`\u2066${escaped(line.text)}`);
+        expect(html.split("\u2066")).toHaveLength(2);
+      }
+    });
+
   it("never depends on the cause", () => {
-    const refusal = STORE_SCREENS.cantOpen(FOLDER);
+    const refusal = STORE_SCREENS.refusedPrevious(FOLDER);
     expect(renderRefusal({ ...refusal, cause: "P9aBroken" })).toBe(renderRefusal({ ...refusal, cause: "AnythingElse" }));
   });
 
   it("shows a quit that failed", () => {
-    expect(renderRefusal(STORE_SCREENS.cantOpen(FOLDER), "This is not available in this build.")).toContain('data-testid="store-refused-problem">This is not available in this build.</p>');
+    expect(renderRefusal(STORE_SCREENS.refusedPrevious(FOLDER), "This is not available in this build.")).toContain('data-testid="store-refused-problem">This is not available in this build.</p>');
+  });
+});
+
+describe("the retry screen", () => {
+  const renderRetry = (problem: string | null = null) => renderToStaticMarkup(createElement(StoreRetryView, { problem, onAction: noop }));
+
+  it("has the engine's retry copy in its catalog verbatim, with its buttons in copy.rs's order", () => {
+    expect([en.storeUpgrade.retry.noSpace.title, en.storeUpgrade.retry.noSpace.text]).toEqual(["RETRY_NO_SPACE_TITLE", "RETRY_NO_SPACE_TEXT"].map(constant));
+    const retry = fnBody("retry_copy_for");
+    expect(retry).toContain('("storeUpgrade.retry.noSpace.title", RETRY_NO_SPACE_TITLE)');
+    expect(retry).toContain('("storeUpgrade.retry.noSpace.text", RETRY_NO_SPACE_TEXT)');
+    expect(retry).toContain("vec![REPORT, QUIT]");
+    expect(retry).toContain("hint: Some((ISSUES_HINT.key, ISSUES_HINT.text))");
+    const key = (name: string) => new RegExp(`const ${name}: Button = button\\("([^"]+)"`).exec(COPY_RS)?.[1];
+    expect(RETRY_BUTTONS).toEqual([key("REPORT"), key("QUIT")]);
+    for (const k of RETRY_BUTTONS) expect(buttonAction(k), k).not.toBeNull();
+    expect([...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.retry.")).sort()).toEqual(["storeUpgrade.retry.noSpace.text", "storeUpgrade.retry.noSpace.title"]);
+  });
+
+  for (const theme of THEMES)
+    it(`shows the catalog's copy, Report a problem first with the issues warning, and Quit (${theme})`, () => {
+      ui.set({ theme });
+      const html = renderRetry();
+      expect(html).toContain(`>${escaped(en.storeUpgrade.retry.noSpace.title)}</h1>`);
+      expect(html).toContain(`data-testid="store-retry-text">${escaped(en.storeUpgrade.retry.noSpace.text)}</p>`);
+      expect(button(html, "store-retry-button-storeUpgrade.refused.report")?.tag).toContain("dash-button-filledBlue");
+      expect(button(html, "store-retry-button-storeUpgrade.refused.quit")?.label).toBe("Quit");
+      expect(html.match(/<button/g)).toHaveLength(2);
+      expect(html).toContain(`data-testid="store-retry-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+      expect(html).not.toContain("disabled");
+      expectNoWalletFallthrough(html);
+      expectStyledClasses(html);
+    });
+
+  it("renders the same markup in light and dark", () => sameInBothThemes(() => renderRetry()));
+
+  it("shows a failed action's problem", () => {
+    expect(renderRetry("This is not available in this build.")).toContain('data-testid="store-retry-problem">This is not available in this build.</p>');
   });
 });
 
@@ -307,6 +448,13 @@ describe("the app while the open is refused or held", () => {
     expectNoWalletFallthrough(html);
   });
 
+  it("shows the retry screen for an upgrade that stopped on the machine, not the shell or onboarding", () => {
+    const html = renderAppFailed(storeRetryError(FOLDER));
+    expect(html).toContain('data-testid="store-retry"');
+    expect(html).not.toContain('data-testid="splash"');
+    expectNoWalletFallthrough(html);
+  });
+
   it("keeps the splash's own error for any other failure", () => {
     const html = renderAppFailed({ code: "storage", message: "disk full", data: null });
     expect(html).toContain('data-testid="splash"');
@@ -322,7 +470,7 @@ describe("the fixture", () => {
 
   it("refuses every open, a restart's included, with the screen it holds", () => {
     const world = buildWorld("funded", null);
-    world.openRefusal = STORE_SCREENS.cantOpenWithoutBackup(FOLDER);
+    world.openRefusal = STORE_SCREENS.refusedSupport(FOLDER);
     const ctx = ctxOf(world);
     expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_refused", data: world.openRefusal }));
     quit({}, ctx);
@@ -386,16 +534,18 @@ describe("the restore screens", () => {
         expect(html).not.toContain("{folder}");
         const keys = RESTORE_BUTTONS[restore.state];
         expect(html.match(/<button/g)).toHaveLength(keys.length);
+        const foreign = restore.state === "foreign";
         keys.forEach((k, i) => {
-          const b = button(html, `store-restore-button-storeUpgrade.restore.${restore.state}.${k}`);
-          expect(b?.label, k).toBe(escaped((copy as Record<string, string>)[k]));
-          expect(b?.tag.includes("dash-button-filledBlue"), k).toBe(i === 0);
+          const key = restoreButtonKey(restore.state, k);
+          const b = button(html, `store-restore-button-${key}`);
+          expect(b?.label, k).toBe(escaped(ENGLISH.get(key) as string));
+          expect(b?.tag.includes("dash-button-filledBlue"), k).toBe(!foreign && i === 0);
         });
         expect(html).not.toContain("disabled");
-        expect(keys.at(-1)).toBe("quit");
+        expect(keys.at(-1)).toBe(restore.state === "refused" || restore.state === "noSpace" ? "ok" : "quit");
         expect(html).not.toContain(escaped(en.app.tryAgain));
         const reports = keys.includes("report");
-        expect(html.includes(`data-testid="store-restore-hint">${escaped(en.settings.about.links.issuesHint)}</p>`)).toBe(reports);
+        expect(html.includes(`>${escaped(en.settings.about.links.issuesHint)}</p>`)).toBe(reports);
         expectNoWalletFallthrough(html);
         expectStyledClasses(html);
       });
@@ -410,17 +560,15 @@ describe("the restore screens", () => {
   });
 
   it("covers every state and each cause the engine names", () => {
-    expect(RESTORE_STATES).toEqual(["refused", "noSpace", "notStarted", "incomplete"]);
-    expect(RESTORE_FAILURE_NAMES).toHaveLength(3 + 1 + 4 + 4);
+    expect(RESTORE_STATES).toEqual(["refused", "noSpace", "notStarted", "incomplete", "foreign"]);
+    expect(RESTORE_FAILURE_NAMES).toHaveLength(3 + 1 + 4 + 4 + 2);
     expect([...new Set(RESTORE_FIXTURES.map(([, r]) => r.state))]).toEqual(RESTORE_STATES);
   });
 
   it("gives every button an action: OK opens the wallet data, Restart restarts, Cancel restore drops the request", () => {
-    expect(RESTORE_STATES.flatMap((state) => RESTORE_BUTTONS[state].map((k) => [`${state}.${k}`, buttonAction(`storeUpgrade.restore.${state}.${k}`)]))).toEqual([
+    expect(RESTORE_STATES.flatMap((state) => RESTORE_BUTTONS[state].map((k) => [`${state}.${k}`, buttonAction(restoreButtonKey(state, k))]))).toEqual([
       ["refused.ok", "reopen"],
-      ["refused.quit", "quit"],
       ["noSpace.ok", "reopen"],
-      ["noSpace.quit", "quit"],
       ["notStarted.restart", "restart"],
       ["notStarted.cancel", "cancelRestore"],
       ["notStarted.report", "report"],
@@ -428,6 +576,25 @@ describe("the restore screens", () => {
       ["incomplete.restart", "restart"],
       ["incomplete.report", "report"],
       ["incomplete.quit", "quit"],
+      ["foreign.keep", "keep"],
+      ["foreign.report", "report"],
+      ["foreign.quit", "quit"],
+    ]);
+  });
+
+  it("offers the buttons copy.rs gives each state, in its order: OK alone where nothing changed", () => {
+    const buttonsOf = (fn: string) => [...fnBody(fn).matchAll(/\bbutton\("storeUpgrade\.restore\.(\w+)\.(\w+)"/g)].map((m) => `${m[1]}.${m[2]}`);
+    expect(buttonsOf("restore_refused")).toEqual(RESTORE_BUTTONS.refused.map((k) => `refused.${k}`));
+    expect(buttonsOf("restore_no_space")).toEqual(RESTORE_BUTTONS.noSpace.map((k) => `noSpace.${k}`));
+    expect(buttonsOf("restore_not_started")).toEqual(RESTORE_BUTTONS.notStarted.map((k) => `notStarted.${k}`));
+    expect(RESTORE_BUTTONS.notStarted).toEqual(["restart", "cancel", "report", "quit"]);
+    expect([...ENGLISH.keys()].filter((k) => /^storeUpgrade\.restore\.(refused|noSpace)\./.test(k)).sort()).toEqual([
+      "storeUpgrade.restore.noSpace.ok",
+      "storeUpgrade.restore.noSpace.text",
+      "storeUpgrade.restore.noSpace.title",
+      "storeUpgrade.restore.refused.ok",
+      "storeUpgrade.restore.refused.text",
+      "storeUpgrade.restore.refused.title",
     ]);
   });
 
@@ -447,14 +614,14 @@ describe("the restore screens", () => {
   it("holds every button but Quit while an action or the open again runs", () => {
     const html = renderToStaticMarkup(createElement(StoreRestoreView, { restore: restoreFailure("notStarted:other", FOLDER), problem: null, busy: true, onAction: noop }));
     for (const k of RESTORE_BUTTONS.notStarted) expect(button(html, `store-restore-button-storeUpgrade.restore.notStarted.${k}`)?.tag.includes('disabled=""'), k).toBe(k !== "quit");
-    const refused = renderToStaticMarkup(createElement(StoreRefusalView, { refusal: STORE_SCREENS.restoreForeign(FOLDER), problem: null, busy: true, onAction: noop }));
-    expect(button(refused, "store-refused-button-storeUpgrade.restore.foreign.keep")?.tag).toContain('disabled=""');
-    expect(button(refused, "store-refused-button-storeUpgrade.restore.foreign.quit")?.tag).not.toContain("disabled");
+    const foreign = renderToStaticMarkup(createElement(StoreRestoreView, { restore: restoreFailure("foreign:otherLineage", FOLDER), problem: null, busy: true, onAction: noop }));
+    expect(button(foreign, "store-restore-button-storeUpgrade.restore.foreign.keep")?.tag).toContain('disabled=""');
+    expect(button(foreign, "store-restore-button-storeUpgrade.restore.foreign.quit")?.tag).not.toContain("disabled");
   });
 
   it("adds no second issues warning to a screen whose hint is the warning", () => {
     expect(renderRefusal(STORE_SCREENS.refusedRestore(FOLDER))).not.toContain("store-refused-issues-hint");
-    expect(renderRefusal(STORE_SCREENS.cantOpen(FOLDER))).not.toContain("store-refused-issues-hint");
+    expect(renderRefusal(STORE_SCREENS.refusedPrevious(FOLDER))).not.toContain("store-refused-issues-hint");
   });
 
   it("shows an action that failed", () => {
@@ -463,31 +630,33 @@ describe("the restore screens", () => {
 });
 
 describe("the foreign lineage's screen", () => {
-  const foreign = STORE_SCREENS.restoreForeign(FOLDER);
+  const foreign = restoreFailure("foreign:otherLineage", FOLDER);
 
   for (const theme of THEMES)
-    it(`in ${theme}, shows the engine's screen with Keep the current files, not focused, and what Keep means under it`, () => {
+    it(`in ${theme}, shows the engine's copy with Keep the current files, not focused, and what Keep means under it`, () => {
       ui.set({ theme });
-      const html = renderRefusal(foreign);
+      const html = renderRestore(foreign);
       const F = en.storeUpgrade.restore.foreign;
       expect(html).toContain(`>${escaped(F.title)}</h1>`);
-      expect(html).toContain(`data-testid="store-refused-text">${escaped(F.text.replaceAll("{folder}", FOLDER))}</p>`);
-      const keep = button(html, "store-refused-button-storeUpgrade.restore.foreign.keep");
+      expect(html).toContain(`data-testid="store-restore-text">${escaped(F.text.replaceAll("{folder}", FOLDER))}</p>`);
+      const keep = button(html, "store-restore-button-storeUpgrade.restore.foreign.keep");
       expect(keep?.label).toBe(F.keep);
       expect(keep?.tag).not.toContain("dash-button-filledBlue");
-      expect(keep?.tag).not.toContain("autofocus");
-      expect(button(html, "store-refused-button-settings.about.links.issues")?.label).toBe(en.settings.about.links.issues);
-      expect(button(html, "store-refused-button-storeUpgrade.restore.foreign.quit")?.label).toBe("Quit");
-      expect(html).toContain(`data-testid="store-refused-hint">${escaped(F.keepMeaning.replaceAll("{folder}", FOLDER))}</p>`);
-      expect(html).toContain(`data-testid="store-refused-issues-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+      expect(html).not.toContain("autofocus");
+      expect(button(html, "store-restore-button-settings.about.links.issues")?.label).toBe(en.settings.about.links.issues);
+      expect(button(html, "store-restore-button-storeUpgrade.restore.foreign.quit")?.label).toBe("Quit");
+      expect(html).toContain(`data-testid="store-restore-hint">${escaped(F.keepMeaning.replaceAll("{folder}", FOLDER))}</p>`);
+      expect(html).toContain(`data-testid="store-restore-issues-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
       expectNoWalletFallthrough(html);
       expectStyledClasses(html);
     });
 
-  it("wires Keep to keep_current_files, Report a problem to the issues page and Quit to quit", () => {
-    expect(foreign.screen.buttons.map((b) => buttonAction(b.key))).toEqual(["keep", "report", "quit"]);
-    expect(foreign.screen.buttons.some((b) => b.defaultFocus)).toBe(false);
-    expect(foreign.screen.buttons.map((b) => b.key)).toEqual(["storeUpgrade.restore.foreign.keep", "settings.about.links.issues", "storeUpgrade.restore.foreign.quit"]);
+  it("wires Keep to keep_current_files, Report a problem to the issues page and Quit to quit, in copy.rs's order and keys", () => {
+    const keys = RESTORE_BUTTONS.foreign.map((k) => restoreButtonKey("foreign", k));
+    expect(keys).toEqual(["storeUpgrade.restore.foreign.keep", "settings.about.links.issues", "storeUpgrade.restore.foreign.quit"]);
+    expect(keys.map(buttonAction)).toEqual(["keep", "report", "quit"]);
+    const screen = COPY_RS.slice(COPY_RS.indexOf("pub mod restore_foreign"));
+    expect(screen).toContain('buttons: vec![\n                b(KEEP),\n                button("settings.about.links.issues", "Report a problem"),\n                b(QUIT),\n            ]');
     expect(en.storeUpgrade.restore.foreign.quit).toBe("Quit");
   });
 });
@@ -600,6 +769,25 @@ describe("the restore actions", () => {
     expect(calls).toEqual(["cancelRestore", "reopen"]);
   });
 
+  /** Presses `state`'s button `k` as its click does: its key's action, through `perform`. */
+  async function press(state: RestoreState, k: string): Promise<string[]> {
+    const calls: string[] = [];
+    const action = buttonAction(restoreButtonKey(state, k));
+    expect(action, `${state}.${k}`).not.toBeNull();
+    perform(new OpenFailureActions(api(calls)), action!, () => calls.push("reopen"));
+    await new Promise((r) => setTimeout(r, 0));
+    return calls;
+  }
+
+  it("notStarted's Cancel restore calls cancel_restore once and nothing else, then opens the data again", async () => {
+    expect(await press("notStarted", "cancel")).toEqual(["cancelRestore", "reopen"]);
+  });
+
+  it("notStarted's Report a problem opens the issues link Settings opens, and nothing else", async () => {
+    expect(await press("notStarted", "report")).toEqual(["link:issues"]);
+    expect(R.notStarted.report).toBe(en.settings.about.links.issues);
+  });
+
   it("Report a problem opens the issues page, and names it to copy when no browser opens", async () => {
     const calls: string[] = [];
     const ok = new OpenFailureActions(api(calls));
@@ -654,6 +842,49 @@ describe("the restored banner", () => {
   });
 });
 
+describe("the upgrade notice", () => {
+  function renderNotice(notice: StoreLine | null | undefined) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    if (notice !== undefined) client.setQueryData(keys.upgradeNotice, notice);
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(UpgradeNoticeBanner)));
+  }
+
+  it("has notice_line's keys and English in its catalog verbatim, and the fixture sends them", () => {
+    const body = fnBody("notice_line");
+    const lines = [...body.matchAll(/line\(\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map(([, key, text]) => [key, text]);
+    expect(lines.map(([key]) => key)).toEqual(["storeUpgrade.notice.snapshotDamaged", "storeUpgrade.notice.snapshotOther"]);
+    for (const [key, text] of lines) expect(ENGLISH.get(key), key).toBe(text);
+    expect([...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.notice.")).sort()).toEqual([
+      "storeUpgrade.notice.dismiss",
+      "storeUpgrade.notice.snapshotDamaged",
+      "storeUpgrade.notice.snapshotOther",
+    ]);
+    expect(Object.values(UPGRADE_NOTICES).map((n) => [n.key, n.text])).toEqual(lines);
+  });
+
+  for (const theme of THEMES)
+    for (const name of UPGRADE_NOTICE_NAMES)
+      it(`in ${theme}, shows the ${name} line with Dismiss, blocking nothing`, () => {
+        ui.set({ theme });
+        const html = renderNotice(UPGRADE_NOTICES[name]);
+        expect(html).toContain(`data-testid="upgrade-notice" data-key="storeUpgrade.notice.${name}"`);
+        expect(html).toContain(`data-testid="upgrade-notice-text">${escaped(en.storeUpgrade.notice[name])}</p>`);
+        expect(button(html, "upgrade-notice-dismiss")?.label).toBe(en.storeUpgrade.notice.dismiss);
+        expect(html).not.toContain("alertdialog");
+        expectStyledClasses(html);
+      });
+
+  it("shows the engine's English for a key the catalog lacks", () => {
+    expect(renderNotice({ key: "storeUpgrade.notice.later", text: "A later notice." })).toContain('data-testid="upgrade-notice-text">A later notice.</p>');
+  });
+
+  it("is gone with no notice or once dismissed, and the same in light and dark", () => {
+    expect(renderNotice(undefined)).toBe("");
+    expect(renderNotice(null)).toBe("");
+    sameInBothThemes(() => renderNotice(UPGRADE_NOTICES.snapshotDamaged));
+  });
+});
+
 describe("the fixture's restore", () => {
   type Ctx = Parameters<(typeof PENDING_HANDLERS)["restart_app"]>[1];
   const call = (handler: unknown) => handler as (args: object, ctx: Ctx) => unknown;
@@ -689,9 +920,9 @@ describe("the fixture's restore", () => {
 
   it("Keep keeps the foreign files: the next open opens them, restored", () => {
     const world = buildWorld("funded", null);
-    world.openRefusal = STORE_SCREENS.restoreForeign(FOLDER);
+    world.openRestore = restoreFailure("foreign:otherLineage", FOLDER);
     const ctx = ctxOf(world);
-    expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_refused" }));
+    expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_restore", data: expect.objectContaining({ state: "foreign" }) }));
     keep({ network: null }, ctx);
     expect(opened(ctx).network.restored).toBe(true);
     expect(world.restoreCalls).toEqual(["keepCurrentFiles"]);

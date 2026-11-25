@@ -1,20 +1,21 @@
 // The screens shown instead of the wallet when its data can't be opened: a store refusal, the screen the
 // engine gives as it gives it (it changed nothing); a restore the user asked for that stopped the open,
-// by its state; a data folder other accounts can change (the engine read nothing below it); and
-// StorageInUse (the session before still holds the data). Each replaces the shell, so
-// none ever shows onboarding, an empty wallet list or a zero balance. A restore only ever runs at the
-// next start: "Restore earlier data" asks for it and restarts. A damaged store's "Set up from recovery
-// phrase" moves the network to a new folder and restarts: onboarding then shows there, restore only.
+// by its state; an upgrade that stopped on the machine (it runs again at the next start); a data folder
+// other accounts can change (the engine read nothing below it); and StorageInUse (the session before
+// still holds the data). Each replaces the shell, so none ever shows onboarding, an empty wallet list or
+// a zero balance. A restore only ever runs at the next start: "Restore earlier data" asks for it and
+// restarts. A damaged store's "Set up from recovery phrase" moves the network to a new folder and
+// restarts: onboarding then shows there, restore only.
 
 import { useId, useState, type ReactNode } from "react";
 import type { Backend } from "../api/backend";
-import { storeRestore, type NotPrivateData, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
+import { storeRestore, type NotPrivateData, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { Model, useModel } from "../onboarding/model";
-import { t, useT, type Translate } from "../i18n";
-import { flatten } from "../i18n/core";
+import { currentLanguage, t, useT, type Translate } from "../i18n";
+import { acrossParagraphs, flatten } from "../i18n/core";
 import { en } from "../i18n/en";
 import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
@@ -26,8 +27,27 @@ type LooseTranslate = (key: string, values?: Record<string, string>) => string;
 
 /** The catalog's text for a `storeUpgrade.*` key in the language in use; for any other key, or one the
  * catalog lacks, the engine's English: never other copy. */
-function textFor(tr: Translate, key: string, english: string, folder: string): string {
-  return key.startsWith("storeUpgrade.") && ENGLISH.has(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
+export function textFor(tr: Translate, key: string, english: string, folder: string): string {
+  return inCatalog(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
+}
+
+const inCatalog = (key: string) => key.startsWith("storeUpgrade.") && ENGLISH.has(key);
+
+/** Left-to-right isolate (U+2066 … U+2069), around English standing in for a right-to-left language. */
+const LRI = "\u2066";
+const PDI = "\u2069";
+
+/** Lines joined as the engine joins a refusal's (`RefusedScreen::text`); `null` for none. */
+const joined = (texts: readonly string[]): string | null => (texts.length === 0 ? null : `${texts[0]}: ${texts.slice(1).join(" ")}`);
+
+/** A refusal's text in the language: its lines by their keys, joined as the engine joins them. A line the
+ * catalog lacks keeps the engine's English, isolated left to right in a right-to-left language. The
+ * engine's text, unchanged, when it sends no lines or lines that don't join to it. */
+export function screenText(tr: Translate, screen: StoreScreen, folder: string, rtl: boolean): string {
+  const lines = screen.lines ?? [];
+  if (joined(lines.map((l) => l.text)) !== screen.text) return screen.text;
+  const english = (text: string) => (rtl ? `${LRI}${acrossParagraphs(text, LRI, PDI)}${PDI}` : text);
+  return joined(lines.map((l) => (inCatalog(l.key) ? textFor(tr, l.key, l.text, folder) : english(l.text)))) ?? screen.text;
 }
 
 export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore" | "recover";
@@ -57,12 +77,14 @@ export function buttonAction(key: string): ButtonAction | null {
   return Object.hasOwn(ACTIONS, key) ? ACTIONS[key] : key.endsWith(".quit") ? "quit" : null;
 }
 
-/** The buttons of a restore state's screen, by their last key segment, in order; the first has the focus. */
+/** The buttons of a restore state's screen, by their last key segment, in order; the first has the focus,
+ * except on the foreign screen, where none has it (Keep is never the default). */
 export const RESTORE_BUTTONS: Record<RestoreState, readonly string[]> = {
-  refused: ["ok", "quit"],
-  noSpace: ["ok", "quit"],
+  refused: ["ok"],
+  noSpace: ["ok"],
   notStarted: ["restart", "cancel", "report", "quit"],
   incomplete: ["restart", "report", "quit"],
+  foreign: ["keep", "report", "quit"],
 };
 
 /** Ways out the engine's screen for a refusal cause doesn't carry yet, first in line, with the line that
@@ -81,6 +103,12 @@ export function refusalButtons(refusal: StoreRefusedData): { buttons: StoreButto
 
 /** The not-private screen's buttons, by their last key segment, in order; the first has the focus. */
 export const NOT_PRIVATE_BUTTONS = ["retry", "report", "quit"] as const;
+
+/** A restore screen's button key: `storeUpgrade.restore.<state>.<k>`; the foreign screen's Report a
+ * problem is `settings.about.links.issues`, as `copy::restore_foreign::screen()` names it. */
+export function restoreButtonKey(state: RestoreState, k: string): string {
+  return state === "foreign" && k === "report" ? "settings.about.links.issues" : `storeUpgrade.restore.${state}.${k}`;
+}
 
 type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "recoverInFreshFolder" | "openProjectLink">;
 
@@ -291,7 +319,7 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
       id={id}
       testId="store-refused"
       title={textFor(tr, screen.titleKey, screen.title, folder)}
-      text={textFor(tr, screen.textKey, screen.text, folder)}
+      text={screenText(tr, screen, folder, currentLanguage().dir === "rtl")}
       problem={problem}
       failedLink={failedLink}
       describedBy={meaning ? [`${id}-meaning`] : []}
@@ -320,20 +348,53 @@ export interface StoreRestoreViewProps {
 }
 
 /** A restore that stopped the open, by its state: the same screen for every cause. Report a problem
- * has the issues warning under the buttons. */
+ * has the issues warning under the buttons; the foreign screen has what Keep means above it. */
 export function StoreRestoreView({ restore, problem, failedLink = null, busy = false, onAction }: StoreRestoreViewProps) {
   const tr = useT();
   const say = tr as unknown as LooseTranslate;
   const id = useId();
   const { state, folder } = restore;
   const keys = RESTORE_BUTTONS[state];
+  const foreign = state === "foreign";
   const buttons = keys.map((k, i): ShownButton => {
-    const key = `storeUpgrade.restore.${state}.${k}`;
-    return { key, label: say(key), destructive: false, defaultFocus: i === 0, action: buttonAction(key) };
+    const key = restoreButtonKey(state, k);
+    return { key, label: say(key), destructive: false, defaultFocus: !foreign && i === 0, action: buttonAction(key) };
   });
+  const reports = keys.includes("report");
+  const hint = foreign ? say("storeUpgrade.restore.foreign.keepMeaning", { folder }) : reports ? tr(ISSUES_HINT) : null;
   return (
     <Panel id={id} testId="store-restore" title={say(`storeUpgrade.restore.${state}.title`)} text={say(`storeUpgrade.restore.${state}.text`, { folder })} problem={problem} failedLink={failedLink}>
-      <Buttons id={id} testId="store-restore" buttons={buttons} hint={keys.includes("report") ? tr(ISSUES_HINT) : null} busy={busy} onAction={onAction} />
+      <Buttons id={id} testId="store-restore" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
+      {foreign && reports && (
+        <p className="field-hint" data-testid="store-restore-issues-hint">
+          {tr(ISSUES_HINT)}
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+/** The retry screen's buttons, as `copy::retry_copy_for` gives them: Report a problem, then Quit. */
+export const RETRY_BUTTONS = ["storeUpgrade.refused.report", "storeUpgrade.refused.quit"] as const;
+
+export interface StoreRetryViewProps {
+  problem: string | null;
+  failedLink?: string | null;
+  busy?: boolean;
+  onAction: (action: ButtonAction) => void;
+}
+
+/** The open's store upgrade stopped on the machine (`storage_retry`): free up space, then quit and open
+ * again; never the earlier version, as the file may be part-upgraded. The issues warning is under the
+ * buttons. */
+export function StoreRetryView({ problem, failedLink = null, busy = false, onAction }: StoreRetryViewProps) {
+  const tr = useT();
+  const say = tr as unknown as LooseTranslate;
+  const id = useId();
+  const buttons = RETRY_BUTTONS.map((key, i): ShownButton => ({ key, label: say(key), destructive: false, defaultFocus: i === 0, action: buttonAction(key) }));
+  return (
+    <Panel id={id} testId="store-retry" title={tr("storeUpgrade.retry.noSpace.title")} text={tr("storeUpgrade.retry.noSpace.text")} problem={problem} failedLink={failedLink}>
+      <Buttons id={id} testId="store-retry" buttons={buttons} hint={tr(ISSUES_HINT)} busy={busy} onAction={onAction} />
     </Panel>
   );
 }
@@ -496,6 +557,11 @@ export function StoreRestoreScreen({ restore, onReopen, retrying }: OpenFailureS
 export function StoreNotPrivateScreen({ notPrivate, onReopen, retrying }: OpenFailureScreenProps & { notPrivate: NotPrivateData }) {
   const exit = useActions();
   return <StoreNotPrivateView notPrivate={notPrivate} problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, onReopen)} />;
+}
+
+export function StoreRetryScreen({ retrying }: { retrying: boolean }) {
+  const exit = useActions();
+  return <StoreRetryView problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, () => {})} />;
 }
 
 export interface StorageInUseViewProps {

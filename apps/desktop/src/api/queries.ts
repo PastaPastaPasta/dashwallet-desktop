@@ -2,13 +2,14 @@
 // signal names exactly the queries to refetch (events.ts).
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { StoreLine } from "./generated/StoreLine";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
 import { creditsToDuffs } from "./pending";
@@ -45,6 +46,9 @@ export const keys = {
   restored: ["restored"] as const,
   /** Whether a verified snapshot is there to restore, read by a screen shown instead of the wallet. */
   restoreAvailable: ["restoreAvailable"] as const,
+  /** The store upgrade's notice for this session (`OpenedNetwork.notice`): seeded by the open only, `null`
+   * once dismissed. */
+  upgradeNotice: ["upgradeNotice"] as const,
   lockStatus: ["lockStatus"] as const,
   lastLockReport: ["lastLockReport"] as const,
   /** Reads `leases`, `dispatchStatus` and `lockStatus` (lockReport.ts). */
@@ -140,18 +144,55 @@ export function useOpenNetwork() {
     queryKey: keys.network,
     queryFn: async () => {
       const since = lockGeneration();
-      const { network, lock } = await b.openNetwork();
+      const { network, lock, notice } = await b.openNetwork();
       seedLockStatus(client, lock, since);
-      client.setQueryData(keys.restored, isRestored(network));
+      seedRestored(client, network);
+      seedUpgradeNotice(client, notice);
       return lock;
     },
   });
 }
 
-/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is. */
+/** Seeds `restored` from the opened network, only when it says: a value not known yet leaves it unread. */
+export function seedRestored(client: QueryClient, network: unknown) {
+  const restored = isRestored(network);
+  if (restored !== undefined) client.setQueryData<boolean | null>(keys.restored, restored);
+}
+
+/** `restored` read from `activeNetwork`. Its data is `undefined` while it is not known: before an answer, when
+ * the read failed, or when the network has no `restored` (the cache holds `null` then, as a query can't
+ * resolve to `undefined`). */
+export const restoredQuery = (b: Backend) =>
+  queryOptions({
+    queryKey: keys.restored,
+    queryFn: async (): Promise<boolean | null> => isRestored(await b.activeNetwork()) ?? null,
+    select: (restored: boolean | null): boolean | undefined => restored ?? undefined,
+  });
+
+/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is.
+ * `undefined` is not known yet. */
 export function useRestored() {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.restored, queryFn: async () => isRestored(await b.activeNetwork()) });
+  return useQuery(restoredQuery(useBackend()));
+}
+
+/** Seeds the store upgrade's notice from the open. It is kept until dismissed: through a lock
+ * (`keptWhileLocked`) and with no screen showing it (no garbage collection). */
+export function seedUpgradeNotice(client: QueryClient, notice: StoreLine | null | undefined) {
+  client.setQueryDefaults(keys.upgradeNotice, { gcTime: Infinity });
+  client.setQueryData<StoreLine | null>(keys.upgradeNotice, notice ?? null);
+}
+
+/** The store upgrade's notice (Q107 107-1): the line `openNetwork` gave for a session whose open upgraded
+ * the wallet data without a before-upgrade copy it can restore, until dismissed. Never fetched on its own,
+ * so nothing but the open sets it. */
+export function useUpgradeNotice() {
+  return useQuery<StoreLine | null>({ queryKey: keys.upgradeNotice, queryFn: () => null, enabled: false });
+}
+
+/** Dismisses the notice for this page; nothing on disk changes. */
+export function useDismissUpgradeNotice() {
+  const client = useQueryClient();
+  return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

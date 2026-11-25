@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::slice;
 
 /// Dash Core's `MAX_SCRIPT_SIZE`, the largest script it executes (consensus rule).
-const MAX_SCRIPT_SIZE: usize = 10_000;
+pub(crate) const MAX_SCRIPT_SIZE: usize = 10_000;
 
 /// A pending spend whose authorization cannot be decided by the wallet signer contract.
 #[derive(Debug, PartialEq, Eq)]

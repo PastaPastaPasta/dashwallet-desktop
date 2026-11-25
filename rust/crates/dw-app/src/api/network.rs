@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData, UpdateBusyReason};
+use crate::error::{
+    AppCode, AppError, CloseRefusalReason, ErrorData, StoreLine, UpdateBusyReason,
+};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 use crate::state::AppState;
@@ -188,6 +190,25 @@ pub struct NetworkSwitch {
 pub struct OpenedNetwork {
     pub network: NetworkInfo,
     pub lock: LockStatus,
+    /// The store upgrade's notice for this session, shown once over the
+    /// wallet and dismissed there: `Some` when its open upgraded the wallet
+    /// data without a before-upgrade copy it can restore
+    /// ([`NetworkSession::upgrade_notice`]). Every call while the session is
+    /// open returns it.
+    pub notice: Option<StoreLine>,
+}
+
+impl OpenedNetwork {
+    fn of(session: &NetworkSession, network: NetworkInfo) -> Self {
+        Self {
+            network,
+            lock: session.vault().status().into(),
+            notice: session.upgrade_notice().map(|l| StoreLine {
+                key: l.key.into(),
+                text: l.text.into(),
+            }),
+        }
+    }
 }
 
 /// A network with data under the data root (IOS-009).
@@ -229,7 +250,11 @@ commands! {
     /// starts SPV on mainnet and testnet unless the app was launched with
     /// `--no-sync`, and on another network with `--sync`; a failed start
     /// leaves the network open, readable offline.
-    #[facade("Engine::open_network", "Engine::close_network")]
+    #[facade(
+        "Engine::open_network",
+        "Engine::close_network",
+        "NetworkSession::upgrade_notice"
+    )]
     fn open_network(
         state,
         network: Option<String>,
@@ -267,10 +292,7 @@ commands! {
                 s
             }
         };
-        Ok(OpenedNetwork {
-            network: NetworkInfo::from(&network),
-            lock: session.vault().status().into(),
-        })
+        Ok(OpenedNetwork::of(&session, NetworkInfo::opened(&session)))
     }
 
     /// Moves the window to `network` (onboarding, Settings), saving the
@@ -376,10 +398,10 @@ commands! {
             eprintln!("dw-app: the network choice was not saved: {e}");
         }
         Ok(NetworkSwitch {
-            opened: Some(OpenedNetwork {
-                network: NetworkInfo::from(session.network()),
-                lock: session.vault().status().into(),
-            }),
+            opened: Some(OpenedNetwork::of(
+                &session,
+                NetworkInfo::from(session.network()),
+            )),
             choice: NetworkChoiceView::read(&state),
         })
     }
@@ -399,14 +421,15 @@ commands! {
         close_active(&state, &mut slot, engine.close_network(network).await)
     }
 
-    /// The active network, `null` before `openNetwork`.
+    /// The active network, `null` before `openNetwork`, with whether its
+    /// wallet data was restored (read again at each call).
     #[facade()]
     fn active_network(state) -> Option<NetworkInfo> {
         Ok(state
             .session_slot()
             .await
             .as_ref()
-            .map(|s| NetworkInfo::from(s.network())))
+            .map(|s| NetworkInfo::opened(s)))
     }
 
     /// The saved network choice (mainnet or testnet), the window's network
@@ -422,6 +445,48 @@ commands! {
         let engines = state.engine.clone();
         let networks = engines.wait().await?.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
+    }
+
+    /// Whether `network` (`null`: the window's) has a verified
+    /// before-upgrade snapshot to restore: "Restore earlier data" shows
+    /// only then.
+    #[facade("Engine::restore_available")]
+    fn restore_available(state, network: Option<String>) -> bool {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.restore_available(&network).await?)
+    }
+
+    /// Restore earlier data: asks for the restore of `network`'s
+    /// (`null`: the window's) verified before-upgrade snapshot at the next
+    /// start; the renderer then calls `restartApp`. Nothing is restored in
+    /// this process. Without a verified snapshot, `storage_restore`
+    /// (refused, missingBackup).
+    #[facade("Engine::request_restore")]
+    fn request_restore(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.request_restore(&network).await?)
+    }
+
+    /// The foreign-lineage screen's Keep the current files: ends
+    /// `network`'s (`null`: the window's) part-done restore keeping its
+    /// files as they are; the renderer then opens the network again.
+    #[facade("Engine::keep_current_files")]
+    fn keep_current_files(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.keep_current_files(&network).await?)
+    }
+
+    /// Cancel restore: drops `network`'s (`null`: the window's) restore
+    /// request while it hasn't begun replacing files; once it has,
+    /// `storage_restore` (incomplete).
+    #[facade("Engine::cancel_restore")]
+    fn cancel_restore(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.cancel_restore(&network).await?)
     }
 
     /// The refused open's way back to the funds (Q107 C1): the window's
@@ -442,6 +507,14 @@ commands! {
         eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
         Ok(())
     }
+}
+
+/// The network a restore command names; `null`: the window's.
+fn restore_network(state: &AppState, network: Option<String>) -> Result<DashNetwork, AppError> {
+    Ok(match network.as_deref().map(parse_network).transpose()? {
+        Some(n) => n,
+        None => state.window_network(),
+    })
 }
 
 /// Opens `network` as the window's: with the launch flags (or, on a
