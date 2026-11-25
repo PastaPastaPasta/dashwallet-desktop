@@ -101,10 +101,10 @@ pub enum PlatformActivityState {
     /// A move recorded and signed whose outcome is not known yet; the next
     /// read asks Platform again. No time limit; never retried by the engine.
     Pending,
-    /// A move that can never execute (not fully signed, or refused by
-    /// Platform's structure or signature check), or one a proof after its
-    /// call shows unexecuted: the latter may still execute, so a next move
-    /// signs the same inputs at the same nonces (m4 §2.12).
+    /// A move that can never execute (not every input was signed), or one
+    /// a proof after its call shows unexecuted: the latter may still
+    /// execute, so a next move signs the same inputs at the same nonces
+    /// (m4 §2.12). No error after signing fails a move (#471).
     Failed,
     /// A move whose inputs, at the nonces it signed, another move of this
     /// wallet with other terms also signed, and Platform took: one of them

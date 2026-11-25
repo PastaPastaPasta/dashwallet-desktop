@@ -4799,6 +4799,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.coins_changed",
   "credits.mixing_active",
   "credits.move_running",
+  "credits.preflight_refused",
+  "credits.rules_unsupported",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

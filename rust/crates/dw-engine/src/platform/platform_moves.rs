@@ -2262,14 +2262,17 @@ impl dpp::identity::signer::Signer<PlatformAddress> for Placeholder {
 /// witnesses, before anything is signed. The SDK runs the same check after
 /// signing, before the broadcast, and its error reads exactly as a node's
 /// would; refused here, nothing is signed, and a structure error after the
-/// signature is a node's answer, which settles nothing (#471).
+/// signature is a node's answer, which settles nothing (#471). A consensus
+/// refusal is [`refused`]; `network` is the proved network protocol
+/// version, if one was read.
 async fn pre_check(
     target: Target<'_>,
     inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
     (script, credits): (Option<&CoreScript>, u64),
     fee_strategy: AddressFundsFeeStrategy,
     version: &PlatformVersion,
-) -> Result<(), PlatformError> {
+    network: Option<u32>,
+) -> Result<(), CreditsError> {
     use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
     use dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
     use dpp::state_transition::address_credit_withdrawal_transition::methods::AddressCreditWithdrawalTransitionMethodsV0;
@@ -2277,7 +2280,7 @@ async fn pre_check(
     use dpp::state_transition::address_funds_transfer_transition::methods::AddressFundsTransferTransitionMethodsV0;
     use dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
     use dpp::state_transition::identity_topup_from_addresses_transition::methods::IdentityTopUpFromAddressesTransitionMethodsV0;
-    let sdk = |e: dash_sdk::Error| PlatformError::from(PlatformWalletError::Sdk(e));
+    let refusal = |e: dpp::ProtocolError| refused(e, target.kind(), version, network);
     let inputs = inputs.clone();
     let built = match (target, script) {
         (Target::Platform(to), _) => {
@@ -2320,8 +2323,39 @@ async fn pre_check(
         // (C-funding P8).
         (Target::Core(_), None) | (Target::Contact, _) => return Ok(()),
     };
-    let transition = built.map_err(|e| sdk(e.into()))?;
-    ensure_valid_state_transition_structure(&transition, version).map_err(|e| sdk(e.into()))
+    let transition = built.map_err(refusal)?;
+    ensure_valid_state_transition_structure(&transition, version).map_err(|e| match e {
+        dash_sdk::dash_platform_queries::Error::Protocol(e) => refusal(e),
+        e => PlatformError::from(PlatformWalletError::Sdk(e.into())).into(),
+    })
+}
+
+/// A pre-check's error. A structural consensus refusal is
+/// `credits.rules_unsupported` when the proved network protocol version is
+/// above both `version` and the latest this build knows, and
+/// `credits.preflight_refused` otherwise, an unread version included. The
+/// consensus error goes to the log with the transfer kind, never into the
+/// error. Anything else maps as the SDK's error.
+fn refused(
+    e: dpp::ProtocolError,
+    kind: MoveKind,
+    version: &PlatformVersion,
+    network: Option<u32>,
+) -> CreditsError {
+    let dpp::ProtocolError::ConsensusError(ce) = e else {
+        return PlatformError::from(PlatformWalletError::Sdk(e.into())).into();
+    };
+    if !matches!(*ce, dpp::consensus::ConsensusError::BasicError(_)) {
+        return PlatformError::from(PlatformWalletError::Sdk((*ce).into())).into();
+    }
+    let planned = version.protocol_version;
+    let latest = PlatformVersion::latest().protocol_version;
+    tracing::warn!(?kind, planned, ?network, error = ?ce, "Platform's structure pre-check refused the transfer; nothing was signed");
+    if network.is_some_and(|v| v > planned.max(latest)) {
+        CreditsError::RulesUnsupported
+    } else {
+        CreditsError::PreflightRefused
+    }
 }
 
 /// address → `(nonce, credits)` (`None`: unknown to Platform), and the
@@ -4233,7 +4267,18 @@ pub(crate) async fn run(
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
     let output = (script.as_ref(), planned.credits());
-    pre_check(target, &inputs, output, planned.fee_strategy(), version).await?;
+    let proved_version = (session.platform.enabled())
+        .then(|| session.platform.protocol.observed())
+        .flatten();
+    pre_check(
+        target,
+        &inputs,
+        output,
+        planned.fee_strategy(),
+        version,
+        proved_version,
+    )
+    .await?;
     // The authority before anything is redeemed: a refusal keeps the grant.
     // A send pays someone else: only a fresh grant, redeemed into a lease
     // for this send alone, never a lease another action holds.

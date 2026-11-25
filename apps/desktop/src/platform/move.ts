@@ -183,6 +183,11 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
   return detail.trim() === "" ? t("transfer.move.notAccepted") : /[.!?]$/.test(detail) ? detail : `${detail}.`;
 }
 
+/** Platform's structure pre-check refused a move, a send or a top-up before signing. Its consensus
+ * error stays in the log. */
+export const preflightText = (code: "credits.rules_unsupported" | "credits.preflight_refused") =>
+  code === "credits.rules_unsupported" ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
+
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. */
 export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
   if (!isAppError(e)) return failureText(e);
@@ -212,6 +217,9 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
