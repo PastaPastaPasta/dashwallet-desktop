@@ -28,8 +28,8 @@
 #
 # What publishes, by trigger (ci/github/release-publish.sh has the logic and refuses anything else;
 # ci/github/release-publish-test.sh tests it on every run):
-#   push to main              an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
-#                             prerelease `continuous` (stable asset names, replaced in place);
+#   push to main              no longer starts a run (tags, the schedule and dispatches only), so the
+#                             per-merge dev prereleases and `continuous` stop; the publish logic for them stays;
 #   push of a tag vX.Y.Z-rc.N that candidate's keyless prerelease (8 assets, never Latest, no .asc);
 #   push of a tag vX.Y.Z      fails closed by default: attests the unsigned build artifacts and waits
 #                             for local detached signing + release-publish-signed.yml (docs/release/SIGNING.md);
@@ -54,7 +54,8 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    # Tags only: main builds at 02:47 UTC and on a dispatch, not on every merge (docs/ci.md, "Main CI wall
+    # time"; the PM's 11-25 trim). Branches build through their pull request.
     # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
     # hand-pushed one from starting one either.
     tags: ["v*", "!v*-dev.*"]

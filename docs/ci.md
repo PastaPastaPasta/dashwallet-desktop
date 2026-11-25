@@ -33,9 +33,10 @@ cross-linted for MinGW on Linux: the workspace, then dw-app with `selftest`; not
 and `ui-playwright` in `ci.yml`, picked by its changed files (below), and `script-tests` and `decide` in `release.yml` only when it changes
 `release.yml`, `ci/`, `packaging/` or `rust/crates/dw-app/tauri.conf.json`. These four `ci.yml` jobs and
 `changes` are the required status checks on `main`. The hosted macOS runners (five at a time across the
-account) were the bottleneck, so the macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs, the
-release bundles, and Playwright run on every push to `main` (each merge), on a 02:47 UTC schedule
-(both workflows; the scheduled release run builds and never publishes) and on a dispatch. The non-blocking
+account) were the bottleneck, so the macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs and
+Playwright run on every push to `main` (each merge), on a 02:47 UTC schedule and on a dispatch. The release
+bundles build on a release tag, on the same schedule (builds, never publishes) and on a dispatch, not on
+each merge. The non-blocking
 Windows Swift job runs only on the schedule and on a dispatch. To run everything for a branch before it
 merges: `gh workflow run ci.yml --ref <branch>` and `gh workflow run release.yml --ref <branch>`.
 
@@ -496,8 +497,8 @@ deployment policy or a tag ruleset in the repository settings. `release-publish.
 (second line). `decide` also gates the build: a branch push or pull request that changes only `docs/`, `*.md`, the
 Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the build
 jobs and so `checksums` (`script-tests` still runs); main, tags and dispatches always build. A new push to a branch
-or pull request cancels that ref's running release build. Main and tags are never cancelled; main builds one
-commit at a time, and a newer pending main run replaces an older pending one. The `publish` job checks
+or pull request cancels that ref's running release build. Tags are never cancelled. A push to main no longer starts a
+release run. The `publish` job checks
 out the full history, runs `ci/github/release-publish.sh` and publishes:
 
 - push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
