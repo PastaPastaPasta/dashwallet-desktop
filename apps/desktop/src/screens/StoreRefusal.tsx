@@ -178,7 +178,7 @@ function Panel({
           <h1 className="onboarding-title" id={`${id}-title`}>
             {title}
           </h1>
-          <p className="onboarding-text" id={`${id}-body`} data-testid={`${testId}-text`}>
+          <p className="onboarding-text store-open-text" id={`${id}-body`} data-testid={`${testId}-text`}>
             {text}
           </p>
           {children}

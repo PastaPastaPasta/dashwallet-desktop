@@ -1,19 +1,26 @@
 //! Q104 104-F1 and Q86 (b): an open that fails once its wallet database is
-//! open unloads no wallet. A loaded wallet keeps the database held, so the
-//! next open in this process is refused, not retryable, while it is.
+//! open unloads no wallet and deletes none of its rows. At the platform pin
+//! that releases the database once its manager drops (P16), nothing holds
+//! it after the failed open, so the next open in this process opens, with
+//! the same wallets, balances and history.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use dashcore::{Address, Block, BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid};
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use zeroize::Zeroizing;
 
+use crate::history::{HistoryFilter, HistoryQuery, HistorySort};
 use crate::session::failed_open_probe;
-use crate::session::{FAIL_HISTORY_LOAD_IN, FAIL_LOAD_IN, KEPT_AFTER_FAILED_OPEN_REFUSAL};
+use crate::session::{FAIL_HISTORY_LOAD_IN, FAIL_LOAD_IN};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
-    NetworkSession, SessionOptions, WalletId,
+    NetworkSession, SessionOptions, WalletBalances, WalletId,
 };
+
+const PAID: u64 = 25 * 100_000_000;
 
 struct NoEvents;
 
@@ -77,12 +84,110 @@ fn imported(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
             },
         ))
         .unwrap();
+    pay(engine, &session, wallet);
     (session, wallet)
 }
 
-/// The wallet ids registered in `data_dir`'s wallet database, read from a
-/// copy so the held database is not opened again.
-fn registered_on_copy(data_dir: &Path) -> Vec<[u8; 32]> {
+/// Pays `wallet` [`PAID`] in a block at height 1 that its scan reached, as
+/// dash-spv delivers it, and commits what the wallet stored of it.
+fn pay(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+    use dash_spv::EventHandler;
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use platform_wallet::key_wallet_manager::{WalletEvent, WalletInterface};
+    let to = engine
+        .block_on(session.current_receive_address(wallet))
+        .unwrap()
+        .address
+        .parse::<Address<dashcore::address::NetworkUnchecked>>()
+        .unwrap()
+        .assume_checked();
+    let payment = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: PAID,
+            script_pubkey: to.script_pubkey(),
+        }],
+        special_transaction_payload: None,
+    };
+    let mut block = Block {
+        header: dashcore::blockdata::block::Header {
+            version: dashcore::blockdata::block::Version::from_consensus(1),
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: dashcore::TxMerkleNode::all_zeros(),
+            time: 1_793_598_712,
+            bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+            nonce: 0,
+        },
+        txdata: vec![payment],
+    };
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let manager = session.manager().unwrap();
+    let events: Vec<WalletEvent> = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let mut rx = wm.subscribe_events();
+        wm.process_block_for_wallets(&block, block.block_hash(), 1, &BTreeSet::from([wallet.0]))
+            .await;
+        wm.update_wallet_synced_height(&wallet.0, 1);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    });
+    for event in &events {
+        session.hub.on_wallet_event(event);
+    }
+    session.live().unwrap().persister.flush(wallet.0).unwrap();
+}
+
+/// What an open session shows: its loaded wallets, and `wallet`'s balances
+/// and history `(txid, amount)`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Shown {
+    wallets: BTreeSet<[u8; 32]>,
+    balances: Option<WalletBalances>,
+    history: Vec<(String, i64)>,
+}
+
+impl Shown {
+    /// As a session shows it while the wallet's scan replays from its
+    /// birth height: catching up.
+    pub(crate) fn catching_up(mut self) -> Self {
+        if let Some(b) = self.balances.as_mut() {
+            b.catching_up = true;
+        }
+        self
+    }
+}
+
+pub(crate) fn shown(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Shown {
+    let page = engine
+        .block_on(session.history_page(
+            wallet,
+            HistoryQuery {
+                filter: HistoryFilter::default(),
+                sort: HistorySort::NewestFirst,
+                cursor: None,
+                limit: 100,
+            },
+        ))
+        .unwrap();
+    Shown {
+        wallets: (session.manager().unwrap().list_wallet_ids_blocking())
+            .into_iter()
+            .collect(),
+        balances: session.balances(&wallet).unwrap(),
+        history: (page.records.into_iter())
+            .map(|r| (r.txid, r.amount))
+            .collect(),
+    }
+}
+
+/// `data_dir`'s wallet database files copied into a new directory, so a
+/// read opens no database a session may be using.
+fn wallet_db_copy(data_dir: &Path) -> (tempfile::TempDir, PathBuf) {
     let copy = dw_testutil::private_tempdir();
     let name = crate::session::WALLET_DB_FILE;
     for suffix in ["", "-wal", "-shm"] {
@@ -91,33 +196,84 @@ fn registered_on_copy(data_dir: &Path) -> Vec<[u8; 32]> {
             std::fs::copy(&from, copy.path().join(format!("{name}{suffix}"))).unwrap();
         }
     }
-    crate::store::registered_wallet_ids(&copy.path().join(name)).unwrap()
+    let db = copy.path().join(name);
+    (copy, db)
 }
 
-/// After a failed open: `wallet` is still registered, the wallet database
-/// is still held, and the next open is refused, not retryable.
-pub(crate) fn assert_held(engine: &Engine, data_dir: &Path, wallet: WalletId) {
-    assert!(registered_on_copy(data_dir).contains(&wallet.0));
-    let refused = open(engine).err().expect("the store is still held");
+/// `wallet`'s row count in each table of `data_dir`'s wallet database that
+/// has a `wallet_id` column, read from a copy.
+pub(crate) fn stored_rows(data_dir: &Path, wallet: WalletId) -> BTreeMap<String, i64> {
+    let (_copy, db) = wallet_db_copy(data_dir);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let tables: Vec<String> = conn
+        .prepare(
+            "SELECT m.name FROM sqlite_master m, pragma_table_info(m.name) c \
+             WHERE m.type = 'table' AND c.name = 'wallet_id' ORDER BY m.name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let rows: BTreeMap<String, i64> = (tables.into_iter())
+        .map(|table| {
+            let count = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM \"{table}\" WHERE wallet_id = ?1"),
+                    [&wallet.0[..]],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (table, count)
+        })
+        .collect();
     assert!(
-        matches!(
-            &refused,
-            EngineError::StorageInUse { detail, retryable: false }
-                if detail == KEPT_AFTER_FAILED_OPEN_REFUSAL
-        ),
-        "{refused:?}"
+        crate::store::registered_wallet_ids(&db)
+            .unwrap()
+            .contains(&wallet.0),
+        "{wallet} is registered"
     );
-    assert_eq!(refused.code(), "storage_in_use");
-    let held = crate::store_upgrade::open_persister(
-        data_dir,
-        crate::store_upgrade::persister_config(data_dir),
+    rows
+}
+
+/// After a failed open of `data_dir`: the open ended with its wallets
+/// still loaded, so it unloaded none; `wallet` is still registered with at
+/// least the rows it had (`rows`, read before the open); and the next open
+/// in this process opens and shows what the session before it showed
+/// (`shown_before`). Returns that open's session.
+pub(crate) fn assert_kept_and_reopened(
+    engine: &Engine,
+    data_dir: &Path,
+    wallet: WalletId,
+    rows: &BTreeMap<String, i64>,
+    shown_before: &Shown,
+) -> Arc<NetworkSession> {
+    assert_eq!(
+        failed_open_probe::ended(data_dir),
+        [(true, true)],
+        "the failed open ended with its wallet loaded and released its wallet database"
     );
     assert!(
-        matches!(held, Err(EngineError::StorageInUse { .. })),
-        "the wallet database is still held: {:?}",
-        held.err()
+        !crate::session::held_after_failed_open(data_dir),
+        "no failed open still holds the wallet database"
     );
-    assert!(registered_on_copy(data_dir).contains(&wallet.0));
+    let kept = stored_rows(data_dir, wallet);
+    assert_eq!(
+        kept.keys().collect::<Vec<_>>(),
+        rows.keys().collect::<Vec<_>>()
+    );
+    for (table, had) in rows {
+        assert!(
+            kept[table] >= *had,
+            "{table}: {} of {had} rows kept",
+            kept[table]
+        );
+    }
+    assert_eq!(rows.get("wallets"), Some(&1), "{rows:?}");
+
+    let session = open(engine).expect("the next open opens");
+    assert_eq!(&shown(engine, &session, wallet), shown_before);
+    session
 }
 
 fn failing_in<T>(
@@ -133,8 +289,9 @@ fn failing_in<T>(
 
 /// Q86 F1: the failed journal open finds no shielded coordinator on its
 /// manager, even when the session this process closed before it had one.
+/// The retry opens with the wallet as it was.
 #[test]
-fn a_failed_journal_open_keeps_its_wallets_and_refuses_the_retry_until_a_restart() {
+fn a_failed_journal_open_keeps_its_wallets_and_the_retry_opens() {
     let root = dw_testutil::private_tempdir();
     let engine = engine(root.path());
     let (session, wallet) = imported(&engine);
@@ -148,8 +305,10 @@ fn a_failed_journal_open_keeps_its_wallets_and_refuses_the_retry_until_a_restart
         )
         .unwrap();
     assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    let before = shown(&engine, &session, wallet);
     drop((manager, session));
     close(&engine);
+    let rows = stored_rows(&data_dir, wallet);
 
     let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
     rusqlite::Connection::open(&journal)
@@ -168,20 +327,25 @@ fn a_failed_journal_open_keeps_its_wallets_and_refuses_the_retry_until_a_restart
     );
     assert_eq!(failed_open_probe::seen(&data_dir), [(false, 1)]);
 
-    assert_held(&engine, &data_dir, wallet);
+    assert_kept_and_reopened(&engine, &data_dir, wallet, &rows, &before);
     assert_eq!(failed_open_probe::seen(&data_dir), [(false, 1)]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// An open that fails after its wallets loaded unloads none of them.
+/// An open that fails after its wallets loaded unloads none of them, and
+/// the retry opens with them as they were.
 #[test]
 fn an_open_failing_after_the_wallets_load_keeps_them() {
     let root = dw_testutil::private_tempdir();
     let engine = engine(root.path());
     let (session, wallet) = imported(&engine);
     let data_dir = session.data_dir().to_path_buf();
+    let before = shown(&engine, &session, wallet);
+    assert_eq!(before.balances.map(|b| b.total), Some(PAID));
+    assert_eq!(before.history.len(), 1, "{before:?}");
     drop(session);
     close(&engine);
+    let rows = stored_rows(&data_dir, wallet);
 
     let failed = failing_in(&FAIL_LOAD_IN, &data_dir, || open(&engine));
 
@@ -190,19 +354,23 @@ fn an_open_failing_after_the_wallets_load_keeps_them() {
         "{:?}",
         failed.err()
     );
-    assert_held(&engine, &data_dir, wallet);
+    assert_kept_and_reopened(&engine, &data_dir, wallet, &rows, &before);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// An open whose history load fails unloads no wallet.
+/// An open whose history load fails unloads no wallet, and the retry opens
+/// with it as it was.
 #[test]
 fn an_open_failing_to_load_the_history_keeps_its_wallets() {
     let root = dw_testutil::private_tempdir();
     let engine = engine(root.path());
     let (session, wallet) = imported(&engine);
     let data_dir = session.data_dir().to_path_buf();
+    let before = shown(&engine, &session, wallet);
+    assert_eq!(before.balances.map(|b| b.total), Some(PAID));
     drop(session);
     close(&engine);
+    let rows = stored_rows(&data_dir, wallet);
 
     let failed = failing_in(&FAIL_HISTORY_LOAD_IN, &data_dir, || open(&engine));
 
@@ -211,12 +379,15 @@ fn an_open_failing_to_load_the_history_keeps_its_wallets() {
         "{:?}",
         failed.err()
     );
-    assert_held(&engine, &data_dir, wallet);
+    assert_kept_and_reopened(&engine, &data_dir, wallet, &rows, &before);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// The refusal lasts only while the failed open's database is held: once
-/// its last holder lets go, the next open opens.
+/// A failed open whose database stays held refuses the next open, not
+/// retryable, while it is held. At this platform pin a failed open leaves
+/// nothing holding it, so only a holder kept here shows the refusal. It
+/// lasts only while the database is held: once its last holder lets go,
+/// the next open opens.
 #[test]
 fn the_refusal_clears_once_the_held_database_is_released() {
     let root = dw_testutil::private_tempdir();
@@ -251,11 +422,11 @@ fn the_refusal_clears_once_the_held_database_is_released() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// The refusal follows the wallet database, not the spelling of its path:
-/// an engine reaching it through a symlinked root is refused too.
+/// A failed open through a symlinked root keeps its wallet, and an engine
+/// reaching the database by its real path opens it as it was.
 #[cfg(unix)]
 #[test]
-fn the_refusal_holds_through_a_symlinked_root() {
+fn a_failed_open_through_a_symlinked_root_keeps_its_wallets() {
     let dir = dw_testutil::private_tempdir();
     let real = dir.path().join("real");
     std::fs::create_dir(&real).unwrap();
@@ -264,16 +435,21 @@ fn the_refusal_holds_through_a_symlinked_root() {
     let linked = engine(&link);
     let (session, wallet) = imported(&linked);
     let data_dir = session.data_dir().to_path_buf();
+    let before = shown(&linked, &session, wallet);
     drop(session);
     close(&linked);
+    let rows = stored_rows(&data_dir, wallet);
     let failed = failing_in(&FAIL_LOAD_IN, &data_dir, || open(&linked));
     assert!(failed.is_err());
     linked.block_on(linked.shutdown()).unwrap();
     drop(linked);
 
     let direct = engine(&real);
-    let real_dir = data_dir.canonicalize().unwrap();
-    assert_ne!(real_dir, data_dir);
-    assert_held(&direct, &real_dir, wallet);
+    assert_ne!(data_dir.canonicalize().unwrap(), data_dir);
+    let session = assert_kept_and_reopened(&direct, &data_dir, wallet, &rows, &before);
+    assert_eq!(
+        session.data_dir().canonicalize().unwrap(),
+        data_dir.canonicalize().unwrap()
+    );
     direct.block_on(direct.shutdown()).unwrap();
 }

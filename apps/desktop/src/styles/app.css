@@ -2363,6 +2363,10 @@ input[type="radio"]:disabled {
   margin-bottom: 0;
 }
 
+.pay-banner.is-updating > .dash-button {
+  flex-shrink: 0;
+}
+
 .pay-fee-line {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -2897,6 +2901,10 @@ input[type="radio"]:disabled {
 
 .onboarding-text {
   text-align: center;
+}
+
+.store-open-text {
+  overflow-wrap: anywhere;
 }
 
 .onboarding-note,

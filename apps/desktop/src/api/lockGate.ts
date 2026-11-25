@@ -213,7 +213,10 @@ export function followLockStatus(client: QueryClient): () => void {
 }
 
 /** What the locked window may ask: the window and its settings, the lock, the unlock and the lock
- * report, Forgot passphrase, links and the menus, and the calls that end what a lock cut short. */
+ * report, Forgot passphrase, links and the menus, the calls that end what a lock cut short, and the
+ * actions of the screens shown when the network's data can't be opened (the gate never opens there: no
+ * lock status is read): Quit, Restart, Report a problem and the restore's calls, which run before the
+ * stores open and touch no keys or funds. */
 export const LOCKED_COMMANDS: ReadonlySet<string> = new Set<keyof IpcBackend>([
   "launchInfo",
   "openNetwork",
@@ -235,6 +238,13 @@ export const LOCKED_COMMANDS: ReadonlySet<string> = new Set<keyof IpcBackend>([
   "revokeGrant",
   "draftAbandon",
   "closeDraft",
+  "quitApp",
+  "restartApp",
+  "openProjectLink",
+  "restoreAvailable",
+  "requestRestore",
+  "keepCurrentFiles",
+  "cancelRestore",
 ]);
 
 /** The backend's own members that ask the engine nothing. */
