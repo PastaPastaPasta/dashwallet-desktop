@@ -1139,25 +1139,26 @@ fn finish_transfers_reports_a_kind_it_could_not_read() {
     assert!(lib.applied.lock().unwrap().is_empty());
 }
 
-/// The library's refusal to record Platform's "already consumed" is the
-/// one smoke02 logged: the session's real persister attests no
-/// `WALLET_RESTORE`.
+/// The session's real persister attests what asset-lock reconciliation
+/// needs (atomic changesets and tracked asset locks; no longer
+/// `WALLET_RESTORE`), so the library records Platform's "already consumed"
+/// itself and answers `AssetLockAlreadyConsumed`: the refusal smoke02 logged
+/// does not arise there.
 #[test]
-fn the_real_persister_cannot_record_a_consumed_report() {
+fn the_real_persister_can_record_a_consumed_report() {
     use platform_wallet::changeset::{PersistenceCapabilities, PlatformWalletPersistence};
     let fx = Fixture::new(0);
     let capabilities = fx.s.live().unwrap().store.persistence_capabilities();
-    assert!(!capabilities.contains(PersistenceCapabilities::WALLET_RESTORE));
-    assert_eq!(
-        conformance::unrecorded_consumed(&fx.s).to_string(),
-        "Failed to persist state: asset-lock reconciliation requires persistence \
-         capabilities [\"wallet_restore\"] (missing mask 0x80)"
+    assert!(
+        capabilities.contains(PersistenceCapabilities::ASSET_LOCK_RECONCILIATION),
+        "{capabilities:?}"
     );
 }
 
 /// F2: a restored lock, `RecoveredFromChain` with its proof, that Platform
 /// answers "already consumed" for, the library unable to record the answer
-/// at the real persister, and Platform's proved state says consumed:
+/// (a persister that does not attest reconciliation), and Platform's proved
+/// state says consumed:
 /// finished elsewhere, off the list and the card, settled nowhere, and so
 /// after a restart, with no second apply.
 #[test]
@@ -1168,7 +1169,7 @@ fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
         locks: vec![restored.clone()],
         ..FakeShielded::default()
     });
-    (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+    (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed());
     (lib.spent_reads.lock().unwrap()).insert(restored.outpoint, SpentRead::Consumed);
     let (finished, begun) = finish(&fx, &lib, restored.outpoint);
     assert!(begun);
@@ -1199,7 +1200,7 @@ fn finish_transfers_counts_restored_locks_platform_reports_used() {
         ..FakeShielded::default()
     });
     for at in [a.outpoint, b.outpoint] {
-        (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+        (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed());
         lib.spent_reads
             .lock()
             .unwrap()
@@ -1246,7 +1247,7 @@ fn only_the_outpoints_own_answer_finishes_a_restored_lock() {
     });
     let elsewhere = OutPoint::new(Txid::from_byte_array([0x99; 32]), 0);
     lib.lib_errors.lock().unwrap().extend([
-        conformance::unrecorded_consumed(&fx.s),
+        conformance::unrecorded_consumed(),
         PlatformWalletError::Persistence("database is locked".into()),
         PlatformWalletError::AssetLockAlreadyConsumed(elsewhere),
     ]);

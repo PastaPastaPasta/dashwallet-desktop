@@ -404,7 +404,7 @@ impl FundLib for FakeFund {
             Answer::Consumed { of } => Err(PlatformWalletError::AssetLockAlreadyConsumed(
                 of.unwrap_or(outpoint),
             )),
-            Answer::Unrecorded => Err(conformance::unrecorded_consumed(&self.session)),
+            Answer::Unrecorded => Err(conformance::unrecorded_consumed()),
             Answer::PersistFailed => Err(PlatformWalletError::Persistence(
                 "database is locked".into(),
             )),

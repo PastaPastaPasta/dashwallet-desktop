@@ -293,8 +293,8 @@ fn only_already_consumed_of_the_same_outpoint_reads_already_consumed() {
     }
 }
 
-/// The library's refusal to record Platform's "already consumed" (a
-/// restored wallet's persister attests no `WALLET_RESTORE`) is that answer
+/// The library's refusal to record Platform's "already consumed" (at a
+/// persister that does not attest asset-lock reconciliation) is that answer
 /// for the applied outpoint, for both kinds.
 #[test]
 fn the_librarys_unrecorded_consumed_report_reads_already_consumed() {
