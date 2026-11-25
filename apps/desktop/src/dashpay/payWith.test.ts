@@ -114,16 +114,31 @@ describe("Shielded readiness reasons (F16, F17)", () => {
   });
 
   it("an unsettled spend that is a hold says so and offers no Try again", () => {
-    const held = shieldedReason(readiness("noUnsettledSpend"), amount, clock, true);
+    const hold = { count: 1, credits: "30000000000", duffs: 30_000_000 };
+    const held = shieldedReason(readiness("noUnsettledSpend"), amount, clock, hold);
     expect(held).toBe(PAY_WITH_COPY.held);
     expect(held).toBe("An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.");
     expect(held).not.toMatch(/try again/i);
+    // A listed spend that holds nothing (a scan saw its notes spent) is still settling.
+    expect(shieldedReason(readiness("noUnsettledSpend"), amount, clock, null)).toBe(PAY_WITH_COPY.unsettled);
     // The row says the same once Shielded is offered, and only for that check.
     const live = new Set<PaySource>(["core", "shielded"]);
-    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: true, live })).shielded).toBe(PAY_WITH_COPY.held);
-    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: false, live })).shielded).toBe(PAY_WITH_COPY.unsettled);
-    expect(reasons(inputs({ readiness: readiness("synced"), shieldedHeld: true, live })).shielded).toBe(PAY_WITH_COPY.syncing);
-    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: true })).shielded).toBe(PAY_WITH_COPY.notOffered);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: hold, live })).shielded).toBe(PAY_WITH_COPY.held);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: null, live })).shielded).toBe(PAY_WITH_COPY.unsettled);
+    expect(reasons(inputs({ readiness: readiness("synced"), shieldedHold: hold, live })).shielded).toBe(PAY_WITH_COPY.syncing);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHold: hold })).shielded).toBe(PAY_WITH_COPY.notOffered);
+  });
+
+  it("a balance short only because of a hold says the hold, not Not enough", () => {
+    // The denomination is 3000000000 credits (3,000,000 duffs).
+    const hold = (credits: string) => ({ count: 1, credits, duffs: Number(BigInt(credits) / 1000n) });
+    const short = PAY_WITH_COPY.short("0.03 Dash");
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("2000000000"), 1_000_000)).toBe(PAY_WITH_COPY.held);
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("1999999999"), 1_000_000)).toBe(short);
+    expect(shieldedReason(readiness("balance"), amount, clock, null, 1_000_000)).toBe(short);
+    expect(shieldedReason(readiness("balance"), amount, clock, hold("2000000000"), null)).toBe(short);
+    const live = new Set<PaySource>(["core", "shielded"]);
+    expect(reasons(inputs({ readiness: readiness("balance"), shieldedDuffs: 1_000_000, shieldedHold: hold("2000000000"), live })).shielded).toBe(PAY_WITH_COPY.held);
   });
 });
 

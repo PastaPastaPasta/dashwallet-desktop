@@ -291,9 +291,6 @@ export function shieldedHold(status: ShieldedStatus | null | undefined): Shielde
   return { count: status.heldSpends.filter((h) => BigInt(h.credits) > 0n).length, credits: status.held, duffs: creditsToDuffs(status.held) };
 }
 
-/** A held spend stands, holding notes or not: as the engine's `noUnsettledSpend` reads it. */
-export const shieldedSpendHeld = (status: ShieldedStatus | null | undefined): boolean => !!status?.active && status.heldSpends.length > 0;
-
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
 export function useShieldedQuote(walletId: string, request: ShieldedRequest | null) {
   const b = useBackend();
@@ -340,7 +337,6 @@ export function usePoolBalances(walletId: string) {
   return {
     shielded: poolReading(shielded, shieldedReading),
     shieldedHold: shieldedHold(shielded.data),
-    shieldedSpendHeld: shieldedSpendHeld(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */

@@ -239,6 +239,8 @@ pub(crate) struct FakeShielded {
     all_notes: Mutex<Option<Vec<ShieldedNote>>>,
     /// `all_notes` cannot be read.
     notes_unreadable: AtomicBool,
+    /// How many times `all_notes` was read.
+    notes_reads: AtomicU32,
     /// What a send that fails (not an unconfirmed one) leaves.
     after_failure: Mutex<AfterFailure>,
     /// The library's held spends cannot be read.
@@ -450,6 +452,7 @@ impl Default for FakeShielded {
             holds: Mutex::default(),
             all_notes: Mutex::default(),
             notes_unreadable: AtomicBool::new(false),
+            notes_reads: AtomicU32::new(0),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
             stored_unreadable: AtomicBool::new(false),
@@ -1026,6 +1029,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn all_notes(&self) -> Result<Vec<ShieldedNote>, PlatformError> {
+        self.notes_reads.fetch_add(1, Ordering::SeqCst);
         if self.notes_unreadable.load(Ordering::SeqCst) {
             return Err(PlatformError::Internal {
                 detail: "the notes cannot be read".into(),
@@ -1535,13 +1539,16 @@ fn the_platform_shield_gate_is_active_then_bound() {
 fn the_status_shows_the_held_spends_and_their_unspent_notes() {
     let fx = Fixture::new(0);
     let status_of = |lib: FakeShielded| {
-        run(&fx, &Arc::new(lib), |_, lib| async move {
+        let lib = Arc::new(lib);
+        let status = run(&fx, &lib, |_, lib| async move {
             pool::status(&*lib).await.unwrap()
-        })
+        });
+        (status, lib.notes_reads.load(Ordering::SeqCst))
     };
-    let none = status_of(FakeShielded::default());
+    // No hold: 0, and the notes are not read.
+    let (none, reads) = status_of(FakeShielded::default());
     assert!(none.held_spends.is_empty());
-    assert_eq!(none.held, 0);
+    assert_eq!((none.held, reads), (0, 0));
 
     let spent = ShieldedNote {
         is_spent: true,
@@ -1559,18 +1566,22 @@ fn the_status_shows_the_held_spends_and_their_unspent_notes() {
         activity: [n + 1; 32],
         nullifiers: notes.iter().map(|note| note.nullifier).collect(),
     };
+    // A note the wallet does not have (never scanned, or purged).
+    let unknown = note(9, 7);
     let holds = vec![
         hold(0xa0, &[&all[2], &all[3]]),
         hold(0xb0, &[&all[3], &all[4]]),
         // Its one note seen spent: listed, holding nothing.
         hold(0xc0, &[&all[4]]),
+        hold(0xd0, &[&unknown]),
     ];
     let held = || FakeShielded {
         holds: Mutex::new(holds.clone()),
         all_notes: Mutex::new(Some(all.clone())),
         ..FakeShielded::default()
     };
-    let status = status_of(held());
+    let (status, reads) = status_of(held());
+    assert_eq!(reads, 1);
     assert_eq!(status.held, 11 + 13);
     assert_eq!(status.held, pool::held_credits(&holds, &all));
     assert_eq!(status.balance, 2 * NOTE);
@@ -1580,24 +1591,23 @@ fn the_status_shows_the_held_spends_and_their_unspent_notes() {
     let spend = |n: u8, credits| (hex::encode([n + 1; 32]), hex::encode([n; 32]), credits);
     assert_eq!(
         shown,
-        [spend(0xa0, 11 + 13), spend(0xb0, 13), spend(0xc0, 0)]
+        [
+            spend(0xa0, 11 + 13),
+            spend(0xb0, 13),
+            spend(0xc0, 0),
+            spend(0xd0, 0)
+        ]
     );
 
-    // No hold: the notes are not read.
-    let unread_notes = FakeShielded {
-        notes_unreadable: AtomicBool::new(true),
-        ..FakeShielded::default()
-    };
-    assert_eq!(status_of(unread_notes).held, 0);
     let notes_fail = held();
     notes_fail.notes_unreadable.store(true, Ordering::SeqCst);
-    let status = status_of(notes_fail);
+    let (status, _) = status_of(notes_fail);
     assert!(status.held_spends.is_empty());
     assert_eq!((status.held, status.balance), (0, 2 * NOTE));
 
     let unreadable = held();
     unreadable.held_unreadable.store(true, Ordering::SeqCst);
-    let status = status_of(unreadable);
+    let (status, _) = status_of(unreadable);
     assert!(status.held_spends.is_empty());
     assert_eq!((status.held, status.balance), (0, 2 * NOTE));
 }

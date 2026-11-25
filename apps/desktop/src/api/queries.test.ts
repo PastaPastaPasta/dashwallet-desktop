@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedHold, shieldedReading, shieldedSpendHeld } from "./queries";
+import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedHold, shieldedReading } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -81,13 +81,10 @@ describe("what payments that may still go through hold of Shielded", () => {
     expect(shieldedHold(status("30000000000", ["30000000000", "0"]))).toEqual({ count: 1, credits: "30000000000", duffs: 30_000_000 });
   });
 
-  it("shows no hold when nothing is held, even while a spend is listed; the gate still reads it", () => {
+  it("shows no hold when nothing is held, even while a spend is listed", () => {
     expect(shieldedHold(status("0", ["0"]))).toBeNull();
-    expect(shieldedSpendHeld(status("0", ["0"]))).toBe(true);
     expect(shieldedHold(status("0", []))).toBeNull();
-    expect(shieldedSpendHeld(status("0", []))).toBe(false);
     expect(shieldedHold(status("30000000000", ["30000000000"], false))).toBeNull();
-    expect(shieldedSpendHeld(status("30000000000", ["30000000000"], false))).toBe(false);
     expect(shieldedHold(null)).toBeNull();
   });
 });
