@@ -300,7 +300,8 @@ impl Fixture {
         self.save_failed_row_of(1);
     }
 
-    /// The library's own row of spend `n`, failed.
+    /// The library's own row of spend `n`, failed (past spend 2, a row of
+    /// no stored spend).
     fn save_failed_row_of(&self, n: u8) {
         let failed = ShieldedActivityEntry {
             id: [n; 32],
@@ -315,7 +316,7 @@ impl Fixture {
             created_at_ms: 0,
             min_note_position: None,
             note_cmxs: Vec::new(),
-            spent_nullifiers: nullifiers(n),
+            spent_nullifiers: if n <= 2 { nullifiers(n) } else { Vec::new() },
         };
         let (coordinator, wallet) = (self.coordinator(), self.wallet);
         self.engine.block_on(async move {
@@ -602,9 +603,14 @@ fn a_crash_before_the_ack_is_acknowledged_at_the_next_pass() {
         .crash_before_ack
         .store(false, Ordering::SeqCst);
     f.reads(Platform::default());
+    let marks = &f.session.hub.pump.platform_marks;
+    *marks.lock().unwrap() = Some(Vec::new());
     f.pass();
     f.assert_released();
     assert_eq!(f.row(), (Shown::Failed, Some(ShieldedRefusal::Released)));
+    let raised = (marks.lock().unwrap().take().unwrap().into_iter())
+        .any(|(w, c)| w == f.wallet && c.contains(&crate::events::PlatformChange::Shielded));
+    assert!(raised, "the acknowledgement raises the Shielded change");
 }
 
 /// T11: a failed anchors read or nullifier read holds and is read again at
@@ -724,6 +730,28 @@ fn reads_on_unverified_quorum_keys_settle_nothing() {
     f.assert_released();
 }
 
+/// Only an SPV-verified read that finds the anchor still recorded keeps
+/// its height (rule 5): an unverified one keeps none, so a spend sent by an
+/// earlier build stays without an Hp, and held, until a verified read.
+#[test]
+fn an_unverified_read_of_a_recorded_anchor_keeps_no_height() {
+    let f = Fixture::stuck(Platform {
+        unverified: true,
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        ..Default::default()
+    });
+    f.pass();
+    f.assert_held();
+    assert_eq!(f.presence(1), None);
+
+    f.platform().unverified = false;
+    f.forget_backoff();
+    f.pass();
+    f.assert_held();
+    assert_eq!(f.presence(1), Some(100));
+}
+
 /// An anchors read one block behind (the SDK's height tolerance) can be
 /// from before the spend's anchor was recorded, whatever the clock said at
 /// the refusal: once a read proved the anchor recorded at a height, its
@@ -833,8 +861,15 @@ fn a_failed_row_reads_held_while_its_sources_cannot_be_read() {
     f.pass();
     assert_eq!(f.settlement().0, ArtifactStatus::NotExecuted);
     let fail_listing = &f.session.platform.fail_disposition_listing;
+    f.save_failed_row_of(9);
+    assert_eq!(
+        f.row_of(9),
+        (Shown::Failed, None),
+        "no artifact: as the library reads it"
+    );
     fail_listing.store(true, Ordering::SeqCst);
     assert_eq!(f.row(), (Shown::Pending, Some(ShieldedRefusal::Held)));
+    assert_eq!(f.row_of(9), (Shown::Pending, Some(ShieldedRefusal::Held)));
     fail_listing.store(false, Ordering::SeqCst);
     assert_eq!(f.row(), (Shown::Pending, Some(ShieldedRefusal::Held)));
 
