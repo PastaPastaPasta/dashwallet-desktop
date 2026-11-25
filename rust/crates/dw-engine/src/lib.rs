@@ -83,6 +83,7 @@ mod tools;
 mod tx_actions;
 mod wallet_read;
 mod wallets;
+mod withhold;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};
 pub use coinjoin::CoinJoinFailure;
@@ -132,3 +133,4 @@ pub use tx_actions::{
     DroppedNotice, TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal,
 };
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};
+pub use withhold::ExclusionReason;

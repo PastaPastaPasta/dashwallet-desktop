@@ -101,6 +101,10 @@ pub struct TxDetailExtras {
     pub can_abandon: bool,
     pub can_resend: bool,
     pub dust_locked_outputs: Vec<OutPoint>,
+    /// Outputs of this transaction kept out of spending and every balance
+    /// while it, or one it was built on, may never confirm (Q100 E1,
+    /// `crate::withhold`): shown as pending.
+    pub withheld_outputs: Vec<OutPoint>,
     pub last_announced_at: Option<u64>,
 }
 
@@ -1721,6 +1725,19 @@ impl NetworkSession {
                 .filter(|row| (row.vout as usize) < entry.tx.output.len())
                 .map(|row| OutPoint::new(txid, row.vout))
                 .collect();
+            let withheld_outputs = {
+                let wm = live.manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&wallet.0))
+                    .map(|i| this.hub.excluded_coins(wallet, &i.core_wallet))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(o, r)| {
+                        o.txid == txid && *r == crate::ExclusionReason::PendingUnproven
+                    })
+                    .map(|(o, _)| o)
+                    .collect()
+            };
             Ok(TxDetailExtras {
                 txid: txid.to_string(),
                 is_coinbase: f.coinbase,
@@ -1735,6 +1752,7 @@ impl NetworkSession {
                 can_abandon: f.abandon_refusal().is_none(),
                 can_resend: f.resend_refusal().is_none(),
                 dust_locked_outputs,
+                withheld_outputs,
                 last_announced_at: this.hub.announced_at(&txid),
             })
         })
