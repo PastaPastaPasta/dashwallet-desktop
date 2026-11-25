@@ -52,11 +52,11 @@ platform-encryption = { git = "https://github.com/dashpay/platform", rev = "611f
 # ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
 # dashpay/rust-dashcore: the revision the platform pin above names.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01" }
-key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01" }
-key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01" }
-dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01" }
-dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01" }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
+dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
 # ---- dashpay/base-sdk: EXACTLY the version that rust-dashcore pins ----
 dash-pkc = { version = "0.3.0-beta", default-features = false }
 
@@ -92,14 +92,14 @@ tempfile = "3"
 # (RUSTSEC-2026-0545..0548 and earlier). v1.8.1 is v1.8.0 with only the zip 9 bump. Drop this
 # when the platform pin moves to v1.8.1 or later. eebfc46c is the v1.8.1 tag.
 [patch."https://github.com/dashpay/platform"]
-platform-wallet = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-platform-wallet-storage = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-dash-sdk = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-dpp = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-dash-context-provider = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-drive = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-rs-sdk-trusted-context-provider = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
-platform-encryption = { git = "file:///work/scratch/pb-wiring/platform-p13", rev = "100c8caf218244df090c78363a19a24e4c372a74" }
+platform-wallet = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+platform-wallet-storage = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+dash-sdk = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+dpp = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+dash-context-provider = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+drive = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+rs-sdk-trusted-context-provider = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+platform-encryption = { git = "file:///work/scratch/pb-int/int-4", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
 
 [patch."https://github.com/dashpay/rs-tenderdash-abci"]
 tenderdash-abci = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
