@@ -299,13 +299,18 @@ fn machine_fault(e: impl std::fmt::Display) -> StoreUpgradeError {
     }
 }
 
-/// Remove private copies left under `data_root` by a check that crashed.
+/// Remove the private directories a crash left under `data_root`: the
+/// checks' copies (`.store-upgrade-precheck-*`) and the probe's store
+/// (`.store-upgrade-probe-*`).
 /// Sweeps only when no other process holds the data root's instance lock
 /// ([`dw_fs::instance::InstanceLock::share`]: this process's own lock, or the
 /// lock taken for the sweep); another holder is
 /// [`StoreUpgradeError::StoreHeld`]. Call it once per start, after the
-/// instance lock and before any check: a check running in another thread of
-/// this process would lose its copy. Returns how many were removed.
+/// instance lock and before any check: a check or probe running in another
+/// thread of this process would lose its directory. This process's own
+/// probe ([`crate::Adopters::for_build`]) removes its directory before it
+/// returns, so a probe that ran earlier leaves nothing live to sweep.
+/// Returns how many were removed.
 pub fn sweep_stale_scratch(data_root: &Path) -> Result<usize> {
     let io = |ctx| StoreUpgradeError::io(ctx, true);
     let lock_path = data_root.join(dw_fs::instance::InstanceLock::FILE);
@@ -319,10 +324,10 @@ pub fn sweep_stale_scratch(data_root: &Path) -> Result<usize> {
     let mut removed = 0;
     for entry in fs::read_dir(data_root).map_err(io("list the data root"))? {
         let entry = entry.map_err(io("list the data root"))?;
-        let is_scratch = entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(SCRATCH_PREFIX);
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_scratch =
+            name.starts_with(SCRATCH_PREFIX) || name.starts_with(crate::adopters::PROBE_PREFIX);
         if is_scratch
             && entry
                 .file_type()

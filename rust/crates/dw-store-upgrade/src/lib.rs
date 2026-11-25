@@ -3,7 +3,10 @@
 //!
 //! Startup order for one network directory `{folder}`, all under the data
 //! root's instance lock and before any store opens, in `spawn_blocking`:
-//! 0. [`sweep_stale_scratch`], once per start, before any check.
+//! 0. [`sweep_stale_scratch`], once per start, before any check: removes the
+//!    checks' and the probe's private directories a crash left under the
+//!    data root. The probe ([`Adopters::for_build`]) runs inside the first
+//!    check and removes its own directory before it returns.
 //! 1. [`prepare`]: the refusal check ([`precheck`], [`precheck_locked`]),
 //!    the upgrade rehearsed on a private copy, then the snapshot
 //!    ([`take_snapshot`]) for a fork file. A refusal writes, renames and

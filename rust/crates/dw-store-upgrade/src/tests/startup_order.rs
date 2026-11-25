@@ -72,3 +72,42 @@ fn reconcile_straight_after_prepare_proceeds() {
     );
     assert!(!column_present(&f), "R1's drop ran");
 }
+
+#[test]
+fn the_sweep_removes_a_crashed_probe_dir_only_under_the_lock() {
+    let tmp = private_tempdir();
+    let root = tmp.path();
+    let probe = root.join(format!("{}crashed", crate::adopters::PROBE_PREFIX));
+    fs::create_dir_all(probe.join("backups/auto")).unwrap();
+    fs::write(probe.join("wallet.sqlite"), b"probe store").unwrap();
+    let unrelated = root.join(".store-upgrade-unrelated");
+    fs::create_dir(&unrelated).unwrap();
+    fs::create_dir(root.join("regtest")).unwrap();
+
+    let other_process = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join(dw_fs::instance::InstanceLock::FILE))
+        .unwrap();
+    other_process.lock().unwrap();
+    let err = crate::sweep_stale_scratch(root).unwrap_err();
+    assert!(
+        matches!(err, StoreUpgradeError::StoreHeld { .. }),
+        "{err:?}"
+    );
+    assert!(probe.exists(), "not swept while another process holds it");
+    drop(other_process);
+
+    assert_eq!(crate::sweep_stale_scratch(root).unwrap(), 1);
+    assert!(!probe.exists());
+    assert!(unrelated.is_dir() && root.join("regtest").is_dir());
+
+    drop(crate::adopters::Adopters::probe(root));
+    assert_eq!(
+        crate::sweep_stale_scratch(root).unwrap(),
+        0,
+        "this process's probe removed its own directory"
+    );
+}
