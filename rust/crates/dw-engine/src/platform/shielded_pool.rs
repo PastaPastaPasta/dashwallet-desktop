@@ -1618,12 +1618,13 @@ pub(super) async fn send_armed(
     }
 }
 
-/// Refuses a spend while the coordinator has no dispatch hook: the library
-/// would send what the engine never accepted. `send` and `unshield` ask
-/// before anything else, so the refusal quotes nothing, issues no address
-/// and keeps the grant.
+/// Refuses a spend while this build cannot spend from the pool
+/// ([`SHIELDED_SPENDS_AVAILABLE`]) or the coordinator has no dispatch hook:
+/// the library would send what the engine never accepted. `send` and
+/// `unshield` ask before anything else, so the refusal quotes nothing, issues
+/// no address and keeps the grant.
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
-    if !lib.hooked().await {
+    if !SHIELDED_SPENDS_AVAILABLE || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
     }
     Ok(())

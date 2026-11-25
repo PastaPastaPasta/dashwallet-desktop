@@ -66,6 +66,7 @@ test.describe("Shielded spends off", () => {
       await page.getByTestId("pay-amount").fill("0.2");
       await page.getByTestId("pay-address").fill(SHIELDED_ADDRESS);
       expect(await reasonOf(page, "pay-shielded-route")).toBe(REASON);
+      await expect(page.getByTestId("pay-address-form").locator(".form-field").first().locator(".field-hint")).toHaveCount(0);
       await shot(page, `${theme}-pay-route-off`);
 
       await page.getByTestId("sidebar-home").click();
@@ -77,6 +78,14 @@ test.describe("Shielded spends off", () => {
         expect(await seriousAxeViolations(page)).toEqual([]);
         await page.getByTestId("transfer-cancel").click();
       }
+
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await expect(page.getByTestId("shielded-receive-spends-off")).toHaveText(REASON);
+      await expect(page.getByTestId("shielded-receive-address")).toBeVisible();
+      await shot(page, `${theme}-receive-off`);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await page.getByTestId("sidebar-home").click();
 
       await toShieldedConfirm(page);
       await expect(page.getByTestId("shielded-spends-off-in")).toHaveText(SHIELD_IN);
@@ -117,6 +126,17 @@ test.describe("Shielded spends off", () => {
     expect(errors).toEqual([]);
   });
 
+  test("an added Shielded recipient isn't pointed to Send from Shielded", async ({ page }) => {
+    const errors = await open(page, "shielded-spends-off", "light");
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    await page.getByTestId("pay-address").fill("yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
+    await page.getByTestId("pay-add-recipient").click();
+    await page.getByTestId("pay-more-2-address").fill(SHIELDED_ADDRESS);
+    await expect(page.getByTestId("pay-more-2").locator(".field-error").first()).toHaveText("This is a shielded address. This wallet cannot pay shielded addresses yet.");
+    expect(errors).toEqual([]);
+  });
+
   test("a move into Shielded still runs", async ({ page }) => {
     const errors = await open(page, "shielded-spends-off", "light");
     await toShieldedConfirm(page);
@@ -137,6 +157,11 @@ test.describe("Shielded spends off", () => {
       await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
       await page.getByTestId("transfer-cancel").click();
     }
+    await page.getByTestId("sidebar-receive").click();
+    await page.getByTestId("shielded-receive-open").click();
+    await expect(page.getByTestId("shielded-receive-address")).toBeVisible();
+    await expect(page.getByTestId("shielded-receive-spends-off")).toHaveCount(0);
+    await page.getByTestId("sidebar-home").click();
     await toShieldedConfirm(page);
     await expect(page.getByTestId("shielded-spends-off-in")).toHaveCount(0);
     await expect(page.getByText(REASON)).toHaveCount(0);

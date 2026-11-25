@@ -423,9 +423,15 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
+  const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
   return {
     text: <p className="sheet-text">{C.receive.text}</p>,
     before: <>
+      {spendsOff && address.data && (
+        <p className="field-hint" data-testid="shielded-receive-spends-off">
+          {SHIELDED_SPENDS_COPY.unavailable}
+        </p>
+      )}
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
           {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
