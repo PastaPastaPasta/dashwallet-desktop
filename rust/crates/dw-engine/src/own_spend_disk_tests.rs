@@ -6482,3 +6482,62 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
         "the funding block scanned again leaves P2's change out"
     );
 }
+
+/// The payment to another loaded wallet, beaten on B, then that wallet's
+/// record of it detected with a lock naming another transaction: the lock
+/// isn't the payment's, so the sender's history doesn't show it locked, no
+/// claim choice runs again and no lock is stored, and the funding block
+/// credits A.
+#[test]
+fn a_detected_record_whose_lock_names_another_transaction_changes_nothing() {
+    use key_wallet::transaction_checking::TransactionContext;
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let other = second_wallet(&engine, &session);
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let to = fresh_address(&engine, &session, other).to_string();
+    let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    let txid = payment.txid();
+    let mut record = {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        (session.live().unwrap().persister)
+            .get_core_tx_record(other.0, &txid)
+            .unwrap()
+            .expect("the recipient stores the payment")
+    };
+    let manager = session.manager().unwrap();
+    let (balance, account_balances) = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&other.0).unwrap().core_wallet;
+        (info.balance(), info.account_balances())
+    });
+    record.context = TransactionContext::InstantSend(InstantLock {
+        txid: Txid::from_byte_array([9; 32]),
+        ..InstantLock::default()
+    });
+
+    (session.hub).apply_wallet_event(
+        &platform_wallet::key_wallet_manager::WalletEvent::TransactionDetected {
+            wallet_id: other.0,
+            record: Box::new(record),
+            balance,
+            account_balances,
+            addresses_derived: Vec::new(),
+        },
+    );
+    assert!(
+        session.hub.take_lock_reruns().is_empty(),
+        "no claim choice runs again"
+    );
+    assert!(
+        !history_shows_locked(&session, id, txid),
+        "the sender's history doesn't show it locked"
+    );
+    assert!(!stored_lock(&session, id, txid), "no lock is stored");
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+}
