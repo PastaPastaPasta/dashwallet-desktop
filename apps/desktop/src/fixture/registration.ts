@@ -572,6 +572,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
    * that commits nothing until its create is named. */
   function startFromShielded(ctx: Ctx, walletId: string, request: RegistrationRequest, grantId: string, denomination: string): string {
     const { world } = ctx;
+    // registration_shielded.rs `FEATURE`: off on mainnet before any read, grant or write.
+    if (world.launch.network.kind === "mainnet") throw shieldedOff();
     const dp = d.dashpay(world, walletId);
     const readiness = shieldedReadiness(world.pending.shielded);
     const failed = readiness.checks.find((c) => !c.ready);
@@ -733,6 +735,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       if (!row) throw invalid("unknown draft");
       // F5: a Platform-funded row is off on mainnet before anything else, its grant unredeemed.
       if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
+      // A Shielded-funded row whose create is not yet named too; a named one settles from its evidence.
+      if (row.fromShielded && !row.fundsCommitted && world.launch.network.kind === "mainnet") throw shieldedOff();
       if (row.phase === "failed" && !row.failure?.retryable) throw invalid(`registration ${draft} failed for good (${row.failure?.code})`);
       if (row.phase === "done" || active(world, walletId, dp, draft)) return null;
       // F12: a named Shielded payment's check runs again from its evidence alone, with no grant.

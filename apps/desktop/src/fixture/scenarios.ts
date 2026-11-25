@@ -1522,6 +1522,13 @@ const SCENARIOS = {
   /** Hostile labels and names (U6): they must render as text. */
   xss: (t) => base(t, "xss"),
   "dashpay-no-identity": (t) => base(t),
+  /** The same on mainnet: a username paid from the Shielded balance is off there (flag `shielded_registration`). */
+  "dashpay-no-identity-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    if (w.pending.networkChoice) w.pending.networkChoice = { ...w.pending.networkChoice, chosen: "mainnet", saved: true };
+    return w;
+  },
   /** A username registration funded and waiting for its InstantSend lock. */
   "dashpay-registering": (t) => {
     const w = base(t);

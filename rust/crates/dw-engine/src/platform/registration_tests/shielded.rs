@@ -321,6 +321,65 @@ fn a_ready_start_writes_the_row_with_its_own_fallback() {
     );
 }
 
+/// Mainnet: off (flag `shielded_registration`) until a payment that stays
+/// unknown has a way out (C-funding C3). The quote and the start are
+/// refused before any name is looked up (DAPI is down), the grant redeemed,
+/// a fallback taken or a row written; an unnamed row's resume before its
+/// grant is redeemed. A named row is not refused: it settles by evidence.
+#[test]
+fn mainnet_refuses_a_shielded_registration_before_anything_is_written() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().shielded = ready();
+    let quote = (f.engine.block_on(registration::quote(&*lib, &shielded(0)))).unwrap();
+    let denomination = quote.readiness.unwrap().denomination.unwrap();
+    lib.w().mainnet = true;
+    lib.w().names_offline = true;
+    let off = RegistrationError::Platform(PlatformError::FeatureOff {
+        feature: "shielded_registration".into(),
+    });
+    let e = (f.engine.block_on(registration::quote(&*lib, &shielded(0)))).unwrap_err();
+    assert_eq!(e, off);
+    let g = f.grant(0, quote.grant.max_credits, f.credential());
+    let e = (f.engine)
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            shielded(denomination),
+            g,
+        ))
+        .unwrap_err();
+    assert_eq!(e, off);
+    assert!(f.rows().is_empty());
+    assert_eq!(lib.w().fallbacks_taken, 0);
+    lib.w().names_offline = false;
+    let unnamed = f.insert(shielded_row(None));
+    let before = f.row(unnamed);
+    let g = f.grant(0, quote.grant.max_credits, f.credential());
+    let e = (f.engine)
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &unnamed.to_string(),
+            Some(g),
+        ))
+        .unwrap_err();
+    assert_eq!(e, off);
+    assert_eq!(f.row(unnamed), before);
+    assert!(lib.w().shielded_asks.is_empty());
+    let named = f.insert(shielded_row(Some(created())));
+    let resumed = (f.engine).block_on(registration::resume(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        &named.to_string(),
+        None,
+    ));
+    assert_ne!(resumed, Err(off));
+}
+
 /// C4b-2: this build reads and runs a Shielded row, named or not.
 #[test]
 fn a_shielded_row_is_run_by_this_build() {

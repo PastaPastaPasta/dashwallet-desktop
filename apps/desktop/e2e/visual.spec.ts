@@ -611,6 +611,16 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   "privacy-partly": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { balance: "1000000000", notes: undefined }, "partly") },
   "privacy-resting": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { restingUntil: 1_900_000_000 }, "resting") },
   "privacy-pool": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { poolNotes: 120 }, "pool") },
+  // On mainnet a username paid from the Shielded balance is off (flag shielded_registration): the Dash wallet only.
+  "privacy-mainnet": {
+    scenario: "dashpay-no-identity-mainnet",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+      await expect(page.getByTestId("pay-with-shielded-note")).toHaveCount(0);
+      await page.mouse.move(0, 0);
+    },
+  },
   name: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {

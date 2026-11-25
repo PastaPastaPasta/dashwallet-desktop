@@ -5112,5 +5112,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     it absorbs the rise of the first read after it only when no read of the addresses happened since the create was
     named, else it claims nothing and the rise reads `Incoming`. `RegistrationStatus` gains `from_shielded`, true
     for a row whose stored funding is `shielded`. After a restart a named row waiting `payment_unknown` runs again
-    only on a `resume_registration` with no grant, which checks its evidence and signs nothing. Top-ups from Shielded and the Platform-address funding on mainnet
+    only on a `resume_registration` with no grant, which checks its evidence and signs nothing. On mainnet the funding is
+    off (`platform.feature_off{feature: "shielded_registration"}`) until a payment that stays unknown has a way out:
+    the quote, the start, and the resume and funding step of a row not yet named are refused before any read, grant
+    or write; a named row still settles by evidence. Top-ups from Shielded and the Platform-address funding on mainnet
     are unchanged.

@@ -31,6 +31,7 @@ use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_platform;
 use super::registration_rows::{Decoded, Funding, Phase, PlatformPlan, ProfileRecord};
+use super::registration_shielded;
 use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::MIN_ACTIONS;
 use super::unfinished::{LockKindId, TransfersReport};
@@ -558,6 +559,9 @@ async fn plan<L: RegistrationLib>(
     if let RegistrationFunding::PlatformAddresses { .. } = &req.funding {
         registration_platform::refuse_on_mainnet(&lib.network())?;
     }
+    if let RegistrationFunding::Shielded { .. } = &req.funding {
+        registration_shielded::refuse_on_mainnet(&lib.network())?;
+    }
     let mut credits = lib.name_credits(&req.label).await?;
     if let Some(temp) = &temp_label {
         credits = credits.saturating_add(lib.name_credits(temp).await?);
@@ -809,7 +813,7 @@ fn shielded_start(
 ) -> Result<(), RegistrationError> {
     let off = || {
         PlatformError::FeatureOff {
-            feature: "shielded_registration".into(),
+            feature: registration_shielded::FEATURE.into(),
         }
         .into()
     };
@@ -1675,11 +1679,15 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
         return Ok(());
     }
     // D8 on every grant a claim is given, not only the start's; F5 on a
-    // Platform- or Shielded-funded row's. A Platform-funded row is off on
-    // mainnet before any grant is redeemed.
+    // Platform- or Shielded-funded row's. A Platform-funded row, and a
+    // Shielded-funded one not yet named, are off on mainnet before any
+    // grant is redeemed; a named one still settles by evidence.
     let paid = paid_from(&row);
     if paid == PaidFrom::Platform {
         registration_platform::refuse_on_mainnet(&lib.network())?;
+    }
+    if let Ok((_, Funding::Shielded { identity: None, .. })) = flow::interpret(&row) {
+        registration_shielded::refuse_on_mainnet(&lib.network())?;
     }
     if let (
         Ok((

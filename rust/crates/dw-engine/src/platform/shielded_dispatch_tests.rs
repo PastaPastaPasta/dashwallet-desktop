@@ -2416,6 +2416,51 @@ fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
     assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::Executed);
 }
 
+/// Mainnet: off (flag `shielded_registration`) until a payment that stays
+/// unknown has a way out (C-funding C3). A new create is refused before
+/// its readiness is read, so before any hold, permit or intent: nothing
+/// signed, the row unnamed. A named row still settles by evidence: its
+/// fallback is proved, settled and its refund armed.
+#[test]
+fn on_mainnet_a_new_create_is_refused_and_a_named_one_settles() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let mut lib = paying(None);
+    lib.network = dpp::dashcore::Network::Mainnet;
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let off = Err(crate::platform::PlatformError::FeatureOff {
+        feature: "shielded_registration".into(),
+    });
+    assert_eq!(h.create(draft, &lib, &ev, &lease), off);
+    assert!(lib.spent.lock().unwrap().is_empty());
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+    assert!(
+        h.f.session
+            .platform
+            .registration_intents
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+
+    let (named, id) = h.dispatched_create(5);
+    h.rewrite(
+        5,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    let mut lib = super::FakeShielded::default();
+    lib.network = dpp::dashcore::Network::Mainnet;
+    assert_eq!(
+        h.evidence_with(named, &id, &ev, &lib),
+        ShieldedOutcome::Fallback(id)
+    );
+    assert_eq!(h.refunds().len(), 1);
+    assert_eq!(h.artifact(5).unwrap().status, ArtifactStatus::Executed);
+}
+
 /// F12: the library resolves every failure of a create after its dispatch
 /// `unresolved` (`Cancelled`, operations.rs `settle_failed_spend`), a paid
 /// fallback included: every published nullifier proved spent, the bundle's

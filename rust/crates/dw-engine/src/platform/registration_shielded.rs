@@ -27,7 +27,23 @@ use super::registration_rows::{Decoded, Funding};
 use super::requests::{leased, write_permit};
 use super::runtime::guard;
 use super::shielded_pool::{self as pool, ShieldedCreate, ShieldedLib, SpendError};
-use crate::{NetworkSession, PlatformChange, WalletId};
+use crate::{DashNetwork, NetworkSession, PlatformChange, WalletId};
+
+/// The flag of a registration paid from the Shielded balance: off on
+/// mainnet until a payment that stays unknown has a way out (C-funding
+/// C3), on for every test network. A row already named still settles by
+/// evidence.
+pub(crate) const FEATURE: &str = "shielded_registration";
+
+/// `platform.feature_off{feature: FEATURE}` on mainnet.
+pub(crate) fn refuse_on_mainnet(network: &DashNetwork) -> Result<(), PlatformError> {
+    match network {
+        DashNetwork::Mainnet => Err(PlatformError::FeatureOff {
+            feature: FEATURE.into(),
+        }),
+        _ => Ok(()),
+    }
+}
 
 /// One funding step of a Shielded-funded row: its draft and claim, the
 /// identity slot, what its quote fixed, and the identity a create of it
@@ -380,6 +396,11 @@ pub(crate) async fn fund(
     let _spending = lock.lock().await;
     if let Some(identity) = &ask.identity {
         return evidence(session, wallet, (lib, net), &ask, identity).await;
+    }
+    if lib.network() == dpp::dashcore::Network::Mainnet {
+        return Err(PlatformError::FeatureOff {
+            feature: FEATURE.into(),
+        });
     }
     let Some(lease) = lease else {
         return Err(PlatformError::SignerUnavailable);
