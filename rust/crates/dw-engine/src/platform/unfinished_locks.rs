@@ -125,11 +125,12 @@ pub(crate) enum ApplyReply {
 
 /// The start of platform-wallet's refusal to keep a lock "consumption
 /// unknown" at a persister that does not attest asset-lock reconciliation
-/// (`sync/tracking.rs:343-355` at the pin). The library raises it only on
-/// Platform's "already consumed" for the outpoint its call applied, matched
-/// first (`asset_lock/orchestration.rs:474-528`), and the pinned storage
-/// never attests `WALLET_RESTORE` (`persister.rs:1362-1389`), so after a
-/// restore it is how that answer arrives.
+/// (`mark_asset_lock_consumption_unknown`, `sync/tracking.rs` at the pin).
+/// The library raises it only on Platform's "already consumed" for the
+/// outpoint its call applied, matched first (`asset_lock/orchestration.rs`).
+/// The pinned storage attests reconciliation, so there the answer arrives as
+/// `AssetLockAlreadyConsumed`; this is that answer from a backend that does
+/// not.
 const UNRECORDED_CONSUMED: &str = "asset-lock reconciliation requires persistence capabilities ";
 
 /// Whether an apply's `error` is the library's [`UNRECORDED_CONSUMED`]

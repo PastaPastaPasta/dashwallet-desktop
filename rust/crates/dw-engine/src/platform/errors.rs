@@ -991,7 +991,7 @@ impl From<crate::EngineError> for PlatformError {
             E::RescanInProgress => Self::ContextUnavailable,
             E::RescanInterrupted => Self::RescanInterrupted,
             e @ (E::Storage(_)
-            | E::StorageInUse(_)
+            | E::StorageInUse { .. }
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
             | E::RetryableIo(_)

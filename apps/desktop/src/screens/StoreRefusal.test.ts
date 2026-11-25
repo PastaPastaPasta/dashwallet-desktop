@@ -466,6 +466,8 @@ describe("the foreign lineage's screen", () => {
   it("wires Keep to keep_current_files, Report a problem to the issues page and Quit to quit", () => {
     expect(foreign.screen.buttons.map((b) => buttonAction(b.key))).toEqual(["keep", "report", "quit"]);
     expect(foreign.screen.buttons.some((b) => b.defaultFocus)).toBe(false);
+    expect(foreign.screen.buttons.map((b) => b.key)).toEqual(["storeUpgrade.restore.foreign.keep", "settings.about.links.issues", "storeUpgrade.restore.foreign.quit"]);
+    expect(en.storeUpgrade.restore.foreign.quit).toBe("Quit");
   });
 });
 

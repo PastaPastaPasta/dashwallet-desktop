@@ -128,7 +128,12 @@ fn crate_errors_map_to_their_engine_errors() {
                 assert!(screen.is_none(), "{name}");
                 assert_eq!(m, &format!("{NO_SCREEN}{name}"));
             }
-            (EngineError::StorageInUse(_), "StoreHeld") => {}
+            (
+                EngineError::StorageInUse {
+                    retryable: true, ..
+                },
+                "StoreHeld",
+            ) => {}
             (EngineError::RetryableIo(_), "SnapshotFailed" | "Sqlite" | "Io") => {}
             (EngineError::StorageTooNew(_), "PersisterOpen") => {}
             (

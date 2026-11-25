@@ -142,11 +142,9 @@ impl From<EngineError> for AppError {
             E::InvalidConfig(_) => (EngineCode::InvalidConfig.into(), None),
             E::InvalidArgument(_) => (EngineCode::InvalidArgument.into(), None),
             E::NetworkNotOpen(_) => (EngineCode::NetworkNotOpen.into(), None),
-            E::StorageInUse(_) => (
+            E::StorageInUse { retryable, .. } => (
                 EngineCode::StorageInUse.into(),
-                Some(ErrorData::StorageInUse {
-                    retryable: dw_engine::store_upgrade::STORAGE_IN_USE_RETRYABLE,
-                }),
+                Some(ErrorData::StorageInUse { retryable }),
             ),
             E::Storage(_) => (EngineCode::Storage.into(), None),
             E::StorageTooNew(_) => (EngineCode::StorageTooNew.into(), None),
@@ -317,20 +315,24 @@ mod tests {
         );
     }
 
-    /// `storage_in_use` says whether a retry in this process may succeed
-    /// (the engine's pinned value); the store upgrade's machine failures
-    /// are `io`, retryable, never a refusal.
+    /// `storage_in_use` carries the engine's own `retryable`: true for a
+    /// store a clean close releases, false for one held until a restart;
+    /// the store upgrade's machine failures are `io`, retryable, never a
+    /// refusal.
     #[test]
     fn storage_in_use_and_retryable_io_ride_in_data() {
-        let e =
-            serde_json::to_value(AppError::from(EngineError::StorageInUse("x".into()))).unwrap();
-        assert_eq!(
-            e["data"],
-            serde_json::json!({
-                "kind": "storageInUse",
-                "retryable": dw_engine::store_upgrade::STORAGE_IN_USE_RETRYABLE,
-            })
-        );
+        for retryable in [true, false] {
+            let e = serde_json::to_value(AppError::from(EngineError::StorageInUse {
+                detail: "x".into(),
+                retryable,
+            }))
+            .unwrap();
+            assert_eq!(e["code"], "storage_in_use");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({ "kind": "storageInUse", "retryable": retryable })
+            );
+        }
         let e = serde_json::to_value(AppError::from(EngineError::RetryableIo("disk full".into())))
             .unwrap();
         assert_eq!(e["code"], "io");
@@ -351,7 +353,10 @@ mod tests {
             E::InvalidConfig(s()),
             E::InvalidArgument(s()),
             E::NetworkNotOpen(s()),
-            E::StorageInUse(s()),
+            E::StorageInUse {
+                detail: s(),
+                retryable: true,
+            },
             E::Storage(s()),
             E::StorageTooNew(s()),
             E::StoreRefused(Box::new(refusal())),

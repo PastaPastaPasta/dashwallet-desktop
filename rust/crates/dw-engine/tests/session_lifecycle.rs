@@ -257,7 +257,7 @@ fn dropping_engine_without_shutdown_releases_storage() {
     let s = loop {
         match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
             Ok(s) => break s,
-            Err(EngineError::StorageInUse(_)) if std::time::Instant::now() < deadline => {
+            Err(EngineError::StorageInUse { .. }) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             Err(e) => panic!("{e:?}"),
@@ -303,7 +303,10 @@ fn second_engine_on_same_data_dir_gets_storage_in_use() {
     let err = second
         .block_on(second.open_network(DashNetwork::Regtest, local_opts()))
         .err();
-    assert!(matches!(err, Some(EngineError::StorageInUse(_))), "{err:?}");
+    assert!(
+        matches!(err, Some(EngineError::StorageInUse { .. })),
+        "{err:?}"
+    );
     first.block_on(first.shutdown()).unwrap();
 }
 

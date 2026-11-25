@@ -262,7 +262,7 @@ impl From<dw_engine::EngineError> for SendError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_)
+            E::StorageInUse { .. }
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)

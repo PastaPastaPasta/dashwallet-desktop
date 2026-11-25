@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 87
+Contract-Version: 88
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -851,7 +851,7 @@ a new lock, new funding or other coins (DEC-1045 (b) as widened by DEC-1051): th
 lock is chain-locked locally (`asset_lock/orchestration.rs:701` → `sync/recovery.rs:1693` → `sync/proof.rs:443-455`); a
 ChainLock proof after the InstantSend wait timed out (`shielded/fund_from_asset_lock.rs:245-262`) or after Platform
 refused the InstantSend one (`:396-433`); the ChainLock proof persisted on an "already consumed" report, the row then
-`RecoveredFromChain` (`asset_lock/orchestration.rs:478-521`, `sync/tracking.rs:351`); or, after Platform refused a
+`RecoveredFromChain` (`asset_lock/orchestration.rs:345-411`, `sync/tracking.rs:386`); or, after Platform refused a
 ChainLock proof, the record's InstantSend proof, another ChainLock proof, or none until the next resume derives one
 (`fund_from_asset_lock.rs:441-445` → `sync/tracking.rs:564-620`). Within one call the ChainLock-height retries sign
 fresh bundles of the same outpoint and proof (`:378`, `:416`). Safety rests on the outpoint: Platform executes at most
@@ -909,12 +909,14 @@ consumed" for the exact outpoint (`PlatformWalletError::AssetLockAlreadyConsumed
 `IdentityAssetLockTransactionOutPointAlreadyConsumedError` matched to the outpoint) is unauthenticated and settles
 nothing; neither does any failure after the lock's credit key signed, whatever the kind's apply returns. A failure leaves
 the lock `checking`, and so does the answer for this device's own shield lock (as its pending shield). A type-4 lock, or a
-restored type-5 one, takes the answer as finished elsewhere (`reportedUsed`, below). After a restore the library cannot
-record the answer: the pinned storage does not attest `WALLET_RESTORE` (platform-wallet-storage `persister.rs:1362-1389`),
-so `mark_asset_lock_consumption_unknown` refuses it with `PlatformWalletError::Persistence` "asset-lock reconciliation
-requires persistence capabilities …" (`sync/tracking.rs:343-355`). The library raises that refusal only after matching
-the answer to the applied outpoint (`asset_lock/orchestration.rs:474-528`), so the engine reads it, and no other
-persistence error, as the answer for that outpoint. Balances come only from proved reads.
+restored type-5 one, takes the answer as finished elsewhere (`reportedUsed`, below). The pinned storage attests
+asset-lock reconciliation (atomic changesets and tracked asset locks, platform-wallet-storage `persister.rs:1341-1373`;
+`WALLET_RESTORE` is no longer needed), so the library records the answer itself when a ChainLock proof is at hand
+(otherwise it records nothing): `mark_asset_lock_consumption_unknown` (`sync/tracking.rs:352-424`) moves the row to
+`RecoveredFromChain` with the outpoint's ChainLock proof. Either way the call returns `AssetLockAlreadyConsumed`. At a backend that does not attest it, the library refuses with
+`PlatformWalletError::Persistence` "asset-lock reconciliation requires persistence capabilities …" instead, and only
+after matching the answer to the applied outpoint (`asset_lock/orchestration.rs:345-411`), so the engine reads that
+refusal, and no other persistence error, as the answer for that outpoint. Balances come only from proved reads.
 
 **States** (`UnfinishedState`). `confirming`: the library's row holds no proof, whatever its status (a restore files
 another device's lock still in flight as `InstantSendLocked` with none; a `RecoveredFromChain` row without one reads
@@ -968,7 +970,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 87 -->
+<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 88 -->
 
 ```rust
 // src/platform/contacts.rs

@@ -1,24 +1,21 @@
-// Hand-written, not generated: the store-refusal, StorageInUse and restore shapes dw-app's ts-rs export
-// carries once its `ErrorData` gains `StoreRefused`, `StorageInUse { retryable }` and `Restore`, its
-// `EngineCode` gains `storage_refused` and `storage_restore`, and `NetworkInfo` gains `restored` (DTO
-// contracts v2 and v3). They match what ts-rs writes (tag `kind`, camelCase fields). When the regenerated
-// bindings have them, these become re-exports of those.
+// The store-refusal and StorageInUse shapes come from dw-app's ts-rs export (src/api/generated). The
+// restore shapes (`storage_restore`, `Restore`, `NetworkInfo.restored`; DTO contract v3) are hand-written
+// until the bindings carry them. This module adds the runtime checks an open's error goes through before
+// the screen trusts it.
 
 import type { NetworkInfo } from "./generated/NetworkInfo";
 
-/** A button of a refused open's screen: its catalog key and English label. */
-export type StoreButton = { key: string; label: string; destructive: boolean; defaultFocus: boolean };
+import type { ErrorData } from "./generated/ErrorData";
+import type { StoreButton } from "./generated/StoreButton";
+import type { StoreHint } from "./generated/StoreHint";
+import type { StoreScreen } from "./generated/StoreScreen";
 
-/** The line under the buttons: its catalog key and English text. */
-export type StoreHint = { key: string; text: string };
-
-/** The screen the engine gives for a refused open (`screen_for`), in English, `{folder}` filled in. */
-export type StoreScreen = { titleKey: string; title: string; textKey: string; text: string; buttons: Array<StoreButton>; hint: StoreHint | null };
+export type { StoreButton, StoreHint, StoreScreen };
 
 /** `cause` is the engine's error variant, for tests and logs only: the screen never depends on it. */
-export type StoreRefusedData = { kind: "storeRefused"; screen: StoreScreen; folder: string; cause: string };
+export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
 
-export type StorageInUseData = { kind: "storageInUse"; retryable: boolean };
+export type StorageInUseData = Extract<ErrorData, { kind: "storageInUse" }>;
 
 /** Where a pending restore stopped the open (`run_pending_restore`); the request, on the next start. */
 export type RestoreState = "refused" | "noSpace" | "notStarted" | "incomplete";
@@ -68,7 +65,7 @@ export function storeRefusal(e: unknown): StoreRefusedData | null {
 }
 
 /** `storage_in_use`'s `retryable`; `null` for any other error. Without the data (a dw-app before it)
- * the store is held until a restart, as at this pin. */
+ * the store is read as held until a restart. */
 export function storageInUse(e: unknown): { retryable: boolean } | null {
   if (!object(e) || e.code !== "storage_in_use") return null;
   const data = e.data as Partial<StorageInUseData> | null | undefined;

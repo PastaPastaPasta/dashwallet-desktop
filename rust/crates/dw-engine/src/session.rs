@@ -184,6 +184,125 @@ async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
     released(persister).await
 }
 
+/// Data directories whose failed open left their wallet database held,
+/// with that database: through upstream's reference cycle (see `close`), a
+/// wallet left loaded holds it until the process exits.
+static KEPT_AFTER_FAILED_OPEN: Mutex<Vec<(PathBuf, Weak<SqlitePersister>)>> =
+    Mutex::new(Vec::new());
+
+/// Why an open of a [`KEPT_AFTER_FAILED_OPEN`] directory is refused.
+pub(crate) const KEPT_AFTER_FAILED_OPEN_REFUSAL: &str = "Dash Wallet needs to restart first. Quit Dash Wallet and open it again. Your wallets and their payments are kept, and Try again won't work until you've restarted.";
+
+/// The key of `data_dir` in [`KEPT_AFTER_FAILED_OPEN`], canonical as the
+/// store upgrade's holder keys are.
+fn kept_key(data_dir: &Path) -> PathBuf {
+    data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf())
+}
+
+/// Whether a failed open still holds `data_dir`'s wallet database; an entry
+/// whose database was released since is dropped.
+fn held_after_failed_open(data_dir: &Path) -> bool {
+    let key = kept_key(data_dir);
+    let mut kept = KEPT_AFTER_FAILED_OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    kept.retain(|(_, persister)| persister.strong_count() > 0);
+    kept.iter().any(|(dir, _)| *dir == key)
+}
+
+/// The end of an open that failed once its wallet database was open, after
+/// everything holding it was dropped (Q104 104-F1, below the
+/// persister-release pin): no wallet is unloaded, as `remove_wallet` can
+/// delete a wallet's stored rows. A wallet left loaded holds the database
+/// until the process exits, so it is recorded at once; with none loaded,
+/// the release is waited for. While it is held, the directory's next open
+/// in this process is refused with [`KEPT_AFTER_FAILED_OPEN_REFUSAL`].
+pub(crate) async fn release_after_failed_open(
+    data_dir: &Path,
+    persister: Weak<SqlitePersister>,
+    left_loaded: bool,
+) {
+    if !left_loaded && persister_released(&persister).await {
+        return;
+    }
+    tracing::warn!("the wallet database stays held after a failed open until the app restarts");
+    (KEPT_AFTER_FAILED_OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()))
+    .push((kept_key(data_dir), persister));
+}
+
+/// Flushes the wallets a failed open leaves loaded, as a close does for
+/// those it keeps (DEC-1046): their writes are committed, not closed.
+async fn flush_left_loaded(persister: &Arc<SqlitePersister>, wallets: &[[u8; 32]]) {
+    for &id in wallets {
+        let persister = Arc::clone(persister);
+        let flushed = tokio::task::spawn_blocking(move || {
+            platform_wallet::changeset::PlatformWalletPersistence::flush(&*persister, id)
+        })
+        .await;
+        if !matches!(flushed, Ok(Ok(()))) {
+            tracing::warn!(wallet_id = %hex::encode(id), ?flushed, "flush after a failed open failed");
+        }
+    }
+}
+
+/// Ends an open that failed after its manager was built: shuts the manager
+/// down, drops it with `held`, and then [`release_after_failed_open`].
+async fn end_failed_open(
+    data_dir: &Path,
+    manager: Arc<Manager>,
+    persister: Arc<SqlitePersister>,
+    held: impl Send,
+) {
+    let report = manager.shutdown().await;
+    if !report.all_clean() {
+        tracing::warn!(
+            ?report,
+            "manager shutdown after a failed open was not clean"
+        );
+    }
+    let loaded = manager.list_wallet_ids_blocking();
+    flush_left_loaded(&persister, &loaded).await;
+    let released = Arc::downgrade(&persister);
+    drop((manager, persister, held));
+    release_after_failed_open(data_dir, released, !loaded.is_empty()).await;
+}
+
+/// Tests: data directories whose next open fails right after its wallets
+/// load, and whose next open fails loading the history.
+#[cfg(test)]
+pub(crate) static FAIL_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+#[cfg(test)]
+pub(crate) static FAIL_HISTORY_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Tests: for each failed journal open of a data directory, whether its
+/// manager had a shielded coordinator, and how many wallets it kept loaded.
+#[cfg(test)]
+pub(crate) mod failed_open_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static SEEN: Mutex<Vec<(PathBuf, bool, usize)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record(data_dir: &Path, coordinator: bool, loaded: usize) {
+        (SEEN.lock().unwrap_or_else(|p| p.into_inner())).push((
+            data_dir.to_path_buf(),
+            coordinator,
+            loaded,
+        ));
+    }
+
+    pub(crate) fn seen(data_dir: &Path) -> Vec<(bool, usize)> {
+        (SEEN.lock().unwrap_or_else(|p| p.into_inner()).iter())
+            .filter(|(d, ..)| d == data_dir)
+            .map(|(_, c, n)| (*c, *n))
+            .collect()
+    }
+}
+
 /// Waits, within [`PERSISTER_RELEASE`], for the last reference to `held`
 /// to go; `false` when one is still held.
 async fn released<T>(held: &Weak<T>) -> bool {
@@ -343,6 +462,12 @@ impl NetworkSession {
         vault_config: VaultConfig,
     ) -> Result<Arc<Self>, EngineError> {
         let opened = Instant::now();
+        if held_after_failed_open(&data_dir) {
+            return Err(EngineError::StorageInUse {
+                detail: KEPT_AFTER_FAILED_OPEN_REFUSAL.into(),
+                retryable: false,
+            });
+        }
         network.validate()?;
         let spv_peers = opts
             .spv_peers
@@ -603,12 +728,18 @@ impl NetworkSession {
         if hub.trust.set(Arc::clone(&trust)).is_err() {
             tracing::warn!("the session hub already had a quorum provider");
         }
-        if let Err(e) = manager.load_from_persistor().await {
-            let report = manager.shutdown().await;
-            if !report.all_clean() {
-                tracing::warn!(?report, "manager shutdown after failed load was not clean");
-            }
-            return Err(e.into());
+        let loaded = manager
+            .load_from_persistor()
+            .await
+            .map_err(EngineError::from);
+        #[cfg(test)]
+        let loaded = match crate::keys::take_test_failure(&FAIL_LOAD_IN, &data_dir) {
+            true => loaded.and(Err(EngineError::Storage("test: load failed".into()))),
+            false => loaded,
+        };
+        if let Err(e) = loaded {
+            end_failed_open(&data_dir, manager, persister, (store, replay, tap)).await;
+            return Err(e);
         }
 
         let lock_state = vault.lock_state();
@@ -619,7 +750,7 @@ impl NetworkSession {
         );
         // The barriers of payout changes signed before MG-13, once per app
         // database, before anything can quote a withdrawal (P16).
-        masternodes.set_barriers_ready({
+        let barriers = {
             let (db, core) = (Arc::clone(&appdb), network.core_network());
             tokio::task::spawn_blocking(move || {
                 crate::masternodes::follow::backfill_payout_barriers(
@@ -628,8 +759,15 @@ impl NetworkSession {
                     crate::events::unix_now(),
                 )
             })
-            .await?
-        });
+            .await
+        };
+        match barriers {
+            Ok(barriers) => masternodes.set_barriers_ready(barriers),
+            Err(e) => {
+                end_failed_open(&data_dir, manager, persister, (store, replay, tap)).await;
+                return Err(e.into());
+            }
+        }
         // A change of the wallet set re-reads the masternodes (MG-03 D28).
         let sink = masternodes.watch_wallets(sink);
         // The wallets the session knows: loaded, unloaded, or listed in the
@@ -642,29 +780,13 @@ impl NetworkSession {
         let journal = match crate::platform::lease::session::open_journal(&data_dir, known).await {
             Ok(journal) => journal,
             Err(e) => {
-                let report = manager.shutdown().await;
-                if !report.all_clean() {
-                    tracing::warn!(
-                        ?report,
-                        "manager shutdown after failed journal read was not clean"
-                    );
-                }
-                // Released before the error returns, as a close does, so
-                // the next open in this process can read the journal again:
-                // the loaded wallets are unloaded first, or upstream's
-                // reference cycle keeps the persister (see `close`). The
-                // shielded store is not configured yet, so the unload
-                // deletes nothing of it.
-                for id in manager.list_wallet_ids_blocking() {
-                    if let Err(e) = manager.remove_wallet(&id).await {
-                        tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload after a failed open failed");
-                    }
-                }
-                let released = Arc::downgrade(&persister);
-                drop((manager, store, persister, replay, tap));
-                if !persister_released(&released).await {
-                    tracing::warn!("the wallet database is still held after a failed open");
-                }
+                #[cfg(test)]
+                failed_open_probe::record(
+                    &data_dir,
+                    manager.shielded_coordinator().await.is_some(),
+                    manager.list_wallet_ids_blocking().len(),
+                );
+                end_failed_open(&data_dir, manager, persister, (store, replay, tap)).await;
                 return Err(e);
             }
         };
@@ -838,12 +960,10 @@ impl NetworkSession {
         // Avatars (DP4-02): the toggle, the cache directory's descriptor.
         session.open_avatars(Arc::clone(&appdb)).await;
         // Before SPV starts: no block can replay a coin outside its account.
-        // A replay owed but not stored: the session does not open, and is
-        // closed as a close does, so the next open in this process can claim
-        // the wallet database.
+        // A replay owed but not stored: the session does not open.
         if let Err(e) = session.restore_loaded_wallets(&manager).await {
             drop((manager, appdb));
-            session.close().await;
+            session.close_after_failed_open().await;
             return Err(e);
         }
         for id in manager.list_wallet_ids_blocking() {
@@ -858,7 +978,20 @@ impl NetworkSession {
                 .expire_contact_profiles(&manager, WalletId(id))
                 .await;
         }
-        session.load_history().await?;
+        let history = session.load_history().await;
+        #[cfg(test)]
+        let history = match crate::keys::take_test_failure(&FAIL_HISTORY_LOAD_IN, &session.data_dir)
+        {
+            true => history.and(Err(EngineError::Storage(
+                "test: history load failed".into(),
+            ))),
+            false => history,
+        };
+        if let Err(e) = history {
+            drop((manager, appdb));
+            session.close_after_failed_open().await;
+            return Err(e);
+        }
         session.clean_export_staging().await;
         session.start_pump(&manager, appdb);
         session.back_up_every_wallet_once();
@@ -1098,6 +1231,17 @@ impl NetworkSession {
     /// databases: it returns once the last reference to the wallet database
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        self.close_with(Closing::Close).await;
+    }
+
+    /// Closes a session whose open failed as [`Self::close`] does, without
+    /// unloading its wallets (Q104 104-F1): a database left held stays
+    /// held, as [`release_after_failed_open`] describes.
+    async fn close_after_failed_open(&self) {
+        self.close_with(Closing::FailedOpen).await;
+    }
+
+    async fn close_with(&self, closing: Closing) {
         // From here the dispatch hook accepts no spend and allows no re-send:
         // a quit is not refused by a signing call in flight; it revokes the
         // leases and drains the passes before its gate waits for that call.
@@ -1234,6 +1378,19 @@ impl NetworkSession {
         // open (its open rehydrates the stored spends), so an in-app close
         // keeps no wallet (`PlatformRuntime::close_preflight`,
         // `wallet_loads`, E1 r2 R2-3, r3 m1).
+        if closing == Closing::FailedOpen {
+            let loaded = manager.list_wallet_ids_blocking();
+            flush_left_loaded(&live.persister, &loaded).await;
+            let persister = Arc::downgrade(&live.persister);
+            drop((manager, live.store, live.persister, live.appdb, live.tap));
+            drop((live.provenance, live.replay));
+            release_after_failed_open(&self.data_dir, persister, !loaded.is_empty()).await;
+            self.leases.close_journal().await;
+            self.sink.emit(EngineEvent::SessionClosed {
+                network: self.network.clone(),
+            });
+            return;
+        }
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
             let unloaded = (self.platform).remove_from_manager(
@@ -1306,6 +1463,15 @@ impl NetworkSession {
             network: self.network.clone(),
         });
     }
+}
+
+/// How [`NetworkSession::close_with`] ends the session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Closing {
+    /// Every wallet that can be is unloaded first.
+    Close,
+    /// After a failed open: no wallet is unloaded.
+    FailedOpen,
 }
 
 /// The SDK options that need parsing, validated once at `open`.
