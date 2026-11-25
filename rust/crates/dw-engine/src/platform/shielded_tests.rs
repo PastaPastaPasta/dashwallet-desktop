@@ -235,6 +235,8 @@ pub(crate) struct FakeShielded {
     applied: Mutex<Vec<OutPoint>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
+    /// The library cannot spend from a lease's key set.
+    pub(super) no_keyset: AtomicBool,
     /// Platform's shielded note count; unknown when `None`.
     pub(super) pool_notes: Mutex<Option<u64>>,
     /// What an identity create asks of the dispatch hook before it signs
@@ -453,6 +455,7 @@ impl Default for FakeShielded {
             queued: Mutex::default(),
             applied: Mutex::default(),
             unhooked: AtomicBool::new(false),
+            no_keyset: AtomicBool::new(false),
             pool_notes: Mutex::new(None),
             create_hook: Mutex::new(None),
             hook_reads: Mutex::default(),
@@ -1008,6 +1011,10 @@ impl ShieldedLib for FakeShielded {
         }
         self.settled.lock().unwrap().insert(txid);
         Ok(())
+    }
+
+    fn keyset_spends(&self) -> bool {
+        !self.no_keyset.load(Ordering::SeqCst)
     }
 
     async fn hooked(&self) -> bool {

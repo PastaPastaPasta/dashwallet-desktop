@@ -319,6 +319,8 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
+    /// Whether the library spends from the key set a lease releases.
+    fn keyset_spends(&self) -> bool;
     /// The account's spends the library resolved with no proof of either
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
@@ -1650,12 +1652,13 @@ pub(super) async fn send_armed(
     }
 }
 
-/// Refuses a spend while the coordinator has no dispatch hook: the library
-/// would send what the engine never accepted. `send` and `unshield` ask
-/// before anything else, so the refusal quotes nothing, issues no address
-/// and keeps the grant.
+/// Refuses a spend while the library cannot spend from a lease's key set
+/// ([`ShieldedLib::keyset_spends`]) or the coordinator has no dispatch hook
+/// (the library would send what the engine never accepted):
+/// `platform.unavailable`. Every spend asks before anything else, so the
+/// refusal quotes nothing, issues no address and keeps the grant.
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
-    if !lib.hooked().await {
+    if !lib.keyset_spends() || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
     }
     Ok(())
@@ -3200,6 +3203,10 @@ impl ShieldedLib for PwShielded {
 
     async fn hooked(&self) -> bool {
         hooked(&self.coordinator).await
+    }
+
+    fn keyset_spends(&self) -> bool {
+        true
     }
 
     async fn rest_clock(&self) -> Result<RestClock, PlatformError> {

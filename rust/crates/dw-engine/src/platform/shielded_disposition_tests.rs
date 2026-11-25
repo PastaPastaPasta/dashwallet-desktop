@@ -398,6 +398,71 @@ fn unreadable_disposition_row_is_acked_by_key_and_listing_resumes() {
     );
 }
 
+/// C4b-2: an outcome the library cannot read is acknowledged on the
+/// engine's proof that it never executed (its `pruned` marker) while the
+/// journal still has it in flight, its notes not read spent. A `pruned`
+/// marker beside a journal settled executed proves nothing: the outcome
+/// waits and its notes stay held.
+#[test]
+fn an_unreadable_outcome_is_acked_on_a_pruned_proof_only_while_in_flight() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    let mark = |n: u8| {
+        let scope = dw_appdb::local_scope(&wallet.to_string());
+        let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash(n)));
+        (engine.block_on(
+            session.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("pruned"))),
+        ))
+        .unwrap();
+    };
+    let corrupt = |n: u8| {
+        let db =
+            rusqlite::Connection::open(session.data_dir().join(pool::SHIELDED_DB_FILE)).unwrap();
+        let rows = db
+            .execute(
+                "UPDATE shielded_spend_dispositions SET at = -1 WHERE st_hash = ?1",
+                [&st_hash(n)[..]],
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+    };
+    let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
+
+    resolve(&engine, &session, wallet, 1, cancelled);
+    mark(1);
+    corrupt(1);
+    assert!(listing(&engine, &session, wallet).is_err());
+    pass(&engine, &session);
+    assert_eq!(listing(&engine, &session, wallet), Ok(Vec::new()));
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::NotExecuted, None, true)
+    );
+
+    resolve(&engine, &session, wallet, 2, cancelled);
+    let settled = engine.block_on(session.leases.settle_shielded_artifact(
+        wallet,
+        st_hash(2),
+        ArtifactStatus::Executed,
+        None,
+        false,
+    ));
+    assert_eq!(settled, Ok(dw_appdb::dispatch::ArtifactSettled::Settled));
+    mark(2);
+    corrupt(2);
+    pass(&engine, &session);
+    assert!(
+        listing(&engine, &session, wallet).is_err(),
+        "not acknowledged: its notes stay held"
+    );
+    assert_eq!(
+        settlement(&engine, &session, wallet, 2),
+        (ArtifactStatus::Executed, None, false)
+    );
+}
+
 /// A failed first send under the hook leaves the spend `Unresolved
 /// (Cancelled)`: it may still execute. It reads as being confirmed
 /// (`unresolved`, its disposition kept) and is never acknowledged here,
