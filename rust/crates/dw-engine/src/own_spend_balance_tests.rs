@@ -3828,7 +3828,11 @@ fn a_spend_note_a_reorg_replaced_while_closed_goes_at_the_open() {
     assert_eq!(held_total(&session, id), (0, 0), "observed");
 
     let session = reopen(&engine, session);
-    assert_eq!(spend_note(&session, id, d), Some(note), "no header chain yet");
+    assert_eq!(
+        spend_note(&session, id, d),
+        Some(note),
+        "no header chain yet"
+    );
     let other = super::block_with(vec![funding(5, &[], 0)]).block_hash();
     assert_ne!(other, block);
     let reorged = [(TIP, tip), (TIP + 1, other)];
