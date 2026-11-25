@@ -131,7 +131,7 @@ fn abandon_child() {
 struct Seen {
     abandoned: bool,
     can_resend: bool,
-    free: bool,
+    offered: BTreeSet<OutPoint>,
     waiting: BTreeSet<OutPoint>,
     synced: u32,
     total: u64,
@@ -168,7 +168,7 @@ fn seen(
                     crate::tx_actions::TxActionRefusal::AlreadyAbandoned
                 ))
             ),
-        free: inputs.is_subset(&free),
+        offered: inputs.intersection(&free).copied().collect(),
         waiting: session.hub.rescan_held(&id),
         synced: synced(engine, session, id),
         total: balances(session, id).total,
@@ -195,7 +195,10 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
     let waiting = |seen: &Seen, when: &str| {
         abandoned(seen, when);
         assert_eq!(seen.waiting, inputs, "{when}: the coins waiting: {seen:?}");
-        assert!(!seen.free, "{when}: its coins are offered: {seen:?}");
+        assert!(
+            seen.offered.is_empty(),
+            "{when}: a coin is offered: {seen:?}"
+        );
         assert_eq!(
             seen.total,
             whole - inputs.len() as u64 * COIN,
@@ -205,7 +208,7 @@ fn kill9_r6a_abandon_killed_before_its_rescan_frees_the_coins_after_it() {
     let settled = |seen: &Seen, when: &str| {
         abandoned(seen, when);
         assert!(seen.waiting.is_empty(), "{when}: {seen:?}");
-        assert!(seen.free, "{when}: its coins are held: {seen:?}");
+        assert_eq!(seen.offered, inputs, "{when}: its coins are held: {seen:?}");
         assert_eq!(seen.total, whole, "{when}: {seen:?}");
     };
 
