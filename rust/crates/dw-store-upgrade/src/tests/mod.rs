@@ -8,6 +8,7 @@ mod p9a;
 mod refusals;
 mod review_fixes;
 mod review_fixes_2;
+mod startup_order;
 mod v3;
 
 use std::collections::BTreeMap;

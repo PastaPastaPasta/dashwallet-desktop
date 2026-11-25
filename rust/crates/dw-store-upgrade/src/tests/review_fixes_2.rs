@@ -156,26 +156,6 @@ fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
 }
 
 #[test]
-fn a_write_to_app_sqlite_between_prepare_and_reconcile_is_refused() {
-    let f = fixture("v0.1.0");
-    let snapshot = crate::prepare_with(&f.net, build(), now())
-        .unwrap()
-        .snapshot
-        .unwrap();
-    exec(
-        &f.net.join("app.sqlite"),
-        "CREATE TABLE dwsu_between (a INTEGER); INSERT INTO dwsu_between VALUES (1)",
-    );
-    let err = reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
-        "{err:?}"
-    );
-    assert!(column_present(&f));
-    assert_eq!(before_upgrade_dirs(&f), 1, "not silently re-snapshotted");
-}
-
-#[test]
 fn a_machine_fault_in_the_rehearsal_is_retryable_not_a_refusal() {
     let f = fixture("v0.1.0");
     let before = tree(&f.root);
