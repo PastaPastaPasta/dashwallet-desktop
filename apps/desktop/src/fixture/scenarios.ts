@@ -37,7 +37,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
-import { restoredFundLock, restoredLock } from "./recovery";
+import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
@@ -78,7 +78,7 @@ export interface World {
    * not roll back, the next `open_network` fails once too, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
-    closeRefused?: "wallet" | "shielded_spend_unresolved";
+    closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;
     /** The switch goes through but its choice is not written. */
@@ -792,6 +792,24 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** Just after a chain fork, while the wallet catches up: an unconfirmed payment offers Abandon,
+   * and Abandon and Remove Unconfirmed are refused with `rescan_in_progress`. */
+  "abandon-catching-up": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5b".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.catchingUp = true;
+    return w;
+  },
   /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
    * offered and refused, and the detail says why. */
   "abandon-settled-child": (t) => {
@@ -1211,6 +1229,44 @@ const SCENARIOS = {
   "paddr-recovery-mixed": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.30 DASH left: Home offers Recover. */
+  "recovery-recoverable": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Two refused transfers to Shielded: one with 0.30 DASH left, one with less than the fee left (too small, not on the card). */
+  "recovery-recoverable-small": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A restored lock ready to finish and a refused transfer to Shielded with 0.30 DASH left: the sheet shows both pairs of lines. */
+  "recovery-recoverable-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(4, 25_000_000), partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Only refused transfers to Shielded with less than the fee left: no card. */
+  "recovery-too-small-only": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A refused transfer to Shielded with 0.30 DASH left, on mainnet: listed, never offered a Recover. */
+  "recovery-recoverable-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(3, 40_000_000, 20_000_000_000n)];
+    return w;
+  },
+  /** The first recover may have gone through ("checking"); the next is applied. */
+  "recovery-recover-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** The first finish ends `platform.unavailable`; a retry is applied. */

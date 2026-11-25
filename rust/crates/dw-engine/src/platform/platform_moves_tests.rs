@@ -948,6 +948,12 @@ impl World {
         Self::over(Fixture::new(0))
     }
 
+    /// [`Self::new`] on a session with Platform on, so a proved protocol
+    /// version reaches the pre-check.
+    pub(crate) fn with_platform() -> Self {
+        Self::over(Fixture::with_platform())
+    }
+
     /// [`Self::new`] with the session on `network`.
     pub(crate) fn on(network: crate::DashNetwork) -> Self {
         Self::over(Fixture::on(network, 0))
@@ -2805,14 +2811,48 @@ pub(crate) fn no_fee_steps() -> &'static PlatformVersion {
     Box::leak(Box::new(v))
 }
 
-/// The refusal [`no_fee_steps`] forces: Platform's own structure check
-/// (`FeeStrategyTooManyStepsError`), not an earlier step of the move.
+/// The refusal [`no_fee_steps`] forces: Platform's own structure check,
+/// with no newer network version read, which only the pre-check returns.
+/// Its consensus error is not carried, so never shown.
 pub(crate) fn assert_no_fee_steps(e: &CreditsError) {
-    let shown = format!("{e:?}");
-    assert!(
-        shown.contains("Fee strategy has 1 steps, maximum allowed is 0"),
-        "{shown}"
-    );
+    assert_eq!(*e, CreditsError::PreflightRefused);
+    assert!(!format!("{e:?} {e}").contains("Fee strategy"), "{e:?}");
+}
+
+/// A pre-check's structural refusal says "rules have changed" only when
+/// the proved network version is above both the planned version and the
+/// latest this build knows; an unread, equal or merely newer-than-planned
+/// version is the generic refusal. Other errors keep their own mapping.
+#[test]
+fn a_pre_check_refusal_names_a_rules_change_only_past_every_known_version() {
+    use dpp::consensus::basic::BasicError;
+    use dpp::consensus::basic::state_transition::FeeStrategyTooManyStepsError;
+    use dpp::consensus::signature::InvalidStateTransitionSignatureError;
+    let basic = || {
+        let e = BasicError::FeeStrategyTooManyStepsError(FeeStrategyTooManyStepsError::new(1, 0));
+        dpp::ProtocolError::ConsensusError(Box::new(ConsensusError::from(e)))
+    };
+    let latest = PlatformVersion::latest();
+    let top = latest.protocol_version;
+    let older = PlatformVersion::get(top - 1).unwrap();
+    for (version, network, expected) in [
+        (latest, None, CreditsError::PreflightRefused),
+        (latest, Some(top), CreditsError::PreflightRefused),
+        (older, Some(top), CreditsError::PreflightRefused),
+        (latest, Some(top + 1), CreditsError::RulesUnsupported),
+        (older, Some(top + 1), CreditsError::RulesUnsupported),
+    ] {
+        for kind in [MoveKind::ToCore, MoveKind::Transfer, MoveKind::ToIdentity] {
+            let got = refused(basic(), kind, version, network);
+            assert_eq!(got, expected, "{kind:?} {network:?}");
+        }
+    }
+    let signature = ConsensusError::from(InvalidStateTransitionSignatureError::new("x".into()));
+    let other = refused(signature.into(), MoveKind::ToCore, latest, Some(top + 1));
+    assert!(matches!(other, CreditsError::Platform(_)), "{other:?}");
+    let built = dpp::ProtocolError::Generic("builder".into());
+    let other = refused(built, MoveKind::Transfer, latest, Some(top + 1));
+    assert!(matches!(other, CreditsError::Platform(_)), "{other:?}");
 }
 
 /// The latest version, one protocol version higher.
@@ -3938,7 +3978,7 @@ fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
     let at = dashcore::OutPoint::new(txid.parse().unwrap(), 0);
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
     let arming = (w.f.engine)
-        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100).await });
+        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100, false).await });
     assert_eq!(arming, Ok(Arming::Made));
     w.net.fund(a, DASH);
     let rows = w.activity();

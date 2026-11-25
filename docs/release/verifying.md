@@ -1,11 +1,14 @@
 # Verifying a download
 
 Every file the release workflow publishes carries a GitHub build attestation: a signed statement, made by
-GitHub Actions for this repository, that the file was built by `.github/workflows/release.yml` from a given
-commit. Signed releases (starting with 1.0, plus any signed release candidate) also carry a detached PGP
-signature (`SHA256SUMS.asc`), Apple Developer ID signing and notarization on macOS, and Windows Authenticode
-signing. Pre-1.0 release candidates, `main` builds, and `continuous` ship keyless: attestations only, with
-ad-hoc macOS and unsigned Windows installers.
+GitHub Actions for this repository, that the file was built or assembled by `.github/workflows/release.yml`
+(or `.github/workflows/release-publish-signed.yml` for detached-signed releases and candidates) from a given commit.
+Signed stable releases (starting with 1.0) also carry a detached PGP signature (`SHA256SUMS.asc`), Apple
+Developer ID signing and notarization on macOS, and Windows Authenticode signing. Release candidates
+(`vX.Y.Z-rc.N`), `main` builds, and `continuous` ship keyless: attestations only, with ad-hoc macOS and
+unsigned Windows installers. A candidate the release signer signs ([`RC-SIGNING.md`](RC-SIGNING.md)) has the same
+signatures as a stable release except the updater feed: `SHA256SUMS.asc`, a notarized `.dmg` and an
+Authenticode-signed installer, attested by `release-publish-signed.yml`.
 
 An attestation proves **where and from what the file was built**, not that the code is safe. For early
 releases without a completed security review, use small amounts only.
@@ -34,7 +37,9 @@ gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop \
 ```
 
 For a tagged release use the tag, for example `--source-ref refs/tags/v0.1.0` (`--signer-workflow` alone checks
-the workflow file, not the branch or tag it ran on).
+the workflow file, not the branch or tag it ran on). Signed 1.0+ releases and signed candidates (with `SHA256SUMS.asc`) published via the
+detached-sigs workflow use `--signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release-publish-signed.yml`
+for the final published assets (while the unsigned CI inputs carry attestations from `release.yml`).
 
 It prints the workflow, the commit and the run that built the file, and exits non-zero when the file's digest has
 no attestation from this repository (or none that satisfies the filters). The same works for every other file (`.exe`, `.AppImage`, `.deb`, `.flatpak`, the two SBOMs) and for
@@ -59,7 +64,7 @@ grep <file name> SHA256SUMS | shasum -a 256 -c  # macOS, one file
 `--ignore-missing` skips the downloads you did not fetch. The `continuous` release has its own `SHA256SUMS`, which
 lists its `DashWallet-continuous-…` names.
 
-Signed releases (1.0 and later, plus signed candidates) also publish a detached armored PGP signature,
+Signed releases (1.0 and later, and release candidates signed the same way) also publish a detached armored PGP signature,
 `SHA256SUMS.asc`, which is attested alongside `SHA256SUMS`. Import the release public key named in the release
 notes, confirm its full 40-character primary key fingerprint matches the release notes, and verify
 `SHA256SUMS.asc` before checking file hashes:
@@ -76,7 +81,7 @@ offline, so `gpg` prints both the primary key fingerprint and the signing subkey
 
 ## Check the macOS signature and notarization
 
-On signed releases (1.0 and later, plus signed candidates), both the `.dmg` and `Dash Wallet.app` inside it are
+On signed releases (1.0 and later) and signed candidates, both the `.dmg` and `Dash Wallet.app` inside it are
 signed with a Developer ID Application certificate and notarized by Apple. After copying `Dash Wallet.app` to
 `/Applications`:
 
@@ -103,9 +108,9 @@ Gatekeeper blocks the app until you allow it explicitly (right-click the app ▸
 
 ## Check the Windows signature
 
-On signed releases (1.0 and later, plus signed candidates), both the NSIS installer
-(`dash-wallet-<version>-windows-x64-setup.exe`) and the installed `dash-wallet.exe` carry an Authenticode
-signature issued via Azure Artifact Signing with an RFC 3161 timestamp.
+On signed releases (1.0 and later), the NSIS installer (`dash-wallet-<version>-windows-x64-setup.exe`) carries
+an Authenticode signature with an RFC 3161 timestamp made with Dash Core's code-signing certificate (following
+Dash Core's detached-signatures model, [`SIGNING.md`](SIGNING.md)).
 
 - **In File Explorer:** right-click the `.exe` ▸ **Properties** ▸ **Digital Signatures** tab ▸ select the
   signature ▸ **Details**. Confirm it says **This digital signature is OK** and shows a valid timestamp.
@@ -116,11 +121,11 @@ Get-AuthenticodeSignature .\dash-wallet-<version>-windows-x64-setup.exe |
   Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
-`Status` must be `Valid`. Run the same command against the installed `dash-wallet.exe` to verify the application
-binary inside the installer.
+`Status` must be `Valid`.
 
-**Keyless candidates and `main` builds:** pre-1.0 release candidates (`-rc.N` without signing), per-build `main`
-releases, and `continuous` are unsigned (`Status: NotSigned`). On first launch, Windows SmartScreen shows
+**Keyless candidates and `main` builds:** release candidates (`-rc.N`) published keyless (every pre-1.0
+candidate, and any candidate without `SHA256SUMS.asc`), per-build `main` releases, and `continuous` are unsigned
+(`Status: NotSigned`). On first launch, Windows SmartScreen shows
 "Windows protected your PC"; click **More info** ▸ **Run anyway** to install (see the release notes' Install
 section).
 
@@ -158,9 +163,12 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
   While it is being replaced (tens of seconds) a file can be briefly missing, or newer than its `SHA256SUMS`:
   if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.
 - **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
-  releases are full releases and ship fully signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
-  Windows Authenticode, plus GitHub build attestations). Pre-1.0 release candidates (`-rc.N`), `main` builds, and
-  `continuous` are prereleases and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release
-  notes and README for the first-launch warnings).
+  releases are full releases and ship signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
+  Windows Authenticode, plus GitHub build attestations) once detached signatures are attached (enforced by
+  default — stable tags fail closed). Release candidates (`-rc.N`) are prereleases; they ship
+  keyless by default, or signed the same way (without an update feed) when the repository opts them in
+  (`docs/release/RC-SIGNING.md`); a signed candidate has `SHA256SUMS.asc`. `main` builds and `continuous` are
+  prereleases and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release notes and README for
+  the first-launch warnings).
 
 A branch or pull-request build is only a CI artifact on its Actions run and is never attested or published.

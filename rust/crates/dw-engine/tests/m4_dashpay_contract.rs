@@ -183,6 +183,9 @@ const IMPLEMENTED: &[&str] = &[
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
     "DashPay.finish_transfer",
+    // #402: recovering a partly used transfer to Shielded.
+    "DashPay.recover_transfer_quote",
+    "DashPay.recover_transfer",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -337,6 +340,8 @@ const NOT_FACADE: &[&str] = &[
     "unfinished_funds.rs",
     "unfinished_locks.rs",
     "unfinished_locks_tests.rs",
+    "unfinished_remainder.rs",
+    "unfinished_remainder_tests.rs",
     "unfinished_shields.rs",
     "users.rs",
     "users_tests.rs",
@@ -1160,6 +1165,8 @@ fn error_codes_match_the_contract() {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::PreflightRefused,
+            CreditsError::RulesUnsupported,
         ],
         CreditsError::code,
     );
@@ -1704,6 +1711,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.finish_transfer(LockKindId::PlatformAddress, s(), 0, s())
                 .await
                 .map(drop),
+            dp.recover_transfer_quote(s(), 0).await.map(drop),
+            dp.recover_transfer(s(), 0, s()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

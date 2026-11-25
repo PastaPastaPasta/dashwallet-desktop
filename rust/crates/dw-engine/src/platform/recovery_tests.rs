@@ -2958,7 +2958,7 @@ fn a_press_refused_after_the_wait_leaves_its_grant_unused() {
 
 /// #585 (Q63): the session closing mid-wait ends the wait. A Finish waits
 /// as a press does, holding the session's gate and close preflight; close
-/// cancels the wait first and returns promptly, and the Finish is refused
+/// cancels the wait first, so the Finish ends promptly, refused
 /// before it takes a lease from its grant.
 #[test]
 fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
@@ -2976,30 +2976,35 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
             max_credits: 0,
         },
     );
+    // Platform answers the Finish's protocol read at once (unreachable), so
+    // its release does not hang on a connect to the offline address.
+    *guard(&s.platform.protocol.test_fetch) = Some(Arc::new(|| Err(PlatformError::Unavailable)));
     let txid = tracked_fund_lock(&engine, &s, id);
-    let started = Instant::now();
     let dp = s.dashpay(id);
     let finished = engine.block_on(async {
-        let finish = dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone());
+        let finish = async {
+            let finished =
+                (dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone())).await;
+            (finished, Instant::now())
+        };
         let closing = async {
             while !pause.reached.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             let at = Instant::now();
             s.close().await;
-            at.elapsed()
+            at
         };
         let both = async { tokio::join!(finish, closing) };
         tokio::time::timeout(Duration::from_secs(60), both).await
     });
-    let (finished, closed_in) =
+    let ((finished, finished_at), closing_at) =
         finished.expect("the Finish waits on the rerun and the close ends it");
-    assert!(closed_in < Duration::from_secs(10), "{closed_in:?}");
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
-    );
+    // Timed from the close's start to the Finish's end, not to the close's:
+    // SPV's teardown waits for the Platform syncs in flight against the
+    // offline address, each up to its request deadline (10 s).
+    let released = finished_at.saturating_duration_since(closing_at);
+    assert!(released < Duration::from_secs(10), "{released:?}");
     // Refused at readiness, before the lease is taken from the grant (close
     // then revokes every grant, so the vault can't be asked after): held
     // on the bring-up, or, once the close has gone further, by the
@@ -3013,6 +3018,92 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
         "{finished:?}"
     );
     pause.release.notify_one();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A Finish whose wait the close cancelled goes on to its readiness, whose
+/// protocol read asks Platform under an operation guard. The close does not
+/// wait for the answer: a connect to an unreachable node took seconds on
+/// Windows and held the gate's close for as long. The read is refused.
+#[test]
+fn a_close_does_not_wait_for_a_protocol_read_in_flight() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let read = Arc::new(crate::coins::TestPause::default());
+    *guard(&s.platform.protocol.hold_fetch) = Some(Arc::clone(&read));
+    let refresh = {
+        let session = Arc::clone(&s);
+        s.rt.spawn(async move { session.refresh_protocol_version().await })
+    };
+    wait_until("the read", || read.reached.load(Ordering::SeqCst));
+    let closed =
+        engine.block_on(async { tokio::time::timeout(Duration::from_secs(20), s.close()).await });
+    assert!(closed.is_ok(), "the close waited for the read");
+    let refreshed = engine.block_on(refresh).unwrap();
+    assert!(
+        matches!(refreshed, Err(PlatformError::NetworkNotOpen)),
+        "{refreshed:?}"
+    );
+    read.release.notify_one();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A network switch while a Finish waits on its wallet's rerun is refused
+/// as preparing, not as an unresolved shielded spend, and the Finish goes on.
+#[test]
+fn a_switch_while_a_finish_waits_on_a_rerun_is_refused_as_preparing() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id, _platform) = skipped_at_restart(dir.path());
+    *guard(&s.platform.bring_up_waits) = Some((Duration::from_secs(120), Duration::from_secs(120)));
+    let pause = test_pause();
+    *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
+    let g = grant(
+        &engine,
+        &s,
+        id,
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 0,
+        },
+    );
+    let txid = tracked_fund_lock(&engine, &s, id);
+    let network = s.network().clone();
+    let dp = s.dashpay(id);
+    let both = engine.block_on(async {
+        let finish = dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone());
+        let switching = async {
+            while !pause.reached.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(s.platform.preparing());
+            let refused = engine
+                .close_network_unless_busy(network, Duration::from_secs(2), |_| None::<()>)
+                .await;
+            pause.release.notify_one();
+            refused
+        };
+        tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(finish, switching)
+        })
+        .await
+    });
+    let (finished, refused) =
+        both.expect("the Finish waits on the rerun and the switch is answered");
+    assert!(
+        matches!(refused, Err(crate::CloseRefused::Preparing)),
+        "{refused:?}"
+    );
+    assert!(s.is_open());
+    // Past the hold, the fund lock is found and, offline, not applied.
+    assert!(
+        !matches!(
+            finished,
+            Ok(super::LockFinish::Applied) | Err(PlatformError::InvalidArgument { .. })
+        ),
+        "{finished:?}"
+    );
+    assert_eq!(startup(&s, id), StartupStatus::NoIdentity);
+    assert!(!s.platform.preparing());
     engine.block_on(engine.shutdown()).unwrap();
 }
 

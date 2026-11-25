@@ -3,4 +3,4 @@
 /**
  * Why a network's close refused itself ([`ErrorData::NetworkCloseRefused`]).
  */
-export type CloseRefusalReason = "walletOpening" | "shieldedSpendUnresolved";
+export type CloseRefusalReason = "walletOpening" | "shieldedSpendUnresolved" | "transferPreparing";
