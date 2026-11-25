@@ -120,10 +120,11 @@ impl RefusedCause {
     ];
 
     /// The cause the refusal screen shows for `e`, or `None` when `e` gets
-    /// no refusal screen: a retryable [`StoreUpgradeError::Io`], a pending
+    /// no refusal screen: a retryable fault (the store held by another
+    /// process, the snapshot not written, an SQLite or I/O error), a pending
     /// restore or any restore error (the restore screens own them,
     /// [`restore_screen_for`]), or an error after which the files may have
-    /// changed, where "didn't change anything" can't be said.
+    /// changed.
     pub fn of(e: &StoreUpgradeError) -> Option<Self> {
         use StoreUpgradeError as E;
         if !e.file_unchanged() {
@@ -139,7 +140,10 @@ impl RefusedCause {
             E::UpgradeSnapshotMissing { .. } => Self::SnapshotMissing,
             E::RetiredPoolWithoutAdopter { .. } => Self::ContactsTable,
             E::P9aBroken { .. } => Self::SelfCheck,
-            E::Io { .. }
+            E::StoreHeld { .. }
+            | E::SnapshotFailed { .. }
+            | E::Sqlite { .. }
+            | E::Io { .. }
             | E::RestorePending { .. }
             | E::RestoreRefused { .. }
             | E::RestoreNoSpace { .. }

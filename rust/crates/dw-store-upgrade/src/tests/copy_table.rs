@@ -374,6 +374,21 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
             },
             None,
         ),
+        (
+            E::Sqlite {
+                context: "x",
+                unchanged: true,
+                source: rusqlite::Error::InvalidQuery,
+            },
+            None,
+        ),
+        (
+            E::StoreHeld {
+                path: PathBuf::from("x"),
+            },
+            None,
+        ),
+        (E::SnapshotFailed { detail: "x".into() }, None),
     ];
     for (e, want) in cases {
         assert_eq!(RefusedCause::of(&e), want, "{e:?}");
@@ -762,12 +777,13 @@ fn every_refusal_variant_has_a_screen() {
         let e = all.iter().find(|e| variant(e) == name).unwrap();
         assert!(restore_screen_for(e).is_some(), "{name}");
     }
-    let io = all
-        .iter()
-        .find(|e| matches!(e, StoreUpgradeError::Io { .. }))
-        .unwrap();
-    assert!(!io.is_refusal());
-    assert!(screen_for(io, ProvedState::default()).is_none());
+    for name in ["StoreHeld", "SnapshotFailed", "Sqlite", "Io"] {
+        let e = all.iter().find(|e| variant(e) == name).unwrap();
+        assert!(e.file_unchanged(), "{name}");
+        assert!(!e.is_refusal(), "{name} is retried, not refused");
+        assert!(screen_for(e, ProvedState::default()).is_none(), "{name}");
+        assert!(restore_screen_for(e).is_none(), "{name}");
+    }
 }
 
 #[test]
