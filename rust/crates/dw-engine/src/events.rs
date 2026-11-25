@@ -1192,11 +1192,7 @@ impl SessionHub {
         excluded: Option<crate::withhold::Excluded>,
     ) {
         let changed = self.write_balances(id, balance, accounts, excluded);
-        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
-            && let Some(reread) = self.balance_reread.get()
-        {
-            reread(id);
-        }
+        self.reread_if_locked(id, balance, accounts);
         if changed {
             self.pump.mark_balances(id);
         }
@@ -1439,12 +1435,23 @@ impl SessionHub {
             return false;
         }
         let changed = self.write_balances(id, balance, accounts, None);
+        self.reread_if_locked(id, balance, accounts);
+        changed
+    }
+
+    /// Balances with locked coins were read while a funding held its
+    /// temporary locks: they are read again once it may have released them.
+    fn reread_if_locked(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) {
         if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
-            && let Some(reread) = reread
+            && let Some(reread) = self.balance_reread.get()
         {
             reread(id);
         }
-        changed
     }
 
     /// Applies the balances of `core`, read from the manager under its

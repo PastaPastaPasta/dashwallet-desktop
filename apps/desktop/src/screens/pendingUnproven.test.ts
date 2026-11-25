@@ -25,7 +25,9 @@ const FEE = { kind: "perKb", duffsPerKb: 1_000 } as const;
 const WITHHELD = { txid: TXID, vout: 1 };
 const isWithheld = (o: { txid: string; vout: number }) => o.txid === WITHHELD.txid && o.vout === WITHHELD.vout;
 const PENDING_TEXT = en.coins.pendingUnproven;
-const HINT_TEXT = en.activity.abandon.unprovenParentHint;
+const PENDING_HTML = PENDING_TEXT.replace(/'/g, "&#x27;");
+const HINT_HTML = en.activity.abandon.unprovenParentHint.replace(/'/g, "&#x27;");
+const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
 
 let fixture: FixtureHandle;
 beforeEach(() => {
@@ -41,9 +43,14 @@ async function coins(): Promise<Utxo[]> {
   return cmd.utxos(W, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null });
 }
 
-/** What the wallet can spend besides the withheld coin, as the engine's selection counts it. */
+/** The coins the engine's selection takes besides the withheld one. */
+async function others(): Promise<Utxo[]> {
+  return (await coins()).filter((u) => u.spendable && !u.reserved && !u.userLocked && u.coinjoinRounds === null);
+}
+
+/** What the wallet can spend besides the withheld coin. */
 async function spendableOthers(): Promise<number> {
-  return (await coins()).filter((u) => u.spendable && !u.reserved && !u.userLocked && u.coinjoinRounds === null).reduce((n, u) => n + u.amount, 0);
+  return (await others()).reduce((n, u) => n + u.amount, 0);
 }
 
 describe("a withheld coin is in no balance the app shows (condition (a))", () => {
@@ -75,16 +82,15 @@ describe("a withheld coin is in no balance the app shows (condition (a))", () =>
   it("Send's Max spends every other coin and not it", async () => {
     const available = await cmd.maxSpendable(W, { kind: "any" }, FEE);
     const d = await cmd.newTxDraft(W);
-    await cmd.draftSetRecipients(d, [{ address: "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd", amount: available, subtractFeeFromAmount: true, label: null, message: null }]);
+    await cmd.draftSetRecipients(d, [{ address: PAYEE, amount: available, subtractFeeFromAmount: true, label: null, message: null }]);
     const est = await cmd.draftEstimate(d);
     expect(est.totalSent + est.fee).toBe(available);
-    const others = (await coins()).filter((u) => u.spendable && !u.reserved && !u.userLocked && u.coinjoinRounds === null);
-    expect(est.inputCount).toBe(others.length);
+    expect(est.inputCount).toBe((await others()).length);
   });
 
   it("coin control refuses it", async () => {
     const d = await cmd.newTxDraft(W);
-    await cmd.draftSetRecipients(d, [{ address: "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd", amount: 1_000_000, subtractFeeFromAmount: false, label: null, message: null }]);
+    await cmd.draftSetRecipients(d, [{ address: PAYEE, amount: 1_000_000, subtractFeeFromAmount: false, label: null, message: null }]);
     await cmd.draftSetSource(d, { kind: "outpoints", outpoints: [WITHHELD] });
     await expect(cmd.draftEstimate(d)).rejects.toBeTruthy();
   });
@@ -131,7 +137,7 @@ describe("the coin row and the payment's details (condition (e))", () => {
         onToggle: () => {},
       }),
     );
-    expect(html).toContain(PENDING_TEXT.replace(/'/g, "&#x27;"));
+    expect(html).toContain(PENDING_HTML);
     expect(html).toMatch(/<input[^>]*disabled=""/);
   });
 
@@ -147,10 +153,10 @@ describe("the coin row and the payment's details (condition (e))", () => {
     expect(withholds(x)).toBe(true);
     const line = renderToStaticMarkup(createElement(PendingUnprovenLine, { x }));
     expect(line).toContain('data-testid="tx-detail-pending-unproven"');
-    expect(line).toContain(PENDING_TEXT.replace(/'/g, "&#x27;"));
+    expect(line).toContain(PENDING_HTML);
     const hint = renderToStaticMarkup(createElement(UnprovenAbandonHint, { x }));
     expect(hint).toContain('data-testid="tx-abandon-unproven-hint"');
-    expect(hint).toContain(HINT_TEXT.replace(/'/g, "&#x27;"));
+    expect(hint).toContain(HINT_HTML);
   });
 
   it("another payment's details show neither", async () => {

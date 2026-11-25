@@ -167,15 +167,20 @@ fn withholding_candidate(e: &TxEntry) -> bool {
     e.context.block_info().is_none() && !e.abandoned && !instant_locked(e)
 }
 
+/// Whether the history holds `o`, input `n` of `t`, as the wallet's: an
+/// own input of `e`, or claimed or marked by `t`.
+fn history_owns(h: &WalletHistory, t: &Txid, n: u32, o: &OutPoint, e: &TxEntry) -> bool {
+    e.own_inputs.contains_key(&n)
+        || h.claimed.get(o) == Some(t)
+        || h.marked.get(t).is_some_and(|m| m.contains(o))
+}
+
 /// Whether `e` spends a coin the history alone knows as the wallet's,
 /// as [`pending_unproven`]'s ownership test can find it without key-wallet.
 fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
     (e.tx.input.iter().zip(0u32..)).any(|(i, n)| {
         let o = &i.previous_output;
-        e.own_inputs.contains_key(&n)
-            || h.claimed.get(o) == Some(t)
-            || h.marked.get(t).is_some_and(|m| m.contains(o))
-            || h.txs.contains_key(&o.txid)
+        history_owns(h, t, n, o, e) || h.txs.contains_key(&o.txid)
     })
 }
 
@@ -209,9 +214,7 @@ pub(crate) fn pending_unproven(core: &ManagedWalletInfo, h: &WalletHistory) -> B
         }
     }
     let owns = |o: &OutPoint, t: &Txid, index: u32, e: &TxEntry| {
-        e.own_inputs.contains_key(&index)
-            || h.claimed.get(o) == Some(t)
-            || h.marked.get(t).is_some_and(|m| m.contains(o))
+        history_owns(h, t, index, o, e)
             || (txs.get(&o.txid))
                 .and_then(|p| p.tx.output.get(o.vout as usize))
                 .and_then(|out| Address::from_script(&out.script_pubkey, network).ok())
