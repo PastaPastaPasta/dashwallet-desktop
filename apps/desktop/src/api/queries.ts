@@ -2,7 +2,7 @@
 // signal names exactly the queries to refetch (events.ts).
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
@@ -142,16 +142,32 @@ export function useOpenNetwork() {
       const since = lockGeneration();
       const { network, lock } = await b.openNetwork();
       seedLockStatus(client, lock, since);
-      client.setQueryData(keys.restored, isRestored(network));
+      seedRestored(client, network);
       return lock;
     },
   });
 }
 
-/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is. */
+/** Seeds `restored` from the opened network, only when it says: a value not known yet leaves it unread. */
+export function seedRestored(client: QueryClient, network: unknown) {
+  const restored = isRestored(network);
+  if (restored !== undefined) client.setQueryData<boolean | null>(keys.restored, restored);
+}
+
+/** `restored` read from `activeNetwork`. Its data is `undefined` while it is not known: before an answer, when
+ * the read failed, or when the network has no `restored` (the cache holds `null` then, as a query can't
+ * resolve to `undefined`). */
+export const restoredQuery = (b: Backend) =>
+  queryOptions({
+    queryKey: keys.restored,
+    queryFn: async (): Promise<boolean | null> => isRestored(await b.activeNetwork()) ?? null,
+    select: (restored: boolean | null): boolean | undefined => restored ?? undefined,
+  });
+
+/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is.
+ * `undefined` is not known yet. */
 export function useRestored() {
-  const b = useBackend();
-  return useQuery({ queryKey: keys.restored, queryFn: async () => isRestored(await b.activeNetwork()) });
+  return useQuery(restoredQuery(useBackend()));
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

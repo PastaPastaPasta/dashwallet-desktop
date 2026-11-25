@@ -91,5 +91,9 @@ export function storeRestore(e: unknown): StoreRestoreData | null {
  * and the engine has not yet cleared RESTORED (its first full sync). */
 export type RestoredNetworkInfo = NetworkInfo & Required<Pick<NetworkInfo, "restored">>;
 
-/** `restored` of a network; `false` for a dw-app before it, which never restores. */
-export const isRestored = (network: unknown): boolean => object(network) && (network as Partial<NetworkInfo>).restored === true;
+/** `restored` of a network: `undefined` (not known yet) when the network isn't an object or has no
+ * boolean `restored`, so nothing reads a missing field as "not restored". */
+export const isRestored = (network: unknown): boolean | undefined => {
+  const restored = object(network) ? (network as Partial<NetworkInfo>).restored : undefined;
+  return typeof restored === "boolean" ? restored : undefined;
+};
