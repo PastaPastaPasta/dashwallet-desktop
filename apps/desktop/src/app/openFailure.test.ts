@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NOT_PRIVATE_REASONS } from "../api/storeOpen";
-import { notPrivateFailure, restoreFailure, STORE_SCREENS, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import { notPrivateFailure, restoreFailure, STORE_SCREENS, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "../fixture/errors";
 import { openFailure } from "./openFailure";
 
 // DP3-04b D35: a wallet file from a newer build is its own, recoverable, refusal.
@@ -22,7 +22,7 @@ describe("the splash's open failure", () => {
   });
 
   it("gives a store refusal its own screen, with the engine's screen", () => {
-    const refusal = STORE_SCREENS.cantOpen("/data/testnet");
+    const refusal = STORE_SCREENS.refusedPrevious("/data/testnet");
     expect(openFailure(storeRefusedError(refusal))).toEqual({ kind: "refused", refusal });
   });
 
@@ -47,15 +47,24 @@ describe("the splash's open failure", () => {
     expect(openFailure({ code: "storage_restore", message: "stopped", data: withoutBytes })).toEqual({ kind: "restore", restore: whole });
   });
 
+  it("gives an upgrade that stopped on the machine its own screen; without whole data, the engine's text and no retry", () => {
+    expect(openFailure(storeRetryError("/data"))).toEqual({ kind: "retry", retry: { kind: "retry", folder: "/data" } });
+    for (const data of [null, { kind: "retry" }, { kind: "retry", folder: 3 }, { kind: "restore", folder: "/data" }])
+      expect(openFailure({ code: "storage_retry", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
+  });
+
   it("does not take a storage_refused without its screen for a refusal", () => {
     expect(openFailure({ code: "storage_refused", message: "x", data: null })).toMatchObject({ kind: "message", retry: false });
     expect(openFailure({ code: "storage_refused", message: "x", data: { kind: "storeRefused", folder: "/data", cause: "P9aBroken" } })).toMatchObject({ kind: "message", retry: false });
-    const whole = STORE_SCREENS.cantOpen("/data");
+    const whole = STORE_SCREENS.refusedPrevious("/data");
     const broken = [
       { ...whole, screen: { ...whole.screen, buttons: undefined } },
-      { ...whole, screen: { ...whole.screen, buttons: [{ key: "storeUpgrade.cantOpen.quit", label: 3, destructive: false, defaultFocus: false }] } },
-      { ...whole, screen: { ...whole.screen, title_key: "storeUpgrade.cantOpen.title", titleKey: undefined } },
+      { ...whole, screen: { ...whole.screen, buttons: [{ key: "storeUpgrade.refused.quit", label: 3, destructive: false, defaultFocus: false }] } },
+      { ...whole, screen: { ...whole.screen, title_key: "storeUpgrade.refused.title", titleKey: undefined } },
       { ...whole, screen: { ...whole.screen, hint: { key: "x" } } },
+      { ...whole, screen: { ...whole.screen, lines: undefined } },
+      { ...whole, screen: { ...whole.screen, lines: [] } },
+      { ...whole, screen: { ...whole.screen, lines: [{ key: "storeUpgrade.refused.intro", text: 3 }] } },
       { ...whole, folder: null },
     ];
     for (const data of broken) expect(openFailure({ code: "storage_refused", message: "x", data })).toMatchObject({ kind: "message", retry: false });

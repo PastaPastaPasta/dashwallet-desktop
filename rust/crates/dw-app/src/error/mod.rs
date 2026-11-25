@@ -21,7 +21,7 @@ mod nested;
 mod platform;
 mod rates;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::governance::{GovernanceSyncPhaseName, ProposalFieldName};
@@ -528,6 +528,23 @@ pub enum ErrorData {
         folder: String,
         reason: NotPrivateReason,
     },
+    /// `storage_restore`: a requested or part-done restore stopped the open
+    /// (or a restore command was refused): `state` picks the
+    /// `storeUpgrade.restore.<state>.*` screen, the same for every `cause`,
+    /// which names it for tests and logs;
+    /// `needed_bytes` is the space the restore's copies need (`noSpace`
+    /// only); `folder` is the network directory.
+    Restore {
+        state: RestoreStateName,
+        cause: String,
+        needed_bytes: Option<u64>,
+        folder: String,
+    },
+    /// `storage_retry`: the open's store upgrade stopped on the machine (the
+    /// disk full or not writable, an I/O fault) and runs again at the next
+    /// start: the `storeUpgrade.retry.noSpace.*` screen, never the earlier
+    /// version; `folder` is the network directory.
+    Retry { folder: String },
     /// `storage_in_use`: whether trying again in this process may succeed;
     /// false means only a restart clears it.
     StorageInUse { retryable: bool },
@@ -536,8 +553,41 @@ pub enum ErrorData {
     Io { retryable: bool },
 }
 
-/// A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for` gives
-/// it: catalog keys with their English, `{folder}` filled in.
+/// Where a restore that stopped the open stands (`storeUpgrade.restore.*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreStateName {
+    /// The request can't be honoured; it was removed and nothing changed.
+    Refused,
+    /// Not enough disk space for the restore's copies; nothing changed.
+    NoSpace,
+    /// Stopped before it began replacing files; nothing changed and the
+    /// request stays.
+    NotStarted,
+    /// Stopped partway; no store opens until a start finishes it.
+    Incomplete,
+    /// The wallet files in place are not the restored data: nothing moved;
+    /// Keep the current files runs `keep_current_files`.
+    Foreign,
+}
+
+impl From<dw_engine::store_upgrade::RestoreState> for RestoreStateName {
+    fn from(s: dw_engine::store_upgrade::RestoreState) -> Self {
+        use dw_engine::store_upgrade::RestoreState as S;
+        match s {
+            S::Refused => Self::Refused,
+            S::NoSpace => Self::NoSpace,
+            S::NotStarted => Self::NotStarted,
+            S::Incomplete => Self::Incomplete,
+            S::Foreign => Self::Foreign,
+        }
+    }
+}
+
+/// A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for`
+/// gives it: catalog keys with their English, `{folder}` filled in. Its
+/// text is `lines` joined as "{intro}: {detail} {unchanged} {wayOut}"
+/// (`RefusedScreen::text`); `text_key` is its way out's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StoreScreen {
@@ -545,6 +595,9 @@ pub struct StoreScreen {
     pub title: String,
     pub text_key: String,
     pub text: String,
+    /// The text's lines by their keys, so a language can show each its own
+    /// way: intro, detail, unchanged, way out.
+    pub lines: Vec<StoreLine>,
     pub buttons: Vec<StoreButton>,
     /// A line under the buttons.
     pub hint: Option<StoreHint>,
@@ -560,6 +613,15 @@ pub struct StoreButton {
     pub default_focus: bool,
 }
 
+/// One keyed line of a [`StoreScreen`]'s text, or the store upgrade's
+/// notice (`OpenedNetwork::notice`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreLine {
+    pub key: String,
+    pub text: String,
+}
+
 /// The line under a [`StoreScreen`]'s buttons.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -569,12 +631,23 @@ pub struct StoreHint {
 }
 
 impl StoreScreen {
-    pub fn new(screen: &dw_engine::store_upgrade::copy::ScreenCopy, folder: &str) -> Self {
+    pub fn new(screen: &dw_engine::store_upgrade::copy::RefusedScreen, folder: &str) -> Self {
         Self {
-            title_key: screen.title_key.into(),
-            title: screen.title.into(),
-            text_key: screen.text_key.into(),
-            text: screen.text.replace("{folder}", folder),
+            title_key: screen.title.key.into(),
+            title: screen.title.text.into(),
+            text_key: screen.way_out_line.key.into(),
+            text: screen.text(folder),
+            lines: [
+                &screen.intro,
+                &screen.detail,
+                &screen.unchanged,
+                &screen.way_out_line,
+            ]
+            .map(|l| StoreLine {
+                key: l.key.into(),
+                text: l.text.replace("{folder}", folder),
+            })
+            .into(),
             buttons: (screen.buttons.iter())
                 .map(|b| StoreButton {
                     key: b.key.into(),
@@ -583,9 +656,9 @@ impl StoreScreen {
                     default_focus: b.default_focus,
                 })
                 .collect(),
-            hint: screen.hint.map(|(key, text)| StoreHint {
-                key: key.into(),
-                text: text.into(),
+            hint: screen.hint.map(|h| StoreHint {
+                key: h.key.into(),
+                text: h.text.replace("{folder}", folder),
             }),
         }
     }

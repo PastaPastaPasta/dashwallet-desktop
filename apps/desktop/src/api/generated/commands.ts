@@ -395,7 +395,8 @@ export function closeNetwork(): Promise<boolean> {
 }
 
 /**
- * The active network, `null` before `openNetwork`.
+ * The active network, `null` before `openNetwork`, with whether its
+ * wallet data was restored (read again at each call).
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
@@ -414,6 +415,44 @@ export function getNetworkChoice(): Promise<NetworkChoiceView> {
  */
 export function existingNetworks(): Promise<Array<NetworkData>> {
   return invoke<Array<NetworkData>>("existing_networks");
+}
+
+/**
+ * Whether `network` (`null`: the window's) has a verified
+ * before-upgrade snapshot to restore: "Restore earlier data" shows
+ * only then.
+ */
+export function restoreAvailable(network: string | null): Promise<boolean> {
+  return invoke<boolean>("restore_available", { network });
+}
+
+/**
+ * Restore earlier data: asks for the restore of `network`'s
+ * (`null`: the window's) verified before-upgrade snapshot at the next
+ * start; the renderer then calls `restartApp`. Nothing is restored in
+ * this process. Without a verified snapshot, `storage_restore`
+ * (refused, missingBackup).
+ */
+export function requestRestore(network: string | null): Promise<null> {
+  return invoke<null>("request_restore", { network });
+}
+
+/**
+ * The foreign-lineage screen's Keep the current files: ends
+ * `network`'s (`null`: the window's) part-done restore keeping its
+ * files as they are; the renderer then opens the network again.
+ */
+export function keepCurrentFiles(network: string | null): Promise<null> {
+  return invoke<null>("keep_current_files", { network });
+}
+
+/**
+ * Cancel restore: drops `network`'s (`null`: the window's) restore
+ * request while it hasn't begun replacing files; once it has,
+ * `storage_restore` (incomplete).
+ */
+export function cancelRestore(network: string | null): Promise<null> {
+  return invoke<null>("cancel_restore", { network });
 }
 
 export function lockStatus(): Promise<LockStatus> {
@@ -3415,6 +3454,10 @@ export type CommandArgs = {
   active_network: {  };
   get_network_choice: {  };
   existing_networks: {  };
+  restore_available: { network: string | null };
+  request_restore: { network: string | null };
+  keep_current_files: { network: string | null };
+  cancel_restore: { network: string | null };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };
@@ -3796,6 +3839,10 @@ export type CommandResults = {
   active_network: NetworkInfo | null;
   get_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
+  restore_available: boolean;
+  request_restore: null;
+  keep_current_files: null;
+  cancel_restore: null;
   lock_status: LockStatus;
   unlock: LockStatus;
   unlock_mixing_only: LockStatus;
@@ -4179,6 +4226,10 @@ export const COMMANDS: Record<CommandName, string> = {
   active_network: "network",
   get_network_choice: "network",
   existing_networks: "network",
+  restore_available: "network",
+  request_restore: "network",
+  keep_current_files: "network",
+  cancel_restore: "network",
   lock_status: "vault",
   unlock: "vault",
   unlock_mixing_only: "vault",
@@ -4585,6 +4636,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "storage_too_new",
   "storage_refused",
   "storage_not_private",
+  "storage_restore",
+  "storage_retry",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",

@@ -49,7 +49,7 @@ pub(crate) fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".partial");
     let tmp = std::path::PathBuf::from(tmp);
-    {
+    let written = (|| {
         let mut opts = OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -59,10 +59,24 @@ pub(crate) fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
         }
         let mut f = opts.open(&tmp)?;
         f.write_all(bytes)?;
-        f.sync_all()?;
+        f.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
     fs::rename(&tmp, path)?;
     fsync_dir(dir)
+}
+
+/// Remove `path` if present and fsync its directory.
+pub(crate) fn remove_durable(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    fsync_dir(path.parent().unwrap_or(Path::new(".")))
 }
 
 /// `YYYYMMDDTHHMMSSZ` for `now`, in UTC.
