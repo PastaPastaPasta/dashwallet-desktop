@@ -24,9 +24,9 @@
 # - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
 #   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
 #   under Xvfb with a screenshot.
-# - macos: engine tests, every Swift suite (MacUITests render the screens offscreen),
-#   the macOS app built with XcodeGen + xcodebuild, installed to /Applications and launched,
-#   with screenshots.
+# - macos: engine tests (`cargo test --workspace`). macos-swift, alongside it: the Rust core bundle,
+#   every Swift suite (MacUITests render the screens offscreen), the macOS app built with XcodeGen +
+#   xcodebuild, installed to /Applications and launched, with screenshots.
 # - windows-cross-check: on Linux, `cargo clippy --workspace --all-targets` for x86_64-pc-windows-gnu
 #   (MinGW-w64), so a pull request lints the Windows code paths before it merges.
 # - windows: engine build, tests and clippy (MSVC). windows-swift builds the Swift side and
@@ -692,11 +692,13 @@ jobs:
           path: screenshots/
           if-no-files-found: warn
 
+  # The engine tests and the Swift side run as two jobs at once: in one job the Swift steps waited
+  # for `cargo test` and added 10 to 30 minutes to every main run (docs/ci.md, "Main CI wall time").
   macos:
-    name: macOS (engine, Swift, app)
+    name: macOS (engine)
+    timeout-minutes: 150
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
-    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -719,6 +721,31 @@ jobs:
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
+
+  macos-swift:
+    name: macOS (Swift, app)
+    timeout-minutes: 120
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          df -h /System/Volumes/Data
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
+      - uses: ./.github/actions/pinned-sources
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       - name: swift build

@@ -331,6 +331,27 @@ step. A mismatch leaves the actual and diff PNGs in the `ui-playwright` artifact
 once it has passed on the runners; regenerate the baselines in the image whenever a screen changes on
 purpose. The per-state screenshots of the other suites are artifacts only.
 
+## Main CI wall time
+
+Measured over the 24 hours to 11-25 05:40Z (Actions API: 13 finished `ci.yml` main runs, 25 `release.yml`):
+
+- Runners were not the bottleneck. A job waited for a runner 0.1 min at the median, 8.5 min at most
+  (macOS included). The wait before a main run starts is the one-run-at-a-time concurrency group:
+  16 min at the median, 49 min at most (7d52864dc, behind 6e9a194e9).
+- A main CI run took 83–130 min (median ~104). Its last job was macOS in 10 of 12 runs, and Windows in the other 2.
+- macOS `cargo test --workspace` took 45–90 min: the workspace compile took 5–55 min, and the
+  dw-engine unit tests alone ~25 min. The Swift steps added another 10–30 min after it, one by one in the
+  same job.
+- The repository's Actions caches held 12.1 GB against GitHub's 10 GB cap, so saves evicted other
+  caches. In 24 hours the CI Rust cache missed in 3 of 12 macOS runs, 3 of 13 Windows runs and 1 of 13
+  Linux runs. A Windows miss costs 29–39 min of compile instead of 4–9. Release's own macOS cache took
+  2.3 GB and saved its compile little (6–33 min on a hit, 11–43 min on a miss). Nightly's five Rust
+  caches missed every night and were saved again.
+
+So: `macos-swift` runs the Swift side next to `macos` instead of after it. Release's macOS job and
+nightly restore but never save their Rust caches, which leaves CI's four (about 8.8 GB) under the cap.
+Coverage is unchanged.
+
 ## `nightly.yml`
 
 | Job | What |
