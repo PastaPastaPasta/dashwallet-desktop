@@ -1369,13 +1369,13 @@ fn a_payout_spend_is_re_sent_only_with_its_dispatch_recorded() {
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 6, st_hash(6)), Ok(()));
 }
 
-/// At this platform pin the library has no key set spend entry point
-/// (P13c): through the real library a send, a withdrawal and an unshield
-/// are `platform.unavailable` before the grant is read, and nothing is
-/// stored, reserved or written to the journal.
+/// While key set spends are off, through the real library a send, a
+/// withdrawal and an unshield are `platform.unavailable` before the grant
+/// is read, and nothing is stored, reserved or written to the journal.
 #[test]
-fn every_spend_through_the_library_is_unavailable_at_this_pin() {
+fn every_spend_through_the_library_is_unavailable_while_key_set_spends_are_off() {
     let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, false);
     h.lease();
     h.hold_notes(&[1, 2]);
     let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
@@ -1402,6 +1402,77 @@ fn every_spend_through_the_library_is_unavailable_at_this_pin() {
             .unwrap();
         assert_eq!(refused, "platform.unavailable", "{route}");
     }
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let store = coordinator.store().read().await;
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
+    });
+    let artifacts = (h.f.engine)
+        .block_on(s.leases.shielded_artifacts(wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
+}
+
+/// With key set spends on, a send through the real library spends with the
+/// key set the vault derives from the wallet's own seed for that call: the
+/// library takes it as the account's spend authority (no
+/// `ShieldedKeysetMismatch`) and goes on past its notes' selection to the
+/// network, where it fails offline before anything is stored or sent. The
+/// notes it reserved are released and nothing is recorded or asked of the
+/// hook.
+#[test]
+fn a_send_through_the_library_spends_with_the_wallets_own_key_set() {
+    use platform_wallet::PlatformWalletError;
+    let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, true);
+    h.lease();
+    h.hold_notes(&[1, 2]);
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        (coordinator.store().write().await)
+            .set_last_synced_note_index(id, 3)
+            .unwrap();
+    });
+    let grant = (h.f.session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: 2 * NOTE,
+            },
+            Some(&h.f.wallet.0),
+            dw_vault::Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let failed = (h.f.engine)
+        .block_on(on_pool(&s, wallet, move |s, lib| async move {
+            let to = super::payee_text();
+            let quoting = (NOTE / 2, pool::Quoting::Send(&to));
+            let flow = super::super::flows::FlowKind::ShieldedSpend;
+            let armed = pool::arm(&s, wallet, &lib, quoting, &grant, flow).await?;
+            let permit = super::super::requests::write_permit(
+                &armed.lease,
+                "transfer",
+                armed.quote.total_credits,
+            )?;
+            let sent = super::super::requests::leased(
+                &armed.lease,
+                lib.transfer(&permit, &super::payee(), NOTE / 2, [0; 36]),
+            )
+            .await;
+            permit.finish(sent.is_ok());
+            Ok(sent)
+        }))
+        .unwrap();
+    let Err(pool::SpendError::Library(e)) = failed else {
+        panic!("{failed:?}");
+    };
+    // Past the key set check and the notes' selection, the first network
+    // call (the recorded anchors) finds no node.
+    assert!(matches!(*e, PlatformWalletError::Sdk(_)), "{e:?}");
     let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
     h.f.engine.block_on(async move {
         let store = coordinator.store().read().await;

@@ -205,6 +205,11 @@ pub(crate) struct PlatformRuntime {
     /// reads of the load fence.
     #[cfg(test)]
     pub(crate) hold_between_fence_reads: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: what the library answers `keyset_spends` instead of this
+    /// build's answer (`shielded_pool::PwShielded`); this build's while
+    /// `None`.
+    #[cfg(test)]
+    pub(crate) keyset_spends: std::sync::Mutex<Option<bool>>,
     /// Tests: the next invitation-hold settle reports here inside its
     /// admitted vault work, and waits for the receiver (or its sender's
     /// drop) before it retains.
@@ -536,6 +541,8 @@ impl PlatformRuntime {
             hold_refresh: std::sync::Mutex::default(),
             #[cfg(test)]
             hold_between_fence_reads: std::sync::Mutex::default(),
+            #[cfg(test)]
+            keyset_spends: std::sync::Mutex::default(),
             #[cfg(test)]
             hold_settle_retain: std::sync::Mutex::default(),
             shielded_calls: std::sync::Mutex::default(),

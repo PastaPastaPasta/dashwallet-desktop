@@ -15,11 +15,13 @@
 //! - **The gate.** Every call but the status reads the network's protocol
 //!   version (the SDK's, refreshed by one proved read only while it is
 //!   below [`SHIELDED_ACTIVATION_VERSION`]) and refuses below it.
-//! - **Spends.** At this platform pin the library has no key set entry
-//!   point (P13c), so every spend is `platform.unavailable` before anything
-//!   else ([`unhooked`]); the rest of this item is the spend once it has
-//!   one. A shielded send (`shielded_transfer_to_with_keyset`) and
-//!   an unshield (`shielded_withdraw_to_with_keyset`, Core fee rate 1) run
+//! - **Spends.** While the library's key set spends are off
+//!   ([`ShieldedLib::keyset_spends`]) every spend is `platform.unavailable`
+//!   before anything else ([`unhooked`]); the rest of this item is the
+//!   spend once they are on. A shielded send
+//!   (`shielded_transfer_to_with_keyset`), an unshield to Core
+//!   (`shielded_withdraw_to_with_keyset`, Core fee rate 1) and an unshield
+//!   to a Platform address (`shielded_unshield_to_with_keyset`) run
 //!   one at a time per wallet under the wallet's shielded lock, charged
 //!   their quote (credits plus Platform's fee for the notes they take) from
 //!   the lease's Credits budget; the key set's release counts as the
@@ -180,10 +182,6 @@ pub(super) const MEMO_BYTES: usize = 36;
 /// spend to two), which the library's selection and fee assume.
 pub(crate) const MIN_ACTIONS: usize = 2;
 /// The Core fee rate an unshield asks for, Platform's minimum.
-#[allow(
-    dead_code,
-    reason = "no key set spend entry point at this platform pin (P13c)"
-)]
 const CORE_FEE_PER_BYTE: u32 =
     dpp::state_transition::identity_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
 /// How long `resume_shield` waits for a lock's proof.
@@ -306,8 +304,9 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
-    /// Whether the library spends from the key set a lease releases. At
-    /// this platform pin it does not: its public spends take the seed.
+    /// Whether spends run through the library's key set entry points with
+    /// the key set a lease releases. While false every spend is
+    /// `platform.unavailable` before anything else ([`unhooked`]).
     fn keyset_spends(&self) -> bool;
     /// The account's spends whose notes the library holds with no record to
     /// re-send and no proof of either outcome, each by its activity id.
@@ -1189,9 +1188,10 @@ pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
         // Retryable: the next sync moves the tree onto a recorded anchor
         // (operations.rs:2736, "wait for the next shielded sync").
         PlatformWalletError::ShieldedNoRecordedAnchor(_) => ShieldedError::not_synced(Wait::Tree),
-        // Refused before anything was sent: by the dispatch hook, or with no
-        // key set entry point to spend through ([`no_keyset_spend`]).
-        PlatformWalletError::ShieldedDispatchRefused { .. } => ShieldedError::SpendRefused,
+        // Refused before anything was sent: by the dispatch hook, or a key
+        // set that is not the account's, refused before anything is read.
+        PlatformWalletError::ShieldedDispatchRefused { .. }
+        | PlatformWalletError::ShieldedKeysetMismatch { .. } => ShieldedError::SpendRefused,
         PlatformWalletError::ShieldedBroadcastFailed(ref text) => match pool_notes(text) {
             Some((notes, required)) => ShieldedError::PoolTooSmall { notes, required },
             None => PlatformError::from(e).into(),
@@ -2883,14 +2883,11 @@ where
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
 
-/// The library's refusal of a shielded spend at this platform pin, never
-/// reached: [`unhooked`] refuses every spend first. The library spends from
-/// a key set only through its crate-internal paths, and its public spends
-/// take the seed, which the vault never hands out.
-fn no_keyset_spend() -> SpendError {
-    SpendError::Library(Box::new(PlatformWalletError::ShieldedDispatchRefused {
-        reason: "this platform-wallet has no key set spend entry point".into(),
-    }))
+/// Tests: makes [`PwShielded::keyset_spends`] answer `on` in `session`,
+/// whatever this build answers.
+#[cfg(test)]
+pub(crate) fn force_keyset_spends(session: &NetworkSession, on: bool) {
+    *(session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner) = Some(on);
 }
 
 /// The activities whose notes the library holds for a spend it keeps no
@@ -3042,23 +3039,50 @@ impl ShieldedLib for PwShielded {
         CachedOrchardProver::new().is_ready()
     }
 
+    /// The account's key set is derived in the vault from the wallet's seed
+    /// for this one call (`OrchardKeySet::from_seed`), lent to the library,
+    /// and dropped when the call returns; so for every spend.
     async fn transfer(
         &self,
-        _permit: &CallPermit,
-        _to: &OrchardAddress,
-        _credits: u64,
-        _memo: [u8; MEMO_BYTES],
+        permit: &CallPermit,
+        to: &OrchardAddress,
+        credits: u64,
+        memo: [u8; MEMO_BYTES],
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_transfer_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_raw_bytes(),
+                credits,
+                memo,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn withdraw(
         &self,
-        _permit: &CallPermit,
-        _to: &Address,
-        _credits: u64,
+        permit: &CallPermit,
+        to: &Address,
+        credits: u64,
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_withdraw_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_string(),
+                credits,
+                CORE_FEE_PER_BYTE,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
@@ -3071,11 +3095,22 @@ impl ShieldedLib for PwShielded {
 
     async fn unshield(
         &self,
-        _permit: &CallPermit,
-        _to: &PlatformAddress,
-        _credits: u64,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_unshield_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_bech32m_string(self.network()),
+                credits,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
@@ -3152,6 +3187,12 @@ impl ShieldedLib for PwShielded {
     }
 
     fn keyset_spends(&self) -> bool {
+        #[cfg(test)]
+        if let Some(on) =
+            *(self.pw.session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner)
+        {
+            return on;
+        }
         false
     }
 

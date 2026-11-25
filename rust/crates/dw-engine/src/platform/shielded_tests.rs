@@ -227,7 +227,7 @@ pub(crate) struct FakeShielded {
     applied: Mutex<Vec<OutPoint>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
-    /// The library has no key set spend entry point.
+    /// The library's key set spends are off.
     no_keyset: AtomicBool,
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
@@ -4768,13 +4768,12 @@ fn a_spend_is_refused_while_the_hook_is_not_set() {
     assert_eq!(sent.unwrap().state, ShieldedSpendState::Done);
 }
 
-/// With no key set spend entry point in the library (P13c) a send, a
-/// withdrawal and an unshield are `platform.unavailable` before anything
-/// else: nothing is quoted, no receive address is issued, no key leaves
-/// the vault, nothing is stored, reserved or recorded, and the grant is
-/// kept.
+/// While the library's key set spends are off a send, a withdrawal and an
+/// unshield are `platform.unavailable` before anything else: nothing is
+/// quoted, no receive address is issued, no key leaves the vault, nothing is
+/// stored, reserved or recorded, and the grant is kept.
 #[test]
-fn a_spend_is_unavailable_without_a_key_set_entry_point() {
+fn a_spend_is_unavailable_while_key_set_spends_are_off() {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeShielded::default());
     let wallet = fx.wallet;
