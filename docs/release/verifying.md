@@ -6,7 +6,9 @@ GitHub Actions for this repository, that the file was built or assembled by `.gi
 Signed stable releases (starting with 1.0) also carry a detached PGP signature (`SHA256SUMS.asc`), Apple
 Developer ID signing and notarization on macOS, and Windows Authenticode signing. Release candidates
 (`vX.Y.Z-rc.N`), `main` builds, and `continuous` ship keyless: attestations only, with ad-hoc macOS and
-unsigned Windows installers.
+unsigned Windows installers. A candidate the release signer signs ([`RC-SIGNING.md`](RC-SIGNING.md)) has the same
+signatures as a stable release except the updater feed: `SHA256SUMS.asc`, a notarized `.dmg` and an
+Authenticode-signed installer, attested by `release-publish-signed.yml`.
 
 An attestation proves **where and from what the file was built**, not that the code is safe. For early
 releases without a completed security review, use small amounts only.
