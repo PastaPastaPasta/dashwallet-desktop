@@ -2326,8 +2326,14 @@ impl Drop for PreparedTx {
             session.spends.release(&wallet_id, owner);
             return;
         };
+        let claim = ReleaseClaim {
+            session: Arc::clone(&session),
+            wallet_id,
+            owner,
+        };
         let rt = session.rt.clone();
         rt.spawn(async move {
+            let _claim = claim;
             // Admitted like any operation, so a close in progress is not
             // raced; after the close there is no wallet left to release in.
             if let Ok(_op) = session.enter().await
@@ -2342,8 +2348,21 @@ impl Drop for PreparedTx {
                 }
                 wallet.core().abandon_transaction(&signed).await;
             }
-            session.spends.release(&wallet_id, owner);
         });
+    }
+}
+
+/// The engine's claim of a dropped payment, released when its task ends,
+/// panics or is dropped unpolled at shutdown.
+struct ReleaseClaim {
+    session: Arc<NetworkSession>,
+    wallet_id: WalletId,
+    owner: SpendOwner,
+}
+
+impl Drop for ReleaseClaim {
+    fn drop(&mut self) {
+        self.session.spends.release(&self.wallet_id, self.owner);
     }
 }
 

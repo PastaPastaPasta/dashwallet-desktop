@@ -673,15 +673,17 @@ fn a_prepared_tx_releases_only_its_own_claim() {
     f.session.spends.release(&f.wallet, other);
     assert!(f.reserved().is_empty());
     let p = prepare();
+    let mine = SpendOwner::Tx(p.summary().txid.parse().unwrap());
     f.session.spends.reserve(f.wallet, other, [a]);
     drop(p);
-    assert_eq!(f.reserved(), vec![a]);
-    f.session.spends.release(&f.wallet, other);
     // The dropped payment's claim goes after key-wallet's, in the task the
     // drop spawned (#745).
     eventually("the dropped payment's claim goes", || {
-        f.reserved().is_empty()
+        f.session.spends.held_by(&f.wallet, mine).is_empty()
     });
+    assert_eq!(f.reserved(), vec![a]);
+    f.session.spends.release(&f.wallet, other);
+    assert!(f.reserved().is_empty());
 }
 
 #[test]
