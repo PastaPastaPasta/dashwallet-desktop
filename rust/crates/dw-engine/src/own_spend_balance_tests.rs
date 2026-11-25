@@ -2369,6 +2369,41 @@ fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
     assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
 }
 
+/// An abandon whose sent-mark read fails stops nothing and marks nothing:
+/// the transaction may be another loaded wallet's payment, whose retries
+/// the client shares.
+#[test]
+fn an_unreadable_sent_mark_fails_the_abandon_before_any_stop() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let source = CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]);
+    let p =
+        super::own_spend_disk_tests::send_to(&engine, &session, id, source, &to, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    wait_stored(&session, other, &[p.txid()]);
+    let stopped = || std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::tx_actions::SENT_MARK_READ_FAULT, stage);
+    let refused = try_abandon(&engine, &session, other, p.txid());
+    dw_appdb::fault::disarm(&path);
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(stopped(), [], "the failed abandon's stops");
+    assert!(!abandon_marked(&session, other, p.txid()), "marked");
+    for w in [id, other] {
+        assert!(
+            (session.hub.history.get(&w, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+            "the payment stays pending"
+        );
+    }
+
+    try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert_eq!(stopped(), [], "the receipt's abandon");
+}
+
 /// An Activity Resend that checked a payment just before an Abandon
 /// committed its mark hands nothing off: it reads the mark again, held
 /// against the Abandon, before its bytes go out.

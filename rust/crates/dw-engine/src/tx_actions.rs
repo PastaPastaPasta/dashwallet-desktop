@@ -536,6 +536,10 @@ pub(crate) fn has_sent_mark(
             .is_some())
 }
 
+/// A test's fault point on the sent-mark read of an abandon's stops.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const SENT_MARK_READ_FAULT: &str = "tx_actions.sent_mark_read";
+
 /// A test's fault point on [`forget_sent`]'s delete.
 #[cfg(all(test, debug_assertions))]
 pub(crate) const FORGET_SENT_FAULT: &str = "tx_actions.forget_sent";
@@ -1728,15 +1732,16 @@ impl NetworkSession {
 
     /// Of `txids`, those `wallet` sent: each spends one of its coins, as
     /// key-wallet's record or the history's own inputs say, or keeps its
-    /// sent mark (a failed read counts). dash-spv's rebroadcast is the
-    /// client's, shared by every loaded wallet, so an abandon stops only
-    /// these: a payment abandoned as received leaves its sender's retries.
+    /// sent mark. dash-spv's rebroadcast is the client's, shared by every
+    /// loaded wallet, so an abandon stops only these: a payment abandoned
+    /// as received leaves its sender's retries. A mark that cannot be read
+    /// is the error: it may be another wallet's payment.
     async fn sent_by(
         &self,
         wallet: WalletId,
         txids: &BTreeSet<Txid>,
         core: &ManagedWalletInfo,
-    ) -> BTreeSet<Txid> {
+    ) -> Result<BTreeSet<Txid>, EngineError> {
         let spends: HashSet<Txid> = (core.accounts.all_accounts().into_iter())
             .filter(|a| !a.managed_account_type().is_contact_owned())
             .flat_map(|a| a.transactions().iter())
@@ -1752,21 +1757,19 @@ impl NetworkSession {
                     })
             });
         if rest.is_empty() {
-            return sent;
+            return Ok(sent);
         }
-        let marked = self.appdb_op({
-            let rest = rest.clone();
-            move |db| {
+        let marks = self
+            .appdb_op(move |db| {
+                #[cfg(all(test, debug_assertions))]
+                db.fault_point(SENT_MARK_READ_FAULT, dw_appdb::fault::Stage::Before)?;
                 (rest.into_iter())
                     .map(|t| Ok((t, has_sent_mark(db, wallet, t)?)))
                     .collect::<Result<Vec<_>, dw_appdb::AppDbError>>()
-            }
-        });
-        match marked.await {
-            Ok(marks) => sent.extend(marks.into_iter().filter(|(_, m)| *m).map(|(t, _)| t)),
-            Err(_) => sent.extend(rest),
-        }
-        sent
+            })
+            .await?;
+        sent.extend(marks.into_iter().filter(|(_, m)| *m).map(|(t, _)| t));
+        Ok(sent)
     }
 
     /// Stops dash-spv's rebroadcast timer from sending `txid` again.
@@ -2061,7 +2064,7 @@ impl NetworkSession {
             // marked transaction this wallet sent is sent again by
             // dash-spv's rebroadcast timer. One this abandon then fails is
             // rebroadcast again only after a resend of it lifts the stop.
-            for t in self.sent_by(wallet, &planned, &info.core_wallet).await {
+            for t in self.sent_by(wallet, &planned, &info.core_wallet).await? {
                 self.stop_rebroadcast(manager, wallet, t).await;
             }
             // A drop of what can never confirm is recorded with the marks,
