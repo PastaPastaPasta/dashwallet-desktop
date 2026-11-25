@@ -679,6 +679,18 @@ mirror_enum!(engine::ShieldedActivityStatus => ShieldedActivityStatus {
     Pending, Confirmed, Failed, Unknown
 });
 
+/// What became of a spend Platform refused at its broadcast: `held` while
+/// it may still go through (its row reads pending), `released` once proved
+/// it never can (its row reads failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedRefusal {
+    Held,
+    Released,
+}
+
+mirror_enum!(engine::ShieldedRefusal => ShieldedRefusal { Held, Released });
+
 /// One row of the wallet's shielded history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -702,6 +714,10 @@ pub struct ShieldedActivity {
     #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<crate::dto::history::TxCounterparty>,
+    /// Set on a spend Platform refused at its broadcast.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ShieldedRefusal>,
 }
 
 impl From<engine::ShieldedActivity> for ShieldedActivity {
@@ -718,6 +734,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             status,
             created_at,
             contact,
+            refusal,
         } = a;
         ShieldedActivity {
             id,
@@ -731,6 +748,7 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             status: status.into(),
             created_at,
             contact: contact.map(Into::into),
+            refusal: refusal.map(Into::into),
         }
     }
 }

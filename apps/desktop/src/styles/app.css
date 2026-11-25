@@ -1847,6 +1847,13 @@ input[type="radio"]:disabled {
   color: var(--dw-role-danger);
 }
 
+.tx-detail-note {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 .tx-detail-explorer {
   margin: 0;
   padding: 0;

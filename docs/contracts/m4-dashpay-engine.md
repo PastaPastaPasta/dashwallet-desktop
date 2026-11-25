@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 86
+Contract-Version: 92
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 86 -->
+<!-- surface-sha256: f9d11693264860d0dcfd3a6adcead35569e5faf2a42e6bb309523e4ba4a389eb version: 92 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2544,6 +2544,13 @@ pub struct ShieldedActivity {
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
     pub #[serde(default, skip_serializing_if = "Option::is_none")] contact: Option<Counterparty>,
+    pub #[serde(default, skip_serializing_if = "Option::is_none")] refusal: Option<ShieldedRefusal>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedRefusal {
+    Held,
+    Released,
 }
 impl DashPay {
     pub async fn shielded_status(&self) -> Result<ShieldedStatus, ShieldedError>;

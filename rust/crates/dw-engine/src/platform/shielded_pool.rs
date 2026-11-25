@@ -916,6 +916,7 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
         },
         created_at: (e.created_at_ms != 0).then_some(e.created_at_ms / 1000),
         contact: None,
+        refusal: None,
     }
 }
 
@@ -2579,6 +2580,11 @@ impl ShieldedDispatch for EngineDispatch {
         if transition_hash(&payload.st_bytes) != payload.st_hash {
             return Err(refused("the transition's hash is not that of its bytes"));
         }
+        if !super::shielded_release::bundle_matches(&payload) {
+            return Err(refused(
+                "the transition's bundle is not the anchor and the nullifiers it came with",
+            ));
+        }
         let notes: HashSet<[u8; 32]> = (coordinator.store().read().await)
             .get_all_notes(subwallet)
             .map_err(|e| refused(format!("the account's notes could not be read: {e}")))?
@@ -3561,9 +3567,13 @@ const UNREADABLE_PER_READ: usize = 16;
 /// - `Unresolved(Unattributable)` whose history row the library reads
 ///   confirmed: settled `executed`, so it reads done, never failed; no
 ///   proof, so never acknowledged and nothing of it is re-sent or rebuilt;
+/// - `Unresolved(Cancelled)` whose artifact the release settled on proved
+///   evidence (`shielded_release`): `not_executed` and acknowledged in the
+///   journal, acknowledged again (a crash came between the two); `executed`,
+///   acknowledged once each note it holds reads spent in the journal;
 /// - any other `Unresolved`: settled `unresolved` (being confirmed), never
-///   acknowledged here: its notes stay held until a scan or the user
-///   settles it;
+///   acknowledged here: its notes stay held until a scan settles it, or the
+///   release proves a refused first send final;
 /// - one the library cannot read: acknowledged by its key only once every
 ///   note it holds reads spent in the journal, so nothing it holds becomes
 ///   selectable; until then the wallet's outcomes wait.
@@ -3649,6 +3659,14 @@ pub(crate) async fn consume_dispositions(
                 {
                     (ArtifactStatus::Executed, false)
                 }
+                ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled) => {
+                    super::shielded_release::settled_by_release(
+                        &artifacts,
+                        d.st_hash,
+                        durable(&d.held_nullifiers),
+                    )
+                    .unwrap_or((ArtifactStatus::Unresolved { unrecorded: false }, false))
+                }
                 ShieldedSpendDisposition::Unresolved(_) => {
                     (ArtifactStatus::Unresolved { unrecorded: false }, false)
                 }
@@ -3674,7 +3692,7 @@ pub(crate) async fn consume_dispositions(
 /// never before the journal holds the settlement. With no artifact only a
 /// `NotExecuted` outcome or an unreadable one is acknowledged. `false` when
 /// it stopped short of what it was asked.
-async fn settle_then_ack(
+pub(crate) async fn settle_then_ack(
     session: &NetworkSession,
     coordinator: &NetworkShieldedCoordinator,
     subwallet: SubwalletId,
@@ -3793,8 +3811,10 @@ pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 ///   up to `UNKNOWN_QUORUM_WAIT` (120 s, `trust.rs`), and the trusted
 ///   provider's HTTP lookup is cut at 30 s
 ///   (rs-sdk-trusted-context-provider `provider.rs:230`);
-/// - the number of calls: the note sync's chunks (the pool's size), and
-///   at most 3 broadcasts per stored spend.
+/// - the number of calls: the note sync's chunks (the pool's size), at
+///   most 3 broadcasts per stored spend, and per wallet holding a refused
+///   first send, one anchors read and one nullifier read
+///   (`shielded_release`).
 ///
 /// The worst case is therefore a pass's call count times about 160 s; on
 /// a reachable network a pass takes seconds (testnet, 6,430 notes: about 1
@@ -3842,7 +3862,9 @@ async fn hold_passes(
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
-/// outcomes into the journal ([`consume_dispositions`]). `false` when it
+/// outcomes into the journal ([`consume_dispositions`]) and settles the
+/// refused first sends proved final (`shielded_release`). A pool with a
+/// held spend is never idle ([`pool_is_idle`]), so each pass runs both. `false` when it
 /// was held back.
 pub(crate) async fn guarded_pass(
     session: &Arc<NetworkSession>,
@@ -3970,6 +3992,13 @@ async fn pass(
     }
     for wallet in pass_wallets(manager, &coordinator).await {
         consume_dispositions(session, &coordinator, WalletId(wallet)).await;
+        super::shielded_release::release_final_rejections(
+            session,
+            manager,
+            &coordinator,
+            WalletId(wallet),
+        )
+        .await;
         // A contact payout settles on its artifact's status (C-funding P7).
         session.settle_shielded_payouts(WalletId(wallet)).await;
     }

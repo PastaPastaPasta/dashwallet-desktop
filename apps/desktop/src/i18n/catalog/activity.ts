@@ -44,5 +44,15 @@ export const activity = {
     feeEstimated: "Fee (estimated)",
     platformBlock: "Platform block",
     copyAddress: "Copy address",
+    /** A Shielded payment Platform refused when it was sent. */
+    refusal: {
+      /** Its funds ({amount}) stay held until Dash Wallet proves it can no longer go through. */
+      held: "Dash Platform didn't accept this payment when it was sent, but it may still accept it later. Until Dash Wallet can prove it no longer can, the Shielded funds it spends ({amount}) stay held. Don't send this payment again: both could go through. If it goes through, Activity shows it as sent. If it can no longer go through, the funds become spendable again. This can take hours, or days when Shielded is quiet.",
+      /** As `held`, with no amount known. */
+      heldNoAmount:
+        "Dash Platform didn't accept this payment when it was sent, but it may still accept it later. Until Dash Wallet can prove it no longer can, the Shielded funds it spends stay held. Don't send this payment again: both could go through. If it goes through, Activity shows it as sent. If it can no longer go through, the funds become spendable again. This can take hours, or days when Shielded is quiet.",
+      /** After Dash Wallet proved it can no longer go through. */
+      released: "Dash Platform didn't accept this payment, and it can no longer go through. Its funds are spendable again.",
+    },
   },
 } as const satisfies Tree;

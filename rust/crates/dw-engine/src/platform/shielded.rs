@@ -416,6 +416,22 @@ pub struct ShieldedActivity {
     /// contact payout's row, else by the destination address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<Counterparty>,
+    /// A spend Platform refused at its broadcast (#444): held while it may
+    /// still go through (status pending), released once proved it never
+    /// can (status failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ShieldedRefusal>,
+}
+
+/// What became of a spend Platform refused at its broadcast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedRefusal {
+    /// It may still go through: its notes stay held, and nothing invites
+    /// sending it again.
+    Held,
+    /// Proved never to go through: its notes are spendable again.
+    Released,
 }
 
 impl DashPay {
@@ -664,6 +680,7 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             let mut rows = pool::history(&lib, offset, limit).await?;
+            super::shielded_release::mark_refused(&session, wallet, &mut rows).await;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })

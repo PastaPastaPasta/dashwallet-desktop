@@ -175,6 +175,18 @@ pub(crate) struct PlatformRuntime {
     /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
     #[cfg(test)]
     pub(crate) crash_before_ack: AtomicBool,
+    /// A test's proved reads for the release of refused shielded spends
+    /// (`shielded_release`); the network's while `None`.
+    #[cfg(test)]
+    pub(crate) release_net: Mutex<Option<Arc<dyn super::shielded_release::ReleaseNet>>>,
+    /// A test's pause of the next release between its reads and its
+    /// second look at the held spends.
+    #[cfg(test)]
+    pub(crate) release_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// Refused shielded spends whose anchor a read found still recorded, by
+    /// transition hash, with when to read them again (in memory: a new
+    /// session reads at its first pass).
+    pub(crate) release_backoff: Mutex<HashMap<[u8; 32], std::time::Instant>>,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -528,6 +540,11 @@ impl PlatformRuntime {
             passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
+            #[cfg(test)]
+            release_net: Mutex::new(None),
+            #[cfg(test)]
+            release_pause: Mutex::new(None),
+            release_backoff: Mutex::default(),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
             wallet_loads: tokio::sync::RwLock::new(()),

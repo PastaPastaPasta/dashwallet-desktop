@@ -91,6 +91,46 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
     await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
   });
 
+  for (const theme of THEMES) {
+    test(`a refused Shielded payment whose funds stay held may still go through, and offers no retry (${theme})`, async ({ page }) => {
+      const errors = await activity(page, "funded", theme);
+      const refuse = (status: "pending" | "failed", refusal: "held" | "released") =>
+        page.evaluate(
+          ([status, refusal]) => {
+            const f = window.__dwFixture!;
+            const s = f.world.pending.shielded!;
+            s.activity = s.activity.map((a) => (a.id === "sh-2" ? { ...a, blockHeight: null, status, refusal } : a));
+            f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } } as never);
+          },
+          [status, refusal] as const,
+        );
+      await refuse("pending", "held");
+      const held = page.locator('button[data-txid="shielded:sent:sh-2:mayland"]');
+      await expect(held).toContainText("May still go through");
+      await expect(held).not.toContainText("Not accepted");
+      await expect(held).toContainText("-0.1");
+      await held.click();
+      const sheet = page.getByTestId("source-detail");
+      await expect(page.getByTestId("source-detail-status")).toHaveText("May still go through");
+      await expect(page.getByTestId("source-detail-status")).not.toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-amount")).toContainText("-0.1");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("may still accept it later");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("Don't send this payment again");
+      await expect(page.getByTestId("source-detail-refusal")).toContainText("(0.10000000 tDASH)");
+      await expect(sheet.getByRole("button", { name: /retry|try again|send again|pay again/i })).toHaveCount(0);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+
+      // Released while its details are open: the same record, now not accepted.
+      await refuse("failed", "released");
+      await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
+      await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
+      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through. Its funds are spendable again.");
+      await page.keyboard.press("Escape");
+      await expect(page.locator('button[data-txid="shielded:sent:sh-2"]')).toContainText("Not accepted");
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("says so when the record leaves the list while its details are open", async ({ page }) => {
     await activity(page);
     await page.locator('button[data-txid="shielded:received:sh-3"]').click();

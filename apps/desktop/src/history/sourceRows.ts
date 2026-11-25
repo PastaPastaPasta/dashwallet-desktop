@@ -45,7 +45,8 @@ const MAY_LAND = ":mayland";
 /** A Platform move the engine replaced with a retry: it carries no amount and is never a loss. */
 export const isReplacedRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(REPLACED);
 
-/** A failed Platform move or send that may still execute: shown as unconfirmed, never as a problem. */
+/** A failed Platform move or send, or a Shielded spend Platform refused whose funds stay held, that
+ * may still execute: shown as unconfirmed, never as a problem. */
 export const isMayLandRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(MAY_LAND);
 
 /** The source of a synthetic row; `null` for a Core transaction. */
@@ -96,13 +97,17 @@ export function platformRow(a: PlatformActivity): TxRow {
 
 /** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
  * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
- * a payment out unless the engine says it is a self-transfer; the rest are received or paid. */
+ * a payment out unless the engine says it is a self-transfer; the rest are received or paid. A
+ * spend Platform refused whose funds stay held (`refusal: held`) may still go through: unconfirmed,
+ * with its amount, never "Not accepted". */
 export function shieldedRow(a: ShieldedActivity): TxRow {
   const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
+  const held = a.refusal === "held";
+  const kind = a.status === "confirmed" ? "confirmed" : a.status === "failed" && !held ? "notAccepted" : "unconfirmed";
   return {
-    ...base(`shielded:${a.kind}:${a.id}`, statusOf(a.status === "confirmed" ? "confirmed" : a.status === "failed" ? "notAccepted" : "unconfirmed"), a.createdAt, a.direction === "out" ? -amount : amount),
+    ...base(`shielded:${a.kind}:${a.id}${held ? MAY_LAND : ""}`, statusOf(kind), a.createdAt, a.direction === "out" ? -amount : amount),
     blockHeight: a.blockHeight,
     txType: internal ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: internal ? "platform" : received ? "received" : "sent",
@@ -129,7 +134,7 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
     return record ? { source, row: platformRow(record), record } : null;
   }
   if (source === "shielded") {
-    const record = shielded?.find((a) => shieldedRow(a).txid === key);
+    const record = shielded?.find((a) => recordKey(shieldedRow(a).txid) === key);
     return record ? { source, row: shieldedRow(record), record } : null;
   }
   return null;

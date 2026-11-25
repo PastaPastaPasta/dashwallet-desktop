@@ -97,6 +97,7 @@ mod shielded;
 mod shielded_close_tests;
 pub(crate) mod shielded_payout;
 pub(crate) mod shielded_pool;
+pub(crate) mod shielded_release;
 #[cfg(test)]
 pub(crate) mod shielded_tests;
 pub mod signers;
@@ -180,7 +181,7 @@ pub use registration::{
 pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
     ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
-    ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
+    ShieldedAddress, ShieldedDirection, ShieldedRefusal, ShieldedSpendOutcome, ShieldedSpendQuote,
     ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
     UnresolvedSpend, UnshieldToPlatformOutcome,
 };

@@ -36,6 +36,15 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
       : t(row.status.kind === "confirmed" ? "activity.sourceDetail.status.confirmed" : row.status.kind === "notAccepted" ? "activity.sourceDetail.status.notAccepted" : "activity.sourceDetail.status.pending");
   const problem = !replaced && !isMayLandRow(row) && isProblem(row.status);
   const fee = found.record.feeCredits;
+  const refusal = found.source === "shielded" ? found.record.refusal : undefined;
+  const refusalText =
+    refusal === "held"
+      ? shown.duffs !== 0
+        ? t("activity.sourceDetail.refusal.held", { amount: display.withUnit(Math.abs(shown.duffs)) })
+        : t("activity.sourceDetail.refusal.heldNoAmount")
+      : refusal === "released"
+        ? t("activity.sourceDetail.refusal.released")
+        : null;
   return (
     <>
       <div className="tx-detail-summary" data-testid="source-detail-summary">
@@ -55,6 +64,11 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
           </span>
         </div>
       </div>
+      {refusalText && (
+        <p className="tx-detail-note" data-testid="source-detail-refusal">
+          {refusalText}
+        </p>
+      )}
       <dl className="detail-list card-l1" data-testid="source-detail-facts">
         {found.source === "shielded" ? (
           <>
