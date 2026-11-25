@@ -74,8 +74,6 @@ export interface PaySourceRow {
   reason: string | null;
 }
 
-/** The pool is not offered here: the start refuses `platform.feature_off` for these. */
-
 /** The first readiness check that fails, in the engine's order, as the step says it (F16). */
 export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duffs: number) => string, clock: (secs: number) => string): string | null {
   if (readiness === null) return null;

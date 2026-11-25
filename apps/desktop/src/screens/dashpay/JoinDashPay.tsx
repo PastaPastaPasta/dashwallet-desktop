@@ -1,7 +1,7 @@
 // Join DashPay (DASHPAY §4 `JoinDashPayViewModel`, F1; DP1-08): the intro (iOS
 // `JoinDashPayScreen`), the readiness under it by status (J1–J7), the voting info and the FAQ.
-// Create username opens the registration wizard (DP1-09, Registration.tsx), and "Pay another way"
-// its "Pay with" step first (C-funding F19); while a registration
+// Create username opens the registration wizard (DP1-09, Registration.tsx) at its "Make your
+// username private" step (C-funding F16, F19); while a registration
 // goes on, one stopped with its funds committed, or this session's has a result to show, the page
 // is its screen instead (D1, D12, D22). An invitation opened (`ui.invitation`, DP5-03) shows the
 // claim screen (Claim.tsx) in place of the intro; its claim is the wizard's invitation mode.
