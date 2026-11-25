@@ -2296,8 +2296,17 @@ impl NetworkSession {
             !stale
         });
         let carried = self.carried_drops(wallet, truncations).await;
-        let mut work: VecDeque<_> = (self.hub.take_dead_children(wallet).into_iter())
-            .map(|(roots, winner, swept)| (roots, winner, swept, None))
+        // A sweep's children queued before a truncation may have lost their
+        // winner too (#891).
+        let children = (self.hub.take_dead_children(wallet).into_iter()).filter(|(t, roots, ..)| {
+            let stale = *t != truncations;
+            if stale {
+                tracing::warn!(%wallet, ?roots, "a swept payment's children are not dropped after a truncation");
+            }
+            !stale
+        });
+        let mut work: VecDeque<_> = children
+            .map(|(_, roots, winner, swept)| (roots, winner, swept, None))
             .chain(waited.map(|(_, w)| w))
             .chain(carried)
             .collect();
@@ -2312,7 +2321,7 @@ impl NetworkSession {
                     manager,
                     wallet,
                     (&roots, winner),
-                    &links,
+                    (&links, truncations),
                     (recheck.as_ref(), &mut out),
                 );
                 if let Err(e) = dropped.await {
@@ -2520,13 +2529,17 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         (roots, winner): (&[Txid], Winner),
-        links: &BTreeSet<Txid>,
+        (links, since): (&BTreeSet<Txid>, u64),
         (recheck, out): (Option<&Recheck>, &mut Rechecked),
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        let swept_children = recheck.is_none() && !links.is_empty();
         #[cfg(test)]
-        let pause = (recheck.is_some())
-            .then(|| self.hub.pause_drop_recheck.lock().unwrap().take())
-            .flatten();
+        let pause = match swept_children {
+            true => self.hub.pause_drop_child.lock().unwrap().take(),
+            false => (recheck.is_some())
+                .then(|| self.hub.pause_drop_recheck.lock().unwrap().take())
+                .flatten(),
+        };
         #[cfg(test)]
         if let Some(pause) = &pause {
             pause.mark_reached();
@@ -2576,12 +2589,29 @@ impl NetworkSession {
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return Ok(BTreeSet::new());
         };
-        if recheck.is_some() {
+        if recheck.is_some() || swept_children {
             // A fork key-wallet truncated and the hub has not heard of yet
             // counts as one since the detection.
             self.hub.detect_truncation(wallet, &info.core_wallet);
         }
         let truncations = self.hub.truncations();
+        // A sweep's children go on it only while no fork has happened since
+        // they were taken and no swept payment is mined (#891): a fork may
+        // have undone the sweep's winner, and the new chain mined them.
+        if swept_children {
+            let core = &info.core_wallet;
+            let mined = |t: &Txid| {
+                (core.accounts.all_accounts().into_iter()).any(|a| {
+                    (a.transactions().get(t)).is_some_and(|r| r.context.block_info().is_some())
+                }) || (self.hub.history.get(&wallet, t))
+                    .is_some_and(|e| e.context.block_info().is_some())
+            };
+            let mined_again: Vec<Txid> = links.iter().copied().filter(|t| mined(t)).collect();
+            if truncations != since || !mined_again.is_empty() {
+                tracing::warn!(%wallet, ?roots, ?mined_again, "a swept payment's children are not dropped: a fork since may have undone its sweep");
+                return Ok(BTreeSet::new());
+            }
+        }
         let (plan, winner, forgotten) = (self.hub.history).read_wallet(&wallet, |h| {
             let complete = h.loaded && !h.load_incomplete;
             let chainlock = self.chainlock_height(&info.core_wallet);

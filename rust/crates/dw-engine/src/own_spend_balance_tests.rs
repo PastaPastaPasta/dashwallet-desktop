@@ -2850,6 +2850,73 @@ fn a_child_of_a_payment_swept_while_another_wallet_opens_stays_after_a_fork() {
     );
 }
 
+/// #891: key-wallet sweeps P, and its drop takes C; before the drop takes
+/// the write lock, `change` happens to the chain that mines P again. C is
+/// valid then: it stays, and so does its change.
+fn swept_child_after_its_take(
+    change: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, &Transaction),
+) {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_drop_child.lock().unwrap() = Some(Arc::clone(&pause));
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    eventually("the drop took C", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    change(&engine, &session, id, &p);
+    pause.release.notify_one();
+    reconciles_done(&engine, &session);
+    engine.block_on({
+        let session = Arc::clone(&session);
+        async move { drop(session.hub.drop_gate.lock().await) }
+    });
+    assert!(live_in_history(&session, id, c.txid()), "C is dropped");
+    assert!(
+        held(&engine, &session, id).contains(&c_change),
+        "C's change is not held"
+    );
+}
+
+/// #891: a fork the hub hears lands after the drop took C, and the new
+/// chain mines P.
+#[test]
+fn a_swept_payments_child_stays_when_a_fork_after_its_take_mines_the_payment() {
+    swept_child_after_its_take(|engine, session, id, p| {
+        let heard = session.hub.truncations();
+        super::deliver(engine, session, id, |wm| {
+            Box::pin(async move {
+                wm.truncate_above(TIP).unwrap();
+            })
+        });
+        assert!(session.hub.truncations() > heard, "the hub heard the fork");
+        mined(engine, session, id, TIP + 1, vec![p.clone()]);
+    });
+}
+
+/// #891: with no fork the hub counts, a block after the drop took C mines
+/// P.
+#[test]
+fn a_swept_payments_child_stays_when_a_block_after_its_take_mines_the_payment() {
+    swept_child_after_its_take(|engine, session, id, p| {
+        let heard = session.hub.truncations();
+        mined(engine, session, id, TIP + 2, vec![p.clone()]);
+        assert_eq!(session.hub.truncations(), heard, "no fork is counted");
+    });
+}
+
 /// #170 case 4: the app stops after key-wallet's sweep of P is stored and
 /// its marks dropped, before C goes. The next load finds C orphaned (no
 /// row of P, which spent its coin) and drops it with its winner unknown:

@@ -727,6 +727,10 @@ pub(crate) struct SessionHub {
     /// detection and its recheck under the write lock.
     #[cfg(test)]
     pub(crate) pause_drop_recheck: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of a swept payment's children after it
+    /// took them, before the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_child: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next drop of beaten payments after it read its
     /// block's proof, before the write lock.
     #[cfg(test)]
@@ -973,6 +977,8 @@ impl SessionHub {
             pause_publish: Mutex::new(None),
             #[cfg(test)]
             pause_drop_recheck: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_child: Mutex::new(None),
             #[cfg(test)]
             pause_drop_proven: Mutex::new(None),
             #[cfg(test)]
@@ -1222,18 +1228,19 @@ impl SessionHub {
     }
 
     /// The children of swept payments queued for wallet `id`'s drop: each
-    /// set with its winner and the swept payments.
+    /// set with the truncations applied when it was queued, its winner and
+    /// the swept payments.
     pub(crate) fn take_dead_children(
         &self,
         id: WalletId,
-    ) -> Vec<(Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
+    ) -> Vec<(u64, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *queued)
             .into_iter()
             .partition(|(w, ..)| *w == id);
         *queued = others;
         (mine.into_iter())
-            .map(|(_, children, winner, swept)| (children, winner, swept))
+            .map(|(_, t, children, winner, swept)| (t, children, winner, swept))
             .collect()
     }
 
@@ -2068,8 +2075,10 @@ impl SessionHub {
                         txid: Some(*superseded_by),
                         mined: winner_block.as_ref().map(|b| b.height()),
                     };
+                    let truncations = self.truncations();
                     (self.dead_children.lock().unwrap_or_else(|p| p.into_inner())).push((
                         id,
+                        truncations,
                         children.into_iter().collect(),
                         winner,
                         txids.iter().copied().collect(),
@@ -2247,9 +2256,16 @@ pub(crate) type CarriedDrop = (
 /// Chooses the spend claims of `wallets` again after `txid`'s lock.
 pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
 
-/// Children of swept payments queued for a drop: their wallet, their
-/// txids, the winner, and the swept payments.
-type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
+/// Children of swept payments queued for a drop: their wallet, the
+/// truncations applied when they were queued, their txids, the winner, and
+/// the swept payments.
+type DeadChildren = (
+    WalletId,
+    u64,
+    Vec<Txid>,
+    crate::history::Winner,
+    BTreeSet<Txid>,
+);
 
 /// The transactions a wallet event names.
 fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
