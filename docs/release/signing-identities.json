@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "pgp_fingerprint": "REPLACE_WITH_40_HEX_PRIMARY_PGP_FINGERPRINT",
+  "apple_team_id": "REPLACE_WITH_10_CHAR_APPLE_TEAM_ID",
+  "windows_leaf_sha256": "sha256:REPLACE_WITH_64_HEX_WINDOWS_LEAF_CERT_SHA256"
+}
