@@ -175,4 +175,9 @@ describe("ContactActions", () => {
     expect(actionError(appError("contact.details_too_long", { kind: "size", bytes: 2100, max: 2031 }))).toBe("The alias and note are too long.");
     expect(actionError(appError("identity.not_found", null, "identity not found"))).toBe("identity not found");
   });
+
+  it("says a write whose outcome is unknown may already be out, never the engine's bare message", () => {
+    expect(actionError(appError("platform.broadcast_unknown", null, "broadcast outcome unknown"))).toBe("It may have been sent. Check your contacts before trying again.");
+    expect(actionError(appError("platform.will_be_sent", null, "will be sent"))).toBe("It is still being sent. Check your contacts in a minute.");
+  });
 });

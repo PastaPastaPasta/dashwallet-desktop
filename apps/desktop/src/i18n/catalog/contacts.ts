@@ -166,6 +166,8 @@ export const contacts = {
     detailsTooLong: "The alias and note are too long.",
     platform: "Could not reach Dash Platform. Try again.",
     locked: "Unlock the wallet and try again.",
+    maybeSent: "It may have been sent. Check your contacts before trying again.",
+    willBeSent: "It is still being sent. Check your contacts in a minute.",
   },
   addContact: {
     title: "Add a New Contact",
