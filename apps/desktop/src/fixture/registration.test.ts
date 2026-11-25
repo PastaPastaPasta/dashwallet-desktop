@@ -5,10 +5,10 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as cmd from "../api/generated/commands";
-import { coreRequest, invitationRequest } from "../dashpay/wizard";
+import { coreRequest, invitationRequest, platformRequest } from "../dashpay/wizard";
 import { IDENTITY } from "./dashpay";
 import { installFixture, type FixtureHandle } from "./index";
-import { checkUsername } from "./registration";
+import { checkUsername, NAME_CREDITS, NEW_IDENTITY } from "./registration";
 import { FIXTURE_WALLET_ID, SCENARIO_NAMES, buildWorld, type ScenarioName } from "./scenarios";
 
 const W = FIXTURE_WALLET_ID;
@@ -83,6 +83,146 @@ describe("start_registration", () => {
     await expect(cmd.startRegistration(W, coreRequest(LABEL), await grant())).rejects.toMatchObject({ code: "registration.in_progress", data: { draft: "reg-1" } });
     const draft = await cmd.startRegistrationPastUnknownFunding(W, coreRequest(LABEL), await grant(), ["reg-1"]);
     expect(draft).not.toBe("reg-1");
+  });
+});
+
+describe("a registration from the Platform balance (C-funding F4, F9, F10, F22)", () => {
+  const FIRST = "tdash1kxk5g3wz9mqhz0pnr8x0a2nxzv3xwq7kp6yvr9h5q9u8fz4d7lqsr8a2cd";
+  const credits = (f: FixtureHandle) => Object.fromEntries(f.world.pending.platform!.addresses.map((a) => [a.address, a.credits]));
+
+  /** The quote, then a start under its grant. */
+  async function start() {
+    const q = await cmd.registrationQuote(W, platformRequest(LABEL));
+    return cmd.startRegistration(W, platformRequest(LABEL, q.platform!), await grant(q.grant.maxDuffs, q.grant.maxCredits));
+  }
+
+  it("writes a row that commits nothing and sends no asset lock; its create debits the planned input once", async () => {
+    const f = install();
+    const before = credits(f);
+    const draft = await start();
+    expect(await rowOf(draft)).toMatchObject({ phase: "draft", fromPlatform: true, fundsCommitted: false, txid: null, running: true, label: LABEL });
+    expect(f.world.dashpay.assetLocks).toBe(0);
+    expect(await cmd.dashpayStatus(W)).toEqual({ kind: "registering", draft });
+    const phases: string[] = [];
+    while (f.advanceRegistration(draft)) phases.push((await rowOf(draft)).phase);
+    expect(phases).toEqual(["keysPrepared", "identityRegistered", "nameRequested", "nameRegistered", "done"]);
+    expect(await rowOf(draft)).toMatchObject({ identity: NEW_IDENTITY, fundsCommitted: true });
+    // Input 0 gives the funding and the fee; the identity starts with the funding.
+    expect(BigInt(credits(f)[FIRST])).toBe(BigInt(before[FIRST]) - NAME_CREDITS - 41_500_000n);
+    expect(f.world.dashpay.identities[0].balance).toBe(String(NAME_CREDITS));
+    expect(await cmd.dashpayStatus(W)).toEqual({ kind: "ready", main: NEW_IDENTITY });
+  });
+
+  it("F5: a grant with duffs, or one short of the debit, is refused before any row", async () => {
+    install();
+    const q = await cmd.registrationQuote(W, platformRequest(LABEL));
+    const request = platformRequest(LABEL, q.platform!);
+    await expect(cmd.startRegistration(W, request, await grant(1, q.grant.maxCredits))).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(cmd.startRegistration(W, request, await grant(0, "1"))).rejects.toMatchObject({ code: "platform.grant_exceeded" });
+    expect(await cmd.registrations(W)).toEqual([]);
+  });
+
+  it("plans several addresses when none alone pays, and input 0 is the first above the reserve", async () => {
+    const f = install();
+    const [a, b] = f.world.pending.platform!.addresses;
+    f.world.pending.platform!.addresses = [
+      { ...a, credits: "1200000000" },
+      { ...b, credits: "1200000000" },
+    ];
+    // Two inputs: the reserve is three fees for two (3 × 42,000,000).
+    const q = await cmd.registrationQuote(W, platformRequest(LABEL));
+    expect(q.platform).toEqual({ fundingCredits: "2000000000", feeCredits: "42000000", feeReserveCredits: "126000000", debitCredits: "2126000000" });
+    expect(q.grant).toEqual({ maxDuffs: 0, maxCredits: String(2_126_000_000n + NAME_CREDITS) });
+    const draft = await start();
+    expect(f.world.dashpay.platformPlans![draft].inputs).toEqual([
+      { address: a.address, claim: 1_074_000_000n },
+      { address: b.address, claim: 926_000_000n },
+    ]);
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(credits(f)).toEqual({ [a.address]: "84000000", [b.address]: "274000000" });
+    // Dust first: input 0 is the next address, alone.
+    clearMocks();
+    const g = install();
+    g.world.pending.platform!.addresses = [
+      { ...a, credits: "50000000" },
+      { ...b, credits: "3000000000" },
+    ];
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).toMatchObject({ fundingCredits: "2000000000", feeReserveCredits: "124500000" });
+    // Too little in all: refused with the debit it needs.
+    g.world.pending.platform!.addresses = [
+      { ...a, credits: "1000000000" },
+      { ...b, credits: "1000000000" },
+    ];
+    await expect(cmd.registrationQuote(W, platformRequest(LABEL))).rejects.toMatchObject({ code: "platform.insufficient_credits", data: { kind: "credits" } });
+    // Input 0 above one input's reserve but not two's: planned again from the next address, alone.
+    g.world.pending.platform!.addresses = [
+      { ...a, credits: "125000000" },
+      { ...b, credits: "5000000000" },
+    ];
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).toEqual({
+      fundingCredits: "2000000000",
+      feeCredits: "41500000",
+      feeReserveCredits: "124500000",
+      debitCredits: "2124500000",
+    });
+  });
+
+  it("an unknown answer waits and reads again; a held one parks, and Continue signs the stored plan once", async () => {
+    const f = install();
+    f.world.dashpay.platformCreates = ["unknown", "held"];
+    const before = credits(f);
+    const draft = await start();
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({ phase: "keysPrepared", waiting: "paymentUnknown", running: true, fundsCommitted: true });
+    await expect(cmd.discardRegistration(W, draft)).rejects.toMatchObject({ code: "invalid_argument" });
+    // F9: the create holds the addresses; the next Platform quote names it.
+    await expect(cmd.registrationQuote(W, platformRequest(LABEL))).rejects.toMatchObject({ code: "credits.move_pending", data: { kind: "artifact", artifact: draft } });
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({ phase: "keysPrepared", waiting: "paymentHeld", running: false });
+    expect(f.advanceRegistration(draft)).toBe(false);
+    expect(credits(f)).toEqual(before);
+    const own = await cmd.registrationResumeGrant(W, draft);
+    expect(own).toEqual({ maxDuffs: 0, maxCredits: String(NAME_CREDITS + 124_500_000n + NAME_CREDITS) });
+    await cmd.resumeRegistration(W, draft, await grant(0, own.maxCredits));
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({ phase: "identityRegistered", identity: NEW_IDENTITY });
+    expect(BigInt(credits(f)[FIRST])).toBe(BigInt(before[FIRST]) - NAME_CREDITS - 41_500_000n);
+  });
+
+  it("F10: a create that fails in a block keeps the fee, clears the row with registration.refunded and frees the balance", async () => {
+    const f = install();
+    f.world.dashpay.platformCreates = ["paidFailure"];
+    const before = credits(f);
+    const draft = await start();
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({
+      phase: "failed",
+      fundsCommitted: false,
+      running: false,
+      identity: null,
+      failure: { code: "registration.refunded", retryable: false },
+    });
+    expect(f.advanceRegistration(draft)).toBe(false);
+    expect(BigInt(credits(f)[FIRST])).toBe(BigInt(before[FIRST]) - 41_500_000n);
+    expect(await cmd.dashpayStatus(W)).toEqual({ kind: "noIdentity", reason: null });
+    // Nothing holds the addresses: the next Platform quote plans.
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).not.toBeNull();
+  });
+
+  it("a re-plan that no longer gives the quoted numbers fails with registration.quote_changed and takes nothing", async () => {
+    const f = install();
+    f.world.dashpay.platformCreates = ["replanRefused"];
+    const before = credits(f);
+    const draft = await start();
+    f.advanceRegistration(draft);
+    f.advanceRegistration(draft);
+    expect(await rowOf(draft)).toMatchObject({ phase: "failed", fundsCommitted: false, running: false, failure: { code: "registration.quote_changed", retryable: false } });
+    expect(credits(f)).toEqual(before);
+    await cmd.discardRegistration(W, draft);
+    expect((await cmd.registrationQuote(W, platformRequest(LABEL))).platform).not.toBeNull();
   });
 });
 
@@ -329,5 +469,85 @@ describe("an invitation's claim (DP5-03 D17)", () => {
     const core = await cmd.registrationQuote(W, coreRequest(LABEL));
     const coreDraft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(core.grant.maxDuffs, core.grant.maxCredits));
     await expect(cmd.registrationResumeGrant(W, coreDraft)).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("#685: a held Platform-funded row resumes under its own grant, which carries no duffs", async () => {
+    const f = install();
+    const quote = await cmd.registrationQuote(W, coreRequest(LABEL));
+    const draft = await cmd.startRegistration(W, coreRequest(LABEL), await grant(quote.grant.maxDuffs, quote.grant.maxCredits));
+    const dp = f.world.dashpay;
+    Object.assign(dp.registrations.find((r) => r.draft === draft)!, { phase: "keysPrepared", waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true });
+    dp.runs = dp.runs.filter((d) => d !== draft);
+    const own = await cmd.registrationResumeGrant(W, draft);
+    expect(own.maxDuffs).toBe(0);
+    expect(BigInt(own.maxCredits)).toBeGreaterThan(0n);
+    await expect(cmd.resumeRegistration(W, draft, await grant(1, own.maxCredits))).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    expect(await rowOf(draft)).toMatchObject({ waiting: "paymentHeld", running: false });
+    await cmd.resumeRegistration(W, draft, await grant(0, own.maxCredits));
+    expect(await rowOf(draft)).toMatchObject({ running: true, fromPlatform: true });
+  });
+});
+
+describe("a temporary name beside a contested label (DP1-09 D4 reversed)", () => {
+  const contested = (temp: string | null) => coreRequest("alice", temp);
+
+  it("the quote prices both names; the contested lock covers them, so the total does not move", async () => {
+    install();
+    const alone = await cmd.registrationQuote(W, contested(null));
+    const both = await cmd.registrationQuote(W, contested("alice2"));
+    expect(alone.grant.maxCredits).toBe(String(NAME_CREDITS));
+    expect(both.grant.maxCredits).toBe(String(2n * NAME_CREDITS));
+    expect(both.totalDuffs).toBe(alone.totalDuffs);
+    // A plain label takes none (registration.rs `plan`).
+    expect((await cmd.registrationQuote(W, coreRequest(LABEL, "alice2"))).grant.maxCredits).toBe(String(NAME_CREDITS));
+  });
+
+  it("a contested temporary name is refused before any row", async () => {
+    const f = install();
+    await expect(cmd.registrationQuote(W, contested("bobby"))).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.startRegistration(W, contested("bobby"), await grant(25_002_261, String(2n * NAME_CREDITS)))).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(f.world.dashpay.assetLocks).toBe(0);
+  });
+
+  it("registered right after the contest starts: the identity's main name while the vote runs", async () => {
+    const f = install();
+    const draft = await cmd.startRegistration(W, contested("alice2"), await grant(25_002_261, String(2n * NAME_CREDITS)));
+    expect((await rowOf(draft)).temporaryLabel).toBe("alice2");
+    while (f.advanceRegistration(draft));
+    expect(await rowOf(draft)).toMatchObject({ phase: "done", temporaryLabel: "alice2" });
+    expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
+    expect((await cmd.identities(W))[0]).toMatchObject({ names: ["alice2"], mainName: "alice2" });
+    expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBe("alice2");
+  });
+
+  it("refused: the contest goes on and the identity holds no name (the engine only logs it)", async () => {
+    const f = install();
+    f.world.dashpay.temporaryRefused = true;
+    const draft = await cmd.startRegistration(W, contested("alice2"), await grant(25_002_261, String(2n * NAME_CREDITS)));
+    while (f.advanceRegistration(draft));
+    expect(await cmd.dashpayStatus(W)).toMatchObject({ kind: "contestPending", label: "alice" });
+    expect((await cmd.identities(W))[0]).toMatchObject({ names: [], mainName: null });
+    expect((await cmd.contestStatus(W, NEW_IDENTITY, "alice")).temporaryName).toBeNull();
+  });
+
+  it("the scenarios: registered, refused, won and lost", async () => {
+    for (const [scenario, names] of [
+      ["dashpay-instant-ok", ["alice2"]],
+      ["dashpay-instant-failed", []],
+      ["dashpay-instant-won", ["alice2"]],
+      ["dashpay-instant-lost", ["alice2"]],
+    ] as const) {
+      clearMocks();
+      install(scenario);
+      expect(await cmd.dashpayStatus(W), scenario).toMatchObject({ kind: "contestPending", label: "alice" });
+      expect((await cmd.registrations(W))[0], scenario).toMatchObject({ label: "alice", temporaryLabel: "alice2", phase: "done" });
+      expect((await cmd.identities(W))[0].names, scenario).toEqual(names);
+    }
+    install("dashpay-instant-won");
+    expect(await cmd.contestStatus(W, IDENTITY.alice, "alice")).toMatchObject({ state: { kind: "won" }, temporaryName: "alice2" });
+    install("dashpay-instant-lost");
+    expect(await cmd.contestStatus(W, IDENTITY.alice, "alice")).toMatchObject({ state: { kind: "lost" }, temporaryName: "alice2" });
+    install("dashpay-contest-instant-short");
+    expect(BigInt((await cmd.identities(W))[0].balance!)).toBeLessThan(NAME_CREDITS);
   });
 });

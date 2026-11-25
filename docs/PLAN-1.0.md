@@ -89,7 +89,7 @@ owner updates the State column as items land and reports against it daily.
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
 | 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
 | 0.9 (RC) | Mon 11-30 | security review fixes in; QA pass on three OSes |
-| 1.0 | Wed 12-02 | RC fixes; release checklist; signed if the certificates exist |
+| 1.0 | Wed 12-02 | RC fixes; release checklist; signed locally by pasta (#780) |
 
 ## Lanes
 
@@ -231,7 +231,7 @@ working days with tests and review, from reading the code; nothing was built exc
 | 16: the same payment when the winner pays only other addresses, so nothing the wallet keeps proves it lost | needs rust-dashcore, so it goes with the fork pin batch; if it cannot make the release candidate's pins, the release owner decides on 11-25, in writing, with its notes line | not sized; sized by 11-25 | not started |
 | 17: a shared masternode registration's marker names the other participants' inputs, so a co-participant can get a coin the wallet has not found yet hidden until the registration is abandoned | closed by #159 at load: its start-up repair drops a claim whose input script is not the coin owner's signature, at the first start after the coin is stored (the fork lane's answer on 11-20, with a test). If #159 is not in the release candidate, the marker has to name only the outpoints this wallet signed. Checking the other participants' signatures when the registration is built is for 1.0.x | with #159; the marker change is not sized | closed at load by #159, merged 11-21 |
 | 11, the finality order: a spent coin can be offered | promised | under 1 | starts 11-21 |
-| 5: abandon, and a winner the store has no row for | promised; a targeted fix closes it partly | 1.5 to 2.5 | not started |
+| 5: abandon, and a winner the store has no row for | parked for 1.0.x; the release candidate's notes carry the disclosure | 1.5 to 2.5 | parked for 1.0.x: #250 closed unmerged; the root fix is #237; the RC release-notes disclosure is [#237 comment](https://github.com/PastaPastaPasta/dashwallet-desktop/issues/237#issuecomment-7128932297) |
 | 1: a crash during a send | promised | 2.5 to 3.5 | not started |
 | 7: unreadable evidence at load | promised. Its pull request first closes the two ways #134 still counts a load as complete when it is not (a skipped malformed row, and an abandoned mark that was never written) | 1.5 to 2.5 | not started |
 | 3 and 4 together: phantom change of a beaten payment, and its restored child (also when the winner is in the history and the child still claims its other coin) | attempted | 4.5 to 6.5 | not started |
@@ -333,18 +333,23 @@ shielded-note sync. It is an RC item in lane C, sized and scheduled by the relea
 
 ## What only pasta can unblock
 
-Without these the release still ships on 12-02, in the reduced form the release plan already allows.
+Without these the release still ships on 12-02, in the reduced form the release plan already allows, except for
+signing: without it the final tag waits (first row).
 No longer on this list: partner credentials and Explore database access (lane L is cut), and Transifex access
 (the translations are made in this repository).
 
 | Needed | For | By | If it does not arrive |
 |---|---|---|---|
-| Apple Developer ID and notarization, Windows signing certificate | signed installers, auto-update | 11-27 | 1.0 ships unsigned and says so; auto-update ships off |
-| A release key, and the choice of PGP or Sigstore | signed checksums | 11-27 | build attestations only, as today |
+| Signing 1.0 on pasta's own machines with Dash Core's identities: the Apple Developer ID with notarization, the Windows Authenticode certificate on pasta's YubiKey, pasta's PGP key over `SHA256SUMS`, and a stable updater key that stays local | signed installers, `SHA256SUMS.asc`, the signed update feed | 11-27 | the final tag fails closed and doesn't publish (#780); shipping 1.0 unsigned needs a written ruling. Release candidates are unsigned either way |
 | Up to 0.5 DASH on mainnet and an iOS user for an hour | mainnet canary (H-07) | 11-28 | canary runs on testnet only |
 | A funded testnet wallet created on iOS and one on Android | same-seed restore test | 11-24 | checked by code comparison only |
 | A real-Mac session and a real Windows PC | Touch ID, VoiceOver, Narrator, first notarized launch | 11-28 | passphrase unlock only on macOS; screen-reader checks on Linux only |
 | Go-ahead for the upstream platform pull request (E0-04.P3/P4), or agreement to drop it | Mode A dispatch | 11-21 | dropped as superseded by item 0's hook |
+
+Signing follows Dash Core's detached-signatures model (#780; the runbook is `docs/release/SIGNING.md`, which lands
+with it). CI builds the unsigned files and `SHA256SUMS` and holds no signing secrets. pasta signs on pasta's own
+machines, and CI attaches the detached signatures, checks them and publishes. Release candidates (`-rc.N`) stay
+unsigned.
 
 ## Risks
 

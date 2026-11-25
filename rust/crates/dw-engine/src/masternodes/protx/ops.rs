@@ -8,9 +8,10 @@
 //! `discard_operation`'s `... WHERE sent_at IS NULL`, which takes the row's
 //! payout-change barrier with it in one transaction (MG-13 P16), and
 //! `sent_at` is durable before each hand-off. A row's inputs stay persistently locked
-//! from its save until its transaction is in a block or conflicted, or the
-//! row is discarded (D8, D25), so no build after a restart can spend them
-//! in a second transaction.
+//! from its save until its transaction is in a block, conflicted or
+//! abandoned in Activity (MG-10 §1.10, D49), or the row is discarded (D8,
+//! D25), so no build after a restart can spend them in a second
+//! transaction.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -26,7 +27,7 @@ use super::super::protx_records::{
 };
 use super::super::shared::list_settled;
 use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
-use crate::history::TxEntry;
+use crate::history::{TxEntry, instant_locked};
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -73,6 +74,7 @@ pub(crate) fn state_name(state: ProTxOperationState) -> &'static str {
         ProTxOperationState::Sent => "sent",
         ProTxOperationState::Confirmed { .. } => "confirmed",
         ProTxOperationState::Conflicted => "conflicted",
+        ProTxOperationState::Abandoned => "abandoned",
     }
 }
 
@@ -176,6 +178,38 @@ pub(crate) fn state_of(
         ProTxOperationState::Conflicted
     } else {
         unsettled
+    }
+}
+
+/// `state` once Activity's abandon is applied (MG-10 §1.10, D49): a `sent`
+/// registration or key change whose txid the wallet's abandoned marks name
+/// (an Abandon's durable commit point), and that isn't InstantSend-locked,
+/// is `abandoned`. Terminal: its fee inputs are released and it is never
+/// resent. Core may still mine it, so its payout-change barrier stays
+/// (MG-13 P16), it holds the signing of a later update of its masternode,
+/// and the key checks (D51) read [`state_of`], where it is `sent`.
+pub(crate) fn abandon_settled(
+    row: &MasternodeOpRow,
+    state: ProTxOperationState,
+    history: &HashMap<Txid, TxEntry>,
+    abandoned: &HashSet<Txid>,
+) -> ProTxOperationState {
+    if state != ProTxOperationState::Sent
+        || !matches!(
+            kind_of(&row.kind),
+            ProTxOperationKind::Registration | ProTxOperationKind::UpdateRegistrar
+        )
+    {
+        return state;
+    }
+    // An InstantSend lock seen since outranks the mark: it will be mined.
+    let marked = (row.txid.as_deref())
+        .and_then(|t| Txid::from_str(t).ok())
+        .is_some_and(|t| abandoned.contains(&t) && !history.get(&t).is_some_and(instant_locked));
+    if marked {
+        ProTxOperationState::Abandoned
+    } else {
+        state
     }
 }
 
@@ -463,16 +497,67 @@ impl NetworkSession {
         Ok((history, unspent))
     }
 
+    /// The txids the wallet's abandoned marks name, for [`abandon_settled`].
+    pub(crate) async fn abandoned_txids(
+        &self,
+        wallet: WalletId,
+    ) -> Result<HashSet<Txid>, MasternodesError> {
+        Ok(self
+            .appdb_op(move |db| crate::tx_actions::abandoned_txids(db, wallet))
+            .await?)
+    }
+
     pub(crate) async fn op_state(
         &self,
         wallet: WalletId,
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
         let (history, unspent) = self.op_view(wallet).await?;
+        let abandoned = self.abandoned_txids(wallet).await?;
         let view = self
             .dissolution_view(wallet, std::slice::from_ref(row))
             .await;
-        Ok(list_settled(row, state_of(row, &history, &unspent), &view))
+        let state = list_settled(row, state_of(row, &history, &unspent), &view);
+        Ok(abandon_settled(row, state, &history, &abandoned))
+    }
+
+    /// `Ok` when a resend of `row` may hand its bytes off: it reads
+    /// `signed`, `not_sent` or `sent`, and a registration's or key change's
+    /// txid carries no abandoned mark, whatever its state reads (an
+    /// InstantSend lock seen since the abandon, or a hand-off recovered
+    /// unsent and abandoned in Activity). `OperationState` otherwise,
+    /// `abandoned` for a marked one. The shared kinds keep their own rules.
+    pub(crate) async fn require_resendable(
+        &self,
+        wallet: WalletId,
+        row: &MasternodeOpRow,
+    ) -> Result<(), MasternodesError> {
+        let state = self.op_state(wallet, row).await?;
+        let abandoned = self.abandoned_txids(wallet).await?;
+        let covered = matches!(
+            kind_of(&row.kind),
+            ProTxOperationKind::Registration | ProTxOperationKind::UpdateRegistrar
+        );
+        let marked = covered
+            && (row.txid.as_deref())
+                .and_then(|t| Txid::from_str(t).ok())
+                .is_some_and(|t| abandoned.contains(&t));
+        let state = match state {
+            ProTxOperationState::Signed
+            | ProTxOperationState::NotSent
+            | ProTxOperationState::Sent
+                if !marked =>
+            {
+                return Ok(());
+            }
+            ProTxOperationState::Signed
+            | ProTxOperationState::NotSent
+            | ProTxOperationState::Sent => ProTxOperationState::Abandoned,
+            state => state,
+        };
+        Err(MasternodesError::OperationState {
+            state: state_name(state).into(),
+        })
     }
 
     pub(crate) async fn operation(
@@ -604,10 +689,11 @@ impl NetworkSession {
         }
     }
 
-    /// Releases the inputs of settled rows: in a block, or conflicted by a
-    /// spend [`Self::buried`] says a reorg won't undo (MG-04b D70, review
-    /// r1 of 1b n-5). The coins are spent, so the locks only clutter coin
-    /// control (D25).
+    /// Releases the inputs of settled rows: in a block, abandoned in
+    /// Activity (MG-10 §1.10, D49), or conflicted by a spend
+    /// [`Self::buried`] says a reorg won't undo (MG-04b D70, review r1 of 1b
+    /// n-5). The coins are spent, or come back to be spent (D49), so the
+    /// locks only clutter coin control (D25).
     pub(crate) async fn settle_operation_locks(
         &self,
         wallet: WalletId,
@@ -620,26 +706,45 @@ impl NetworkSession {
             return Ok(());
         }
         let (history, unspent) = self.op_view(wallet).await?;
+        let abandoned = self.abandoned_txids(wallet).await?;
         let buried = self.buried();
-        let settled: Vec<(String, Vec<OutPoint>)> = rows
+        let settled: Vec<(String, Vec<OutPoint>, bool)> = rows
             .iter()
             .filter(|r| r.fee_inputs != "[]")
-            .filter(|r| match state_of(r, &history, &unspent) {
-                ProTxOperationState::Confirmed { .. } => true,
-                ProTxOperationState::Conflicted => signed_tx(r)
-                    .and_then(|tx| tx_conflict_height(&tx, &history))
-                    .is_some_and(&buried),
-                _ => false,
+            .filter_map(|r| {
+                let state = state_of(r, &history, &unspent);
+                let state = abandon_settled(r, state, &history, &abandoned);
+                let settled = match state {
+                    ProTxOperationState::Confirmed { .. } | ProTxOperationState::Abandoned => true,
+                    ProTxOperationState::Conflicted => signed_tx(r)
+                        .and_then(|tx| tx_conflict_height(&tx, &history))
+                        .is_some_and(&buried),
+                    _ => false,
+                };
+                settled.then(|| {
+                    let by_abandon = state == ProTxOperationState::Abandoned;
+                    (r.id.clone(), decode_inputs(&r.fee_inputs), by_abandon)
+                })
             })
-            .map(|r| (r.id.clone(), decode_inputs(&r.fee_inputs)))
             .collect();
         if settled.is_empty() {
             return Ok(());
         }
+        let by_abandon = settled.iter().any(|(_, _, a)| *a);
         let w = wallet.to_string();
         self.appdb_op(move |db| {
             let now = now_secs();
-            for (id, inputs) in &settled {
+            for (id, inputs, abandoned) in &settled {
+                if *abandoned {
+                    // Its inputs and their locks in one transaction; its
+                    // payout-change barrier stays (MG-13 P16).
+                    let inputs: Vec<(String, u32)> = inputs
+                        .iter()
+                        .map(|o| (o.txid.to_string(), o.vout))
+                        .collect();
+                    db.release_abandoned_masternode_op_durable(&w, id, &inputs, now)?;
+                    continue;
+                }
                 for o in inputs {
                     let holder = Holder::Operation(id);
                     db.release_lock(&w, holder, &o.txid.to_string(), o.vout, now)?;
@@ -649,6 +754,10 @@ impl NetworkSession {
             Ok(())
         })
         .await?;
+        if by_abandon {
+            self.hub.pump.mark_balances(wallet);
+            self.masternodes.local_change();
+        }
         Ok(())
     }
 

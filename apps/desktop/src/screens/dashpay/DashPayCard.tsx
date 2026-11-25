@@ -2,10 +2,12 @@
 // shortcut card and on the Join page. The model is dashpay/status.ts `homeCard`.
 
 import { useId, useState, type ReactNode } from "react";
+import type { Backend } from "../../api/backend";
 import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import type { CardActionKind, CardModel } from "../../dashpay/status";
 import { useT } from "../../i18n";
+import { transferFor } from "../../transfer/model";
 import { VotingInfoSheet } from "./AboutDashPay";
 
 const ICONS: Record<CardModel["tone"], ReactNode> = {
@@ -37,12 +39,23 @@ function CardIcon({ tone }: { tone: CardModel["tone"] }) {
   );
 }
 
-/** The card's buttons outside the Join page: into the Join page, the unlock sheet, Tools ▸ Repair. */
-export function defaultCardAction(kind: CardActionKind, retry: () => void) {
+/** "Move to Dash wallet" from a held Platform payment: Home's transfer, which plans beside
+ * the held payment from its inputs only, so it is that payment's way out. */
+export function moveToDashWallet(b: Backend, walletId: string) {
+  navigate("home");
+  transferFor(b, walletId).start("platformToCore");
+}
+
+/** The card's buttons outside the Join page: into the Join page, the unlock sheet, Tools ▸ Repair,
+ * Home's move to the Dash wallet. */
+export function defaultCardAction(kind: CardActionKind, retry: () => void, moveToCore: () => void) {
   switch (kind) {
     case "join":
     case "continue":
     case "chooseName":
+    // Each page with the card opens the wizard itself (MyProfile.tsx `identityCardAction`).
+    case "instantName":
+    case "instantRetry":
       return navigate("joinDashPay");
     case "retry":
       return retry();
@@ -50,6 +63,8 @@ export function defaultCardAction(kind: CardActionKind, retry: () => void) {
       return ui.set({ dialog: "unlock" });
     case "repair":
       return navigate("tools", { toolsTab: "repair" });
+    case "moveToCore":
+      return moveToCore();
     // Home opens the top-up sheet before it navigates (Overview.tsx); elsewhere, My Profile.
     case "buyCredits":
       return navigate("profile");
@@ -63,7 +78,8 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
   const tr = useT();
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
-  const { action, step } = card;
+  const { action, secondary, step } = card;
+  const press = (kind: CardActionKind) => (kind === "votingInfo" ? setVotingInfo(true) : onAction(kind));
   return (
     <section
       className={`dashpay-card card-l1 is-${card.tone}`}
@@ -101,16 +117,31 @@ export function DashPayCard({ card, onAction }: { card: CardModel; onAction: (ki
         )}
       </div>
       {action && (
-        <DashButton
-          variant={action.kind === "votingInfo" ? "plainBlue" : "filledBlue"}
-          size="small"
-          className="dashpay-card-action"
-          data-testid="dashpay-card-action"
-          disabled={action.disabled}
-          onClick={() => (action.kind === "votingInfo" ? setVotingInfo(true) : onAction(action.kind))}
-        >
-          {action.label}
-        </DashButton>
+        <div className="dashpay-card-actions">
+          <DashButton
+            variant={action.kind === "votingInfo" ? "plainBlue" : "filledBlue"}
+            size="small"
+            className="dashpay-card-action"
+            data-testid="dashpay-card-action"
+            data-kind={action.kind}
+            disabled={action.disabled}
+            onClick={() => press(action.kind)}
+          >
+            {action.label}
+          </DashButton>
+          {secondary && (
+            <DashButton
+              variant={secondary.kind === "votingInfo" ? "plainBlue" : "tintedBlue"}
+              size="small"
+              className="dashpay-card-action"
+              data-testid="dashpay-card-secondary"
+              disabled={secondary.disabled}
+              onClick={() => press(secondary.kind)}
+            >
+              {secondary.label}
+            </DashButton>
+          )}
+        </div>
       )}
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
     </section>

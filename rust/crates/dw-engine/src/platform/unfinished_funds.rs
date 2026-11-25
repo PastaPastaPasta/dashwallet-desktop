@@ -161,6 +161,12 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         self.record(Mark::Unknown, lock).await;
     }
 
+    async fn await_start_up(&self) {
+        (self.session.platform)
+            .settle_startup_hold(self.wallet, || self.lib.funding_hold())
+            .await;
+    }
+
     async fn readiness(&self) -> Readiness {
         if let Err(e) = fund::gate(self.lib).await {
             return match e {
@@ -168,7 +174,8 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 e => Readiness::Held(e.code().into()),
             };
         }
-        match self.lib.funding_hold() {
+        let hold = self.lib.funding_hold();
+        match self.session.platform.ask_on_startup_hold(self.wallet, hold) {
             Some(wait) => Readiness::Held(super::topup::held(wait).code().into()),
             None => Readiness::Ready,
         }
@@ -193,7 +200,10 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
     }
 
     fn caught_up(&self) -> bool {
-        self.lib.funding_hold().is_none()
+        let hold = self.lib.funding_hold();
+        (self.session.platform)
+            .ask_on_startup_hold(self.wallet, hold)
+            .is_none()
     }
 
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>> {

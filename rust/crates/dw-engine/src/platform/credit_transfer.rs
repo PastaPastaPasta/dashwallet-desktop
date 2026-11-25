@@ -42,7 +42,9 @@ use super::identity::KeyPurpose;
 use super::identity_writes::identity_locks;
 use super::money_gate::Subject;
 use super::platform_addresses::RecipientProblem;
-use super::platform_moves::{bech32m, next_receive_address, parse, pool, recipient, sends_active};
+use super::platform_moves::{
+    address_sends_open, bech32m, next_receive_address, parse, pool, recipient, sends_active,
+};
 use super::registration_flow::parse_identity;
 use super::requests::{flow_signer, leased, write_lease, write_permit};
 use super::withdrawal::{
@@ -148,6 +150,7 @@ pub(crate) async fn quote(
     identity: &str,
     amount: WithdrawAmount,
 ) -> Result<WithdrawToPlatformQuote, CreditsError> {
+    address_sends_open(network)?;
     let id = parse_identity(identity)?;
     own(wallet, id).await?;
     let (credits, rules) = plan(net, id, amount).await?;
@@ -215,8 +218,9 @@ pub(crate) async fn transfer(
     (to, amount): (&str, WithdrawAmount),
     grant: &str,
 ) -> Result<WithdrawToPlatformOutcome, CreditsError> {
-    let id = parse_identity(identity)?;
     let network = session.vault.network();
+    address_sends_open(network)?;
+    let id = parse_identity(identity)?;
     let address = destination(wallet, network, to).await?;
     own(wallet, id).await?;
     (session.money_gate(Subject::Identity(wallet_id, id)).await)

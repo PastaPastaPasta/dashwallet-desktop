@@ -542,3 +542,345 @@ fn mainnet_refuses_a_platform_registration_before_anything_is_written() {
     assert_eq!(f.rows(), rows);
     assert!(lib.w().platform_asks.is_empty(), "no pass ran on mainnet");
 }
+
+/// F5 (#685): a Platform row's resume grant is sized from the row alone,
+/// never a quote: no duffs, the stored funding and fee reserve while its
+/// identity is not created, then the names and the profile. A Core row
+/// has none.
+#[test]
+fn a_platform_rows_resume_grant_is_its_own() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let grant = |row: NewRegistration| {
+        let draft = f.insert(row);
+        (f.engine)
+            .block_on(registration::resume_grant(
+                &f.session,
+                f.wallet,
+                &*lib,
+                &draft.to_string(),
+            ))
+            .map(|g| (g.max_duffs, g.max_credits))
+            .map_err(|e| e.code())
+    };
+    let later = NAME_CREDITS + flow::PROFILE_CREDITS;
+    assert_eq!(
+        grant(platform_row(None)),
+        Ok((0, FUNDING + RESERVE + later))
+    );
+    assert_eq!(
+        grant(platform_row(Some(platform_plan_of(FUNDING)))),
+        Ok((0, FUNDING + RESERVE + later))
+    );
+    assert_eq!(
+        grant(NewRegistration {
+            identity: Some(platform_identity()),
+            phase: Phase::IdentityRegistered.as_str().into(),
+            ..platform_row(Some(platform_plan_of(FUNDING)))
+        }),
+        Ok((0, later))
+    );
+    // The Platform addresses are not read for it: a held create refuses
+    // their quote, not this.
+    lib.w().platform_held = Some("move-7-0".into());
+    assert_eq!(
+        grant(platform_row(Some(platform_plan_of(FUNDING)))),
+        Ok((0, FUNDING + RESERVE + later))
+    );
+    assert_eq!(grant(core_row(PLAIN)), Err("invalid_argument"));
+    let platform = f.insert(platform_row(Some(platform_plan_of(FUNDING))));
+    let core = f.insert(core_row(PLAIN));
+    assert!(f.status(&lib, platform).from_platform);
+    assert!(!f.status(&lib, core).from_platform);
+}
+
+/// F22 (#685): Continue on a held create: the resume takes the grant its
+/// row sizes and signs the stored plan once more, at its nonces; nothing
+/// is planned again. A grant with duffs is still refused.
+#[test]
+fn a_held_platform_row_resumes_with_its_own_grant() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let draft = f.insert(platform_row(Some(platform_plan_of(FUNDING))));
+    script(&lib, [(false, Ok(RegisterOutcome::Held))]);
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let request = (f.engine)
+        .block_on(registration::resume_grant(
+            &f.session,
+            f.wallet,
+            &*lib,
+            &draft.to_string(),
+        ))
+        .unwrap();
+    let resume = |grant: String| {
+        (f.engine).block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(grant),
+        ))
+    };
+    let with_duffs = f.grant(1, request.max_credits, Credential::None);
+    assert_eq!(
+        resume(with_duffs).map_err(|e| e.code()),
+        Err("platform.grant_invalid")
+    );
+    assert_eq!(lib.w().platform_asks.len(), 1);
+    script(
+        &lib,
+        [(false, Ok(RegisterOutcome::Registered(platform_identity())))],
+    );
+    let grant = f.grant(request.max_duffs, request.max_credits, Credential::None);
+    resume(grant).unwrap();
+    f.settle(draft);
+    let asks = lib.w().platform_asks.clone();
+    assert_eq!(asks.len(), 2);
+    assert_eq!(asks[1].plan, Some(platform_plan_of(FUNDING)));
+    assert_eq!(
+        (asks[1].funding_credits, asks[1].fee_reserve_credits),
+        (FUNDING, RESERVE)
+    );
+    assert_eq!(
+        f.row(draft).identity.as_deref(),
+        Some(platform_identity().as_str())
+    );
+}
+
+/// F5 (#685): a resume grant is never sized from defaults: a Platform row
+/// whose stored funding is missing a field, whose plan is half stored, or
+/// whose plan is not one the funding step makes (an address twice, nonce
+/// 0, a zero claim, claims below the stored funding, an address or an
+/// identity that does not parse) has none.
+#[test]
+fn an_edited_or_missing_platform_funding_sizes_no_grant() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let grant = |funding: String| {
+        let draft = f.insert(NewRegistration {
+            funding,
+            ..platform_row(None)
+        });
+        (f.engine)
+            .block_on(registration::resume_grant(
+                &f.session,
+                f.wallet,
+                &*lib,
+                &draft.to_string(),
+            ))
+            .map(|g| (g.max_duffs, g.max_credits))
+            .map_err(|e| e.code())
+    };
+    let identity = platform_identity();
+    let raw = |rest: &str| {
+        format!(r#"{{"v":1,"kind":"platform_addresses","funding_credits":{FUNDING}{rest}}}"#)
+    };
+    let planned_by = |inputs: &str, identity: &str| {
+        raw(&format!(
+            r#","fee_reserve_credits":{RESERVE},"inputs":{inputs},"identity":"{identity}""#
+        ))
+    };
+    let planned = |inputs: &str| planned_by(inputs, &identity);
+    let address = |b: u8| {
+        crate::platform::platform_moves::bech32m(
+            &PlatformAddress::P2pkh([b; 20]),
+            dpp::dashcore::Network::Testnet,
+        )
+    };
+    let (a, b) = (address(0xa1), address(0xb1));
+    let one = |address: &str, nonce: u32, credits: u64| {
+        format!(r#"{{"address":"{address}","nonce":{nonce},"credits":{credits}}}"#)
+    };
+    assert!(grant(raw(&format!(r#","fee_reserve_credits":{RESERVE}"#))).is_ok());
+    assert_eq!(grant(raw("")), Err("invalid_argument"), "no reserve");
+    assert_eq!(
+        grant(raw(&format!(
+            r#","fee_reserve_credits":{RESERVE},"inputs":[{}]"#,
+            one(&a, 1, FUNDING)
+        ))),
+        Err("invalid_argument"),
+        "inputs without the identity"
+    );
+    assert!(grant(planned(&format!("[{}]", one(&a, 1, FUNDING)))).is_ok());
+    for (inputs, why) in [
+        (
+            format!("[{},{}]", one(&a, 1, FUNDING), one(&a, 2, 1)),
+            "an address twice",
+        ),
+        (format!("[{}]", one(&a, 0, FUNDING)), "nonce 0"),
+        (
+            format!("[{},{}]", one(&a, 1, FUNDING), one(&b, 1, 0)),
+            "a zero claim",
+        ),
+        (
+            format!("[{}]", one(&a, 1, FUNDING - 1)),
+            "claims below the funding",
+        ),
+        (
+            format!("[{}]", one(&a, 1, FUNDING + 1)),
+            "claims above the funding",
+        ),
+        (
+            format!("[{}]", one("tdashevo1plan", 1, FUNDING)),
+            "an address that does not parse",
+        ),
+        ("[]".to_owned(), "no inputs"),
+    ] {
+        assert_eq!(grant(planned(&inputs)), Err("invalid_argument"), "{why}");
+    }
+    assert_eq!(
+        grant(planned_by(
+            &format!("[{}]", one(&a, 1, FUNDING)),
+            "not-an-identity"
+        )),
+        Err("invalid_argument"),
+        "an identity that does not parse"
+    );
+    let unfunded = format!(
+        r#"{{"v":1,"kind":"platform_addresses","funding_credits":0,"fee_reserve_credits":{RESERVE},"inputs":[],"identity":"{identity}"}}"#
+    );
+    assert_eq!(
+        grant(unfunded),
+        Err("invalid_argument"),
+        "no inputs, no funding"
+    );
+}
+
+/// F5 (#685): a plan the funding step makes is one `resume_grant` accepts.
+/// The quote stores the plan's `funding_credits`, the sum of its claims,
+/// even where a claim was raised past the requested funding to the input
+/// minimum; the step stores those inputs only when its plan gives the same
+/// numbers. Through the real planner: one input, two inputs, and a last
+/// claim raised to the input minimum.
+#[test]
+fn a_plan_the_funding_step_makes_sizes_a_grant() {
+    use crate::platform::keys_policy::registration_specs;
+    use crate::platform::platform_moves::bech32m;
+    use crate::platform::registration_platform::register_plan;
+    use dpp::dashcore::Network;
+    use dpp::version::PlatformVersion;
+
+    let f = fixture(false);
+    let lib = f.fake();
+    let version = PlatformVersion::latest();
+    let keys = registration_specs().len();
+    let reserve = |inputs: usize| REGISTER_FEE_BAND * register_fee(version, inputs, keys);
+    let min_input = version.dpp.state_transitions.address_funds.min_input_amount;
+    let address = |b: u8| PlatformAddress::P2pkh([b; 20]);
+    let short = 50_000;
+    for (entries, inputs, raised, why) in [
+        (vec![(1u8, HELD)], 1, false, "one input"),
+        (
+            vec![(1, reserve(2) + 10_000_000), (2, 20_000_000)],
+            2,
+            false,
+            "two inputs",
+        ),
+        (
+            vec![
+                (1, reserve(1) + 200_000),
+                (2, reserve(2) + FUNDING - short),
+                (3, HELD),
+            ],
+            2,
+            true,
+            "a last claim raised to the input minimum",
+        ),
+    ] {
+        let balances = entries.iter().map(|(b, c)| (address(*b), *c)).collect();
+        let nonces = entries
+            .iter()
+            .map(|(b, _)| (address(*b), *b as u32))
+            .collect();
+        let planned = register_plan((&balances, &nonces), FUNDING, keys, version).unwrap();
+        let claims: u64 = planned.inputs.values().map(|(_, c)| *c).sum();
+        assert_eq!(planned.inputs.len(), inputs, "{why}");
+        assert_eq!(planned.funding_credits, claims, "{why}");
+        assert_eq!(planned.funding_credits > FUNDING, raised, "{why}");
+        if raised {
+            assert!(
+                planned.inputs.values().any(|(_, c)| *c == min_input),
+                "{why}"
+            );
+        }
+        let plan = PlatformPlan {
+            inputs: (planned.inputs.iter())
+                .map(|(a, (n, c))| (bech32m(a, Network::Testnet), *n, *c))
+                .collect(),
+            identity: platform_identity(),
+        };
+        let draft = f.insert(NewRegistration {
+            funding: Funding::PlatformAddresses {
+                funding_credits: planned.funding_credits,
+                fee_reserve_credits: planned.fee_reserve_credits,
+                plan: Some(plan),
+            }
+            .encode(),
+            ..platform_row(None)
+        });
+        let grant = (f.engine)
+            .block_on(registration::resume_grant(
+                &f.session,
+                f.wallet,
+                &*lib,
+                &draft.to_string(),
+            ))
+            .unwrap_or_else(|e| panic!("{why}: {e:?}"));
+        assert_eq!(
+            (grant.max_duffs, grant.max_credits),
+            (
+                0,
+                planned.funding_credits
+                    + planned.fee_reserve_credits
+                    + NAME_CREDITS
+                    + flow::PROFILE_CREDITS
+            ),
+            "{why}"
+        );
+    }
+}
+
+/// F5 (#685), mainnet off: a held row's resume grant is not sized, and a
+/// grant of that size is refused before it is redeemed; nothing runs.
+#[test]
+fn mainnet_refuses_a_platform_resume_before_redeeming_its_grant() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let draft = f.insert(platform_row(Some(platform_plan_of(FUNDING))));
+    let request = (f.engine)
+        .block_on(registration::resume_grant(
+            &f.session,
+            f.wallet,
+            &*lib,
+            &draft.to_string(),
+        ))
+        .unwrap();
+    lib.w().mainnet = true;
+    let refused = (f.engine).block_on(registration::resume_grant(
+        &f.session,
+        f.wallet,
+        &*lib,
+        &draft.to_string(),
+    ));
+    assert_eq!(refused.unwrap_err().code(), "platform.feature_off");
+    let before = f.row(draft);
+    let grant = f.grant(request.max_duffs, request.max_credits, Credential::None);
+    let e = (f.engine)
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(grant.clone()),
+        ))
+        .unwrap_err();
+    assert_eq!(e.code(), "platform.feature_off");
+    assert_eq!(f.row(draft), before);
+    assert!(lib.w().platform_asks.is_empty());
+    (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::Registration, &[grant]),
+        )
+        .expect("the refused resume left its grant unredeemed");
+}

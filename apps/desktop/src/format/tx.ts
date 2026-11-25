@@ -211,7 +211,7 @@ export function txIcon(type: TxTypeName, status: TxStatusInfo, amount: number): 
   if (type === "generated") return "mining";
   if (isInternal(type)) return "internalTransfer";
   if (MIXING.includes(type)) return "mixing";
-  return amount >= 0 ? "received" : "sent";
+  return amount < 0 || (amount === 0 && type === "sendToAddress") ? "sent" : "received";
 }
 
 /** One status chip, or null when the transaction is settled ("quiet when fine"). */

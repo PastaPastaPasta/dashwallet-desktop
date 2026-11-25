@@ -446,7 +446,14 @@ type PlatformFundEnd = Result<super::platform_moves::RegisterOutcome, super::err
 /// row's funding, and the identity [`platform_identity`].
 fn platform_plan_of(funding: u64) -> super::registration_rows::PlatformPlan {
     super::registration_rows::PlatformPlan {
-        inputs: vec![("tdashevo1plan".into(), 1, funding)],
+        inputs: vec![(
+            super::platform_moves::bech32m(
+                &dpp::address_funds::PlatformAddress::P2pkh([0x50; 20]),
+                dpp::dashcore::Network::Testnet,
+            ),
+            1,
+            funding,
+        )],
         identity: platform_identity(),
     }
 }
@@ -2491,9 +2498,9 @@ fn a_run_waits_for_the_sync_with_its_lease() {
 /// (dw-tdash B2): the first ends `PartialNoIdentity`; the next, once
 /// `rerun` lets it, proves the seed has no identity.
 #[derive(Default)]
-struct PartialBringUp {
-    calls: AtomicU32,
-    rerun: Arc<tokio::sync::Notify>,
+pub(super) struct PartialBringUp {
+    pub(super) calls: AtomicU32,
+    pub(super) rerun: Arc<tokio::sync::Notify>,
 }
 
 impl MockPlatform for PartialBringUp {

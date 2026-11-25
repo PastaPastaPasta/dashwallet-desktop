@@ -1702,8 +1702,9 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
- * An invitation claim row's resume grant: no duffs, and the credits
- * of the steps it has left, from the row (DP5-03 D20).
+ * An invitation claim row's or a Platform-funded row's resume grant:
+ * no duffs, and the credits of the steps it has left, from the row
+ * (DP5-03 D20).
  */
 export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
   return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });
@@ -4827,6 +4828,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.no_owner_key",
   "masternodes.update_pending",
   "masternodes.update_superseded",
+  "masternodes.update_abandoned_pending",
   "masternodes.shared_session_not_found",
   "masternodes.shared_stage",
   "masternodes.shared_message",

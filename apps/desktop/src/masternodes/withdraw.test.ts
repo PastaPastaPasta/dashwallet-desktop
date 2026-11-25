@@ -42,6 +42,12 @@ describe("the evonode withdrawal held by an unconfirmed payout change", () => {
     expect(destinationNote(checking("payout_change_pending"))).toBeNull();
   });
 
+  it("says under the destination that an abandoned payout change holds withdrawals (P16)", () => {
+    expect(destinationNote(checking("payout_change_abandoned"))).toBe(
+      "An abandoned change to this masternode's payout address may still confirm, so withdrawals wait. To end the wait, send one of that change's coins to yourself. Withdrawals resume once that payment is in a block.",
+    );
+  });
+
   it("refuses with waiting first, then when abandoning is safe", () => {
     const e = err("masternodes.withdrawal_destination_checking");
     expect(payoutUnconfirmedRefusal(e, checking("payout_change_unconfirmed"))).toEqual([WAIT, ABANDON]);
