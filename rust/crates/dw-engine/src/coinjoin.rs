@@ -672,7 +672,7 @@ impl CoinJoinRuntime {
 
     /// Tests: `input` held by `owner` since now, as a session that signed
     /// and ended leaves it.
-    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    #[cfg(all(debug_assertions, feature = "test-support"))]
     pub(crate) fn hold_for_test(&self, id: WalletId, input: OutPoint, owner: SpendOwner) {
         let mut mixers = self.mixers();
         let held = &mut mixers.entry(id).or_default().held;
