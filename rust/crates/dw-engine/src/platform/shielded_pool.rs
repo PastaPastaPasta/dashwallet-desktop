@@ -3688,15 +3688,16 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
 
 /// The journal's settlement of an imported spend whose notes came free with
 /// nothing proving its outcome ([`spend_outcome`]): still unresolved, under
-/// the library's `Unattributable` disposition strings. It holds as any open
-/// artifact, and is never read executed or not executed, nor re-sent.
+/// the library's `Unattributable` disposition strings. It stays open and is
+/// never settled after: never read executed or not executed, nor re-sent.
 const FREED_UNKNOWN: SpendOutcome = (
     ArtifactStatus::Unresolved { unrecorded: false },
     Some(("unresolved", Some("unattributable"))),
 );
 
-/// Whether open imported `artifact` carries a disposition, which only
-/// [`FREED_UNKNOWN`] writes on one: its outcome is unknown for good.
+/// Whether open imported `artifact` carries a disposition: [`FREED_UNKNOWN`],
+/// or an unresolved one the 0.1 build wrote (its record dropped with no
+/// proof of the outcome). Its outcome is unknown for good.
 fn freed_unknown(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
     imported(artifact) && artifact.disposition.is_some()
 }

@@ -577,6 +577,39 @@ async fn a_freed_import_with_a_pending_row_waits() {
     assert_eq!(read(&coordinator).await, (Vec::new(), None));
 }
 
+/// An open imported spend the 0.1 build settled unresolved, its record
+/// dropped with no proof of the outcome, reads as one marked [`FREED`]
+/// whatever its reason: no row while the library holds its record, and
+/// nothing once its notes read spent and the record is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_zero_one_unresolved_disposition_reads_as_freed() {
+    for reason in [
+        "deserialize_dropped",
+        "purged",
+        "unattributable",
+        "cancelled",
+    ] {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("shielded.sqlite");
+        zero_one_store(&path);
+        let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
+        let zero_one = ShieldedArtifact {
+            disposition: Some(("unresolved".to_owned(), Some(reason.to_owned()))),
+            ..artifact(OPEN)
+        };
+        assert_eq!(held(&coordinator, &path).await, IMPORTED, "{reason}");
+        assert!(!keep(&coordinator, &zero_one).await, "{reason}");
+        assert!(
+            (coordinator.store().write().await)
+                .mark_spent(subwallet(), &NULLIFIER)
+                .unwrap()
+        );
+        assert!(!held(&coordinator, &path).await.record, "{reason}");
+        assert_eq!(outcome(&coordinator, &zero_one).await, None, "{reason}");
+        assert!(rows(&coordinator).await.is_empty(), "{reason}");
+    }
+}
+
 /// The settlement the journal keeps of an imported spend freed with no
 /// proof of its outcome.
 const FREED: SpendOutcome = (OPEN, Some(("unresolved", Some("unattributable"))));
