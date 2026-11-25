@@ -10,6 +10,7 @@
 # The gate itself.
 ci/funds-paths.txt
 ci/github/funds-gate.py
+ci/github/funds-gate-test.py
 .github/workflows/funds-gate.yml
 
 # Dependency pins: key-wallet, dash-spv, platform-wallet and the SDK sign, select coins and keep UTXOs
@@ -131,6 +132,22 @@ apps/desktop/src/masternodes/shared*
 apps/desktop/src/masternodes/changeKeys*
 apps/desktop/src/masternodes/operations*
 apps/desktop/src/dashpay/wizard.ts
+apps/desktop/src/dashpay/payWith*
+apps/desktop/src/dashpay/registration*
+apps/desktop/src/masternodes/withdraw*
+apps/desktop/src/masternodes/keys*
+apps/desktop/src/payments/hold*
+apps/desktop/src/components/coins.tsx
+apps/desktop/src/components/phrase.tsx
+apps/desktop/src/app/rescan*
+apps/desktop/src/fiat/entry*
+apps/desktop/src/format/fiat*
+apps/desktop/src/onboarding/recovery*
+apps/desktop/src/onboarding/phraseEntry*
+apps/desktop/src/onboarding/words*
+apps/desktop/src/onboarding/bip39English*
+apps/desktop/src/onboarding/passphrase*
+apps/desktop/src/onboarding/birthHeight*
 apps/desktop/src/platform/**
 apps/desktop/src/tools/psbt*
 apps/desktop/src/tools/coins*
@@ -138,15 +155,27 @@ apps/desktop/src/tools/signVerify*
 apps/desktop/src/tools/grant*
 apps/desktop/src/tools/console*
 
-# Renderer screens that build money requests: the pay view-models (not the form views), and the masternode
-# sheets that register, release collateral, set shared fees and create proposals.
-apps/desktop/src/screens/pay/*.ts
-!apps/desktop/src/screens/pay/scan.ts
-!apps/desktop/src/screens/pay/contactQueries.ts
+# Renderer screens that send, receive, sign or move money, and the sheets that confirm it.
+apps/desktop/src/screens/pay/**
+apps/desktop/src/screens/Receive.tsx
+apps/desktop/src/screens/TransferSheet.tsx
+apps/desktop/src/screens/PlatformFundSheet.tsx
+apps/desktop/src/screens/UnfinishedTransfersCard.tsx
+apps/desktop/src/screens/dashpay/TopUpSheet.tsx
+apps/desktop/src/screens/dashpay/WithdrawSheet.tsx
+apps/desktop/src/screens/coinjoin/MoveMixedSheet.tsx
+apps/desktop/src/screens/settings/Backups.tsx
+apps/desktop/src/screens/tools/CoinSelection.tsx
+apps/desktop/src/screens/tools/Psbt.tsx
+apps/desktop/src/screens/tools/SignVerify.tsx
 apps/desktop/src/screens/masternodes/CreateProposalSheet.tsx
 apps/desktop/src/screens/masternodes/RegisterSheet.tsx
 apps/desktop/src/screens/masternodes/ReleaseSheet.tsx
 apps/desktop/src/screens/masternodes/Shared.tsx
+apps/desktop/src/screens/masternodes/SharedSetup.tsx
+apps/desktop/src/screens/masternodes/ChangeKeysSheet.tsx
+apps/desktop/src/screens/masternodes/KeysSheet.tsx
+apps/desktop/src/screens/masternodes/credential.tsx
 
 # Swift app: the engine bridge, amounts, send, PSBT, coin control, mixed-coin sweep, vault, spending cap
 # and signing.

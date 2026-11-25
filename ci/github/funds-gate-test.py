@@ -74,6 +74,11 @@ class Paths(unittest.TestCase):
             "rust/crates/dw-engine/src/platform/profiles.rs",
             "rust/crates/dw-app/src/dto/governance.rs",
             "rust/crates/dw-app/src/shell/links.rs",
+            "ci/github/funds-gate-test.py",
+            "apps/desktop/src/screens/pay/form.tsx",
+            "apps/desktop/src/screens/tools/Psbt.tsx",
+            "apps/desktop/src/masternodes/keys.ts",
+            "apps/desktop/src/payments/hold.ts",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -88,10 +93,8 @@ class Paths(unittest.TestCase):
             "rust/crates/dw-engine/src/csv_export.rs",
             "rust/crates/dw-appdb/src/avatar.rs",
             "apps/desktop/src/screens/Overview.tsx",
+            "apps/desktop/src/screens/masternodes/VoteSheet.tsx",
             "apps/desktop/src/format/amountish/x.ts",
-            "apps/desktop/src/screens/pay/form.tsx",
-            "apps/desktop/src/screens/pay/scan.ts",
-            "apps/desktop/src/masternodes/keys.ts",
         ]:
             self.assertFalse(gate.is_funds(f, RULES), f)
 
