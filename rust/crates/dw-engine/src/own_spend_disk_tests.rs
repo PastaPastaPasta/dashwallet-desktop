@@ -1775,15 +1775,40 @@ fn a_beaten_payment_stays_when_an_unheard_fork_takes_its_winner_before_a_chainlo
     header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
     let pause = t.mine_and_hold(&block);
     let heard = t.session.hub.truncations();
-    let manager = Arc::clone(&t.session.live().unwrap().manager);
-    t.engine.block_on(async move {
-        use platform_wallet::key_wallet_manager::WalletInterface;
-        let wm = manager.wallet_manager_arc();
-        wm.write().await.truncate_above(TIP).unwrap();
-    });
     let fork = [t.winner.clone()];
     header_chain(&t.session, &[(TIP + 1, block_hash(&fork))]);
-    mined(&t.engine, &t.session, t.id, TIP + 1, fork.to_vec());
+    // Truncated and the new block processed under one write lock, the
+    // truncation's event withheld: no reconcile reads the truncated wallet.
+    let (manager, id, txs) = (
+        Arc::clone(&t.session.live().unwrap().manager),
+        t.id,
+        fork.to_vec(),
+    );
+    let events: Vec<platform_wallet::events::WalletEvent> = t.engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let mut rx = wm.subscribe_events();
+        wm.truncate_above(TIP).unwrap();
+        let block = super::block_with(txs);
+        (wm.process_block_for_wallets(
+            &block,
+            block.block_hash(),
+            TIP + 1,
+            &BTreeSet::from([id.0]),
+        ))
+        .await;
+        wm.update_wallet_synced_height(&id.0, TIP + 1);
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    });
+    for event in &events {
+        if !matches!(
+            event,
+            platform_wallet::events::WalletEvent::ChainTruncated { .. }
+        ) {
+            t.session.hub.on_wallet_event(event);
+        }
+    }
     chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&fork));
     assert_eq!(t.session.hub.truncations(), heard, "the hub heard no fork");
     pause.release.notify_one();
