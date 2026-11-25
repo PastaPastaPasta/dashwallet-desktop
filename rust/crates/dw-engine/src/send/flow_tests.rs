@@ -673,8 +673,14 @@ fn a_prepared_tx_releases_only_its_own_claim() {
     f.session.spends.release(&f.wallet, other);
     assert!(f.reserved().is_empty());
     let p = prepare();
+    let mine = SpendOwner::Tx(p.summary().txid.parse().unwrap());
     f.session.spends.reserve(f.wallet, other, [a]);
     drop(p);
+    // The dropped payment's claim goes after key-wallet's, in the task the
+    // drop spawned (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.session.spends.held_by(&f.wallet, mine).is_empty()
+    });
     assert_eq!(f.reserved(), vec![a]);
     f.session.spends.release(&f.wallet, other);
     assert!(f.reserved().is_empty());
@@ -706,8 +712,11 @@ fn broadcast_needs_spv_and_drop_releases() {
         .unwrap();
     assert_eq!(f.reserved(), vec![a]);
     drop(p);
-    assert!(f.reserved().is_empty());
-    // key-wallet's reservation is released by a task the drop spawned.
+    // Both reservations are released by a task the drop spawned, the
+    // engine's after key-wallet's (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.reserved().is_empty()
+    });
     let mut ok = false;
     for _ in 0..50 {
         let d = f.draft(vec![pay(FOREIGN, 10_000_000)]);
@@ -4547,7 +4556,7 @@ impl Fixture {
             .block_on(session.on_runtime(async move {
                 let wallet = inner.wallet(&id).await?;
                 let mut state = wallet.state_mut().await;
-                state.core_wallet.restore_spent_outpoints(&claims);
+                crate::history_ops::restore_spent_claims(&mut state, &claims);
                 Ok(())
             }))
             .unwrap();

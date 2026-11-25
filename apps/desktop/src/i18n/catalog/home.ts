@@ -67,6 +67,14 @@ export const home = {
     keepLegacy:
       "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. Keep {wallet}: don't remove it to get them back. It was added from a Dash Core wallet.dat that uses older addresses a recovery phrase doesn't restore, so removing and restoring it would leave some of its coins out. Coins the payment didn't spend stay held in {wallet}: they're still yours, but this version won't spend them. The rest of {wallet} works as usual.",
   },
+  /** The Shielded row's subtitle while a payment that may still go through holds part of it.
+   * `amount` is the held total with its unit; `count` the payments holding it. */
+  shielded: {
+    held: {
+      one: "{amount} held for a payment",
+      other: "{amount} held for {count} payments",
+    },
+  },
   shortcuts: {
     label: "Shortcuts",
     receive: "Receive",
