@@ -232,6 +232,7 @@ export const TRANSFER_STATES: TransferState[] = [
   { id: "coreToShielded-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
   { id: "coreToShielded-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToShielded", MAX_EMPTY) },
   { id: "coreToShielded-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToShielded") },
+  { id: "coreToShielded-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToShielded") },
   {
     id: "coreToShielded-confirm",
     scenario: "funded",
@@ -331,6 +332,7 @@ export const TRANSFER_STATES: TransferState[] = [
   { id: "coreToPlatform-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
   { id: "coreToPlatform-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToPlatform", MAX_EMPTY) },
   { id: "coreToPlatform-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToPlatform") },
+  { id: "coreToPlatform-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToPlatform") },
   {
     id: "coreToPlatform-confirm",
     scenario: "funded",

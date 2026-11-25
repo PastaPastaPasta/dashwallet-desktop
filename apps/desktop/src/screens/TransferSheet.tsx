@@ -70,7 +70,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
-    coreCoins: coins.data?.reduce((n, c) => n + c.amount, 0) ?? null,
+    coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.userLocked && !c.reserved).reduce((n, c) => n + c.amount, 0) ?? null),
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
     shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
     platform:
@@ -255,8 +255,10 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const amount = useParsed(text, network);
   const blocked = why !== null || flow.running;
   const probe = balanceOf(ROUTES[route].from, pools);
-  // A Core Max is offered while the Dash wallet holds any coin: its refusal says why it moves none.
-  const maxFrom = isCoreRoute(route) ? (pools.coreCoins === undefined ? probe : pools.coreCoins) : probe;
+  // A Core Max is offered while the Dash wallet holds any coin not locked or reserved: its refusal says why it
+  // moves none.
+  const coins = isCoreRoute(route) && pools.coreCoins !== undefined ? pools.coreCoins : probe;
+  const canMax = !!coins && probe !== null;
   // The fee line follows the amount once it is read, and the source balance; nothing is quoted while
   // the route can't run.
   useEffect(() => {
@@ -325,11 +327,11 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           size="medium"
           data-testid="transfer-max"
           aria-busy={line.maxing}
-          disabled={blocked || !own || !maxFrom || probe === null || line.maxing}
-          why={why ?? (probe === null || maxFrom === null ? T.loading : null)}
+          disabled={blocked || !own || !canMax || line.maxing}
+          why={why ?? (probe === null || coins === null ? T.loading : null)}
           title={line.maxing ? T.why.max : undefined}
           whyId={why ? `${id}-why` : undefined}
-          onClick={() => maxFrom && probe !== null && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
+          onClick={() => probe !== null && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
           {T.max}<span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
         </DashButton>
