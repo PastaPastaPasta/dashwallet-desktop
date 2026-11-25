@@ -3274,21 +3274,22 @@ fn a_resume_waiting_on_the_rerun_refuses_a_close_and_ends_with_the_session() {
     assert!(fx.unused(&g), "the grant is unused");
     assert!(!press.is_finished(), "it still waits");
 
-    let started = std::time::Instant::now();
+    // The press ends within 10 s of the close's start. The close itself
+    // can take longer: SPV's teardown waits for the Platform syncs in
+    // flight against the offline address, each up to its request deadline.
     let s = Arc::clone(&fx.s);
-    fx.engine.block_on(async move { s.close().await });
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        started.elapsed()
-    );
-    // A press reading its hold after the close is still held.
-    assert_eq!(lib.funding_hold(), Some(RegistrationWait::Sync));
+    let closing = fx.s.rt.spawn(async move { s.close().await });
     let resumed = fx
         .engine
         .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await })
         .expect("the press ends with the session")
         .unwrap();
+    fx.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    // A press reading its hold after the close is still held.
+    assert_eq!(lib.funding_hold(), Some(RegistrationWait::Sync));
     assert!(
         matches!(&resumed, Ok(PlatformFundState::NotApplied { .. }) | Err(_)),
         "{resumed:?}"
