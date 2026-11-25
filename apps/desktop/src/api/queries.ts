@@ -291,6 +291,19 @@ export function useShieldedSyncInfo(walletId: string, enabled = true) {
   });
 }
 
+/** Reads a failed read once more when the account reads bound, once per bound state: a read with
+ * no data goes back to pending while it refetches, so its error alone would re-read in a loop. */
+export function useRereadWhenBound(bound: boolean, enabled: boolean, failed: boolean, reread: () => unknown) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (!bound) done.current = false;
+    else if (enabled && failed && !done.current) {
+      done.current = true;
+      void reread();
+    }
+  }, [enabled, bound, failed, reread]);
+}
+
 /** An account the full status read may bind: the sync read cannot see a viewing key saved by an
  * earlier session, which binds with no unlock. */
 export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
@@ -326,6 +339,20 @@ export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote } | { kind: "s
  * the command is absent, the network is not active or the account has not been scanned yet. */
 export function shieldedDuffs(status: ShieldedStatus | null): number | null {
   return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
+}
+
+/** What payments that may still go through hold of the Shielded balance (not in `balance`): how
+ * many still hold notes, and the held total in credits and duffs. `null` when nothing is held: a
+ * held spend whose notes a scan saw spent holds nothing. */
+export interface ShieldedHold {
+  count: number;
+  credits: string;
+  duffs: number;
+}
+
+export function shieldedHold(status: ShieldedStatus | null | undefined): ShieldedHold | null {
+  if (!status?.active || BigInt(status.held) === 0n) return null;
+  return { count: status.heldSpends.filter((h) => BigInt(h.credits) > 0n).length, credits: status.held, duffs: creditsToDuffs(status.held) };
 }
 
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
@@ -373,6 +400,7 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: poolReading(shielded, shieldedReading),
+    shieldedHold: shieldedHold(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */

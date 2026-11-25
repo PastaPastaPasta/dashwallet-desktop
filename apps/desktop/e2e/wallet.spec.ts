@@ -527,7 +527,7 @@ test.describe("Pay", () => {
       const restored = wallet.coins[0];
       const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
       wallet.coins = [single];
-      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, catchingUp: false };
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, withheld: 0, catchingUp: false };
       w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
       w.coinjoin.mixers[wallet.summary.walletId] = {
         state: "idle",
@@ -868,6 +868,17 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-abandon").click();
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("an Abandon refused while the wallet catches up after a fork says to wait", async ({ page }) => {
+    const errors = await open(page, "abandon-catching-up");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5b".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. You can abandon this payment once it has finished.");
     await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
     expect(errors).toEqual([]);
   });

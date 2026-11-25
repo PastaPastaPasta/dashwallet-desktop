@@ -10,7 +10,7 @@ import type { PlatformAddressBalance } from "../api/generated/PlatformAddressBal
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
 import { creditsToDuffs } from "../api/pending";
 import { messageTable, t } from "../i18n";
-import { isHeldOp } from "../platform/move";
+import { isHeldOp, preflightText } from "../platform/move";
 import { creditCount } from "./profile";
 import { PAY_WITH_COPY, type PaySource } from "./payWith";
 import { withTable } from "./status";
@@ -166,6 +166,9 @@ export function fromPlatformErrorText(e: unknown, amount: (duffs: number) => str
       return FROM_PLATFORM_COPY.error.quoteChanged;
     case "platform.feature_off":
       return SOURCE_COPY.notOffered;
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code);
     default:
       return topUpErrorText(e, amount, discreet);
   }

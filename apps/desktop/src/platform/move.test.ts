@@ -36,6 +36,22 @@ function setup(lock = { encrypted: false }) {
 
 afterEach(() => resetPlatformMoves());
 
+describe("a pre-check refusal of a held top-up's exit", () => {
+  it("keeps the exit it refused, and the next move replaces it", async () => {
+    const { flow, api } = setup();
+    api.platformMoveToCore.mockImplementationOnce(() => Promise.reject(appError("credits.preflight_refused")));
+    flow.begin();
+    await flow.move(EXIT);
+    expect([flow.step, flow.exitOf]).toEqual(["refused", "move-7-0"]);
+    expect(moveErrorText(flow.error, credits, [], flow.exitOf)).toContain("Your earlier top-up may still go through");
+    flow.back();
+    api.platformMoveToCore.mockImplementationOnce(() => Promise.reject(appError("credits.preflight_refused")));
+    await flow.move(QUOTE);
+    expect([flow.step, flow.exitOf]).toEqual(["refused", null]);
+    expect(moveErrorText(flow.error, credits, [], flow.exitOf)).toContain("nothing was sent and your balance is unchanged");
+  });
+});
+
 describe("Move to Dash wallet", () => {
   it("moves everything under the quote's platformOp grant, and keeps the result while the sheet is closed", async () => {
     const { flow, vault, calls, answer } = setup();

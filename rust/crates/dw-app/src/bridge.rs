@@ -873,6 +873,7 @@ mod tests {
                         locked: u64::MAX,
                         total: u64::MAX,
                         coinjoin: u64::MAX,
+                        withheld: u64::MAX,
                         catching_up: true,
                     }),
                 },

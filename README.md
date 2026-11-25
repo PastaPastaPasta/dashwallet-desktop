@@ -33,8 +33,9 @@ Windows code signing, hardware wallets. The plan is
 ## Latest build
 
 Preview builds of `main`, one click each. They are **unsigned or ad-hoc signed previews** (no notarization, no
-Windows code signing), made by GitHub Actions on every merge to `main`, and they come with no security review:
-small amounts only.
+Windows code signing) and they come with no security review: small amounts only. Since 11-25 GitHub Actions no
+longer builds every merge (release tags, the nightly run and manual runs only), so `continuous` holds the last
+merge built before then; release candidates (`v<version>-rc.N`) are the newer builds.
 
 | OS | Latest build |
 |---|---|
@@ -44,7 +45,7 @@ small amounts only.
 | Checksums | [SHA256SUMS](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/SHA256SUMS) |
 
 The [`continuous` release](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/continuous) says which
-commit it holds. Each merge also keeps its own build, `v<version>-dev.<run>+<commit>`, on the
+commit it holds. Merges until 11-25 also kept their own build, `v<version>-dev.<run>+<commit>`, on the
 [releases page](https://github.com/PastaPastaPasta/dashwallet-desktop/releases), next to the tagged releases
 (`v0.1.0` to `v0.3.0`). Check a download with [`docs/release/verifying.md`](docs/release/verifying.md).
 

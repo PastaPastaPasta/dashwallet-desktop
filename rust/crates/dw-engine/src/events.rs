@@ -14,11 +14,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::SyncProgress;
+use dash_spv::sync::{SyncEvent, SyncProgress};
+use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
+use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
@@ -359,6 +362,10 @@ pub(crate) struct WalletState {
     /// `ChainTruncated` event of: the event at this height, or one above
     /// it that would lower nothing, is that truncation's, heard late.
     pub detected: Option<u32>,
+    /// The share of the excluded coins (`crate::withhold`) in `balance`
+    /// and `accounts`, read with them from the manager. An event's
+    /// snapshot keeps the last one until the manager is read again.
+    pub excluded: crate::withhold::Excluded,
 }
 
 impl WalletState {
@@ -404,14 +411,16 @@ impl WalletState {
     /// The balance known so far: confirmed coins the scan found, and the
     /// mempool and InstantSend payments seen while it runs.
     pub fn balances(&self) -> WalletBalances {
-        let b = &self.balance;
+        use crate::withhold::Excluded;
+        let b = Excluded::subtract(&self.balance, Some(&self.excluded.balance));
         // Before the CoinJoin view is computed: the CoinJoin accounts'
         // spendable balance (an upper bound of the fully mixed one).
         let coinjoin = self.fully_mixed.unwrap_or_else(|| {
             self.accounts
                 .iter()
                 .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
-                .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
+                .map(|(t, b)| Excluded::subtract(b, self.excluded.accounts.get(t)))
+                .map(|b| b.confirmed().saturating_add(b.unconfirmed()))
                 .sum()
         });
         WalletBalances {
@@ -421,6 +430,7 @@ impl WalletState {
             locked: b.locked(),
             total: b.total(),
             coinjoin,
+            withheld: self.excluded.pending,
             catching_up: self.catching_up(),
         }
     }
@@ -557,6 +567,16 @@ pub(crate) struct SessionHub {
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Tests: the balance rereads spawned and not yet done.
+    #[cfg(test)]
+    rereads_running: Arc<std::sync::atomic::AtomicUsize>,
+    /// Chooses the spend claims of the wallets again that learned of an
+    /// InstantSend lock no event of theirs named, and stores the lock for
+    /// them ([`Self::fan_out_lock`]); unset in hub-only tests.
+    lock_rerun: OnceLock<Box<LockRerun>>,
+    /// The InstantSend locks a wallet learned of without an event of its
+    /// own whose store failed, run again at the next lock heard.
+    unstored_locks: Mutex<HashMap<(WalletId, Txid), InstantLock>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -602,6 +622,9 @@ pub(crate) struct SessionHub {
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the claim choices a lock started again, to wait for.
+    #[cfg(test)]
+    pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The session's replay records, told of each fork truncation.
     replay: OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Tests: holds the next first-seen write before it runs.
@@ -694,6 +717,10 @@ pub(crate) struct SessionHub {
     /// its sweep.
     #[cfg(test)]
     pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next dropped payment's release of key-wallet's
+    /// reservation, before it runs.
+    #[cfg(test)]
+    pub(crate) pause_release: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: the next abandon's write of its abandoned marks fails.
     #[cfg(test)]
     pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
@@ -892,6 +919,10 @@ impl SessionHub {
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            #[cfg(test)]
+            rereads_running: Arc::default(),
+            lock_rerun: OnceLock::new(),
+            unstored_locks: Mutex::new(HashMap::new()),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -908,6 +939,8 @@ impl SessionHub {
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
@@ -964,6 +997,8 @@ impl SessionHub {
             #[cfg(test)]
             pause_abandon_sweep: Mutex::new(None),
             #[cfg(test)]
+            pause_release: Mutex::new(None),
+            #[cfg(test)]
             fail_abandon_mark: Default::default(),
             #[cfg(test)]
             fail_abandon_sweep: Default::default(),
@@ -999,6 +1034,78 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Tests: counts a balance reread as running until the guard drops.
+    #[cfg(test)]
+    pub(crate) fn reread_started(&self) -> RereadRunning {
+        let n = Arc::clone(&self.rereads_running);
+        n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        RereadRunning(n)
+    }
+
+    /// Tests: waits up to 10 s for the balance rereads the events applied
+    /// so far spawned, so a read after them sees what they read.
+    #[cfg(test)]
+    pub(crate) fn settle_rereads(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while self
+            .rereads_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a balance reread never ended"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Sets what chooses the spend claims again after a lock (once).
+    pub(crate) fn attach_lock_rerun(&self, run: Box<LockRerun>) {
+        let _ = self.lock_rerun.set(run);
+    }
+
+    /// Tests: the claim choices a lock started again so far.
+    #[cfg(test)]
+    pub(crate) fn take_lock_reruns(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(&mut *self.lock_reruns.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    fn unstored_locks(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, Txid), InstantLock>> {
+        self.unstored_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Keeps `lock` of `txid` for `wallet` until its store takes it.
+    pub(crate) fn note_unstored_lock(&self, wallet: WalletId, txid: Txid, lock: InstantLock) {
+        self.unstored_locks().insert((wallet, txid), lock);
+    }
+
+    /// The locks whose store failed so far, taken to be written again.
+    pub(crate) fn take_unstored_locks(&self) -> HashMap<(WalletId, Txid), InstantLock> {
+        std::mem::take(&mut *self.unstored_locks())
+    }
+
+    /// A verified InstantSend lock of `txid`: each loaded wallet but those
+    /// `unloaded` whose history holds it out of a block without a lock
+    /// shows it locked, and its spend claims are chosen again as at its
+    /// load. key-wallet tells only the wallets holding the transaction's
+    /// record or coins, and no wallet when it pays none of them (#828).
+    /// The locks whose store failed before are written again.
+    fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
+        let wallets = self.history.note_instant_lock(&txid, unloaded);
+        if wallets.is_empty() && self.unstored_locks().is_empty() {
+            return;
+        }
+        for id in &wallets {
+            self.pump.mark_history(*id, Some(&[txid]));
+        }
+        if let Some(rerun) = self.lock_rerun.get() {
+            rerun(txid, lock.clone(), wallets);
+        }
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -1194,14 +1301,24 @@ impl SessionHub {
     }
 
     /// Publishes key-wallet's own balances for wallet `id` (after the engine
-    /// changed its coins) and announces them when they differ.
-    pub(crate) fn publish_core_balance(
+    /// changed its coins), read from `core` under the manager's lock with
+    /// the excluded coins' share, and announces them when they differ.
+    pub(crate) fn publish_core_balance(&self, id: WalletId, core: &ManagedWalletInfo) {
+        let excluded = self.excluded_share(id, core);
+        let (balance, accounts) = (core.balance(), core.account_balances());
+        self.publish_balances(id, &balance, &accounts, Some(excluded));
+    }
+
+    fn publish_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+        excluded: Option<crate::withhold::Excluded>,
     ) {
-        if self.update_balance(id, balance, accounts) {
+        let changed = self.write_balances(id, balance, accounts, excluded);
+        self.reread_if_locked(id, balance, accounts);
+        if changed {
             self.pump.mark_balances(id);
         }
     }
@@ -1447,52 +1564,99 @@ impl SessionHub {
     /// A snapshot with locked coins was taken while a funding held its
     /// temporary locks (only those set the flag), and may be applied after
     /// they were released: the balances are read again once it is.
+    ///
+    /// The snapshot comes without the excluded coins' share
+    /// (`crate::withhold`): while the wallet may hold some, it is not
+    /// applied, and the balances are read again from the manager with it,
+    /// so no read pairs one with the other's share.
     fn update_balance(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) -> bool {
-        let changed = self.write_balances(id, balance, accounts);
-        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
-            && let Some(reread) = self.balance_reread.get()
+        let reread = self.balance_reread.get();
+        if let Some(reread) = reread
+            && self.may_withhold(&id)
         {
             reread(id);
+            return false;
         }
+        let changed = self.write_balances(id, balance, accounts, None);
+        self.reread_if_locked(id, balance, accounts);
         changed
     }
 
-    /// Applies balances read from the manager, under its lock, unless the
-    /// wallet is unloaded; announces them when they changed.
-    pub(crate) fn apply_balance_read(
+    /// Balances with locked coins were read while a funding held its
+    /// temporary locks: they are read again once it may have released them.
+    fn reread_if_locked(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) {
+        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+            && let Some(reread) = self.balance_reread.get()
+        {
+            reread(id);
+        }
+    }
+
+    /// Applies the balances of `core`, read from the manager under its
+    /// lock, with the excluded coins' share, unless the wallet is
+    /// unloaded; announces them when they changed.
+    pub(crate) fn apply_balance_read(&self, id: WalletId, core: &ManagedWalletInfo) {
         let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         if unloaded.contains(&id) {
             return;
         }
-        if self.write_balances(id, balance, accounts) {
+        let excluded = self.excluded_share(id, core);
+        let (balance, accounts) = (core.balance(), core.account_balances());
+        if self.write_balances(id, &balance, &accounts, Some(excluded)) {
             self.pump.mark_balances(id);
         }
     }
 
+    /// Lets go of the share of each coin of `waiting`, read as waiting for
+    /// its rescan with balances just written, whose hold went meanwhile: a
+    /// release between that read and its write must not be undone.
+    pub(crate) fn release_settled(&self, id: WalletId, waiting: BTreeSet<dashcore::OutPoint>) {
+        if waiting.is_empty() {
+            return;
+        }
+        let held = self.rescan_held(&id);
+        let gone: BTreeSet<dashcore::OutPoint> = waiting.difference(&held).copied().collect();
+        if !gone.is_empty() {
+            self.update_wallet_state(id, |s| s.excluded.release(&gone));
+            self.pump.mark_balances(id);
+        }
+    }
+
+    /// `excluded`: the excluded coins' share read with the balances;
+    /// `None` keeps the last one (an event's snapshot).
     fn write_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+        excluded: Option<crate::withhold::Excluded>,
     ) -> bool {
-        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        let state = map.entry(id).or_default();
-        let before = state.balances();
-        state.balance = *balance;
-        for (t, b) in accounts {
-            state.accounts.insert(*t, *b);
-        }
-        before != state.balances()
+        let waiting = (excluded.as_ref()).map_or_else(BTreeSet::new, |e| e.waiting());
+        let changed = {
+            let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            let state = map.entry(id).or_default();
+            let before = state.balances();
+            state.balance = *balance;
+            for (t, b) in accounts {
+                state.accounts.insert(*t, *b);
+            }
+            if let Some(excluded) = excluded {
+                state.excluded = excluded;
+            }
+            before != state.balances()
+        };
+        self.release_settled(id, waiting);
+        changed
     }
 
     /// Records the fully mixed balance the CoinJoin view computed and
@@ -1530,6 +1694,76 @@ impl SessionHub {
         if !txids.is_empty() {
             self.pump.mark_history(id, Some(&txids));
         }
+        let _ = self.settle_rescan_holds(id, None);
+    }
+
+    /// The coins of wallet `id` given back that still wait for their
+    /// rescan (`crate::rescan_hold`): neither counted nor offered.
+    pub(crate) fn rescan_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
+        (self.history).read_wallet(id, |h| h.rescan_holds.keys().copied().collect())
+    }
+
+    /// Lets go of wallet `id`'s holds whose rescan is back, and reads its
+    /// balances again when one went. `synced` is key-wallet's synced
+    /// height, read under the manager's lock: the hub's can be raised past
+    /// a rewind by a height event queued before it. Without it, a hold the
+    /// hub's state shows back asks for the balance reread, which reads it.
+    /// Returns the released coins, whose marks the caller drops
+    /// (`NetworkSession::forget_released_holds`).
+    pub(crate) fn settle_rescan_holds(
+        &self,
+        id: WalletId,
+        synced: Option<u32>,
+    ) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self.history.read_wallet(&id, |h| h.rescan_holds.clone());
+        if holds.is_empty() {
+            return BTreeSet::new();
+        }
+        let state = self.wallet_state(&id);
+        let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(&id));
+        let back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        if back.is_empty() {
+            return BTreeSet::new();
+        }
+        if synced.is_none() {
+            if let Some(reread) = self.balance_reread.get() {
+                reread(id);
+            }
+            return BTreeSet::new();
+        }
+        let released: BTreeSet<dashcore::OutPoint> = self.history.with_wallet(id, |h| {
+            let mut gone = BTreeSet::new();
+            for o in back {
+                if h.rescan_holds.contains_key(&o) && h.rescan_holds.get(&o) == holds.get(&o) {
+                    h.rescan_holds.remove(&o);
+                    gone.insert(o);
+                }
+            }
+            gone
+        });
+        if !released.is_empty() {
+            tracing::info!(wallet = %id, coins = released.len(), "coins given back are released: their rescan is back");
+            self.update_wallet_state(id, |s| s.excluded.release(&released));
+            if let Some(reread) = self.balance_reread.get() {
+                reread(id);
+            }
+            self.pump.mark_balances(id);
+            // The abandoned payments that spent them no longer say their
+            // coins are being checked.
+            let spenders: Vec<Txid> = self.history.read(&id, |txs| {
+                (txs.iter())
+                    .filter(|(_, e)| {
+                        e.is_abandoned()
+                            && (e.tx.input.iter()).any(|i| released.contains(&i.previous_output))
+                    })
+                    .map(|(t, _)| *t)
+                    .collect()
+            });
+            if !spenders.is_empty() {
+                self.pump.mark_history(id, Some(&spenders));
+            }
+        }
+        released
     }
 
     /// Advances the wallet's scan heights. Returns whether the wallet
@@ -1782,12 +2016,19 @@ impl SessionHub {
                 }
                 // First seen through its InstantSend lock: evidence. In
                 // the mempool: none (BL-76).
-                if matches!(record.context, TransactionContext::InstantSend(_)) {
+                if let TransactionContext::InstantSend(lock) = &record.context {
                     self.note_seen(id, [record.txid]);
+                    if lock.txid == record.txid {
+                        self.fan_out_lock(record.txid, lock, &unloaded);
+                    } else {
+                        tracing::debug!(wallet = %id, txid = %record.txid, lock = %lock.txid,
+                            "a detected record's lock names another transaction: not fanned out");
+                    }
                 }
             }
             WalletEvent::TransactionInstantLocked {
                 txid,
+                instant_lock,
                 balance,
                 account_balances,
                 ..
@@ -1799,6 +2040,7 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
+                self.fan_out_lock(*txid, instant_lock, &unloaded);
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -2024,6 +2266,9 @@ impl SessionHub {
                 if let Some(rescan) = self.rescan().as_mut() {
                     rescan.note_height(&id, *height);
                 }
+                // A rescan's last height may change no balance: its holds
+                // are settled once the rescan has noted it (`crate::rescan_hold`).
+                let _ = self.settle_rescan_holds(id, None);
                 // A reader of the wallet's checkpoint is told of every advance:
                 // the last one can come after the last progress report.
                 self.pump.mark_sync();
@@ -2067,10 +2312,20 @@ impl SessionHub {
                     self.pump.mark_history(id, Some(&changed));
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
+                // The lock may prune key-wallet's observed spends of a
+                // withheld payment's coins (`crate::withhold`).
+                if self.may_withhold(&id)
+                    && let Some(reread) = self.balance_reread.get()
+                {
+                    reread(id);
+                }
             }
         }
     }
 }
+
+/// Chooses the spend claims of `wallets` again after `txid`'s lock.
+pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
 
 /// Children of swept payments queued for a drop: their wallet, their
 /// txids, the winner, and the swept payments.
@@ -2104,6 +2359,20 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
 }
 
 impl EventHandler for SessionHub {
+    /// A verified InstantSend lock, which the mempool manager hands the
+    /// wallet as well: a payment to no loaded wallet's address raises no
+    /// wallet event (#828).
+    fn on_sync_event(&self, event: &SyncEvent) {
+        if let SyncEvent::InstantLockReceived {
+            instant_lock,
+            validated: true,
+        } = event
+        {
+            let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+            self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
+        }
+    }
+
     fn on_progress(&self, progress: &SyncProgress) {
         #[cfg(test)]
         if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2426,6 +2695,17 @@ impl PumpTarget for SessionPump {
             });
             self.hub.pump.mark_sync();
         }
+    }
+}
+
+/// Tests: a running balance reread ([`SessionHub::reread_started`]).
+#[cfg(test)]
+pub(crate) struct RereadRunning(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Drop for RereadRunning {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -2994,10 +3274,20 @@ mod tests {
         });
         hub.pump.take_wallet_marks();
 
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
+        hub.publish_balances(
+            W,
+            &WalletCoreBalance::new(1_000, 0, 0, 0),
+            &BTreeMap::new(),
+            None,
+        );
         assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, 1_000);
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
+        hub.publish_balances(
+            W,
+            &WalletCoreBalance::new(1_000, 0, 0, 0),
+            &BTreeMap::new(),
+            None,
+        );
         assert!(
             !hub.pump.take_wallet_marks().0.contains(&W),
             "unchanged: not announced"
@@ -3021,6 +3311,44 @@ mod tests {
         hub.apply_wallet_event(&truncated(105, Vec::new(), Vec::new(), 0));
         assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 105);
         assert!(hub.pump.sync_marked());
+    }
+
+    /// #818: a coin's hold going marks the abandoned payment that spent it,
+    /// so its details stop saying the coin is being checked.
+    #[test]
+    fn a_released_hold_marks_the_abandoned_payment_that_spent_its_coin() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 110,
+        });
+        let (spender, other) = (tx(1), tx(2));
+        let coin = spender.input[0].previous_output;
+        hub.history.with_wallet(W, |h| {
+            h.mark_abandoned(&[
+                (spender.txid(), spender.clone()),
+                (other.txid(), other.clone()),
+            ]);
+            h.rescan_holds.insert(
+                coin,
+                crate::rescan_hold::RescanHold {
+                    checkpoint: 100,
+                    target: 110,
+                    armed: true,
+                },
+            );
+        });
+        hub.pump.take_wallet_marks();
+
+        assert_eq!(
+            hub.settle_rescan_holds(W, Some(110)),
+            BTreeSet::from([coin])
+        );
+        let mut history = hub.pump.take_wallet_marks().1;
+        let Some(TxidSet::Some(changed)) = history.remove(&W) else {
+            panic!("history marks: {history:?}");
+        };
+        assert_eq!(changed, BTreeSet::from([spender.txid()]));
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance

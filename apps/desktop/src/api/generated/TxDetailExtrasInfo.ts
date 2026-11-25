@@ -37,6 +37,17 @@ inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: b
  */
 dustLockedOutputs: Array<OutPoint>,
 /**
+ * Outputs of this transaction shown as pending, kept out of spending
+ * and every balance while it, or one it was built on, may never
+ * confirm.
+ */
+withheldOutputs: Array<OutPoint>,
+/**
+ * Abandoned, with a coin it spent still being checked by a rescan
+ * before it comes back.
+ */
+checkingSpentCoins: boolean,
+/**
  * UNIX seconds the engine last announced it (send or resend).
  */
 lastAnnouncedAt: number | null, };
