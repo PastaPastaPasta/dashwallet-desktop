@@ -166,7 +166,6 @@ struct FakeFund {
     /// Every recover (`apply_remainder`): the outpoint and the address it
     /// paid.
     pub(super) recovered: Mutex<Vec<(OutPoint, PlatformAddress)>>,
-    network: Network,
 }
 
 impl FakeFund {
@@ -205,7 +204,6 @@ impl FakeFund {
             core_fenced: Mutex::default(),
             spent: Mutex::default(),
             recovered: Mutex::default(),
-            network: Network::Testnet,
         }
     }
 

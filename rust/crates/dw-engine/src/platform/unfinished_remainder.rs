@@ -145,9 +145,12 @@ pub(crate) async fn recover(
         Standing::Finished(done) => return Ok(done),
         Standing::TooSmall { floor, .. } => {
             return Ok(LockFinish::NotApplied {
-                error: super::errors::CreditsError::BelowMinimum { min: floor }
-                    .code()
-                    .into(),
+                error: super::errors::CreditsError::BelowMinimum {
+                    min: floor,
+                    max: None,
+                }
+                .code()
+                .into(),
             });
         }
         Standing::Ready {

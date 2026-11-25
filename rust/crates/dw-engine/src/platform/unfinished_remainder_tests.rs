@@ -215,7 +215,11 @@ fn a_remaining_value_below_the_fee_is_never_recovered() {
     );
     let g = grant(&fx, 1, fee - 1);
     let refused = recover(&fx, &lib, at, &g).unwrap();
-    let min = super::super::errors::CreditsError::BelowMinimum { min: fee }.code();
+    let min = super::super::errors::CreditsError::BelowMinimum {
+        min: fee,
+        max: None,
+    }
+    .code();
     assert_eq!(refused, LockFinish::NotApplied { error: min.into() });
     assert!(lib.recovered.lock().unwrap().is_empty());
     assert!(kept(&fx, &g), "the grant is kept");
