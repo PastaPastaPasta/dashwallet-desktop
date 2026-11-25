@@ -767,6 +767,14 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next rescan's publication, after its rewind.
     #[cfg(test)]
     pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of beaten payments between their
+    /// detection and its recheck under the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_recheck: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of beaten payments after it read its
+    /// block's proof, before the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_proven: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next truncation between its heights and the rest.
     #[cfg(test)]
     pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -778,6 +786,11 @@ pub(crate) struct SessionHub {
     /// Rescans cancelled in this session: a caller that started one tells
     /// from it that its rescan was cancelled, even when another replaced it.
     pub(crate) rescan_cancels: std::sync::atomic::AtomicU64,
+    /// How many fork truncations the hub applied, to any wallet, this
+    /// session; never lowered. A beaten payment's drop reads it at its
+    /// detection and again under the write lock
+    /// (`NetworkSession::drop_dead_unmined`).
+    truncations: std::sync::atomic::AtomicU64,
     /// The wallets unloaded or removed, and not added again: an event of
     /// one is stale, from before. Held through each event's application
     /// and through a wallet's unload, removal and admission, so an event
@@ -1045,9 +1058,14 @@ impl SessionHub {
             #[cfg(test)]
             pause_publish: Mutex::new(None),
             #[cfg(test)]
+            pause_drop_recheck: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_proven: Mutex::new(None),
+            #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             rescan_cancels: std::sync::atomic::AtomicU64::new(0),
+            truncations: std::sync::atomic::AtomicU64::new(0),
             unloaded: Mutex::new(HashSet::new()),
             abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -1490,6 +1508,12 @@ impl SessionHub {
 
     pub(crate) fn tracker(&self) -> std::sync::MutexGuard<'_, SyncTracker> {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// How many fork truncations the hub applied to any wallet this
+    /// session ([`Self::truncations`]).
+    pub(crate) fn truncations(&self) -> u64 {
+        self.truncations.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(crate) fn wallet_state(&self, id: &WalletId) -> Option<WalletState> {
@@ -1950,6 +1974,7 @@ impl SessionHub {
         let Some((from, flipped, checkpoint_lowered)) = lowered else {
             return false;
         };
+        (self.truncations).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         #[cfg(test)]
         if let Some((reached, release)) = self.pause_truncation.lock().unwrap().take() {
             reached.wait();
