@@ -3590,7 +3590,10 @@ fn unrelated(n: u8) -> Transaction {
 
 /// Answers the session's header lookups with the blocks of `chain`, by
 /// height: a height it does not name has no header.
-fn headers(session: &NetworkSession, chain: &[(u32, Vec<Transaction>)]) {
+/// Blocks by height, each with its transactions.
+type Chain = [(u32, Vec<Transaction>)];
+
+fn headers(session: &NetworkSession, chain: &Chain) {
     let chain: std::collections::HashMap<u32, dashcore::BlockHash> = (chain.iter())
         .map(|(h, txs)| (*h, super::block_with(txs.clone()).block_hash()))
         .collect();
@@ -3809,7 +3812,7 @@ fn a_swept_payments_child_goes_when_nothing_changes_after_its_take() {
 /// block started are done.
 fn block_after_its_take(
     winner_at: Option<u32>,
-    (before, after): (&[(u32, Vec<Transaction>)], &[(u32, Vec<Transaction>)]),
+    (before, after): (&Chain, &Chain),
     check: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, (&Transaction, OutPoint, OutPoint)),
 ) {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
