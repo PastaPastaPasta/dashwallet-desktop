@@ -2360,6 +2360,13 @@ impl NetworkSession {
     ) {
         let _gate = self.hub.drop_gate.lock().await;
         let truncations = self.hub.truncations();
+        // Key-wallet's processed height before the take: a fork the hub has
+        // not counted yet moves it (#891).
+        let processed = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.last_processed_height())
+        };
         // A child that waited across a truncation may have lost its winner:
         // it waits for the next sweep or orphan pass to be found again.
         // A beaten root's recheck reads its winner again under the lock.
@@ -2396,7 +2403,7 @@ impl NetworkSession {
                     manager,
                     wallet,
                     (&roots, winner),
-                    (&links, truncations),
+                    (&links, truncations, processed),
                     (recheck.as_ref(), &mut out),
                 );
                 if let Err(e) = dropped.await {
@@ -2610,7 +2617,7 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         (roots, winner): (&[Txid], Winner),
-        (links, since): (&BTreeSet<Txid>, u64),
+        (links, since, processed): (&BTreeSet<Txid>, u64, Option<u32>),
         (recheck, out): (Option<&Recheck>, &mut Rechecked),
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let swept_children = recheck.is_none() && !links.is_empty();
@@ -2680,18 +2687,20 @@ impl NetworkSession {
         // they were taken and every swept payment is still swept (#891): a
         // fork may have undone the sweep's winner, and a swept payment that
         // is mined, or that the history holds again and no longer abandons
-        // (the sweep abandoned or forgot it), may confirm.
+        // (the sweep abandoned or forgot it), may confirm. Key-wallet's
+        // processed height moving since the take covers a fork the hub has
+        // not counted yet.
         if swept_children {
             let core = &info.core_wallet;
             let held = |t: &Txid| {
                 (core.accounts.all_accounts().into_iter()).any(|a| {
                     (a.transactions().get(t)).is_some_and(|r| r.context.block_info().is_some())
-                }) || (self.hub.history.get(&wallet, t))
-                    .is_some_and(|e| !e.is_abandoned() || e.context.block_info().is_some())
+                }) || (self.hub.history.get(&wallet, t)).is_some_and(|e| !e.is_abandoned())
             };
             let held_again: Vec<Txid> = links.iter().copied().filter(|t| held(t)).collect();
-            if truncations != since || !held_again.is_empty() {
-                tracing::warn!(%wallet, ?roots, ?held_again, "a swept payment's children are not dropped: a fork or block since their take may have made them valid");
+            let moved = processed != Some(core.last_processed_height());
+            if truncations != since || moved || !held_again.is_empty() {
+                tracing::warn!(%wallet, ?roots, ?held_again, moved, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
                 return Ok(BTreeSet::new());
             }
         }

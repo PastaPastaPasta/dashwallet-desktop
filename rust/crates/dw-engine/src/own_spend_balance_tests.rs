@@ -3305,9 +3305,7 @@ fn a_child_of_a_payment_swept_while_another_wallet_opens_stays_after_a_fork() {
     );
 }
 
-/// #891: key-wallet sweeps P, and its drop takes C; before the drop takes
-/// the write lock, `change` happens to the chain that mines P again. C is
-/// valid then: it stays, and so does its change.
+/// Key-wallet's sweep of P by `winner`, with no winner block.
 fn swept(
     id: WalletId,
     p: &Transaction,
@@ -3336,6 +3334,18 @@ fn fork_above_tip(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) 
     assert!(session.hub.truncations() > heard, "the hub heard the fork");
 }
 
+/// A transaction of no wallet's, `n` apart from the others.
+fn unrelated(n: u8) -> Transaction {
+    use dashcore::hashes::Hash;
+    super::spend_of(
+        OutPoint::new(Txid::from_byte_array([n; 32]), 0),
+        vec![(super::elsewhere(), 1_000)],
+    )
+}
+
+/// #891: key-wallet sweeps P, and its drop takes C; before the drop takes
+/// the write lock, `change` happens to the chain or to P. C may be valid
+/// then: it stays, and so does its change.
 fn swept_child_after_its_take(
     change: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, &Transaction),
 ) {
@@ -3389,10 +3399,43 @@ fn a_swept_payments_child_stays_when_the_payment_is_locked_after_its_take() {
 }
 
 /// #891: a fork the hub hears lands after the drop took C, and the new
-/// chain has not mined P yet: the fork alone keeps C.
+/// chain is back at the old height without P: the counted fork alone keeps
+/// C.
 #[test]
 fn a_swept_payments_child_stays_when_a_fork_after_its_take_leaves_the_payment_unmined() {
-    swept_child_after_its_take(|engine, session, id, _| fork_above_tip(engine, session, id));
+    swept_child_after_its_take(|engine, session, id, _| {
+        fork_above_tip(engine, session, id);
+        mined(engine, session, id, TIP + 1, vec![unrelated(9)]);
+    });
+}
+
+/// #891: after the drop took C, key-wallet processes a fork the hub has
+/// not heard of, whose new chain passes the hub's height, while P waits
+/// unmined in its mempool. The hub counts no fork and holds no P, but
+/// key-wallet's processed height moved: C stays.
+#[test]
+fn a_swept_payments_child_stays_when_a_fork_the_hub_has_not_heard_passes_its_height() {
+    swept_child_after_its_take(|engine, session, id, _| {
+        let heard = session.hub.truncations();
+        let manager = session.manager().unwrap();
+        engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            wm.truncate_above(TIP).unwrap();
+            for (height, n) in [(TIP + 1, 9u8), (TIP + 2, 10)] {
+                let block = super::block_with(vec![unrelated(n)]);
+                (wm.process_block_for_wallets(
+                    &block,
+                    block.block_hash(),
+                    height,
+                    &BTreeSet::from([id.0]),
+                ))
+                .await;
+                wm.update_wallet_synced_height(&id.0, height);
+            }
+        });
+        assert_eq!(session.hub.truncations(), heard, "the hub heard no fork");
+    });
 }
 
 /// #891: a fork the hub hears lands after the sweep queued C and before
