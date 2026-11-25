@@ -1431,6 +1431,21 @@ impl SessionHub {
         }
     }
 
+    /// Lets go of the share of each coin of `waiting`, read as waiting for
+    /// its rescan with balances just written, whose hold went meanwhile: a
+    /// release between that read and its write must not be undone.
+    pub(crate) fn release_settled(&self, id: WalletId, waiting: BTreeSet<dashcore::OutPoint>) {
+        if waiting.is_empty() {
+            return;
+        }
+        let held = self.rescan_held(&id);
+        let gone: BTreeSet<dashcore::OutPoint> = waiting.difference(&held).copied().collect();
+        if !gone.is_empty() {
+            self.update_wallet_state(id, |s| s.excluded.release(&gone));
+            self.pump.mark_balances(id);
+        }
+    }
+
     /// `excluded`: the excluded coins' share read with the balances;
     /// `None` keeps the last one (an event's snapshot).
     fn write_balances(
@@ -1440,17 +1455,22 @@ impl SessionHub {
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
         excluded: Option<crate::withhold::Excluded>,
     ) -> bool {
-        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        let state = map.entry(id).or_default();
-        let before = state.balances();
-        state.balance = *balance;
-        for (t, b) in accounts {
-            state.accounts.insert(*t, *b);
-        }
-        if let Some(excluded) = excluded {
-            state.excluded = excluded;
-        }
-        before != state.balances()
+        let waiting = (excluded.as_ref()).map_or_else(BTreeSet::new, |e| e.waiting());
+        let changed = {
+            let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            let state = map.entry(id).or_default();
+            let before = state.balances();
+            state.balance = *balance;
+            for (t, b) in accounts {
+                state.accounts.insert(*t, *b);
+            }
+            if let Some(excluded) = excluded {
+                state.excluded = excluded;
+            }
+            before != state.balances()
+        };
+        self.release_settled(id, waiting);
+        changed
     }
 
     /// Records the fully mixed balance the CoinJoin view computed and

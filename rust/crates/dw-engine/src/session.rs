@@ -905,16 +905,19 @@ impl NetworkSession {
         }
         self.hub.detect_truncation(id, core);
         let synced = core.synced_height();
+        let excluded = self.hub.excluded_share(id, core);
+        let waiting = excluded.waiting();
         let read = WalletState {
             birth_height: core.birth_height(),
             synced_height: synced,
             processed_height: core.last_processed_height(),
             balance: core.balance(),
             accounts: core.account_balances(),
-            excluded: self.hub.excluded_share(id, core),
+            excluded,
             ..WalletState::default()
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
+        self.hub.release_settled(id, waiting);
         drop(wm);
         self.hub.settle_rescan_holds(id, Some(synced));
     }

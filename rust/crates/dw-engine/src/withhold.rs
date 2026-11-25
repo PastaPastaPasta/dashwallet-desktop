@@ -121,6 +121,14 @@ impl Excluded {
         }
     }
 
+    /// The coins kept out while they wait for their rescan.
+    pub(crate) fn waiting(&self) -> BTreeSet<OutPoint> {
+        (self.coins.iter())
+            .filter(|(_, (_, _, listed))| !listed)
+            .map(|(o, _)| *o)
+            .collect()
+    }
+
     /// The excluded coins' value.
     pub(crate) fn total(&self) -> u64 {
         self.balance.total()
