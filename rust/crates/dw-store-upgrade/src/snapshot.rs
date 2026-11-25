@@ -82,6 +82,7 @@ impl SnapshotInfo {
     pub fn fork_versions(&self) -> &BTreeSet<u32> {
         &self.fork_versions
     }
+    /// The highest refinery version in the before set's wallet.sqlite.
     pub(crate) fn refinery_max(&self) -> i64 {
         self.refinery_max
     }

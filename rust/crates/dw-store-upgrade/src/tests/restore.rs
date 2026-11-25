@@ -1,548 +1,337 @@
-//! Restore on restart (R3-RESTORE-DESIGN-v2.md rev 2.1, Q92 v2.1): the
-//! fresh run, its refusals and out-of-space path, every resume stop point,
-//! S4, the attempt record, the mark, and the copy.
+//! R3 restore on restart (design v2.1, Q92 v2.1): every stop point resumes
+//! to the before set, files another build wrote are copied aside before
+//! anything live changes (V1), S4 keeps what is live, and a crashed attempt
+//! removes only the dirs its record may name (92-4, 92-5).
+
+use std::sync::OnceLock;
 
 use super::*;
-use crate::copy::{self, BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut};
+use crate::copy;
 use crate::error::StoreUpgradeError;
 use crate::fsx::{arm_fault, disarm_fault};
-use crate::reconcile::{Outcome, reconcile_fork_store};
+use crate::precheck::{Precheck, precheck_with};
+use crate::reconcile::reconcile_fork_store;
 use crate::restore::{
-    self as r, IncompleteCause, RefusalCause, RestoreInfo, S4_FOR_TEST, S4Policy,
+    FAIL_CLEANUP, IncompleteCause, KEPT, MOVE_SIDES_ON_KEEP, RESTORE_ATTEMPT, RESTORE_JOURNAL,
+    RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, S4_FOR_TEST, S4Policy,
+    SAFE_TO_DELETE, SIDE_BEFORE_REPLACE, keep_current_files, request_restore, restored_mark,
+    run_pending_restore,
 };
 use crate::snapshot::{
-    STORE_FILES, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state, take_snapshot,
+    STORE_FILES, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot,
+    snapshot_present, snapshot_state, take_snapshot,
 };
-use crate::sql::sha256_file;
-
-const REPLACE_ORDER: [&str; 4] = [
-    "app.sqlite",
-    "dispatch.sqlite",
-    "shielded.sqlite",
-    "wallet.sqlite",
-];
-const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
-const REQUEST_KEY: &str = "regtest/upgrade-backups/RESTORE-REQUESTED";
 
 type Hashes = BTreeMap<String, Option<String>>;
 
-/// `DWSU_FAIL_FIRST=<name>` turns on a fail-first switch for one run.
-fn fail_first(name: &str) -> bool {
-    std::env::var("DWSU_FAIL_FIRST").is_ok_and(|v| v == name)
+/// A v0.2.0 fixture after one upgrade start (snapshot, reconcile, open),
+/// every store's log folded in, built once and copied per test.
+struct Upgraded {
+    _tmp: tempfile::TempDir,
+    net: PathBuf,
+    snapshot: SnapshotInfo,
 }
 
-fn hashes(dir: &Path) -> Hashes {
-    STORE_FILES
-        .iter()
-        .map(|n| (n.to_string(), sha256_file(&dir.join(n)).ok()))
-        .collect()
+impl Upgraded {
+    fn root(&self) -> PathBuf {
+        self.net.join(UPGRADE_BACKUPS_DIR)
+    }
+
+    fn wallet(&self) -> PathBuf {
+        self.net.join("wallet.sqlite")
+    }
+
+    fn request(&self) {
+        request_restore(&self.net, &self.snapshot).unwrap();
+    }
+
+    fn run(&self, at: SystemTime) -> crate::Result<Option<RestoreInfo>> {
+        run_pending_restore(&self.net, at)
+    }
+
+    fn live(&self) -> Hashes {
+        hashes_in(&self.net)
+    }
+
+    fn before(&self) -> Hashes {
+        STORE_FILES
+            .iter()
+            .map(|n| {
+                let sha = self
+                    .snapshot
+                    .files()
+                    .iter()
+                    .find(|f| f.name == *n)
+                    .map(|f| f.sha256.clone());
+                (n.to_string(), sha)
+            })
+            .collect()
+    }
+
+    fn sides(&self) -> Vec<String> {
+        side_names(&self.net)
+    }
+
+    /// Stop with every store replaced, the request removed and the journal
+    /// still there: the S4 stop point.
+    fn stop_at_s4(&self) {
+        self.request();
+        arm_fault("restore.before_journal_removal", 0);
+        let err = self.run(now()).unwrap_err();
+        disarm_fault();
+        assert!(matches!(
+            err,
+            StoreUpgradeError::InjectedFault("restore.before_journal_removal")
+        ));
+        assert_eq!(self.live(), self.before());
+        assert!(self.root().join(RESTORE_JOURNAL).exists());
+    }
 }
 
-fn before_set(s: &SnapshotInfo) -> Hashes {
+fn hashes_in(dir: &Path) -> Hashes {
     STORE_FILES
         .iter()
         .map(|n| {
-            let sha = s.files().iter().find(|f| f.name == *n);
-            (n.to_string(), sha.map(|f| f.sha256.clone()))
+            let p = dir.join(n);
+            (
+                n.to_string(),
+                p.exists().then(|| crate::sql::sha256_file(&p).unwrap()),
+            )
         })
         .collect()
 }
 
-fn side(path: &Path, suffix: &str) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(suffix);
-    PathBuf::from(s)
-}
-
-fn sides_left(net: &Path) -> Vec<String> {
-    let mut v = Vec::new();
+fn side_names(net: &Path) -> Vec<String> {
+    let mut out = Vec::new();
     for n in STORE_FILES {
-        for s in ["-wal", "-shm", "-journal"] {
-            if side(&net.join(n), s).exists() {
-                v.push(format!("{n}{s}"));
+        for s in crate::snapshot::SIDE_SUFFIXES {
+            if net.join(format!("{n}{s}")).exists() {
+                out.push(format!("{n}{s}"));
             }
         }
     }
-    v
+    out
 }
 
-/// Fold every store's log into its main file, as a clean close does.
-fn settle_stores(net: &Path) {
+fn fold_logs(net: &Path) {
     for n in STORE_FILES {
         let p = net.join(n);
         if p.exists() {
-            exec(&p, "PRAGMA wal_checkpoint(TRUNCATE)");
+            let conn = Connection::open(&p).unwrap();
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                .unwrap();
+            conn.close().unwrap();
         }
     }
+    assert!(side_names(net).is_empty(), "{:?}", side_names(net));
 }
 
-/// A fork file upgraded and used: snapshot, reconcile, the upstream open,
-/// then a change to app.sqlite since the upgrade.
-fn upgraded() -> (Fixture, SnapshotInfo) {
-    let f = fixture("v0.1.0");
-    settle_stores(&f.net);
-    let snapshot = crate::prepare_with(&f.net, build(), now())
-        .unwrap()
-        .snapshot
-        .unwrap();
+/// Upgrade a v0.2.0 fixture after `prep` changed its live set.
+fn upgrade_fixture(prep: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf) {
+    let f = fixture("v0.2.0");
+    prep(&f.wallet());
     assert!(matches!(
-        reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
-        Outcome::Pending { .. }
+        precheck_with(&f.net, build()).unwrap(),
+        Precheck::Fork { .. }
     ));
+    let snapshot = take_snapshot(&f.net, now()).unwrap();
+    reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
     drop(open_and_load(&f.net));
-    exec(
-        &f.net.join("app.sqlite"),
-        "CREATE TABLE dwsu_since (a INTEGER); INSERT INTO dwsu_since VALUES (1)",
-    );
-    settle_stores(&f.net);
     crate::token::reset_opened_for_test();
-    (f, snapshot)
+    fold_logs(&f.net);
+    let tmp = private_tempdir();
+    let net = tmp.path().join("regtest");
+    copy_tree(&f.net, &net);
+    (tmp, net)
 }
 
-/// [`upgraded`] with a restore requested: the tree before the request, and
-/// the live (after) set.
-fn requested() -> (Fixture, SnapshotInfo, BTreeMap<String, String>, Hashes) {
-    let (f, s) = upgraded();
-    let pre = tree(&f.root);
-    r::request_restore(&f.net, &s).unwrap();
-    let after = hashes(&f.net);
-    assert_ne!(after, before_set(&s));
-    (f, s, pre, after)
-}
-
-/// Upstream names its pre-migration backup by the wall-clock second, so a
-/// second upgrade of one store within a second collides.
-fn next_wall_second() {
-    let secs = || {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+fn copy_of(base: &Path) -> Upgraded {
+    let tmp = private_tempdir();
+    let net = tmp.path().join("regtest");
+    copy_tree(base, &net);
+    let snapshot = latest_snapshot(&net).unwrap().expect("a snapshot");
+    let u = Upgraded {
+        _tmp: tmp,
+        net,
+        snapshot,
     };
-    let start = secs();
-    while secs() == start {
-        std::thread::sleep(Duration::from_millis(20));
+    assert_ne!(u.live(), u.before(), "the fixture's live set is upgraded");
+    u
+}
+
+fn upgraded() -> Upgraded {
+    static BASE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    copy_of(&BASE.get_or_init(|| upgrade_fixture(|_| {})).1)
+}
+
+/// The restored end state: the before set live with no side file, the
+/// request and journal gone, the mark set, and `after-upgrade` holding the
+/// set that was live.
+fn assert_restored(u: &Upgraded, was_live: &Hashes, info: &RestoreInfo) {
+    assert_eq!(u.live(), u.before());
+    assert!(u.sides().is_empty(), "{:?}", u.sides());
+    assert!(!u.root().join(RESTORE_REQUESTED).exists());
+    assert!(!u.root().join(RESTORE_JOURNAL).exists());
+    assert!(!u.root().join(RESTORE_ATTEMPT).exists());
+    assert!(u.root().join(RESTORED_MARK).exists());
+    assert_eq!(&hashes_in(&info.after_dir), was_live);
+    assert!(!info.kept_live);
+}
+
+/// No live store's main file is ever missing (D2, V1).
+fn assert_all_live(u: &Upgraded) {
+    for n in STORE_FILES {
+        assert!(u.net.join(n).exists(), "{n} is missing");
     }
 }
 
-fn backups(f: &Fixture) -> PathBuf {
-    f.net.join(UPGRADE_BACKUPS_DIR)
-}
-
-fn present(f: &Fixture, name: &str) -> bool {
-    fs::symlink_metadata(backups(f).join(name)).is_ok()
-}
-
-fn dirs(f: &Fixture, prefix: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(backups(f))
+fn during_dirs(u: &Upgraded) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(u.root())
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| {
-            p.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(&format!("{prefix}-"))
-        })
+        .filter(|p| file_name(p).starts_with("during-restore-"))
         .collect();
     v.sort();
     v
 }
 
-fn run(f: &Fixture, at: SystemTime) -> crate::Result<Option<RestoreInfo>> {
-    r::run_pending_restore(&f.net, at)
+fn file_name(p: &Path) -> String {
+    p.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-fn run_with_fault(
-    f: &Fixture,
-    point: &'static str,
-    skip: u32,
-    at: SystemTime,
-) -> StoreUpgradeError {
-    arm_fault(point, skip);
-    let found = run(f, at);
-    disarm_fault();
-    found.expect_err(point)
+/// Every file's bytes under `dir`, by sha256.
+fn contents(dir: &Path) -> std::collections::BTreeSet<String> {
+    tree(dir).into_values().filter(|v| v != "dir").collect()
 }
 
-fn without_request(mut t: BTreeMap<String, String>) -> BTreeMap<String, String> {
-    t.remove(REQUEST_KEY);
-    t
-}
-
-/// What an old build leaves: a change held only in the store's log, the
-/// log and an `-shm` beside the main file it never checkpointed.
-fn leave_hot_wal(path: &Path, sql: &str) {
-    let pristine = fs::read(path).unwrap();
-    let conn = Connection::open(path).unwrap();
-    let mode: String = conn
-        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(mode, "wal");
-    conn.execute_batch(&format!("PRAGMA wal_autocheckpoint = 0; {sql}"))
-        .unwrap();
-    let held = fs::read(side(path, "-wal")).unwrap();
-    drop(conn);
-    fs::write(path, &pristine).unwrap();
-    fs::write(side(path, "-wal"), held).unwrap();
-    fs::write(side(path, "-shm"), vec![0u8; 32768]).unwrap();
-}
-
-/// An old build's start: app.sqlite written and checkpointed, then a change
-/// held in its log; dispatch and shielded written; logs left beside each.
-/// Returns app.sqlite's main file sha256 as the old build left it.
-fn old_build_writes(net: &Path) -> String {
-    let app = net.join("app.sqlite");
-    exec(
-        &app,
-        "CREATE TABLE IF NOT EXISTS dwsu_old (a INTEGER); INSERT INTO dwsu_old VALUES (1)",
-    );
-    leave_hot_wal(&app, "INSERT INTO dwsu_old VALUES (2)");
-    for n in ["dispatch.sqlite", "shielded.sqlite"] {
-        let p = net.join(n);
-        exec(&p, "CREATE TABLE IF NOT EXISTS dwsu_old (a INTEGER)");
-        leave_hot_wal(&p, "INSERT INTO dwsu_old VALUES (3)");
-    }
-    sha256_file(&app).unwrap()
-}
-
-const PENDING_TXID: [u8; 32] = [0xAA; 32];
-
-/// An unmined payment of the first coin in `wallet.sqlite`.
-fn pending_sql() -> String {
-    let txid = "AA".repeat(32);
-    format!(
-        "INSERT INTO core_transactions (wallet_id, txid, height, finalized, record_blob) \
-           SELECT wallet_id, x'{txid}', NULL, 0, x'00' FROM core_utxos ORDER BY outpoint LIMIT 1; \
-         UPDATE core_utxos SET spent_in_txid = x'{txid}' \
-           WHERE rowid = (SELECT rowid FROM core_utxos ORDER BY outpoint LIMIT 1)"
-    )
-}
-
-fn first_outpoint(wallet: &Path) -> dashcore::OutPoint {
-    let blob: Vec<u8> = crate::sql::open_immutable(wallet)
-        .unwrap()
-        .query_row(
-            "SELECT outpoint FROM core_utxos ORDER BY outpoint LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let (op, used): (dashcore::OutPoint, usize) =
-        bincode::serde::decode_from_slice(&blob, bincode::config::standard()).unwrap();
-    assert_eq!(used, blob.len());
-    assert_eq!(&op.txid.to_byte_array()[..], &blob[1..33]);
-    op
-}
-
-fn assert_pending_is_the_one_payment(f: &Fixture, wallet_for_coin: &Path) {
-    let mark = r::restored_mark(&f.net).unwrap().expect("mark set");
-    assert_eq!(mark.pending.len(), 1, "{mark:?}");
-    assert_eq!(mark.pending[0].txid.to_byte_array(), PENDING_TXID);
+#[test]
+fn fresh_restore_puts_back_the_before_set() {
+    let u = upgraded();
+    let was_live = u.live();
+    u.request();
+    let snapshot_tree = tree(u.snapshot.dir());
+    let info = u.run(now()).unwrap().expect("a restore ran");
+    assert_restored(&u, &was_live, &info);
+    assert!(!info.resumed);
+    assert!(info.during_dirs.is_empty());
     assert_eq!(
-        mark.pending[0].inputs,
-        vec![first_outpoint(wallet_for_coin)]
+        tree(u.snapshot.dir()),
+        snapshot_tree,
+        "the snapshot is kept"
     );
+    assert!(restored_mark(&u.net).unwrap().is_some());
+    assert!(matches!(u.run(later(60)), Ok(None)), "nothing left to do");
 }
 
+/// Step 6 and H3's cross-check: the mark lists the before set's unmined
+/// payments with the coins they spend, in the store's own outpoint encoding.
 #[test]
-fn restore_runs_keeps_both_sets_and_the_restored_store_reopens_strict() {
-    let (f, s, _, after) = requested();
-    let prepared = crate::prepare_with(&f.net, build(), later(60)).unwrap();
-    let info = prepared.restored.expect("restored");
-    assert!(!info.resumed && !info.kept_live && info.during_dirs.is_empty());
-    assert_eq!(info.snapshot_dir, s.dir());
-    assert_eq!(info.after_dir.parent().unwrap(), backups(&f));
-    assert!(
-        info.after_dir
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("after-upgrade-")
-    );
-    assert_eq!(hashes(&f.net), before_set(&s));
-    assert_eq!(hashes(&info.after_dir), after);
-    assert!(sides_left(&f.net).is_empty());
-    assert!(!present(&f, r::RESTORE_REQUESTED) && !present(&f, r::RESTORE_JOURNAL));
-    assert!(!present(&f, r::RESTORE_ATTEMPT));
-    assert!(dirs(&f, "restore-staging").is_empty());
-    assert!(r::restored_mark_present(&f.net));
-    assert!(matches!(prepared.precheck, crate::Precheck::Fork { .. }));
-    let again = prepared.snapshot.unwrap();
-    assert_eq!(again.dir(), s.dir(), "the restored set is the snapshot");
-    assert!(matches!(
-        reconcile_fork_store(&config(&f.net), &again, build()).unwrap(),
-        Outcome::Pending { .. }
-    ));
-    next_wall_second();
-    let (p, token) = open_and_load(&f.net);
-    assert!(r::clear_restored_mark_on_first_all_synced(&token).unwrap());
-    assert!(!r::restored_mark_present(&f.net));
-    assert!(!r::clear_restored_mark_on_first_all_synced(&token).unwrap());
-    drop(p);
-    assert_eq!(hashes(&info.after_dir), after, "after-upgrade untouched");
+fn fresh_restore_marks_the_before_sets_pending_payments() {
+    let mut paid = None;
+    let (_tmp, base) = upgrade_fixture(|wallet| {
+        let conn = Connection::open(wallet).unwrap();
+        paid = Some(pay(&conn));
+    });
+    let (txid, outpoint) = paid.unwrap();
+    let u = copy_of(&base);
+    u.request();
+    u.run(now()).unwrap().unwrap();
+    assert!(mark_lists(&u, &txid, &outpoint));
+    assert_eq!(restored_mark(&u.net).unwrap().unwrap().pending.len(), 1);
 }
 
+/// Each injected stop, started again, ends where an uninterrupted run does,
+/// with every live store present at the stop.
 #[test]
-fn restore_unreachable_without_explicit_request() {
-    let (f, s) = upgraded();
-    let pre = tree(&f.root);
-    assert!(run(&f, later(60)).unwrap().is_none());
-    let err = r::restore(&f.net, &s, later(60)).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), pre);
-    r::request_restore(&f.net, &s).unwrap();
-    let info = r::restore(&f.net, &s, later(60)).unwrap();
-    assert_eq!(hashes(&f.net), before_set(&s));
-    assert!(info.after_dir.starts_with(backups(&f)));
-}
-
-#[test]
-fn request_names_only_a_completed_snapshot_in_this_directory() {
-    let (f, s) = upgraded();
-    let other = upgraded().1;
-    let err = r::request_restore(&f.net, &other).unwrap_err();
-    assert!(matches!(err, StoreUpgradeError::SnapshotInvalid { .. }));
-    fs::write(s.dir().join("app.sqlite"), b"x").unwrap();
-    assert!(r::request_restore(&f.net, &s).is_err());
-    assert!(!present(&f, r::RESTORE_REQUESTED));
-}
-
-fn assert_refused_once(f: &Fixture, want_tree: BTreeMap<String, String>, cause: RefusalCause) {
-    let err = run(f, later(60)).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreRefused { cause: c } if c == cause),
-        "{cause:?}: {err:?}"
-    );
-    assert!(err.file_unchanged());
-    assert_eq!(
-        copy::restore_screen_for(&err),
-        Some(copy::restore_refused(cause))
-    );
-    assert_eq!(tree(&f.root), want_tree, "{cause:?}");
-    assert!(run(f, later(120)).unwrap().is_none(), "no loop");
-}
-
-#[test]
-fn refused_restart_leaves_every_file_and_listing_unchanged_and_clears_the_request_once() {
-    let (f, s, _, _) = requested();
-    fs::remove_dir_all(s.dir()).unwrap();
-    assert_refused_once(
-        &f,
-        without_request(tree(&f.root)),
-        RefusalCause::MissingBackup,
-    );
-
-    let (f, s, _, _) = requested();
-    fs::remove_file(s.dir().join("dispatch.sqlite")).unwrap();
-    assert_refused_once(
-        &f,
-        without_request(tree(&f.root)),
-        RefusalCause::MissingBackup,
-    );
-
-    let (f, s, _, _) = requested();
-    let app = s.dir().join("app.sqlite");
-    let mut bytes = fs::read(&app).unwrap();
-    bytes[200] ^= 1;
-    fs::write(&app, bytes).unwrap();
-    assert_refused_once(
-        &f,
-        without_request(tree(&f.root)),
-        RefusalCause::MismatchedBackup,
-    );
-
-    let (f, _, _, _) = requested();
-    let req = backups(&f).join(r::RESTORE_REQUESTED);
-    let text = fs::read_to_string(&req).unwrap();
-    let manifest = text.lines().last().unwrap().to_string();
-    fs::write(
-        &req,
-        text.replace(&manifest, &format!("manifest {}", "0".repeat(64))),
-    )
-    .unwrap();
-    assert_refused_once(
-        &f,
-        without_request(tree(&f.root)),
-        RefusalCause::MismatchedBackup,
-    );
-
-    for garbled in [b"garbage".to_vec(), vec![0xff, 0xfe], Vec::new()] {
-        let (f, _, _, _) = requested();
-        fs::write(backups(&f).join(r::RESTORE_REQUESTED), garbled).unwrap();
-        assert_refused_once(
-            &f,
-            without_request(tree(&f.root)),
-            RefusalCause::GarbledMarker,
-        );
+fn resume_at_each_stop_point_ends_restored() {
+    let points: &[(&'static str, u32)] = &[
+        ("restore.after_quiesce", 0),
+        ("restore.copy", 0),
+        ("restore.copy", 5),
+        ("restore.after_journal", 0),
+        ("restore.rename", 0),
+        ("restore.rename", 3),
+        ("restore.replaced", 0),
+        ("restore.replaced", 2),
+        ("restore.replaced", 3),
+        ("restore.before_journal_removal", 0),
+    ];
+    for &(point, skip) in points {
+        let u = upgraded();
+        let was_live = u.live();
+        u.request();
+        arm_fault(point, skip);
+        let err = u.run(now()).unwrap_err();
+        disarm_fault();
+        assert_all_live(&u);
+        let journal = u.root().join(RESTORE_JOURNAL).exists();
+        if !journal {
+            assert_eq!(u.live(), was_live, "{point}/{skip}: nothing changed");
+            assert!(
+                !u.root().join(RESTORE_ATTEMPT).exists(),
+                "{point}/{skip}: {err}"
+            );
+        }
+        if !u.root().join(RESTORE_REQUESTED).exists() && !journal {
+            assert!(
+                matches!(err, StoreUpgradeError::RestoreNoSpace { .. }),
+                "{point}/{skip}: {err}"
+            );
+            u.request();
+        }
+        let info = u.run(later(60)).unwrap().expect("resumed");
+        assert_restored(&u, &was_live, &info);
+        assert_eq!(info.resumed, journal, "{point}/{skip}");
     }
 }
 
-#[test]
-fn restore_refuses_older_and_newer_marker_versions() {
-    for format in ["format 0", "format 2"] {
-        let (f, _, _, _) = requested();
-        let req = backups(&f).join(r::RESTORE_REQUESTED);
-        let text = fs::read_to_string(&req)
-            .unwrap()
-            .replace("format 1", format);
-        fs::write(&req, text).unwrap();
-        assert_refused_once(
-            &f,
-            without_request(tree(&f.root)),
-            RefusalCause::GarbledMarker,
-        );
+/// Garbage another build left beside the after set mid-restore.
+fn write_sides_mid_restore(u: &Upgraded) -> Vec<Vec<u8>> {
+    let mut written = Vec::new();
+    for (i, name) in ["app.sqlite-wal", "wallet.sqlite-wal"].iter().enumerate() {
+        let bytes = format!("written by another build {i}").into_bytes();
+        fs::write(u.net.join(name), &bytes).unwrap();
+        written.push(bytes);
     }
+    written
 }
 
+/// V1: at every sub-step of a resume that finds side files, each live store
+/// is present and every byte another build wrote is live or in a
+/// `during-restore-*` copy; the second interrupted resume uses a new dir.
 #[test]
-fn restore_refuses_after_a_store_opened_in_process() {
-    let (f, _, _, _) = requested();
-    let want = tree(&f.root);
-    crate::token::note_stores_opening();
-    let err = run(&f, later(60)).unwrap_err();
-    crate::token::reset_opened_for_test();
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreAfterOpen),
-        "{err:?}"
-    );
-    assert!(err.file_unchanged());
-    assert_eq!(tree(&f.root), want);
-    assert!(run(&f, later(60)).unwrap().is_some());
-}
-
-#[test]
-fn restore_refuses_while_wallet_store_is_held() {
-    let (f, s) = upgraded();
-    let (p, token) = open_and_load(&f.net);
-    r::request_restore(&f.net, &s).unwrap();
-    crate::token::reset_opened_for_test();
-    let live = hashes(&f.net);
-    let err = run(&f, later(60)).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::StoreHeld { .. }),
-        "{err:?}"
-    );
-    assert!(present(&f, r::RESTORE_REQUESTED) && !present(&f, r::RESTORE_JOURNAL));
-    assert!(dirs(&f, "after-upgrade").is_empty());
-    assert_eq!(hashes(&f.net), live);
-    let err = keep_current_err(&f);
-    assert!(
-        matches!(err, StoreUpgradeError::StoreHeld { .. }),
-        "{err:?}"
-    );
-    drop(p);
-    drop(token);
-}
-
-fn keep_current_err(f: &Fixture) -> StoreUpgradeError {
-    r::keep_current_files(&f.net, later(60)).unwrap_err()
-}
-
-#[test]
-fn restore_refuses_while_app_db_lock_is_held() {
-    let (f, _, _, _) = requested();
-    let want = tree(&f.root);
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(f.net.join("app.sqlite.lock"))
-        .unwrap();
-    lock.lock().unwrap();
-    let err = run(&f, later(60)).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::StoreHeld { .. }),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), want);
-    drop(lock);
-    assert!(run(&f, later(60)).unwrap().is_some());
-}
-
-#[test]
-fn prepare_runs_pending_restore_before_precheck_and_any_open() {
-    let (f, s, _, _) = requested();
-    assert!(matches!(
-        crate::precheck_with(&f.net, build()).unwrap_err(),
-        StoreUpgradeError::RestorePending { .. }
-    ));
-    let err = PersisterOpened::open(config(&f.net))
-        .err()
-        .expect("refused");
-    assert!(
-        matches!(err, StoreUpgradeError::RestorePending { .. }),
-        "{err:?}"
-    );
-    crate::token::reset_opened_for_test();
-    let prepared = crate::prepare_with(&f.net, build(), later(60)).unwrap();
-    assert!(prepared.restored.is_some());
-    assert!(matches!(prepared.precheck, crate::Precheck::Fork { .. }));
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn after_set_complete_and_mark_written_before_the_first_replace() {
-    let (f, s, _, after) = requested();
-    let err = run_with_fault(&f, "restore.after_journal", 0, later(60));
-    assert!(
-        matches!(err, StoreUpgradeError::InjectedFault(_)),
-        "{err:?}"
-    );
-    assert_eq!(hashes(&f.net), after, "nothing replaced yet");
-    assert!(present(&f, r::RESTORE_JOURNAL) && r::restored_mark_present(&f.net));
-    assert!(!present(&f, r::RESTORE_ATTEMPT));
-    let [after_dir] = &dirs(&f, "after-upgrade")[..] else {
-        panic!("one after-upgrade dir")
-    };
-    assert_eq!(hashes(after_dir), after);
-    let [staging] = &dirs(&f, "restore-staging")[..] else {
-        panic!("one staging dir")
-    };
-    assert_eq!(hashes(staging), before_set(&s));
-    let info = run(&f, later(120)).unwrap().unwrap();
-    assert!(info.resumed && info.during_dirs.is_empty());
-    assert_eq!(&info.after_dir, after_dir);
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn marker_removed_only_after_swap_and_fsync() {
-    let (f, s, _, _) = requested();
-    let err = run_with_fault(&f, "restore.before_journal_removal", 0, later(60));
-    assert!(
-        matches!(err, StoreUpgradeError::InjectedFault(_)),
-        "{err:?}"
-    );
-    assert_eq!(hashes(&f.net), before_set(&s));
-    assert!(present(&f, r::RESTORE_JOURNAL));
-    let info = run(&f, later(120)).unwrap().unwrap();
-    assert!(info.resumed && !info.kept_live && info.during_dirs.is_empty());
-    assert!(!present(&f, r::RESTORE_JOURNAL));
-}
-
-#[test]
-fn quiesced_but_unstaged_restore_runs_again_at_the_next_start() {
-    let (f, s, _, after) = requested();
-    let err = run_with_fault(&f, "restore.after_quiesce", 0, later(60));
-    assert!(
-        matches!(err, StoreUpgradeError::InjectedFault(_)),
-        "{err:?}"
-    );
-    assert_eq!(hashes(&f.net), after);
-    assert!(present(&f, r::RESTORE_REQUESTED) && !present(&f, r::RESTORE_JOURNAL));
-    assert!(dirs(&f, "after-upgrade").is_empty());
-    run(&f, later(120)).unwrap().unwrap();
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn wallet_is_replaced_last() {
-    for k in 0..4 {
-        let (f, s, _, after) = requested();
-        let before = before_set(&s);
-        let err = run_with_fault(&f, "restore.replaced", k, later(60));
+fn v1_copy_first_keeps_every_write_at_each_sub_step() {
+    let points: &[(&'static str, u32)] = &[
+        ("restore.settle", 0),
+        ("restore.settle", 1),
+        ("restore.settle", 2),
+        ("restore.rename", 0),
+        ("restore.rename", 1),
+        ("restore.rename", 2),
+        ("restore.replaced", 0),
+        ("restore.copy", 1),
+    ];
+    for &(point, skip) in points {
+        let u = upgraded();
+        let was_live = u.live();
+        u.request();
+        arm_fault("restore.after_journal", 0);
+        u.run(now()).unwrap_err();
+        disarm_fault();
+        let written = write_sides_mid_restore(&u);
+        let wanted: Vec<String> = written
+            .iter()
+            .map(|b| {
+                use sha2::Digest;
+                sha2::Sha256::digest(b)
+                    .iter()
+                    .map(|x| format!("{x:02x}"))
+                    .collect()
+            })
+            .collect();
+        arm_fault(point, skip);
+        let err = u.run(later(60)).unwrap_err();
+        disarm_fault();
         assert!(
             matches!(
                 err,
@@ -551,492 +340,731 @@ fn wallet_is_replaced_last() {
                     ..
                 }
             ),
-            "{err:?}"
+            "{point}/{skip}: {err}"
         );
-        let live = hashes(&f.net);
-        for (i, name) in REPLACE_ORDER.iter().enumerate() {
-            let want = if i <= k as usize { &before } else { &after };
-            assert_eq!(live[*name], want[*name], "stop {k}: {name}");
+        assert_all_live(&u);
+        let mut kept = contents(&u.net);
+        for d in during_dirs(&u) {
+            kept.extend(contents(&d));
         }
-        let info = run(&f, later(120)).unwrap().unwrap();
-        assert!(info.resumed && !info.kept_live && info.during_dirs.is_empty());
-        assert_eq!(hashes(&f.net), before);
-    }
-}
-
-#[test]
-fn enospc_before_journal_shows_no_space_not_incomplete() {
-    for skip in 0..8 {
-        let (f, _, pre, _) = requested();
-        let err = run_with_fault(&f, "restore.copy", skip, later(60));
-        assert!(
-            matches!(err, StoreUpgradeError::RestoreNoSpace { needed: Some(n) } if n > 0),
-            "copy {skip}: {err:?}"
-        );
-        assert!(err.file_unchanged());
-        assert_eq!(
-            copy::restore_screen_for(&err),
-            Some(copy::restore_no_space())
-        );
-        assert_eq!(tree(&f.root), pre, "copy {skip}");
-        assert!(run(&f, later(120)).unwrap().is_none(), "request cleared");
-    }
-}
-
-#[test]
-fn enospc_at_the_journal_removes_this_attempts_mark() {
-    let (f, _, pre, _) = requested();
-    let err = run_with_fault(&f, "restore.journal", 0, later(60));
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreNoSpace { .. }),
-        "{err:?}"
-    );
-    assert!(!r::restored_mark_present(&f.net));
-    assert_eq!(tree(&f.root), pre);
-}
-
-#[test]
-fn enospc_cleanup_removes_only_this_attempts_copies() {
-    let (f, s) = upgraded();
-    let unrelated = backups(&f).join("after-upgrade-20000101T000000Z");
-    crate::fsx::create_private_dir(&unrelated).unwrap();
-    fs::write(unrelated.join("app.sqlite"), b"an older restore's copy").unwrap();
-    let pre = tree(&f.root);
-    r::request_restore(&f.net, &s).unwrap();
-    let err = run_with_fault(&f, "restore.copy", 5, later(60));
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreNoSpace { .. }),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), pre);
-}
-
-#[test]
-fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
-    let (f, s, _, after) = requested();
-    r::CLEANUP_FAILS.with(|c| c.set(true));
-    let err = run_with_fault(&f, "restore.copy", 2, later(60));
-    r::CLEANUP_FAILS.with(|c| c.set(false));
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreNoSpace { .. }),
-        "{err:?}"
-    );
-    assert_eq!(hashes(&f.net), after);
-    assert!(!present(&f, r::RESTORE_ATTEMPT) && !present(&f, r::RESTORE_REQUESTED));
-    let [left] = &dirs(&f, "after-upgrade")[..] else {
-        panic!("one partial dir")
-    };
-    let manifest = fs::read_to_string(left.join(r::SAFE_TO_DELETE)).unwrap();
-    assert!(
-        manifest.starts_with("incomplete, safe to delete\n"),
-        "{manifest}"
-    );
-    assert!(manifest.contains("file app.sqlite\n") && manifest.contains("file dispatch.sqlite\n"));
-    assert!(manifest.contains("cause: "));
-    let left_tree = tree(left);
-    r::request_restore(&f.net, &s).unwrap();
-    let info = run(&f, later(120)).unwrap().unwrap();
-    assert_ne!(&info.after_dir, left);
-    assert_eq!(tree(left), left_tree, "a later run never removes it");
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn restore_attempt_record_outside_upgrade_backups_is_refused() {
-    let (f, s, _, _) = requested();
-    let b = backups(&f);
-    let outside = f.root.join("outside");
-    crate::fsx::create_private_dir(&outside).unwrap();
-    fs::write(outside.join("keep.txt"), b"keep").unwrap();
-    let snapshot_name = s.dir().file_name().unwrap().to_string_lossy().into_owned();
-    #[cfg_attr(not(unix), allow(unused_mut))]
-    let mut entries = vec![
-        "..".to_string(),
-        outside.display().to_string(),
-        snapshot_name.clone(),
-        r::RESTORE_JOURNAL.to_string(),
-        "after-upgrade-20000101T000000Z/../../../outside".to_string(),
-        "restore-staging-bogus".to_string(),
-        "during-restore-20000101T000000Z".to_string(),
-    ];
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&outside, b.join("after-upgrade-20000102T000000Z")).unwrap();
-        entries.push("after-upgrade-20000102T000000Z".into());
-    }
-    let during = b.join("during-restore-20000101T000000Z");
-    crate::fsx::create_private_dir(&during).unwrap();
-    fs::write(during.join("app.sqlite"), b"kept mid-restore").unwrap();
-    let mut text = "dw-store-upgrade restore-attempt\nformat 1\n".to_string();
-    for e in &entries {
-        text += &format!("dir {e}\n");
-    }
-    fs::write(b.join(r::RESTORE_ATTEMPT), text).unwrap();
-
-    run(&f, later(60)).unwrap().unwrap();
-    assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"keep");
-    assert!(crate::snapshot::read_snapshot(s.dir(), true).is_ok());
-    assert!(during.join("app.sqlite").exists());
-    #[cfg(unix)]
-    assert!(
-        fs::symlink_metadata(b.join("after-upgrade-20000102T000000Z"))
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-    assert!(!present(&f, r::RESTORE_ATTEMPT));
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn crash_after_record_before_create_cleans_cleanly() {
-    let (f, s, _, _) = requested();
-    let b = backups(&f);
-    let partial = b.join("restore-staging-20000101T000000Z");
-    crate::fsx::create_private_dir(&partial).unwrap();
-    fs::write(partial.join("app.sqlite.partial"), b"half a copy").unwrap();
-    fs::write(
-        b.join(r::RESTORE_ATTEMPT),
-        "dw-store-upgrade restore-attempt\nformat 1\n\
-         dir after-upgrade-20000101T000000Z\ndir restore-staging-20000101T000000Z\n",
-    )
-    .unwrap();
-    run(&f, later(60)).unwrap().unwrap();
-    assert!(!partial.exists());
-    assert!(!present(&f, r::RESTORE_ATTEMPT));
-    assert_eq!(dirs(&f, "after-upgrade").len(), 1);
-    assert_eq!(hashes(&f.net), before_set(&s));
-}
-
-#[test]
-fn resume_crash_between_move_and_rename_leaves_a_live_file() {
-    let (f, s, _, after) = requested();
-    let err = run_with_fault(&f, "restore.rename", 0, later(60));
-    assert!(
-        matches!(
-            err,
-            StoreUpgradeError::RestoreIncomplete {
-                cause: IncompleteCause::PermissionDenied,
-                journal_written: true,
-                ..
-            }
-        ),
-        "{err:?}"
-    );
-    assert_eq!(hashes(&f.net), after);
-    let modified = old_build_writes(&f.net);
-
-    let err = run_with_fault(&f, "restore.rename", 0, later(120));
-    assert!(
-        matches!(
-            err,
-            StoreUpgradeError::RestoreIncomplete {
-                journal_written: true,
-                ..
-            }
-        ),
-        "{err:?}"
-    );
-    let app = f.net.join("app.sqlite");
-    assert_eq!(
-        sha256_file(&app).unwrap(),
-        modified,
-        "the live file is still there"
-    );
-    assert!(!side(&app, "-wal").exists() && !side(&app, "-shm").exists());
-    let [first] = &dirs(&f, "during-restore")[..] else {
-        panic!("one during-restore dir")
-    };
-    assert_eq!(sha256_file(&first.join("app.sqlite")).unwrap(), modified);
-    assert!(first.join("app.sqlite-wal").exists());
-    let kept = fs::read_to_string(first.join(r::KEPT)).unwrap();
-    assert!(
-        kept.contains("app.sqlite: written by another build"),
-        "{kept}"
-    );
-
-    let info = run(&f, later(180)).unwrap().unwrap();
-    let during = dirs(&f, "during-restore");
-    assert_eq!(
-        during.len(),
-        2,
-        "a second interrupted resume uses a new dir"
-    );
-    assert_eq!(info.during_dirs, vec![during[1].clone()]);
-    assert_eq!(&during[0], first);
-    assert_eq!(hashes(&f.net), before_set(&s));
-    assert!(sides_left(&f.net).is_empty());
-    assert!(r::restored_mark_present(&f.net));
-}
-
-#[test]
-fn leftover_old_build_wal_is_moved_aside_never_replayed() {
-    let (f, s, _, _) = requested();
-    run_with_fault(&f, "restore.rename", 0, later(60));
-    let app = f.net.join("app.sqlite");
-    leave_hot_wal(
-        &app,
-        "CREATE TABLE dwsu_old_build (a INTEGER); INSERT INTO dwsu_old_build VALUES (7)",
-    );
-    let wal = fs::read(side(&app, "-wal")).unwrap();
-    r::SKIP_SIDE_UNLINK.with(|x| x.set(fail_first("skip-side-unlink")));
-    let found = run(&f, later(120));
-    r::SKIP_SIDE_UNLINK.with(|x| x.set(false));
-    let info = found.unwrap().unwrap();
-    assert_eq!(hashes(&f.net), before_set(&s));
-    let conn = Connection::open(&app).unwrap();
-    assert!(
-        !crate::sql::has_table(&conn, "dwsu_old_build").unwrap(),
-        "the old log was replayed"
-    );
-    assert!(crate::sql::integrity_ok(&conn).unwrap());
-    drop(conn);
-    let [during] = &info.during_dirs[..] else {
-        panic!("one during-restore dir")
-    };
-    assert_eq!(fs::read(during.join("app.sqlite-wal")).unwrap(), wal);
-}
-
-#[test]
-fn resume_after_old_build_touched_folder_mid_restore() {
-    for point in ["restore.replaced", "restore.rename"] {
-        for k in 0..4u32 {
-            if point == "restore.replaced" && k == 3 {
-                continue;
-            }
-            let (f, s, _, after) = requested();
-            run_with_fault(&f, point, k, later(60));
-            let modified = old_build_writes(&f.net);
-            let info = run(&f, later(120))
-                .unwrap_or_else(|e| panic!("{point} {k}: {e:?}"))
-                .unwrap();
-            let at = format!("{point} {k}");
-            assert!(info.resumed && !info.kept_live, "{at}");
-            assert_eq!(hashes(&info.after_dir), after, "{at}");
-            assert_eq!(hashes(&f.net), before_set(&s), "{at}");
-            assert!(sides_left(&f.net).is_empty(), "{at}");
-            let [during] = &info.during_dirs[..] else {
-                panic!("{at}: one during-restore dir")
-            };
-            assert_eq!(
-                sha256_file(&during.join("app.sqlite")).unwrap(),
-                modified,
-                "{at}"
+        for w in &wanted {
+            assert!(kept.contains(w), "{point}/{skip}: a write was lost");
+        }
+        let first = during_dirs(&u);
+        let info = u.run(later(60)).unwrap().expect("resumed");
+        assert_restored(&u, &was_live, &info);
+        let all = during_dirs(&u);
+        let mut kept = std::collections::BTreeSet::new();
+        for d in &all {
+            kept.extend(contents(d));
+            assert!(d.join(KEPT).exists());
+        }
+        for w in &wanted {
+            assert!(
+                kept.contains(w),
+                "{point}/{skip}: a write was lost at the end"
             );
-            for n in STORE_FILES.iter().filter(|n| **n != "wallet.sqlite") {
-                assert!(during.join(format!("{n}-wal")).exists(), "{at}: {n}-wal");
-            }
-            assert!(r::restored_mark_present(&f.net), "{at}");
-            assert!(!present(&f, r::RESTORE_JOURNAL), "{at}");
+        }
+        if !first.is_empty() && !info.during_dirs.is_empty() {
+            assert!(
+                !first.contains(&info.during_dirs[0]),
+                "{point}/{skip}: the second resume uses its own dir"
+            );
         }
     }
 }
 
-/// S4: every store replaced (a crash right after wallet.sqlite's rename),
-/// then an old build writes a payment held only in wallet.sqlite's log.
-fn at_s4_with_old_build_payment() -> (Fixture, SnapshotInfo) {
-    let (f, s, _, _) = requested();
-    run_with_fault(&f, "restore.replaced", 3, later(60));
-    assert_eq!(hashes(&f.net), before_set(&s));
-    assert!(present(&f, r::RESTORE_JOURNAL));
-    leave_hot_wal(&f.wallet(), &pending_sql());
-    (f, s)
+/// The fail-first for V1's side handling: with the side files left in place
+/// the resume can't finish, and no live main file is touched.
+#[test]
+fn skipping_the_side_files_leaves_the_restore_unfinished() {
+    let u = upgraded();
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    write_sides_mid_restore(&u);
+    crate::restore::SKIP_SIDE_MOVE.with(|s| s.set(true));
+    let live = u.run(later(60));
+    crate::restore::SKIP_SIDE_MOVE.with(|s| s.set(false));
+    assert!(
+        matches!(
+            live,
+            Err(StoreUpgradeError::RestoreIncomplete {
+                journal_written: true,
+                ..
+            })
+        ),
+        "{live:?}"
+    );
+    assert_eq!(u.sides().len(), 2, "the old build's logs are still live");
+    assert_all_live(&u);
+    assert!(during_dirs(&u).is_empty(), "and no copy of them was kept");
+}
+
+/// S4-4: a side file that appears beside a store just before its replace
+/// stops the fresh run with the journal kept; the resume copies it aside.
+#[test]
+fn a_side_file_before_a_replace_is_kept_aside() {
+    for store in [
+        "app.sqlite",
+        "dispatch.sqlite",
+        "shielded.sqlite",
+        "wallet.sqlite",
+    ] {
+        let u = upgraded();
+        let was_live = u.live();
+        u.request();
+        SIDE_BEFORE_REPLACE.with(|s| s.set(Some(store)));
+        let err = u.run(now());
+        SIDE_BEFORE_REPLACE.with(|s| s.set(None));
+        assert!(
+            matches!(
+                err,
+                Err(StoreUpgradeError::RestoreIncomplete {
+                    journal_written: true,
+                    ..
+                })
+            ),
+            "{store}: {err:?}"
+        );
+        assert_all_live(&u);
+        let info = u.run(later(60)).unwrap().unwrap();
+        assert_restored(&u, &was_live, &info);
+        let kept: std::collections::BTreeSet<String> =
+            info.during_dirs.iter().flat_map(|d| contents(d)).collect();
+        let want = {
+            use sha2::Digest;
+            sha2::Sha256::digest(b"written mid-replace")
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        };
+        assert!(kept.contains(&want), "{store}: the side file was kept");
+    }
 }
 
 #[test]
-fn s4_keeps_live_and_side_files_by_default() {
-    assert_eq!(r::S4_POLICY, S4Policy::KeepLive);
-    let (f, s) = at_s4_with_old_build_payment();
-    let live = tree(&f.net);
-    r::MOVE_SIDES_AT_S4.with(|x| x.set(fail_first("move-sides-at-s4")));
-    let found = run(&f, later(120));
-    r::MOVE_SIDES_AT_S4.with(|x| x.set(false));
-    let info = found.unwrap().unwrap();
-    assert!(info.kept_live && info.resumed);
-    assert_pending_is_the_one_payment(&f, &s.dir().join("wallet.sqlite"));
-    for n in ["wallet.sqlite", "wallet.sqlite-wal", "wallet.sqlite-shm"] {
-        assert_eq!(
-            live.get(n),
-            tree(&f.net).get(n),
-            "{n} kept in place, unopened"
-        );
-    }
-    assert!(!present(&f, r::RESTORE_JOURNAL) && !present(&f, r::RESTORE_REQUESTED));
-    assert!(r::restored_mark_present(&f.net));
-    let kept = fs::read_to_string(info.after_dir.join(r::KEPT)).unwrap();
-    assert!(kept.contains("kept the live files"), "{kept}");
-    let visible: i64 = Connection::open(f.wallet())
-        .unwrap()
+fn s4_untouched_finishes_normally() {
+    let u = upgraded();
+    let was_live = u.live();
+    u.stop_at_s4();
+    let info = u.run(later(60)).unwrap().unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert!(info.resumed);
+}
+
+/// One unmined payment spending a wallet coin: its txid and the coin.
+fn pay(conn: &Connection) -> (Vec<u8>, Vec<u8>) {
+    let (wid, outpoint): (Vec<u8>, Vec<u8>) = conn
         .query_row(
-            "SELECT COUNT(*) FROM core_transactions WHERE height IS NULL",
+            "SELECT wallet_id, outpoint FROM core_utxos ORDER BY spent, outpoint LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(visible, 1, "the payment held in the log is visible");
-}
-
-#[test]
-fn s4_lineage_by_schema_and_wallet_ids_keeps_live() {
-    let (f, s, _, _) = requested();
-    run_with_fault(&f, "restore.replaced", 3, later(60));
-    exec(&f.wallet(), &pending_sql());
-    assert_ne!(hashes(&f.net), before_set(&s));
-    let info = run(&f, later(120)).unwrap().unwrap();
-    assert!(info.kept_live);
-    assert_pending_is_the_one_payment(&f, &f.wallet());
-}
-
-#[test]
-fn s4_refuses_when_switched_and_touches_nothing() {
-    let (f, _) = at_s4_with_old_build_payment();
-    let want = tree(&f.root);
-    S4_FOR_TEST.with(|p| p.set(Some(S4Policy::Refuse)));
-    let found = run(&f, later(120));
-    S4_FOR_TEST.with(|p| p.set(None));
-    let err = found.unwrap_err();
-    assert!(
-        matches!(
-            err,
-            StoreUpgradeError::RestoreIncomplete {
-                cause: IncompleteCause::S4OldBuildWrote,
-                journal_written: true,
-                ..
-            }
-        ),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), want);
-    assert_eq!(
-        copy::restore_screen_for(&err),
-        Some(copy::restore_keep_current())
-    );
-    let info = r::keep_current_files(&f.net, later(180)).unwrap();
-    assert!(info.kept_live);
-    assert!(!present(&f, r::RESTORE_JOURNAL));
-}
-
-#[test]
-fn s4_other_lineage_refuses_with_keep_action() {
-    let (f, _, _, _) = requested();
-    run_with_fault(&f, "restore.replaced", 3, later(60));
-    let (_fresh_dir, fresh) = fresh_store();
-    fs::copy(&fresh, f.wallet()).unwrap();
-    let want = tree(&f.root);
-    let err = run(&f, later(120)).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            StoreUpgradeError::RestoreIncomplete {
-                cause: IncompleteCause::S4OtherLineage,
-                journal_written: true,
-                ..
-            }
-        ),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), want, "nothing moved");
-    let screen = copy::restore_screen_for(&err).unwrap();
-    assert_eq!(screen.title_key, "storeUpgrade.restore.keepCurrent.title");
-    assert_eq!(
-        screen.buttons[0].key,
-        "storeUpgrade.restore.keepCurrent.keep"
-    );
-    assert!(
-        run(&f, later(150)).is_err(),
-        "refused again until the user acts"
-    );
-
-    let wallet = sha256_file(&f.wallet()).unwrap();
-    let info = r::keep_current_files(&f.net, later(180)).unwrap();
-    assert!(info.kept_live);
-    assert_eq!(sha256_file(&f.wallet()).unwrap(), wallet);
-    assert!(!present(&f, r::RESTORE_JOURNAL) && !present(&f, r::RESTORE_REQUESTED));
-    assert!(r::restored_mark_present(&f.net), "the mark stays");
-    let kept = fs::read_to_string(info.after_dir.join(r::KEPT)).unwrap();
-    assert_eq!(kept.lines().count(), 1, "{kept}");
-    assert!(run(&f, later(200)).unwrap().is_none());
-}
-
-#[test]
-fn keep_current_files_refuses_before_the_wallet_is_put_back() {
-    let (f, _, _, _) = requested();
-    run_with_fault(&f, "restore.replaced", 1, later(60));
-    let want = tree(&f.root);
-    let err = keep_current_err(&f);
-    assert!(
-        matches!(err, StoreUpgradeError::RestoreIncomplete { .. }),
-        "{err:?}"
-    );
-    assert_eq!(tree(&f.root), want);
-}
-
-#[test]
-fn restored_mark_lists_before_set_pending_payments() {
-    let f = fixture("v0.1.0");
-    settle_stores(&f.net);
-    exec(&f.wallet(), &pending_sql());
-    settle_stores(&f.net);
-    let s = take_snapshot(&f.net, now()).unwrap();
-    exec(
-        &f.wallet(),
-        &format!(
-            "DELETE FROM core_transactions WHERE txid = x'{}'",
-            "AA".repeat(32)
-        ),
-    );
-    settle_stores(&f.net);
-    r::request_restore(&f.net, &s).unwrap();
-    run(&f, later(60)).unwrap().unwrap();
-    assert_pending_is_the_one_payment(&f, &f.wallet());
-    let text = fs::read_to_string(backups(&f).join(r::RESTORED_MARK)).unwrap();
-    assert!(text.starts_with("dw-store-upgrade restored\nformat 1\nrestored "));
-
-    fs::write(
-        backups(&f).join(r::RESTORED_MARK),
-        format!("{text}pending zz 00\n"),
+    let txid: Vec<u8> = (1u8..=32).collect();
+    conn.execute(
+        "INSERT INTO core_transactions (wallet_id, txid, height, finalized) VALUES (?1, ?2, NULL, 0)",
+        (&wid, &txid),
     )
     .unwrap();
-    assert!(r::restored_mark(&f.net).is_err(), "never silently short");
+    conn.execute(
+        "UPDATE core_utxos SET spent = 1, spent_in_txid = ?1 WHERE wallet_id = ?2 AND outpoint = ?3",
+        (&txid, &wid, &outpoint),
+    )
+    .unwrap();
+    (txid, outpoint)
+}
+
+/// Write one pending payment into the live wallet's WAL only, as an old
+/// build that stopped before a checkpoint leaves it. Returns its txid and
+/// the coin it spends.
+fn pay_in_wal_only(wallet: &Path) -> (Vec<u8>, Vec<u8>) {
+    let wal = wallet.with_file_name("wallet.sqlite-wal");
+    let conn = Connection::open(wallet).unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let main_before = fs::read(wallet).unwrap();
+    let (txid, outpoint) = pay(&conn);
+    let main = fs::read(wallet).unwrap();
+    let log = fs::read(&wal).unwrap();
+    assert_eq!(main, main_before, "the payment is in the WAL only");
+    drop(conn);
+    fs::write(wallet, main).unwrap();
+    fs::write(&wal, log).unwrap();
+    let _ = fs::remove_file(wallet.with_file_name("wallet.sqlite-shm"));
+    (txid, outpoint)
+}
+
+fn payment_visible(wallet: &Path, txid: &[u8]) -> bool {
+    let conn = Connection::open(wallet).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM core_transactions WHERE txid = ?1 AND height IS NULL",
+        [txid],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        == 1
+}
+
+fn mark_lists(u: &Upgraded, txid: &[u8], outpoint: &[u8]) -> bool {
+    let mark = restored_mark(&u.net).unwrap().expect("the mark stays");
+    mark.pending.iter().any(|p| {
+        dashcore::consensus::serialize(&p.txid) == txid
+            && p.inputs.iter().any(|o| {
+                bincode::serde::encode_to_vec(o, bincode::config::standard()).unwrap() == outpoint
+            })
+    })
+}
+
+/// 92-1, S4-3, S4-5: KeepLive is the default. A payment the old build left
+/// in the wallet's WAL only stays visible, the side file is never moved, the
+/// payment joins the mark, and a KEPT.txt line records the keep.
+#[test]
+fn s4_keep_live_keeps_a_wal_only_payment() {
+    let u = upgraded();
+    u.stop_at_s4();
+    let (txid, outpoint) = pay_in_wal_only(&u.wallet());
+    let live_tree = tree(&u.net);
+    let info = u.run(later(60)).unwrap().unwrap();
+    assert!(info.kept_live && info.resumed);
+    assert!(!u.root().join(RESTORE_REQUESTED).exists());
+    assert!(!u.root().join(RESTORE_JOURNAL).exists());
+    assert!(u.root().join(RESTORED_MARK).exists(), "the mark stays (H4)");
+    let changed = tree_diff(&live_tree, &tree(&u.net));
+    let during = file_name(&info.during_dirs[0]);
+    for path in &changed {
+        let ok = path.starts_with(&format!("{UPGRADE_BACKUPS_DIR}/{during}"))
+            || path == &format!("{UPGRADE_BACKUPS_DIR}/{RESTORE_JOURNAL}")
+            || path == &format!("{UPGRADE_BACKUPS_DIR}/{RESTORED_MARK}");
+        assert!(ok, "Keep changed {path}");
+    }
+    let kept = fs::read_to_string(info.during_dirs[0].join(KEPT)).unwrap();
+    assert!(
+        kept.lines()
+            .any(|l| l == "kept live: opened by another build after the swap finished"),
+        "{kept}"
+    );
+    assert!(u.net.join("wallet.sqlite-wal").exists(), "the WAL is live");
+    assert!(mark_lists(&u, &txid, &outpoint), "the payment is held");
+    assert!(
+        payment_visible(&u.wallet(), &txid),
+        "the payment is visible"
+    );
+}
+
+/// The S4-5 fail-first: moving the side files aside loses the payment.
+#[test]
+fn s4_moving_the_side_files_aside_loses_the_payment() {
+    let u = upgraded();
+    u.stop_at_s4();
+    let (txid, outpoint) = pay_in_wal_only(&u.wallet());
+    MOVE_SIDES_ON_KEEP.with(|m| m.set(true));
+    let info = u.run(later(60));
+    MOVE_SIDES_ON_KEEP.with(|m| m.set(false));
+    assert!(info.unwrap().unwrap().kept_live);
+    assert!(!mark_lists(&u, &txid, &outpoint));
+    assert!(!payment_visible(&u.wallet(), &txid));
 }
 
 #[test]
-fn snapshot_state_reports_a_corrupt_snapshot_as_unverified() {
-    let f = fixture("v0.1.0");
-    assert_eq!(snapshot_state(&f.net).unwrap(), SnapshotState::None);
-    let s = take_snapshot(&f.net, now()).unwrap();
-    assert_eq!(
-        snapshot_state(&f.net).unwrap(),
-        SnapshotState::Verified(s.clone())
+fn s4_refuse_policy_changes_nothing() {
+    let u = upgraded();
+    u.stop_at_s4();
+    pay_in_wal_only(&u.wallet());
+    let before = tree(&u.net);
+    S4_FOR_TEST.with(|p| p.set(Some(S4Policy::Refuse)));
+    let err = u.run(later(60));
+    S4_FOR_TEST.with(|p| p.set(None));
+    assert!(matches!(
+        err,
+        Err(StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::S4OldBuildWrote,
+            journal_written: true,
+            ..
+        })
+    ));
+    assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+}
+
+/// A wallet with the before set's version and wallets ids, but another
+/// main file, is in the lineage (S4-2): kept live.
+#[test]
+fn s4_rewritten_wallet_with_the_same_ids_is_kept() {
+    let u = upgraded();
+    u.stop_at_s4();
+    exec(&u.wallet(), "CREATE TABLE written_by_old_build (a)");
+    fold_logs(&u.net);
+    assert_ne!(u.live(), u.before());
+    let info = u.run(later(60)).unwrap().unwrap();
+    assert!(info.kept_live);
+}
+
+/// 92-2: a live wallet outside the before lineage is refused with nothing
+/// moved, and the keep action then runs KeepLive with every existing file
+/// in place (MG Q93 condition (2)).
+#[test]
+fn s4_other_lineage_refuses_with_keep_action() {
+    for foreign in ["another wallet id", "the after file"] {
+        let u = upgraded();
+        u.stop_at_s4();
+        match foreign {
+            "another wallet id" => {
+                exec(
+                    &u.wallet(),
+                    "INSERT INTO wallets (wallet_id, network, birth_height) \
+                     VALUES (x'00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff', \
+                     'regtest', 0)",
+                );
+                fold_logs(&u.net);
+            }
+            _ => {
+                let after = fs::read_dir(u.root())
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| file_name(p).starts_with("after-upgrade-"))
+                    .unwrap();
+                fs::copy(after.join("wallet.sqlite"), u.wallet()).unwrap();
+            }
+        }
+        fs::write(u.net.join("app.sqlite-wal"), b"another build's log").unwrap();
+        let before = tree(&u.net);
+        let err = u.run(later(60)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreUpgradeError::RestoreIncomplete {
+                    cause: IncompleteCause::S4OtherLineage,
+                    journal_written: true,
+                    ..
+                }
+            ),
+            "{foreign}: {err}"
+        );
+        assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+        let screen = crate::copy::restore_screen_for(&err).expect("a screen");
+        assert_eq!(screen, crate::copy::restore_foreign::screen(), "{foreign}");
+        assert_eq!(screen.buttons[0].key, "storeUpgrade.restore.foreign.keep");
+        assert!(
+            screen
+                .buttons
+                .iter()
+                .all(|b| !b.key.starts_with("storeUpgrade.cantOpen.")),
+            "no key the cantOpen family may retire"
+        );
+        assert!(
+            !screen.buttons[0].default_focus,
+            "Keep is not the default focus"
+        );
+        let info = keep_current_files(&u.net, later(120))
+            .unwrap()
+            .expect("kept");
+        assert!(info.kept_live, "{foreign}");
+        let after_keep = tree(&u.net);
+        for (path, sha) in &before {
+            if path == &format!("{UPGRADE_BACKUPS_DIR}/{RESTORE_JOURNAL}")
+                || path == &format!("{UPGRADE_BACKUPS_DIR}/{RESTORED_MARK}")
+            {
+                continue;
+            }
+            assert_eq!(
+                after_keep.get(path),
+                Some(sha),
+                "{foreign}: Keep changed {path}"
+            );
+        }
+        assert!(!u.root().join(RESTORE_JOURNAL).exists());
+        assert!(u.root().join(RESTORED_MARK).exists());
+        assert!(matches!(u.run(later(180)), Ok(None)));
+        assert!(matches!(keep_current_files(&u.net, later(240)), Ok(None)));
+    }
+}
+
+#[test]
+fn keep_action_does_nothing_before_s4() {
+    let u = upgraded();
+    assert!(matches!(keep_current_files(&u.net, now()), Ok(None)));
+    u.request();
+    arm_fault("restore.replaced", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let before = tree(&u.net);
+    assert!(matches!(keep_current_files(&u.net, later(60)), Ok(None)));
+    assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+}
+
+fn write_attempt_record(u: &Upgraded, entries: &[String]) {
+    let mut text = "dw-store-upgrade restore-attempt\nformat 1\n".to_string();
+    for e in entries {
+        text += e;
+        text.push('\n');
+    }
+    fs::write(u.root().join(RESTORE_ATTEMPT), text).unwrap();
+}
+
+/// 92-4: a record naming anything but a fresh-name attempt dir directly
+/// under upgrade-backups, or a symlink, is refused; nothing outside is
+/// removed and the restore still runs.
+#[test]
+fn restore_attempt_record_outside_upgrade_backups_is_refused() {
+    let u = upgraded();
+    let was_live = u.live();
+    let outside = u.net.parent().unwrap().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("wallet.sqlite"), b"not ours").unwrap();
+    let link = "after-upgrade-20261125T004000Z";
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, u.root().join(link)).unwrap();
+    let snapshot_name = file_name(u.snapshot.dir());
+    write_attempt_record(
+        &u,
+        &[
+            "path ../outside".into(),
+            "path ../../outside".into(),
+            format!("path {}", outside.display()),
+            format!("path {snapshot_name}"),
+            format!("path {link}"),
+            "path restore-staging-20261125T004000Z/../../outside".into(),
+            "path RESTORE-IN-PROGRESS".into(),
+            "path RESTORE-REQUESTED".into(),
+            "path during-restore-20261125T004000Z".into(),
+            "path wallet.sqlite".into(),
+        ],
     );
-    let app = s.dir().join("app.sqlite");
-    let mut bytes = fs::read(&app).unwrap();
-    bytes[100] ^= 1;
-    fs::write(&app, bytes).unwrap();
-    let state = snapshot_state(&f.net).unwrap();
+    let snapshot_tree = tree(u.snapshot.dir());
+    u.request();
+    let info = u.run(now()).unwrap().unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert_eq!(
+        fs::read(outside.join("wallet.sqlite")).unwrap(),
+        b"not ours".to_vec()
+    );
+    #[cfg(unix)]
     assert!(
-        matches!(&state, SnapshotState::Unverified { dir, .. } if dir == s.dir()),
+        fs::symlink_metadata(u.root().join(link))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the symlink is refused, not followed or removed"
+    );
+    assert_eq!(tree(u.snapshot.dir()), snapshot_tree);
+}
+
+/// 92-5: a crash after the record but before the create leaves names that
+/// don't exist; the sweep counts them as cleaned.
+#[test]
+fn crash_after_record_before_create_cleans_cleanly() {
+    let u = upgraded();
+    let was_live = u.live();
+    let made = u.root().join("after-upgrade-20261125T004000Z");
+    crate::fsx::create_private_dir(&made).unwrap();
+    fs::write(made.join("ATTEMPT-ID"), "t1\n").unwrap();
+    fs::write(made.join("app.sqlite.partial"), b"partial").unwrap();
+    write_attempt_record(
+        &u,
+        &[
+            "id t1".into(),
+            "mark-created".into(),
+            "path after-upgrade-20261125T004000Z".into(),
+            "path restore-staging-20261125T004000Z".into(),
+        ],
+    );
+    u.request();
+    let info = u.run(now()).unwrap().unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert!(!made.exists(), "the dir it did create is removed");
+    assert!(!u.root().join("restore-staging-20261125T004000Z").exists());
+}
+
+/// A crash mid-copy leaves its dirs, a partial copy and a mark it created;
+/// the next start removes exactly those.
+#[test]
+fn a_crashed_attempt_is_swept_by_the_next_start() {
+    let u = upgraded();
+    let was_live = u.live();
+    let left = u.root().join("after-upgrade-20261125T004000Z");
+    crate::fsx::create_private_dir(&left).unwrap();
+    fs::write(left.join("ATTEMPT-ID"), "t1\n").unwrap();
+    fs::write(left.join("app.sqlite"), b"partial").unwrap();
+    fs::write(left.join("dispatch.sqlite.partial"), b"partial").unwrap();
+    fs::write(
+        u.root().join(RESTORED_MARK),
+        "dw-store-upgrade restored\nformat 1\nattempt t1\n",
+    )
+    .unwrap();
+    fs::write(u.root().join("RESTORED.partial"), b"partial").unwrap();
+    write_attempt_record(
+        &u,
+        &[
+            "id t1".into(),
+            "mark-created".into(),
+            "path after-upgrade-20261125T004000Z".into(),
+        ],
+    );
+    u.request();
+    let info = u.run(now()).unwrap().unwrap();
+    assert_restored(&u, &was_live, &info);
+    assert!(!left.exists());
+    assert!(!u.root().join("RESTORED.partial").exists());
+}
+
+/// An earlier restore's after set and during dir (design §3: a failed
+/// attempt must leave them alone).
+fn seed_earlier_restore(u: &Upgraded) {
+    for dir in [
+        "after-upgrade-20261124T000000Z",
+        "during-restore-20261124T000000Z",
+    ] {
+        let d = u.root().join(dir);
+        crate::fsx::create_private_dir(&d).unwrap();
+        fs::write(d.join("wallet.sqlite"), format!("earlier {dir}")).unwrap();
+    }
+}
+
+/// Q102 102-1: a record that can't be removed stops the run with the journal
+/// still there, wherever a run removes it after the journal (finish, a
+/// resume's stale record, keep); the next start finishes and leaves no record
+/// behind.
+#[test]
+fn a_record_removal_failure_is_restore_incomplete() {
+    let fails = |u: &Upgraded, skip: u32, at: SystemTime, what: &str| {
+        arm_fault("restore.remove_record", skip);
+        let err = u.run(at).unwrap_err();
+        disarm_fault();
+        assert!(
+            matches!(
+                err,
+                StoreUpgradeError::RestoreIncomplete {
+                    journal_written: true,
+                    ..
+                }
+            ),
+            "{what}: {err:?}"
+        );
+        assert!(u.root().join(RESTORE_JOURNAL).exists(), "{what}");
+    };
+    let finishes = |u: &Upgraded, what: &str| {
+        let info = u.run(later(180)).unwrap().unwrap();
+        assert!(info.resumed, "{what}");
+        for gone in [RESTORE_JOURNAL, RESTORE_ATTEMPT, RESTORE_REQUESTED] {
+            assert!(!u.root().join(gone).exists(), "{what}: {gone}");
+        }
+        assert!(u.root().join(RESTORED_MARK).exists(), "{what}");
+        assert!(!info.after_dir.join("ATTEMPT-ID").exists(), "{what}");
+        info
+    };
+
+    let u = upgraded();
+    u.request();
+    fails(&u, 0, now(), "finish");
+    write_attempt_record(&u, &[]);
+    fails(&u, 0, later(60), "a resume's stale record");
+    assert!(u.root().join(RESTORE_ATTEMPT).exists(), "resume");
+    let info = finishes(&u, "after finish and resume");
+    assert_eq!(u.live(), u.before());
+    assert!(!info.kept_live);
+
+    let u = upgraded();
+    u.stop_at_s4();
+    pay_in_wal_only(&u.wallet());
+    fails(&u, 1, later(60), "keep");
+    let info = finishes(&u, "after keep");
+    assert!(info.kept_live);
+}
+
+/// C1: a record that outlived a finished restore (a failed unlink, or put
+/// there by hand) never removes that restore's after set or its mark.
+#[test]
+fn a_stale_record_never_removes_a_finished_restore() {
+    let u = upgraded();
+    u.request();
+    let info = u.run(now()).unwrap().unwrap();
+    let after = file_name(&info.after_dir);
+    let after_tree = tree(&info.after_dir);
+    assert!(!info.after_dir.join("ATTEMPT-ID").exists());
+    let mark = fs::read_to_string(u.root().join(RESTORED_MARK)).unwrap();
+    assert!(!mark.contains("attempt "), "{mark}");
+    for id in ["", "id anything"] {
+        let mut entries = vec!["mark-created".to_string(), format!("path {after}")];
+        if !id.is_empty() {
+            entries.insert(0, id.to_string());
+        }
+        write_attempt_record(&u, &entries);
+        let snap = latest_snapshot(&u.net).unwrap().unwrap();
+        request_restore(&u.net, &snap).unwrap();
+        let again = u.run(later(3600)).unwrap().unwrap();
+        assert_eq!(tree(&info.after_dir), after_tree, "{id:?}");
+        assert!(u.root().join(RESTORED_MARK).exists(), "{id:?}");
+        assert_ne!(again.after_dir, info.after_dir);
+    }
+}
+
+/// ENOSPC before the journal: RestoreNoSpace, the request cleared, and
+/// nothing else in the network dir changed.
+#[test]
+fn enospc_cleanup_removes_only_this_attempts_copies() {
+    for skip in [0, 2, 6] {
+        let u = upgraded();
+        seed_earlier_restore(&u);
+        u.request();
+        let start = tree(&u.net);
+        arm_fault("restore.copy", skip);
+        let err = u.run(now()).unwrap_err();
+        disarm_fault();
+        assert!(
+            matches!(err, StoreUpgradeError::RestoreNoSpace { needed: Some(_) }),
+            "{skip}: {err}"
+        );
+        assert_eq!(
+            tree_diff(&start, &tree(&u.net)),
+            vec![format!("{UPGRADE_BACKUPS_DIR}/{RESTORE_REQUESTED}")],
+            "{skip}"
+        );
+    }
+}
+
+/// The cleanup itself fails: each of the attempt's dirs gets the MG note,
+/// the record goes, and the live set is untouched.
+#[test]
+fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
+    let u = upgraded();
+    let was_live = u.live();
+    seed_earlier_restore(&u);
+    u.request();
+    arm_fault("restore.copy", 6);
+    FAIL_CLEANUP.with(|f| f.set(true));
+    let err = u.run(now());
+    FAIL_CLEANUP.with(|f| f.set(false));
+    disarm_fault();
+    assert!(matches!(err, Err(StoreUpgradeError::RestoreNoSpace { .. })));
+    assert_eq!(u.live(), was_live);
+    assert!(!u.root().join(RESTORE_ATTEMPT).exists());
+    let notes: Vec<PathBuf> = fs::read_dir(u.root())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join(SAFE_TO_DELETE).exists())
+        .collect();
+    assert_eq!(
+        notes.len(),
+        1,
+        "the partial staging dir; never a complete after set"
+    );
+    for d in &notes {
+        let name = file_name(d);
+        assert!(name.starts_with("restore-staging-"), "{name}");
+        let text = fs::read_to_string(d.join(SAFE_TO_DELETE)).unwrap();
+        assert!(
+            text.starts_with("This folder is an unfinished copy"),
+            "{text}"
+        );
+    }
+    u.request();
+    let info = u.run(later(60)).unwrap().unwrap();
+    assert_restored(&u, &was_live, &info);
+    for d in &notes {
+        assert!(d.exists(), "a later run leaves a noted dir alone");
+    }
+}
+
+/// Q98 98-5: only a verified snapshot is a backup to the refusal screens; an
+/// unverified one (a corrupt byte, a garbled marker) is Unverified, and none
+/// at all (no snapshot, or one without its marker) is None.
+#[test]
+fn only_a_verified_snapshot_gets_the_backup_sentence() {
+    use crate::copy::{BackupState, ProvedState};
+    let key = |net: &Path| {
+        let state = snapshot_state(net).unwrap();
+        let backup = BackupState::from(&state);
+        assert_eq!(ProvedState::read(net, false).backup, Some(backup));
+        assert_eq!(
+            snapshot_present(net).unwrap(),
+            backup == BackupState::Verified
+        );
+        (state, backup)
+    };
+    let with = BackupState::Verified;
+    let without = BackupState::Unverified;
+    let none = BackupState::None;
+
+    let u = upgraded();
+    let (state, k) = key(&u.net);
+    assert!(matches!(state, SnapshotState::Verified(_)));
+    assert_eq!(k, with);
+
+    let file = u.snapshot.dir().join("wallet.sqlite");
+    let mut bytes = fs::read(&file).unwrap();
+    bytes[100] ^= 0x80;
+    fs::write(&file, bytes).unwrap();
+    let (state, k) = key(&u.net);
+    assert!(
+        matches!(state, SnapshotState::Unverified { .. }),
         "{state:?}"
     );
-    assert!(!crate::snapshot_present(&f.net).unwrap());
-    let backup = BackupState::from(&state);
-    assert_eq!(backup, BackupState::Unverified);
-    let migrated = |backup| ProvedState {
-        migrated: Some(true),
-        backup: Some(backup),
-        unchanged: Some(false),
-    };
-    let screen = RefusedScreen::new(RefusedCause::Unexpected, migrated(backup));
-    assert_eq!(screen.way_out, WayOut::Unverified);
+    assert_eq!(k, without, "a corrupt byte");
+
+    let u = upgraded();
+    let marker = u.snapshot.dir().join(crate::snapshot::MARKER);
+    let text = fs::read_to_string(&marker).unwrap();
+    fs::write(&marker, text.replacen("refinery-max", "refinery-mix", 1)).unwrap();
+    let (state, k) = key(&u.net);
     assert!(
-        screen
-            .buttons
-            .iter()
-            .all(|b| b.key != "storeUpgrade.refused.restore")
+        matches!(state, SnapshotState::Unverified { .. }),
+        "{state:?}"
     );
-    let verified = RefusedScreen::new(RefusedCause::Unexpected, migrated(BackupState::Verified));
-    assert_eq!(verified.way_out, WayOut::Restore);
+    assert_eq!(k, without, "a garbled marker");
+
+    fs::remove_file(&marker).unwrap();
+    let (state, k) = key(&u.net);
+    assert_eq!(
+        state,
+        SnapshotState::None,
+        "no marker: not a completed snapshot"
+    );
+    assert_eq!(k, none);
+
+    fs::remove_dir_all(u.snapshot.dir()).unwrap();
+    let (state, k) = key(&u.net);
+    assert_eq!(state, SnapshotState::None);
+    assert_eq!(k, none, "no snapshot");
 }
+
+/// One corrupt byte in a snapshot file makes it Unverified: no backup
+/// sentence, and a restore requested from it is refused with nothing moved.
+#[test]
+fn snapshot_state_one_corrupt_byte_is_unverified() {
+    let u = upgraded();
+    assert!(matches!(
+        snapshot_state(&u.net).unwrap(),
+        SnapshotState::Verified(_)
+    ));
+    u.request();
+    let file = u.snapshot.dir().join("dispatch.sqlite");
+    let mut bytes = fs::read(&file).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0x01;
+    fs::write(&file, bytes).unwrap();
+    assert!(matches!(
+        snapshot_state(&u.net).unwrap(),
+        SnapshotState::Unverified { .. }
+    ));
+    assert!(!snapshot_present(&u.net).unwrap());
+    let live = u.live();
+    let err = u.run(now()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreRefused {
+                cause: RefusalCause::MismatchedBackup | RefusalCause::MissingBackup
+            }
+        ),
+        "{err}"
+    );
+    assert_eq!(u.live(), live);
+    assert!(!u.root().join(RESTORE_REQUESTED).exists(), "MG (k)");
+}
+
+const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 
 #[test]
 fn restore_confirm_copy_is_verbatim_and_cancel_has_default_focus() {
@@ -1178,14 +1206,14 @@ fn placeholders_are_only_the_keys_mg_has_not_written() {
 
 #[test]
 fn touched_paths_name_every_marker_and_dir() {
-    let all = r::touched_paths().join("\n");
+    let all = crate::restore::touched_paths().join("\n");
     for name in [
-        r::RESTORE_REQUESTED,
-        r::RESTORE_JOURNAL,
-        r::RESTORED_MARK,
-        r::RESTORE_ATTEMPT,
-        r::SAFE_TO_DELETE,
-        r::KEPT,
+        crate::restore::RESTORE_REQUESTED,
+        crate::restore::RESTORE_JOURNAL,
+        crate::restore::RESTORED_MARK,
+        crate::restore::RESTORE_ATTEMPT,
+        crate::restore::SAFE_TO_DELETE,
+        crate::restore::KEPT,
         "after-upgrade-<UTC>",
         "restore-staging-<UTC>",
         "during-restore-<UTC>",
@@ -1196,17 +1224,20 @@ fn touched_paths_name_every_marker_and_dir() {
 }
 
 #[test]
-#[ignore = "timing on a loaded box is noise; run alone"]
-fn measure_rename_window() {
-    let mut taken = Vec::new();
-    for _ in 0..20 {
-        let (f, _, _, _) = requested();
-        run(&f, later(60)).unwrap().unwrap();
-        taken.push(r::LAST_REPLACE.with(|t| t.get()).unwrap());
-    }
-    taken.sort();
-    eprintln!(
-        "rename window: median {:?}, min {:?}, max {:?}",
-        taken[10], taken[0], taken[19]
+fn restore_foreign_screen_renders_the_folder_in_its_hint() {
+    let s = copy::restore_foreign::screen();
+    assert!(copy::all_screens().contains(&s));
+    let keys: Vec<_> = s.buttons.iter().map(|b| b.key).collect();
+    assert_eq!(
+        keys,
+        [
+            "storeUpgrade.restore.foreign.keep",
+            "settings.about.links.issues",
+            "storeUpgrade.restore.foreign.quit",
+        ]
     );
+    assert!(s.buttons.iter().all(|b| !b.default_focus && !b.destructive));
+    let shown = s.render(FOLDER);
+    assert!(shown.contains(&format!("opens the files in {FOLDER} as they are now")));
+    assert!(!shown.contains("{folder}"));
 }

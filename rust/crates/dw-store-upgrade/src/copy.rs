@@ -580,7 +580,7 @@ impl ScreenCopy {
             out += &format!("[{}]", b.label);
         }
         if let Some((_, hint)) = self.hint {
-            out += &format!("\n{hint}");
+            out += &format!("\n{}", hint.replace("{folder}", folder));
         }
         out
     }
@@ -729,7 +729,11 @@ pub fn restore_screen_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
         StoreUpgradeError::RestoreRefused { cause } => restore_refused(*cause),
         StoreUpgradeError::RestoreNoSpace { .. } => restore_no_space(),
         StoreUpgradeError::RestoreIncomplete {
-            cause: IncompleteCause::S4OldBuildWrote | IncompleteCause::S4OtherLineage,
+            cause: IncompleteCause::S4OtherLineage,
+            ..
+        } => restore_foreign::screen(),
+        StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::S4OldBuildWrote,
             journal_written: true,
             ..
         } => restore_keep_current(),
@@ -753,6 +757,7 @@ pub fn all_screens() -> Vec<ScreenCopy> {
         restore_no_space(),
         restore_not_started(IncompleteCause::Other),
         restore_keep_current(),
+        restore_foreign::screen(),
     ];
     v.dedup();
     v
@@ -763,7 +768,7 @@ pub fn all_screens() -> Vec<ScreenCopy> {
 /// besides Keep the screen has Report a problem (with [`ISSUES_HINT`]) and
 /// Quit, and Keep is not the default focus.
 pub mod restore_foreign {
-    use super::Line;
+    use super::{Button, Line, ScreenCopy, button};
 
     pub const TITLE: Line = super::line(
         "storeUpgrade.restore.foreign.title",
@@ -781,6 +786,25 @@ pub mod restore_foreign {
         "storeUpgrade.restore.foreign.keepMeaning",
         "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.",
     );
+    pub const QUIT: Line = super::line("storeUpgrade.restore.foreign.quit", "Quit");
+
+    /// The screen: Keep (runs [`crate::keep_current_files`]), Report a
+    /// problem, and Quit. Its hint is [`KEEP_MEANING`].
+    pub fn screen() -> ScreenCopy {
+        let b = |l: Line| -> Button { button(l.key, l.text) };
+        ScreenCopy {
+            title_key: TITLE.key,
+            title: TITLE.text,
+            text_key: TEXT.key,
+            text: TEXT.text,
+            buttons: vec![
+                b(KEEP),
+                button("settings.about.links.issues", "Report a problem"),
+                b(QUIT),
+            ],
+            hint: Some((KEEP_MEANING.key, KEEP_MEANING.text)),
+        }
+    }
 }
 
 /// The folder name the copy names: the one the snapshot is written under.
