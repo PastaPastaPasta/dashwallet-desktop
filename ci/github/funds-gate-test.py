@@ -97,6 +97,11 @@ class Paths(unittest.TestCase):
             "Sources/DashKit/EngineClient+M3CoinJoin.swift",
             "Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift",
             "Sources/WalletRuntime/M3/CoinJoinAdapters.swift",
+            "Sources/WalletFeatures/Security/SecurityViewModel.swift",
+            "Sources/WalletFeatures/Onboarding/OnboardingViewModel.swift",
+            "Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift",
+            "apps/desktop/src/onboarding/lock.ts",
+            "rust/crates/dw-appdb/src/proposals.rs",
             "apps/desktop/src/screens/Onboarding.tsx",
             "apps/desktop/src/screens/settings/Security.tsx",
             "apps/desktop/src/screens/settings/CoinJoin.tsx",
@@ -247,7 +252,7 @@ class Check(unittest.TestCase):
     def tearDown(self):
         gate.fetch_pr, gate.fetch, gate.post_status, gate.gh = self.saved
 
-    def check(self, base_ref="main", comments=(), fetch_error=None, sha=None, moves=0):
+    def check(self, base_ref="main", comments=(), fetch_error=None, sha=None, moves=0, policy=None):
         info = {"head": {"sha": HEAD}, "base": {"sha": OLD, "ref": base_ref, "repo": {"default_branch": "main"}}}
         gate.fetch_pr = lambda repo, pr: info
 
@@ -262,6 +267,8 @@ class Check(unittest.TestCase):
             return [FUNDS_FILE], True, list(comments)
 
         gate.fetch = fetch
+        text = gate.PATHS_FILE.read_text()
+        gate.gh = lambda *a, **k: policy if policy is not None else text
         args = gate.argparse.Namespace(repo="o/r", pr=1, sha=sha, status=True, paths=gate.PATHS_FILE)
         return gate.cmd_check(args)
 
@@ -288,6 +295,10 @@ class Check(unittest.TestCase):
     def test_base_moving_three_times_leaves_pending(self):
         self.assertEqual(self.check(comments=[comment(BOTH)], moves=3), 2)
         self.assertEqual(self.posted, ["pending"] * 3)
+
+    def test_policy_change_during_retry_leaves_pending(self):
+        self.assertEqual(self.check(comments=[comment(BOTH)], moves=1, policy="rust/**\n"), 2)
+        self.assertEqual(self.posted, ["pending"])
 
     def test_sha_mismatch_posts_no_status(self):
         self.assertEqual(self.check(sha=OLD), 1)

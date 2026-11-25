@@ -229,6 +229,13 @@ def cmd_match(args):
     return 0
 
 
+def policy_unchanged(repo, pr, paths):
+    """A retry may only classify with the patterns it loaded if the new base carries the same list."""
+    base = fetch_pr(repo, pr)["base"]["sha"]
+    if gh("-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/ci/funds-paths.txt?ref={base}") != Path(paths).read_text():
+        raise RuntimeError(f"ci/funds-paths.txt changed at base {base} during the check; run it again")
+
+
 def cmd_check(args):
     rules = load_patterns(args.paths)
     try:
@@ -252,6 +259,7 @@ def cmd_check(args):
                 if attempt == 2:
                     raise
                 print(f"funds gate: {e}; reading it again", file=sys.stderr)
+                policy_unchanged(args.repo, args.pr, args.paths)
     except (RuntimeError, json.JSONDecodeError, KeyError) as e:
         print(f"funds gate: {e}", file=sys.stderr)
         return 2

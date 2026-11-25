@@ -65,7 +65,6 @@ rust/crates/dw-ffi/src/api/console.rs
 # app.sqlite records of holds, barriers, withdrawals, registrations and shared-masternode sessions.
 rust/crates/dw-appdb/**
 !rust/crates/dw-appdb/src/avatar.rs
-!rust/crates/dw-appdb/src/proposals.rs
 
 # Bridges that carry sends, keys, backups and Platform money to the UI (Tauri commands, Swift FFI).
 rust/crates/dw-app/src/api/send.rs
@@ -158,6 +157,7 @@ apps/desktop/src/onboarding/bip39English*
 apps/desktop/src/onboarding/passphrase*
 apps/desktop/src/onboarding/birthHeight*
 apps/desktop/src/onboarding/onboarding.ts
+apps/desktop/src/onboarding/lock.ts
 apps/desktop/src/settings/security.ts
 apps/desktop/src/platform/**
 apps/desktop/src/tools/psbt*
@@ -212,6 +212,9 @@ Sources/WalletRuntime/Services/TransactionSender.swift
 Sources/WalletRuntime/Services/VaultService.swift
 Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
 Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
+Sources/WalletFeatures/Security/SecurityViewModel.swift
+Sources/WalletFeatures/Onboarding/OnboardingViewModel.swift
+Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift
 Sources/WalletRuntime/M3/CoinJoinAdapters.swift
 Sources/CrossUI/ToolScreens.swift
 Sources/MacUI/SignVerify/**
