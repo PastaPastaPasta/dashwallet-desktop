@@ -2380,6 +2380,17 @@ impl PumpTarget for SessionPump {
     }
 }
 
+/// Tests: a running balance reread ([`SessionHub::reread_started`]).
+#[cfg(test)]
+pub(crate) struct RereadRunning(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Drop for RereadRunning {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use dashcore::hashes::Hash;
@@ -2894,16 +2905,5 @@ mod tests {
         hub.update_wallet_state(W, |s| s.take_core(r));
         assert_eq!(target(), 900);
         assert!(!hub.wallet_state(&W).unwrap().replaying_at(900));
-    }
-}
-
-/// Tests: a running balance reread ([`SessionHub::reread_started`]).
-#[cfg(test)]
-pub(crate) struct RereadRunning(Arc<std::sync::atomic::AtomicUsize>);
-
-#[cfg(test)]
-impl Drop for RereadRunning {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
