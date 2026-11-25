@@ -2899,6 +2899,10 @@ input[type="radio"]:disabled {
   text-align: center;
 }
 
+.store-open-text {
+  overflow-wrap: anywhere;
+}
+
 .onboarding-note,
 .form-hint,
 .form-ok {
