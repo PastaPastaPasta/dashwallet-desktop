@@ -6927,3 +6927,85 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         "C after a restart"
     );
 }
+
+/// A payment of A and B with change, no record of key-wallet's after a
+/// restart, beaten on B by another device's spend in a block: its drop is
+/// held before the recheck while its lock arrives, heard by the SPV alone
+/// (#828) and then by the wallet. Locked, it is beaten only under a
+/// ChainLock, so the drop keeps it: it stays with its claims, nothing is
+/// freed, and A is neither counted nor offered, after a restart too.
+#[test]
+fn a_lock_arriving_while_a_beaten_payments_drop_is_held_keeps_it_and_its_claims() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_drop_recheck.lock().unwrap() = Some(Arc::clone(&pause));
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert!(
+        pause.wait_reached(std::time::Duration::from_secs(20)),
+        "the block's reconcile rechecks the payment"
+    );
+    let lock = InstantLock {
+        txid: payment.txid(),
+        ..InstantLock::default()
+    };
+    session
+        .hub
+        .on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
+            instant_lock: lock,
+            validated: true,
+        });
+    lock_reruns_done(&engine, &session);
+    assert!(
+        history_shows_locked(&session, id, payment.txid()),
+        "the history shows the lock"
+    );
+    instant_lock(&engine, &session, id, &payment);
+    lock_reruns_done(&engine, &session);
+    pause.release.notify_one();
+    let gate = Arc::clone(&session);
+    engine.block_on(async move { drop(gate.hub.drop_gate.lock().await) });
+
+    let kept = |session: &Arc<NetworkSession>, state: &str| {
+        assert!(
+            !abandoned(&engine, session, id, payment.txid()),
+            "{state}: the payment stays"
+        );
+        let marks = (session.live().unwrap().appdb)
+            .settings_with_prefix(&id.to_string(), "dropped:")
+            .unwrap();
+        assert!(marks.is_empty(), "{state}: no dropped mark: {marks:?}");
+        let drops = (session.hub.history).read_wallet(&id, |h| h.drops.len());
+        assert_eq!(drops, 0, "{state}: nothing listed as dropped");
+        mined(&engine, session, id, TIP, vec![paid.clone()]);
+        assert!(
+            !held(&engine, session, id).contains(&a),
+            "{state}: A stays claimed"
+        );
+        assert!(
+            !spendable(&engine, session, id, a),
+            "{state}: A is not offered"
+        );
+    };
+    kept(&session, "held drop released");
+    let session = reopen(&engine, session);
+    assert!(
+        history_shows_locked(&session, id, payment.txid()),
+        "the load reads the lock"
+    );
+    kept(&session, "after a restart");
+}
