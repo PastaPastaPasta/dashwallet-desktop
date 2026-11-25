@@ -5218,6 +5218,85 @@ fn an_older_drop_settles_on_its_root_inputs_final_spend() {
     assert_eq!(held_report(&session, id), (x, 0, false), "restarted");
 }
 
+/// #907: C, dropped holding D when key-wallet swept its parent P for W,
+/// another device's spend of A paying the wallet, out of a block. W is
+/// mined at `TIP + 1` in block B above the ChainLock, and the history holds
+/// it there: D awaits W. After a restart the header chain holds B' at
+/// `TIP + 1`, a fork having replaced B, and the ChainLock is of `TIP + 2`
+/// on that branch: W's stored record of B is no proof, so D awaits. Once W
+/// is mined again on the new branch and ChainLocked, D awaits nothing.
+#[test]
+fn a_drops_winner_in_a_block_a_fork_replaced_keeps_the_wallet_awaiting_after_a_reopen() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let w = rival(&engine, &session, id, &paid, a.vout);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: w.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    let x = paid.output[d.vout as usize].value;
+    let in_history = |session: &NetworkSession| {
+        (session.hub.history).read_wallet(&id, |h| {
+            (h.txs.get(&w.txid()))
+                .and_then(|e| e.context.block_info())
+                .map(|b| (b.height(), b.block_hash()))
+        })
+    };
+    assert_eq!(held_report(&session, id), (x, 0, true), "W out of a block");
+
+    let b = super::block_with(vec![w.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, b)]);
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    reconciled(&engine, &session, id);
+    assert_eq!(in_history(&session), Some((TIP + 1, b)), "W mined in B");
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined in B");
+
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let session = reopen(&engine, session);
+    reload_with_headers(
+        &engine,
+        &session,
+        id,
+        &[(TIP + 1, replaced), (TIP + 2, next)],
+    );
+    chain_lock(&engine, &session, id, TIP + 2, next);
+    reconciled(&engine, &session, id);
+    assert_eq!(
+        in_history(&session),
+        Some((TIP + 1, b)),
+        "W's record of B comes back"
+    );
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, true),
+        "B replaced, the ChainLock past it"
+    );
+
+    let again = super::block_with(vec![w.clone(), foreign()]).block_hash();
+    header_chain(
+        &session,
+        &[(TIP + 1, replaced), (TIP + 2, next), (TIP + 3, again)],
+    );
+    mined(&engine, &session, id, TIP + 3, vec![w.clone(), foreign()]);
+    chain_lock(&engine, &session, id, TIP + 3, again);
+    reconciled(&engine, &session, id);
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, false),
+        "W mined again and ChainLocked"
+    );
+}
+
 /// D held, its drop's winner W ChainLocked: nothing awaits.
 fn settled_holding_d() -> (
     tempfile::TempDir,
