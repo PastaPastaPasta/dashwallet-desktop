@@ -2056,14 +2056,53 @@ mod tests {
         let id = (engine.block_on(s.import_wallet_dat(file, None, options)))
             .unwrap()
             .wallet_id;
+        let counters = [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)];
         let addresses = addresses_of(&engine, &s, id);
-        let before = highest(&addresses, AddressChain::Receiving);
-        assert!(before < 1000 + CORE_COMPAT_LOOKAHEAD, "{before}");
+        for (chain, counter) in counters {
+            let before = highest(&addresses, chain);
+            assert!(
+                before < counter - 1 + CORE_COMPAT_LOOKAHEAD,
+                "{chain:?}: {before}"
+            );
+        }
 
         let manager = s.manager().unwrap();
         (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
         let addresses = addresses_of(&engine, &s, id);
-        for (chain, counter) in [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)] {
+        for (chain, counter) in counters {
+            assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+        }
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Keys attached from a wallet.dat to a wallet with a narrower lookahead
+    /// raise its pools before Core's counters are covered, so the range past
+    /// each counter is the attach's lookahead.
+    #[test]
+    fn an_attach_covers_cores_counters_with_its_raised_lookahead() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let narrow = ImportOptions {
+            lookahead: Some(50),
+            ..ImportOptions::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, narrow)))
+            .unwrap()
+            .wallet_id;
+        let counters = [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)];
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
+            let before = highest(&addresses, chain);
+            assert!(
+                before < counter - 1 + CORE_COMPAT_LOOKAHEAD,
+                "{chain:?}: {before}"
+            );
+        }
+
+        assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+        assert_eq!(import(&engine, &s, "bdb_wide_range.dat"), id);
+        let addresses = addresses_of(&engine, &s, id);
+        for (chain, counter) in counters {
             assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
         }
         engine.block_on(engine.shutdown()).unwrap();

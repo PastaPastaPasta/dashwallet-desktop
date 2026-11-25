@@ -911,9 +911,9 @@ nothing; neither does any failure after the lock's credit key signed, whatever t
 the lock `checking`, and so does the answer for this device's own shield lock (as its pending shield). A type-4 lock, or a
 restored type-5 one, takes the answer as finished elsewhere (`reportedUsed`, below). The pinned storage attests
 asset-lock reconciliation (atomic changesets and tracked asset locks, platform-wallet-storage `persister.rs:1341-1373`;
-`WALLET_RESTORE` is no longer needed), so the library records the answer itself: `mark_asset_lock_consumption_unknown`
-(`sync/tracking.rs:352-424`) keeps the row `RecoveredFromChain` with the outpoint's ChainLock proof, and the call returns
-`AssetLockAlreadyConsumed`. At a backend that does not attest it, the library refuses with
+`WALLET_RESTORE` is no longer needed), so the library records the answer itself when a ChainLock proof is at hand
+(otherwise it records nothing): `mark_asset_lock_consumption_unknown` (`sync/tracking.rs:352-424`) moves the row to
+`RecoveredFromChain` with the outpoint's ChainLock proof. Either way the call returns `AssetLockAlreadyConsumed`. At a backend that does not attest it, the library refuses with
 `PlatformWalletError::Persistence` "asset-lock reconciliation requires persistence capabilities …" instead, and only
 after matching the answer to the applied outpoint (`asset_lock/orchestration.rs:345-411`), so the engine reads that
 refusal, and no other persistence error, as the answer for that outpoint. Balances come only from proved reads.

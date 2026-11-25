@@ -2079,7 +2079,7 @@ impl NetworkSession {
         let restored = self.restore_coins(manager, id).await;
         match (raised, restored) {
             (Err(raise), Err(restore)) => Err(EngineError::Internal(format!(
-                "{restore}; raising the lookahead to {gap} failed first: {raise}"
+                "{restore}; raising the lookahead to {gap} or covering Core's range with it failed first: {raise}"
             ))),
             (raised, restored) => raised.and(restored.map(|_| ())),
         }
