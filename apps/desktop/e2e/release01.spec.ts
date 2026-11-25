@@ -416,6 +416,10 @@ test.describe("network choice", () => {
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
     await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    await setKnobs(page, { closeRefused: "transfer_preparing" });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A transfer in one of your wallets is still being prepared. Try again when it's done.");
     expect(await activeNetwork(page)).toBe("testnet");
   });
 

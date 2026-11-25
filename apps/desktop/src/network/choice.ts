@@ -83,6 +83,9 @@ export const NetworkText = {
   get shieldedUnresolved() {
     return t("network.shieldedUnresolved");
   },
+  get transferPreparing() {
+    return t("transfer.preparingBlocksClose");
+  },
   /** After a switch that failed: the window went back to the network it left. */
   backOn: (to: ChosenNetwork, from: ChosenNetwork) => t("network.backOn", { to: networkName(to), from: networkName(from) }),
   /** After a switch that failed, and the way back too: the splash's Retry opens `from`. */

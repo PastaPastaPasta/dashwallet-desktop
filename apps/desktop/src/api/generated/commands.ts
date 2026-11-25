@@ -356,7 +356,8 @@ export function openNetwork(network: string | null, settings: SessionSettings | 
  * checked before and after the operations already running finish
  * (`draining` when they do not within 2 s); then the engine's own
  * refusals (`wallet` while a wallet is still opening,
- * `shielded_spend_unresolved`, both with
+ * `shielded_spend_unresolved`, `app.transfer_preparing` while a
+ * transfer waits on its wallet's start-up, each with
  * [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
  * the session, its drafts, the window and the choice stay, and the
  * paused operations run. Once closed, its vault is locked and its
@@ -4599,6 +4600,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.transfer_preparing",
   "app.shared_send_off",
   "app.shared_send_unsupported",
   "invalid_config",
@@ -4824,6 +4826,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.coins_changed",
   "credits.mixing_active",
   "credits.move_running",
+  "credits.preflight_refused",
+  "credits.rules_unsupported",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

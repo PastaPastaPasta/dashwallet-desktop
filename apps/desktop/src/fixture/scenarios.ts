@@ -78,7 +78,7 @@ export interface World {
    * not roll back, the next `open_network` fails once too, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
-    closeRefused?: "wallet" | "shielded_spend_unresolved";
+    closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;
     /** The switch goes through but its choice is not written. */
@@ -790,6 +790,24 @@ const SCENARIOS = {
     };
     wallet.rows = [row, ...wallet.rows];
     w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** Just after a chain fork, while the wallet catches up: an unconfirmed payment offers Abandon,
+   * and Abandon and Remove Unconfirmed are refused with `rescan_in_progress`. */
+  "abandon-catching-up": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5b".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.catchingUp = true;
     return w;
   },
   /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
