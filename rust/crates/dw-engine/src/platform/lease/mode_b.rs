@@ -1508,6 +1508,35 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// The notes `wallet`'s drained fork dispositions hold, by account
+    /// (schema 12); an error while the journal is not open or cannot be
+    /// read. On the blocking pool.
+    pub(crate) async fn shielded_drained_holds(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(u32, [u8; 32])>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_drained_holds(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Whether a drained hold or an unreadable drained disposition names
+    /// `wallet`'s transition `st_hash` (schema 12); an error while the
+    /// journal is not open or cannot be read. On the blocking pool.
+    pub(crate) async fn shielded_drain_names(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_drain_names(&wallet.0, &st_hash))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// The shielded artifact of `wallet`'s spend `activity` (schema 11),
     /// archived or not; an error while the journal is not open or cannot
     /// be read. On the blocking pool.

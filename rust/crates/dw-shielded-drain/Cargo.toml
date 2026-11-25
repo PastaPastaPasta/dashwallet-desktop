@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# `test_support`: a fork-written store for other crates' tests. Never enabled
+# by the app.
+test-support = []
+
 [dependencies]
 # The dispatch journal the drained holds and the drain's marker go to.
 dw-appdb = { workspace = true }

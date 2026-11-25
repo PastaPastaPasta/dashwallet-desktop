@@ -211,6 +211,22 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     ) -> Result<bool, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
+    /// The notes `wallet`'s drained fork dispositions hold (schema 12), by
+    /// account: those not read spent yet. An error in a journal that keeps
+    /// none, so no reader takes "none" from a journal that can't tell.
+    fn shielded_drained_holds(&self, _wallet: &[u8; 32]) -> Result<Vec<(u32, [u8; 32])>, String> {
+        Err("this journal keeps no drained holds".into())
+    }
+    /// Whether a drained hold or an unreadable drained disposition names
+    /// `wallet`'s transition `st_hash` (schema 12): never re-sent. An error
+    /// in a journal that keeps none.
+    fn shielded_drain_names(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+    ) -> Result<bool, String> {
+        Err("this journal keeps no drained holds".into())
+    }
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included.
     fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
@@ -436,6 +452,15 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         nullifiers: &[[u8; 32]],
     ) -> Result<Vec<[u8; 32]>, String> {
         (self.note_spent_nullifiers(wallet, nullifiers)).map_err(|e| e.to_string())
+    }
+
+    fn shielded_drained_holds(&self, wallet: &[u8; 32]) -> Result<Vec<(u32, [u8; 32])>, String> {
+        self.shielded_drained_holds(wallet)
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_drain_names(&self, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool, String> {
+        (self.shielded_drain_names(wallet, st_hash)).map_err(|e| e.to_string())
     }
 
     fn record_shielded_artifact(

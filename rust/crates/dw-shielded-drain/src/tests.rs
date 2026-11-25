@@ -19,46 +19,7 @@ use super::*;
 
 const W: [u8; 32] = [0xa1; 32];
 
-const FORK_PENDING: &str = "CREATE TABLE shielded_pending_spends (
-    wallet_id     BLOB    NOT NULL,
-    account_index INTEGER NOT NULL,
-    activity_id   BLOB    NOT NULL,
-    anchor        BLOB    NOT NULL,
-    nullifiers    BLOB    NOT NULL,
-    st_bytes      BLOB    NOT NULL,
-    attempts      INTEGER NOT NULL DEFAULT 0,
-    identity_nonce_finalized INTEGER NOT NULL DEFAULT 0,
-    identity_user_abandoned INTEGER NOT NULL DEFAULT 0,
-    unsent        INTEGER NOT NULL DEFAULT 0,
-    armed_recording INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (wallet_id, account_index, activity_id)
-)";
-
-const FORK_DISPOSITIONS: &str = "CREATE TABLE shielded_spend_dispositions (
-    wallet_id     BLOB    NOT NULL
-        CHECK (typeof(wallet_id) = 'blob' AND length(wallet_id) = 32),
-    account_index INTEGER NOT NULL
-        CHECK (typeof(account_index) = 'integer'
-               AND account_index BETWEEN 0 AND 4294967295),
-    st_hash       BLOB    NOT NULL
-        CHECK (typeof(st_hash) = 'blob' AND length(st_hash) = 32),
-    activity_id   BLOB    NOT NULL
-        CHECK (typeof(activity_id) = 'blob' AND length(activity_id) = 32),
-    disposition   TEXT    NOT NULL
-        CHECK (disposition IN ('executed', 'not_executed', 'unresolved')),
-    reason        TEXT
-        CHECK ((disposition = 'executed') = (reason IS NULL)),
-    at            INTEGER NOT NULL,
-    nullifiers    BLOB    NOT NULL DEFAULT x''
-        CHECK (typeof(nullifiers) = 'blob' AND length(nullifiers) % 32 = 0
-               AND (disposition IN ('executed', 'unresolved')
-                    OR length(nullifiers) = 0)),
-    released_by_scan INTEGER NOT NULL DEFAULT 0
-        CHECK (released_by_scan IN (0, 1)),
-    PRIMARY KEY (wallet_id, account_index, st_hash)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS shielded_spend_dispositions_by_transition
-    ON shielded_spend_dispositions (wallet_id, st_hash);";
+use crate::test_support::{FORK_DISPOSITIONS, FORK_PENDING};
 
 /// The same table with every CHECK dropped (the F6 and corrupt-key cases).
 const FORK_DISPOSITIONS_UNCHECKED: &str = "CREATE TABLE shielded_spend_dispositions (

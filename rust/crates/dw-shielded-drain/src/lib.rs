@@ -34,6 +34,9 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 /// The shielded store's file in a network directory, and the name its drain
 /// marker carries in that directory's journal.
 pub const SHIELDED_STORE_FILE: &str = "shielded.sqlite";

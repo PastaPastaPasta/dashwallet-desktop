@@ -322,6 +322,7 @@ const NOT_FACADE: &[&str] = &[
     "shielded_disposition_tests.rs",
     "shielded_payout.rs",
     "shielded_pool.rs",
+    "shielded_store_drain_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
@@ -1197,6 +1198,9 @@ fn error_codes_match_the_contract() {
             ShieldedError::CoinsUnconfirmed { coins: 0 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::Failed,
+            },
         ],
         ShieldedError::code,
     );

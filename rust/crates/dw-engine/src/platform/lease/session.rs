@@ -699,19 +699,29 @@ pub(crate) type LoadedJournal = (
 /// steps. An error: the imported spends could not be read, and the
 /// session must not open (a removal or restore before they are read would
 /// change which are archived); the next open reads them.
+///
+/// Then, before the journal is loaded, the drain of a `shielded.sqlite` an
+/// earlier build wrote (Q110 110-2), beside `persister`, this start's
+/// persister open: the second value is its verdict, which upstream's
+/// shielded store waits for. With no journal there is no drain and the
+/// verdict is a refusal, so that store stays closed.
 pub(crate) async fn open_journal(
     data_dir: &Path,
     known: HashSet<[u8; 32]>,
-) -> Result<Option<LoadedJournal>, EngineError> {
+    persister: Arc<dw_store_upgrade::PersisterOpened>,
+) -> Result<(Option<LoadedJournal>, ShieldedDrainVerdict), EngineError> {
     enum Failed {
         Unavailable(dw_appdb::AppDbError),
         Unread(dw_appdb::AppDbError),
     }
+    use crate::platform::ShieldedStoreClosed;
+    let no_journal = Err(ShieldedStoreClosed::Failed);
     if let Err(e) = crate::fsutil::create_owned_file(data_dir, Path::new(DISPATCH_DB_FILE)) {
         tracing::warn!(error = %e, "could not create the dispatch journal");
-        return Ok(None);
+        return Ok((None, no_journal));
     }
     let path = data_dir.join(DISPATCH_DB_FILE);
+    let network_dir = data_dir.to_path_buf();
     let opened = tokio::task::spawn_blocking(move || {
         let journal = match DispatchJournal::open(&path, crate::events::unix_now())
             .map_err(Failed::Unavailable)?
@@ -731,29 +741,59 @@ pub(crate) async fn open_journal(
                 "imported shielded spends read"
             );
         }
+        let drained = drain_shielded_store(&network_dir, &persister, &journal);
         let (rows, steps) = journal.load().map_err(Failed::Unavailable)?;
         let calls = journal.load_calls().map_err(Failed::Unavailable)?;
-        Ok(Some((journal, rows, steps, calls)))
+        Ok(Some(((journal, rows, steps, calls), drained)))
     })
     .await;
     match opened {
-        Ok(Ok(Some((journal, rows, steps, calls)))) => Ok(Some((
-            Arc::new(journal) as Arc<dyn JournalBackend>,
-            rows,
-            steps,
-            calls,
-        ))),
-        Ok(Ok(None)) => Ok(None),
+        Ok(Ok(Some(((journal, rows, steps, calls), drained)))) => Ok((
+            Some((
+                Arc::new(journal) as Arc<dyn JournalBackend>,
+                rows,
+                steps,
+                calls,
+            )),
+            drained,
+        )),
+        Ok(Ok(None)) => Ok((None, no_journal)),
         Ok(Err(Failed::Unread(e))) => Err(EngineError::Storage(format!(
             "the imported shielded spends could not be read: {e}"
         ))),
         Ok(Err(Failed::Unavailable(e))) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            Ok(None)
+            Ok((None, no_journal))
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            Ok(None)
+            Ok((None, no_journal))
+        }
+    }
+}
+
+/// Whether upstream's shielded store may open this session: `Ok` once the
+/// drain left no fork rows in it, else why it stays closed.
+pub(crate) type ShieldedDrainVerdict = Result<(), crate::platform::ShieldedStoreClosed>;
+
+/// The drain of `network_dir`'s `shielded.sqlite` into `journal`
+/// ([`dw_shielded_drain`]), logged.
+fn drain_shielded_store(
+    network_dir: &Path,
+    opened: &dw_store_upgrade::PersisterOpened,
+    journal: &DispatchJournal,
+) -> ShieldedDrainVerdict {
+    match dw_shielded_drain::drain_fork_shielded_store(network_dir, opened, journal) {
+        Ok(outcome) => {
+            tracing::info!(?outcome, "shielded store drain");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "the shielded store drain did not finish; the shielded store stays closed"
+            );
+            Err((&e).into())
         }
     }
 }

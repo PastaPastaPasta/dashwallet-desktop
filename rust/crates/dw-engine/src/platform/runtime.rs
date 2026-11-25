@@ -147,6 +147,13 @@ pub(crate) struct PlatformRuntime {
     /// takes a hook once and does not say whether one is set.
     pub(crate) shielded_hooked:
         Mutex<std::sync::Weak<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>>,
+    /// This start's drain of the network's shielded store (Q110 110-2),
+    /// set once the session's journal open ran it: upstream's shielded
+    /// store opens only on `Ok`, and stays closed while this is unset.
+    pub(crate) shielded_drain: std::sync::OnceLock<Result<(), super::ShieldedStoreClosed>>,
+    /// The drained notes the engine holds in upstream's store, by wallet:
+    /// `(account, nullifier)` ([`super::shielded_pool::sync_drained_holds`]).
+    pub(crate) drained_held: Mutex<HashMap<[u8; 32], HashSet<(u32, [u8; 32])>>>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
@@ -512,6 +519,8 @@ impl PlatformRuntime {
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
             shielded_hooked: Mutex::new(std::sync::Weak::new()),
+            shielded_drain: std::sync::OnceLock::new(),
+            drained_held: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
