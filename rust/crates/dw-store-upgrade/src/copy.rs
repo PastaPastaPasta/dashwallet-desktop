@@ -1,10 +1,17 @@
-//! MG's store-upgrade refusal copy, verbatim (mg-store-upgrade-restore-copy.md,
-//! sha256 0eb5aec0…7158), as a model the screen renders. `{folder}` is the
-//! network directory the refusal names; "upgrade-backups" is the literal
-//! folder name (M3-UX (e)).
+//! MG's store-upgrade copy, verbatim, as a model the screen renders.
+//! `{folder}` is the network directory the screen names; "upgrade-backups"
+//! is the literal folder name (M3-UX (e)).
+//!
+//! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
+//! family, sha256 36670f48…2b30) is title + "{intro}: {detail} {unchanged}
+//! {wayOut}". The detail follows the refusal's cause; the way out follows
+//! the file's proved state, never the cause alone, and an unproved state
+//! never offers the earlier version.
+
+use std::path::Path;
 
 use crate::error::StoreUpgradeError;
-use crate::snapshot::UPGRADE_BACKUPS_DIR;
+use crate::snapshot::{STORE_FILES, UPGRADE_BACKUPS_DIR};
 
 /// One button: its catalog key and label.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,37 +20,6 @@ pub struct Button {
     pub label: &'static str,
     pub destructive: bool,
     pub default_focus: bool,
-}
-
-/// A screen's copy with its catalog keys.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScreenCopy {
-    pub title_key: &'static str,
-    pub title: &'static str,
-    pub text_key: &'static str,
-    pub text: &'static str,
-    pub buttons: Vec<Button>,
-    /// A line under the buttons: key and text.
-    pub hint: Option<(&'static str, &'static str)>,
-}
-
-impl ScreenCopy {
-    /// Title, text with `{folder}` filled in, buttons, hint: what the screen
-    /// shows.
-    pub fn render(&self, folder: &str) -> String {
-        let mut out = format!(
-            "{}\n\n{}\n",
-            self.title,
-            self.text.replace("{folder}", folder)
-        );
-        for b in &self.buttons {
-            out += &format!("[{}]", b.label);
-        }
-        if let Some((_, hint)) = self.hint {
-            out += &format!("\n{hint}");
-        }
-        out
-    }
 }
 
 const fn button(key: &'static str, label: &'static str) -> Button {
@@ -55,56 +31,395 @@ const fn button(key: &'static str, label: &'static str) -> Button {
     }
 }
 
-const CANT_OPEN_TITLE: &str = "Dash Wallet can't open this wallet data";
-const CANT_OPEN_TEXT: &str = "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed, and the wallet data saved before the upgrade is still in the upgrade-backups folder inside {folder}. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.";
-const CANT_OPEN_TEXT_WITHOUT_BACKUP: &str = "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.";
-
-/// Which refusal the can't-open screen shows for (Q78-A (j)).
+/// One catalog string: its key and English text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CantOpenCause {
-    /// A fork file with retired contact-pool rows, P9a Absent.
-    RetiredPoolWithoutP9a,
-    /// The P9a probe read Broken: every wallet is refused.
-    P9aBroken,
+pub struct Line {
+    pub key: &'static str,
+    pub text: &'static str,
 }
 
-impl CantOpenCause {
+const fn line(key: &'static str, text: &'static str) -> Line {
+    Line { key, text }
+}
+
+/// `settings.links.issuesHint`, shown under every "Report a problem".
+pub const ISSUES_HINT: Line = line(
+    "settings.links.issuesHint",
+    "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
+);
+
+const REFUSED_TITLE: Line = line(
+    "storeUpgrade.refused.title",
+    "Dash Wallet can't open this wallet data safely",
+);
+const REFUSED_INTRO: Line = line(
+    "storeUpgrade.refused.intro",
+    "This version of Dash Wallet can't safely open the wallet data in {folder}",
+);
+const REFUSED_UNCHANGED: Line = line(
+    "storeUpgrade.refused.unchanged",
+    "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+);
+
+const QUIT: Button = button("storeUpgrade.refused.quit", "Quit");
+const REPORT: Button = button("storeUpgrade.refused.report", "Report a problem");
+const RESTORE: Button = button("storeUpgrade.refused.restore", "Restore earlier data");
+
+/// The screen "Restore earlier data" opens: the R3 confirm, the only way to
+/// a restore (MG (D)).
+pub const RESTORE_BUTTON_OPENS: &str = "storeUpgrade.restore.confirm";
+
+/// Why the store was refused: picks `storeUpgrade.refused.detail.*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefusedCause {
+    /// [`StoreUpgradeError::ForkStoreUnsupported`].
+    ForkUnsupported,
+    /// [`StoreUpgradeError::ForkStoreShapeMismatch`].
+    ShapeMismatch,
+    /// [`StoreUpgradeError::UpgradeRehearsalFailed`].
+    RehearsalFailed,
+    /// [`StoreUpgradeError::PreHistoryFork`].
+    DevBuild,
+    /// [`StoreUpgradeError::SchemaTooNew`].
+    TooNew,
+    /// [`StoreUpgradeError::SchemaHistoryMismatch`].
+    HistoryMismatch,
+    /// [`StoreUpgradeError::RetiredPoolWithoutAdopter`].
+    ContactsTable,
+    /// [`StoreUpgradeError::P9aBroken`]: this build's own check failed. It
+    /// refuses every file, migrated or not, and may be a passing fault such
+    /// as a full disk (Q98 98-3), so it never sends the user back.
+    SelfCheck,
+    /// Every other error that leaves the files unchanged and is not retried.
+    Unexpected,
+}
+
+impl RefusedCause {
+    pub const ALL: [Self; 9] = [
+        Self::ForkUnsupported,
+        Self::ShapeMismatch,
+        Self::RehearsalFailed,
+        Self::DevBuild,
+        Self::TooNew,
+        Self::HistoryMismatch,
+        Self::ContactsTable,
+        Self::SelfCheck,
+        Self::Unexpected,
+    ];
+
+    /// The cause the refusal screen shows for `e`, or `None` when `e` gets
+    /// no refusal screen: a retryable [`StoreUpgradeError::Io`], a pending
+    /// restore (the restore screens own it), or an error after which the
+    /// files may have changed, where "didn't change anything" can't be said.
     pub fn of(e: &StoreUpgradeError) -> Option<Self> {
-        match e {
-            StoreUpgradeError::RetiredPoolWithoutAdopter { .. } => {
-                Some(Self::RetiredPoolWithoutP9a)
-            }
-            StoreUpgradeError::P9aBroken { .. } => Some(Self::P9aBroken),
-            _ => None,
+        use StoreUpgradeError as E;
+        if !e.file_unchanged() {
+            return None;
+        }
+        Some(match e {
+            E::ForkStoreUnsupported { .. } => Self::ForkUnsupported,
+            E::ForkStoreShapeMismatch { .. } => Self::ShapeMismatch,
+            E::UpgradeRehearsalFailed { .. } => Self::RehearsalFailed,
+            E::PreHistoryFork => Self::DevBuild,
+            E::SchemaTooNew { .. } => Self::TooNew,
+            E::SchemaHistoryMismatch { .. } => Self::HistoryMismatch,
+            E::RetiredPoolWithoutAdopter { .. } => Self::ContactsTable,
+            E::P9aBroken { .. } => Self::SelfCheck,
+            E::Io { .. } | E::RestorePending { .. } => return None,
+            _ => Self::Unexpected,
+        })
+    }
+
+    pub fn detail(self) -> Line {
+        match self {
+            Self::ForkUnsupported => line(
+                "storeUpgrade.refused.detail.forkUnsupported",
+                "it was written by a version of Dash Wallet that this one can't upgrade from.",
+            ),
+            Self::ShapeMismatch => line(
+                "storeUpgrade.refused.detail.shapeMismatch",
+                "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
+            ),
+            Self::RehearsalFailed => line(
+                "storeUpgrade.refused.detail.rehearsalFailed",
+                "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
+            ),
+            Self::DevBuild => line(
+                "storeUpgrade.refused.detail.devBuild",
+                "it was written by a development build of Dash Wallet.",
+            ),
+            Self::TooNew => line(
+                "storeUpgrade.refused.detail.tooNew",
+                "it was written by a newer version of Dash Wallet.",
+            ),
+            Self::HistoryMismatch => line(
+                "storeUpgrade.refused.detail.historyMismatch",
+                "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+            ),
+            Self::ContactsTable => line(
+                "storeUpgrade.refused.detail.contactsTable",
+                "it holds contact data that this version can't read yet.",
+            ),
+            Self::SelfCheck => line(
+                "storeUpgrade.refused.detail.selfCheck",
+                "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+            ),
+            Self::Unexpected => line(
+                "storeUpgrade.refused.detail.unexpected",
+                "it's in a state this version doesn't expect.",
+            ),
         }
     }
 }
 
-/// `storeUpgrade.cantOpen.*`, the same for both causes; the backup sentence
-/// only when a completed before-upgrade snapshot exists
-/// ([`crate::snapshot_present`]).
-pub fn cant_open(_cause: CantOpenCause, backup_present: bool) -> ScreenCopy {
-    let (text_key, text) = if backup_present {
-        ("storeUpgrade.cantOpen.text", CANT_OPEN_TEXT)
-    } else {
-        (
-            "storeUpgrade.cantOpen.textWithoutBackup",
-            CANT_OPEN_TEXT_WITHOUT_BACKUP,
+/// The before-upgrade backup, as the engine proved it: only a verified
+/// snapshot is a backup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackupState {
+    /// A completed snapshot whose files all match their sizes and sha256.
+    Verified,
+    /// A completed snapshot that fails verification, and no verified one.
+    Unverified,
+    /// No completed snapshot.
+    None,
+}
+
+/// What the engine proved about the refused file. `None` in a field means
+/// not proved, which never offers the earlier version (MG (A)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProvedState {
+    /// Refinery's `MAX(version)` is past V018: a new build migrated it, so
+    /// no earlier version opens it ([`migrated`]).
+    pub migrated: Option<bool>,
+    pub backup: Option<BackupState>,
+}
+
+/// Whether `network_dir`'s `wallet.sqlite` was migrated past the last
+/// version a fork build wrote (refinery `MAX(version)` > 18), read with
+/// `immutable=1`. `None` when that can't be proved: no file, no refinery
+/// history, a read error, or a version at or below 18 with a non-empty
+/// `-wal` or `-journal` the immutable read can't see.
+pub fn migrated(network_dir: &Path) -> Option<bool> {
+    let path = network_dir.join(STORE_FILES[0]);
+    if !path.is_file() {
+        return None;
+    }
+    let conn = crate::sql::open_immutable(&path).ok()?;
+    if !crate::sql::has_table(&conn, "refinery_schema_history").ok()? {
+        return None;
+    }
+    let max: i64 = conn
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get::<_, Option<i64>>(0),
         )
-    };
-    ScreenCopy {
-        title_key: "storeUpgrade.cantOpen.title",
-        title: CANT_OPEN_TITLE,
-        text_key,
-        text,
-        buttons: vec![button("storeUpgrade.cantOpen.quit", "Quit")],
-        hint: None,
+        .ok()??;
+    if max > crate::fork::FORK_REFINERY_MAX {
+        return Some(true);
+    }
+    let logged = ["-wal", "-journal"].iter().any(|suffix| {
+        std::fs::metadata(network_dir.join(format!("{}{suffix}", STORE_FILES[0])))
+            .is_ok_and(|m| m.len() > 0)
+    });
+    (!logged).then_some(false)
+}
+
+/// The way out the screen offers: `storeUpgrade.refused.wayOut.*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WayOut {
+    /// Not migrated: the earlier version opens it.
+    Previous,
+    /// [`RefusedCause::TooNew`] only.
+    Newer,
+    /// Migrated, backup verified.
+    Restore,
+    /// Migrated, backup unverified.
+    Unverified,
+    /// Not proved migrated, and nothing better proved.
+    Support,
+    /// Migrated, no backup or the backup not proved.
+    SupportMigrated,
+    /// [`RefusedCause::SelfCheck`] only, in every state.
+    SelfCheck,
+}
+
+impl WayOut {
+    pub const ALL: [Self; 7] = [
+        Self::Previous,
+        Self::Newer,
+        Self::Restore,
+        Self::Unverified,
+        Self::Support,
+        Self::SupportMigrated,
+        Self::SelfCheck,
+    ];
+
+    /// MG's cause → allowed ways out, by the proved state. A failed self
+    /// check gets its own way out whatever the state; `state.migrated` stays
+    /// an input so its text can split by whether the file is at this build's
+    /// schema (Q98 98-3).
+    pub fn for_cause(cause: RefusedCause, state: ProvedState) -> Self {
+        use RefusedCause as C;
+        let by_state = || match (state.migrated, state.backup) {
+            (Some(true), Some(BackupState::Verified)) => Self::Restore,
+            (Some(true), Some(BackupState::Unverified)) => Self::Unverified,
+            (Some(true), _) => Self::SupportMigrated,
+            _ => Self::Support,
+        };
+        match cause {
+            C::TooNew => Self::Newer,
+            C::SelfCheck => Self::SelfCheck,
+            C::ForkUnsupported | C::RehearsalFailed => match state.migrated {
+                Some(false) => Self::Previous,
+                Some(true) => Self::SupportMigrated,
+                None => Self::Support,
+            },
+            C::ContactsTable if state.migrated == Some(false) => Self::Previous,
+            C::ContactsTable
+            | C::ShapeMismatch
+            | C::DevBuild
+            | C::HistoryMismatch
+            | C::Unexpected => by_state(),
+        }
+    }
+
+    pub fn line(self) -> Line {
+        match self {
+            Self::Previous => line(
+                "storeUpgrade.refused.wayOut.previous",
+                "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+            ),
+            Self::Newer => line(
+                "storeUpgrade.refused.wayOut.newer",
+                "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.",
+            ),
+            Self::Restore => line(
+                "storeUpgrade.refused.wayOut.restore",
+                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+            ),
+            Self::Unverified => line(
+                "storeUpgrade.refused.wayOut.unverified",
+                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem.",
+            ),
+            Self::Support => line(
+                "storeUpgrade.refused.wayOut.support",
+                "Choose Report a problem.",
+            ),
+            Self::SupportMigrated => line(
+                "storeUpgrade.refused.wayOut.supportMigrated",
+                "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Choose Report a problem.",
+            ),
+            Self::SelfCheck => line(
+                "storeUpgrade.refused.wayOut.selfCheck",
+                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
+            ),
+        }
+    }
+
+    /// Restore earlier data (only with [`Self::Restore`]), Report a problem
+    /// (except with [`Self::Previous`] and [`Self::Newer`]), Quit always.
+    fn buttons(self) -> Vec<Button> {
+        let mut out = Vec::new();
+        if self == Self::Restore {
+            out.push(RESTORE);
+        }
+        if self.reports() {
+            out.push(REPORT);
+        }
+        out.push(QUIT);
+        out
+    }
+
+    fn reports(self) -> bool {
+        !matches!(self, Self::Previous | Self::Newer)
     }
 }
 
-/// The screen for an error from this crate, if it has one.
-pub fn screen_for(e: &StoreUpgradeError, backup_present: bool) -> Option<ScreenCopy> {
-    CantOpenCause::of(e).map(|c| cant_open(c, backup_present))
+/// The refusal screen: what it shows and the keys it shows it with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedScreen {
+    pub cause: RefusedCause,
+    pub way_out: WayOut,
+    pub title: Line,
+    pub intro: Line,
+    pub detail: Line,
+    pub unchanged: Line,
+    pub way_out_line: Line,
+    pub buttons: Vec<Button>,
+    /// `settings.links.issuesHint`, under the buttons with Report a problem.
+    pub hint: Option<Line>,
+}
+
+impl RefusedScreen {
+    pub fn new(cause: RefusedCause, state: ProvedState) -> Self {
+        let way_out = WayOut::for_cause(cause, state);
+        Self {
+            cause,
+            way_out,
+            title: REFUSED_TITLE,
+            intro: REFUSED_INTRO,
+            detail: cause.detail(),
+            unchanged: REFUSED_UNCHANGED,
+            way_out_line: way_out.line(),
+            buttons: way_out.buttons(),
+            hint: way_out.reports().then_some(ISSUES_HINT),
+        }
+    }
+
+    /// "{intro}: {detail} {unchanged} {wayOut}" with `{folder}` filled in.
+    pub fn text(&self, folder: &str) -> String {
+        format!(
+            "{}: {} {} {}",
+            self.intro.text, self.detail.text, self.unchanged.text, self.way_out_line.text
+        )
+        .replace("{folder}", folder)
+    }
+
+    /// Title, text, buttons, hint: what the screen shows.
+    pub fn render(&self, folder: &str) -> String {
+        let mut out = format!("{}\n\n{}\n", self.title.text, self.text(folder));
+        for b in &self.buttons {
+            out += &format!("[{}]", b.label);
+        }
+        if let Some(hint) = self.hint {
+            out += &format!("\n{}", hint.text);
+        }
+        out
+    }
+}
+
+/// The refusal screen for an error from this crate, if it has one
+/// ([`RefusedCause::of`]), its way out chosen by `state`. The caller proves
+/// `state`: [`migrated`] for the file, the snapshot's verification for the
+/// backup.
+pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedScreen> {
+    RefusedCause::of(e).map(|cause| RefusedScreen::new(cause, state))
+}
+
+/// `storeUpgrade.restore.foreign.*` (MG, Q93 / Q92 v2.1 copy): the live
+/// wallet fails the restore's lineage test. Copy data for the restore flow;
+/// besides Keep the screen has Report a problem (with [`ISSUES_HINT`]) and
+/// Quit, and Keep is not the default focus.
+pub mod restore_foreign {
+    use super::Line;
+
+    pub const TITLE: Line = super::line(
+        "storeUpgrade.restore.foreign.title",
+        "These wallet files don't match the restore",
+    );
+    pub const TEXT: Line = super::line(
+        "storeUpgrade.restore.foreign.text",
+        "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.",
+    );
+    pub const KEEP: Line = super::line(
+        "storeUpgrade.restore.foreign.keep",
+        "Keep the current files",
+    );
+    pub const KEEP_MEANING: Line = super::line(
+        "storeUpgrade.restore.foreign.keepMeaning",
+        "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.",
+    );
 }
 
 /// The folder name the copy names: the one the snapshot is written under.

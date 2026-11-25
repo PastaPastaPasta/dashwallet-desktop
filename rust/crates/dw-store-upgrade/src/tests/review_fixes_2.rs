@@ -174,7 +174,7 @@ fn a_machine_fault_in_the_rehearsal_is_retryable_not_a_refusal() {
         "{err:?}"
     );
     assert!(!err.is_refusal());
-    assert!(crate::copy::screen_for(&err, true).is_none());
+    assert!(crate::copy::screen_for(&err, crate::copy::ProvedState::default()).is_none());
     assert_eq!(tree(&f.root), before);
     assert!(matches!(checked(&f).unwrap(), Precheck::Fork { .. }));
 }

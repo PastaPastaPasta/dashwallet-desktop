@@ -1,6 +1,7 @@
 //! Tests over copies of the released fixtures (testdata/upgrade/*, never
 //! edited), each in its own 0700 temp directory.
 
+mod copy_table;
 mod crash;
 mod fixtures;
 mod meta;

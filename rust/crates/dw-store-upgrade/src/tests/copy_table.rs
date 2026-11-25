@@ -1,0 +1,673 @@
+//! MG's final refusal copy (`storeUpgrade.refused.*`): every cause × every
+//! proved state gives an allowed way out with its text assembled exactly,
+//! "previous" only for a file proved not migrated (MG (A), (E)), and every
+//! cause, made by the engine on a real fixture, leaves the data root
+//! byte-identical (MG (B)).
+
+use std::collections::BTreeSet;
+
+use super::*;
+use crate::copy::{
+    BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut, migrated, screen_for,
+};
+use crate::error::StoreUpgradeError;
+use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
+
+const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
+
+/// MG's strings, verbatim from the final copy.
+const TITLE: &str = "Dash Wallet can't open this wallet data safely";
+const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
+const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
+const EARLIER: &str =
+    "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded.";
+const L9: &str = "If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.";
+
+fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
+    use RefusedCause::*;
+    match cause {
+        ForkUnsupported => (
+            "forkUnsupported",
+            "it was written by a version of Dash Wallet that this one can't upgrade from.",
+        ),
+        ShapeMismatch => (
+            "shapeMismatch",
+            "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
+        ),
+        RehearsalFailed => (
+            "rehearsalFailed",
+            "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
+        ),
+        DevBuild => (
+            "devBuild",
+            "it was written by a development build of Dash Wallet.",
+        ),
+        TooNew => (
+            "tooNew",
+            "it was written by a newer version of Dash Wallet.",
+        ),
+        HistoryMismatch => (
+            "historyMismatch",
+            "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+        ),
+        ContactsTable => (
+            "contactsTable",
+            "it holds contact data that this version can't read yet.",
+        ),
+        SelfCheck => (
+            "selfCheck",
+            "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+        ),
+        Unexpected => ("unexpected", "it's in a state this version doesn't expect."),
+    }
+}
+
+fn way_out(w: WayOut) -> (&'static str, String) {
+    match w {
+        WayOut::Previous => (
+            "previous",
+            format!(
+                "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. {L9}"
+            ),
+        ),
+        WayOut::Newer => (
+            "newer",
+            "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.".into(),
+        ),
+        WayOut::Restore => (
+            "restore",
+            format!(
+                "{EARLIER} To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem."
+            ),
+        ),
+        WayOut::Unverified => (
+            "unverified",
+            format!(
+                "{EARLIER} A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem."
+            ),
+        ),
+        WayOut::Support => ("support", "Choose Report a problem.".into()),
+        WayOut::SupportMigrated => (
+            "supportMigrated",
+            format!("{EARLIER} Choose Report a problem."),
+        ),
+        WayOut::SelfCheck => (
+            "selfCheck",
+            "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.".into(),
+        ),
+    }
+}
+
+/// MG's cause → allowed ways out. A cause whose table entry is `previous`
+/// alone also allows `support` / `supportMigrated` for a state not proved
+/// unmigrated (MG (A)). A failed self check has its own way out in every
+/// state (Q98 98-3).
+fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
+    use RefusedCause::*;
+    use WayOut::*;
+    match cause {
+        ForkUnsupported | RehearsalFailed => [Previous, Support, SupportMigrated].into(),
+        ShapeMismatch | DevBuild | HistoryMismatch | Unexpected => {
+            [Restore, Unverified, Support, SupportMigrated].into()
+        }
+        TooNew => [Newer].into(),
+        ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
+        RefusedCause::SelfCheck => [WayOut::SelfCheck].into(),
+    }
+}
+
+fn states() -> Vec<ProvedState> {
+    let mut out = Vec::new();
+    for migrated in [Some(false), Some(true), None] {
+        for backup in [
+            Some(BackupState::Verified),
+            Some(BackupState::Unverified),
+            Some(BackupState::None),
+            None,
+        ] {
+            out.push(ProvedState { migrated, backup });
+        }
+    }
+    out
+}
+
+fn labels(s: &RefusedScreen) -> Vec<(&'static str, &'static str)> {
+    s.buttons.iter().map(|b| (b.key, b.label)).collect()
+}
+
+#[test]
+fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
+    let mut reached: BTreeSet<(RefusedCause, WayOut)> = BTreeSet::new();
+    for cause in RefusedCause::ALL {
+        for state in states() {
+            let s = RefusedScreen::new(cause, state);
+            let w = s.way_out;
+            let at = format!("{cause:?} {state:?} -> {w:?}");
+            assert!(allowed(cause).contains(&w), "{at}");
+            reached.insert((cause, w));
+
+            match w {
+                WayOut::Previous => assert_eq!(state.migrated, Some(false), "{at}"),
+                WayOut::Newer => assert_eq!(cause, RefusedCause::TooNew, "{at}"),
+                WayOut::Restore => assert_eq!(
+                    (state.migrated, state.backup),
+                    (Some(true), Some(BackupState::Verified)),
+                    "{at}"
+                ),
+                WayOut::Unverified => assert_eq!(
+                    (state.migrated, state.backup),
+                    (Some(true), Some(BackupState::Unverified)),
+                    "{at}"
+                ),
+                WayOut::SupportMigrated => assert_eq!(state.migrated, Some(true), "{at}"),
+                WayOut::Support => assert_ne!(state.migrated, Some(true), "{at}"),
+                WayOut::SelfCheck => assert_eq!(cause, RefusedCause::SelfCheck, "{at}"),
+            }
+            if allowed(cause).contains(&WayOut::Previous) && state.migrated == Some(false) {
+                assert_eq!(w, WayOut::Previous, "{at}: the earlier version opens it");
+            }
+            if allowed(cause).contains(&WayOut::Restore)
+                && state.migrated == Some(true)
+                && state.backup == Some(BackupState::Verified)
+            {
+                assert_eq!(w, WayOut::Restore, "{at}");
+            }
+
+            let (detail_key, detail_text) = detail(cause);
+            let (way_key, way_text) = way_out(w);
+            assert_eq!(s.title.key, "storeUpgrade.refused.title");
+            assert_eq!(s.intro.key, "storeUpgrade.refused.intro");
+            assert_eq!(s.unchanged.key, "storeUpgrade.refused.unchanged");
+            assert_eq!(
+                s.detail.key,
+                format!("storeUpgrade.refused.detail.{detail_key}")
+            );
+            assert_eq!(
+                s.way_out_line.key,
+                format!("storeUpgrade.refused.wayOut.{way_key}")
+            );
+            let text = format!("{INTRO}: {detail_text} {UNCHANGED} {way_text}")
+                .replace("{folder}", FOLDER);
+            assert_eq!(s.text(FOLDER), text, "{at}");
+
+            let reports = !matches!(w, WayOut::Previous | WayOut::Newer);
+            let mut want = Vec::new();
+            if w == WayOut::Restore {
+                want.push(("storeUpgrade.refused.restore", "Restore earlier data"));
+            }
+            if reports {
+                want.push(("storeUpgrade.refused.report", "Report a problem"));
+            }
+            want.push(("storeUpgrade.refused.quit", "Quit"));
+            assert_eq!(labels(&s), want, "{at}");
+            assert!(s.buttons.iter().all(|b| !b.destructive), "{at}");
+            assert_eq!(
+                s.hint.map(|h| (h.key, h.text)),
+                reports.then_some(("settings.links.issuesHint", HINT)),
+                "{at}"
+            );
+
+            let mut shown = format!("{TITLE}\n\n{text}\n");
+            for (_, label) in &want {
+                shown += &format!("[{label}]");
+            }
+            if reports {
+                shown += &format!("\n{HINT}");
+            }
+            assert_eq!(s.render(FOLDER), shown, "{at}");
+            assert!(!shown.contains("{folder}"));
+            assert!(!shown.contains("held on the network"));
+        }
+    }
+    let every: BTreeSet<(RefusedCause, WayOut)> = RefusedCause::ALL
+        .into_iter()
+        .flat_map(|c| allowed(c).into_iter().map(move |w| (c, w)))
+        .collect();
+    assert_eq!(reached, every, "every allowed way out is reachable");
+}
+
+#[test]
+fn previous_carries_the_l9_sentence_verbatim() {
+    assert!(WayOut::Previous.line().text.ends_with(L9));
+    for w in WayOut::ALL {
+        if w != WayOut::Previous {
+            assert!(
+                !w.line()
+                    .text
+                    .contains("version of Dash Wallet you used before")
+            );
+        }
+    }
+}
+
+#[test]
+fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
+    use RefusedCause::*;
+    use StoreUpgradeError as E;
+    let cases: Vec<(E, Option<RefusedCause>)> = vec![
+        (
+            E::ForkStoreUnsupported {
+                versions: [1, 6].into(),
+            },
+            Some(ForkUnsupported),
+        ),
+        (
+            E::ForkStoreShapeMismatch { object: "x".into() },
+            Some(ShapeMismatch),
+        ),
+        (
+            E::UpgradeRehearsalFailed { detail: "x".into() },
+            Some(RehearsalFailed),
+        ),
+        (E::PreHistoryFork, Some(DevBuild)),
+        (
+            E::SchemaTooNew {
+                found: 99,
+                supported: 22,
+            },
+            Some(TooNew),
+        ),
+        (
+            E::SchemaHistoryMismatch {
+                version: 1,
+                detail: "x".into(),
+            },
+            Some(HistoryMismatch),
+        ),
+        (
+            E::RetiredPoolWithoutAdopter { rows: 1 },
+            Some(ContactsTable),
+        ),
+        (E::P9aBroken { detail: "x".into() }, Some(SelfCheck)),
+        (
+            E::NonStrictOpen {
+                policy: "Recovery".into(),
+            },
+            Some(Unexpected),
+        ),
+        (E::ProbeNotRun, Some(Unexpected)),
+        (
+            E::OpenConfigUnsupported { detail: "x".into() },
+            Some(Unexpected),
+        ),
+        (
+            E::Io {
+                context: "x",
+                unchanged: true,
+                source: std::io::Error::other("disk full"),
+            },
+            None,
+        ),
+        (
+            E::Io {
+                context: "x",
+                unchanged: false,
+                source: std::io::Error::other("x"),
+            },
+            None,
+        ),
+        (
+            E::RestorePending {
+                dir: PathBuf::from("x"),
+            },
+            None,
+        ),
+        (
+            E::Sqlite {
+                context: "x",
+                unchanged: false,
+                source: rusqlite::Error::InvalidQuery,
+            },
+            None,
+        ),
+    ];
+    for (e, want) in cases {
+        assert_eq!(RefusedCause::of(&e), want, "{e:?}");
+        assert_eq!(
+            screen_for(&e, ProvedState::default()).map(|s| s.cause),
+            want,
+            "{e:?}"
+        );
+        if want.is_some() {
+            assert!(e.file_unchanged(), "{e:?}");
+        }
+    }
+}
+
+/// The refusal from the checks, the locked check when asked.
+fn precheck_refusal(f: &Fixture, adopters: &crate::adopters::Adopters) -> StoreUpgradeError {
+    let mut found = precheck_with(&f.net, adopters).unwrap();
+    if matches!(found, Precheck::NeedsLockedCheck) {
+        found = precheck_locked_with(&f.net, adopters).unwrap();
+    }
+    match found {
+        Precheck::Refuse { reason } => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// `make` refuses on `f`; the data root is byte-identical across the refusal
+/// and the screen's state reads, and the screen is `want`'s.
+fn shows_unchanged(
+    f: &Fixture,
+    want: RefusedCause,
+    make: impl FnOnce(&Fixture) -> StoreUpgradeError,
+) -> RefusedScreen {
+    let before = tree(&f.root);
+    let err = make(f);
+    let state = ProvedState {
+        migrated: migrated(&f.net),
+        backup: Some(if crate::snapshot::snapshot_present(&f.net).unwrap() {
+            BackupState::Verified
+        } else {
+            BackupState::None
+        }),
+    };
+    let screen = screen_for(&err, state).unwrap_or_else(|| panic!("no screen for {err:?}"));
+    assert_eq!(screen.cause, want, "{err:?}");
+    assert!(err.file_unchanged(), "{err:?}");
+    assert_eq!(
+        tree_diff(&tree(&f.root), &before),
+        Vec::<String>::new(),
+        "{want:?} changed the data root"
+    );
+    screen
+}
+
+#[test]
+fn every_cause_leaves_the_data_root_byte_identical() {
+    use crate::adopters::P9aStatus;
+    use RefusedCause::*;
+    let mut seen = BTreeSet::new();
+    let mut check = |version: &str,
+                     sql: &str,
+                     want: RefusedCause,
+                     make: &dyn Fn(&Fixture) -> StoreUpgradeError| {
+        let f = fixture(version);
+        if !sql.is_empty() {
+            exec(&f.wallet(), sql);
+        }
+        let s = shows_unchanged(&f, want, make);
+        if allowed(want).contains(&WayOut::Previous) {
+            assert_eq!(s.way_out, WayOut::Previous, "{want:?}: a released file");
+        }
+        seen.insert(want);
+    };
+    let pre = |f: &Fixture| precheck_refusal(f, build());
+    check(
+        "v0.1.0",
+        "INSERT INTO dw_fork_schema_history VALUES (6, 'later', 'x', '1')",
+        ForkUnsupported,
+        &pre,
+    );
+    check(
+        "v0.1.0",
+        "ALTER TABLE core_address_pool_retired ADD COLUMN extra INTEGER",
+        ShapeMismatch,
+        &pre,
+    );
+    check(
+        "v0.1.0",
+        "INSERT INTO core_transactions (wallet_id, txid, finalized, record_blob) \
+         SELECT wallet_id, randomblob(32), 0, x'00' FROM wallets LIMIT 1",
+        RehearsalFailed,
+        &pre,
+    );
+    check(
+        "v0.1.0",
+        "DROP TABLE dw_fork_schema_history; \
+         INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
+         VALUES (19, 'dashpay_external_rotation', 'x', '1')",
+        DevBuild,
+        &pre,
+    );
+    check(
+        "v0.1.0",
+        "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
+         VALUES (99, 'future', 'x', '1')",
+        TooNew,
+        &pre,
+    );
+    check(
+        "v0.1.0",
+        "UPDATE refinery_schema_history SET checksum = '1' WHERE version = 1",
+        HistoryMismatch,
+        &pre,
+    );
+    check(
+        "v0.3.0",
+        "INSERT INTO core_address_pool_retired (wallet_id, account_type, account_index, \
+           account_xpub, pool_type, address_index, script, used) \
+         SELECT wallet_id, 'dashpay_external', 0, x'0488b21e', 2, 0, \
+           x'76a914' || randomblob(20) || x'88ac', 1 FROM wallets LIMIT 1",
+        ContactsTable,
+        &|f| precheck_refusal(f, &build().with_p9a(P9aStatus::Absent)),
+    );
+    check("v0.3.0", "", SelfCheck, &|f| {
+        let broken = build().with_p9a(P9aStatus::Broken {
+            detail: "test".into(),
+        });
+        precheck_refusal(f, &broken)
+    });
+    check("v0.1.0", "", SelfCheck, &|f| {
+        crate::token::PROBE_FOR_OPEN.with(|p| {
+            *p.borrow_mut() = Some(Some(P9aStatus::Broken {
+                detail: "test".into(),
+            }))
+        });
+        let result = PersisterOpened::open(config(&f.net));
+        crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
+        result.err().expect("refused on a Broken probe")
+    });
+    check("v0.1.0", "", Unexpected, &|f| {
+        PersisterOpened::open(config(&f.net).with_load_policy(LoadPolicy::Recovery))
+            .err()
+            .expect("Recovery is refused")
+    });
+    check("v0.1.0", "", Unexpected, &|f| {
+        crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = Some(None));
+        let result = PersisterOpened::open(config(&f.net));
+        crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
+        result.err().expect("refused without the probe")
+    });
+    assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
+}
+
+#[test]
+fn a_migrated_file_never_offers_the_earlier_version() {
+    let f = fixture("v0.1.0");
+    assert_eq!(migrated(&f.net), Some(false));
+    let snapshot = crate::prepare_with(&f.net, build(), now())
+        .unwrap()
+        .snapshot
+        .unwrap();
+    crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
+    drop(open_and_load(&f.net));
+    assert_eq!(migrated(&f.net), Some(true));
+    exec(
+        &f.wallet(),
+        "UPDATE refinery_schema_history SET checksum = '1' WHERE version = 1",
+    );
+    let s = shows_unchanged(&f, RefusedCause::HistoryMismatch, |f| {
+        precheck_refusal(f, build())
+    });
+    assert_eq!(s.way_out, WayOut::Restore, "migrated, backup verified");
+    assert!(
+        !s.text(FOLDER)
+            .contains("version of Dash Wallet you used before")
+    );
+
+    let contacts = RefusedScreen::new(
+        RefusedCause::ContactsTable,
+        ProvedState {
+            migrated: migrated(&f.net),
+            backup: Some(BackupState::None),
+        },
+    );
+    assert_eq!(contacts.way_out, WayOut::SupportMigrated);
+
+    let broken = build().with_p9a(crate::adopters::P9aStatus::Broken {
+        detail: "test".into(),
+    });
+    let s = shows_unchanged(&f, RefusedCause::SelfCheck, |f| {
+        precheck_refusal(f, &broken)
+    });
+    assert_eq!(
+        s.way_out,
+        WayOut::SelfCheck,
+        "a migrated file, Broken probe"
+    );
+}
+
+#[test]
+fn a_failed_self_check_never_offers_the_earlier_version() {
+    let e = StoreUpgradeError::P9aBroken {
+        detail: "disk full".into(),
+    };
+    for state in states() {
+        let s = screen_for(&e, state).unwrap();
+        assert_eq!(s.cause, RefusedCause::SelfCheck, "{state:?}");
+        assert_eq!(s.way_out, WayOut::SelfCheck, "{state:?}");
+        assert!(
+            !s.text(FOLDER)
+                .contains("version of Dash Wallet you used before")
+        );
+        assert_eq!(
+            labels(&s),
+            [
+                ("storeUpgrade.refused.report", "Report a problem"),
+                ("storeUpgrade.refused.quit", "Quit"),
+            ]
+        );
+        assert_eq!(s.hint.map(|h| h.key), Some("settings.links.issuesHint"));
+    }
+}
+
+/// One value of every [`StoreUpgradeError`] variant. [`variant`] matches
+/// with no wildcard arm, so a new variant fails to compile until it is
+/// listed here (Q98 98-2).
+fn every_variant() -> Vec<StoreUpgradeError> {
+    use StoreUpgradeError as E;
+    vec![
+        E::ForkStoreUnsupported {
+            versions: [1, 6].into(),
+        },
+        E::ForkStoreShapeMismatch { object: "x".into() },
+        E::RetiredPoolWithoutAdopter { rows: 1 },
+        E::P9aBroken { detail: "x".into() },
+        E::UpgradeRehearsalFailed { detail: "x".into() },
+        E::PreHistoryFork,
+        E::SchemaTooNew {
+            found: 99,
+            supported: 22,
+        },
+        E::SchemaHistoryMismatch {
+            version: 1,
+            detail: "x".into(),
+        },
+        E::SnapshotInvalid {
+            dir: PathBuf::from("x"),
+            detail: "x".into(),
+        },
+        E::SnapshotFailed { detail: "x".into() },
+        E::RestorePending {
+            dir: PathBuf::from("x"),
+        },
+        E::StoreHeld {
+            path: PathBuf::from("x"),
+        },
+        E::NonStrictOpen {
+            policy: "Recovery".into(),
+        },
+        E::OpenConfigUnsupported { detail: "x".into() },
+        E::ProbeNotRun,
+        E::PersisterOpen {
+            dir: PathBuf::from("x"),
+            source: Box::new(platform_wallet_storage::WalletStorageError::AlreadyOpen {
+                path: PathBuf::from("x"),
+            }),
+        },
+        E::Sqlite {
+            context: "x",
+            unchanged: true,
+            source: rusqlite::Error::InvalidQuery,
+        },
+        E::Io {
+            context: "x",
+            unchanged: true,
+            source: std::io::Error::other("disk full"),
+        },
+        E::InjectedFault("x"),
+    ]
+}
+
+fn variant(e: &StoreUpgradeError) -> &'static str {
+    use StoreUpgradeError as E;
+    match e {
+        E::ForkStoreUnsupported { .. } => "ForkStoreUnsupported",
+        E::ForkStoreShapeMismatch { .. } => "ForkStoreShapeMismatch",
+        E::RetiredPoolWithoutAdopter { .. } => "RetiredPoolWithoutAdopter",
+        E::P9aBroken { .. } => "P9aBroken",
+        E::UpgradeRehearsalFailed { .. } => "UpgradeRehearsalFailed",
+        E::PreHistoryFork => "PreHistoryFork",
+        E::SchemaTooNew { .. } => "SchemaTooNew",
+        E::SchemaHistoryMismatch { .. } => "SchemaHistoryMismatch",
+        E::SnapshotInvalid { .. } => "SnapshotInvalid",
+        E::SnapshotFailed { .. } => "SnapshotFailed",
+        E::RestorePending { .. } => "RestorePending",
+        E::StoreHeld { .. } => "StoreHeld",
+        E::NonStrictOpen { .. } => "NonStrictOpen",
+        E::OpenConfigUnsupported { .. } => "OpenConfigUnsupported",
+        E::ProbeNotRun => "ProbeNotRun",
+        E::PersisterOpen { .. } => "PersisterOpen",
+        E::Sqlite { .. } => "Sqlite",
+        E::Io { .. } => "Io",
+        E::InjectedFault(_) => "InjectedFault",
+    }
+}
+
+#[test]
+fn every_refusal_variant_has_a_screen() {
+    let all = every_variant();
+    let names: BTreeSet<&str> = all.iter().map(variant).collect();
+    assert_eq!(names.len(), all.len(), "each variant listed once");
+    assert_eq!(names.len(), 19, "every variant in `variant` is listed");
+    let mut refusals = 0;
+    for e in &all {
+        if e.is_refusal() {
+            refusals += 1;
+            let s = screen_for(e, ProvedState::default())
+                .unwrap_or_else(|| panic!("{} is a refusal with no screen", variant(e)));
+            assert_ne!(s.cause, RefusedCause::Unexpected, "{}", variant(e));
+            assert_ne!(
+                s.way_out,
+                WayOut::Previous,
+                "{}: unproved state",
+                variant(e)
+            );
+        }
+    }
+    assert_eq!(refusals, 8);
+    let io = all
+        .iter()
+        .find(|e| matches!(e, StoreUpgradeError::Io { .. }))
+        .unwrap();
+    assert!(!io.is_refusal());
+    assert!(screen_for(io, ProvedState::default()).is_none());
+}
+
+#[test]
+fn migrated_is_unproved_without_a_readable_history_or_with_a_hidden_log() {
+    let empty = private_tempdir();
+    assert_eq!(migrated(empty.path()), None, "no wallet.sqlite");
+    let f = fixture("v0.1.0");
+    exec(&f.wallet(), "PRAGMA wal_checkpoint(TRUNCATE)");
+    super::review_fixes::hot_wal(&f, "UPDATE core_utxos SET spent = spent");
+    let before = tree(&f.root);
+    assert_eq!(migrated(&f.net), None, "a log the immutable read can't see");
+    assert_eq!(tree(&f.root), before);
+    let g = fixture("v0.1.0");
+    exec(&g.wallet(), "DROP TABLE refinery_schema_history");
+    assert_eq!(migrated(&g.net), None);
+}
