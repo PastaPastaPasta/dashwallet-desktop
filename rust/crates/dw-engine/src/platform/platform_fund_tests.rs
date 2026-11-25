@@ -3110,7 +3110,7 @@ fn a_first_resume_after_a_held_bring_up_waits_for_its_rerun() {
 
 /// #585 (Q63c): a "Check again" waiting on the rerun holds the session's
 /// close preflight and gate, as a Finish does: an in-app close meanwhile is
-/// refused and the grant stays unused. The session's own close ends the
+/// refused as preparing and the grant stays unused. The session's own close ends the
 /// wait at once, and the press is refused before it takes a lease.
 #[test]
 fn a_resume_waiting_on_the_rerun_refuses_a_close_and_ends_with_the_session() {
@@ -3138,12 +3138,7 @@ fn a_resume_waiting_on_the_rerun_refuses_a_close_and_ends_with_the_session() {
         |_| None::<()>,
     ));
     assert!(
-        matches!(
-            closed,
-            Err(crate::CloseRefused::Engine(
-                crate::EngineError::ShieldedSpendUnresolved
-            ))
-        ),
+        matches!(closed, Err(crate::CloseRefused::Preparing)),
         "{closed:?}"
     );
     assert!(fx.unused(&g), "the grant is unused");

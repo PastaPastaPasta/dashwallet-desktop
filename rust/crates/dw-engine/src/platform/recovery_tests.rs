@@ -3034,16 +3034,11 @@ fn a_switch_while_a_finish_waits_on_a_rerun_is_refused_as_preparing() {
             max_credits: 0,
         },
     );
-    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let txid = tracked_fund_lock(&engine, &s, id);
     let network = s.network().clone();
     let dp = s.dashpay(id);
-    let (finished, refused) = engine.block_on(async {
-        let finish = dp.finish_transfer(
-            super::LockKindId::PlatformAddress,
-            zero.into(),
-            0,
-            g.clone(),
-        );
+    let both = engine.block_on(async {
+        let finish = dp.finish_transfer(super::LockKindId::PlatformAddress, txid, 0, g.clone());
         let switching = async {
             while !pause.reached.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3055,17 +3050,27 @@ fn a_switch_while_a_finish_waits_on_a_rerun_is_refused_as_preparing() {
             pause.release.notify_one();
             refused
         };
-        tokio::join!(finish, switching)
+        tokio::time::timeout(Duration::from_secs(60), async {
+            tokio::join!(finish, switching)
+        })
+        .await
     });
+    let (finished, refused) =
+        both.expect("the Finish waits on the rerun and the switch is answered");
     assert!(
         matches!(refused, Err(crate::CloseRefused::Preparing)),
         "{refused:?}"
     );
     assert!(s.is_open());
+    // Past the hold, the fund lock is found and, offline, not applied.
     assert!(
-        matches!(&finished, Err(PlatformError::InvalidArgument { detail }) if detail.contains("no tracked lock")),
+        !matches!(
+            finished,
+            Ok(super::LockFinish::Applied) | Err(PlatformError::InvalidArgument { .. })
+        ),
         "{finished:?}"
     );
+    assert_eq!(startup(&s, id), StartupStatus::NoIdentity);
     assert!(!s.platform.preparing());
     engine.block_on(engine.shutdown()).unwrap();
 }
