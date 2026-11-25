@@ -64,7 +64,7 @@ grep <file name> SHA256SUMS | shasum -a 256 -c  # macOS, one file
 `--ignore-missing` skips the downloads you did not fetch. The `continuous` release has its own `SHA256SUMS`, which
 lists its `DashWallet-continuous-…` names.
 
-Signed stable releases (1.0 and later) also publish a detached armored PGP signature,
+Signed releases (1.0 and later, and release candidates signed the same way) also publish a detached armored PGP signature,
 `SHA256SUMS.asc`, which is attested alongside `SHA256SUMS`. Import the release public key named in the release
 notes, confirm its full 40-character primary key fingerprint matches the release notes, and verify
 `SHA256SUMS.asc` before checking file hashes:
@@ -123,8 +123,9 @@ Get-AuthenticodeSignature .\dash-wallet-<version>-windows-x64-setup.exe |
 
 `Status` must be `Valid`.
 
-**Keyless candidates and `main` builds:** pre-1.0 release candidates (`-rc.N`), per-build `main`
-releases, and `continuous` are unsigned (`Status: NotSigned`). On first launch, Windows SmartScreen shows
+**Keyless candidates and `main` builds:** release candidates (`-rc.N`) published keyless (every pre-1.0
+candidate, and any candidate without `SHA256SUMS.asc`), per-build `main` releases, and `continuous` are unsigned
+(`Status: NotSigned`). On first launch, Windows SmartScreen shows
 "Windows protected your PC"; click **More info** ▸ **Run anyway** to install (see the release notes' Install
 section).
 
@@ -164,8 +165,10 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
 - **Tagged releases** (`vX.Y.Z` and `vX.Y.Z-rc.N`) are made by the same workflow from the tag. Final 1.0+
   releases are full releases and ship signed (PGP `SHA256SUMS.asc`, macOS Developer ID + notarization,
   Windows Authenticode, plus GitHub build attestations) once detached signatures are attached (enforced by
-  default — stable tags fail closed). Release candidates (`-rc.N`), `main` builds, and `continuous` are prereleases
-  and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release notes and README for the
-  first-launch warnings).
+  default — stable tags fail closed). Release candidates (`-rc.N`) are prereleases; they ship
+  keyless by default, or signed the same way (without an update feed) when the repository opts them in
+  (`docs/release/RC-SIGNING.md`); a signed candidate has `SHA256SUMS.asc`. `main` builds and `continuous` are
+  prereleases and ship keyless: ad-hoc signed on macOS and unsigned on Windows (see the release notes and README for
+  the first-launch warnings).
 
 A branch or pull-request build is only a CI artifact on its Actions run and is never attested or published.
