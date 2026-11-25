@@ -3215,6 +3215,21 @@ fn abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spen
     );
 }
 
+/// Waits for wallet.sqlite to hold `outpoint` spent or unspent: key-wallet's
+/// changes reach the store through the persister's own event task, so a row
+/// read right after an event can still be the one before it.
+fn wait_stored_spent(
+    session: &NetworkSession,
+    id: WalletId,
+    outpoint: OutPoint,
+    spent: bool,
+    what: &str,
+) {
+    eventually(what, || {
+        stored_row(session, id, outpoint).map(|r| r.0) == Some(spent)
+    });
+}
+
 /// What wallet.sqlite holds for `outpoint` of `id`: whether it is spent,
 /// and whether it is a sweep's placeholder claim. The store keys a coin by
 /// its outpoint in bincode varint: the txid's length, the txid, then the
@@ -5858,11 +5873,7 @@ fn a_lock_arriving_after_the_funding_block_leaves_the_coin_spent() {
         "the lock claims A"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
-    assert_eq!(
-        stored_row(&session, id, a).map(|r| r.0),
-        Some(true),
-        "A is stored spent"
-    );
+    wait_stored_spent(&session, id, a, true, "A is stored spent");
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
@@ -6541,11 +6552,7 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         held(&engine, &session, id).contains(&c),
         "nothing claims C again"
     );
-    assert_eq!(
-        stored_row(&session, id, c).map(|r| r.0),
-        Some(false),
-        "C is stored unspent"
-    );
+    wait_stored_spent(&session, id, c, false, "C is stored unspent");
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
     assert!(
