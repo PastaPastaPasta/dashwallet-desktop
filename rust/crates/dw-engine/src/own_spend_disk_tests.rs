@@ -1729,6 +1729,7 @@ fn a_block_scanned_under_its_applied_chainlock_leaves_no_observed_spend() {
     let a = OutPoint::new(t.paid.txid(), 0);
     let manager = Arc::clone(&t.session.live().unwrap().manager);
     let (processed, a_held) = t.engine.block_on(async move {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
