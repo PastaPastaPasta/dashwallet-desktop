@@ -3036,15 +3036,20 @@ fn a_close_does_not_wait_for_a_protocol_read_in_flight() {
         s.rt.spawn(async move { session.refresh_protocol_version().await })
     };
     wait_until("the read", || read.reached.load(Ordering::SeqCst));
-    let closed =
-        engine.block_on(async { tokio::time::timeout(Duration::from_secs(20), s.close()).await });
+    let deadline = Duration::from_secs(20);
+    let (closed, refreshed) = engine.block_on(async {
+        tokio::join!(
+            tokio::time::timeout(deadline, s.close()),
+            tokio::time::timeout(deadline, refresh),
+        )
+    });
+    read.release.notify_one();
     assert!(closed.is_ok(), "the close waited for the read");
-    let refreshed = engine.block_on(refresh).unwrap();
+    let refreshed = refreshed.expect("the close did not end the read").unwrap();
     assert!(
         matches!(refreshed, Err(PlatformError::NetworkNotOpen)),
         "{refreshed:?}"
     );
-    read.release.notify_one();
     engine.block_on(engine.shutdown()).unwrap();
 }
 
