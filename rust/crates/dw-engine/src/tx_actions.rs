@@ -1353,7 +1353,7 @@ struct DropPlan {
 /// the winner is a block's spend the wallet does not know
 /// ([`unknown_block`]), the header chain's hash at that block's height and
 /// the coins of the roots key-wallet held as spent there.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct Recheck {
     truncations: u64,
     block: Option<BlockHash>,
@@ -2294,12 +2294,18 @@ impl NetworkSession {
                     tracing::warn!(%wallet, error = %e, "could not drop transactions that can never confirm")
                 }
                 again |= out.regrouped;
-                if let Some(r) = recheck.filter(|r| !out.retry.is_empty() && r.tries < RECHECKS) {
-                    let r = Recheck {
-                        tries: r.tries + 1,
-                        ..r
-                    };
-                    work.push_back((out.retry, winner, BTreeSet::new(), Some(r)));
+                match recheck.filter(|_| !out.retry.is_empty()) {
+                    Some(r) if r.tries < RECHECKS => {
+                        let r = Recheck {
+                            tries: r.tries + 1,
+                            ..r
+                        };
+                        work.push_back((out.retry, winner, BTreeSet::new(), Some(r)));
+                    }
+                    Some(_) => {
+                        tracing::warn!(%wallet, roots = ?out.retry, ?winner, "beaten payments not dropped: their recheck could not finish")
+                    }
+                    None => {}
                 }
             }
             if !again {
@@ -2483,7 +2489,8 @@ impl NetworkSession {
                             groups.entry(*w).or_default().push(*t);
                             continue;
                         }
-                        let spent = match r.truncations == truncations && !recorded(t) {
+                        let bound = r.block.is_some() && r.truncations == truncations;
+                        let spent = match bound && !recorded(t) {
                             true => spend_forgotten_as_final(&h.txs, core, t, winner, r),
                             false => BTreeMap::new(),
                         };

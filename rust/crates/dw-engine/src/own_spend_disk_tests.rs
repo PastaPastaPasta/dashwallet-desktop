@@ -1726,7 +1726,12 @@ fn a_beaten_payment_stays_when_a_heard_fork_takes_its_winner_though_the_headers_
     let chain = [(TIP + 1, block_hash(&block)), (TIP + 2, block_hash(&next))];
     header_chain(&t.session, &chain);
     let pause = t.mine_and_hold(&block);
+    let heard = t.session.hub.truncations();
     t.truncate(TIP);
+    assert!(
+        t.session.hub.truncations() > heard,
+        "the hub heard the fork"
+    );
     mined(&t.engine, &t.session, t.id, TIP + 1, vec![t.winner.clone()]);
     mined(&t.engine, &t.session, t.id, TIP + 2, next.to_vec());
     chain_lock(&t.engine, &t.session, t.id, TIP + 2, block_hash(&next));
