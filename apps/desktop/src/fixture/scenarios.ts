@@ -1635,6 +1635,13 @@ const SCENARIOS = {
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
     return w;
   },
+  /** The same while the wallet's Platform-address pass failed: the bar says Platform did not finish. */
+  "dashpay-identity-unsettled-addresses-failed": (t) => {
+    const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    w.dashpay.addresses = "failed";
+    return w;
+  },
   /** The bring-up could not finish its discovery. */
   "dashpay-look-failed": (t) => withStatus(base(t), { kind: "startupIncomplete", startup: "discoveryFailed" }),
   // DP6-03: Tools ▸ Information's DashPay card. `dashpay-registered` is its degraded mode (the
