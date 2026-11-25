@@ -3341,7 +3341,15 @@ impl ShieldedLib for PwShielded {
         let public = (signer
             .derive_public_keys(create.index, &super::keys_policy::registration_specs()))
         .await
-        .map_err(|_| SpendError::Lease(LeaseError::Vault("registration keys")))?;
+        .map_err(|e| match e {
+            // As `shielded_keys` reads a locked vault: the row parks for
+            // authority, not failed.
+            crate::EngineError::Signer(dw_vault::SignerError::Locked) => {
+                permit.signatures().note_locked();
+                SpendError::Lease(LeaseError::Locked)
+            }
+            _ => SpendError::Lease(LeaseError::Vault("registration keys")),
+        })?;
         let public_keys = (public.into_values())
             .map(|key| {
                 let in_creation = IdentityPublicKeyInCreation::from(&key);
