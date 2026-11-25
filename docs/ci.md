@@ -237,6 +237,40 @@ deep-link and Swift jobs delete the preinstalled .NET, Android, GHC and CodeQL t
 (`ci/github/linux-free-disk.sh`). `Rust tests (Linux)` does not: its runner starts with about 90 GB free and
 ends a cold run with 71 GB free and a 16 GB `rust/target`; its last step reports the disk use.
 
+## Funds review gate (`funds-gate.yml`)
+
+A pull request that changes a funds path merges only with two records for its **exact head commit**: a
+funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
+`ci/funds-paths.txt` (send, coin selection and control, fees, keys and the vault, backup and restore, CoinJoin,
+Platform credits, asset locks, top-ups, withdrawals, shielded, transfers and unfinished locks, masternode
+collateral and payouts, the app.sqlite hold and barrier records, the bridges that carry these to the UI, the
+renderer's amount and send logic, the dependency pins, and the gate itself). Check a branch with
+`git diff --name-only origin/main... | ci/github/funds-gate.py match`.
+
+A record is an HTML comment in a pull request comment by the repository's owner, a member or a collaborator
+(bots never count):
+
+    <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
+    <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
+
+Reviewer lanes post one with `ci/github/funds-gate.py record --repo PastaPastaPasta/dashwallet-desktop --pr <N>
+--sha <head they reviewed> --kind funds|review --verdict approve|block --model <their model> [--note-file F]`.
+It refuses when the head has moved since the review, and refuses any model but Opus (`claude-opus-…`); Sonnet
+is never a reviewer. Rules:
+
+- Only records naming the current head count. Any push, a merge of main included, makes the old ones stale.
+- For each kind, the latest record at the head wins: `verdict=block` withdraws an earlier approve.
+- A pull request that changes no funds path passes with no records.
+- If the API truncates the file list, the gate treats the pull request as funds.
+
+`funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review), on a pull
+request comment that adds, edits or deletes a record, and on a dispatch (`gh workflow run funds-gate.yml -f
+pr=<N>`). It posts the commit status **Funds review gate** on the head: success or failure. It runs the
+gate from the default branch, never from the pull request, and checks out no pull request code. The PO's
+drain script runs the same `funds-gate.py check --sha <head>` from origin/main before every merge and
+refuses on anything but a pass. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
+pattern in `ci/funds-paths.txt` still matches a tracked file.
+
 ## UI tests (U-07)
 
 The renderer is tested in a browser against the **fixture backend** (`apps/desktop/src/fixture/`): Tauri's

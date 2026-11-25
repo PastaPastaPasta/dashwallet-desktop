@@ -1,0 +1,57 @@
+# Funds review gate (docs/ci.md, "Funds review gate").
+#
+# Posts the commit status "Funds review gate" on a pull request's head commit: success when the pull
+# request changes no file in ci/funds-paths.txt, or when its comments carry a funds-reviewer verdict and
+# an Opus review, both approving that exact head (ci/github/funds-gate.py). It runs again on every push
+# and on every comment that adds, edits or deletes a record, so a push after a verdict turns the status
+# red until the new head is reviewed.
+#
+# pull_request_target and issue_comment run this file and the gate script from the default branch, never
+# the pull request's copy, so a pull request cannot loosen its own gate. No pull request code is checked
+# out or run. The PO's drain script runs the same script from origin/main before every merge.
+name: Funds review gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: funds-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Evaluate the funds review gate
+    if: >-
+      ${{ github.event_name != 'issue_comment' || (github.event.issue.pull_request &&
+      (contains(github.event.comment.body, 'dwd-review') || contains(github.event.changes.body.from, 'dwd-review'))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: ci
+      - name: Check the records and post the status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+        run: |
+          set +e
+          python3 ci/github/funds-gate.py check --repo "$GITHUB_REPOSITORY" --pr "$PR" --status
+          rc=$?
+          # 1 is a refusal, already posted as the failing status; only an error (2) fails this job.
+          [[ $rc -le 1 ]]

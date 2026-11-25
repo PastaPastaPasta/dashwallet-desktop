@@ -1,0 +1,120 @@
+# Funds paths: a pull request that changes any of these files merges only with a funds-reviewer
+# verdict and an Opus review, both recorded for its exact head commit (docs/ci.md, "Funds review gate").
+# The gate (ci/github/funds-gate.py), the PO's drain script and people all read this one file.
+#
+# Syntax: one glob per line, relative to the repository root. `*` matches within one path segment,
+# `**` matches across segments, `?` matches one character. A line starting with `!` takes matching
+# files back out. The last line that matches a file decides. `#` starts a comment line.
+# Check a change locally: git diff --name-only origin/main... | ci/github/funds-gate.py match
+
+# The gate itself.
+ci/funds-paths.txt
+ci/github/funds-gate.py
+.github/workflows/funds-gate.yml
+
+# Dependency pins: key-wallet, dash-spv, platform-wallet and the SDK sign, select coins and keep UTXOs.
+rust/Cargo.toml
+rust/Cargo.lock
+rust/crates/dw-engine/Cargo.toml
+rust/crates/dw-vault/Cargo.toml
+
+# Keys, seeds, signing, transaction building.
+rust/crates/dw-vault/**
+rust/crates/dw-compat/**
+rust/crates/dw-psbt/**
+rust/crates/dw-protx/**
+rust/crates/dw-coinjoin/**
+rust/crates/dw-units/**
+rust/crates/dw-uri/**
+
+# Engine: send, coin selection and control, fees, keys, backup, restore, CoinJoin, wallet lifecycle.
+rust/crates/dw-engine/src/send/**
+rust/crates/dw-engine/src/coins.rs
+rust/crates/dw-engine/src/fees.rs
+rust/crates/dw-engine/src/keys.rs
+rust/crates/dw-engine/src/masternode_keys.rs
+rust/crates/dw-engine/src/receive.rs
+rust/crates/dw-engine/src/backup*.rs
+rust/crates/dw-engine/src/restore*.rs
+rust/crates/dw-engine/src/replay_record.rs
+rust/crates/dw-engine/src/coinjoin*.rs
+rust/crates/dw-engine/src/mix_shield_test.rs
+rust/crates/dw-engine/src/tx_actions.rs
+rust/crates/dw-engine/src/store.rs
+rust/crates/dw-engine/src/wallets.rs
+rust/crates/dw-engine/src/wallet_read.rs
+rust/crates/dw-engine/src/wallet_gone_tests.rs
+rust/crates/dw-engine/src/multiwallet.rs
+rust/crates/dw-engine/src/compat.rs
+rust/crates/dw-engine/src/gate.rs
+rust/crates/dw-engine/src/held_writes.rs
+rust/crates/dw-engine/src/crash_send_tests.rs
+rust/crates/dw-engine/src/own_spend_*.rs
+rust/crates/dw-engine/src/dismissed_spend_*.rs
+rust/crates/dw-engine/src/dropped_claim_*.rs
+rust/crates/dw-engine/src/signed_coin_pin_*.rs
+rust/crates/dw-engine/src/removed_payment_way_out_*.rs
+rust/crates/dw-engine/src/kill9/**
+rust/crates/dw-engine/src/*kill9*.rs
+
+# Engine: Platform credits, asset locks, top-ups, withdrawals, shielded, transfers, unfinished locks,
+# registration, invitations, recovery. Profile, avatar, contact-list and notification code is not.
+rust/crates/dw-engine/src/platform/**
+!rust/crates/dw-engine/src/platform/avatar**
+!rust/crates/dw-engine/src/platform/banner*
+!rust/crates/dw-engine/src/platform/profile*
+!rust/crates/dw-engine/src/platform/contact_names.rs
+!rust/crates/dw-engine/src/platform/contacts**
+!rust/crates/dw-engine/src/platform/notifications*
+!rust/crates/dw-engine/src/platform/users*
+!rust/crates/dw-engine/src/platform/contest_watch*
+
+# Engine: masternode collateral, ProTx, payouts, credit withdrawals, shared masternodes; proposal collateral.
+rust/crates/dw-engine/src/masternodes/**
+rust/crates/dw-engine/src/governance/collateral*
+
+# app.sqlite records of holds, barriers, withdrawals, registrations and shared-masternode sessions.
+rust/crates/dw-appdb/**
+!rust/crates/dw-appdb/src/avatar.rs
+!rust/crates/dw-appdb/src/proposals.rs
+
+# Bridges that carry sends, keys, backups and Platform money to the UI (Tauri commands, Swift FFI).
+rust/crates/dw-app/src/api/send.rs
+rust/crates/dw-app/src/api/send/**
+rust/crates/dw-app/src/api/vault.rs
+rust/crates/dw-app/src/api/backup.rs
+rust/crates/dw-app/src/api/coinjoin.rs
+rust/crates/dw-app/src/api/wallets.rs
+rust/crates/dw-app/src/api/units.rs
+rust/crates/dw-app/src/api/masternodes.rs
+rust/crates/dw-app/src/api/identity.rs
+rust/crates/dw-app/src/api/identity/**
+rust/crates/dw-app/src/api/social/payments.rs
+rust/crates/dw-ffi/src/api/send*.rs
+rust/crates/dw-ffi/src/api/psbt.rs
+rust/crates/dw-ffi/src/api/vault*.rs
+rust/crates/dw-ffi/src/api/coins.rs
+rust/crates/dw-ffi/src/api/fees.rs
+rust/crates/dw-ffi/src/api/backup.rs
+rust/crates/dw-ffi/src/api/coinjoin.rs
+rust/crates/dw-ffi/src/api/compat.rs
+rust/crates/dw-ffi/src/api/masternode_keys.rs
+rust/crates/dw-ffi/src/api/multiwallet.rs
+rust/crates/dw-ffi/src/api/wallet.rs
+rust/crates/dw-ffi/src/api/tx_actions.rs
+rust/crates/dw-ffi/src/api/units.rs
+rust/crates/dw-ffi/src/api/uri.rs
+
+# Renderer logic that turns what the user typed into amounts and send requests.
+apps/desktop/src/format/amount*
+apps/desktop/src/format/feeWarning*
+apps/desktop/src/api/send*
+apps/desktop/src/api/lockGate*
+apps/desktop/src/api/pending*
+apps/desktop/src/shielded/**
+apps/desktop/src/transfer/**
+apps/desktop/src/recovery/**
+
+# Swift app: send and PSBT.
+Sources/WalletFeatures/Send/**
+Sources/WalletFeatures/PSBT/**
