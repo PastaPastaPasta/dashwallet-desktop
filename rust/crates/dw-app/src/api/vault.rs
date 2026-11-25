@@ -1173,9 +1173,14 @@ commands! {
 
     /// A fresh BIP39 phrase of 12, 15, 18, 21 or 24 words. Nothing is
     /// stored: the UI shows it, checks the user wrote it down (QT-103,
-    /// IOS-004) and passes it to `importWallet`.
+    /// IOS-004) and passes it to `importWallet`. `restore_only` while the
+    /// open network's RESTORED mark is set: a new wallet waits for it to
+    /// clear.
     #[facade("dw_vault::mnemonic::generate")]
     fn generate_mnemonic(state, word_count: u8, language: MnemonicLanguageName) -> String {
+        if let Ok(session) = state.session().await {
+            dw_engine::store_upgrade::refuse_while_restored(session.data_dir())?;
+        }
         generated_phrase(word_count, language.into())
     }
 

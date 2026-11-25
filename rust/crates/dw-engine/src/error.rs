@@ -193,11 +193,37 @@ pub enum EngineError {
     /// and its reservations (platform-wallet has no detach at the pin).
     #[error("a shielded payment is still being confirmed; wait, or quit and reopen the app")]
     ShieldedSpendUnresolved,
+    /// The user's removal of a wallet that holds a shielded spend whose
+    /// result is not known (Q86 Q-PURGE C2): the removal would delete the
+    /// spend's record and its notes' hold. Nothing was removed. Code
+    /// `shielded_spend_unresolved`, with why it holds.
+    #[error(
+        "a shielded payment from this wallet may still be going through; nothing was removed ({0:?})"
+    )]
+    ShieldedSpendHeld(ShieldedHold),
     /// `set_load_on_startup` would leave no wallet on the load-on-startup
     /// list: with no wallet open the app starts in onboarding, where closed
     /// wallets cannot be reached.
     #[error("at least one wallet opens at start")]
     LastStartupWallet,
+    /// The network's wallet data is a restore not yet cleared (its RESTORED
+    /// mark, Q107 C1): until its first full sync a wallet is added only from
+    /// its recovery phrase, so a new wallet, a file or key import and a
+    /// watch-only wallet are refused, nothing changed.
+    #[error("the wallet data is a restore not yet synced; add a wallet from its recovery phrase")]
+    RestoreOnly,
+}
+
+/// Why a wallet's removal is refused ([`EngineError::ShieldedSpendHeld`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedHold {
+    /// A spend the library stored, or reserved notes for, may still be going
+    /// through: the hold clears once it resolves.
+    InFlight,
+    /// A spend this build did not make or cannot read: a DEC-1057 marker, a
+    /// fork-era hold, or a marker, journal, outcome or store that does not
+    /// read. A confirmation alone does not clear it.
+    CarriedOver,
 }
 
 impl EngineError {
@@ -254,8 +280,11 @@ impl EngineError {
             EngineError::Masternode(_) => "masternode",
             EngineError::StuckFunding(_) => "stuck_funding",
             EngineError::Contact(_) => "contact",
-            EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
+            EngineError::ShieldedSpendUnresolved | EngineError::ShieldedSpendHeld(_) => {
+                "shielded_spend_unresolved"
+            }
             EngineError::LastStartupWallet => "last_startup_wallet",
+            EngineError::RestoreOnly => "restore_only",
         }
     }
 }

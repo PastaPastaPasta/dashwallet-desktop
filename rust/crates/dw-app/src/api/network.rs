@@ -488,6 +488,25 @@ commands! {
         let engines = state.engine.clone();
         Ok(engines.wait().await?.cancel_restore(&network).await?)
     }
+
+    /// The refused open's way back to the funds (Q107 C1): the window's
+    /// network starts over in a new, empty folder beside its own, with the
+    /// restore's RESTORED mark, so the wallet set up there from its recovery
+    /// phrase stays held until its first full sync. Nothing in the refused
+    /// folder changes. The next start opens the new folder; the renderer
+    /// restarts the app after this (`restart_app`). `invalid_argument`
+    /// unless the network's last open was refused by the store-upgrade
+    /// check as damaged, and while it is open.
+    #[facade("Engine::recover_in_fresh_folder")]
+    fn recover_in_fresh_folder(state) -> () {
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
+        let _slot = state.session_slot().await;
+        let network = state.window_network();
+        let dir = engine.recover_in_fresh_folder(network.clone()).await?;
+        eprintln!("dw-app: {} starts over in {}", network.dir_name(), dir.display());
+        Ok(())
+    }
 }
 
 /// The network a restore command names; `null`: the window's.

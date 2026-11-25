@@ -46,6 +46,7 @@ mod mempool_sync_tests;
 mod multiwallet;
 mod network;
 pub mod network_choice;
+mod network_folders;
 pub mod platform;
 mod pump;
 pub mod rates;
@@ -97,7 +98,7 @@ pub use compat::{
 };
 pub use dw_appdb::BookPurpose;
 pub use engine::{CloseRefused, Engine, EngineConfig};
-pub use error::{EngineError, TASK_PANICKED, engine_poisoned};
+pub use error::{EngineError, ShieldedHold, TASK_PANICKED, engine_poisoned};
 pub use events::{EngineEvent, EventSink, NoticeCode, PlatformChange};
 pub use fees::{
     CoinSelectionSummary, FEE_TARGETS, FeePolicy, FeeSource, FeeTarget, MAX_BROADCAST_RATE_PER_KB,

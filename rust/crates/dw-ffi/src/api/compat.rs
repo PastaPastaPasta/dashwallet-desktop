@@ -228,7 +228,7 @@ impl From<dw_engine::EngineError> for CompatError {
                 Self::GrantInvalid
             }
             E::Vault(V::NoSecret) => Self::WatchOnly,
-            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) => {
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) | E::RestoreOnly => {
                 Self::InvalidArgument { detail }
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },

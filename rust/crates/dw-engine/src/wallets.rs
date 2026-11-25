@@ -215,7 +215,11 @@ impl NetworkSession {
     /// Removes a wallet: unloads it, deletes its wallet-state rows, its app
     /// metadata and finally its vault records (IOS-109, QT-101). Needs a
     /// `Wipe` grant, redeemed after the wallet is found. Refused (`Storage`)
-    /// before anything changes while the dispatch journal is unavailable.
+    /// before anything changes while the dispatch journal is unavailable,
+    /// and (`ShieldedSpendHeld`) while the wallet holds a shielded spend
+    /// whose result is not known, as Close Wallet is refused, or has one
+    /// stored in a shielded store not opened this session
+    /// (`shielded_pool::removal_hold`).
     ///
     /// Deleting the vault records needs a full-scope data key: the vault's,
     /// or the grant's own key when it was issued with the passphrase on a
@@ -263,6 +267,20 @@ impl NetworkSession {
                 this.vault
                     .check_grant(&grant_id, GrantKind::Wipe, Some(&id.0))?;
             }
+            // A shielded call of the wallet in flight ends first and none
+            // starts until the removal is done, as for Close Wallet: none
+            // stores a spend after the check below.
+            let _shielded = crate::platform::shielded_pool::wallet_lock(&this, id)
+                .lock_owned()
+                .await;
+            // Q86 Q-PURGE C2: a wallet holding a shielded spend whose result
+            // is not known is not removed, as the removal would delete the
+            // spend's record and its notes' hold; refused before anything of
+            // it changes, and checked again below.
+            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, id);
+            if let Some(hold) = held.await {
+                return Err(EngineError::ShieldedSpendHeld(hold));
+            }
             // E0-04 §8.6: the wallet's leases end and its permits drain
             // before anything of it goes.
             let _barrier = this.revoke_wallet(id, RevokeCause::WalletRemoved).await;
@@ -289,17 +307,21 @@ impl NetworkSession {
             // is done: none may keep its master key, or apply what it finds,
             // past the removal (review DP1-05 r1 M3).
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
+            // Again before the seed goes, now that its leases drained: a hold
+            // that came up meanwhile keeps the seed. The leases come back.
+            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, id);
+            if let Some(hold) = held.await {
+                this.spawn_ensure_background();
+                return Err(EngineError::ShieldedSpendHeld(hold));
+            }
             // DEC-134: the vault records first; their failure fails the
             // removal closed, before anything else of the wallet goes.
             let vault = this.vault.clone();
             tokio::task::spawn_blocking(move || vault.wipe_wallet_secret(&id.0, &token)).await??;
+            // Its gate once more, fail closed (`ShieldedSpendUnresolved`,
+            // the seed gone: removing it again finishes the removal).
             (this.platform)
-                .remove_from_manager(
-                    &this.leases,
-                    &live.manager,
-                    id,
-                    crate::platform::runtime::StoredSpends::Purge,
-                )
+                .remove_from_manager(&this.leases, &live.manager, id)
                 .await?;
             this.hub.forget_wallet(&id);
             this.coin_fences.forget(&id);

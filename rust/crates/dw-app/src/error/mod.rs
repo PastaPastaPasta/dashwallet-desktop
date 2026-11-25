@@ -219,6 +219,27 @@ pub enum CloseRefusalReason {
     ShieldedSpendUnresolved,
 }
 
+/// Why a wallet's removal is refused ([`ErrorData::ShieldedHold`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedHoldReason {
+    /// A shielded payment of the wallet may still be going through; the
+    /// hold clears once it resolves.
+    InFlight,
+    /// A shielded payment from an earlier build, or a record that does not
+    /// read: a confirmation alone does not clear it.
+    CarriedOver,
+}
+
+impl From<dw_engine::ShieldedHold> for ShieldedHoldReason {
+    fn from(h: dw_engine::ShieldedHold) -> Self {
+        match h {
+            dw_engine::ShieldedHold::InFlight => Self::InFlight,
+            dw_engine::ShieldedHold::CarriedOver => Self::CarriedOver,
+        }
+    }
+}
+
 /// Why the data folder is not private ([`ErrorData::NotPrivate`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -286,6 +307,9 @@ pub enum ErrorData {
     /// `wallet` or `shielded_spend_unresolved` from `switch_network`: the
     /// network's close refused itself. Nothing changed.
     NetworkCloseRefused { reason: CloseRefusalReason },
+    /// `shielded_spend_unresolved` from `remove_wallet`: why the wallet
+    /// holds a shielded payment. Nothing was removed.
+    ShieldedHold { reason: ShieldedHoldReason },
     /// `app.network_switch_failed`: the network that did not open, and
     /// whether the window is back on the one it left.
     NetworkSwitch {
@@ -513,7 +537,9 @@ pub enum ErrorData {
     /// `storage_refused`: the open's store-upgrade check refused the
     /// network's wallet data and changed nothing in it. `screen` is the
     /// store upgrade's own screen with `{folder}` filled in; `folder` is the
-    /// network directory; `cause` names the refusal for tests and logs only.
+    /// network directory; `cause` names the refusal, for tests and logs, and
+    /// for a way out the screen doesn't carry yet (the renderer's
+    /// `LOCAL_WAYS_OUT`).
     StoreRefused {
         screen: Box<StoreScreen>,
         folder: String,

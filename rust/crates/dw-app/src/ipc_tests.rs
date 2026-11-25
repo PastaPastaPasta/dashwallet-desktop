@@ -355,6 +355,17 @@ fn engine_and_session_commands_over_ipc() {
 }
 
 #[test]
+fn recover_in_fresh_folder_reaches_the_engine_only_after_a_refused_open() {
+    let demo = Demo::new();
+    let root = demo.app.state::<crate::state::AppState>().data_root.clone();
+    demo.err("recover_in_fresh_folder", json!({}), "invalid_argument");
+    demo.open();
+    demo.err("recover_in_fresh_folder", json!({}), "invalid_argument");
+    assert!(!root.join("network-folders.json").exists());
+    assert!(!root.join("regtest-recovered-1").exists());
+}
+
+#[test]
 fn a_missing_argument_is_tauris_refusal() {
     let demo = Demo::new();
     // A string, not an AppError.
@@ -2881,6 +2892,71 @@ fn the_open_network_carries_the_store_upgrade_notice() {
     let notice = json!({ "key": line.key, "text": line.text });
     assert_eq!(demo.open()["notice"], notice);
     assert_eq!(demo.ok("open_network", json!({}))["notice"], notice);
+}
+
+/// Q107 C1: while the network's RESTORED mark is set a wallet is added only
+/// from its recovery phrase. `create_wallet`, the desktop's new-wallet phrase
+/// (`generate_mnemonic`), a backup-file restore, key material and a
+/// watch-only wallet are refused with `restore_only`, nothing added; the
+/// phrase restore works.
+/// With the mark removed (here directly, not by the clear rule) both come
+/// back.
+#[test]
+fn a_restored_network_adds_a_wallet_only_from_its_phrase() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let first = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let file = demo.data_root().join("first.dwbackup");
+    demo.ok(
+        "backup_wallet",
+        json!({ "walletId": first, "destPath": file, "backupPassphrase": null }),
+    );
+    let restore_file = json!({ "path": file, "passphrase": "pw" });
+    let generate = json!({ "wordCount": 12, "language": "english" });
+    let key_material = json!({
+        "material": { "kind": "hdSeed", "seedHex": "01" },
+        "options": { "name": null, "birthHeight": 0, "coreCompat": false, "lookahead": null },
+    });
+    let watch_only = json!({
+        "xpub": "xpub",
+        "options": { "name": null, "birthHeight": null, "lookahead": null },
+    });
+    let count = || demo.ok("list_wallets", json!({})).as_array().unwrap().len();
+    let backups = demo.data_root().join("regtest").join("upgrade-backups");
+    let mark = backups.join("RESTORED");
+    std::fs::create_dir_all(&backups).unwrap();
+    std::fs::write(&mark, b"dw-store-upgrade restored\nformat 1\n").unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], true);
+
+    demo.err("create_wallet", json!({ "wordCount": 12 }), "restore_only");
+    demo.err("generate_mnemonic", generate.clone(), "restore_only");
+    demo.err("restore_backup", restore_file.clone(), "restore_only");
+    demo.err("import_key_material", key_material.clone(), "restore_only");
+    demo.err("import_watch_only", watch_only.clone(), "restore_only");
+    assert_eq!(count(), 1, "nothing added while the mark is set");
+    demo.ok(
+        "import_wallet",
+        json!({
+            "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            "bip39Passphrase": null,
+            "options": { "name": null, "birthHeight": 0, "coreCompat": false, "lookahead": null },
+        }),
+    );
+    assert_eq!(count(), 2, "the phrase restore is the way in");
+    assert!(mark.exists(), "nothing here clears the mark");
+
+    std::fs::remove_file(&mark).unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], false);
+    demo.ok("generate_mnemonic", generate);
+    demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    assert_eq!(count(), 3, "a new wallet once the mark is gone");
+    demo.err("restore_backup", restore_file, "backup.already_exists");
+    assert_ne!(
+        demo.call("import_key_material", key_material).unwrap_err()["code"],
+        "restore_only"
+    );
+    demo.err("import_watch_only", watch_only, "invalid_xpub");
 }
 
 /// `restored` follows the network's RESTORED mark at each `openNetwork` and
