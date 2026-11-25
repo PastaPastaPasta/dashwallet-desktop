@@ -6027,3 +6027,76 @@ fn abandoning_stops_the_spv_client_sending_it() {
     assert_eq!(dropped, 1);
     assert!(stopped(next.txid()), "the removed payment");
 }
+
+/// A payment whose asset lock the wallet still tracks, broadcast and
+/// waiting for its proof, is neither abandoned nor stopped, in Activity or
+/// by Remove unconfirmed transactions: the catch-up resumes the lock and
+/// sends it again, which would lift the stop. Its spend stays live.
+#[test]
+fn a_tracked_asset_locks_funding_is_neither_abandoned_nor_stopped() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let coins = [0, 1].map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+    let funding = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &funding);
+    wait_stored(&session, id, &[funding.txid()]);
+    start_spv(&engine, &session);
+    let txid = funding.txid();
+    let row = platform_wallet::TrackedAssetLock {
+        out_point: OutPoint::new(txid, 0),
+        transaction: funding.clone(),
+        account_index: 0,
+        funding_type: platform_wallet::AssetLockFundingType::IdentityTopUp,
+        identity_index: 0,
+        amount: COIN,
+        status: platform_wallet::AssetLockStatus::Broadcast,
+        proof: None,
+    };
+    let s = Arc::clone(&session);
+    (engine.block_on(session.on_runtime(async move {
+        let w = s.wallet(&id).await?;
+        w.state_mut()
+            .await
+            .tracked_asset_locks
+            .insert(row.out_point, row);
+        Ok(())
+    })))
+    .unwrap();
+    let stopped = || {
+        let manager = session.manager().unwrap();
+        engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await })
+    };
+    let kept = || {
+        assert!(!stopped(), "stopped");
+        assert!(!engine.block_on(session.abandon_marked(id, txid)), "marked");
+        assert!(
+            (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+            "abandoned"
+        );
+    };
+
+    let exits = engine.block_on(session.activity_exits(id, txid, true, 1));
+    let refused =
+        crate::tx_actions::ActivityRefusal::Tx(crate::tx_actions::TxActionRefusal::PlatformFunding);
+    assert_eq!(exits.unwrap().unwrap().abandon, Some(refused), "offered");
+    let abandon = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(
+            abandon,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::PlatformFunding
+            ))
+        ),
+        "{abandon:?}"
+    );
+    kept();
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    kept();
+}

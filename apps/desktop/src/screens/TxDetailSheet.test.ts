@@ -92,6 +92,12 @@ describe("a refused abandon", () => {
     );
   });
 
+  it("says why a payment funding an unfinished Platform transfer can't be abandoned, from the catalog", () => {
+    expect(actionProblem(refused("platformFunding", "engine text"))).toBe(
+      "This transaction can't be abandoned because it pays for a Platform transfer, credit top-up or username registration that hasn't finished.",
+    );
+  });
+
   it("names the wallet whose saved transaction doesn't read, and what to do, from the catalog", () => {
     const unreadable = { ...refused("recordUnreadable", "engine text"), data: { kind: "txAction", refusal: "recordUnreadable", walletId: WALLET_A } };
     const savings = summary(WALLET_A, "Savings");

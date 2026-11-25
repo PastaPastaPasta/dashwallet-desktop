@@ -61,6 +61,10 @@ pub enum TxActionRefusal {
     /// restart clears it once the record reads; a record that never does
     /// stays until that wallet is removed and restored.
     RecordUnreadable(WalletId),
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer, top-up or registration whose asset lock is still tracked:
+    /// the catch-up resumes it, sending it again.
+    PlatformFunding,
 }
 
 impl TxActionRefusal {
@@ -882,6 +886,8 @@ struct Facts {
     /// An Abandon of it committed its mark (its sweep may not be stored
     /// yet): never resent.
     abandon_marked: bool,
+    /// Its asset lock is tracked ([`TxActionRefusal::PlatformFunding`]).
+    platform_funding: bool,
 }
 
 /// Abandons `root`, then each of `descendants` key-wallet's own walk did
@@ -1509,6 +1515,7 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>, proof: &ChainProof) -> Facts {
             }),
         matures_in: status.matures_in,
         abandon_marked: false,
+        platform_funding: false,
     }
 }
 
@@ -1527,6 +1534,8 @@ impl Facts {
             Some(TxActionRefusal::SettledDescendant)
         } else if self.coinbase {
             Some(TxActionRefusal::Coinbase)
+        } else if self.platform_funding {
+            Some(TxActionRefusal::PlatformFunding)
         } else {
             None
         }
@@ -1638,6 +1647,12 @@ impl NetworkSession {
             })
             .await?
             .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))?;
+        if offer {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            f.platform_funding = (wm.get_wallet_info(&wallet.0))
+                .is_some_and(|i| i.tracked_asset_locks.keys().any(|o| o.txid == txid));
+        }
         // The exception's evidence on the inputs, as the abandon checks it:
         // not offered when it would refuse as locked.
         if offer && !f.instant_locked && f.abandon_refusal().is_none() {
@@ -1938,6 +1953,14 @@ impl NetworkSession {
                 &info.core_wallet,
                 &settled,
             )?;
+            // A drop's are dead, and a resume's send of one is refused.
+            if dead_drop.is_none()
+                && (info.tracked_asset_locks.keys()).any(|o| planned.contains(&o.txid))
+            {
+                return Err(EngineError::TxActionRefused(
+                    TxActionRefusal::PlatformFunding,
+                ));
+            }
             // What key-wallet abandons and the history has not heard of is
             // marked, and its coins released, from key-wallet's copy in this
             // wallet's own accounts.
@@ -1991,8 +2014,8 @@ impl NetworkSession {
                 .collect();
             // Before the marks, under the gate a resend's hand-off holds: no
             // marked transaction this wallet sent is sent again by
-            // dash-spv's rebroadcast timer. One this abandon then fails is rebroadcast again only
-            // after a resend of it lifts the stop.
+            // dash-spv's rebroadcast timer. One this abandon then fails is
+            // rebroadcast again only after a resend of it lifts the stop.
             for t in self.sent_by(wallet, &planned, &info.core_wallet).await {
                 self.stop_rebroadcast(manager, wallet, t).await;
             }
@@ -3491,6 +3514,7 @@ mod tests {
             inputs_unresolved: false,
             matures_in: None,
             abandon_marked: false,
+            platform_funding: false,
         }
     }
 

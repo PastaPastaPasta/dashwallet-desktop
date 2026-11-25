@@ -581,6 +581,9 @@ pub enum TxActionRefusalName {
     /// A saved transaction of the loaded wallet `walletId` names didn't
     /// read at its load, so what descends from this one is unknown.
     RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which Dash Wallet sends again.
+    PlatformFunding,
 }
 
 impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
@@ -596,6 +599,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::PlatformFunding => Self::PlatformFunding,
         }
     }
 }
