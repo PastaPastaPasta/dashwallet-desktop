@@ -8,7 +8,8 @@
 //! [`PENDING_MG`] or start with [`PLACEHOLDER`].
 //!
 //! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
-//! family, sha256 8c2c34db…0da2) is title + "{intro}: {detail} {unchanged}
+//! family, sha256 8c2c34db…0da2, and the damaged-store keys after it, still
+//! [`PLACEHOLDER`] copy) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version. "{unchanged}" says Dash Wallet changed
@@ -114,7 +115,7 @@ pub enum RefusedCause {
     /// back to the earlier version.
     SelfCheck,
     /// [`StoreUpgradeError::SnapshotSourceDamaged`]: a store SQLite can't
-    /// read whole, refused before this start wrote anything.
+    /// read whole, refused before any upgrade step wrote anything.
     Damaged,
     /// Every other error that leaves the files unchanged and is not retried.
     Unexpected,

@@ -1,4 +1,5 @@
-//! MG's final refusal copy (`storeUpgrade.refused.*`): every cause × every
+//! MG's final refusal copy (`storeUpgrade.refused.*`, the damaged-store
+//! keys still placeholders): every cause × every
 //! proved state gives an allowed way out with its text assembled exactly,
 //! "previous" only for a file proved not migrated (MG (A), (E)), and every
 //! cause, made by the engine on a real fixture, leaves the data root
@@ -569,6 +570,7 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::prepare_with(&f.net, build(), now()).unwrap_err()
     });
     assert_eq!(s.unchanged.key, "storeUpgrade.refused.unchanged");
+    assert_eq!(s.way_out, WayOut::Damaged);
     seen.insert(Damaged);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
 }
@@ -1111,7 +1113,8 @@ pub(super) fn assert_damaged_screen(e: &StoreUpgradeError, state: ProvedState) {
     );
     assert_eq!(
         s.hint.map(|h| h.key),
-        Some("settings.about.links.issuesHint")
+        Some("settings.about.links.issuesHint"),
+        "{at}"
     );
     let text = s.text(FOLDER);
     assert!(!text.contains(L9), "{at}");

@@ -251,8 +251,6 @@ fn a_damaged_index_found_by_the_copy_is_refused_with_the_damaged_screen() {
     let dispatch = f.net.join("dispatch.sqlite");
     let (root, page_size): (i64, i64) = {
         let conn = rusqlite::Connection::open(&dispatch).unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-            .unwrap();
         let root = conn
             .query_row(
                 "SELECT rootpage FROM sqlite_master WHERE type = 'index' AND name = 'step_log_artifact'",
@@ -270,7 +268,8 @@ fn a_damaged_index_found_by_the_copy_is_refused_with_the_damaged_screen() {
     fs::write(&dispatch, bytes).unwrap();
     let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
     assert!(
-        matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { store, .. } if store == "dispatch.sqlite"),
+        matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { store, detail }
+            if store == "dispatch.sqlite" && detail == "integrity_check of the store and its copy failed"),
         "{err:?}"
     );
     let backups = f.net.join(crate::snapshot::UPGRADE_BACKUPS_DIR);
@@ -289,8 +288,8 @@ fn a_damaged_index_found_by_the_copy_is_refused_with_the_damaged_screen() {
     }
 }
 
-/// The copied `wallet.sqlite` read as damaged once taken is refused with
-/// the damaged-store screen.
+/// A copied `wallet.sqlite` that reads as no database once taken is
+/// refused with the damaged-store screen.
 #[test]
 fn a_copy_read_as_damaged_once_taken_is_refused_with_the_damaged_screen() {
     let f = fixture("v0.1.0");
@@ -298,7 +297,8 @@ fn a_copy_read_as_damaged_once_taken_is_refused_with_the_damaged_screen() {
     let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
     crate::fsx::disarm_fault();
     assert!(
-        matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { detail, .. } if detail.starts_with("its copy: ")),
+        matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { store, detail }
+            if store == "wallet.sqlite" && detail.starts_with("its copy: ")),
         "{err:?}"
     );
     assert!(crate::copy::retry_copy_for(&err).is_none());

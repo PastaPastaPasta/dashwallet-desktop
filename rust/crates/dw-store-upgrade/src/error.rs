@@ -66,10 +66,10 @@ pub enum StoreUpgradeError {
     #[error("upgrade snapshot failed: {detail}")]
     SnapshotFailed { detail: String },
 
-    /// A store the snapshot copies is damaged: SQLite reads it as corrupt
-    /// (`SQLITE_CORRUPT`) or not a database (`SQLITE_NOTADB`), or the
-    /// integrity check of its copy fails. A retry would fail the same way:
-    /// its screen is the unexpected-state refusal. File unchanged.
+    /// A store the snapshot reads or copies is damaged: SQLite reads it as
+    /// corrupt (`SQLITE_CORRUPT`) or not a database (`SQLITE_NOTADB`), or
+    /// it and its copy fail the integrity check. A retry would fail the same
+    /// way: its screen is the damaged-store refusal. File unchanged.
     #[error("{store} is damaged: {detail}")]
     SnapshotSourceDamaged { store: String, detail: String },
 
