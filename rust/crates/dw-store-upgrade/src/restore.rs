@@ -1840,6 +1840,29 @@ fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
     )
 }
 
+/// The notStarted screen's "Cancel restore" (MG (x)): drop a restore that
+/// hasn't begun replacing files. Removes what a stopped attempt made (only
+/// dirs carrying its id, as the next start would), then the request. Once a
+/// journal exists the restore can only be finished, so this refuses with
+/// `RestoreIncomplete{journal_written: true}` and changes nothing. Nothing
+/// pending is `Ok`.
+pub fn cancel_restore(network_dir: &Path) -> Result<()> {
+    let _locks = gates(network_dir)?;
+    let root = root(network_dir);
+    match pending_restore(network_dir)
+        .map_err(StoreUpgradeError::io("read the restore marker", true))?
+    {
+        Some(PendingRestore::InProgress) => Err(incomplete_other(
+            "the restore has begun replacing files and can only be finished".into(),
+        )),
+        _ => {
+            sweep_left_over_attempt(&root);
+            fsx::remove_durable(&root.join(RESTORE_REQUESTED))
+                .map_err(StoreUpgradeError::io("clear the restore request", true))
+        }
+    }
+}
+
 /// "Keep the current files" (MG Q93 §1): from an S4 refusal, keep what is
 /// live exactly as KeepLive does (S4-3), whatever its lineage. `Ok(None)`
 /// when no restore is part-done or it is not at S4: nothing is kept, and the

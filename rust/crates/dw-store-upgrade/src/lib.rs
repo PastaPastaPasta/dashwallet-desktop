@@ -55,9 +55,9 @@ pub use reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
 pub use restore::{
     IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT, RESTORE_JOURNAL,
     RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
-    SAFE_TO_DELETE, clear_restored_mark_on_first_all_synced, keep_current_files, pending_restore,
-    request_restore, restore, restored_mark, restored_mark_present, run_pending_restore,
-    touched_paths,
+    SAFE_TO_DELETE, cancel_restore, clear_restored_mark_on_first_all_synced, keep_current_files,
+    pending_restore, request_restore, restore, restored_mark, restored_mark_present,
+    run_pending_restore, touched_paths,
 };
 pub use snapshot::{
     MissingSnapshot, NOT_THIS_WALLET, STORE_FILES, SnapshotFile, SnapshotInfo, SnapshotState,
