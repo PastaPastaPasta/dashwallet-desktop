@@ -2312,6 +2312,9 @@ impl Fixture {
                 height,
             },
         );
+        // A coin a replay gives back is released by the reread the height
+        // starts (`crate::rescan_hold`).
+        self.session.hub.settle_rereads();
     }
 
     /// The wallet's own transaction `seed`, spending `inputs`, in `context`.
