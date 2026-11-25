@@ -783,6 +783,57 @@ fn crash_after_record_before_create_cleans_cleanly() {
     assert!(!u.root().join("restore-staging-20261125T004000Z").exists());
 }
 
+/// MG (x): Cancel restore before the journal removes the request and what
+/// the stopped attempt made, leaving the network dir as before the request;
+/// with a journal it refuses and changes nothing; with nothing pending it
+/// does nothing.
+#[test]
+fn cancel_restore_before_the_journal_only() {
+    let u = upgraded();
+    let start = tree(&u.net);
+    crate::restore::cancel_restore(&u.net).unwrap();
+    assert_eq!(tree_diff(&start, &tree(&u.net)), Vec::<String>::new());
+
+    u.request();
+    let made = u.root().join("after-upgrade-20261125T004000Z");
+    crate::fsx::create_private_dir(&made).unwrap();
+    fs::write(made.join("ATTEMPT-ID"), "t1\n").unwrap();
+    fs::write(made.join("app.sqlite.partial"), b"partial").unwrap();
+    write_attempt_record(
+        &u,
+        &["id t1".into(), "path after-upgrade-20261125T004000Z".into()],
+    );
+    crate::restore::cancel_restore(&u.net).unwrap();
+    assert_eq!(tree_diff(&start, &tree(&u.net)), Vec::<String>::new());
+    assert_eq!(crate::restore::pending_restore(&u.net).unwrap(), None);
+    assert!(
+        u.run(now()).unwrap().is_none(),
+        "nothing runs at the next start"
+    );
+
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let mid = tree(&u.net);
+    let err = crate::restore::cancel_restore(&u.net).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                journal_written: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(tree_diff(&mid, &tree(&u.net)), Vec::<String>::new());
+    assert!(
+        u.run(later(60)).unwrap().is_some(),
+        "the restore still finishes"
+    );
+}
+
 /// A crash mid-copy leaves its dirs, a partial copy and a mark it created;
 /// the next start removes exactly those.
 #[test]
