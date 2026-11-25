@@ -37,6 +37,12 @@ inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: b
  */
 dustLockedOutputs: Array<OutPoint>,
 /**
+ * Outputs of this transaction shown as pending, kept out of spending
+ * and every balance while it, or one it was built on, may never
+ * confirm.
+ */
+withheldOutputs: Array<OutPoint>,
+/**
  * UNIX seconds the engine last announced it (send or resend).
  */
 lastAnnouncedAt: number | null, };

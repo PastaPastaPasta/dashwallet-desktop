@@ -63,7 +63,7 @@ describe("Home's reading of a pool query", () => {
 });
 
 describe("the wallet balance the screens read", () => {
-  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, catchingUp: false };
+  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, withheld: 0, catchingUp: false };
 
   it("is withheld while the wallet is catching up, and passed on once it is not", () => {
     expect(settledBalance({ ...known, catchingUp: true })).toBeNull();
