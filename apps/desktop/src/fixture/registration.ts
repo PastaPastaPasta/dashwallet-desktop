@@ -136,6 +136,9 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 /** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94). */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
+/** shielded_pool.rs `registration_facts`: while this build cannot spend from Shielded (m4 item 112). */
+export const shieldedSpendsOff = (s: ShieldedWorld | null | undefined): AppError | null =>
+  s?.spendsAvailable === false ? fail("platform.unavailable", "this build cannot spend from Shielded") : null;
 const platformOff = () => fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
 
@@ -574,6 +577,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const { world } = ctx;
     // registration_shielded.rs `FEATURE`: off on mainnet before any read, grant or write.
     if (world.launch.network.kind === "mainnet") throw shieldedOff();
+    const spendsOff = shieldedSpendsOff(world.pending.shielded);
+    if (spendsOff) throw spendsOff;
     const dp = d.dashpay(world, walletId);
     const readiness = shieldedReadiness(world.pending.shielded);
     const failed = readiness.checks.find((c) => !c.ready);

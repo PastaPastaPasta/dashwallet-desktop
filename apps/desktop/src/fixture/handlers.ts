@@ -45,7 +45,7 @@ import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote } from "./registration";
+import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote, shieldedSpendsOff } from "./registration";
 import { connectHandlers, connectRoute, takeConnect } from "./connect";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -1154,6 +1154,9 @@ export const HANDLERS: Handlers = {
     if (funding.kind === "shielded") {
       // registration_shielded.rs `FEATURE`: off on mainnet before any read.
       if (world.launch.network.kind === "mainnet") throw shieldedOff();
+      checkTemporary(request);
+      const spendsOff = shieldedSpendsOff(world.pending.shielded);
+      if (spendsOff) throw spendsOff;
       return shieldedQuote(label, world.pending.shielded, request.temporaryLabel);
     }
     checkTemporary(request);

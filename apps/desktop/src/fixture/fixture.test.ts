@@ -293,6 +293,13 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 112).
+    clearMocks();
+    backend({ scenario: "shielded-spends-off" });
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.unavailable" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.unavailable" });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {
