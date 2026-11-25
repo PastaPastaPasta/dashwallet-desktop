@@ -80,6 +80,12 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/masternodes/keys.ts",
             "apps/desktop/src/payments/hold.ts",
             "apps/desktop/src/screens/ShieldedSheet.tsx",
+            "apps/desktop/src/contacts/actions.ts",
+            "apps/desktop/src/dashpay/editProfile.ts",
+            "apps/desktop/src/governance/model.ts",
+            "apps/desktop/src/settings/files.ts",
+            "rust/crates/dw-app/src/api/files.rs",
+            "rust/crates/dw-app/src/shell/files.rs",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 

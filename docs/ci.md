@@ -241,16 +241,17 @@ ends a cold run with 71 GB free and a 16 GB `rust/target`; its last step reports
 
 A pull request that changes a funds path merges only with two records for its **exact head commit**: a
 funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
-`ci/funds-paths.txt`. All of dw-engine counts, except the files it names as not funds (rates, CSV export,
-profile display, avatars, contact-list tests, notifications, and governance voting and reads), so a
+`ci/funds-paths.txt`. All of dw-engine counts, except the files its `!` lines name as not funds (for example rates,
+CSV export, profile display, avatars and governance voting; the file has the full list), so a
 new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, CoinJoin and units crates, the
 CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
 (Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
 screen view-models that build money requests, the dependency pins, and the gate itself. Check a branch with
 `git diff --name-only origin/main... | ci/github/funds-gate.py match`.
 
-A record is an HTML comment in a pull request comment by the repository's owner, a member or a collaborator
-(bots never count):
+A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
+inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
+count). `funds-gate.py record` posts it in the right place:
 
     <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
     <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->

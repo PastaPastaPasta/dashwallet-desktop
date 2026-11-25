@@ -89,6 +89,8 @@ rust/crates/dw-app/src/error/**
 rust/crates/dw-app/src/dto/platform.rs
 rust/crates/dw-app/src/dto/governance.rs
 rust/crates/dw-app/src/shell/links.rs
+rust/crates/dw-app/src/api/files.rs
+rust/crates/dw-app/src/shell/files.rs
 rust/crates/dw-app/src/dto/masternodes*.rs
 rust/crates/dw-app/src/dto/protx.rs
 rust/crates/dw-app/capabilities/*.json
@@ -140,6 +142,10 @@ apps/desktop/src/payments/hold*
 apps/desktop/src/components/coins.tsx
 apps/desktop/src/components/phrase.tsx
 apps/desktop/src/app/rescan*
+apps/desktop/src/contacts/actions*
+apps/desktop/src/dashpay/editProfile*
+apps/desktop/src/governance/model*
+apps/desktop/src/settings/files*
 apps/desktop/src/fiat/entry*
 apps/desktop/src/format/fiat*
 apps/desktop/src/onboarding/recovery*
