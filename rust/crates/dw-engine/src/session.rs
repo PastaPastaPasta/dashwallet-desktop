@@ -759,6 +759,7 @@ impl NetworkSession {
                     .load_journal_with(None, Vec::new(), Vec::new(), Default::default())
             }
         }
+        crate::platform::shielded_pool::import_fork_holds(&session).await;
         session.leases.start_reaper();
         session.masternodes.follow(&session);
         // MG-13 P8: undecided masternode withdrawals are rechecked from the
@@ -1216,11 +1217,11 @@ impl NetworkSession {
         // closed: every `store` commits inline (the persister's default
         // `Immediate` mode, WAL), and a flush here retries any left by a
         // transient failure (a failed flush is logged, not returned). The
-        // library wrote the spend's record to the shielded store before the
-        // spend returned, best-effort (`arm_redrive_record`,
-        // operations.rs:2983: a failed write is logged, and that spend has
-        // no record to keep; its reservations live in memory only,
-        // file_store.rs:572, and end with the session). The connections stay open until the process
+        // library wrote the spend's record to the shielded store before its
+        // first broadcast (`arm_redrive_before_broadcast`,
+        // operations.rs:4445-4515: a failed write sends nothing; its
+        // reservations live in memory only, file_store.rs:1126-1132, and end
+        // with the session). The connections stay open until the process
         // exits, so their last WAL checkpoint does not run; the WAL replays
         // at the next open, and the rows rehydrate as pending. The cost:
         // the Arc cycle above keeps the persister's open-path claim, so the

@@ -212,6 +212,382 @@ fn cancelled_first_send_holds_notes_and_reads_checking() {
     refused(engine.block_on(session.unload_wallet(wallet)));
 }
 
+/// L4: a failed history row settles `not_executed` only once the library
+/// holds neither a record nor a reserved note of the spend: with both, then
+/// with either alone (spend 2's record retired first; spend 1's
+/// reservations released, which drops its record, and its record saved
+/// again alone), it stays open; with neither, it settles.
+#[test]
+fn a_failed_row_settles_only_once_nothing_of_the_spend_is_held() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    let [first, second]: [PendingRedrive; 2] = spends().try_into().unwrap();
+    // `(spend, retire first)`; each step's effect, then what the library
+    // still holds of the spend: `(record, reservations)`.
+    for (spend, retire_first) in [(second, true), (first, false)] {
+        let n = spend.activity_id[0];
+        let step = |what: &'static str| {
+            let (s, m, spend) = (
+                Arc::clone(&session),
+                session.manager().unwrap(),
+                spend.clone(),
+            );
+            engine.block_on(async move {
+                let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+                let mut store = coordinator.store().write().await;
+                let id = subwallet(wallet);
+                match what {
+                    "fail" => history_row(&mut *store, id, &spend, ShieldedActivityStatus::Failed),
+                    "retire" => assert!(
+                        store
+                            .retire_undelivered_spend(id, &spend.activity_id, &[])
+                            .unwrap()
+                    ),
+                    "release" => {
+                        for nullifier in &spend.nullifiers {
+                            store.clear_pending(id, nullifier).unwrap();
+                        }
+                    }
+                    "record alone" => {
+                        for nullifier in &spend.nullifiers {
+                            store.clear_pending(id, nullifier).unwrap();
+                        }
+                        store.arm_redrive(id, spend.clone()).unwrap();
+                    }
+                    other => unreachable!("{other}"),
+                }
+                let stored = (store.pending_redrives(id).unwrap().iter())
+                    .any(|r| r.activity_id == spend.activity_id);
+                let held = (store.stale_pending_spends(id).unwrap().iter())
+                    .any(|(_, _, a, _)| *a == Some(spend.activity_id));
+                (stored, held)
+            })
+        };
+        let (one, two) = if retire_first {
+            (("retire", (false, true)), ("release", (false, false)))
+        } else {
+            (("record alone", (true, false)), ("retire", (false, false)))
+        };
+        assert_eq!(step("fail"), (true, true), "spend {n}");
+        pass(&engine, &session);
+        assert_eq!(
+            settlement(&engine, &session, wallet, n).0,
+            ArtifactStatus::Registered,
+            "spend {n}: record and reservations held"
+        );
+        assert_eq!(step(one.0), one.1, "spend {n}");
+        pass(&engine, &session);
+        assert_eq!(
+            settlement(&engine, &session, wallet, n).0,
+            ArtifactStatus::Registered,
+            "spend {n}: {} done, the rest held",
+            one.0
+        );
+        assert_eq!(step(two.0), two.1, "spend {n}");
+        pass(&engine, &session);
+        assert_eq!(
+            settlement(&engine, &session, wallet, n),
+            (ArtifactStatus::NotExecuted, None, false),
+            "spend {n}"
+        );
+    }
+}
+
+/// L1: while the dispatch journal is not read, an outcome the library may
+/// report cannot be compared with it, so Close Wallet and the rollback are
+/// refused; read again, they proceed.
+#[test]
+fn an_unread_journal_holds_the_close() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let journal = session.leases.journal.get();
+    session.leases.load_journal(None, Vec::new(), Vec::new());
+    assert!(!session.leases.journal_ready());
+    refused(engine.block_on(session.unload_wallet(wallet)));
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    refused(engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &m, wallet, StoredSpends::Refuse))
+        .await
+    }));
+    assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
+
+    session.leases.load_journal(journal, Vec::new(), Vec::new());
+    assert!(session.leases.journal_ready());
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+}
+
+/// A row of the fork's `shielded_spend_dispositions`: transition `n`
+/// (activity `[n; 32]`), its disposition and reason, the notes it holds
+/// and `released_by_scan`.
+type ForkRow = (u8, &'static str, Option<&'static str>, Vec<[u8; 32]>, i64);
+
+/// Writes `rows` of `wallet` into the fork's table in the shielded store,
+/// created with the fork's schema.
+fn fork_dispositions(path: &Path, wallet: WalletId, rows: &[ForkRow]) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS shielded_spend_dispositions (
+            wallet_id     BLOB    NOT NULL
+                CHECK (typeof(wallet_id) = 'blob' AND length(wallet_id) = 32),
+            account_index INTEGER NOT NULL
+                CHECK (typeof(account_index) = 'integer'
+                       AND account_index BETWEEN 0 AND 4294967295),
+            st_hash       BLOB    NOT NULL
+                CHECK (typeof(st_hash) = 'blob' AND length(st_hash) = 32),
+            activity_id   BLOB    NOT NULL
+                CHECK (typeof(activity_id) = 'blob' AND length(activity_id) = 32),
+            disposition   TEXT    NOT NULL
+                CHECK (disposition IN ('executed', 'not_executed', 'unresolved')),
+            reason        TEXT
+                CHECK ((disposition = 'executed') = (reason IS NULL)),
+            at            INTEGER NOT NULL,
+            nullifiers    BLOB    NOT NULL DEFAULT x''
+                CHECK (typeof(nullifiers) = 'blob' AND length(nullifiers) % 32 = 0
+                       AND (disposition IN ('executed', 'unresolved')
+                            OR length(nullifiers) = 0)),
+            released_by_scan INTEGER NOT NULL DEFAULT 0
+                CHECK (released_by_scan IN (0, 1)),
+            PRIMARY KEY (wallet_id, account_index, st_hash)
+        )",
+    )
+    .unwrap();
+    for (n, disposition, reason, nullifiers, released) in rows {
+        db.execute(
+            "INSERT INTO shielded_spend_dispositions (wallet_id, account_index, st_hash, \
+             activity_id, disposition, reason, at, nullifiers, released_by_scan) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+            rusqlite::params![
+                &wallet.0[..],
+                dw_vault::SHIELDED_ACCOUNT,
+                &[*n; 32][..],
+                &[*n; 32][..],
+                disposition,
+                reason,
+                nullifiers.concat(),
+                released,
+            ],
+        )
+        .unwrap();
+    }
+}
+
+/// Every row of the fork's table, as stored.
+fn fork_rows(path: &Path) -> Vec<(Vec<u8>, Vec<u8>, i64)> {
+    let db = rusqlite::Connection::open(path).unwrap();
+    let mut rows = db
+        .prepare(
+            "SELECT st_hash, nullifiers, released_by_scan FROM shielded_spend_dispositions \
+             ORDER BY st_hash",
+        )
+        .unwrap();
+    rows.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Closes the network, runs `between` on its shielded store's path, and
+/// opens it again, unlocked.
+fn reopen_with(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    between: impl FnOnce(&Path),
+) -> Arc<NetworkSession> {
+    let path = session.data_dir().join(pool::SHIELDED_DB_FILE);
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    between(&path);
+    let session = open(engine);
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    session
+}
+
+/// M1: the fork held the notes of an unacknowledged `executed` or
+/// `unresolved` disposition until its acknowledgement, which upstream
+/// neither reads nor offers. After the upgrade each such row is a marked
+/// spend (DEC-1057): Close Wallet, the network close and the rollback are
+/// refused until a scan finds all its notes spent. The fork's table is left
+/// as it was, and a cleared marker is not marked again at the next open.
+#[test]
+fn a_fork_held_spend_holds_the_close_after_the_upgrade() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let (unresolved, executed) = (vec![[61; 32], [62; 32]], vec![[63; 32]]);
+    let rows: Vec<ForkRow> = vec![
+        (1, "unresolved", Some("cancelled"), unresolved.clone(), 0),
+        (2, "executed", None, executed.clone(), 0),
+    ];
+    let mut before = Vec::new();
+    let session = reopen_with(&engine, session, |path| {
+        fork_dispositions(path, wallet, &rows);
+        before = fork_rows(path);
+    });
+    assert_eq!(markers(&engine, &session, wallet), [[1; 32], [2; 32]]);
+    refused(engine.block_on(session.unload_wallet(wallet)));
+    refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
+    assert!(session.live().is_ok(), "the session stays open");
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    refused(engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &m, wallet, StoredSpends::Refuse))
+        .await
+    }));
+
+    spent_seen(&session, wallet, &unresolved);
+    assert_eq!(markers(&engine, &session, wallet), [[2; 32]]);
+    refused(engine.block_on(session.unload_wallet(wallet)));
+    spent_seen(&session, wallet, &executed);
+    assert!(markers(&engine, &session, wallet).is_empty());
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+
+    let path = session.data_dir().join(pool::SHIELDED_DB_FILE);
+    let session = reopen_with(&engine, session, |_| {});
+    assert_eq!(fork_rows(&path), before, "the fork's rows as they were");
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert!(markers(&engine, &session, wallet).is_empty(), "not again");
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+}
+
+/// M1: a fork row that holds no note (acknowledged, so its nullifiers were
+/// cleared; `not_executed`; or left to a scan by a purge) marks nothing,
+/// nor does a store without the fork's table: the close proceeds.
+#[test]
+fn fork_rows_holding_no_note_and_a_store_without_them_leave_the_close() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let session = reopen_with(&engine, session, |path| {
+        assert!(path.exists(), "the bind opened the store");
+        let db = rusqlite::Connection::open(path).unwrap();
+        let tables: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'shielded_spend_dispositions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "upstream's store has no such table");
+    });
+    assert!(markers(&engine, &session, wallet).is_empty());
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+
+    let rows: Vec<ForkRow> = vec![
+        (1, "executed", None, Vec::new(), 0),
+        (2, "unresolved", Some("cancelled"), Vec::new(), 0),
+        (3, "not_executed", Some("refused"), Vec::new(), 0),
+        (4, "unresolved", Some("cancelled"), vec![[64; 32]], 1),
+        (5, "executed", None, vec![[65; 32]], 1),
+    ];
+    let session = reopen_with(&engine, session, |path| {
+        fork_dispositions(path, wallet, &rows)
+    });
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert!(markers(&engine, &session, wallet).is_empty());
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+}
+
+/// The fork's table as a build that wrote it without its checks would
+/// leave it, with one row of `wallet_id`, `st_hash` and `nullifiers`.
+fn unchecked_fork_row(path: &Path, wallet_id: &[u8], st_hash: &[u8], nullifiers: &[u8]) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE shielded_spend_dispositions (wallet_id, account_index, st_hash, \
+         activity_id, disposition, reason, at, nullifiers, released_by_scan)",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO shielded_spend_dispositions VALUES (?1, 0, ?2, ?3, 'unresolved', \
+         'cancelled', 1, ?4, 0)",
+        rusqlite::params![wallet_id, st_hash, &[1u8; 32][..], nullifiers],
+    )
+    .unwrap();
+}
+
+/// M1, fail closed: a fork row that does not read holds its wallet for the
+/// session (a held-note list that is no list of nullifiers, a malformed
+/// transition), and every wallet when its wallet does not read either;
+/// nothing is marked. Another wallet is held only in the latter case.
+#[test]
+fn an_unreadable_fork_row_holds_its_wallet_or_every_wallet() {
+    let other = WalletId([3; 32]);
+    type Row = fn(WalletId) -> (Vec<u8>, Vec<u8>, Vec<u8>);
+    let cases: [(Row, bool); 3] = [
+        (|w| (w.0.to_vec(), vec![1; 32], vec![61; 33]), false),
+        (|w| (w.0.to_vec(), vec![1; 31], vec![61; 32]), false),
+        (|w| (w.0[..31].to_vec(), vec![1; 32], vec![61; 32]), true),
+    ];
+    for (row, every) in cases {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let (wallet_id, st_hash, nullifiers) = row(wallet);
+        let session = reopen_with(&engine, session, |path| {
+            unchecked_fork_row(path, &wallet_id, &st_hash, &nullifiers)
+        });
+        assert!(markers(&engine, &session, wallet).is_empty());
+        assert!(engine.block_on(session.leases.marks_unrecorded(wallet)));
+        assert_eq!(
+            engine.block_on(session.leases.marks_unrecorded(other)),
+            every
+        );
+        refused(engine.block_on(session.unload_wallet(wallet)));
+        refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
+    }
+}
+
+/// M1, fail closed: with the dispatch journal unreadable at the open (here
+/// of a newer schema) no marker can be written, so the wallet of a fork row
+/// that holds notes is held for the session; another wallet is not.
+#[test]
+fn a_fork_hold_with_no_journal_holds_its_wallet_for_the_session() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let journal = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    let rows: Vec<ForkRow> = vec![(1, "unresolved", Some("cancelled"), vec![[61; 32]], 0)];
+    let session = reopen_with(&engine, session, |path| {
+        fork_dispositions(path, wallet, &rows);
+        let db = rusqlite::Connection::open(&journal).unwrap();
+        db.execute("UPDATE meta SET v = 99 WHERE k = 'schema'", [])
+            .unwrap();
+    });
+    assert!(!session.leases.journal_ready());
+    assert!(engine.block_on(session.leases.marks_unrecorded(wallet)));
+    assert!(!engine.block_on(session.leases.marks_unrecorded(WalletId([3; 32]))));
+    refused(engine.block_on(session.unload_wallet(wallet)));
+}
+
 #[test]
 #[ignore = "GAP G2: upstream keeps no executed-spend hold until the host holds the spent state; journal holds (DRAIN D1) not ported"]
 fn executed_ack_lifts_the_close_refusal() {

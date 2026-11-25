@@ -1,8 +1,8 @@
 //! DEC-1046 (E1 review r1, R1-1): no close, unload or quit deletes a
 //! shielded spend whose result is not known. At the pin, platform-wallet's
 //! `remove_wallet` always purges the wallet's shielded store, its stored
-//! transitions and reservations included (`wallet_lifecycle.rs:847-850` →
-//! `coordinator.rs:878-902` → `file_store.rs:880-901`), and it has no detach.
+//! transitions and reservations included (`wallet_lifecycle.rs:1011-1013` →
+//! `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`), and it has no detach.
 //! So Close Wallet and an in-app network close or switch are refused while a
 //! wallet holds one, and the quit keeps that wallet loaded: its rows are on
 //! disk, and the next launch rehydrates them as pending.

@@ -1653,8 +1653,8 @@ fn unshield_hook_refuses_when_its_record_is_not_written() {
 /// is refused and the artifact settled `not_executed` (the library retires
 /// its record), so no re-send is admitted. **A stop between the artifact
 /// and the arming** leaves both open: the pass's re-send is admitted only
-/// once the hook armed the record. An unshield artifact with no record
-/// (dispatched before records were kept) is admitted as before.
+/// once the hook armed the record. An unshield artifact with no record is
+/// refused, as `dispatch` refuses one whose record is gone.
 #[test]
 fn an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_at_re_send() {
     let h = Hooked::new();
@@ -1731,8 +1731,40 @@ fn an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_a
     let wrote = (h.f.engine)
         .block_on(async move { s.leases.record_shielded_artifact(wallet, legacy).await });
     assert_eq!(wrote, Ok(true));
-    assert_eq!(h.admit(SHIELDED_ACCOUNT, 2, [0x22; 32]), Ok(()));
+    let refused = h.admit(SHIELDED_ACCOUNT, 2, [0x22; 32]).unwrap_err();
+    assert!(refused.contains("it is gone"), "{refused}");
     assert_eq!(h.records().len(), before);
+}
+
+/// A re-send whose `FromShielded` record is settled (failed or done) while
+/// its artifact is still open is refused: nothing arms a settled record.
+#[test]
+fn an_unshield_whose_record_is_settled_is_not_admitted() {
+    use super::super::platform_addresses::PlatformActivityState;
+    let h = Hooked::new();
+    let fee = UNSHIELD_FEE;
+    for (n, state) in [
+        (1u8, PlatformActivityState::Failed),
+        (2, PlatformActivityState::Done),
+    ] {
+        let payload = h.staged_unshield(
+            n,
+            &[u64::from(n)],
+            unshield_bytes(n, &[u64::from(n)], own_platform(), NOTE / 2 + fee),
+        );
+        let hash = payload.st_hash;
+        h.intend(own_platform(), NOTE / 2);
+        assert_eq!(h.dispatch(payload), Ok(()));
+        h.lease();
+        assert_eq!(h.admit(SHIELDED_ACCOUNT, n, hash), Ok(()));
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine).block_on(async move {
+            super::super::platform_moves::tests::set_record_state(&s, wallet, [n; 32], state).await
+        });
+        let refused = h.admit(SHIELDED_ACCOUNT, n, hash).unwrap_err();
+        assert!(refused.contains("it is gone"), "{state:?}: {refused}");
+        assert_eq!(h.artifact(n).unwrap().status, ArtifactStatus::Registered);
+    }
 }
 
 /// **A stop between the artifact and the arming:** the record is written

@@ -886,8 +886,8 @@ impl PlatformRuntime {
     ///
     /// The engine's only route to platform-wallet's `remove_wallet`, which
     /// at the pin always purges the wallet's shielded store, its stored
-    /// spends included (`wallet_lifecycle.rs:847-850` →
-    /// `coordinator.rs:878-902` → `file_store.rs:880-901`). So with
+    /// spends included (`wallet_lifecycle.rs:1011-1013` →
+    /// `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`). So with
     /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
     /// not known stays (`ShieldedSpendUnresolved`, DEC-1046), as does one
     /// with a marked spend (`leases`' journal, DEC-1057); only the

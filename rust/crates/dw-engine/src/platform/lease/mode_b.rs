@@ -1590,6 +1590,42 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// Marks the fork's held spends `holds` (DEC-1057), each once. A wallet
+    /// of one not marked is held for the session instead
+    /// ([`Self::marks_unrecorded`]). On the blocking pool.
+    pub(crate) async fn import_fork_holds(&self, holds: Vec<dw_appdb::dispatch::ForkHold>) {
+        if holds.is_empty() {
+            return;
+        }
+        let wallets: BTreeSet<WalletId> = holds.iter().map(|h| WalletId(h.wallet)).collect();
+        let imported: Result<usize, String> = async {
+            let backend = self.journal.get().ok_or("the journal is closed")?;
+            (self.rt)
+                .spawn_blocking(move || backend.import_fork_holds(&holds))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        .await;
+        match imported {
+            Ok(n) => tracing::info!(marked = n, "the fork's held shielded spends are marked"),
+            Err(e) => {
+                tracing::error!(error = %e, "the fork's held shielded spends were not marked; their wallets are held");
+                self.hold_fork_wallets(Some(wallets));
+            }
+        }
+    }
+
+    /// Holds `wallets` for the session as marked ([`Self::marks_unrecorded`]);
+    /// `None` holds every wallet.
+    pub(crate) fn hold_fork_wallets(&self, wallets: Option<BTreeSet<WalletId>>) {
+        let mut held = (self.fork_held.lock()).unwrap_or_else(std::sync::PoisonError::into_inner);
+        match (wallets, held.as_mut()) {
+            (Some(wallets), Some(held)) => held.extend(wallets),
+            (Some(_), None) => {}
+            (None, _) => *held = None,
+        }
+    }
+
     /// The marked shielded spends of `wallet` (schema 10); none while the
     /// journal is not open (nothing can be marked then). On the blocking
     /// pool.
@@ -1609,6 +1645,13 @@ impl LeaseTable {
     /// Whether `wallet` has a marked shielded spend; `true` when the
     /// markers cannot be read (fail closed).
     pub(crate) async fn marks_unrecorded(&self, wallet: WalletId) -> bool {
+        if (self.fork_held.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|held| held.contains(&wallet))
+        {
+            return true;
+        }
         match self.unrecorded_spends(wallet).await {
             Ok(markers) => !markers.is_empty(),
             Err(e) => {

@@ -726,9 +726,10 @@ pub(crate) async fn stage_from_shielded(
 /// Arms the record of the spend `activity`, after its artifact and before
 /// any send of it: from the dispatch hook's accept, and again from its
 /// admission of a re-send, so a spend whose arming a stop cut off is armed
-/// before it leaves (C-routes C1-9). Whether the spend has a record: one
-/// with none was dispatched before records were kept. A record of another
-/// transition than `st_hash` is an error: that send is not the record's.
+/// before it leaves (C-routes C1-9). Whether the spend has a pending record,
+/// armed now or before; `false` when it has none, or its record is settled.
+/// A record of another transition than `st_hash` is an error: that send is
+/// not the record's.
 pub(crate) async fn arm_from_shielded(
     session: &NetworkSession,
     wallet: WalletId,
@@ -745,7 +746,10 @@ pub(crate) async fn arm_from_shielded(
             detail: "the FromShielded record is of another transition".into(),
         });
     }
-    if !record.armed && record.state == PlatformActivityState::Pending {
+    if record.state != PlatformActivityState::Pending {
+        return Ok(false);
+    }
+    if !record.armed {
         #[cfg(test)]
         if tests::arm_write_fails(&store.appdb) {
             return Err(PlatformError::Storage {
