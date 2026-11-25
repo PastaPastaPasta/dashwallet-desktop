@@ -979,7 +979,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f3fdae8d6228c1dfecc76187123ec030bbb80bb874b08d41fb5b116bb35ec50e version: 98 -->
+<!-- surface-sha256: a11d8aabe0650e8bd9b7fb7372c3ba089734479ac71efbf5cbe1bcada9654615 version: 99 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1370,6 +1370,7 @@ pub enum RegistrationError {
     ShieldedNotReady { reason: ShieldedCheck, ready_at: Option<u64> },
     QuoteChanged,
     Refunded,
+    PaymentConsumed,
     Name(NameError),
     Invitation(InvitationError),
     Credits(CreditsError),
