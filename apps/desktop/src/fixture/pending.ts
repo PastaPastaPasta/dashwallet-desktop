@@ -242,7 +242,7 @@ export function switchedWorld(): World | null {
 /** What RESTORED waits for (`restore_status`), as the engine counts it: with Platform off its first
  * check is satisfied. */
 function restoreStatusOf(world: World): HeldRestoreStatus {
-  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false };
+  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false };
   return { ...s, waiting: world.noPlatform ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
 }
 
