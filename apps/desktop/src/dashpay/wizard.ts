@@ -50,15 +50,16 @@ export type WizardMode =
   | { kind: "credits"; identity: string; instant?: boolean }
   | { kind: "invitation"; linkId: string; contestedAllowed: boolean; inviter: InvitationInviter | null };
 
-/** `source`: the "Pay with" step before the name (C-funding F19). */
-export type WizardStep = "source" | "name" | "confirm";
+/** `source`: the "Pay with" step before the name (C-funding F19); `instant`: the instant
+ * username beside a contested one (D4 reversed), between the name and Confirm. */
+export type WizardStep = "source" | "name" | "instant" | "confirm";
 
 export type RunningCall = "start" | "resume" | "discard" | "finish" | "name";
 
 /** A Core-funded request for `label` (DP1-02's `CoreBalance` funding; no profile, D4/F2). */
-export const coreRequest = (label: string): RegistrationRequest => ({
+export const coreRequest = (label: string, temporaryLabel: string | null = null): RegistrationRequest => ({
   label,
-  temporaryLabel: null,
+  temporaryLabel,
   funding: { kind: "coreBalance" },
   initialProfile: null,
 });
@@ -66,9 +67,13 @@ export const coreRequest = (label: string): RegistrationRequest => ({
 /** C-funding F4: a request paid from the Platform balance for `label`, with the numbers its quote
  * showed (the start refuses `registration.quote_changed` for others). A quote of the source passes
  * zeros: the engine plans its own. */
-export const platformRequest = (label: string, quote: Pick<PlatformRegistrationQuote, "fundingCredits" | "feeReserveCredits"> = { fundingCredits: "0", feeReserveCredits: "0" }): RegistrationRequest => ({
+export const platformRequest = (
+  label: string,
+  quote: Pick<PlatformRegistrationQuote, "fundingCredits" | "feeReserveCredits"> = { fundingCredits: "0", feeReserveCredits: "0" },
+  temporaryLabel: string | null = null,
+): RegistrationRequest => ({
   label,
-  temporaryLabel: null,
+  temporaryLabel,
   funding: { kind: "platformAddresses", fundingCredits: quote.fundingCredits, feeReserveCredits: quote.feeReserveCredits },
   initialProfile: null,
 });
@@ -104,6 +109,10 @@ export class RegistrationWizard extends Model {
   /** The wizard was opened on the "Pay with" step: Back from the name returns there. */
   picked = false;
   label = "";
+  /** The instant offer shows over the name step (D4 reversed): the label is contested. */
+  offer = false;
+  /** The instant username the start registers beside the contested label; `null` for none. */
+  temporaryLabel: string | null = null;
   /** The claim's "Send a contact request" check (DP5-03 D7). */
   requestInviter = true;
   /** The draft this session started or resumed: its result screen shows until Done. */
@@ -139,6 +148,8 @@ export class RegistrationWizard extends Model {
     this.source = "core";
     this.picked = step === "source";
     this.label = "";
+    this.offer = false;
+    this.temporaryLabel = null;
     this.requestInviter = true;
     this.draft = null;
     this.named = null;
@@ -166,6 +177,11 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
+  setTemporaryLabel(label: string) {
+    this.temporaryLabel = label;
+    this.changed();
+  }
+
   setRequestInviter(on: boolean) {
     this.requestInviter = on;
     this.changed();
@@ -181,22 +197,66 @@ export class RegistrationWizard extends Model {
   request(quote: ConfirmQuote | null = null): RegistrationRequest {
     const m = this.mode;
     if (m.kind === "invitation") return invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null);
-    if (this.fromPlatform && quote?.platform) return platformRequest(this.label, quote.platform);
-    if (this.fromPlatform) return platformRequest(this.label);
-    return coreRequest(this.label);
+    const temp = this.temporaryLabel;
+    if (this.fromPlatform) return platformRequest(this.label, quote?.platform ?? undefined, temp);
+    return coreRequest(this.label, temp);
   }
 
-  /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). */
-  next() {
+  /** The wizard offers an instant username beside a contested one: a new identity, which owns no
+   * name yet. A name from credits is one `register_name`, and a claim's invitation pays for one
+   * name: the voting card offers theirs once the contest is open. */
+  get offersInstant(): boolean {
+    return this.mode.kind === "core";
+  }
+
+  /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). A
+   * contested label the wizard offers an instant username beside asks first (`offer`). */
+  next(contested = false) {
     this.label = this.label.trim();
+    this.temporaryLabel = null;
+    this.error = null;
+    if (contested && this.offersInstant) this.offer = true;
+    else this.step = "confirm";
+    this.changed();
+  }
+
+  /** The offer's "Create instant username": the form, prefilled with `suggestion`. */
+  createInstant(suggestion: string) {
+    this.offer = false;
+    this.temporaryLabel = suggestion;
+    this.step = "instant";
+    this.changed();
+  }
+
+  /** The offer's "No, thanks": Confirm, for the contested label alone. */
+  declineInstant() {
+    this.offer = false;
+    this.temporaryLabel = null;
+    this.step = "confirm";
+    this.changed();
+  }
+
+  /** The offer closed: back to the name. */
+  dismissOffer() {
+    this.offer = false;
+    this.changed();
+  }
+
+  /** The instant form → Confirm, for the name the screen has checked (`instantCheck`). */
+  confirmInstant() {
+    if (this.temporaryLabel === null) return;
+    this.temporaryLabel = this.temporaryLabel.trim();
     this.step = "confirm";
     this.error = null;
     this.changed();
   }
 
   back() {
-    if (this.step === "confirm") this.step = "name";
-    else if (this.step === "name" && this.picked) this.step = "source";
+    if (this.step === "confirm") this.step = this.temporaryLabel !== null ? "instant" : "name";
+    else if (this.step === "instant") {
+      this.step = "name";
+      this.temporaryLabel = null;
+    } else if (this.step === "name" && this.picked) this.step = "source";
     else this.step = null;
     this.error = null;
     this.wedge = null;
@@ -271,7 +331,7 @@ export class RegistrationWizard extends Model {
       // holds them, and a Core quote's grant carries duffs.
       const grant = row.invitation || row.fromPlatform
         ? await this.api.registrationResumeGrant(this.walletId, row.draft)
-        : (await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel })).grant;
+        : (await this.api.registrationQuote(this.walletId, coreRequest(row.label, row.temporaryLabel))).grant;
       const done = await this.#withGrant(grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
       if (done) this.draft = row.draft;
     });
@@ -312,6 +372,7 @@ export class RegistrationWizard extends Model {
       this.begin({ kind: "core" }, "source");
       if (row.fromPlatform) this.source = "platform";
       this.label = row.label;
+      this.temporaryLabel = row.temporaryLabel;
       this.step = "confirm";
       this.requoteAt = Date.now();
     });

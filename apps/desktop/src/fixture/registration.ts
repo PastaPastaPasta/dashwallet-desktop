@@ -13,7 +13,9 @@
 // A start from the Platform balance (C-funding F4) stores its plan (`DashPayWorld.platformPlans`)
 // and writes a row that commits nothing until its create; `DashPayWorld.platformCreates` says what
 // each create comes to.
-// Not modelled: profiles (F2), temporary names (D4), the funding's coin selection and its debit
+// A temporary name beside a contested label (D4 reversed) is priced with it and registered right
+// after its contest starts, unless `DashPayWorld.temporaryRefused` (the engine only logs that).
+// Not modelled: profiles (F2), the funding's coin selection and its debit
 // from the balance, InstantSend timeouts, and proofs (a resumed `fundingSent` row waits for its
 // InstantSend lock again).
 
@@ -103,6 +105,8 @@ export const NETWORK_NAMES: Record<string, NameAvailability> = {
   "ma11ory": { kind: "taken", owner: IDENTITY.mallory },
   car01: { kind: "contestOpen", endsAt: secs(FIXTURE_NOW) + 5 * 24 * 3600, contenders: 2 },
   "sat0sh1": { kind: "locked" },
+  // A plain name taken, for the instant username's form (DP1-09 D4 reversed).
+  a11ce3: { kind: "taken", owner: IDENTITY.mallory },
 };
 
 /** dpp's `convert_to_homograph_safe_chars`: lower case, `o` → `0`, `i` and `l` → `1`. */
@@ -423,12 +427,22 @@ function platformDebit(dp: DashPayWorld, row: RegistrationStatus) {
   return { funding, reserve, debit: funding + reserve };
 }
 
-/** The fixture quote's costs for `label` (handlers.ts `registration_quote`). */
-export function costs(label: string) {
+/** The fixture quote's costs for `label` (handlers.ts `registration_quote`), and for the temporary
+ * name beside it (registration.rs `plan`: only a contested label takes one). The contested lock
+ * floor covers both names' credits, so the total does not change. */
+export function costs(label: string, temporaryLabel: string | null = null) {
   const contested = checkUsername(label).contested;
   const lockDuffs = contested ? 25_000_000 : 3_000_000;
   const totalDuffs = lockDuffs + 2_260;
-  return { contested, lockDuffs, feeDuffs: 2_260, totalDuffs, credits: NAME_CREDITS };
+  const credits = contested && temporaryLabel !== null ? 2n * NAME_CREDITS : NAME_CREDITS;
+  return { contested, lockDuffs, feeDuffs: 2_260, totalDuffs, credits };
+}
+
+/** names.rs `check_temporary_name` as registration.rs `plan` applies it: valid, not contested. */
+export function checkTemporary(request: RegistrationRequest) {
+  const temp = request.temporaryLabel;
+  if (temp === null || !checkUsername(request.label).contested) return;
+  if (validLabel(temp).contested) throw invalid("the temporary name must not be contested");
 }
 
 function changed({ world, emit }: Ctx, walletId: string, draft: string | null) {
@@ -462,6 +476,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
+    checkTemporary(request);
     let plan: PlatformRegisterPlan | null = null;
     if (request.funding.kind === "platformAddresses") {
       plan = platformPlan(request.label, world.pending.platform, world.launch.network.kind === "mainnet", dp);
@@ -472,7 +487,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
     if (plan) return startFromPlatform(ctx, walletId, request, grantId, plan);
-    const { totalDuffs, credits } = costs(request.label);
+    const { totalDuffs, credits } = costs(request.label, request.temporaryLabel);
     const g = d.grant(world, grantId, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     const { maxDuffs, maxCredits } = g.grant.purpose;
@@ -792,8 +807,15 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       row.phase = "nameRequested";
       break;
     case "nameRequested":
-      if (costs(row.label).contested) Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
-      else {
+      if (costs(row.label).contested) {
+        Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
+        // The temporary name right after ContestStarted; a refusal is only logged.
+        const temp = row.temporaryLabel;
+        if (temp !== null && !dp.temporaryRefused) {
+          dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [...i.names, temp], mainName: temp } : i));
+          ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
+        }
+      } else {
         row.phase = "nameRegistered";
         dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [row.label], mainName: row.label } : i));
         ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
