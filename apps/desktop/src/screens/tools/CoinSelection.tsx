@@ -7,8 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useUtxos, useWalletCatchUp } from "../../api/queries";
-import { restored } from "../../api/restoreHolds";
+import { keys, useRestored, useUtxos, useWalletCatchUp } from "../../api/queries";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
@@ -59,7 +58,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const t = useT();
   const utxos = useUtxos(walletId, true);
-  const walletRestored = restored(network);
+  const walletRestored = useRestored().data === true;
   const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
     rowCount: utxos.data?.length ?? 0,
@@ -189,7 +188,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
       </div>
       {walletRestored && (
         <p className="placeholder-note" role="status" data-testid="coins-restored-gate">
-          {t("common.fundsPaused")}
+          {t("storeUpgrade.restore.banner")}
         </p>
       )}
     </div>

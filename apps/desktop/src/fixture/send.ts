@@ -25,7 +25,7 @@ import type { TxActionRefusalName } from "../api/generated/TxActionRefusalName";
 import type { TxEstimate } from "../api/generated/TxEstimate";
 import type { TxRow } from "../api/generated/TxRow";
 import type { Utxo } from "../api/generated/Utxo";
-import { pendingUnproven, restored, type HeldTxActionRefusalName, type HeldTxExtras } from "../api/restoreHolds";
+import { pendingUnproven, type HeldTxActionRefusalName, type HeldTxExtras } from "../api/restoreHolds";
 import type { LockResolutionName } from "../api/generated/LockResolutionName";
 import type { PaymentLockInfo } from "../api/generated/PaymentLockInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -874,7 +874,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
-      if (restored(ctx.world.launch.network)) throw refused("restored");
+      if (ctx.world.restored) throw refused("restored");
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
@@ -907,7 +907,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
-      if (restored(world.launch.network)) throw refused("restored");
+      if (world.restored) throw refused("restored");
       const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);

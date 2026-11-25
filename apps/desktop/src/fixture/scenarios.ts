@@ -34,7 +34,7 @@ import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashP
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
-import type { HeldUtxo, RestoredNetworkInfo } from "../api/restoreHolds";
+import type { HeldUtxo } from "../api/restoreHolds";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -536,8 +536,7 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
     ...wallet.summary,
     balances: { ...b, confirmed: b.confirmed - spent.amount, unconfirmed: b.unconfirmed + change.amount, total: b.total + row.amount },
   };
-  const network: RestoredNetworkInfo = { ...w.launch.network, restored: stillRestored };
-  w.launch = { ...w.launch, network };
+  w.restored = stillRestored;
   w.send.sent[RESTORE_HELD_TXID] = { walletId: wallet.summary.walletId, spent: [spent], change: change.outpoint };
   w.send.restoreHeld = [RESTORE_HELD_TXID];
   return w;
