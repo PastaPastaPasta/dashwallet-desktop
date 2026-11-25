@@ -3373,6 +3373,21 @@ fn a_swept_payments_child_stays_when_a_fork_after_its_take_mines_the_payment() {
     });
 }
 
+/// #891: with no fork the hub counts and no block, P is InstantSend-locked
+/// after the drop took C: the history no longer abandons it, and C stays.
+#[test]
+fn a_swept_payments_child_stays_when_the_payment_is_locked_after_its_take() {
+    swept_child_after_its_take(|engine, session, id, p| {
+        let heard = session.hub.truncations();
+        instant_lock(engine, session, id, p);
+        assert!(
+            (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+            "the history holds P again"
+        );
+        assert_eq!(session.hub.truncations(), heard, "no fork is counted");
+    });
+}
+
 /// #891: a fork the hub hears lands after the drop took C, and the new
 /// chain has not mined P yet: the fork alone keeps C.
 #[test]
