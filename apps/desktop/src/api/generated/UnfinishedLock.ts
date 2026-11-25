@@ -7,4 +7,9 @@ export type UnfinishedLock = { txid: string, vout: number, kind: LockKind,
 /**
  * The credit output's value.
  */
-duffs: number, origin: LockOrigin, state: UnfinishedState, };
+duffs: number, origin: LockOrigin, state: UnfinishedState,
+/**
+ * For a partly used transfer, the credits Platform's proved state
+ * showed left when it was read; a recover reads them again.
+ */
+remainingCredits: string | null, };
