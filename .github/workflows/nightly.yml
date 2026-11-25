@@ -65,6 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
           save-if: false
       - uses: ./.github/actions/pinned-sources
       # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
@@ -223,6 +224,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
           save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: Build the warm-up example
@@ -254,6 +256,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
           save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: mg04b_release_check (release)
@@ -287,6 +290,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
           save-if: false
       - uses: ./.github/actions/pinned-sources
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -328,6 +332,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
           save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: kill -9 rows

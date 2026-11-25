@@ -111,7 +111,8 @@ row):
 | Tauri E2E (tauri-driver, Linux) | `ubuntu-24.04` | `linux-host-deps.sh tauri` (WebKitGTK, `webkit2gtk-driver`, Xvfb), `cargo install tauri-driver --version 2.1.0 --locked`, then `xvfb-run -a pnpm e2e:tauri`: the debug app with the production renderer and the real engine, driven through one smoke flow; screenshots and logs uploaded as `e2e-tauri-linux` |
 | Deep links (linux, macos, windows) | `ubuntu-24.04`, `macos-latest`, `windows-latest` | U-01: `pnpm tauri build --debug --features selftest` with one bundle per OS (deb, app, NSIS), then `ci/github/deep-links.sh`: the bundle's scheme registration (`.desktop` `MimeType`, `CFBundleURLTypes`, `HKCU\Software\Classes`) checked, the app launched with a `dash:` link, and `pay:`, `dashpay:`, `dashwallet:` and a refused `dash:` link opened through the OS (`xdg-open` under `dbus-run-session`, `open`, `start`) and followed in the link trace; trace, logs and the registration files uploaded as `deep-links-<os>`. Passing on the hosted linux, macos and windows runners |
 | Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` (`SwiftCrossUIPatchTests`, the vendored SwiftCrossUI patches, among them) plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
-| macOS | `macos-latest` (arm64) | `cargo test --workspace --locked`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
+| macOS (engine) | `macos-latest` (arm64) | `cargo test --workspace --locked` |
+| macOS (Swift, app) | `macos-latest` (arm64), beside macOS (engine) | `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
 | Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
 | Windows Swift | `windows-latest` | **non-blocking**, see "Known gaps": the Windows core bundle, the headless Swift suites, `dash-wallet` with WinUIBackend, then a launch screenshot if it built |
 
@@ -348,9 +349,18 @@ Measured over the 24 hours to 11-25 05:40Z (Actions API: 13 finished `ci.yml` ma
   2.3 GB and saved its compile little (6–33 min on a hit, 11–43 min on a miss). Nightly's five Rust
   caches missed every night and were saved again.
 
-So: `macos-swift` runs the Swift side next to `macos` instead of after it. Release's macOS job and
-nightly restore but never save their Rust caches, which leaves CI's four (about 8.8 GB) under the cap.
-Coverage is unchanged.
+So, trimming only (no new runners):
+
+- `macos-swift` runs the Swift side beside `macos` instead of after it.
+- A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
+- A docs-only merge starts no CI run (the docs that tests read still do).
+- Release builds on tags, at 02:47 UTC and on a dispatch, not on every merge (in the pull request after #780,
+  which rewrites `release.yml`).
+- Release's macOS job and nightly restore CI's Rust cache (`ci-<os>`) and never save one, which leaves CI's
+  four (about 9.2 GB) as the only Rust caches. Delete the old `v0-rust-release-macOS-*` entry once, after the
+  merge (`gh cache delete <key>`), or it stays until it ages out.
+- When runners are the wait, build and test on other compute (strix, agentbox, the Studio, boat.dev) and merge
+  on that green build plus the required checks; fix a regression on main after.
 
 ## `nightly.yml`
 

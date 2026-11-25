@@ -45,6 +45,26 @@ name: CI
 on:
   push:
     branches: [main]
+    # A docs-only merge runs nothing, as a docs-only pull request does (the `changes` job): docs/ and *.md,
+    # except the docs that tests read. The 02:47 UTC run still runs everything.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "docs/contracts/**"
+      - "docs/design/E0-13-facade-coverage.md"
+      - "docs/**/*.rs"
+      - "docs/**/*.swift"
+      - "docs/**/*.ts"
+      - "docs/**/*.tsx"
+      - "docs/**/*.js"
+      - "docs/**/*.mjs"
+      - "docs/**/*.json"
+      - "docs/**/*.toml"
+      - "docs/**/*.yml"
+      - "docs/**/*.yaml"
+      - "docs/**/*.sh"
+      - "docs/**/*.py"
   pull_request:
   schedule:
     - cron: "47 2 * * *"
@@ -57,11 +77,11 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's or pull request's running CI. Main runs one at a time and is never
-# cancelled; a newer main run replaces a pending one, so a burst of merges queues one run behind the running one.
+# A new push cancels its ref's running CI, main included: the newest main commit's run covers the merges
+# before it, so a burst of merges no longer queues behind a superseded ~100-minute run.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
