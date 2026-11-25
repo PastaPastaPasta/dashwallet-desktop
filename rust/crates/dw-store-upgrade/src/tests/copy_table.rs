@@ -991,9 +991,17 @@ fn only_a_start_stopped_by_the_machine_gets_the_retry_screen() {
         (opened(W::Sqlite(sqlite(rusqlite::ffi::SQLITE_FULL))), true),
         (opened(W::Io(io(std::io::ErrorKind::UnexpectedEof))), false),
         (opened(short_blob), false),
+        (opened(disk_in_decode()), false),
         (opened(W::BlobDecode { reason: "x" }), false),
     ] {
         assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+    }
+    for (e, want) in [
+        (W::Io(io(std::io::ErrorKind::StorageFull)), true),
+        (W::Io(io(std::io::ErrorKind::UnexpectedEof)), false),
+        (disk_in_decode(), false),
+    ] {
+        assert_eq!(crate::precheck::storage_fault(&e), want, "{e:?}");
     }
     let e = E::Io {
         context: "x",
@@ -1021,4 +1029,14 @@ fn the_notices_carry_mg_s_final_text() {
         }
     );
     assert!(crate::copy::PENDING_MG.is_empty());
+}
+
+/// A decode error stops the search for a machine fault, whatever its
+/// sources say.
+fn disk_in_decode() -> platform_wallet_storage::WalletStorageError {
+    platform_wallet_storage::WalletStorageError::ConsensusCodec {
+        source: dashcore::consensus::encode::Error::Io(std::io::Error::from(
+            std::io::ErrorKind::StorageFull,
+        )),
+    }
 }
