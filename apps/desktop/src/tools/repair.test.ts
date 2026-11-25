@@ -376,6 +376,17 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     const retry = { reason: "spendUnsettled", retryLater: true } as const;
     expect(shieldBlockedText(retry, true)).toBe(shieldBlockedText(retry));
     expect(RepairText.resolvedShield("ab".repeat(32), true)).toBe(`The coins were sent back to your wallet (transaction ${"ab".repeat(32)}).`);
+    expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH.",
+    );
+    expect(RepairText.shieldRepair(false, 1, "1.1 DASH", "0.0000034 DASH", true)).toBe(
+      "Repair sends the one spendable coin of your main balance (1.1 DASH) back to your wallet, at a network fee of 0.0000034 DASH.",
+    );
+    for (const [mixed, n] of [[true, 1], [true, 2], [false, 1], [false, 2]] as const) {
+      const on = RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH");
+      expect(on).toMatch(/ You can move Dash into Shielded again once that payment is confirmed\.$/);
+      expect(RepairText.shieldRepair(mixed, n, "1.1 DASH", "0.0000034 DASH", true)).toBe(on.replace(" You can move Dash into Shielded again once that payment is confirmed.", ""));
+    }
 
     const { api, vault } = setup({ encrypted: false });
     const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => true);

@@ -270,6 +270,15 @@ export const tools = {
       one: "Repair sends the one spendable coin of your main balance ({total}) back to your wallet, at a network fee of {fee}. You can move Dash into Shielded again once that payment is confirmed.",
       other: "Repair sends all {count} spendable coins of your main balance ({total}) back to your wallet, at a network fee of {fee}. You can move Dash into Shielded again once that payment is confirmed.",
     },
+    /** `shieldRepairMixed`/`shieldRepairMain` where this version cannot send from Shielded, so moves into it stay off. */
+    shieldRepairMixedSpendsOff: {
+      one: "Repair sends the move's mixed coin ({total}) back to your wallet's main balance, at a network fee of {fee}.",
+      other: "Repair sends the move's {count} mixed coins ({total}) back to your wallet's main balance, at a network fee of {fee}.",
+    },
+    shieldRepairMainSpendsOff: {
+      one: "Repair sends the one spendable coin of your main balance ({total}) back to your wallet, at a network fee of {fee}.",
+      other: "Repair sends all {count} spendable coins of your main balance ({total}) back to your wallet, at a network fee of {fee}.",
+    },
     resolveStuckShieldMixed: {
       one: "Send the move's mixed coin ({total}) back to your wallet's main balance? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",
       other: "Send the move's {count} mixed coins ({total}) back to your wallet's main balance? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",

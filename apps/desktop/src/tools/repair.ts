@@ -80,8 +80,17 @@ export const RepairText = {
   shield: (mixed: boolean) => (mixed ? t("tools.repair.shieldMixed") : t("tools.repair.shieldMain")),
   /** What Repair's payment for it spends: a move of mixed coins sends back only those coins, to the
    * main balance; a shield sends every spendable coin of the main balance. */
-  shieldRepair: (mixed: boolean, coins: number, total: string, fee: string) =>
-    t(mixed ? "tools.repair.shieldRepairMixed" : "tools.repair.shieldRepairMain", { count: coins, total, fee }),
+  shieldRepair: (mixed: boolean, coins: number, total: string, fee: string, spendsOff = false) =>
+    t(
+      spendsOff
+        ? mixed
+          ? "tools.repair.shieldRepairMixedSpendsOff"
+          : "tools.repair.shieldRepairMainSpendsOff"
+        : mixed
+          ? "tools.repair.shieldRepairMixed"
+          : "tools.repair.shieldRepairMain",
+      { count: coins, total, fee },
+    ),
   resolveStuckShieldQuestion: (mixed: boolean, coins: number, total: string, fee: string) =>
     t(mixed ? "tools.repair.resolveStuckShieldMixed" : "tools.repair.resolveStuckShieldMain", { count: coins, total, fee }),
   /** `spendsOff`: this build cannot send from Shielded, so it names no move into Shielded. */

@@ -180,7 +180,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                   {t("tools.repair.shieldLine", {
                     what: RepairText.shield(f.repair?.mixed ?? false),
                     detail: f.repair
-                      ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
+                      ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs), spendsOff)
                       : f.blocked
                         ? shieldBlockedText(f.blocked, spendsOff)
                         : "",
