@@ -31,7 +31,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
 import { heldExitOp, isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
