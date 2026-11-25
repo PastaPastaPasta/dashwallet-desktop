@@ -44,7 +44,7 @@ extension L10n {
             case .recordUnreadable:
                 "A saved transaction in one of your open wallets can't be read, so Dash Wallet can't tell whether this one is still needed. Restart Dash Wallet. If that doesn't help, remove that wallet and restore it from its recovery phrase."
             case .platformFunding:
-                "This transaction can't be abandoned because it, or a later transaction that spends from it, pays for a Platform transfer, credit top-up or username registration that hasn't finished."
+                "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes."
             }
         }
 

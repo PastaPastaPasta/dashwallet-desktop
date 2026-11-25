@@ -94,7 +94,7 @@ describe("a refused abandon", () => {
 
   it("says why a payment funding an unfinished Platform transfer can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("platformFunding", "engine text"))).toBe(
-      "This transaction can't be abandoned because it, or a later transaction that spends from it, pays for a Platform transfer, credit top-up or username registration that hasn't finished.",
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     );
   });
 
