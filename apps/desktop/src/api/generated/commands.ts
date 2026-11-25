@@ -455,6 +455,20 @@ export function cancelRestore(network: string | null): Promise<null> {
   return invoke<null>("cancel_restore", { network });
 }
 
+/**
+ * The refused open's way back to the funds (Q107 C1): the window's
+ * network starts over in a new, empty folder beside its own, with the
+ * restore's RESTORED mark, so the wallet set up there from its recovery
+ * phrase stays held until its first full sync. Nothing in the refused
+ * folder changes. The next start opens the new folder; the renderer
+ * restarts the app after this (`restart_app`). `invalid_argument`
+ * unless the network's last open was refused by the store-upgrade
+ * check as damaged, and while it is open.
+ */
+export function recoverInFreshFolder(): Promise<null> {
+  return invoke<null>("recover_in_fresh_folder");
+}
+
 export function lockStatus(): Promise<LockStatus> {
   return invoke<LockStatus>("lock_status");
 }
@@ -672,7 +686,9 @@ export function destroyVault(credential: CredentialSpec): Promise<LockStatus> {
 /**
  * A fresh BIP39 phrase of 12, 15, 18, 21 or 24 words. Nothing is
  * stored: the UI shows it, checks the user wrote it down (QT-103,
- * IOS-004) and passes it to `importWallet`.
+ * IOS-004) and passes it to `importWallet`. `restore_only` while the
+ * open network's RESTORED mark is set: a new wallet waits for it to
+ * clear.
  */
 export function generateMnemonic(wordCount: number, language: MnemonicLanguageName): Promise<string> {
   return invoke<string>("generate_mnemonic", { wordCount, language });
@@ -3458,6 +3474,7 @@ export type CommandArgs = {
   request_restore: { network: string | null };
   keep_current_files: { network: string | null };
   cancel_restore: { network: string | null };
+  recover_in_fresh_folder: {  };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };
@@ -3843,6 +3860,7 @@ export type CommandResults = {
   request_restore: null;
   keep_current_files: null;
   cancel_restore: null;
+  recover_in_fresh_folder: null;
   lock_status: LockStatus;
   unlock: LockStatus;
   unlock_mixing_only: LockStatus;
@@ -4230,6 +4248,7 @@ export const COMMANDS: Record<CommandName, string> = {
   request_restore: "network",
   keep_current_files: "network",
   cancel_restore: "network",
+  recover_in_fresh_folder: "network",
   lock_status: "vault",
   unlock: "vault",
   unlock_mixing_only: "vault",
@@ -4669,6 +4688,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "stuck_funding",
   "shielded_spend_unresolved",
   "last_startup_wallet",
+  "restore_only",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",

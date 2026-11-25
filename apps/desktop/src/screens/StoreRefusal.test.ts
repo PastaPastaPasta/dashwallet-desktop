@@ -42,7 +42,6 @@ import {
   OpenFailureActions,
   perform,
   RecoverConfirmView,
-  refusalButtons,
   RESTORE_BUTTONS,
   restoreButtonKey,
   RestoreConfirmView,
@@ -136,7 +135,7 @@ describe("the store refusal screen", () => {
         expect(html).toContain(FOLDER);
         expect(html).not.toContain("{folder}");
         for (const b of screen.buttons) expect(button(html, `store-refused-button-${b.key}`)?.label).toBe(escaped(b.label));
-        expect(html.match(/<button/g)).toHaveLength(refusalButtons(refusal).buttons.length);
+        expect(html.match(/<button/g)).toHaveLength(screen.buttons.length);
         expect(html).not.toContain("disabled");
         expect(html.includes('data-testid="store-refused-hint"')).toBe(screen.hint !== null);
         expectNoWalletFallthrough(html);
@@ -1063,16 +1062,17 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
   const recoverButton = `store-refused-button-${RECOVER}`;
   const RC = en.storeUpgrade.recover;
   const buttonKeys = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
+  const CONFIRM_TEXT = "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.";
 
-  it("shows only for a damaged store, whatever else the screen offers", () => {
-    for (const [name, refusal] of FIXTURES) expect(button(renderRefusal(refusal), recoverButton) !== null, name).toBe(refusal.cause === "SnapshotSourceDamaged");
-    for (const cause of ["Unexpected", "SchemaHistoryMismatch", "PreHistoryFork", "snapshotsourcedamaged", "", "__proto__", "constructor"])
-      expect(button(renderRefusal({ ...damaged, cause }), recoverButton), cause).toBeNull();
-    for (const [, refusal] of FIXTURES.filter(([, r]) => r.cause !== "SnapshotSourceDamaged")) expect(renderRefusal(refusal)).not.toContain("store-refused-recover-meaning");
+  it("shows only where the engine's screen carries it: a damaged store", () => {
+    for (const [name, refusal] of FIXTURES) expect(button(renderRefusal(refusal), recoverButton) !== null, name).toBe(refusal.screen.buttons.some((b) => b.key === RECOVER));
+    expect(FIXTURES.filter(([, r]) => r.screen.buttons.some((b) => b.key === RECOVER)).map(([, r]) => r.cause)).toEqual(["SnapshotSourceDamaged"]);
+    for (const cause of ["Unexpected", "SchemaHistoryMismatch", "RetiredPoolWithoutAdopter"])
+      expect(button(renderRefusal({ ...damaged, cause, screen: { ...damaged.screen, buttons: damaged.screen.buttons.filter((b) => b.key !== RECOVER) } }), recoverButton), cause).toBeNull();
   });
 
   for (const theme of THEMES)
-    it(`in ${theme}, comes first, unfocused and plain, with what it does under the text`, () => {
+    it(`in ${theme}, comes first, unfocused and plain, under the crate's damaged-store text`, () => {
       ui.set({ theme });
       const html = renderRefusal(damaged);
       expect(buttonKeys(html)).toEqual([RECOVER, "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
@@ -1081,22 +1081,30 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
       expect(recover?.tag).toContain("dash-button-plainBlue");
       expect(recover?.tag).not.toContain("autofocus");
       expect(html).not.toContain("autofocus");
-      expect(html).toContain(`data-testid="store-refused-recover-meaning">${escaped(RC.meaning.replaceAll("{folder}", FOLDER))}</p>`);
       expect(html).toContain(`data-testid="store-refused-text">${escaped(damaged.screen.text)}</p>`);
+      expect(damaged.screen.text).toContain(en.storeUpgrade.refused.detail.damaged);
+      expect(damaged.screen.text).toContain(en.storeUpgrade.refused.wayOut.damaged.replaceAll("{folder}", FOLDER));
       expect(html).toContain(`data-testid="store-refused-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+      expect(html).not.toContain("store-refused-recover-meaning");
       expectNoWalletFallthrough(html);
       expectStyledClasses(html);
     });
+
+  it("carries the crate's damaged-store lines word for word", () => {
+    const keyed = (key: string, text: string) => new RegExp(`"${key.replace(/\./g, "\\.")}",\\s*"${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
+    expect(COPY_RS).toMatch(keyed("storeUpgrade.refused.detail.damaged", en.storeUpgrade.refused.detail.damaged));
+    expect(COPY_RS).toMatch(keyed("storeUpgrade.refused.wayOut.damaged", en.storeUpgrade.refused.wayOut.damaged));
+    expect(COPY_RS).toMatch(keyed("storeUpgrade.refused.recover", en.storeUpgrade.refused.recover));
+  });
 
   it("names the refused folder's real path wherever the copy says {folder}, never the placeholder", () => {
     const other = "/srv/other/Dash Wallet/testnet";
     for (const folder of [FOLDER, other]) {
       const html = renderRefusal(STORE_SCREENS.damaged(folder));
-      const meaning = html.match(/data-testid="store-refused-recover-meaning">([^<]*)<\/p>/)?.[1] ?? "";
-      expect(meaning).toContain(`leaves ${escaped(folder)} as it is and doesn&#x27;t delete anything`);
-      expect(meaning).toContain(`they stay in ${escaped(folder)}.`);
+      expect(html).toContain(`leaves ${escaped(folder)} as it is and doesn&#x27;t delete anything`);
+      expect(html).toContain(`they stay in ${escaped(folder)}.`);
       const confirm = renderToStaticMarkup(createElement(RecoverConfirmView, { folder, busy: false, problem: null, onConfirm: noop, onClose: noop }));
-      expect(confirm).toContain(`leaves ${escaped(folder)} as it is`);
+      expect(confirm).toContain(`delete anything in ${escaped(folder)}.</p>`);
       for (const out of [html, confirm]) expect(out).not.toContain("{folder}");
     }
   });
@@ -1108,17 +1116,12 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
     expect(button(busy, "store-refused-button-storeUpgrade.refused.quit")?.tag).not.toContain("disabled");
   });
 
-  it("shows the engine's own button once, without the local line, once dw-store-upgrade carries it", () => {
-    const html = renderRefusal(STORE_SCREENS.damagedRecover(FOLDER));
-    expect(buttonKeys(html)).toEqual([RECOVER, "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
-    expect(html).not.toContain("store-refused-recover-meaning");
-    expect(button(html, recoverButton)?.label).toBe("Set up from recovery phrase");
+  it("is the recover action", () => {
+    expect(buttonAction(RECOVER)).toBe("recover");
   });
 
-  it("is the recover action, labelled from the catalog as the engine labels it", () => {
-    expect(buttonAction(RECOVER)).toBe("recover");
-    expect(en.storeUpgrade.refused.recover).toBe(STORE_SCREENS.damagedRecover(FOLDER).screen.buttons[0].label);
-    expect(refusalButtons(damaged).buttons.filter((b) => b.key === RECOVER)).toEqual([{ key: RECOVER, label: en.storeUpgrade.refused.recover, destructive: false, defaultFocus: false }]);
+  it("the confirm carries MG's copy, word for word", () => {
+    expect(RC.confirm).toEqual({ title: "Set up from a recovery phrase?", text: CONFIRM_TEXT, confirm: "Restart and set up", cancel: "Cancel" });
   });
 
   const renderConfirm = (busy = false, problem: string | null = null) => renderToStaticMarkup(createElement(RecoverConfirmView, { folder: FOLDER, busy, problem, onConfirm: noop, onClose: noop }));
@@ -1130,8 +1133,7 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
       expect(html).toContain('role="dialog"');
       expect(html).toContain(`>${escaped(RC.confirm.title)}</h2>`);
       const paragraphs = [...html.matchAll(/data-testid="recover-confirm-text">([^<]*)<\/p>/g)].map((m) => m[1]);
-      expect(paragraphs).toEqual(RC.confirm.text.replaceAll("{folder}", FOLDER).split("\n\n").map(escaped));
-      expect(paragraphs[0]).toContain(`leaves ${FOLDER} as it is, without deleting anything`);
+      expect(paragraphs).toEqual([escaped(CONFIRM_TEXT.replace("{folder}", FOLDER))]);
       const cancel = button(html, "recover-confirm-cancel");
       expect(cancel?.label).toBe(RC.confirm.cancel);
       expect(cancel?.tag).toContain("data-autofocus");

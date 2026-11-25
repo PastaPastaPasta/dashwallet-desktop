@@ -8,17 +8,15 @@ import type { Tree } from "../core";
  * its `dismiss` is the renderer's own. `restore` and
  * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
  * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. `refused.recover`
- * is the damaged store's way out (Q107 C1), with its own line and confirm under `recover`, until the
- * engine's screen carries the button. `notPrivate`
+ * is the damaged store's way out (Q107 C1) in the engine's screen; `recover` is the renderer's own
+ * confirm for it, `folder` there the refused folder. `notPrivate`
  * is the renderer's own screen for `storage_not_private`: `folder` there is the directory others can
  * change, and `reason` says why. */
 export const storeUpgrade = {
   recover: {
-    meaning:
-      "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
     confirm: {
-      title: "Set up this wallet again?",
-      text: "Dash Wallet restarts with a new data folder. There, set up a wallet again from its recovery phrase, then add any other wallets, each from its own. Dash Wallet leaves {folder} as it is, without deleting anything.\n\nUntil the wallet has finished syncing, anything that moves your funds is paused.",
+      title: "Set up from a recovery phrase?",
+      text: "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in {folder}.",
       confirm: "Restart and set up",
       cancel: "Cancel",
     },
@@ -59,6 +57,7 @@ export const storeUpgrade = {
       contactsTable: "it holds contact data that this version can't read yet.",
       selfCheck: "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
       unexpected: "it's in a state this version doesn't expect.",
+      damaged: "it can't be read as wallet data, so it may be damaged.",
     },
     wayOut: {
       previous:
@@ -76,6 +75,8 @@ export const storeUpgrade = {
         "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
       selfCheckNotMigrated:
         "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+      damaged:
+        "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
     },
   },
   retry: {

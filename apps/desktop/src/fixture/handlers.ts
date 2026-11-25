@@ -57,7 +57,7 @@ import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./top
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
-import { FIXTURE_DATA_DIR, isClosed, settingsHandlers } from "./settings";
+import { FIXTURE_DATA_DIR, isClosed, restoreOnly, settingsHandlers } from "./settings";
 import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
@@ -868,7 +868,8 @@ export const HANDLERS: Handlers = {
     setLock(ctx, passphrase === null ? "noKeys" : "unlocked");
     return world.lock;
   },
-  generate_mnemonic: ({ wordCount, language }) => {
+  generate_mnemonic: ({ wordCount, language }, { world }) => {
+    if (world.restored) throw restoreOnly();
     if (language !== "english" || (wordCount !== 12 && wordCount !== 24)) throw fail("invalid_argument", "the fixture makes English phrases of 12 or 24 words");
     return wordCount === 12 ? CREATED_12 : CREATED_24;
   },

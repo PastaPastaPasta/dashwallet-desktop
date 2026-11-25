@@ -152,32 +152,25 @@ test.describe("a damaged store (Q107 C1)", () => {
   }
 
   for (const theme of THEMES)
-    test(`offers Set up from recovery phrase first, unfocused, with what it does (${theme})`, async ({ page }) => {
+    test(`offers the engine's Set up from recovery phrase first, unfocused, under its damaged-store text (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl("funded", theme, "&openRefused=damaged"));
       const buttons = page.getByTestId("store-refused").locator("button");
       await expect(buttons).toHaveText(["Set up from recovery phrase", "Report a problem", "Quit"]);
       await expect(page.getByTestId(RECOVER)).not.toBeFocused();
-      await expect(page.getByTestId("store-refused-recover-meaning")).toContainText(
-        "Dash Wallet leaves /home/user/.local/share/dashwallet/testnet as it is and doesn't delete anything.",
-      );
+      const text = page.getByTestId("store-refused-text");
+      await expect(text).toContainText("it can't be read as wallet data, so it may be damaged.");
+      await expect(text).toContainText("Dash Wallet leaves /home/user/.local/share/dashwallet/testnet as it is and doesn't delete anything.");
       await expectNoWallet(page);
       expect(errors).toEqual([]);
     });
 
-  for (const screen of ["cantOpen", "cantOpenWithoutBackup", "restoreForeign", "refusedRestore"])
+  for (const screen of ["refusedPrevious", "refusedSupport", "refusedRestore"])
     test(`is not offered on any other refusal (${screen})`, async ({ page }) => {
       await page.goto(fixtureUrl("funded", "light", `&openRefused=${screen}&restoreAvailable=yes`));
       await expect(page.getByTestId("store-refused")).toBeVisible();
       await expect(page.getByTestId(RECOVER)).toHaveCount(0);
-      await expect(page.getByTestId("store-refused-recover-meaning")).toHaveCount(0);
     });
-
-  test("shows the engine's own button once when dw-store-upgrade carries it", async ({ page }) => {
-    await page.goto(fixtureUrl("funded", "light", "&openRefused=damagedRecover"));
-    await expect(page.getByTestId(RECOVER)).toHaveCount(1);
-    await expect(page.getByTestId("store-refused-recover-meaning")).toHaveCount(0);
-  });
 
   test("asks first, then sets up in a new folder after a restart: the phrase restore only, more wallets through Add a wallet, and never the refusal again", async ({ page }) => {
     const errors = trackPageErrors(page);
@@ -185,6 +178,10 @@ test.describe("a damaged store (Q107 C1)", () => {
 
     // Cancel writes nothing.
     await page.getByTestId(RECOVER).click();
+    await expect(page.getByTestId("recover-confirm").locator("h2")).toHaveText("Set up from a recovery phrase?");
+    await expect(page.getByTestId("recover-confirm-text")).toHaveText(
+      "Dash Wallet restarts with a new, empty data folder, and you enter a wallet's recovery phrase. It doesn't change or delete anything in /home/user/.local/share/dashwallet/testnet.",
+    );
     await expect(page.getByTestId("recover-confirm-cancel")).toBeFocused();
     await page.getByTestId("recover-confirm-cancel").click();
     await expect(page.getByTestId("recover-confirm")).toHaveCount(0);
@@ -197,7 +194,9 @@ test.describe("a damaged store (Q107 C1)", () => {
     await expectRestoreOnly(page);
     expect(await restoreCalls(page)).toEqual(["recoverInFreshFolder"]);
     expect(await appExits(page)).toEqual(["restart"]);
-    await expect(page.getByTestId("onboarding-welcome-text")).toHaveText("Dash Wallet started with a new data folder. Set up your wallet again from its recovery phrase.");
+    await expect(page.getByTestId("onboarding-welcome-text")).toHaveText(
+      "Your earlier wallet data couldn't be read, so Dash Wallet started with a new data folder. Enter a recovery phrase to set up a wallet again.",
+    );
     await expect(page.getByTestId("store-refused")).toHaveCount(0);
 
     await restorePhrase(page, MAIN_PHRASE);
@@ -211,12 +210,26 @@ test.describe("a damaged store (Q107 C1)", () => {
     await command(page, { kind: "addWallet" });
     await expect(page.getByTestId("onboarding-welcome").locator("h1")).toHaveText("Add a wallet");
     await expectRestoreOnly(page);
-    await expect(page.getByTestId("onboarding-welcome-text")).toHaveText("Until this wallet data has finished syncing, a wallet can only be added from its recovery phrase.");
+    await expect(page.getByTestId("onboarding-welcome-text")).toHaveText(
+      "Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase. The other ways to add a wallet come back after that.",
+    );
     await restorePhrase(page, SECOND_PHRASE);
     await page.getByTestId("onboarding-open").click();
     await expect(page.getByTestId("toolbar-wallet-picker")).toBeVisible();
     expect(await page.evaluate(() => Object.values(window.__dwFixture!.world.phrases).sort())).toEqual([MAIN_PHRASE, SECOND_PHRASE].sort());
     expect(await page.evaluate(() => window.__dwFixture!.world.restored)).toBe(true);
+
+    // Once the mark clears (here set directly), Add a wallet offers every way again.
+    await page.evaluate(() => (window.__dwFixture!.world.restored = false));
+    await relaunch(page);
+    await page.getByTestId("lock-field").fill("restored pass");
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("hero")).toBeVisible();
+    await command(page, { kind: "addWallet" });
+    for (const id of ["onboarding-create", "onboarding-restore", "onboarding-restore-file"]) await expect(page.getByTestId(id)).toBeVisible();
+    await expect(page.getByTestId("onboarding-welcome-text")).toHaveText("Create a new wallet, or restore one with its recovery phrase or a backup file.");
+    await page.getByTestId("onboarding-cancel").click();
+    await page.evaluate(() => (window.__dwFixture!.world.restored = true));
 
     // Two more starts open the new folder: the wallets, never the refusal.
     for (let i = 0; i < 2; i++) {

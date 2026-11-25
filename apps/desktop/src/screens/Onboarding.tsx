@@ -252,7 +252,7 @@ function Done({ model, network, onDone }: { model: OnboardingModel; network: Net
   );
 }
 
-function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
+export function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
   // A wallet is made on the network this window runs on. Choosing the other one moves the window
   // there (the page boots again), so until then neither action may go on. "Add a wallet" adds to
   // this network and has no picker: switching networks is Settings' (row 74).
