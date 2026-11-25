@@ -959,11 +959,14 @@ impl From<crate::EngineError> for PlatformError {
             // A replay that runs: a wait for sync, as `PwLib::fence` reports it.
             E::RescanInProgress => Self::ContextUnavailable,
             E::RescanInterrupted => Self::RescanInterrupted,
-            e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
-                Self::Storage {
-                    detail: e.to_string(),
-                }
-            }
+            e @ (E::Storage(_)
+            | E::StorageInUse(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::RetryableIo(_)
+            | E::Io(_)) => Self::Storage {
+                detail: e.to_string(),
+            },
             E::InsufficientCredits {
                 needed, available, ..
             } => Self::InsufficientCredits { needed, available },

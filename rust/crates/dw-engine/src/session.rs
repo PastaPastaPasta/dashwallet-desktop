@@ -15,7 +15,7 @@ use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletManager;
-use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+use platform_wallet_storage::SqlitePersister;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::{Error as PemError, PemObject};
 use tokio::runtime::Handle;
@@ -204,6 +204,8 @@ async fn released<T>(held: &Weak<T>) -> bool {
 pub(crate) struct Live {
     pub manager: Arc<Manager>,
     pub persister: Arc<SqlitePersister>,
+    /// The store upgrade's proof the persister opened through it.
+    pub _persister_opened: Arc<dw_store_upgrade::PersisterOpened>,
     /// The persister platform-wallet uses; knows which wallets are closed.
     pub store: Arc<crate::store::WalletStore>,
     pub appdb: Arc<AppDb>,
@@ -366,10 +368,26 @@ impl NetworkSession {
             None => None,
         };
         create_owned_dir(&data_dir, Path::new(""))?;
+        // M3 (dw-store-upgrade): under the instance lock and before any store
+        // opens, the refusal check, the snapshot and the reconcile, with the
+        // config the persister opens with below. A refusal changes nothing
+        // in the folder.
+        let persister_config = crate::store_upgrade::persister_config(&data_dir);
+        {
+            let (dir, config) = (data_dir.clone(), persister_config.clone());
+            tokio::task::spawn_blocking(move || {
+                crate::store_upgrade::prepare_and_reconcile(&dir, &config)
+            })
+            .await??;
+        }
+        dw_store_upgrade::note_stores_opening();
+        use crate::store_upgrade::order::{Step, record};
+        record(&data_dir, Step::StoresOpening);
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
         let unclean_previous = marker.exists();
 
         let vault_dir = data_dir.join(VAULT_DIR);
+        record(&data_dir, Step::Vault);
         let (core_network, tag) = (network.core_network(), network.dir_name());
         let vault = tokio::task::spawn_blocking(move || {
             Vault::open(vault_dir, core_network, &tag, vault_config)
@@ -377,6 +395,7 @@ impl NetworkSession {
         .await??;
 
         let appdb_path = data_dir.join(APP_DB_FILE);
+        record(&data_dir, Step::AppDb);
         create_owned_file(&data_dir, Path::new(APP_DB_FILE))?;
         create_owned_file(&data_dir, Path::new(APP_DB_LOCK_FILE))?;
         let (appdb, names) = tokio::task::spawn_blocking(move || {
@@ -457,25 +476,25 @@ impl NetworkSession {
             (!opts.no_platform).then(|| protocol.observer()),
         )?;
 
-        let db_path = data_dir.join(WALLET_DB_FILE);
         // SqlitePersister creates its backup directory with the umask's mode
         // and refuses one below a group-writable directory: `backups` and
         // `backups/auto` are owner-only, legacy 0775 ones included, before
         // it needs a pre-migration backup.
-        let auto_backups = platform_wallet_storage::default_auto_backup_dir(&db_path);
-        let auto_backups = auto_backups.strip_prefix(&data_dir).map_err(|_| {
-            EngineError::Internal(format!(
-                "{} is outside the network directory",
-                auto_backups.display()
-            ))
-        })?;
+        let auto_backups = (persister_config.auto_backup_dir.as_deref())
+            .and_then(|dir| dir.strip_prefix(&data_dir).ok())
+            .ok_or_else(|| {
+                EngineError::Internal(format!(
+                    "{:?} is not inside the network directory",
+                    persister_config.auto_backup_dir
+                ))
+            })?;
         create_owned_dir(&data_dir, auto_backups)?;
-        let persister = Arc::new(
-            tokio::task::spawn_blocking(move || {
-                SqlitePersister::open(SqlitePersisterConfig::new(db_path))
-            })
-            .await??,
-        );
+        // Only through the store upgrade's token, with the config the
+        // reconcile used; the token lives as long as the persister (`Live`).
+        let (persister, persister_opened) = tokio::task::spawn_blocking(move || {
+            crate::store_upgrade::open_persister(persister_config)
+        })
+        .await??;
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
         // them: with no wallet open, closed ones cannot be reached. Such a
@@ -708,6 +727,7 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
+                _persister_opened: Arc::new(persister_opened),
                 store,
                 appdb: Arc::clone(&appdb),
                 tap,

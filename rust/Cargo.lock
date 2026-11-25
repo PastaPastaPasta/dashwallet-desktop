@@ -2575,6 +2575,7 @@ dependencies = [
  "dw-p2p",
  "dw-protx",
  "dw-psbt",
+ "dw-store-upgrade",
  "dw-testutil",
  "dw-units",
  "dw-uri",

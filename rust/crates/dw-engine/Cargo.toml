@@ -63,6 +63,9 @@ dw-uri = { workspace = true }
 dw-vault = { workspace = true }
 # Owner-only directories and files, changed through descriptors.
 dw-fs = { workspace = true }
+# M3: wallet files the fork builds wrote, checked and upgraded before the
+# persister opens; the persister opens only through its token.
+dw-store-upgrade = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -110,6 +113,8 @@ serde_json = "1"
 # pinned platform's grovedb, the crate the graph already uses).
 grovedb-commitment-tree = { git = "https://github.com/dashpay/grovedb", rev = "89dc7351f09f5e5425025861fdc1892473569917" }
 tempfile = { workspace = true }
+# A chosen P9a outcome on the real open path, one test binary each.
+dw-store-upgrade = { workspace = true, features = ["test-support"] }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests. `net` and

@@ -128,6 +128,16 @@ impl Engine {
                 dw_fs::instance::InstanceError::Io(e) => EngineError::from(e),
             })?;
         mark("instance");
+        use crate::store_upgrade::order::{Step, record};
+        record(&config.data_root, Step::Instance);
+        // M3: a store-upgrade check that crashed left a private copy of a
+        // wallet file under the root; no check runs yet in this process.
+        match dw_store_upgrade::sweep_stale_scratch(&config.data_root) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(removed = n, "store upgrade: stale scratch copies removed"),
+            Err(e) => tracing::warn!(error = %e, "store upgrade: stale scratch copies not removed"),
+        }
+        record(&config.data_root, Step::Sweep);
         install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.
