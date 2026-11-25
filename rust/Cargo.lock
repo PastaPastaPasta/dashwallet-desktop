@@ -166,7 +166,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "app-connect-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1579,7 +1579,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "dash-platform-macros",
  "futures-core",
@@ -1633,7 +1633,7 @@ dependencies = [
 [[package]]
 name = "dash-async"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "futures",
  "thiserror 2.0.18",
@@ -1645,7 +1645,7 @@ dependencies = [
 [[package]]
 name = "dash-context-provider"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "arc-swap",
  "dash-async",
@@ -1660,7 +1660,7 @@ dependencies = [
 [[package]]
 name = "dash-core-proof"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "blst",
  "hex",
@@ -1744,7 +1744,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-macros"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "heck 0.5.0",
  "quote",
@@ -1754,7 +1754,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-queries"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -1782,7 +1782,7 @@ dependencies = [
 [[package]]
 name = "dash-sdk"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1965,7 +1965,7 @@ dependencies = [
 [[package]]
 name = "dashpay-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1976,7 +1976,7 @@ dependencies = [
 [[package]]
 name = "data-contracts"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "app-connect-contract",
  "dashpay-contract",
@@ -2039,7 +2039,7 @@ dependencies = [
 [[package]]
 name = "decision-proposals-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2231,7 +2231,7 @@ dependencies = [
 [[package]]
 name = "document-history-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2272,7 +2272,7 @@ dependencies = [
 [[package]]
 name = "dpns-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2283,7 +2283,7 @@ dependencies = [
 [[package]]
 name = "dpp"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2351,7 +2351,7 @@ dependencies = [
 [[package]]
 name = "dpp-json-convertible-derive"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2361,7 +2361,7 @@ dependencies = [
 [[package]]
 name = "drive"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "byteorder",
  "derive_more 1.0.0",
@@ -2388,7 +2388,7 @@ dependencies = [
 [[package]]
 name = "drive-proof-verifier"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -4999,7 +4999,7 @@ dependencies = [
 [[package]]
 name = "json-schema-compatibility-validator"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "json-patch 1.4.0",
  "once_cell",
@@ -5125,7 +5125,7 @@ dependencies = [
 [[package]]
 name = "keyword-search-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5342,7 +5342,7 @@ dependencies = [
 [[package]]
 name = "masternode-reward-shares-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5465,7 +5465,7 @@ dependencies = [
 [[package]]
 name = "moderation-charters-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -6350,7 +6350,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-encryption"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "aes 0.8.4",
  "cbc",
@@ -6364,7 +6364,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "grovedb-bincode",
  "platform-version",
@@ -6373,7 +6373,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization-derive"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6384,7 +6384,7 @@ dependencies = [
 [[package]]
 name = "platform-value"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -6404,7 +6404,7 @@ dependencies = [
 [[package]]
 name = "platform-version"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "grovedb-bincode",
  "grovedb-version",
@@ -6415,7 +6415,7 @@ dependencies = [
 [[package]]
 name = "platform-versioning"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6425,7 +6425,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6459,7 +6459,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet-storage"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "apple-native-keyring-store",
  "argon2",
@@ -7273,7 +7273,7 @@ dependencies = [
 [[package]]
 name = "rs-dapi-client"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "backon",
  "chrono",
@@ -7302,7 +7302,7 @@ dependencies = [
 [[package]]
 name = "rs-sdk-trusted-context-provider"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "arc-swap",
  "dash-async",
@@ -8963,7 +8963,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "token-history-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -8974,7 +8974,7 @@ dependencies = [
 [[package]]
 name = "token-market-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -9062,6 +9062,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -9852,7 +9853,7 @@ dependencies = [
 [[package]]
 name = "wallet-utils-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -10710,7 +10711,7 @@ dependencies = [
 [[package]]
 name = "withdrawals-contract"
 version = "5.1.0-dev.1"
-source = "git+https://github.com/dashpay/platform?rev=611f30d6f32e5b335feec02266fb22e143adbb75#611f30d6f32e5b335feec02266fb22e143adbb75"
+source = "git+file:///work/scratch/pb-wiring/platform-p13?rev=100c8caf218244df090c78363a19a24e4c372a74#100c8caf218244df090c78363a19a24e4c372a74"
 dependencies = [
  "num_enum",
  "platform-value",
