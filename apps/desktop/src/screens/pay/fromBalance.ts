@@ -6,6 +6,7 @@
 
 import type { Backend } from "../../api/backend";
 import { isAppError } from "../../api/backend";
+import type { AppError } from "../../api/generated/AppError";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { ContactPayOutcomeInfo } from "../../api/generated/ContactPayOutcomeInfo";
 import type { ContactPayQuoteInfo } from "../../api/generated/ContactPayQuoteInfo";
@@ -95,10 +96,8 @@ export function totalText(quote: ContactPayQuoteInfo, contact: string, credit: (
 }
 
 /** Whether a Shielded refusal for too little is the hold's: what is held would cover the shortfall. */
-const heldShort = (e: { data?: unknown }, hold: ShieldedHold | null): boolean => {
-  const d = e.data as { kind?: string; needed?: string; available?: string } | undefined;
-  return hold !== null && d?.kind === "credits" && d.needed !== undefined && d.available !== undefined && BigInt(d.needed) <= BigInt(d.available) + BigInt(hold.credits);
-};
+const heldShort = (e: AppError, hold: ShieldedHold | null): boolean =>
+  hold !== null && e.data?.kind === "credits" && BigInt(e.data.needed) <= BigInt(e.data.available) + BigInt(hold.credits);
 
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked;
  * `hold` what payments that may still go through hold of the Shielded balance. */
