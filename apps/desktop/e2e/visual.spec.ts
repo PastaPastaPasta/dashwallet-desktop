@@ -1397,7 +1397,7 @@ const approveConnect = async (page: Page) => {
   await page.getByTestId("connect-approve").click();
   await authorize(page);
 };
-const CONNECT: Record<string, { outcome: ConnectOutcome; reach: (page: Page) => Promise<unknown> }> = {
+const CONNECT: Record<string, { outcome: ConnectOutcome; returnsTo?: string | null; reach: (page: Page) => Promise<unknown> }> = {
   sheet: { outcome: "ok", reach: quoted },
   "sheet-end": { outcome: "ok", reach: async (page) => (await quoted(page), page.getByTestId("connect-approve").scrollIntoViewIfNeeded()) },
   done: { outcome: "ok", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-done").waitFor()) },
@@ -1406,12 +1406,22 @@ const CONNECT: Record<string, { outcome: ConnectOutcome; reach: (page: Page) => 
   refused: { outcome: "stale", reach: (page) => page.getByTestId("connect-refusal").waitFor() },
   failed: { outcome: "failed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-refusal").waitFor()) },
   "not-confirmed": { outcome: "notConfirmed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-quote-error").scrollIntoViewIfNeeded()) },
+  "denied-typed": {
+    outcome: "notConfirmed",
+    returnsTo: null,
+    reach: async (page) => {
+      await approveConnect(page);
+      await page.getByTestId("connect-quote-error").waitFor();
+      await page.getByTestId("connect-deny").click();
+      await page.getByTestId("connect-denied").waitFor();
+    },
+  },
 };
 
 for (const theme of THEMES) {
-  for (const [name, { outcome, reach }] of Object.entries(CONNECT)) {
+  for (const [name, { outcome, returnsTo, reach }] of Object.entries(CONNECT)) {
     test(`visual connect-${name} ${theme}`, async ({ page }) => {
-      await openConnect(page, outcome, theme);
+      await openConnect(page, outcome, theme, returnsTo);
       await reach(page);
       await page.mouse.move(0, 0);
       await shoot(page, `connect-${name}`, theme);
