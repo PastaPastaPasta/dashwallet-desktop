@@ -1352,7 +1352,8 @@ struct DropPlan {
 /// the write lock (#818): the truncations the hub had applied, and, when
 /// the winner is a block's spend the wallet does not know
 /// ([`unknown_block`]), the header chain's hash at that block's height and
-/// the coins of the roots key-wallet held as spent there.
+/// the coins of the roots key-wallet held as spent, each at its block's
+/// height.
 #[derive(Debug, Clone)]
 pub(crate) struct Recheck {
     truncations: u64,
@@ -1407,7 +1408,8 @@ fn unknown_block(winner: Winner) -> Option<u32> {
 /// The coins of `root` that the detection saw key-wallet hold as spent by
 /// `winner`'s block, if key-wallet holds none of them so any more and
 /// `root` is still out of a block, not abandoned and not
-/// InstantSend-locked, and key-wallet processed that block (#818, Q89a).
+/// InstantSend-locked, key-wallet processed that block, and the detection
+/// saw no coin of `root` spent by another block (#818, Q89a).
 /// The caller proves the block final under the wallet's own ChainLock with
 /// no truncation since the detection, and that key-wallet holds no record
 /// of `root`.
@@ -1426,6 +1428,11 @@ fn spend_forgotten_as_final(
     let open = e.context.block_info().is_none() && !e.is_abandoned() && !instant_locked(e);
     if !open || core.last_processed_height() < at || coins.iter().any(|o| observed.contains_key(o))
     {
+        return BTreeMap::new();
+    }
+    // A coin of `root` another block spent is evidence this proof can't
+    // carry: no drop, as when nothing beat it (#818).
+    if (coins.iter()).any(|o| detected.spent.get(o).is_some_and(|h| *h != at)) {
         return BTreeMap::new();
     }
     (coins.into_iter())
@@ -2222,10 +2229,9 @@ impl NetworkSession {
             let beaten = (beaten.into_iter())
                 .map(|(t, w)| {
                     let spent = match (unknown_block(w), h.txs.get(&t)) {
-                        (Some(at), Some(e)) => (e.tx.input.iter())
+                        (Some(_), Some(e)) => (e.tx.input.iter())
                             .map(|i| i.previous_output)
-                            .filter(|o| observed.get(o) == Some(&at))
-                            .map(|o| (o, at))
+                            .filter_map(|o| observed.get(&o).map(|h| (o, *h)))
                             .collect(),
                         _ => BTreeMap::new(),
                     };
@@ -2324,7 +2330,8 @@ impl NetworkSession {
         stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
         work: &mut VecDeque<DeadWork>,
     ) {
-        let Some((truncations, beaten, orphans)) = self.find_dead(manager, wallet, stored).await
+        let Some((truncations, beaten, mut orphans)) =
+            self.find_dead(manager, wallet, stored).await
         else {
             return;
         };
@@ -2338,12 +2345,14 @@ impl NetworkSession {
             // spends key-wallet holds under the next read: a fork truncates
             // the wallet before the header chain, so each is its block's
             // (Q89a C1). A truncation the hub applied since the first read
-            // binds none.
+            // binds none. The orphans are read again too: a parent may be
+            // back.
             headers = self.hub.header_hashes(heights).await;
-            found = (self.find_dead(manager, wallet, None).await).map(|(again, beaten, _)| {
+            found = (self.find_dead(manager, wallet, stored).await).map(|(again, beaten, now)| {
                 if again != truncations {
                     headers.clear();
                 }
+                orphans = now;
                 (truncations, beaten)
             });
         }
