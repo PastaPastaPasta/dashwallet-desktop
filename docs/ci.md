@@ -230,9 +230,12 @@ deep-links leg, Swift + UI T0 and `release.yml`'s Linux build) uninstalls every 
 every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
 depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.
-Only `ci.yml` on `main` saves the regular Rust caches (one per job OS, `ci-<os>`); `release.yml`'s macOS job
-and `nightly.yml` restore them and never save (nightly's fuzz job keeps its own cache, since it also installs
-a nightly toolchain), installing only `rust/rust-toolchain.toml`'s toolchain so the key matches. The manual
+Only `ci.yml` on `main` saves the regular Rust caches (`ci-Linux`, `ci-mingw-Linux`, `ci-macOS`,
+`ci-Windows`; a busy merge day can cancel every main run before macOS saves, and the 02:47 UTC run, in its own
+group, saves then); `release.yml`'s build jobs and `nightly.yml` restore them and never save (nightly's fuzz job
+keeps its own cache, since it also installs a nightly toolchain). Each restoring job installs its toolchains
+as the saving job does, since the key hashes every installed toolchain: only `rust/rust-toolchain.toml`'s on
+Linux, and that plus the image's stable on macOS and Windows. The manual
 `gate.yml` and `tauri-selftest.yml` still save from whatever branch they run on. A cache is saved only when its job
 succeeds. Past the repository's cache limit (10 GB by default), GitHub evicts the least recently
 used caches, so a branch whose workflows still save their own caches can push `main`'s out.
@@ -358,8 +361,8 @@ So, trimming only (no new runners):
 
 - `macos-swift` runs the Swift side beside `macos` instead of after it.
 - A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
-- A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; GitHub matches a
-  very large push, GitHub matches only part of the changed files). A merge never cancels the 02:47 UTC run or a dispatch: the event
+- A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; on a very large push
+  GitHub matches only part of the changed files). A merge never cancels the 02:47 UTC run or a dispatch: the event
   is part of the concurrency group.
 - Release builds on tags, at 02:47 UTC and on a dispatch, not on every merge (in the pull request after #780,
   which rewrites `release.yml`).
@@ -481,7 +484,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 ## `release.yml` (PK-01, PK-02; 0.1)
 
 On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
-`selftest` feature (`rust-cache` keys `release-<os>`, except macOS, which restores CI's `ci-macOS` and saves nothing; Node 24, pnpm; the Windows `unistd` shim as in
+`selftest` feature (each job restores CI's `ci-<os>` Rust cache and saves nothing; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
 | Job | Runner | Output (staged by `ci/github/release-stage.sh` as `dash-wallet-<version>-<suffix>`) | Measured (cold cache, rel6) |

@@ -65,21 +65,22 @@ jobs:
           while read -r r a s c u; do
             if [[ $c == cancelled ]]; then
               bad=$(gh api "repos/$GH_REPO/actions/runs/$r/attempts/$a/jobs?per_page=100" \
-                --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")] | length') || bad=0
+                --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")] | length') ||
+                { echo "::error::could not list the jobs of $NAME run $r" >&2; exit 1; }
               [[ $bad -gt 0 ]] || continue
               c=failure
             fi
             run=$r attempt=$a sha=$s conclusion=$c url=$u
             break
           done < <(jq -r '.[:30][] | "\(.id) \(.run_attempt) \(.head_sha) \(.conclusion) \(.html_url)"' <<<"$finished")
-          [[ -n $run ]] || { echo "no finished $NAME run with a result on main among the newest 30; nothing to report"; exit 0; }
+          [[ -n $run ]] || { echo "::error::no finished $NAME run with a result on main among the newest 30" >&2; exit 1; }
           what="$NAME on main at ${sha:0:8}"
           if [[ $conclusion == success ]]; then
             ci/github/nightly-issue.sh green "$NAME on main" "$what passed: $url"
             exit 0
           fi
           failed=$(gh api "repos/$GH_REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" \
-            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))"') ||
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url))"') ||
             failed="(the failed jobs could not be listed)"
           green=$(jq -r '[.[] | select(.conclusion == "success")][0].head_sha // empty' <<<"$finished")
           if [[ -z $green ]]; then
