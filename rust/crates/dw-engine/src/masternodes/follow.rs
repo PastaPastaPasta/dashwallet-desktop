@@ -577,7 +577,8 @@ mod tests {
             is_valid: valid,
             is_evonode: false,
             has_extended_net_info: false,
-            net_info: None,
+            service_addresses: vec![format!("10.0.0.{seed}:9999").parse().unwrap()],
+            operator_key_is_legacy: false,
         }
     }
 

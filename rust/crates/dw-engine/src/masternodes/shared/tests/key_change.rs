@@ -39,7 +39,8 @@ fn list_keys(f: &Fx, txid: Txid, operator: [u8; 48], voting: [u8; 20]) {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
 }
