@@ -8,7 +8,12 @@
 //! with their artifacts ([`store_spends`]).
 //!
 //! The fork's tests of its dispositions are kept below, not compiled
-//! ([`fork`]); each has an ignored stand-in naming the gap.
+//! ([`fork`]). Its executed-spend holds are replaced by upstream's durable
+//! reservation: a spend's record (`shielded_pending_spends`) holds its
+//! notes until the scan marks them spent, across a restart too (M2-a,
+//! [`an_executed_spend_whose_mark_spent_failed_stays_reserved_across_a_restart`]).
+
+use platform_wallet::wallet::shielded::ShieldedNote;
 
 use super::*;
 
@@ -589,27 +594,388 @@ fn a_fork_hold_with_no_journal_holds_its_wallet_for_the_session() {
 }
 
 #[test]
-#[ignore = "GAP G2: upstream keeps no executed-spend hold until the host holds the spent state; journal holds (DRAIN D1) not ported"]
-fn executed_ack_lifts_the_close_refusal() {
-    panic!("GAP G2: no upstream disposition to acknowledge");
-}
-
-#[test]
-#[ignore = "GAP G2: upstream has no disposition and no acknowledgement to replay after a crash"]
-fn disposition_replayed_after_crash_before_ack() {
-    panic!("GAP G2: no upstream disposition to acknowledge");
-}
-
-#[test]
 #[ignore = "GAP G6: upstream reports no Unattributable outcome; a confirmed row settles executed (reported_outcomes_settle_the_journal)"]
 fn unattributable_with_confirmed_activity_reads_done_and_offers_no_retry() {
     panic!("GAP G6: no upstream Unattributable outcome");
 }
 
+// ---- M2-a: upstream's durable reservation across a restart ----
+
+/// The credits of each note of [`scanned_notes`].
+const NOTE_VALUE: u64 = 10_000_000_000;
+
+/// The nullifier of the one note of [`scanned_notes`] no spend holds.
+const FREE: [u8; 32] = [0x30; 32];
+
+/// Where the child of the relaunch tests keeps its data root, and how it
+/// ends ([`an_executed_spend_child`]).
+const EXECUTED_ROOT: &str = "DW_M2A_EXECUTED_ROOT";
+const EXECUTED_CUT: &str = "DW_M2A_EXECUTED_CUT";
+
+/// The account's notes as a scan finds them: the two of each of [`spends`]
+/// at positions 0 to 3, then [`FREE`]'s at 4, each [`NOTE_VALUE`].
+fn scanned_notes() -> Vec<ShieldedNote> {
+    (spends().into_iter())
+        .flat_map(|r| r.nullifiers)
+        .chain([FREE])
+        .enumerate()
+        .map(|(position, nullifier)| ShieldedNote {
+            position: position as u64,
+            cmx: [0x80 + position as u8; 32],
+            nullifier,
+            block_height: 1,
+            is_spent: false,
+            value: NOTE_VALUE,
+            note_data: Vec::new(),
+        })
+        .collect()
+}
+
+/// A scan of `wallet`'s account as the library's pass commits one
+/// (`sync_notes_across`, under one write of the store): it saves the notes
+/// it decrypts, marks spent the account's notes whose nullifiers it saw,
+/// then moves the watermark to `to`.
+async fn scan(
+    s: &Arc<NetworkSession>,
+    wallet: WalletId,
+    notes: &[ShieldedNote],
+    spent: &[[u8; 32]],
+    to: u64,
+) {
+    let m = s.manager().unwrap();
+    let coordinator = pool::coordinator(s, &m, None).await.unwrap();
+    let mut store = coordinator.store().write().await;
+    for note in notes {
+        store.save_note(subwallet(wallet), note).unwrap();
+    }
+    for nullifier in spent {
+        store.mark_spent(subwallet(wallet), nullifier).unwrap();
+    }
+    store
+        .set_last_synced_note_index(subwallet(wallet), to)
+        .unwrap();
+}
+
+/// What upstream's success arm does with spend `r` once Platform proved it
+/// executed (operations.rs, `Ok((proof, metadata))`): its notes handed over
+/// to the outcome, its history row confirmed, then, with `finalize`,
+/// `finalize_pending` → `mark_notes_spent`, the store's `mark_spent` of
+/// each of its notes. Without `finalize`, the cut before it. The nullifiers
+/// `mark_notes_spent` also hands the persister are not staged here
+/// ([`spent_seen`] stages them where a test needs them).
+async fn executed(s: &Arc<NetworkSession>, wallet: WalletId, r: &PendingRedrive, finalize: bool) {
+    let m = s.manager().unwrap();
+    let coordinator = pool::coordinator(s, &m, None).await.unwrap();
+    let mut store = coordinator.store().write().await;
+    history_row(
+        &mut *store,
+        subwallet(wallet),
+        r,
+        ShieldedActivityStatus::Confirmed,
+    );
+    if finalize {
+        for nullifier in &r.nullifiers {
+            store.mark_spent(subwallet(wallet), nullifier).unwrap();
+        }
+    }
+}
+
+/// Makes every delete of a spend record in the shielded store at `path`
+/// fail (`on`), as a failed durable write in the store's `mark_spent` does
+/// (it only warns, `file_store.rs`), or lets them succeed again.
+fn fail_record_deletes(path: &Path, on: bool) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute_batch(if on {
+        "CREATE TRIGGER m2a_fail_delete BEFORE DELETE ON shielded_pending_spends \
+         BEGIN SELECT RAISE(FAIL, 'injected delete failure'); END;"
+    } else {
+        "DROP TRIGGER IF EXISTS m2a_fail_delete;"
+    })
+    .unwrap();
+}
+
+/// The positions of the notes a spend of `wallet` may select.
+fn selectable(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Vec<u64> {
+    let mut positions = engine
+        .block_on(on_pool(session, wallet, |_, lib| async move {
+            Ok((pool::ShieldedLib::unspent(&lib).await?.iter())
+                .map(|n| n.position)
+                .collect::<Vec<_>>())
+        }))
+        .unwrap();
+    positions.sort_unstable();
+    positions
+}
+
+/// The balance the desktop shows for `wallet` (`DashPay::shielded_status`),
+/// which must be a reading.
+fn shown_balance(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> u64 {
+    let status = engine
+        .block_on(session.dashpay(wallet).shielded_status())
+        .unwrap();
+    assert!(status.active && status.ready, "{status:?}");
+    status.balance
+}
+
+/// The reservations of spend `r` in `wallet`'s store.
+fn reserved_for(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    r: &PendingRedrive,
+) -> Vec<[u8; 32]> {
+    let (s, m, activity) = (
+        Arc::clone(session),
+        session.manager().unwrap(),
+        r.activity_id,
+    );
+    let mut held: Vec<[u8; 32]> = engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let store = coordinator.store().read().await;
+        (store
+            .stale_pending_spends(subwallet(wallet))
+            .unwrap()
+            .into_iter())
+        .filter(|(_, _, a, _)| *a == Some(activity))
+        .map(|(n, ..)| n)
+        .collect()
+    });
+    held.sort_unstable();
+    held
+}
+
+/// The first launch of the relaunch tests, in a child process: [`spends`]
+/// stored with their artifacts, a scan that found their notes and
+/// [`FREE`], then spend 1 executed. `crash`: its mark-spent ran with every
+/// record delete failing, and the process exits at once, with no quit.
+/// `quit`: cut before the mark-spent, then a quit (`Engine::shutdown`).
 #[test]
-#[ignore = "GAP G2: upstream keeps no disposition rows to read or acknowledge"]
-fn unreadable_disposition_row_is_acked_by_key_and_listing_resumes() {
-    panic!("GAP G2: no upstream disposition rows");
+#[ignore = "the child process of the relaunch tests after an executed spend"]
+fn an_executed_spend_child() {
+    let Some(root) = std::env::var_os(EXECUTED_ROOT) else {
+        return;
+    };
+    let cut = std::env::var(EXECUTED_CUT).unwrap();
+    let engine = engine_at(Path::new(&root));
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { scan(&s, wallet, &scanned_notes(), &[], 5).await });
+    let first = spends().remove(0);
+    let crash = cut == "crash";
+    if crash {
+        fail_record_deletes(&session.data_dir().join(pool::SHIELDED_DB_FILE), true);
+    }
+    let (s, r) = (Arc::clone(&session), first.clone());
+    engine.block_on(async move { executed(&s, wallet, &r, crash).await });
+    // Spend 1's notes are spent (crash) or held (quit) in this process,
+    // and its record is on disk either way.
+    assert_eq!(selectable(&engine, &session, wallet), [4]);
+    let mut stored = stored_rows(&session, wallet);
+    stored.sort_unstable();
+    assert_eq!(stored, [[1; 32], [2; 32]]);
+    let held = reserved_for(&engine, &session, wallet, &first);
+    assert_eq!(held.is_empty(), crash, "{held:?}");
+    std::fs::write(Path::new(&root).join("wallet"), wallet.to_string()).unwrap();
+    if !crash {
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+    std::process::exit(0);
+}
+
+/// The relaunch after [`an_executed_spend_child`] ended by `cut`: spend 1's
+/// record is back from disk with its reservations. Its notes, found again
+/// by a scan that has not reached its actions, are neither selectable nor
+/// counted in the balance the desktop shows, a send that needs them is
+/// refused before its grant, and Close Wallet is refused. The scan that
+/// reaches its actions marks them spent, and its record goes from disk
+/// too. Its artifact never reads not executed.
+fn relaunch_after_an_executed_spend(cut: &str) {
+    let dir = dw_testutil::private_tempdir();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "platform::shielded_close_tests::disposition_tests::an_executed_spend_child",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(EXECUTED_ROOT, dir.path())
+        .env(EXECUTED_CUT, cut)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the first launch failed: {}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
+        .parse()
+        .unwrap();
+    let engine = engine_at(dir.path());
+    let session = open(&engine);
+    pool::force_keyset_spends(&session, true);
+    // The failure was that write's: the relaunch's deletes succeed.
+    fail_record_deletes(&session.data_dir().join(pool::SHIELDED_DB_FILE), false);
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    assert!(bind(&engine, &session, wallet));
+    let [first, second]: [PendingRedrive; 2] = spends().try_into().unwrap();
+
+    let mut stored = stored_rows(&session, wallet);
+    stored.sort_unstable();
+    assert_eq!(stored, [[1; 32], [2; 32]], "{cut}: the records");
+    assert_eq!(
+        reserved_for(&engine, &session, wallet, &first),
+        first.nullifiers,
+        "{cut}: spend 1's reservations"
+    );
+    refused(engine.block_on(session.unload_wallet(wallet)));
+
+    let s = Arc::clone(&session);
+    engine.block_on(async move { scan(&s, wallet, &scanned_notes(), &[], 5).await });
+    assert_eq!(selectable(&engine, &session, wallet), [4], "{cut}");
+    assert_eq!(
+        shown_balance(&engine, &session, wallet),
+        NOTE_VALUE,
+        "{cut}"
+    );
+    let dp = session.dashpay(wallet);
+    let to = engine
+        .block_on(dp.shielded_receive_address())
+        .unwrap()
+        .address;
+    let sent = engine.block_on(dp.shielded_send(to, 2 * NOTE_VALUE, None, "g".into(), false));
+    assert_eq!(
+        sent.unwrap_err().code(),
+        "shielded.insufficient_funds",
+        "{cut}"
+    );
+    refused(engine.block_on(session.unload_wallet(wallet)));
+
+    let s = Arc::clone(&session);
+    let spent = first.nullifiers.clone();
+    engine.block_on(async move { scan(&s, wallet, &[], &spent, 7).await });
+    spent_seen(&session, wallet, &first.nullifiers);
+    assert_eq!(stored_rows(&session, wallet), [second.activity_id], "{cut}");
+    assert!(reserved_for(&engine, &session, wallet, &first).is_empty());
+    assert_eq!(selectable(&engine, &session, wallet), [4], "{cut}");
+    assert_eq!(
+        shown_balance(&engine, &session, wallet),
+        NOTE_VALUE,
+        "{cut}"
+    );
+    engine.block_on(session.ensure_background());
+    pass(&engine, &session);
+    assert_ne!(
+        settlement(&engine, &session, wallet, 1).0,
+        ArtifactStatus::NotExecuted,
+        "{cut}"
+    );
+    refused(engine.block_on(session.unload_wallet(wallet)));
+}
+
+/// M2-a (i): an executed spend whose mark-spent failed to delete its record
+/// keeps its notes reserved across a restart (here a crash right after
+/// it), until the scan marks them spent
+/// ([`relaunch_after_an_executed_spend`]).
+#[test]
+fn an_executed_spend_whose_mark_spent_failed_stays_reserved_across_a_restart() {
+    relaunch_after_an_executed_spend("crash");
+}
+
+/// M2-a (ii): a quit right after a spend's executed outcome, before its
+/// mark-spent, then a relaunch: the same as (i).
+#[test]
+fn a_quit_right_after_an_executed_spend_keeps_it_reserved_for_the_relaunch() {
+    relaunch_after_an_executed_spend("quit");
+}
+
+/// M2-a (ii): Close Wallet right after a spend's executed outcome is
+/// refused, before its mark-spent (the record and reservations hold it) and
+/// after (the confirmed row a pass has not read holds it), and so is the
+/// network close; nothing of the spend is let go. Once a pass reads the
+/// row the close proceeds. After the relaunch no record comes back and the
+/// artifact still reads executed; a scan that covers the spend (finding
+/// its notes and their nullifiers together) leaves them out of the
+/// selection and the balance.
+#[test]
+fn close_wallet_right_after_an_executed_spend_is_refused_until_it_is_read() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let first = spends().remove(0);
+    let (s, r) = (Arc::clone(&session), first.clone());
+    engine.block_on(async move {
+        let m = s.manager().unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        reserve_and_record(
+            &mut *coordinator.store().write().await,
+            subwallet(wallet),
+            r.clone(),
+        );
+        s.leases
+            .record_shielded_artifact(
+                wallet,
+                NewShieldedArtifact {
+                    activity: r.activity_id,
+                    origin: ArtifactOrigin::Dispatched,
+                    st_hash: Some(Sha256::digest(&r.st_bytes).into()),
+                    kind: Some(ArtifactKind::Transfer),
+                    anchor: Some(r.anchor),
+                    identity_id: None,
+                    selected: r.nullifiers.clone(),
+                    published: r.nullifiers.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        scan(&s, wallet, &scanned_notes(), &[], 5).await;
+    });
+    // Spend 2's notes are unreserved here: four selectable notes, three of
+    // them not spend 1's.
+    let others = 3 * NOTE_VALUE;
+    assert_eq!(shown_balance(&engine, &session, wallet), others);
+
+    for finalize in [false, true] {
+        let (s, r) = (Arc::clone(&session), first.clone());
+        engine.block_on(async move { executed(&s, wallet, &r, finalize).await });
+        refused(engine.block_on(session.unload_wallet(wallet)));
+        refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
+        assert!(session.live().is_ok(), "the session stays open");
+        assert_eq!(
+            stored_rows(&session, wallet).is_empty(),
+            finalize,
+            "the record is kept until the mark-spent"
+        );
+        assert_eq!(selectable(&engine, &session, wallet), [2, 3, 4]);
+        assert_eq!(shown_balance(&engine, &session, wallet), others);
+    }
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (
+            ArtifactStatus::Executed,
+            Some(("executed".into(), None)),
+            false
+        )
+    );
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+
+    let session = reopen_with(&engine, session, |_| {});
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert!(bind(&engine, &session, wallet));
+    assert!(stored_rows(&session, wallet).is_empty());
+    let s = Arc::clone(&session);
+    let spent = first.nullifiers.clone();
+    engine.block_on(async move { scan(&s, wallet, &scanned_notes(), &spent, 7).await });
+    assert_eq!(selectable(&engine, &session, wallet), [2, 3, 4]);
+    assert_eq!(shown_balance(&engine, &session, wallet), others);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1).0,
+        ArtifactStatus::Executed
+    );
 }
 
 /// The fork's tests, against its dispositions (`resolve_redrive`,
