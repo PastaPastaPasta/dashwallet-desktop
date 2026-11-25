@@ -192,9 +192,11 @@ export function preflightText(code: "credits.rules_unsupported" | "credits.prefl
   return rules ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
 }
 
-/** Whether Activity shows the item `id` names, of `kind`, as still holding (it may land). */
-export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined, kind: PlatformActivity["kind"]): boolean =>
-  !!id && !!activity?.some((a) => a.id === id && a.kind === kind && isHeldOp(a));
+/** Whether the earlier item a refused retry or exit named (`id`) may still have gone or go through. The
+ * engine runs the pre-check for a named call only while that item holds, so it counts as held unless
+ * Activity has since shown it failed for good: one that landed after the refusal changed the balance too. */
+export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): boolean =>
+  !!id && !activity?.some((a) => a.id === id && a.state === "failed" && !a.mayLand);
 
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
  * was the exit of; while it still holds, a pre-check refusal says it may still land. */
@@ -228,7 +230,7 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
     case "credits.rules_unsupported":
     case "credits.preflight_refused":
-      return preflightText(e.code, stillHeld(activity, exitOf, "toIdentity") ? "topUp" : null);
+      return preflightText(e.code, stillHeld(activity, exitOf) ? "topUp" : null);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:

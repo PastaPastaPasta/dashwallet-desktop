@@ -1,6 +1,6 @@
 // A pre-check refusal of the exact retry of a held send, or of the move out of a held top-up: that
 // attempt sent nothing, but the earlier item may still land, so the line says so and points to
-// Activity. Once Activity no longer shows it holding, the first-attempt lines come back.
+// Activity. Only once Activity shows that item failed for good do the first-attempt lines come back.
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,15 +65,20 @@ describe("a pre-check refusal beside an earlier item that still holds", () => {
       expect(moveErrorText(e, dash, [row("pt-1", "toIdentity", "failed", true)], "pt-1")).toBe(k.topUp);
     });
 
-    it(`${k.code}: once the earlier item no longer holds, or is not of its kind, the first-attempt line`, () => {
-      for (const activity of [[row("ps-1", "send", "done", false)], [row("ps-1", "send", "failed", false)], [], null, undefined]) {
-        expect(sendRefusalText(e, dash, activity, "ps-1")).toBe(k.first);
-        expect(moveErrorText(e, dash, activity?.map((a) => ({ ...a, kind: "toIdentity" as const })), "ps-1")).toBe(k.first);
+    it(`${k.code}: the line stays while the earlier item lands or Activity has not answered`, () => {
+      for (const activity of [[row("ps-1", "send", "done", false)], [], null, undefined]) {
+        expect(sendRefusalText(e, dash, activity, "ps-1")).toBe(k.retry);
+        expect(moveErrorText(e, dash, activity?.map((a) => ({ ...a, kind: "toIdentity" as const })), "ps-1")).toBe(k.topUp);
       }
-      expect(sendRefusalText(e, dash, [row("ps-1", "moveToCore", "failed", true)], "ps-1")).toBe(k.first);
-      expect(moveErrorText(e, dash, [row("pt-1", "moveToCore", "failed", true)], "pt-1")).toBe(k.first);
+    });
+
+    it(`${k.code}: once the earlier item failed for good, or none was named, the first-attempt line`, () => {
+      expect(sendRefusalText(e, dash, [row("ps-1", "send", "failed", false)], "ps-1")).toBe(k.first);
+      expect(moveErrorText(e, dash, [row("pt-1", "toIdentity", "failed", false)], "pt-1")).toBe(k.first);
       expect(sendRefusalText(e, dash, [row("ps-1", "send", "failed", true)], null)).toBe(k.first);
       expect(moveErrorText(e, dash, [row("pt-1", "toIdentity", "failed", true)], null)).toBe(k.first);
+      expect(sendRefusalText(e, dash, [row("ps-1", "send", "failed", true)])).toBe(k.first);
+      expect(moveErrorText(e, dash, [row("pt-1", "toIdentity", "failed", true)])).toBe(k.first);
     });
   }
 });

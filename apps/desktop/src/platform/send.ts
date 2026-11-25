@@ -236,7 +236,7 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
   switch (e.code) {
     case "credits.rules_unsupported":
     case "credits.preflight_refused":
-      return preflightText(e.code, stillHeld(activity, retryOf, "send") ? "send" : null);
+      return preflightText(e.code, stillHeld(activity, retryOf) ? "send" : null);
     case "credits.recipient_invalid":
       return recipientText(e.data?.kind === "reason" ? e.data.reason : undefined);
     case "credits.send_out_of_range":
