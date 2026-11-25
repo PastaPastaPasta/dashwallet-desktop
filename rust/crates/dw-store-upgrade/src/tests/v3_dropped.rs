@@ -6,6 +6,12 @@
 //! load returns them as the wallet's (T3 b), and removing one wallet deletes
 //! only that wallet's rows (T3 c).
 //! A V3 store the upstream load can't read is refused at the rehearsal.
+//!
+//! The fixture's V1-era state is the fork's test seeding (its tests'
+//! `as_fork_v1_left_it`), not a file a V1 build wrote; the open that
+//! re-applied V2 and V3 and ran the drop is the fork's own. Each
+//! InstantSend lock is a test vector: an all-zero signature, stored
+//! unverified (`islock_verified` 0).
 
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::changeset::{
