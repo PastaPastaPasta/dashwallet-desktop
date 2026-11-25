@@ -20,6 +20,8 @@ export const transfer = {
   platformToCoreIntro: "The spendable balance on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
   fee: "Fee about {fee} · You receive about {receive}",
   quoting: "Working out the fee…",
+  /** Under a transfer's progress once its call has run for a second (it may wait for the wallet's start-up). */
+  preparing: "Preparing the transfer…",
   feeOnNextStep: "Fee shown on the next step",
   invalidAmount: "Enter an amount.",
   notEnoughSpendable: "Not enough spendable Dash: {amount} available.",

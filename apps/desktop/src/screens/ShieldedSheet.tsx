@@ -20,6 +20,7 @@ import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shiel
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
 import { SHIELDED_SYNC_COPY, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
 import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
+import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
@@ -361,6 +362,11 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
           <p className="sheet-text" data-testid="shielded-progress">
             {flow.kind === "add" || flow.kind === "resume" ? C.running.lock : C.running.prove}
           </p>
+          {flow.preparing.shown && (
+            <p className="sheet-text" data-testid="transfer-preparing">
+              {preparingText()}
+            </p>
+          )}
         </div>
       )}
       {step === "done" && <Outcome flow={flow} fmt={fmt} />}

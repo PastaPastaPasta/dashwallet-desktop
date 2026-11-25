@@ -26,6 +26,7 @@ import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { IdentitiesWorld } from "./identities";
+import type { PlatformCreateOutcome, PlatformRegisterPlan } from "./registration";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -62,6 +63,11 @@ export interface DashPayWorld {
   runs: string[];
   /** DP5-03: the code the request to a claim's inviter is refused with for good; absent: sent. */
   requestRefusal?: string;
+  /** C-funding F3: each Platform-funded row's stored funding and plan, by draft. */
+  platformPlans?: Record<string, PlatformRegisterPlan>;
+  /** C-funding F10: what each next identity create from the Platform balance comes to, first
+   * first; once empty, `registered`. */
+  platformCreates?: PlatformCreateOutcome[];
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
