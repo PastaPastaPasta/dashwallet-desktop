@@ -861,6 +861,29 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Abandon isn't offered for a payment that funds an unfinished Platform top-up", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"57".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a platformFunding refusal says why the payment can't be abandoned", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"58".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
   test("a rescanFirst refusal shows the catalog's steps", async ({ page }) => {
     const errors = await open(page, "abandon-rescan-first");
     await page.getByTestId("sidebar-activity").click();

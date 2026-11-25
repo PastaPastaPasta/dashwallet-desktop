@@ -883,6 +883,42 @@ const SCENARIOS = {
     w.send.settledChildHidden = [row.txid];
     return w;
   },
+  /** An unconfirmed payment that funds an unfinished credit top-up's asset lock, built while its
+   * detail was open: Abandon is offered and refused, and the detail says why. */
+  "abandon-platform-funding": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "58".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFunding = [row.txid];
+    return w;
+  },
+  /** As `abandon-platform-funding`, with the lock already built when the detail opens: Abandon
+   * isn't offered. */
+  "abandon-platform-funding-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "57".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFundingHidden = [row.txid];
+    return w;
+  },
   /** A payment this wallet made on another device, seen only by its change before the coins it
    * spent are known: its debit is unknown, so Abandon warns about paying twice. */
   "abandon-debit-unknown": (t) => {
