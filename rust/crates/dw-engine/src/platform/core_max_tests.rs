@@ -14,6 +14,7 @@ use key_wallet::bip32::DerivationPath;
 
 use super::*;
 use crate::platform::core_max::{self, CoreCoins};
+use crate::platform::credits::CoreMaxShort;
 use crate::platform::flows::GrantRequest;
 use crate::platform::shielded::{ShieldOutcome, ShieldQuote};
 
@@ -320,26 +321,36 @@ fn core_max_refuses_coins_changed_since_the_quote() {
     drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
 }
 
-/// A lock below the pool's floor, or none, is refused before signing.
+/// A lock below the pool's floor, or none, is refused before signing,
+/// with what Max would move (the figure held against the floor) and what
+/// the other accounts hold.
 #[test]
 fn core_max_refuses_below_the_floor() {
     let fx = Fixture::new(0);
     let floor = drain::drain_floor(pool_fee());
     let fee = crate::fees::asset_lock_fee_bound(1);
-    let one = |v: u64| CoreCoins {
+    let one = |v: u64, left_duffs: u64| CoreCoins {
         coins: vec![bip44(0, v)],
-        ..CoreCoins::default()
+        left_duffs,
+        arriving_duffs: 0,
     };
-    let below = ShieldedError::BelowMinimum { min: floor };
+    let below = |duffs: u64, left_duffs: u64| ShieldedError::BelowMinimum {
+        min: floor,
+        max: Some(CoreMaxShort { duffs, left_duffs }),
+    };
     assert_eq!(
-        quote_of(&fx, &maxer(&fx, one(floor + fee - 1))).unwrap_err(),
-        below
+        quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 0))).unwrap_err(),
+        below(floor - 1, 0)
+    );
+    assert_eq!(
+        quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 7_000))).unwrap_err(),
+        below(floor - 1, 7_000)
     );
     assert_eq!(
         quote_of(&fx, &maxer(&fx, CoreCoins::default())).unwrap_err(),
-        below
+        below(0, 0)
     );
-    quote_of(&fx, &maxer(&fx, one(floor + fee))).unwrap();
+    quote_of(&fx, &maxer(&fx, one(floor + fee, 7_000))).unwrap();
 }
 
 /// A Max whose lock was signed and is out but not applied (the process

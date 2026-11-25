@@ -26,6 +26,7 @@ import type { ShellSync } from "../api/generated/ShellSync";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { TxDropInfo } from "../api/generated/TxDropInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
@@ -36,7 +37,7 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
-import { restoredFundLock, restoredLock } from "./recovery";
+import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
@@ -62,6 +63,8 @@ export interface FixtureWallet {
   receive: ReceiveWorld;
   /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
   scanHeight?: number | null;
+  /** Dropped payments whose notice was dismissed. */
+  droppedSeen?: string[];
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -219,6 +222,34 @@ export function emptyWallet(walletId: string, name: string): FixtureWallet {
  * wait dw-vault reports for them (the fixture's clock stands still, so it never runs out). */
 function lockedAfter(w: World, failedAttempts: number): World {
   w.lock = { ...w.lock, state: "locked", failedAttempts, retryAfterSecs: throttleWaitSecs(failedAttempts) || null };
+  return w;
+}
+
+/** Adds a payment Dash Wallet dropped itself for each of `drops`, newest first, an hour apart, to the
+ * first wallet: an abandoned send, not counted (the never-valid transaction itself is a receive). */
+function withDropped(w: World, drops: TxDropInfo[]): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const received = wallet.rows.find((r) => r.category === "received")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const rows: TxRow[] = drops.map((dropped, i) => {
+    const like = dropped.cause === "invalidClaim" ? received : sent;
+    return {
+      ...like,
+      txid: (0xd0 + i).toString(16).repeat(32),
+      recordIndex: 0,
+      timestamp: newest + 3600 * (drops.length - i),
+      blockHeight: null,
+      amount: like.amount < 0 ? -(25_000_000 + i * 1_000_000) - 374 : 40_000_000,
+      fee: like.amount < 0 ? 374 : null,
+      label: null,
+      status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null, dropped },
+      countsTowardBalance: false,
+      counterparty: undefined,
+      fiatThen: undefined,
+    };
+  });
+  wallet.rows = [...rows, ...wallet.rows];
   return w;
 }
 
@@ -723,6 +754,26 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** One payment Dash Wallet dropped because the Dash it used came from an incoming transaction that
+   * was never valid, its coins back: Home's notice names it. */
+  "dropped-one": (t) => withDropped(base(t), [{ cause: "invalidSource", state: { kind: "released" } }]),
+  /** Two such payments: the notice counts them, and Details opens Activity. */
+  "dropped-several": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "released" } },
+      { cause: "invalidSource", state: { kind: "released" } },
+    ]),
+  /** A dropped row in each state the engine gives, and the never-valid transaction itself; no
+   * notice, since none is back. */
+  "dropped-states": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "releasing" } },
+      { cause: "invalidSource", state: { kind: "rescanNeeded" } },
+      { cause: "invalidSource", state: { kind: "rescanFromHeight", height: 2_103_500 } },
+      { cause: "invalidSource", state: { kind: "awaitingFunding" } },
+      { cause: "replaced", state: { kind: "held" } },
+      { cause: "invalidClaim", state: { kind: "released" } },
+    ]),
   /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
    * offered, and refused until the wallet restarts and rescans. */
   "abandon-rescan-first": (t) => {
@@ -1160,6 +1211,44 @@ const SCENARIOS = {
   "paddr-recovery-mixed": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.30 DASH left: Home offers Recover. */
+  "recovery-recoverable": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Two refused transfers to Shielded: one with 0.30 DASH left, one with less than the fee left (too small, not on the card). */
+  "recovery-recoverable-small": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A restored lock ready to finish and a refused transfer to Shielded with 0.30 DASH left: the sheet shows both pairs of lines. */
+  "recovery-recoverable-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(4, 25_000_000), partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Only refused transfers to Shielded with less than the fee left: no card. */
+  "recovery-too-small-only": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A refused transfer to Shielded with 0.30 DASH left, on mainnet: listed, never offered a Recover. */
+  "recovery-recoverable-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(3, 40_000_000, 20_000_000_000n)];
+    return w;
+  },
+  /** The first recover may have gone through ("checking"); the next is applied. */
+  "recovery-recover-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** The first finish ends `platform.unavailable`; a retry is applied. */

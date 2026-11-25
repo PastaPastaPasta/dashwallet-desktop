@@ -94,6 +94,8 @@ export class IpcBackend implements Backend {
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
+  droppedNotices = cmd.droppedNotices;
+  dismissDroppedNotices = cmd.dismissDroppedNotices;
   // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
   // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
   networkChoice = () => orAbsent(cmd.getNetworkChoice());
@@ -105,6 +107,8 @@ export class IpcBackend implements Backend {
   resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
   unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
   finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
+  recoverTransferQuote = (...a: Parameters<typeof cmd.recoverTransferQuote>) => orUnavailable(cmd.recoverTransferQuote(...a));
+  recoverTransfer = (...a: Parameters<typeof cmd.recoverTransfer>) => orUnavailable(cmd.recoverTransfer(...a));
   shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
