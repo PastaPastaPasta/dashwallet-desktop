@@ -836,15 +836,14 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
             v.contract_bounds = Some(ContractBounds::SingleContract { id: id(77) });
         }
     }
-    let cases: [(&str, EncPurpose, Identifier, fn(&mut Identity)); 4] = [
-        ("no DECRYPTION key", EncPurpose::Decryption, app(), |me| {
+    let cases: [(&str, EncPurpose, fn(&mut Identity)); 3] = [
+        ("no DECRYPTION key", EncPurpose::Decryption, |me| {
             me.public_keys_mut()
                 .retain(|_, k| k.purpose() != Purpose::DECRYPTION);
         }),
         (
             "ENCRYPTION key on another contract",
             EncPurpose::Encryption,
-            app(),
             |me| {
                 for k in me.public_keys_mut().values_mut() {
                     if k.purpose() == Purpose::ENCRYPTION {
@@ -853,32 +852,20 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
                 }
             },
         ),
-        (
-            "disabled ENCRYPTION key",
-            EncPurpose::Encryption,
-            app(),
-            |me| {
-                for k in me.public_keys_mut().values_mut() {
-                    if k.purpose() == Purpose::ENCRYPTION {
-                        k.set_disabled_at(1);
-                    }
+        ("disabled ENCRYPTION key", EncPurpose::Encryption, |me| {
+            for k in me.public_keys_mut().values_mut() {
+                if k.purpose() == Purpose::ENCRYPTION {
+                    k.set_disabled_at(1);
                 }
-            },
-        ),
-        (
-            "the DashPay contract",
-            EncPurpose::Encryption,
-            dashpay_contract::ID,
-            |_| {},
-        ),
+            }
+        }),
     ];
-    for (case, purpose, contract, edit) in cases {
+    for (case, purpose, edit) in cases {
         let f = Fixture::new();
         edit(f.net.identities.lock().unwrap().get_mut(&id(ME)).unwrap());
         let mut r = request();
-        r.app_id = contract.to_buffer();
         r.enc_bindings = vec![EncBinding {
-            contract: contract.to_buffer(),
+            contract: app().to_buffer(),
             purpose,
         }];
         let l = devnet(r);
@@ -896,6 +883,19 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
         let records = f.engine.block_on(records(&f.s, f.wallet)).unwrap();
         assert!(records[0].encryption_keys.is_empty(), "{case}");
     }
+    let f = Fixture::new();
+    let mut r = request();
+    r.enc_bindings = [EncPurpose::Encryption, EncPurpose::Decryption]
+        .map(|purpose| EncBinding {
+            contract: dashpay_contract::ID.to_buffer(),
+            purpose,
+        })
+        .into();
+    let plans = f
+        .engine
+        .block_on(encryption_plans(&*f.net, &r, &f.net.me()))
+        .unwrap();
+    assert_eq!(plans, vec![EncPlan::Omit; 2], "the DashPay contract");
 }
 
 #[test]
