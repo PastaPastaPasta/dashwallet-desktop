@@ -176,3 +176,56 @@ fn a_record_that_cant_be_written_stops_before_the_drop_and_is_retried() {
     ));
     assert!(names(&f, &s));
 }
+
+/// M3: the named snapshot of other data in a directory that can't be
+/// written to is left as it is, no longer named, and never offered.
+#[cfg(unix)]
+#[test]
+fn a_snapshot_of_other_data_that_cant_be_marked_is_no_longer_named() {
+    use std::os::unix::fs::PermissionsExt;
+    let (f, s) = failed_open();
+    exec(&f.wallet(), BUMP);
+    fs::set_permissions(s.dir(), fs::Permissions::from_mode(0o500)).unwrap();
+    let untouched = tree(s.dir());
+    start_opens(
+        &f,
+        Some(crate::reconcile::UpgradeNotice::SnapshotOther),
+        false,
+    );
+    let unmarked = !s.dir().join(NOT_THIS_WALLET).exists();
+    let same = tree(s.dir()) == untouched;
+    let record = record(&f);
+    let state = snapshot_state(&f.net).unwrap();
+    let request = crate::restore::request_restore(&f.net, &s);
+    fs::set_permissions(s.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(unmarked && same, "left as it is");
+    assert!(record.contains("snapshot none\n"), "{record}");
+    assert!(!matches!(state, SnapshotState::Verified(_)), "{state:?}");
+    assert!(
+        matches!(request, Err(StoreUpgradeError::SnapshotInvalid { .. })),
+        "{request:?}"
+    );
+    assert!(s.dir().join("wallet.sqlite").is_file());
+}
+
+/// M3: a named snapshot that can't be read for its permissions is
+/// unverified: the start goes on with the damaged notice, never offering it.
+#[test]
+fn a_snapshot_unreadable_for_its_permissions_is_unverified() {
+    let (f, s) = failed_open();
+    let untouched = tree(s.dir());
+    crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| {
+        *h.borrow_mut() = Some((s.dir().to_path_buf(), std::io::ErrorKind::PermissionDenied))
+    });
+    let state = std::panic::catch_unwind(|| {
+        start_opens(
+            &f,
+            Some(crate::reconcile::UpgradeNotice::SnapshotDamaged),
+            false,
+        );
+        snapshot_state(&f.net).unwrap()
+    });
+    crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| *h.borrow_mut() = None);
+    assert!(matches!(state.unwrap(), SnapshotState::Unverified { .. }));
+    assert_eq!(tree(s.dir()), untouched, "never marked");
+}

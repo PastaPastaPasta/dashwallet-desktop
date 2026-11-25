@@ -229,16 +229,19 @@ pub(crate) fn read_snapshot(
 
 /// Why a snapshot directory doesn't check out.
 pub(crate) enum SnapshotFault {
-    /// Reading it failed (`EIO`, `EMFILE`, `EACCES`): retried, never taken
-    /// for a defect of the copy.
+    /// Reading it failed for a reason that may pass (`EIO`, `EMFILE`,
+    /// `EINTR`, `ENOSPC`): retried, never taken for a defect of the copy.
     Io(io::Error),
-    /// A marker or file is missing or is not what the marker says.
+    /// A marker or file is missing, is not what the marker says, or can't
+    /// be read for its permissions (`EACCES`, `EPERM`): never a backup,
+    /// and never waited for.
     Defect(String),
 }
 
 fn snapshot_fault(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> SnapshotFault {
     move |e| match e.kind() {
         io::ErrorKind::NotFound
+        | io::ErrorKind::PermissionDenied
         | io::ErrorKind::InvalidData
         | io::ErrorKind::IsADirectory
         | io::ErrorKind::NotADirectory
@@ -743,19 +746,37 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Retire a verified before-upgrade snapshot that is not of this wallet:
+/// Retire the named snapshot when it verifies and is not of this wallet:
 /// [`NOT_THIS_WALLET`] written atomically into its directory, which is never
-/// deleted. Never while a restore is requested or part-done: the restore
-/// owns `upgrade-backups/` until it is done, and may name this snapshot.
+/// deleted. A directory that can't be written to (`EACCES`, `EPERM`,
+/// `EROFS`) is left as it is and [`UPGRADED_FROM`] is rewritten as `none`,
+/// which keeps it from being offered all the same; only a failure to write
+/// that is retried. Never while a restore is requested or part-done: the
+/// restore owns `upgrade-backups/` until it is done, and may name this
+/// snapshot.
 fn mark_not_this_wallet(network_dir: &Path, dir: &Path, now: SystemTime) -> Result<()> {
     crate::restore::refuse_if_restore_pending(network_dir)?;
     let text = format!(
         "dw-store-upgrade not this wallet\nformat 1\nretired {}\n",
         fsx::utc_stamp(now)
     );
-    tracing::warn!(dir = %dir.display(), "store upgrade: snapshot is not of this wallet; retired");
-    fsx::write_durable(&dir.join(NOT_THIS_WALLET), text.as_bytes())
-        .map_err(|e| failed(format!("mark {}: {e}", dir.display())))
+    match fsx::write_durable(&dir.join(NOT_THIS_WALLET), text.as_bytes()) {
+        Ok(()) => {
+            tracing::warn!(dir = %dir.display(), "store upgrade: snapshot is not of this wallet; retired");
+            Ok(())
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            tracing::warn!(dir = %dir.display(), error = %e, "store upgrade: snapshot is not of this wallet and can't be marked; no longer named");
+            write_lineage(network_dir, None)
+                .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))
+        }
+        Err(e) => Err(StoreUpgradeError::io("mark a snapshot of other data", true)(e)),
+    }
 }
 
 fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
