@@ -2763,8 +2763,9 @@ impl ShieldedDispatch for EngineDispatch {
     /// settled nor archived; the wallet holds its background lease; the
     /// session is open; a contact payout's dispatch is recorded beside its
     /// row, as `dispatch` records it before the first send; an unshield's
-    /// pending `FromShielded` record is armed. An artifact or a record that
-    /// is missing or cannot be read is refused.
+    /// pending `FromShielded` record is armed; its history row does not read
+    /// confirmed. An artifact, a record or a row that is missing or cannot be
+    /// read is refused.
     async fn admit(
         &self,
         wallet_id: [u8; 32],
@@ -2772,8 +2773,8 @@ impl ShieldedDispatch for EngineDispatch {
         activity_id: [u8; 32],
         st_hash: [u8; 32],
     ) -> Result<(), DispatchRefused> {
-        let (session, _) = self.open()?;
-        Self::account(wallet_id, account_index)?;
+        let (session, coordinator) = self.open()?;
+        let subwallet = Self::account(wallet_id, account_index)?;
         if (self.refused.lock())
             .unwrap_or_else(PoisonError::into_inner)
             .contains(&st_hash)
@@ -2797,6 +2798,14 @@ impl ShieldedDispatch for EngineDispatch {
             );
         if !accepted {
             return Err(refused("the spend's artifact does not allow a send"));
+        }
+        // A confirmed row is done, also before a pass reads it into the
+        // journal (its mark-spent failed and its record is kept).
+        let row = (coordinator.store().read().await)
+            .get_activity_by_entry_id(subwallet, &activity_id)
+            .map_err(|e| refused(format!("the spend's history row could not be read: {e}")))?;
+        if row.is_some_and(|e| e.status == Status::Confirmed) {
+            return Err(refused("the spend's history row reads confirmed"));
         }
         (session.payout_dispatch_recorded(wallet, st_hash).await).map_err(refused)?;
         // An unshield's record, written before its artifact, is armed before
