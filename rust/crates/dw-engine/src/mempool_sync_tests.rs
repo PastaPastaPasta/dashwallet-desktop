@@ -636,7 +636,6 @@ fn a_spend_of_a_coin_not_scanned_yet_never_overstates_the_balance() {
 /// that its owner never signed. When the scan finds the coin, the claim is
 /// dropped with its row and the coin counts, across a restart too.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn an_unsigned_spend_of_a_coin_not_scanned_yet_does_not_hide_it() {
     let (_dir, engine, session, id) = engine_wallet();
     let (_, funding, spend) = funding_and_spend(&engine, &session, id);
