@@ -893,6 +893,16 @@ fn a_stale_record_never_removes_a_finished_restore() {
         write_attempt_record(&u, &entries);
         let snap = latest_snapshot(&u.net).unwrap().unwrap();
         request_restore(&u.net, &snap).unwrap();
+        let mark = fs::read(u.root().join(RESTORED_MARK)).unwrap();
+        arm_fault("restore.after_quiesce", 0);
+        u.run(later(1800)).unwrap_err();
+        disarm_fault();
+        assert_eq!(tree(&info.after_dir), after_tree, "{id:?}: after the sweep");
+        assert_eq!(
+            fs::read(u.root().join(RESTORED_MARK)).unwrap(),
+            mark,
+            "{id:?}: the mark is byte-equal after the sweep"
+        );
         let again = u.run(later(3600)).unwrap().unwrap();
         assert_eq!(tree(&info.after_dir), after_tree, "{id:?}");
         assert!(u.root().join(RESTORED_MARK).exists(), "{id:?}");
