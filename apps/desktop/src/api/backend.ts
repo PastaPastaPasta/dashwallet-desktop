@@ -28,6 +28,7 @@ import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance"
 import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
+import type { RecoverQuote } from "./generated/RecoverQuote";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
 import type { ShieldedAddress } from "./generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
@@ -291,6 +292,10 @@ export interface Backend {
   unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers | null>;
   /** Finishes the unfinished transfer of `kind` at `txid`:`vout` under a `platformOp` grant. */
   finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish>;
+  /** What a recover of the partly used transfer to Shielded at `txid`:`vout` would move, read from Platform now. */
+  recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote>;
+  /** Recovers what is left on it to the wallet's own Platform address, under a grant of exactly the quote's credits. */
+  recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish>;
   /** Shielded → Shielded; `credits` is a decimal string. */
   shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
   /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);
