@@ -555,17 +555,23 @@ pub fn retry_copy_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
     use platform_wallet_storage::WalletStorageError as W;
     use rusqlite::ErrorCode::{CannotOpen, DiskFull, SystemIoFailure};
     let write_fault = |err: &(dyn std::error::Error + 'static)| {
-        std::iter::successors(Some(err), |e| e.source()).any(|e| {
-            e.downcast_ref::<std::io::Error>().is_some()
-                || e.downcast_ref::<rusqlite::Error>().is_some_and(|s| {
-                    matches!(
-                        s.sqlite_error_code(),
-                        Some(DiskFull | SystemIoFailure | CannotOpen)
-                    )
-                })
-                || e.downcast_ref::<W>()
-                    .is_some_and(|s| matches!(s, W::Io(_) | W::AutoBackupDirUnwritable { .. }))
-        })
+        std::iter::successors(Some(err), |e| e.source())
+            .take_while(|e| {
+                !e.downcast_ref::<W>()
+                    .is_some_and(crate::precheck::decode_defect)
+            })
+            .any(|e| {
+                e.downcast_ref::<std::io::Error>()
+                    .is_some_and(crate::precheck::machine_io)
+                    || e.downcast_ref::<rusqlite::Error>().is_some_and(|s| {
+                        matches!(
+                            s.sqlite_error_code(),
+                            Some(DiskFull | SystemIoFailure | CannotOpen)
+                        )
+                    })
+                    || e.downcast_ref::<W>()
+                        .is_some_and(|s| matches!(s, W::AutoBackupDirUnwritable { .. }))
+            })
     };
     let retried = match e {
         StoreUpgradeError::Io { .. } | StoreUpgradeError::SnapshotFailed { .. } => true,

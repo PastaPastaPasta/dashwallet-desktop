@@ -977,6 +977,24 @@ fn only_a_start_stopped_by_the_machine_gets_the_retry_screen() {
         path: PathBuf::from("x"),
     };
     assert!(retry_copy_for(&held).is_none());
+    use platform_wallet_storage::WalletStorageError as W;
+    let opened = |source: W| E::PersisterOpen {
+        dir: PathBuf::from("x"),
+        source: Box::new(source),
+    };
+    let io = |kind| std::io::Error::from(kind);
+    let short_blob = W::ConsensusCodec {
+        source: dashcore::consensus::encode::Error::Io(io(std::io::ErrorKind::UnexpectedEof)),
+    };
+    for (e, want) in [
+        (opened(W::Io(io(std::io::ErrorKind::StorageFull))), true),
+        (opened(W::Sqlite(sqlite(rusqlite::ffi::SQLITE_FULL))), true),
+        (opened(W::Io(io(std::io::ErrorKind::UnexpectedEof))), false),
+        (opened(short_blob), false),
+        (opened(W::BlobDecode { reason: "x" }), false),
+    ] {
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+    }
     let e = E::Io {
         context: "x",
         unchanged: true,

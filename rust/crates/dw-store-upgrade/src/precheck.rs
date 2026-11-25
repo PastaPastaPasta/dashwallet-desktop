@@ -427,18 +427,40 @@ fn persistence_fault(e: &PersistenceError) -> bool {
     e.is_transient() || machine_cause(e)
 }
 
+/// Upstream failing to decode stored bytes: a defect of the data, whatever
+/// its sources say (a consensus decode reports a short blob as an
+/// `UnexpectedEof` I/O error).
+pub(crate) fn decode_defect(e: &WalletStorageError) -> bool {
+    matches!(
+        e,
+        WalletStorageError::ConsensusCodec { .. }
+            | WalletStorageError::BincodeDecode { .. }
+            | WalletStorageError::HashDecode { .. }
+            | WalletStorageError::AddressDecode { .. }
+            | WalletStorageError::BlobDecode { .. }
+    )
+}
+
+/// An I/O error of the machine, not a short or malformed read.
+pub(crate) fn machine_io(e: &io::Error) -> bool {
+    !matches!(
+        e.kind(),
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::InvalidData
+    )
+}
+
 fn machine_cause(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut next = Some(e);
     while let Some(err) = next {
-        if let Some(s) = err.downcast_ref::<WalletStorageError>()
-            && (matches!(
-                s,
-                WalletStorageError::Io(_) | WalletStorageError::AutoBackupDirUnwritable { .. }
-            ) || s.is_transient())
-        {
-            return true;
+        if let Some(s) = err.downcast_ref::<WalletStorageError>() {
+            if decode_defect(s) {
+                return false;
+            }
+            if matches!(s, WalletStorageError::AutoBackupDirUnwritable { .. }) || s.is_transient() {
+                return true;
+            }
         }
-        if err.downcast_ref::<io::Error>().is_some()
+        if err.downcast_ref::<io::Error>().is_some_and(machine_io)
             || err
                 .downcast_ref::<rusqlite::Error>()
                 .is_some_and(sqlite_fault)
