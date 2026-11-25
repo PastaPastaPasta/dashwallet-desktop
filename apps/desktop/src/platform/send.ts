@@ -15,7 +15,7 @@ import { CREDITS_PER_DUFF } from "../api/pending";
 import { failureText, Model } from "../onboarding/model";
 import { t } from "../i18n";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
-import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify } from "./move";
+import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify, preflightText, stillHeld } from "./move";
 import { isAddressSendsOff } from "./mainnetOff";
 
 export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
@@ -229,10 +229,14 @@ export function recipientText(reason: string | undefined): string {
   }
 }
 
-/** A send's refusal, by code; the move's texts for the codes both share. */
-export function sendErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
+/** A send's refusal, by code; the move's texts for the codes both share. `retryOf`: the held send this
+ * one retried; while it still holds, a pre-check refusal says it may still land. */
+export function sendErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, retryOf?: string | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code, stillHeld(activity, retryOf, "send") ? "send" : null);
     case "credits.recipient_invalid":
       return recipientText(e.data?.kind === "reason" ? e.data.reason : undefined);
     case "credits.send_out_of_range":
@@ -264,8 +268,8 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
 
 /** The refusal of `platformSend` itself: an unknown or used operation (`invalid_argument`) means the
  * quote it came from is no good any more; the rest as a quote's. */
-export function sendRefusalText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
-  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity);
+export function sendRefusalText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, retryOf?: string | null): string {
+  return hasCode(e, "invalid_argument") ? SEND_COPY.expired : sendErrorText(e, credits, activity, retryOf);
 }
 
 /** Back is offered when a new quote may pass (as for a move), after an expired operation, and when

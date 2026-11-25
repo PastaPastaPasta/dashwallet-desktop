@@ -11,5 +11,15 @@ export const platform = {
     rulesUnsupported:
       "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them. Nothing was sent, and your balance is unchanged. Update Dash Wallet, then try again.",
     refused: "Dash Platform would refuse this transfer as Dash Wallet built it, so nothing was sent and your balance is unchanged. If this keeps happening, update Dash Wallet.",
+    /** The same refusals of the exact retry of a send that still holds: the earlier payment may land. */
+    refusedRetry:
+      "Dash Platform would refuse this attempt as Dash Wallet built it, so this attempt sent nothing. Your earlier payment may still go through, so check Activity before you pay again. If this keeps happening, update Dash Wallet.",
+    rulesUnsupportedRetry:
+      "Dash Platform's rules have changed, and this version of Dash Wallet can't send this under them, so this attempt sent nothing. Your earlier payment may still go through. Update Dash Wallet, and check Activity before you pay again.",
+    /** The same refusals of the move out of a top-up that still holds: the earlier top-up may land. */
+    refusedHeldTopUp:
+      "Dash Platform would refuse this move as Dash Wallet built it, so this attempt sent nothing. Your earlier top-up may still go through, so check Activity before you try again. If this keeps happening, update Dash Wallet.",
+    rulesUnsupportedHeldTopUp:
+      "Dash Platform's rules have changed, and this version of Dash Wallet can't make this move under them, so this attempt sent nothing. Your earlier top-up may still go through. Update Dash Wallet, and check Activity before you try again.",
   },
 } as const satisfies Tree;
