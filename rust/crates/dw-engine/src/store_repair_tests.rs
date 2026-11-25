@@ -9,40 +9,164 @@ use crate::session::WALLET_DB_FILE;
 use crate::store_repair::{Stop, arm, repair};
 
 /// The wallet holds coin A, mined; a peer's claim on A paying [`CHANGE`]
-/// back is relayed with `script` as its input script, and key-wallet
-/// records it, A spent. Returns A's funding and the claim.
-fn claim_on_a_held_coin(
+/// back, with `script` as its input script, is in the store as a build
+/// that recorded it left it, A spent ([`seed_claim`]). Returns the session
+/// reopened on that store, A's funding and the claim.
+pub(super) fn claim_on_a_held_coin(
     engine: &Engine,
-    session: &Arc<NetworkSession>,
+    session: Arc<NetworkSession>,
     id: WalletId,
     script: &[u8],
-) -> (Transaction, Transaction) {
+) -> (Arc<NetworkSession>, Transaction, Transaction) {
     edited_claim_on_a_held_coin(engine, session, id, |claim| {
         claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script.to_vec());
     })
 }
 
 /// [`claim_on_a_held_coin`] with the claim as `edit` leaves it.
-fn edited_claim_on_a_held_coin(
+pub(super) fn edited_claim_on_a_held_coin(
     engine: &Engine,
-    session: &Arc<NetworkSession>,
+    session: Arc<NetworkSession>,
     id: WalletId,
     edit: impl FnOnce(&mut Transaction),
-) -> (Transaction, Transaction) {
-    let (_, funding, mut claim) = funding_and_spend(engine, session, id);
+) -> (Arc<NetworkSession>, Transaction, Transaction) {
+    let (to, funding, mut claim) = funding_and_spend(engine, &session, id);
     edit(&mut claim);
-    mined(engine, session, id, BIRTH - 20, vec![funding.clone()]);
-    mempool(engine, session, id, &claim);
+    mined(engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let owners = vec![to; claim.input.len()];
+    let session = seed_claim(engine, session, id, &claim, &owners);
     let a = OutPoint::new(funding.txid(), 0);
-    assert!(!spendable(engine, session, id, a), "the claim holds A");
-    eventually("the claim is stored", || {
-        stored(session.data_dir(), id, claim.txid())
+    assert!(!spendable(engine, &session, id, a), "the claim holds A");
+    (session, funding, claim)
+}
+
+/// Puts `claim`, a spend its coins' owner never signed, in the store as
+/// the builds before key-wallet refused such spends recorded it (this
+/// build's key-wallet ignores it, so it can only come from such a store):
+/// its twin with each input signed for the address of `owners` at its
+/// index (a repeated input once) goes through the mempool and is stored,
+/// then the closed store's rows of the twin become the claim's, its record
+/// holding the claim. The record keeps the twin's input details, so with
+/// a repeated input their indices are the twin's; the repair reads only
+/// the transaction. Returns the session reopened on that store with the
+/// repair skipped, as a build without it opened it
+/// ([`a_seeded_claim_is_stored_as_a_relayed_one`]).
+pub(super) fn seed_claim(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    claim: &Transaction,
+    owners: &[Address],
+) -> Arc<NetworkSession> {
+    assert_eq!(owners.len(), claim.input.len(), "an owner for each input");
+    let mut seen = std::collections::HashSet::new();
+    let (input, owners): (Vec<TxIn>, Vec<Address>) = (claim.input.iter().zip(owners))
+        .filter(|(i, _)| seen.insert(i.previous_output))
+        .map(|(i, o)| {
+            let input = TxIn {
+                script_sig: dashcore::ScriptBuf::new(),
+                ..i.clone()
+            };
+            (input, o.clone())
+        })
+        .unzip();
+    let twin = Transaction {
+        input,
+        ..claim.clone()
+    };
+    let twin = signed_by_wallet_each(engine, &session, id, &owners, twin);
+    mempool(engine, &session, id, &twin);
+    eventually("the twin is stored", || {
+        stored(session.data_dir(), id, twin.txid())
     });
-    (funding, claim)
+    let dir = close(engine, session);
+    swap_in(&dir, &twin, claim);
+    arm(&dir, Stop::Skip);
+    let session = open(engine);
+    assert!(stored(session.data_dir(), id, claim.txid()), "seeded");
+    session
+}
+
+/// In the closed store in `dir`, every row of `twin` becomes `claim`'s
+/// (same inputs and outputs, another txid): its record holds `claim`, and
+/// its txid and outpoint keys name `claim`.
+pub(super) fn swap_in(dir: &std::path::Path, twin: &Transaction, claim: &Transaction) {
+    let mut conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON").unwrap();
+    let (from, to) = (
+        twin.txid().as_byte_array().to_vec(),
+        claim.txid().as_byte_array().to_vec(),
+    );
+    let blobs: Vec<(Vec<u8>, Vec<u8>)> = {
+        let mut stmt = tx
+            .prepare("SELECT wallet_id, record_blob FROM core_transactions WHERE txid = ?1")
+            .unwrap();
+        stmt.query_map([&from], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(!blobs.is_empty(), "the twin is stored");
+    for (wallet, blob) in blobs {
+        let mut record = crate::history_ops::decode_record(&blob).unwrap();
+        record.transaction = claim.clone();
+        record.txid = claim.txid();
+        let config = bincode::config::standard()
+            .with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+        let blob = bincode::serde::encode_to_vec(&record, config).unwrap();
+        tx.execute(
+            "UPDATE core_transactions SET record_blob = ?3 WHERE wallet_id = ?1 AND txid = ?2",
+            rusqlite::params![wallet, &from, blob],
+        )
+        .unwrap();
+    }
+    let tables: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    for table in tables {
+        let columns: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT name FROM pragma_table_info(?1)")
+                .unwrap();
+            stmt.query_map([&table], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        for column in ["txid", "spent_in_txid"] {
+            if columns.iter().any(|c| c == column) {
+                tx.execute(
+                    &format!("UPDATE \"{table}\" SET {column} = ?2 WHERE {column} = ?1"),
+                    rusqlite::params![&from, &to],
+                )
+                .unwrap();
+            }
+        }
+        if columns.iter().any(|c| c == "outpoint") {
+            for vout in 0..twin.output.len() as u32 {
+                tx.execute(
+                    &format!("UPDATE \"{table}\" SET outpoint = ?2 WHERE outpoint = ?1"),
+                    rusqlite::params![
+                        crate::store_repair::encode_outpoint(&OutPoint::new(twin.txid(), vout)),
+                        crate::store_repair::encode_outpoint(&OutPoint::new(claim.txid(), vout)),
+                    ],
+                )
+                .unwrap();
+            }
+        }
+    }
+    tx.commit().unwrap();
 }
 
 /// Whether the store holds a row of `txid` for `id`.
-fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
+pub(super) fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
     let conn = rusqlite::Connection::open_with_flags(
         dir.join(WALLET_DB_FILE),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -57,7 +181,12 @@ fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
 }
 
 /// Whether `txid` is out of the history or abandoned in it.
-fn dropped(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) -> bool {
+pub(super) fn dropped(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> bool {
     rows(engine, session, id)
         .iter()
         .all(|r| r.0 != txid.to_string() || r.1 == TxStatusKind::Abandoned)
@@ -77,12 +206,12 @@ fn records(
 }
 
 /// The app's settings value of `key` in `scope`.
-fn setting(session: &Arc<NetworkSession>, scope: &str, key: &str) -> Option<String> {
+pub(super) fn setting(session: &Arc<NetworkSession>, scope: &str, key: &str) -> Option<String> {
     (session.live().unwrap().appdb).setting(scope, key).unwrap()
 }
 
 /// Closes the network; returns its directory.
-fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
+pub(super) fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
     let dir = session.data_dir().to_path_buf();
     *session.close_load_wait.lock().unwrap() = Some(LOAD_WAIT);
     drop(session);
@@ -95,13 +224,13 @@ fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
 }
 
 /// Runs the repair on the closed network `dir` with its own app database.
-fn repair_closed(dir: &std::path::Path) -> crate::store_repair::Outcome {
+pub(super) fn repair_closed(dir: &std::path::Path) -> crate::store_repair::Outcome {
     let appdb = dw_appdb::AppDb::open(&dir.join(dw_appdb::APP_DB_FILE)).unwrap();
     repair(dir, &appdb).unwrap()
 }
 
 /// SQL on the closed network `dir`'s store.
-fn on_store(dir: &std::path::Path, sql: &str, params: impl rusqlite::Params) {
+pub(super) fn on_store(dir: &std::path::Path, sql: &str, params: impl rusqlite::Params) {
     let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
     conn.execute(sql, params).unwrap();
 }
@@ -112,7 +241,7 @@ fn on_store(dir: &std::path::Path, sql: &str, params: impl rusqlite::Params) {
 #[test]
 fn a_claim_recorded_on_a_held_coin_and_left_at_an_exit_is_dropped_at_the_next_open() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let session = reopen(&engine, session);
     let a = OutPoint::new(funding.txid(), 0);
     assert!(
@@ -147,7 +276,7 @@ fn a_claim_recorded_on_a_held_coin_and_left_at_an_exit_is_dropped_at_the_next_op
 #[test]
 fn a_claim_on_a_held_coin_whose_input_script_isnt_push_only_is_kept() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[0x61, 0x01, 0x01]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[0x61, 0x01, 0x01]);
     assert_eq!(
         crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
         Ok(false)
@@ -177,7 +306,7 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
         fresh_address(&engine, &session, id),
         fresh_address(&engine, &session, id),
     );
-    let funding = super::own_spend_disk_tests::funding(5, &[to_a, to_b], PAID);
+    let funding = super::own_spend_disk_tests::funding(5, &[to_a.clone(), to_b.clone()], PAID);
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     let (a, b) = (
         OutPoint::new(funding.txid(), 0),
@@ -193,7 +322,7 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
         previous_output: b,
         ..Default::default()
     });
-    mempool(&engine, &session, id, &claim);
+    let session = seed_claim(&engine, session, id, &claim, &[to_a, to_b]);
     assert!(!spendable(&engine, &session, id, a) && !spendable(&engine, &session, id, b));
     let payment = send(
         &engine,
@@ -228,7 +357,7 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
 #[test]
 fn a_claim_spending_one_coin_twice_is_dropped_as_structural() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = edited_claim_on_a_held_coin(&engine, &session, id, |claim| {
+    let (session, funding, claim) = edited_claim_on_a_held_coin(&engine, session, id, |claim| {
         claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
         claim.input.push(claim.input[0].clone());
     });
@@ -253,7 +382,7 @@ fn a_claim_spending_one_coin_twice_is_dropped_as_structural() {
 #[test]
 fn a_locked_payment_on_the_claims_change_keeps_the_claim() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let payment = send(
         &engine,
         &session,
@@ -280,7 +409,7 @@ fn a_locked_payment_on_the_claims_change_keeps_the_claim() {
 #[test]
 fn an_output_of_the_claim_spent_by_an_unknown_transaction_keeps_it() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (_, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     on_store(
         &dir,
@@ -292,7 +421,7 @@ fn an_output_of_the_claim_spent_by_an_unknown_transaction_keeps_it() {
         ],
     );
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome.schema, Some(24));
+    assert_eq!(outcome.schema, Some(26));
     assert!(outcome.dropped.is_empty(), "{outcome:?}");
     assert!(stored(&dir, id, claim.txid()));
 }
@@ -302,7 +431,7 @@ fn an_output_of_the_claim_spent_by_an_unknown_transaction_keeps_it() {
 #[test]
 fn a_claim_a_sweep_named_the_winner_or_with_an_unverified_lock_is_kept() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
     let txid = claim.txid().as_byte_array().to_vec();
@@ -335,7 +464,7 @@ fn a_claim_a_sweep_named_the_winner_or_with_an_unverified_lock_is_kept() {
 #[test]
 fn a_sweep_winner_built_on_the_claim_or_a_stray_lock_row_keeps_it() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let payment = send(
         &engine,
         &session,
@@ -398,7 +527,7 @@ fn an_unsigned_input_after_structural_ones_makes_the_drop_sure() {
         fresh_address(&engine, &session, id),
         fresh_address(&engine, &session, id),
     );
-    let funding = super::own_spend_disk_tests::funding(5, &[to_a, to_b], PAID);
+    let funding = super::own_spend_disk_tests::funding(5, &[to_a.clone(), to_b.clone()], PAID);
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     let (a, b) = (
         OutPoint::new(funding.txid(), 0),
@@ -411,10 +540,8 @@ fn an_unsigned_input_after_structural_ones_makes_the_drop_sure() {
         previous_output: b,
         ..Default::default()
     });
-    mempool(&engine, &session, id, &claim);
-    eventually("the claim is stored", || {
-        stored(session.data_dir(), id, claim.txid())
-    });
+    let session = seed_claim(&engine, session, id, &claim, &[to_a.clone(), to_a, to_b]);
+    assert!(!spendable(&engine, &session, id, a) && !spendable(&engine, &session, id, b));
     let session = reopen(&engine, session);
     assert!(!stored(session.data_dir(), id, claim.txid()), "dropped");
     let raw = setting(
@@ -434,7 +561,7 @@ fn an_unsigned_input_after_structural_ones_makes_the_drop_sure() {
 #[test]
 fn a_walk_that_cant_complete_keeps_the_claim() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (_, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     let copy = tempfile::tempdir().unwrap();
     for name in std::fs::read_dir(&dir).unwrap() {
@@ -479,7 +606,7 @@ fn a_walk_that_cant_complete_keeps_the_claim() {
 #[test]
 fn a_locked_claim_is_kept() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (_, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     instant_lock(&engine, &session, id, &claim);
     let session = reopen(&engine, session);
     assert!(stored(session.data_dir(), id, claim.txid()));
@@ -491,7 +618,7 @@ fn a_locked_claim_is_kept() {
 #[test]
 fn a_coin_the_store_doesnt_hold_as_its_funding_pays_keeps_the_claim() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
     on_store(
@@ -517,17 +644,328 @@ fn a_coin_the_store_doesnt_hold_as_its_funding_pays_keeps_the_claim() {
 #[test]
 fn a_store_of_an_unknown_schema_is_not_repaired() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (_, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    for (later, sql) in [
+        (
+            27,
+            "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
+             SELECT 27, 'later', applied_on, checksum FROM refinery_schema_history \
+             WHERE version = 26",
+        ),
+        (25, "DELETE FROM refinery_schema_history WHERE version > 25"),
+    ] {
+        on_store(&dir, sql, []);
+        assert_eq!(schema(&dir), later);
+        let outcome = repair_closed(&dir);
+        assert_eq!(outcome, crate::store_repair::Outcome::default(), "{later}");
+        assert!(stored(&dir, id, claim.txid()), "{later}: nothing repaired");
+    }
+}
+
+/// Every row of the closed store in `dir`, by table, but for the schema
+/// history, times, flush counts (`meta_data_versions.seq` counts the
+/// persister's flushes, which batch writes by timing) and the store's
+/// random generation token.
+fn dump(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT IN ('refinery_schema_history', 'sqlite_sequence', 'meta_store_generation') \
+                 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let mut all = Vec::new();
+    for table in tables {
+        let columns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info(?1)")
+                .unwrap();
+            stmt.query_map([&table], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let kept: Vec<String> = (columns.into_iter())
+            .filter(|c| !c.ends_with("_at") && !c.ends_with("_time") && c != "time")
+            .filter(|c| table != "meta_data_versions" || c != "seq")
+            .map(|c| format!("quote(\"{c}\")"))
+            .collect();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM \"{table}\"",
+                kept.join(" || '|' || ")
+            ))
+            .unwrap();
+        let mut rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        rows.sort();
+        all.push((table, rows));
+    }
+    all
+}
+
+/// What [`seed_claim`] leaves is what the store keeps of the same claim
+/// relayed through the mempool, compared row by row ([`dump`]): a
+/// claim whose input script isn't push-only, which key-wallet still
+/// records, after the same opens.
+#[test]
+fn a_seeded_claim_is_stored_as_a_relayed_one() {
+    let script = [0x61, 0x01, 0x01];
+    let (relayed, relayed_rows) = {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+        claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script.to_vec());
+        mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+        mempool(&engine, &session, id, &claim);
+        eventually("the claim is stored", || {
+            stored(session.data_dir(), id, claim.txid())
+        });
+        let dir = close(&engine, session);
+        arm(&dir, Stop::Skip);
+        let dir = close(&engine, open(&engine));
+        (claim.txid(), dump(&dir))
+    };
+    let (seeded, seeded_rows) = {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &script);
+        let dir = close(&engine, session);
+        (claim.txid(), dump(&dir))
+    };
+    assert_eq!(relayed, seeded, "the same claim");
+    for ((table, relayed), (_, seeded)) in relayed_rows.iter().zip(&seeded_rows) {
+        assert_eq!(relayed, seeded, "{table}");
+    }
+    assert_eq!(relayed_rows, seeded_rows);
+}
+
+/// The persister keys a block's spend of a coin as the store keys the
+/// coin, which the repair's block-spend checks rely on.
+#[test]
+fn a_block_spend_is_keyed_as_its_coin() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to, funding, spend) = funding_and_spend(&engine, &session, id);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let spend = signed_by_wallet(&engine, &session, id, &to, spend);
+    mined(&engine, &session, id, BIRTH - 10, vec![spend.clone()]);
+    let dir = close(&engine, session);
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT outpoint, spender_txid FROM core_block_spends WHERE wallet_id = ?1")
+        .unwrap();
+    let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+        .query_map([id.0.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    let spender = spend.txid().as_byte_array().to_vec();
+    assert_eq!(rows, vec![(a.clone(), spender.clone())]);
+    let (spent, spent_in): (i64, Option<Vec<u8>>) = conn
+        .query_row(
+            "SELECT spent, spent_in_txid FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![id.0.as_slice(), a],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(spent, 1, "the coin is marked spent with its block's spend");
+    assert!(
+        spent_in.as_ref().is_none_or(|t| *t == spender),
+        "{spent_in:?}"
+    );
+}
+
+/// A block's spend of `outpoint` by `spender`, written as the persister
+/// writes it (platform-wallet-storage `apply_block_spends`): its row, and
+/// the coin, when held unspent, marked spent by the spender.
+pub(super) fn block_spend(
+    dir: &std::path::Path,
+    id: WalletId,
+    outpoint: &OutPoint,
+    spender: [u8; 32],
+) {
+    let op = crate::store_repair::encode_outpoint(outpoint);
+    on_store(
+        dir,
+        "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id.0.as_slice(), op, BIRTH - 10, [7u8; 32], spender],
+    );
+    on_store(
+        dir,
+        "UPDATE core_utxos SET spent = 1, spent_in_txid = ?3 \
+         WHERE wallet_id = ?1 AND outpoint = ?2 AND spent = 0",
+        rusqlite::params![id.0.as_slice(), op, spender],
+    );
+}
+
+/// S2 from a block's spend (V025): the claim's change, held spent by the
+/// wallet's pending payment Z, is spent in a block by another transaction
+/// (the persister's mark finds it spent already). The block makes the
+/// claim mined, so it is kept, though all the walk finds below it is Z,
+/// pending.
+#[test]
+fn a_claim_whose_output_a_block_spent_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let change = OutPoint::new(claim.txid(), 1);
+    let z = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &z);
+    eventually("Z is stored", || stored(session.data_dir(), id, z.txid()));
+    let dir = close(&engine, session);
+    let mark = || {
+        rusqlite::Connection::open(dir.join(WALLET_DB_FILE))
+            .unwrap()
+            .query_row(
+                "SELECT spent, spent_in_txid IS NULL FROM core_utxos \
+                 WHERE wallet_id = ?1 AND outpoint = ?2",
+                rusqlite::params![
+                    id.0.as_slice(),
+                    crate::store_repair::encode_outpoint(&change)
+                ],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(mark(), (1, true), "Z holds the change");
+    block_spend(&dir, id, &change, [9u8; 32]);
+    assert_eq!(mark(), (1, true), "the block's mark finds it spent");
+    let outcome = repair_closed(&dir);
+    assert_eq!(outcome.schema, Some(26));
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// S6 from a block's spend: the claim's coin A, held spent by it, is
+/// spent in a block by the claim itself (the store has yet to record the
+/// claim mined). The claim is kept.
+#[test]
+fn a_claim_a_block_spent_its_coin_for_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    block_spend(
+        &dir,
+        id,
+        &OutPoint::new(funding.txid(), 0),
+        claim.txid().to_byte_array(),
+    );
+    let outcome = repair_closed(&dir);
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// S2: a block's spend whose key doesn't decode means the walk can't
+/// complete, so every claim is kept.
+#[test]
+fn a_block_spend_that_doesnt_read_keeps_the_claim() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     on_store(
         &dir,
-        "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
-         SELECT 25, 'later', applied_on, checksum FROM refinery_schema_history WHERE version = 24",
-        [],
+        "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+         VALUES (?1, x'00', ?2, ?3, ?4)",
+        rusqlite::params![id.0.as_slice(), BIRTH - 10, [7u8; 32], [9u8; 32]],
     );
     let outcome = repair_closed(&dir);
-    assert_eq!(outcome, crate::store_repair::Outcome::default());
-    assert!(stored(&dir, id, claim.txid()), "nothing repaired");
+    assert_eq!(outcome.schema, Some(26));
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// The store as a build at V024 left it: the tables of the later
+/// migrations aren't there, and its history ends at 24.
+pub(super) fn as_v24(dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    conn.execute_batch(
+        "DROP TABLE core_block_spends; DROP TABLE core_block_spends_migrated; \
+         DROP TABLE core_dismissed_txids; \
+         DELETE FROM refinery_schema_history WHERE version > 24;",
+    )
+    .unwrap();
+}
+
+/// The store's schema version.
+fn schema(dir: &std::path::Path) -> i64 {
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    conn.query_row(
+        "SELECT MAX(version) FROM refinery_schema_history",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// W2 on the store a build at V024 left: the first open of this build
+/// repairs it before the persister upgrades it, and the next at V026 finds
+/// nothing more.
+#[test]
+fn a_claim_in_a_store_a_v24_build_left_is_dropped_at_the_first_open() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    as_v24(&dir);
+    let outcome = repair_closed(&dir);
+    assert_eq!(outcome.schema, Some(24));
+    assert_eq!(outcome.dropped.get(&id), Some(&vec![claim.txid()]));
+    let session = open(&engine);
+    assert_eq!(schema(session.data_dir()), 26, "upgraded after the repair");
+    let a = OutPoint::new(funding.txid(), 0);
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert_eq!(balances(&session, id).total, PAID, "A counts once");
+    let dir = close(&engine, session);
+    let outcome = repair_closed(&dir);
+    assert_eq!(outcome.schema, Some(26));
+    assert!(outcome.dropped.is_empty() && outcome.restored.is_empty());
+}
+
+/// A coin of the claim that a block spent, whatever spent it (V025), is
+/// not given back when the claim is dropped: it stays spent.
+#[test]
+fn a_coin_a_block_spent_is_not_given_back_by_the_drop() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    block_spend(&dir, id, &OutPoint::new(funding.txid(), 0), [9u8; 32]);
+    let outcome = repair_closed(&dir);
+    assert_eq!(
+        outcome.dropped.get(&id),
+        Some(&vec![claim.txid()]),
+        "dropped"
+    );
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let spent: i64 = conn
+        .query_row(
+            "SELECT spent FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![id.0.as_slice(), a],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(spent, 1, "A stays spent");
+    let appdb = dw_appdb::AppDb::open(&dir.join(dw_appdb::APP_DB_FILE)).unwrap();
+    let raw = (appdb.setting(&id.to_string(), &format!("store_dropped:{}", claim.txid())))
+        .unwrap()
+        .unwrap();
+    assert!(raw.contains("\"released_coins\":[]"), "{raw}");
 }
 
 /// A stop after the records are staged and before the store commits rolls
@@ -536,7 +974,7 @@ fn a_store_of_an_unknown_schema_is_not_repaired() {
 #[test]
 fn a_stop_inside_the_repair_rolls_it_back() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let a = OutPoint::new(funding.txid(), 0);
     arm(session.data_dir(), Stop::BeforeCommit);
     let session = reopen(&engine, session);
@@ -571,7 +1009,7 @@ fn a_stop_inside_the_repair_rolls_it_back() {
 #[test]
 fn a_stop_after_the_store_commits_keeps_the_drop() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let payment = send(
         &engine,
         &session,
@@ -616,7 +1054,7 @@ fn a_stop_after_the_store_commits_keeps_the_drop() {
 #[test]
 fn a_repair_record_reaches_the_listing_of_stored_transactions() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (_, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let session = reopen(&engine, session);
     let mut persisted =
         crate::history_ops::persisted_txids(&session.data_dir().join(WALLET_DB_FILE))
