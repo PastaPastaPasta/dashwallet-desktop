@@ -33,6 +33,7 @@ import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { RestoredBanner } from "./RestoredBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
+import { ShieldedClosedNotice } from "./ShieldedClosedNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -282,6 +283,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       <div className="page-column">
         <RestoredBanner />
         <HistoryGapNotice />
+        <ShieldedClosedNotice walletId={walletId} />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <ExportStagingBanner />

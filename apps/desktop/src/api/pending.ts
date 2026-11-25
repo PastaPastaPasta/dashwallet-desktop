@@ -33,6 +33,7 @@ export const SHIELDED_CODES = {
   moveRunning: "shielded.move_running",
   coinsChanged: "shielded.coins_changed",
   unrecordedSpend: "shielded.unrecorded_spend",
+  storeClosed: "shielded.store_closed",
 } as const satisfies Record<string, ShieldedCode>;
 
 /** Whether `e` says the command does not exist in this dw-app. dw-app's ACL manifest lists every
