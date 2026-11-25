@@ -2856,3 +2856,38 @@ fn every_broadcast_command_counts_while_it_runs() {
         );
     }
 }
+
+/// `restored` follows the network's RESTORED mark at each `openNetwork` and
+/// `activeNetwork`: absent, false; present, true; a mark that can't be
+/// checked, true. Nothing here clears it.
+#[test]
+fn the_open_network_says_whether_its_data_was_restored() {
+    let demo = Demo::new();
+    let backups = demo.data_root().join("regtest").join("upgrade-backups");
+    let mark = backups.join("RESTORED");
+    assert_eq!(demo.open()["network"]["restored"], false);
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], false);
+    std::fs::create_dir_all(&backups).unwrap();
+    std::fs::write(&mark, b"not a mark").unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], true);
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["restored"],
+        true
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&backups, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = demo.ok("active_network", json!({}))["restored"].clone();
+        std::fs::set_permissions(&backups, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(unreadable, true);
+    }
+    assert!(mark.exists());
+    std::fs::remove_file(&mark).unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], false);
+    assert!(
+        demo.ok("launch_info", json!({}))["network"]
+            .get("restored")
+            .is_none()
+    );
+}

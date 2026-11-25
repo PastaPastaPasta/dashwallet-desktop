@@ -268,7 +268,7 @@ commands! {
             }
         };
         Ok(OpenedNetwork {
-            network: NetworkInfo::from(&network),
+            network: NetworkInfo::opened(&session),
             lock: session.vault().status().into(),
         })
     }
@@ -399,14 +399,15 @@ commands! {
         close_active(&state, &mut slot, engine.close_network(network).await)
     }
 
-    /// The active network, `null` before `openNetwork`.
+    /// The active network, `null` before `openNetwork`, with whether its
+    /// wallet data was restored (read again at each call).
     #[facade()]
     fn active_network(state) -> Option<NetworkInfo> {
         Ok(state
             .session_slot()
             .await
             .as_ref()
-            .map(|s| NetworkInfo::from(s.network())))
+            .map(|s| NetworkInfo::opened(s)))
     }
 
     /// The saved network choice (mainnet or testnet), the window's network

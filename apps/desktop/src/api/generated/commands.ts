@@ -395,7 +395,8 @@ export function closeNetwork(): Promise<boolean> {
 }
 
 /**
- * The active network, `null` before `openNetwork`.
+ * The active network, `null` before `openNetwork`, with whether its
+ * wallet data was restored (read again at each call).
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
