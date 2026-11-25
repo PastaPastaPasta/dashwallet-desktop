@@ -154,8 +154,9 @@ complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored b
 ## What you are getting
 
 - **Per-build releases** are named `v<version>-dev.<run>+<short commit>`: one for each push to `main` (a burst of
-  pushes can skip one), never edited.
-- **`continuous`** is replaced by every push to `main`, never by an older commit; its files keep the same names.
+  pushes can skip one), never edited. Since 11-25 a push to `main` builds nothing, so no new ones appear.
+- **`continuous`** was replaced by every push to `main` until 11-25, never by an older commit; its files keep the
+  same names.
   After a burst of pushes it can sit one commit behind until the next push; its notes say which commit it holds.
   While it is being replaced (tens of seconds) a file can be briefly missing, or newer than its `SHA256SUMS`:
   if a download fails or the checksum does not match, fetch the file and `SHA256SUMS` again a minute later.

@@ -12,8 +12,8 @@ Work through it top to bottom and tick each box in the release's tracking issue 
 
 - [ ] The commit is on `main`. The workflow publishes nothing for a commit that isn't an ancestor of `main`
       (`ci/github/release-decide.sh`, then `release-publish.sh` again).
-- [ ] CI and Release are green on that commit (Release's `main` push has already built it and published
-      `v<version>-dev.<run>+<sha>`). Nightly's latest run on `main` is green, or each red job has an issue that says
+- [ ] CI is green on that commit, and Release is green on it: Release no longer runs on a `main` push, so run
+      `gh workflow run release.yml --ref main` when the chosen commit is main's head (it builds, never publishes). Nightly's latest run on `main` is green, or each red job has an issue that says
       why it doesn't block. UI gate and Tauri selftest run only by hand (`workflow_dispatch`): run both on the
       commit and have them green.
 - [ ] No open blocker or critical issue is tagged for this version.
@@ -57,8 +57,8 @@ first candidate.
 ## 4. Run the test bar
 
 Test the commit that will ship: tag a release candidate (section 5) and test its `-rc.N` files, or, for a version
-that skips candidates, the `v<version>-dev.<run>+<sha>` build of the chosen commit (it shows the test-build warning;
-nothing else differs). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
+that skips candidates, the `dist-<os>` artifacts of a `gh workflow run release.yml --ref main` run at the chosen
+commit (they show the test-build warning; nothing else differs). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
 published files once more.
 
 The minimal bar (RELEASE-PLAN §1), on public testnet, funded with the `dash-faucet` skill, on the Linux AppImage:
