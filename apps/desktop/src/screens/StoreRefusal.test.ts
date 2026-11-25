@@ -159,8 +159,8 @@ describe("the store refusal screen", () => {
     const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
     const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(rust)?.[1]?.replace(/\\n/g, "\n");
     const R = en.storeUpgrade.restore;
-    expect([R.confirm.title, R.confirm.text, R.refused.title, R.refused.text, R.incomplete.title, R.incomplete.text, R.noSpace.title, R.noSpace.text]).toEqual(
-      ["CONFIRM_TITLE", "CONFIRM_TEXT", "RESTORE_REFUSED_TITLE", "RESTORE_REFUSED_TEXT", "INCOMPLETE_TITLE", "INCOMPLETE_TEXT", "NO_SPACE_TITLE", "NO_SPACE_TEXT"].map(constant),
+    expect([R.confirm.title, R.confirm.text, R.refused.title, R.refused.text, R.incomplete.title, R.incomplete.text, R.noSpace.title, R.noSpace.text, R.notStarted.title, R.notStarted.text]).toEqual(
+      ["CONFIRM_TITLE", "CONFIRM_TEXT", "RESTORE_REFUSED_TITLE", "RESTORE_REFUSED_TEXT", "INCOMPLETE_TITLE", "INCOMPLETE_TEXT", "NO_SPACE_TITLE", "NO_SPACE_TEXT", "NOT_STARTED_TITLE", "NOT_STARTED_TEXT"].map(constant),
     );
     for (const key of ["title", "text", "keep", "keepMeaning", "quit"] as const) expect(R.foreign[key]).toBe(STORE_COPY[`storeUpgrade.restore.foreign.${key}`]);
     expect(rust).not.toContain("keepCurrent");
