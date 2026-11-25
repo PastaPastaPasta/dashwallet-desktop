@@ -6930,10 +6930,11 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
 
 /// A payment of A and B with change, no record of key-wallet's after a
 /// restart, beaten on B by another device's spend in a block: its drop is
-/// held before the recheck while its lock arrives, heard by the SPV alone
-/// (#828) and then by the wallet. Locked, it is beaten only under a
-/// ChainLock, so the drop keeps it: it stays with its claims, nothing is
-/// freed, and A is neither counted nor offered, after a restart too.
+/// held before the recheck while its lock arrives, heard by the SPV before
+/// key-wallet takes it (#828), so only the history shows it locked. Locked,
+/// it is beaten only under a ChainLock, so the drop keeps it: it stays with
+/// its claims, nothing is freed, and A is neither counted nor offered,
+/// after a restart too.
 #[test]
 fn a_lock_arriving_while_a_beaten_payments_drop_is_held_keeps_it_and_its_claims() {
     use dash_spv::EventHandler;
@@ -6974,8 +6975,6 @@ fn a_lock_arriving_while_a_beaten_payments_drop_is_held_keeps_it_and_its_claims(
         history_shows_locked(&session, id, payment.txid()),
         "the history shows the lock"
     );
-    instant_lock(&engine, &session, id, &payment);
-    lock_reruns_done(&engine, &session);
     pause.release.notify_one();
     let gate = Arc::clone(&session);
     engine.block_on(async move { drop(gate.hub.drop_gate.lock().await) });
