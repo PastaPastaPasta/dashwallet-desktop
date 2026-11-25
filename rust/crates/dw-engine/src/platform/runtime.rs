@@ -143,12 +143,6 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
-    /// The coordinator the engine set its dispatch hook on. The library
-    /// keeps a hook for the coordinator's life and never unsets it, so
-    /// `shielded_pool::hooked` answers from here without the store lock a
-    /// pass holds.
-    pub(crate) shielded_hooked:
-        Mutex<std::sync::Weak<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
@@ -517,7 +511,6 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
-            shielded_hooked: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),

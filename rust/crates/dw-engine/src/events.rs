@@ -9,7 +9,6 @@
 //! the last change of a burst (reviews H2, M4).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,7 +24,6 @@ use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use crate::history::HistoryStore;
-use crate::platform::shielded_pool::LedgerView;
 use crate::pump::{EventPump, NewTxs, PumpTarget, TxidSet};
 use crate::sync::{SyncSnapshot, SyncTracker};
 use crate::tools::{RescanState, better_chainlock, count_masternodes};
@@ -580,18 +578,6 @@ pub(crate) struct SessionHub {
     shielded_synced: Mutex<HashSet<WalletId>>,
     /// The wallets whose last shielded pass failed, until one succeeds.
     shielded_failed: Mutex<HashSet<WalletId>>,
-    /// Each wallet's last shielded ledger a status read under the store's
-    /// guard, with the [`Self::shielded_generation`] it was read at.
-    shielded_ledgers: Mutex<HashMap<WalletId, (u64, LedgerView)>>,
-    /// Moves on every change to a shielded ledger the engine starts (a
-    /// signing call, a spend's dispatch) and on every unload: a ledger kept
-    /// at an earlier one is never shown again.
-    shielded_generation: AtomicU64,
-    /// The changes running: no ledger is kept or shown meanwhile.
-    shielded_changes: AtomicUsize,
-    /// Whether a status shows a kept ledger while the store is held
-    /// ([`SHOW_KEPT_SHIELDED_LEDGER`]); when not, it shows none (not ready).
-    shielded_keep: std::sync::atomic::AtomicBool,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -769,58 +755,6 @@ impl SessionHub {
             })
     }
 
-    /// The generation a ledger read now would be kept at; `None` while a
-    /// change runs.
-    pub(crate) fn shielded_generation(&self) -> Option<u64> {
-        let generation = self.shielded_generation.load(Ordering::Acquire);
-        (self.shielded_changes.load(Ordering::Acquire) == 0).then_some(generation)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_shielded_keep(&self, on: bool) {
-        self.shielded_keep.store(on, Ordering::Release);
-    }
-
-    pub(crate) fn bump_shielded_generation(&self) {
-        self.shielded_generation.fetch_add(1, Ordering::AcqRel);
-    }
-
-    /// A change to a shielded ledger the engine starts, until the guard
-    /// drops: a ledger read before its start or before its end, or while it
-    /// runs, is not shown again.
-    pub(crate) fn shielded_change(&self) -> ShieldedChange<'_> {
-        self.shielded_changes.fetch_add(1, Ordering::AcqRel);
-        self.bump_shielded_generation();
-        ShieldedChange(self)
-    }
-
-    /// Keeps `wallet`'s ledger as read under the store's guard, from a read
-    /// that began at `generation`, unless a change began since.
-    pub(crate) fn keep_shielded_ledger(
-        &self,
-        wallet: WalletId,
-        generation: u64,
-        ledger: LedgerView,
-    ) {
-        if !self.shielded_keep.load(Ordering::Acquire) {
-            return;
-        }
-        let mut ledgers = (self.shielded_ledgers.lock()).unwrap_or_else(|e| e.into_inner());
-        if self.shielded_generation() == Some(generation) {
-            ledgers.insert(wallet, (generation, ledger));
-        }
-    }
-
-    /// `wallet`'s kept ledger, unless a change began since its read.
-    pub(crate) fn shielded_ledger(&self, wallet: WalletId) -> Option<LedgerView> {
-        if !self.shielded_keep.load(Ordering::Acquire) {
-            return None;
-        }
-        let ledgers = (self.shielded_ledgers.lock()).unwrap_or_else(|e| e.into_inner());
-        let (generation, ledger) = ledgers.get(&wallet)?;
-        (self.shielded_generation() == Some(*generation)).then(|| ledger.clone())
-    }
-
     /// `wallet`'s last shielded pass of this session failed.
     pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
         (self
@@ -921,10 +855,6 @@ impl SessionHub {
             shielded_scan: Mutex::new(None),
             shielded_synced: Mutex::new(HashSet::new()),
             shielded_failed: Mutex::new(HashSet::new()),
-            shielded_ledgers: Mutex::new(HashMap::new()),
-            shielded_generation: AtomicU64::new(0),
-            shielded_changes: AtomicUsize::new(0),
-            shielded_keep: std::sync::atomic::AtomicBool::new(SHOW_KEPT_SHIELDED_LEDGER),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -995,7 +925,7 @@ impl SessionHub {
             #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
-            rescan_cancels: AtomicU64::new(0),
+            rescan_cancels: std::sync::atomic::AtomicU64::new(0),
             unloaded: Mutex::new(HashSet::new()),
             abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -1361,12 +1291,6 @@ impl SessionHub {
             .lock()
             .unwrap_or_else(|e| e.into_inner()))
         .remove(id);
-        (self
-            .shielded_ledgers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()))
-        .remove(id);
-        self.bump_shielded_generation();
         (self
             .shielded_failed
             .lock()
@@ -2119,22 +2043,6 @@ impl PlatformEventHandler for SessionHub {
     fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
         *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((leaves_committed, total_target));
-    }
-}
-
-/// Whether a Shielded status shows the wallet's ledger as last read under
-/// the note store's guard while a pass or a spend holds the store to
-/// write. Off: it shows no ledger then (not ready), until the funds ruling
-/// on the kept ledger.
-pub(crate) const SHOW_KEPT_SHIELDED_LEDGER: bool = false;
-
-/// [`SessionHub::shielded_change`]'s guard.
-pub(crate) struct ShieldedChange<'a>(&'a SessionHub);
-
-impl Drop for ShieldedChange<'_> {
-    fn drop(&mut self) {
-        self.0.bump_shielded_generation();
-        self.0.shielded_changes.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

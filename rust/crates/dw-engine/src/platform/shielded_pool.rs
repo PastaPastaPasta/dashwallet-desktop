@@ -216,19 +216,6 @@ pub(crate) struct SyncState {
     pub(crate) last_pass_failed: bool,
 }
 
-/// What a status shows of the account's ledger, all read under the store's
-/// guard ([`status`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LedgerView {
-    pub(crate) unresolved_spends: Vec<UnresolvedSpend>,
-    /// `(spendable, synced_index, pending)` once the ledger is established.
-    pub(crate) ledger: Option<(u64, Option<u64>, u64)>,
-}
-
-/// How often a status waiting on the store checks whether a pass or a
-/// spend holds it to write, to answer from the engine's own state instead.
-const STATUS_STORE_WAIT: Duration = Duration::from_millis(250);
-
 /// platform-wallet's shielded side as these flows use it; [`PwShielded`] is
 /// the real one, `shielded_tests.rs` scripts a fake.
 pub(crate) trait ShieldedLib: Send + Sync {
@@ -319,22 +306,6 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
-    /// The session's [`crate::events::SessionHub::shielded_generation`]:
-    /// `None` while a change runs, when no ledger is kept.
-    fn ledger_generation(&self) -> Option<u64> {
-        None
-    }
-    /// Keeps the wallet's ledger as a status read it under the store's
-    /// guard, from a read that began at `generation`.
-    fn keep_ledger(&self, _generation: u64, _ledger: LedgerView) {}
-    /// Whether a pass or a spend holds the store to write.
-    fn store_busy(&self) -> bool {
-        false
-    }
-    /// The wallet's kept ledger, unless a change began since it was read.
-    fn kept_ledger(&self) -> Option<LedgerView> {
-        None
-    }
     /// The account's spends the library resolved with no proof of either
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
@@ -628,55 +599,17 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
     if !account.is_bound() {
         return Ok(status);
     }
-    // A pass holds the store to write for its whole network stream, a
-    // first scan for long. While one (or a spend) holds it, the ledger is
-    // the one kept from the last read under the guard, unless a change
-    // began since, and none (not ready) otherwise: never one read inside a
-    // pass.
-    let generation = lib.ledger_generation();
-    let read = ledger_view(lib);
-    tokio::pin!(read);
-    let view = loop {
-        match tokio::time::timeout(STATUS_STORE_WAIT, &mut read).await {
-            Ok(view) => {
-                let view = view?;
-                if let Some(generation) = generation {
-                    lib.keep_ledger(generation, view.clone());
-                }
-                break Some(view);
-            }
-            Err(_) if lib.store_busy() => break lib.kept_ledger(),
-            Err(_) => {}
-        }
-    };
-    if let Some(view) = view {
-        status.unresolved_spends = view.unresolved_spends;
-        if let Some((balance, synced_index, pending)) = view.ledger {
-            status.ready = true;
-            status.balance = balance;
-            status.synced_index = synced_index;
-            status.pending = pending;
-        }
+    status.unresolved_spends = lib.unresolved().await?;
+    if let Some(ledger) = lib.ledger().await? {
+        status.ready = true;
+        status.balance = ledger.spendable;
+        status.synced_index = ledger.synced_index;
+        status.pending = (lib.activity(0, MAX_HISTORY).await?.iter())
+            .take_while(|e| e.status == Status::Pending)
+            .map(|e| e.amount)
+            .fold(0u64, u64::saturating_add);
     }
     Ok(status)
-}
-
-async fn ledger_view(lib: &impl ShieldedLib) -> Result<LedgerView, ShieldedError> {
-    let unresolved_spends = lib.unresolved().await?;
-    let ledger = match lib.ledger().await? {
-        Some(ledger) => {
-            let pending = (lib.activity(0, MAX_HISTORY).await?.iter())
-                .take_while(|e| e.status == Status::Pending)
-                .map(|e| e.amount)
-                .fold(0u64, u64::saturating_add);
-            Some((ledger.spendable, ledger.synced_index, pending))
-        }
-        None => None,
-    };
-    Ok(LedgerView {
-        unresolved_spends,
-        ledger,
-    })
 }
 
 pub(crate) async fn sync(
@@ -2466,7 +2399,7 @@ pub(crate) async fn coordinator(
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<Arc<NetworkShieldedCoordinator>, PlatformError> {
     if let Some(coordinator) = manager.shielded_coordinator().await {
-        if !hooked(session, &coordinator).await {
+        if !hooked(&coordinator).await {
             // Not under a pass, as the configuration below.
             let _passes = session.platform.shielded_passes.write().await;
             set_dispatch(session, &coordinator).await?;
@@ -2525,28 +2458,9 @@ pub(crate) async fn coordinator(
 }
 
 /// Whether `coordinator` has its dispatch hook: the library records spend
-/// dispositions exactly from the moment one is set, and keeps the hook for
-/// the coordinator's life. Once the engine saw it set, the answer comes
-/// from the session, not from the store a pass holds to write for its
-/// whole network stream.
-async fn hooked(session: &NetworkSession, coordinator: &Arc<NetworkShieldedCoordinator>) -> bool {
-    {
-        let recorded =
-            (session.platform.shielded_hooked.lock()).unwrap_or_else(PoisonError::into_inner);
-        if std::ptr::eq(recorded.as_ptr(), Arc::as_ptr(coordinator)) {
-            return true;
-        }
-    }
-    let hooked = (coordinator.store().read().await).records_spend_dispositions();
-    if hooked {
-        record_hooked(session, coordinator);
-    }
-    hooked
-}
-
-fn record_hooked(session: &NetworkSession, coordinator: &Arc<NetworkShieldedCoordinator>) {
-    *(session.platform.shielded_hooked.lock()).unwrap_or_else(PoisonError::into_inner) =
-        Arc::downgrade(coordinator);
+/// dispositions exactly from the moment one is set.
+async fn hooked(coordinator: &NetworkShieldedCoordinator) -> bool {
+    (coordinator.store().read().await).records_spend_dispositions()
 }
 
 /// Sets the engine's dispatch hook on `coordinator` unless it has one (the
@@ -2555,7 +2469,7 @@ async fn set_dispatch(
     session: &Arc<NetworkSession>,
     coordinator: &Arc<NetworkShieldedCoordinator>,
 ) -> Result<(), PlatformError> {
-    if hooked(session, coordinator).await {
+    if hooked(coordinator).await {
         return Ok(());
     }
     let hook = Arc::new(EngineDispatch::new(session, coordinator));
@@ -2564,9 +2478,7 @@ async fn set_dispatch(
         PlatformError::Internal {
             detail: format!("the shielded dispatch hook: {e}"),
         }
-    })?;
-    record_hooked(session, coordinator);
-    Ok(())
+    })
 }
 
 // MARK: the dispatch hook
@@ -2676,7 +2588,6 @@ impl ShieldedDispatch for EngineDispatch {
     /// this returns `Ok`.
     async fn dispatch(&self, payload: ShieldedDispatchPayload) -> Result<(), DispatchRefused> {
         let (session, coordinator) = self.open()?;
-        session.hub.bump_shielded_generation();
         let subwallet = Self::account(payload.wallet_id, payload.account_index)?;
         if transition_hash(&payload.st_bytes) != payload.st_hash {
             return Err(refused("the transition's hash is not that of its bytes"));
@@ -2894,7 +2805,6 @@ where
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
         let lib = PwShielded::open(&session, wallet_id).await?;
-        let _change = signing.then(|| session.hub.shielded_change());
         body(Arc::clone(&session), lib).await
     })
     .await
@@ -3059,7 +2969,6 @@ impl ShieldedLib for PwShielded {
     ) -> Result<(), SpendError> {
         let keys = permit.shielded_keys()?;
         let prover = CachedOrchardProver::new();
-        let _change = self.pw.session.hub.shielded_change();
         (self.pw.wallet)
             .shielded_transfer_to_with_keyset(
                 &self.coordinator,
@@ -3082,7 +2991,6 @@ impl ShieldedLib for PwShielded {
     ) -> Result<(), SpendError> {
         let keys = permit.shielded_keys()?;
         let prover = CachedOrchardProver::new();
-        let _change = self.pw.session.hub.shielded_change();
         (self.pw.wallet)
             .shielded_withdraw_to_with_keyset(
                 &self.coordinator,
@@ -3113,7 +3021,6 @@ impl ShieldedLib for PwShielded {
     ) -> Result<(), SpendError> {
         let keys = permit.shielded_keys()?;
         let prover = CachedOrchardProver::new();
-        let _change = self.pw.session.hub.shielded_change();
         (self.pw.wallet)
             .shielded_unshield_to_with_keyset(
                 &self.coordinator,
@@ -3197,23 +3104,7 @@ impl ShieldedLib for PwShielded {
     }
 
     async fn hooked(&self) -> bool {
-        hooked(&self.pw.session, &self.coordinator).await
-    }
-
-    fn ledger_generation(&self) -> Option<u64> {
-        self.pw.session.hub.shielded_generation()
-    }
-
-    fn store_busy(&self) -> bool {
-        self.coordinator.store().try_read().is_err()
-    }
-
-    fn keep_ledger(&self, generation: u64, ledger: LedgerView) {
-        (self.pw.session.hub).keep_shielded_ledger(self.pw.wallet_id, generation, ledger);
-    }
-
-    fn kept_ledger(&self) -> Option<LedgerView> {
-        self.pw.session.hub.shielded_ledger(self.pw.wallet_id)
+        hooked(&self.coordinator).await
     }
 
     async fn rest_clock(&self) -> Result<RestClock, PlatformError> {
@@ -3634,7 +3525,7 @@ pub(crate) async fn admit_pass(
     manager: &Manager,
 ) -> Result<Arc<NetworkShieldedCoordinator>, PassHeld> {
     let coordinator = (manager.shielded_coordinator().await).ok_or(PassHeld::NoCoordinator)?;
-    if !hooked(session, &coordinator).await {
+    if !hooked(&coordinator).await {
         return Err(PassHeld::NoHook);
     }
     for id in pass_wallets(manager, &coordinator).await {
