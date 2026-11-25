@@ -194,11 +194,12 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
   const startReleases = new Map<string, () => void>();
   for (const c of opts.holds ?? []) startReleases.set(c, startHold(c));
+  const carry = () => sessionStorage.setItem(RELAUNCH_KEY, JSON.stringify(world));
   const relaunch = () => {
-    sessionStorage.setItem(RELAUNCH_KEY, JSON.stringify(world));
+    carry();
     location.reload();
   };
-  const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event), relaunch };
+  const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event), relaunch, carry };
 
   const UNDELAYED = new Set(["launch_info", "ui_settings"]);
   mockIPC(

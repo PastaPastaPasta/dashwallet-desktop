@@ -44,6 +44,8 @@ export const keys = {
   network: ["network"] as const,
   /** The network's `restored` (storeOpen.ts): seeded by the open, read again while it is `true`. */
   restored: ["restored"] as const,
+  /** What RESTORED still waits for, read while it is set and again on each sync. */
+  restoreStatus: ["restoreStatus"] as const,
   /** Whether a verified snapshot is there to restore, read by a screen shown instead of the wallet. */
   restoreAvailable: ["restoreAvailable"] as const,
   /** The store upgrade's notice for this session (`OpenedNetwork.notice`): seeded by the open only, `null`
@@ -193,6 +195,12 @@ export function useUpgradeNotice() {
 export function useDismissUpgradeNotice() {
   const client = useQueryClient();
   return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
+}
+
+/** What RESTORED still waits for (`restore_status`), while `restored` is. */
+export function useRestoreStatus(restored: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled: restored });
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

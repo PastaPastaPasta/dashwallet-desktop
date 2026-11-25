@@ -30,7 +30,7 @@ import type { PayoutStateName } from "../api/generated/PayoutStateName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, restoreStatusOf, settleRestored, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -548,6 +548,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     const shielded = world.pending.shielded;
     if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    world.noPlatform = undefined;
     // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
     if (world.restoreRequested) {
       world.restoreRequested = false;
@@ -582,6 +583,16 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   cancel_restore: (_: { network: string | null }, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("cancelRestore");
     if (world.openRestore?.state === "notStarted") world.openRestore = undefined;
+    return null;
+  },
+  // B addendum 1: what RESTORED waits for, and Try again, which writes a clear that failed before.
+  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored ? restoreStatusOf(world) : null),
+  restore_retry: (_: Record<string, never>, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreRetry");
+    if (world.restored && world.restoreStatus?.clearFailed) {
+      world.restoreStatus = { ...world.restoreStatus, clearFailed: false };
+      settleRestored(world);
+    }
     return null;
   },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,

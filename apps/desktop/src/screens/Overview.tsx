@@ -31,6 +31,7 @@ import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { RestoredBanner } from "./RestoredBanner";
+import { RestoredStatePanel } from "./RestoredStatePanel";
 import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
@@ -283,6 +284,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       </div>
       <div className="page-column">
         <RestoredBanner />
+        <RestoredStatePanel />
         <UpgradeNoticeBanner />
         <HistoryGapNotice />
         <ShieldedClosedNotice walletId={walletId} />

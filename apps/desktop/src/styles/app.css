@@ -4857,6 +4857,19 @@ button.bell-row-open:focus-visible {
   opacity: var(--dw-opacity-disabled);
 }
 
+.restored-state-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.restored-state-panel .history-gap-actions {
+  margin-top: 0;
+}
+
 .history-gap-notice {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;

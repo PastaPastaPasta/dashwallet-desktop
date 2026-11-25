@@ -71,6 +71,7 @@ import type { LockStatus } from "./generated/LockStatus";
 import type { MnemonicCheck } from "./generated/MnemonicCheck";
 import type { NetworkInfo } from "./generated/NetworkInfo";
 import type { OpenedNetwork } from "./generated/OpenedNetwork";
+import type { RestoreStatus } from "./restoreHolds";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
@@ -421,6 +422,14 @@ export interface Backend {
   keepCurrentFiles(): Promise<unknown>;
   /** The couldn't-start screen's Cancel restore (`cancel_restore`): drops the request; the open is then tried again. */
   cancelRestore(): Promise<null>;
+  /** What RESTORED still waits for (`restore_status`); `null` while it isn't set, or when dw-app has no such command. */
+  restoreStatus(): Promise<RestoreStatus | null>;
+  /** Try again (`restore_retry`): the engine checks what RESTORED waits for again now. */
+  restoreRetry(): Promise<null>;
+  /** Closes the active network (`close_network`); `false` when none was open. */
+  closeNetwork(): Promise<boolean>;
+  /** Opens the window's network without Dash Platform, for this session only (`no_platform`). */
+  openNetworkWithoutPlatform(): Promise<OpenedNetwork>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.

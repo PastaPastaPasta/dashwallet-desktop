@@ -25,7 +25,7 @@ const AREAS: Record<string, string[]> = {
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
-  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx"],
+  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx", "screens/RestoredStatePanel.tsx"],
 
   activity: ["screens/SourceDetailSheet.tsx"],
 

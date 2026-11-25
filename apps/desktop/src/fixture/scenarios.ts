@@ -34,7 +34,7 @@ import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashP
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
-import type { HeldUtxo } from "../api/restoreHolds";
+import type { HeldUtxo, RestoreStatus } from "../api/restoreHolds";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -108,8 +108,14 @@ export interface World {
   restoreRequested?: boolean;
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
+  /** What RESTORED waits for (`restore_status`); nothing when unset. */
+  restoreStatus?: RestoreStatus;
+  /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
+  noPlatform?: boolean;
+  /** `open_network` with `noPlatform` fails; the usual open still works. */
+  noPlatformOpenFails?: boolean;
   /** The restore commands called, in order. */
-  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore")[];
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "restoreRetry")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
@@ -542,6 +548,13 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
   return w;
 }
 
+/** RESTORED set, waiting as `status` says (`restore_status`). */
+function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
+  w.restored = true;
+  w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, ...status };
+  return w;
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -894,6 +907,23 @@ const SCENARIOS = {
   "restore-holds": (t) => withRestoreHold(base(t), false),
   /** As `restore-holds` while RESTORED is still set: the money gate's line stands in for Abandon. */
   "restore-holds-restored": (t) => withRestoreHold(base(t), true),
+  /** RESTORED set while the engine waits for the wallet to sync with the Dash network. */
+  "restored-waiting-core": (t) => withRestoreStatus(base(t), { waiting: ["coreSync"] }),
+  /** RESTORED set while Platform's first check is what it waits for: Finish without Dash Platform shows,
+   * and after it RESTORED clears. */
+  "restored-waiting-platform": (t) => withRestoreStatus(base(t), { waiting: ["platformPass"] }),
+  /** As `restored-waiting-platform`, but the open without Platform fails: the network opens as usual. */
+  "restored-finish-fails": (t) => {
+    const w = withRestoreStatus(base(t), { waiting: ["platformPass"] });
+    w.noPlatformOpenFails = true;
+    return w;
+  },
+  /** RESTORED set while a wallet's history loads. */
+  "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
+  /** The wallet's history couldn't load: named, with Report a problem only. */
+  "restored-history-failed": (t) => withRestoreStatus(base(t), { historyWallets: [FIXTURE_WALLET_ID] }),
+  /** The check finished but its clear couldn't be written: Try again (which works) and Report a problem. */
+  "restored-clear-failed": (t) => withRestoreStatus(base(t), { clearFailed: true }),
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);
