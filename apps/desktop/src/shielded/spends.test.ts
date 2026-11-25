@@ -9,7 +9,7 @@ import { fromRows } from "../screens/pay/fromBalance";
 import { shieldedErrorText } from "./flow";
 import { SHIELDED_SPENDS_COPY, shieldedSpendsOff, spendsOffRefusal } from "./spends";
 
-const STATUS: ShieldedStatus = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true, spendsAvailable: true };
+const STATUS: ShieldedStatus = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true, spendsAvailable: true };
 const credits = (c: string) => `${c} credits`;
 const duffs = (d: number) => `${d} duffs`;
 const UNAVAILABLE = appError("platform.unavailable");

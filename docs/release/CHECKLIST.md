@@ -12,8 +12,10 @@ Work through it top to bottom and tick each box in the release's tracking issue 
 
 - [ ] The commit is on `main`. The workflow publishes nothing for a commit that isn't an ancestor of `main`
       (`ci/github/release-decide.sh`, then `release-publish.sh` again).
-- [ ] CI and Release are green on that commit (Release's `main` push has already built it and published
-      `v<version>-dev.<run>+<sha>`). Nightly's latest run on `main` is green, or each red job has an issue that says
+- [ ] CI is green on that commit, and Release is green on it. Release no longer runs on a `main` push: run
+      `gh workflow run release.yml --ref main` when the chosen commit is main's head (it builds, never
+      publishes); for an older commit, tag a release candidate, or push a temporary branch at it and run
+      release.yml on that branch (`--ref` takes a branch or tag, not a SHA). Nightly's latest run on `main` is green, or each red job has an issue that says
       why it doesn't block. UI gate and Tauri selftest run only by hand (`workflow_dispatch`): run both on the
       commit and have them green.
 - [ ] No open blocker or critical issue is tagged for this version.
@@ -57,8 +59,9 @@ first candidate.
 ## 4. Run the test bar
 
 Test the commit that will ship: tag a release candidate (section 5) and test its `-rc.N` files, or, for a version
-that skips candidates, the `v<version>-dev.<run>+<sha>` build of the chosen commit (it shows the test-build warning;
-nothing else differs). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
+that skips candidates, the `dist-<os>` artifacts of a release.yml dispatch at the chosen commit (section 1; they
+show the test-build warning, and they leave out the updater feed URL that a signed stable tag build embeds
+with `DW_ENABLE_UPDATER=1`, so this test does not exercise the updater; section 7 checks it). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
 published files once more.
 
 The minimal bar (RELEASE-PLAN §1), on public testnet, funded with the `dash-faucet` skill, on the Linux AppImage:
@@ -103,8 +106,9 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
 
 ## 5. Tag
 
-- [ ] Before tagging (DEC-1806): a manual Linux testnet smoke on the AppImage that `main` built for the commit to
-      tag: a fresh install and an upgrade from the previous release; create, restore, sync, receive and send, and
+- [ ] Before tagging (DEC-1806): a manual Linux testnet smoke on the AppImage (`dist-linux`) from a Release dispatch at
+      the exact commit to tag, or from a nightly run built from that same commit (a merge to `main` no longer
+      builds one): a fresh install and an upgrade from the previous release; create, restore, sync, receive and send, and
       each of the release's headline features once. The evidence goes in the release pull request and the release
       text, never key material (no phrase, no private key, no passphrase).
 - [ ] Optional dry run of the whole build without publishing: `git tag v0.0.0-rel<N> <sha> && git push origin

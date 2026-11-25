@@ -179,11 +179,11 @@ pub use registration::{
     ShieldedReadiness,
 };
 pub use shielded::{
-    MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, SHIELDED_SPENDS_AVAILABLE,
-    ShieldOutcome, ShieldQuote, ShieldRepairCost, ShieldState, ShieldedActivity,
-    ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress, ShieldedDirection,
-    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncWait,
-    StuckShieldFunding, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, SHIELDED_SPENDS_AVAILABLE, ShieldOutcome,
+    ShieldQuote, ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind,
+    ShieldedActivityStatus, ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome,
+    ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding,
+    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,

@@ -369,7 +369,7 @@ function ContactForm({
   const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
   const [chosen, setChosen] = useState<PaySource>("core");
   const coreAvailable = useAvailable(walletId, advanced, sheets.held);
-  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), live: liveSources(network.kind), shieldedSpendsOff: spendsOff });
+  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), shieldedHold: pools.shieldedHold, live: liveSources(network.kind), shieldedSpendsOff: spendsOff });
   // The choice stays the user's: a source that can no longer pay holds Review with its reason.
   const source = chosen;
   const activity = usePlatformActivity(walletId);
