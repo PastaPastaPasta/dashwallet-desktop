@@ -443,29 +443,39 @@ pub(crate) fn swept_claims(
     by: Txid,
     swept: &[Transaction],
 ) -> Option<BTreeSet<Txid>> {
-    let spends_by = |i: &dashcore::TxIn| i.previous_output.txid == by;
-    let claims: Vec<&Transaction> = (swept.iter())
-        .filter(|tx| tx.input.iter().any(spends_by))
-        .collect();
-    if claims.is_empty() {
+    let tree = claim_tree(by, swept);
+    if tree.is_empty() {
         return None;
     }
-    if let Some(tx) = (claims.iter())
-        .find(|tx| (tx.input.iter()).any(|i| spends_by(i) && !push_only(&i.script_sig)))
-    {
+    if let Some(tx) = swept.iter().find(|tx| {
+        (tx.input.iter()).any(|i| i.previous_output.txid == by && !push_only(&i.script_sig))
+    }) {
         tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
         return None;
     }
-    let mut dead: BTreeSet<Txid> = claims.iter().map(|tx| tx.txid()).collect();
+    Some(tree)
+}
+
+/// Of the `swept` transactions, those that spend an output of `by` (claims
+/// on it) and those that descend from them, whatever their input scripts.
+pub(crate) fn claim_tree(by: Txid, swept: &[Transaction]) -> BTreeSet<Txid> {
+    let claims = (swept.iter())
+        .filter(|tx| (tx.input.iter()).any(|i| i.previous_output.txid == by))
+        .map(|tx| tx.txid());
+    built_on(claims.collect(), swept)
+}
+
+/// `tree` with every one of the `swept` transactions that descends from it.
+pub(crate) fn built_on(mut tree: BTreeSet<Txid>, swept: &[Transaction]) -> BTreeSet<Txid> {
     loop {
-        let before = dead.len();
+        let before = tree.len();
         for tx in swept {
-            if (tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid)) {
-                dead.insert(tx.txid());
+            if (tx.input.iter()).any(|i| tree.contains(&i.previous_output.txid)) {
+                tree.insert(tx.txid());
             }
         }
-        if dead.len() == before {
-            return Some(dead);
+        if tree.len() == before {
+            return tree;
         }
     }
 }
