@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
-import { orAbsent, orUnavailable } from "./pending";
+import { absentAsUnavailable, orAbsent, orUnavailable } from "./pending";
 import { formatLocale, systemRegionLocale } from "../i18n";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
@@ -170,6 +170,8 @@ export class IpcBackend implements Backend {
   checkForUpdate = () => cmd.checkForUpdate();
   installUpdate = cmd.installUpdate;
   restartToUpdate = () => cmd.restartToUpdate();
+  quitApp = () => absentAsUnavailable(invoke<null>("quit_app"));
+  restartApp = () => absentAsUnavailable(invoke<null>("restart_app"));
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

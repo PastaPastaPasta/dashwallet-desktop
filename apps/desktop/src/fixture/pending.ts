@@ -533,6 +533,19 @@ function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  // App::quit_app and restart_app, from the screens shown instead of the wallet. A restart frees a
+  // store the session before held, and the page starts again.
+  quit_app: (_: Record<string, never>, { world }: Ctx) => {
+    (world.appExits ??= []).push("quit");
+    return null;
+  },
+  restart_app: (_: Record<string, never>, { world, relaunch }: Ctx) => {
+    (world.appExits ??= []).push("restart");
+    world.storageHeld = undefined;
+    if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    relaunch?.();
+    return null;
+  },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
   // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
   contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {

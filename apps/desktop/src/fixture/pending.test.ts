@@ -3,6 +3,7 @@
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { absentAsUnavailable } from "../api/pending";
 import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "./index";
 import { landSend, PLATFORM_PAYEE } from "./pending";
@@ -13,6 +14,7 @@ let backend: IpcBackend;
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
   const stored = new Map<string, string>();
+  vi.stubGlobal("location", { reload: vi.fn() });
   vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
   fixture = installFixture({ scenario: "funded" });
   backend = new IpcBackend("fixture");
@@ -47,8 +49,19 @@ describe("fixture pending commands", () => {
     fixture.world.networkSwitch = { fail: { rolledBack: false } };
     await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "app.network_switch_failed", data: { rolledBack: false } });
     expect(fixture.world.launch.network.kind).toBe("testnet");
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use", data: { kind: "storageInUse", retryable: false } });
     await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use" });
+    expect(await backend.restartApp()).toBeNull();
+    expect(location.reload).toHaveBeenCalledOnce();
     expect((await backend.openNetwork()).network.kind).toBe("testnet");
+  });
+
+  it("quits and restarts through quit_app and restart_app, whose success is null", async () => {
+    expect(await backend.quitApp()).toBeNull();
+    expect(await backend.restartApp()).toBeNull();
+    expect(fixture.world.appExits).toEqual(["quit", "restart"]);
+    await expect(absentAsUnavailable(Promise.reject("Command quit_app not found"))).rejects.toThrow(/^This is not available in this build\.$/);
+    await expect(absentAsUnavailable(Promise.reject(new Error("disk full")))).rejects.toThrow("disk full");
   });
 
   it("only saves the choice in a window pinned to a network", async () => {
