@@ -1077,6 +1077,20 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
+    /// [`Self::cover_issued`] for wallet `id`'s stored counters, if any.
+    /// Upstream pools keep the gap past used addresses only, so this runs
+    /// again after each lookahead raise.
+    pub(crate) async fn cover_stored_issued(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        match self.stored_issued(id).await? {
+            Some(issued) => self.cover_issued(manager, id, issued).await,
+            None => Ok(()),
+        }
+    }
+
     /// Wallet `id`'s stored legacy counters, if stored; `Err` when they
     /// cannot be read or are malformed.
     pub(crate) async fn stored_issued(
@@ -1771,6 +1785,30 @@ mod tests {
         let addresses = addresses_of(&engine, &s, id);
         assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
         assert!(highest(&addresses, AddressChain::Change) >= 2599 + CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// A lookahead raised after the import (the recovery scan's) watches
+    /// that gap past Core's counters, not just past the used addresses.
+    #[test]
+    fn a_raised_lookahead_reaches_past_cores_counters() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let options = ImportOptions {
+            lookahead: Some(100),
+            ..Default::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, options)))
+            .unwrap()
+            .wallet_id;
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) < 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) <= CORE_COMPAT_LOOKAHEAD);
+        let manager = s.manager().unwrap();
+        (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) > CORE_COMPAT_LOOKAHEAD);
         engine.block_on(engine.shutdown()).unwrap();
     }
 
