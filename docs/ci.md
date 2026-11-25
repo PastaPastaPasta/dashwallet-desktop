@@ -241,10 +241,12 @@ ends a cold run with 71 GB free and a 16 GB `rust/target`; its last step reports
 
 A pull request that changes a funds path merges only with two records for its **exact head commit**: a
 funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
-`ci/funds-paths.txt` (send, coin selection and control, fees, keys and the vault, backup and restore, CoinJoin,
-Platform credits, asset locks, top-ups, withdrawals, shielded, transfers and unfinished locks, masternode
-collateral and payouts, the app.sqlite hold and barrier records, the bridges that carry these to the UI (Tauri commands, the Swift engine bridge), the
-renderer's amount and send logic and the screen view-models that build money requests, the dependency pins, and the gate itself). Check a branch with
+`ci/funds-paths.txt`. All of dw-engine counts, except the files it names as not funds (rates, CSV export,
+profiles, avatars, contact lists, notifications, and governance other than proposal collateral and fees), so a
+new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, CoinJoin and units crates, the
+CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
+(Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
+screen view-models that build money requests, the dependency pins, and the gate itself. Check a branch with
 `git diff --name-only origin/main... | ci/github/funds-gate.py match`.
 
 A record is an HTML comment in a pull request comment by the repository's owner, a member or a collaborator
