@@ -680,7 +680,9 @@ pub(crate) fn held_total(
             }
         }
         for (index, (value, _)) in &e.own_inputs {
-            if let Some(i) = (e.tx.input.get(*index as usize)).filter(|i| held.contains(&i.previous_output)) {
+            if let Some(i) =
+                (e.tx.input.get(*index as usize)).filter(|i| held.contains(&i.previous_output))
+            {
                 own_inputs.insert(i.previous_output, *value);
             }
         }
@@ -3530,7 +3532,8 @@ mod tests {
             (700 + 300, 1)
         );
         assert_eq!(
-            held_total(&BTreeSet::from([valued, unknown]), &txs, |s| owned.contains(s)),
+            held_total(&BTreeSet::from([valued, unknown]), &txs, |s| owned
+                .contains(s)),
             (700, 1),
             "one valued and one unvalued"
         );

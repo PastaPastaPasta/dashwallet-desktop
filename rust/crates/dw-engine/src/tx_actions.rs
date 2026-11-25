@@ -31,8 +31,7 @@ use crate::csv_export::{TX_TYPE_COUNT, write_csv};
 use crate::history::{
     ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, WalletHistory, Winner, amounts,
     beaten_unrecorded, chain_locked, chainlock_beaten, depth_of, filtered, gone_parents,
-    orphaned_unmined,
-    records_of, rival_heights, status_of,
+    orphaned_unmined, records_of, rival_heights, status_of,
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -217,9 +216,11 @@ pub(crate) fn drop_notes(
 ) -> Result<DropNotes, dw_appdb::AppDbError> {
     let scope = wallet.to_string();
     let rows = |prefix: &str| -> Result<Vec<(String, String)>, dw_appdb::AppDbError> {
-        Ok((appdb.settings_with_prefix_lossy(&scope, prefix)?.into_iter())
-            .filter_map(|(key, value)| Some((key[prefix.len()..].to_owned(), value?)))
-            .collect())
+        Ok((appdb
+            .settings_with_prefix_lossy(&scope, prefix)?
+            .into_iter())
+        .filter_map(|(key, value)| Some((key[prefix.len()..].to_owned(), value?)))
+        .collect())
     };
     let mut notes = DropNotes::default();
     for (t, held) in rows(DROP_HOLDS_PREFIX)? {
@@ -229,7 +230,9 @@ pub(crate) fn drop_notes(
         }
     }
     for (t, origin) in rows(DROP_WINNER_PREFIX)? {
-        let drop = Txid::from_str(&t).ok().and_then(|t| notes.drops.get_mut(&t));
+        let drop = Txid::from_str(&t)
+            .ok()
+            .and_then(|t| notes.drops.get_mut(&t));
         if let Some(drop) = drop {
             drop.1 = crate::history::DropOrigin::decode(&origin);
         }
@@ -2262,8 +2265,7 @@ impl NetworkSession {
         let report = (self.hub.history).read(&wallet, |txs| {
             let left_out = |o: &OutPoint| proven.contains(o) || gone.contains(&o.txid);
             let held = crate::history::still_held(&holds, txs, observed, left_out);
-            let (sum, unvalued) =
-                crate::history::held_total(&held, txs, |s| owned.contains_key(s));
+            let (sum, unvalued) = crate::history::held_total(&held, txs, |s| owned.contains_key(s));
             let unknown_lock = (core.instant_send_locks().iter()).any(|t| {
                 !txs.contains_key(t) && !accounts.iter().any(|a| a.transactions().contains_key(t))
             });
