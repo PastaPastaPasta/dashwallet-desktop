@@ -588,6 +588,108 @@ fn a_fork_hold_with_no_journal_holds_its_wallet_for_the_session() {
     refused(engine.block_on(session.unload_wallet(wallet)));
 }
 
+/// Saves a note of `wallet`'s account with `nullifier` in the library's
+/// store, read spent when `spent`, with no changeset: the persister's tap
+/// does not see it, as with a note restored spent or one the store read
+/// spent before the marker was written.
+fn store_note(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    nullifier: [u8; 32],
+    spent: bool,
+) {
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let note = platform_wallet::wallet::shielded::ShieldedNote {
+            position: u64::from(nullifier[0]),
+            cmx: [nullifier[0].wrapping_add(1); 32],
+            nullifier,
+            block_height: 1,
+            is_spent: false,
+            value: 1_000,
+            note_data: vec![0; 115],
+        };
+        store.save_note(subwallet(wallet), &note).unwrap();
+        if spent {
+            assert!(store.mark_spent(subwallet(wallet), &nullifier).unwrap());
+        }
+    });
+}
+
+/// M1: a fork hold whose notes the library's store already reads spent,
+/// with no changeset the persister's tap saw, is flagged spent from the
+/// store at the next pass: a hold all of whose notes it reads spent is
+/// cleared; one with a note it reads unspent, or does not hold, stays (a
+/// partial set clears nothing), and the close stays refused until the store
+/// reads every one spent.
+#[test]
+fn a_fork_hold_over_notes_the_store_reads_spent_clears_at_the_next_pass() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let rows: Vec<ForkRow> = vec![
+        (1, "unresolved", Some("cancelled"), vec![[61; 32]], 0),
+        (2, "executed", None, vec![[62; 32], [63; 32]], 0),
+        (3, "unresolved", Some("cancelled"), vec![[64; 32]], 0),
+    ];
+    let session = reopen_with(&engine, session, |path| {
+        fork_dispositions(path, wallet, &rows)
+    });
+    assert!(bind(&engine, &session, wallet));
+    assert_eq!(
+        markers(&engine, &session, wallet),
+        [[1; 32], [2; 32], [3; 32]]
+    );
+    store_note(&engine, &session, wallet, [61; 32], true);
+    store_note(&engine, &session, wallet, [62; 32], true);
+    store_note(&engine, &session, wallet, [63; 32], false);
+    assert_eq!(
+        markers(&engine, &session, wallet),
+        [[1; 32], [2; 32], [3; 32]],
+        "the tap saw nothing"
+    );
+
+    pass(&engine, &session);
+    assert_eq!(markers(&engine, &session, wallet), [[2; 32], [3; 32]]);
+    let flags: Vec<_> = (engine
+        .block_on(session.leases.unrecorded_spends(wallet))
+        .unwrap())
+    .into_iter()
+    .map(|m| m.nullifiers)
+    .collect();
+    assert_eq!(
+        flags,
+        [
+            vec![([62; 32], true), ([63; 32], false)],
+            vec![([64; 32], false)]
+        ]
+    );
+    refused(engine.block_on(session.unload_wallet(wallet)));
+
+    store_note(&engine, &session, wallet, [64; 32], true);
+    pass(&engine, &session);
+    assert_eq!(
+        markers(&engine, &session, wallet),
+        [[2; 32]],
+        "unspent stays"
+    );
+    refused(engine.block_on(session.unload_wallet(wallet)));
+
+    store_note(&engine, &session, wallet, [63; 32], true);
+    pass(&engine, &session);
+    assert!(markers(&engine, &session, wallet).is_empty(), "all spent");
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+}
+
 #[test]
 #[ignore = "GAP G2: upstream keeps no executed-spend hold until the host holds the spent state; journal holds (DRAIN D1) not ported"]
 fn executed_ack_lifts_the_close_refusal() {
@@ -610,6 +712,113 @@ fn unattributable_with_confirmed_activity_reads_done_and_offers_no_retry() {
 #[ignore = "GAP G2: upstream keeps no disposition rows to read or acknowledge"]
 fn unreadable_disposition_row_is_acked_by_key_and_listing_resumes() {
     panic!("GAP G2: no upstream disposition rows");
+}
+
+/// A spend the 0.1 build stored (its record with no anchor height, its
+/// artifact imported and classified): each pass saves it a pending history
+/// row before the library's pass, for the library's release to fail. Then
+/// the release, as the library's (its notes freed, which drops its record,
+/// and its row failed only if it has one), and the pass's end settles it
+/// `not_executed`; a later pass saves it no row again.
+#[test]
+fn a_pass_keeps_an_imported_spends_row_for_its_release() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let spend = PendingRedrive {
+        anchor_height: None,
+        ..spends().remove(0)
+    };
+    let st_hash: [u8; 32] = Sha256::digest(&spend.st_bytes).into();
+    let (s, m, r) = (
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        spend.clone(),
+    );
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        reserve_and_record(
+            &mut *coordinator.store().write().await,
+            subwallet(wallet),
+            r.clone(),
+        );
+        let imported = NewShieldedArtifact {
+            activity: r.activity_id,
+            origin: ArtifactOrigin::ImportedRedrive,
+            st_hash: Some(st_hash),
+            kind: None,
+            anchor: Some(r.anchor),
+            identity_id: None,
+            selected: Vec::new(),
+            published: Vec::new(),
+        };
+        assert!(
+            s.leases
+                .record_shielded_artifact(wallet, imported)
+                .await
+                .unwrap()
+        );
+        s.ensure_background().await;
+    });
+    let changed = rusqlite::Connection::open(
+        session
+            .data_dir()
+            .join(dw_appdb::dispatch::DISPATCH_DB_FILE),
+    )
+    .unwrap()
+    .execute(
+        "UPDATE shielded_artifact SET status = 'unresolved' WHERE wallet = ?1 AND activity = ?2",
+        rusqlite::params![&wallet.0[..], &spend.activity_id[..]],
+    )
+    .unwrap();
+    assert_eq!(changed, 1);
+    let activity = spend.activity_id;
+    let row = |engine: &Engine| {
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let store = coordinator.store().read().await;
+            (store.get_activity_by_entry_id(subwallet(wallet), &activity))
+                .unwrap()
+                .map(|e| e.status)
+        })
+    };
+    assert_eq!(row(&engine), None);
+
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Pending));
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (
+            ArtifactStatus::Unresolved { unrecorded: false },
+            None,
+            false
+        )
+    );
+
+    let (s, m, r) = (Arc::clone(&session), session.manager().unwrap(), spend);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let id = subwallet(wallet);
+        for nullifier in &r.nullifiers {
+            assert!(store.clear_pending(id, nullifier).unwrap());
+        }
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        if let Some(mut entry) = store.get_activity_by_entry_id(id, &r.activity_id).unwrap() {
+            entry.status = ShieldedActivityStatus::Failed;
+            store.save_activity(id, &entry).unwrap();
+        }
+    });
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Failed));
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::NotExecuted, None, false)
+    );
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Failed));
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
 }
 
 /// The fork's tests, against its dispositions (`resolve_redrive`,
