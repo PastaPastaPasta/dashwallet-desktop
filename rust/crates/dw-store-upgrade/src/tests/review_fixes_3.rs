@@ -8,6 +8,7 @@ use platform_wallet_storage::{Synchronous, WalletStorageError};
 
 use super::review_fixes::column_present;
 use super::*;
+#[cfg(unix)]
 use crate::copy::{self, ProvedState, RefusedCause};
 use crate::error::StoreUpgradeError;
 use crate::precheck::{LOAD_FOR_TEST, Precheck, precheck_locked_with, precheck_with};
