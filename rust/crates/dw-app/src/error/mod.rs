@@ -200,6 +200,10 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A network switch's close waited on a transfer that is still
+        /// being prepared ([`ErrorData::NetworkCloseRefused`]). Nothing
+        /// changed.
+        TransferPreparing = "app.transfer_preparing",
         /// A shared-masternode send on a network this release doesn't send
         /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
         /// signed or sent.
@@ -219,6 +223,8 @@ pub enum CloseRefusalReason {
     WalletOpening,
     /// A shielded spend's result is not known yet.
     ShieldedSpendUnresolved,
+    /// A transfer waits on its wallet's start-up to go on.
+    TransferPreparing,
 }
 
 /// What `app.update_busy` waits for ([`ErrorData::UpdateBusy`]).

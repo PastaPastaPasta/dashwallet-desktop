@@ -79,7 +79,7 @@ export interface World {
    * not roll back, the next `open_network` fails once too, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
-    closeRefused?: "wallet" | "shielded_spend_unresolved";
+    closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;
     /** The switch goes through but its choice is not written. */
