@@ -6680,7 +6680,7 @@ fn track_lock(
 }
 
 /// Activity's offer and Abandon both refuse `txid` as a Platform funding.
-fn assert_funding_refused(
+pub(super) fn assert_funding_refused(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,

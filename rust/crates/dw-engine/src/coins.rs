@@ -59,7 +59,7 @@
 //! owning an input, in ascending wallet id, held through its send. Every
 //! other holder takes one and waits for no other, so no cycle forms.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -885,10 +885,7 @@ pub(crate) fn unsettled_spends(info: &ManagedWalletInfo) -> BTreeMap<Txid, bool>
         .flat_map(|a| a.transactions().values())
         .filter(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
     {
-        let mempool = matches!(r.context, TransactionContext::Mempool);
-        (out.entry(r.txid))
-            .and_modify(|m: &mut bool| *m &= mempool)
-            .or_insert(mempool);
+        *out.entry(r.txid).or_insert(true) &= matches!(r.context, TransactionContext::Mempool);
     }
     out
 }

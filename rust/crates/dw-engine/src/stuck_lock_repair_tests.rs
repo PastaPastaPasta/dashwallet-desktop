@@ -12,15 +12,14 @@ use dw_vault::{Credential, GrantPurpose};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, FUNDED_AT, TIP, chain_lock, foreign, own_scripts, send, spendable, start_spv,
-    wait_stored, wallet_funded_unmined,
+    Accept, COIN, FUNDED_AT, TIP, assert_funding_refused, chain_lock, foreign, own_scripts, send,
+    spendable, start_spv, wait_stored, wallet_funded_unmined,
 };
 use super::{block_with, mempool, mined};
 use crate::platform::lease::{FlowOutcome, FundingKey, StoredLock, StuckFundingRefusal};
 use crate::platform::{DispatchState, FlowKind};
 use crate::send::CoinSource;
 use crate::session::NetworkSession;
-use crate::tx_actions::TxActionRefusal;
 use crate::{Engine, EngineError, WalletId};
 
 /// A registration's funding step whose call signed `lock` and failed: its
@@ -197,7 +196,7 @@ fn resolve(
     step: &str,
 ) -> Result<Transaction, EngineError> {
     let draft = engine.block_on(session.stuck_funding_draft_as(id, step, true))?;
-    let seen = Arc::new(Seen::default());
+    let seen = Arc::new(Accept::default());
     *draft.broadcaster.lock().unwrap() = Some(seen.clone());
     let grant = (session.vault())
         .authorize(
@@ -208,29 +207,8 @@ fn resolve(
         .unwrap()
         .id;
     engine.block_on(session.send_self_spend(&draft, step, grant))?;
-    let tx = seen.0.lock().unwrap().take().expect("broadcast");
+    let tx = seen.0.lock().unwrap().pop().expect("broadcast");
     Ok(tx)
-}
-
-#[derive(Default)]
-struct Seen(std::sync::Mutex<Option<Transaction>>);
-
-impl crate::send::TestBroadcaster for Seen {
-    fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(std::future::ready(()))
-    }
-
-    fn broadcast(
-        &self,
-        tx: &Transaction,
-        _first: bool,
-    ) -> std::pin::Pin<
-        Box<dyn Future<Output = Result<Txid, platform_wallet::PlatformWalletError>> + Send>,
-    > {
-        *self.0.lock().unwrap() = Some(tx.clone());
-        let txid = tx.txid();
-        Box::pin(async move { Ok(txid) })
-    }
 }
 
 fn phase_one(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, step: &str, lock: Txid) {
@@ -240,22 +218,6 @@ fn phase_one(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, step:
         }
         other => panic!("not phase 1: {other:?}"),
     }
-}
-
-/// Activity neither offers nor runs an Abandon of the lock.
-fn activity_refuses(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, lock: Txid) {
-    let refused = TxActionRefusal::PlatformFunding;
-    let exits = engine.block_on(session.activity_exits(id, lock, true, 1));
-    assert_eq!(
-        exits.unwrap().unwrap().abandon,
-        Some(crate::tx_actions::ActivityRefusal::Tx(refused)),
-        "offered"
-    );
-    let abandon = engine.block_on(session.abandon_transaction(id, lock));
-    assert!(
-        matches!(abandon, Err(EngineError::TxActionRefused(r)) if r == refused),
-        "{abandon:?}"
-    );
 }
 
 fn stopped(session: &NetworkSession, engine: &Engine, txid: Txid) -> bool {
@@ -284,7 +246,7 @@ fn rescan_back(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, pai
 #[test]
 fn resolve_abandons_the_recorded_lock_and_signs_nothing() {
     let (_dir, engine, session, id, step, lock, a, _paid) = recorded_stuck_lock();
-    activity_refuses(&engine, &session, id, lock.txid());
+    assert_funding_refused(&engine, &session, id, lock.txid());
     let before = super::balances(&session, id);
 
     phase_one(&engine, &session, id, &step, lock.txid());
