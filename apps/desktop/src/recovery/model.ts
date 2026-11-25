@@ -20,6 +20,7 @@ import { en } from "../i18n/en";
 import { Model } from "../onboarding/model";
 import { onMoveSettledNotify } from "../platform/move";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { Preparing } from "../transfer/preparing";
 
 export type RecoveryApi = Pick<
   Backend,
@@ -204,6 +205,8 @@ export class RecoveryModel extends Model {
   /** Per lock: what its last finish came to in this session. */
   results = new Map<string, { lock: UnfinishedLock; result: RowResult }>();
   readonly grants: GrantModel;
+  /** A Finish's call has been pending for a second. */
+  readonly preparing = new Preparing(() => this.changed());
 
   constructor(
     private readonly api: RecoveryApi,
@@ -255,8 +258,10 @@ export class RecoveryModel extends Model {
     let platform = false;
     try {
       const next = await this.#do(action, since, () => (ran = true), () => (platform = true));
+      this.preparing.stop();
       this.#set(next);
     } catch (e) {
+      this.preparing.stop();
       this.#set({ kind: "failed", error: e, retry: action });
     } finally {
       if (ran) for (const f of settledListeners) queueMicrotask(f);
@@ -270,7 +275,7 @@ export class RecoveryModel extends Model {
       const report = await this.grants.withGrant(
         { kind: "platformOp", maxDuffs: caps.maxDuffs, maxCredits: caps.maxCredits },
         this.walletId,
-        (grant) => (started(), this.api.finishAssetLocks(this.walletId, grant.id)),
+        (grant) => (started(), this.preparing.start(), this.api.finishAssetLocks(this.walletId, grant.id)),
         since,
       );
       if (report?.value.byKind.some((k) => k.kind === "platformAddress")) touchedPlatform();
@@ -282,9 +287,10 @@ export class RecoveryModel extends Model {
       const got = await this.grants.withGrant(
         platformOp({ maxDuffs: 1, maxCredits: "0" }),
         this.walletId,
-        (grant) => (started(), this.api.finishTransfer(this.walletId, lock.kind, lock.txid, lock.vout, grant.id)),
+        (grant) => (started(), this.preparing.start(), this.api.finishTransfer(this.walletId, lock.kind, lock.txid, lock.vout, grant.id)),
         since,
       );
+      this.preparing.stop();
       if (!got) return { kind: "idle" };
       this.results.set(lockKey(lock), { lock, result: got.value });
       if (got.value.kind === "notApplied") return { kind: "failed", error: engineError(got.value.error), retry: action };

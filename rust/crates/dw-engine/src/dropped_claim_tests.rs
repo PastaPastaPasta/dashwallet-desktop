@@ -1475,6 +1475,7 @@ fn a_stop_after_an_in_session_sweeps_marks_ends_with_the_payment_dropped() {
         id,
         &[t, s],
         &dead,
+        &[],
         &[(s, payment.clone(), own)],
     )
     .unwrap();

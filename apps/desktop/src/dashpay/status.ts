@@ -234,8 +234,14 @@ export const CLAIM_REFUSAL = {
 };
 
 /** D5: why a registration stopped, by its failure's code. */
-export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
+export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
   switch (failure.code) {
+    // C-funding F10: a create that executed as a paid failure, from the Platform balance.
+    case "registration.refunded":
+      return fromPlatform ? t("dashpay.failure.refundedPlatform") : t("dashpay.failure.stoppedWith", { code: failure.code });
+    // A run that stopped when its Platform plan changed: a re-plan refused, or an exit to the Dash wallet.
+    case "registration.quote_changed":
+      return t("dashpay.failure.quoteChanged");
     case "registration.funding_insufficient":
       if (failure.needed === null) return t("dashpay.failure.fundingShort");
       // What the wallet holds stays hidden in discreet mode.
@@ -332,7 +338,7 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
       secondary: action("moveToCore", COPY.moveToCore),
     });
   if (r.failure || awaitsContinue(r)) {
-    const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
+    const why = r.failure ? failureText(r.failure, i.amount, i.discreet, r.fromPlatform) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }
   if (r.waiting === "unlock") return card("creatingUnlock", "problem", title, [WAITS.unlock], { step, action: unlockAction(i.lock) });

@@ -184,6 +184,27 @@ function setup(finish: (txid: string, n: number) => LockFinish | Error = () => (
 }
 
 describe("RecoveryModel", () => {
+  it("says it is preparing once a Finish's call has been pending for a second", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { model, api } = setup();
+      let finished: ((f: LockFinish) => void) | null = null;
+      api.finishTransfer.mockImplementation(() => new Promise<LockFinish>((resolve) => (finished = resolve)));
+      const going = model.finish(lock(1, "ready"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(model.running).toBe(true);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(model.preparing.shown).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(model.preparing.shown).toBe(true);
+      finished!({ kind: "applied" });
+      await going;
+      expect([model.state.kind, model.preparing.shown]).toEqual(["idle", false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("Finish asks for a platformOp grant of one duff and no credits, and records the result", async () => {
