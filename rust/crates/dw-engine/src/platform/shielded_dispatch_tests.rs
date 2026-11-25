@@ -1851,21 +1851,39 @@ fn a_create_whose_dispatch_is_not_recorded_is_refused_unsent() {
 }
 
 /// Platform's proved reads, scripted: the height every nullifier reads
-/// spent at (`None`: one does not), and the identity read; each read noted.
+/// spent at (`None`: none is, read at `unspent_at`), the height the anchor
+/// reads pruned at (`None`: still recorded), and the identity read; each
+/// read noted.
 #[derive(Default)]
 struct Evidence {
     spent: std::sync::Mutex<Option<u64>>,
+    unspent_at: std::sync::Mutex<u64>,
+    pruned: std::sync::Mutex<Option<u64>>,
     identity: std::sync::Mutex<(bool, u64)>,
     reads: std::sync::Mutex<Vec<&'static str>>,
 }
 
 impl super::super::registration_shielded::CreateEvidence for Evidence {
-    async fn spent_at(
+    async fn nullifiers(
         &self,
         _: &[[u8; 32]],
-    ) -> Result<Option<u64>, crate::platform::PlatformError> {
+    ) -> Result<NullifierRead, crate::platform::PlatformError> {
         self.reads.lock().unwrap().push("spent");
-        Ok(*self.spent.lock().unwrap())
+        Ok(match *self.spent.lock().unwrap() {
+            Some(at) => NullifierRead::Spent(at),
+            None => NullifierRead::Unspent(*self.unspent_at.lock().unwrap()),
+        })
+    }
+
+    async fn anchor_recorded(
+        &self,
+        _: [u8; 32],
+    ) -> Result<(bool, u64), crate::platform::PlatformError> {
+        self.reads.lock().unwrap().push("anchor");
+        Ok(match *self.pruned.lock().unwrap() {
+            Some(at) => (false, at),
+            None => (true, 0),
+        })
     }
 
     async fn identity(
@@ -1877,7 +1895,7 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
     }
 }
 
-use super::super::registration_shielded::{ShieldedAsk, ShieldedOutcome};
+use super::super::registration_shielded::{NullifierRead, ShieldedAsk, ShieldedOutcome};
 
 impl Hooked {
     /// A Shielded-funded row whose create `n` the hook accepted: its draft
@@ -1899,6 +1917,17 @@ impl Hooked {
 
     /// One evidence pass of row `draft` named `identity`.
     fn evidence(&self, draft: i64, identity: &str, ev: &Evidence) -> ShieldedOutcome {
+        self.evidence_with(draft, identity, ev, &super::FakeShielded::default())
+    }
+
+    /// [`Self::evidence`] over library `lib`.
+    fn evidence_with(
+        &self,
+        draft: i64,
+        identity: &str,
+        ev: &Evidence,
+        lib: &super::FakeShielded,
+    ) -> ShieldedOutcome {
         let ask = ShieldedAsk {
             draft,
             owner: 0,
@@ -1907,14 +1936,13 @@ impl Hooked {
             fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
             identity: Some(identity.to_owned()),
         };
-        let lib = super::FakeShielded::default();
         let version = dpp::version::PlatformVersion::latest();
         let (s, wallet) = (Arc::clone(&self.f.session), self.f.wallet);
         (self.f.engine)
             .block_on(super::super::registration_shielded::fund(
                 &s,
                 wallet,
-                (&lib, ev, version),
+                (lib, ev, version),
                 ask,
                 None,
             ))
@@ -1951,12 +1979,16 @@ fn an_unsettled_create_waits_and_an_unsent_one_is_cleared() {
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unknown);
     h.rewrite(1, "status = 'unresolved'");
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unknown);
+    ev.reads.lock().unwrap().clear();
     *ev.identity.lock().unwrap() = (true, 5);
     assert_eq!(
         h.evidence(draft, &id, &ev),
         ShieldedOutcome::Registered(id.clone())
     );
-    assert!(!ev.reads.lock().unwrap().contains(&"spent"));
+    assert!(
+        !ev.reads.lock().unwrap().contains(&"anchor"),
+        "present first"
+    );
     h.rewrite(1, "status = 'not_executed'");
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Unsent);
     assert!(h.refunds().is_empty());
@@ -2296,4 +2328,112 @@ fn a_create_signs_nothing_while_a_check_fails() {
     );
     assert!(lib.spent.lock().unwrap().is_empty());
     assert_eq!(h.row_funding(draft), shielded_funding(None));
+}
+
+/// F12: the library resolves every failure of a create after its dispatch
+/// `unresolved` (`Cancelled`, operations.rs `settle_failed_spend`), a paid
+/// fallback included: every published nullifier proved spent, padding
+/// included, attributes the spend to this create, so an unresolved create
+/// settles as an executed one does.
+#[test]
+fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(4);
+    h.rewrite(
+        4,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Fallback);
+    assert_eq!(h.refunds().len(), 1);
+    *ev.identity.lock().unwrap() = (true, 101);
+    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
+}
+
+/// F12: an unresolved create none of whose nullifiers is spent may still
+/// execute while its anchor is recorded, and so does one whose unspent
+/// read is below the height its anchor read pruned at (a node behind).
+/// Read at or above it, it never executed and never can: its artifact
+/// settles `not_executed` (pruned), the library's hold on its notes is
+/// acknowledged, and it reads unsent. A pass after a crash between the two
+/// repeats the acknowledgement. Mutant: drop the height check.
+#[test]
+fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    h.rewrite(
+        5,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let st_hash = h.artifact(5).unwrap().st_hash.unwrap();
+    let lib = super::FakeShielded::default();
+    lib.held.lock().unwrap().insert(st_hash);
+    let ev = Evidence::default();
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "anchor recorded"
+    );
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 150;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "unspent read below the prune"
+    );
+    assert!(lib.acks.lock().unwrap().is_empty());
+    assert_eq!(
+        h.artifact(5).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    ev.reads.lock().unwrap().clear();
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(
+        ev.reads.lock().unwrap()[..],
+        ["spent", "identity", "anchor", "spent"],
+        "the prune first, then the nullifiers at or above it"
+    );
+    let artifact = h.artifact(5).unwrap();
+    assert_eq!(artifact.status, ArtifactStatus::NotExecuted);
+    assert_eq!(
+        artifact.disposition,
+        Some(("not_executed".into(), Some("pruned".into())))
+    );
+    assert_eq!(lib.acks.lock().unwrap()[..], [st_hash]);
+    assert!(lib.held.lock().unwrap().is_empty(), "its notes are free");
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(lib.acks.lock().unwrap().len(), 2, "acknowledged again");
+    assert!(h.refunds().is_empty());
+}
+
+/// F12: a create the hook named and then refused (its artifact could not
+/// be written) clears its name and fails retryable, unsent: it is not
+/// signed again at once, in a loop.
+#[test]
+fn a_create_refused_after_its_naming_is_unsent_not_signed_again() {
+    let h = Hooked::new();
+    assert_eq!(h.dispatch(h.staged(9, &[9])), Ok(()));
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(10, &[10], (DENOMINATION, own_platform()), None);
+    let payload = ShieldedDispatchPayload {
+        activity_id: [9; 32],
+        ..h.staged_create(10, &[10], bytes, id)
+    };
+    let lib = paying(Some(hook_of(&h, payload)));
+    let ev = Evidence::default();
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unsent)
+    );
+    assert!(lib.spent.lock().unwrap().is_empty());
 }

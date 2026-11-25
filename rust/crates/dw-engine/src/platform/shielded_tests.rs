@@ -249,6 +249,8 @@ pub(crate) struct FakeShielded {
     after_failure: Mutex<AfterFailure>,
     /// The library's held spends cannot be read.
     held_unreadable: AtomicBool,
+    /// Every acknowledgement of a spend's outcome, in order.
+    pub(super) acks: Mutex<Vec<[u8; 32]>>,
     /// The library's stored transitions cannot be read.
     stored_unreadable: AtomicBool,
     /// The receive addresses issued.
@@ -455,6 +457,7 @@ impl Default for FakeShielded {
             held: Mutex::default(),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
+            acks: Mutex::default(),
             stored_unreadable: AtomicBool::new(false),
             issued: AtomicU32::new(0),
             funder: Mutex::default(),
@@ -1028,6 +1031,11 @@ impl ShieldedLib for FakeShielded {
             });
         }
         Ok(self.held.lock().unwrap().clone())
+    }
+
+    async fn ack_spend(&self, st_hash: [u8; 32]) -> Result<bool, PlatformError> {
+        self.acks.lock().unwrap().push(st_hash);
+        Ok(self.held.lock().unwrap().remove(&st_hash))
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {

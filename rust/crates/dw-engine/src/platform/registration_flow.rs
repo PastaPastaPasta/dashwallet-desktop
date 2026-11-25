@@ -2897,6 +2897,7 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
+        let named = identity.clone();
         let ask = ShieldedAsk {
             draft: row.id,
             owner: self.claim.owner,
@@ -2931,10 +2932,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(ShieldedOutcome::Unknown) => Ok(Step::Wait(RegistrationWait::PaymentUnknown)),
             // F12, F13: Platform refused the keys and refunded the payment;
             // an identity of the seed at the row's index is the row's, else
-            // the penalty was taken and nothing retries.
+            // the penalty was taken and nothing retries. The one the create
+            // named was just proved absent, whatever the library recorded.
             Ok(ShieldedOutcome::Fallback) => match self.identity_at(index).await? {
-                Some(identity) => self.advance(row, registered(identity)).await,
-                None => {
+                Some(identity) if Some(&identity) != named.as_ref() => {
+                    self.advance(row, registered(identity)).await
+                }
+                _ => {
                     tracing::warn!(draft = row.id, "a Shielded-funded create was refunded");
                     let refunded = RegistrationError::Refunded.code();
                     self.advance(row, unnamed(Some((refunded, false)))).await

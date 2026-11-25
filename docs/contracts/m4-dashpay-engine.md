@@ -4952,11 +4952,17 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     activity's height at that moment) durably before the spend's dispatch artifact, and records the dispatch after
     it; a dispatch it cannot record is settled not sent. A named row settles by evidence alone: the identity proved
     present is `IdentityRegistered`; an artifact not executed, or no artifact with the row named and no dispatch
-    recorded, clears the name and the row tries again (a refused send fails it, retryable, so it never loops); an
-    artifact executed whose nullifiers are proved spent at height h with the identity proved absent at or above h
-    adopts an identity of the seed at the row's index, else fails the row `registration.refunded` (not retryable);
-    anything else (a dispatch recorded with no artifact, an unresolved artifact, an absence read below h, a failed
-    read) is `waiting: payment_unknown`, and so is a refusal after the create was named (the pool floor included).
+    recorded, clears the name and the row tries again (a refused send fails it, retryable, so it never loops; so
+    does a create the hook named and then refused); an artifact executed or unresolved (the library resolves every
+    failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
+    bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
+    adopts an identity of the seed at the row's index other than the one the create named, else fails the row
+    `registration.refunded` (not retryable); an unresolved one whose anchor is proved pruned from the pool's
+    recorded anchors at height p (they are kept 1,000 blocks) and none of whose published nullifiers is spent by a
+    proved read at or above p never executed and never can: its artifact is settled `not_executed` (disposition
+    `pruned`), the library's outcome acknowledged so its notes are free, the name cleared and the row failed,
+    retryable; anything else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an
+    absence read below h, a failed read) is `waiting: payment_unknown`.
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);

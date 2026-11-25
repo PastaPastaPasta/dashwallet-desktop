@@ -396,13 +396,16 @@ fn an_unknown_create_waits_and_refuses_the_discard() {
 }
 
 /// F12, F13: Platform's fallback: an identity of the seed at the row's
-/// index is the row's; else `registration.refunded`, not retryable, the
-/// name cleared and the row free to discard.
+/// index is the row's, but never the one the create named, which was just
+/// proved absent however the library recorded it; else
+/// `registration.refunded`, not retryable, the name cleared and the row
+/// free to discard.
 #[test]
 fn a_fallback_adopts_the_index_identity_or_fails_refunded() {
     let f = fixture(false);
     let lib = f.fake();
     let draft = f.insert(shielded_row(Some(created())));
+    lib.w().identities.push((0, created()));
     script(&lib, [(None, Ok(ShieldedOutcome::Fallback))]);
     f.drive(&lib, draft, None, false);
     let row = f.row(draft);
@@ -414,7 +417,7 @@ fn a_fallback_adopts_the_index_identity_or_fails_refunded() {
     f.discard(&lib, draft).unwrap();
     let draft = f.insert(shielded_row(Some(created())));
     let found = flow::b58(&dpp::prelude::Identifier::from([0x62u8; 32]));
-    lib.w().identities.push((0, found.clone()));
+    lib.w().identities = vec![(0, found.clone())];
     script(&lib, [(None, Ok(ShieldedOutcome::Fallback))]);
     f.drive(&lib, draft, None, false);
     assert_eq!(f.row(draft).identity, Some(found));

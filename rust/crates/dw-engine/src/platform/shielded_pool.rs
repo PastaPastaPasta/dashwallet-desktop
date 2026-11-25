@@ -318,6 +318,13 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
+    /// Acknowledges the library's outcome of the account's transition
+    /// `st_hash`, which lifts its hold on the notes; `false` when there was
+    /// none. Only once the journal holds the spend's settlement.
+    fn ack_spend(
+        &self,
+        st_hash: [u8; 32],
+    ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
     /// The wallet's [`RestClock`], kept in `app.sqlite`.
     fn rest_clock(&self) -> impl Future<Output = Result<RestClock, PlatformError>> + Send;
     /// [`write_rest_clock`] on the wallet's `app.sqlite`.
@@ -3203,6 +3210,14 @@ impl ShieldedLib for PwShielded {
             })
             .map(|d| d.st_hash)
             .collect())
+    }
+
+    async fn ack_spend(&self, st_hash: [u8; 32]) -> Result<bool, PlatformError> {
+        let id = self.subwallet();
+        (self.coordinator)
+            .ack_spend_disposition(id.wallet_id, id.account_index, &st_hash)
+            .await
+            .map_err(store_error)
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {

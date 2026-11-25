@@ -259,14 +259,30 @@ pub(crate) async fn confirm_create(
     ))
 }
 
+/// A proved read of a create's published nullifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NullifierRead {
+    /// Every one is spent, at the read's height.
+    Spent(u64),
+    /// None is, at the read's height.
+    Unspent(u64),
+    /// Some are.
+    Partly,
+}
+
 /// Platform's proved reads a Shielded-funded create is settled by.
 pub(crate) trait CreateEvidence: Send + Sync {
-    /// The height of a proved read at which every one of `nullifiers` is
-    /// spent; `None` when one is not.
-    fn spent_at(
+    /// Whether `nullifiers` are spent, by one proved read.
+    fn nullifiers(
         &self,
         nullifiers: &[[u8; 32]],
-    ) -> impl Future<Output = Result<Option<u64>, PlatformError>> + Send;
+    ) -> impl Future<Output = Result<NullifierRead, PlatformError>> + Send;
+    /// Whether `anchor` is among the anchors Platform's pool still records,
+    /// by a proved read, with its height. A pruned anchor never returns.
+    fn anchor_recorded(
+        &self,
+        anchor: [u8; 32],
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
     /// Whether identity `id` exists, by a proved read, with its height.
     fn identity(
         &self,
@@ -278,7 +294,7 @@ pub(crate) trait CreateEvidence: Send + Sync {
 pub(crate) struct SdkEvidence(pub(crate) Arc<dash_sdk::Sdk>);
 
 impl CreateEvidence for SdkEvidence {
-    async fn spent_at(&self, nullifiers: &[[u8; 32]]) -> Result<Option<u64>, PlatformError> {
+    async fn nullifiers(&self, nullifiers: &[[u8; 32]]) -> Result<NullifierRead, PlatformError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::query_types::{ShieldedNullifierStatuses, ShieldedNullifiersQuery};
         if !self.0.prove() {
@@ -292,8 +308,25 @@ impl CreateEvidence for SdkEvidence {
             .filter(|s| s.is_spent)
             .map(|s| s.nullifier)
             .collect();
-        let all = !nullifiers.is_empty() && nullifiers.iter().all(|n| spent.contains(n));
-        Ok(all.then_some(at.height))
+        Ok(
+            match nullifiers.iter().filter(|n| spent.contains(*n)).count() {
+                _ if nullifiers.is_empty() => NullifierRead::Partly,
+                0 => NullifierRead::Unspent(at.height),
+                n if n == nullifiers.len() => NullifierRead::Spent(at.height),
+                _ => NullifierRead::Partly,
+            },
+        )
+    }
+
+    async fn anchor_recorded(&self, anchor: [u8; 32]) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
+        use dash_sdk::query_types::ShieldedAnchors;
+        if !self.0.prove() {
+            return Err(PlatformError::Unavailable);
+        }
+        let (ShieldedAnchors(anchors), at) =
+            ShieldedAnchors::fetch_current_with_metadata(&self.0).await?;
+        Ok((anchors.contains(&anchor), at.height))
     }
 
     async fn identity(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
@@ -329,7 +362,7 @@ pub(crate) async fn fund(
     let lock = pool::wallet_lock(session, wallet);
     let _spending = lock.lock().await;
     if let Some(identity) = &ask.identity {
-        return evidence(session, wallet, net, &ask, identity).await;
+        return evidence(session, wallet, (lib, net), &ask, identity).await;
     }
     let Some(lease) = lease else {
         return Err(PlatformError::SignerUnavailable);
@@ -409,21 +442,29 @@ pub(crate) async fn fund(
     if let Ok((true, _)) = net.identity(Identifier::new(identity)).await {
         return Ok(ShieldedOutcome::Registered(name));
     }
-    evidence(session, wallet, net, &ask, &name).await
+    // A create the hook named and then refused is not signed again at once.
+    match evidence(session, wallet, (lib, net), &ask, &name).await? {
+        ShieldedOutcome::Cleared if sent.is_err() => Ok(ShieldedOutcome::Unsent),
+        outcome => Ok(outcome),
+    }
 }
 
 /// What the evidence proves of the create that named `identity` in `ask`'s
 /// row (C-funding F12). Its artifact first: none means never sent, but
 /// only while the row was named on this install and the hook never
 /// recorded the dispatch (else the journal is lost or older); not executed
-/// means nothing was spent. An executed one, its nullifiers proved spent,
-/// then the identity: present, registered; absent at or above that height,
-/// Platform's fallback, its refund's record written. Anything else, a read
-/// failure included, is unknown.
+/// means nothing was spent. An executed or unresolved one (the library
+/// resolves every failure after the dispatch `unresolved`), every published
+/// nullifier proved spent, then the identity: present, registered; absent
+/// at or above that height, Platform's fallback, its refund's record
+/// written. The published nullifiers include the bundle's padding, which
+/// only this create spends. An unresolved one none of whose nullifiers is
+/// spent, read after its anchor is proved pruned, can never execute
+/// ([`never_executes`]). Anything else, a read failure included, is unknown.
 async fn evidence(
     session: &NetworkSession,
     wallet: WalletId,
-    net: &impl CreateEvidence,
+    (lib, net): (&impl ShieldedLib, &impl CreateEvidence),
     ask: &ShieldedAsk,
     identity: &str,
 ) -> Result<ShieldedOutcome, PlatformError> {
@@ -453,18 +494,31 @@ async fn evidence(
             Ok((_, Some(_))) | Err(_) => ShieldedOutcome::Unknown,
         });
     };
-    match artifact.status {
+    let present = async || match net.identity(id).await {
+        Ok((true, _)) => ShieldedOutcome::Registered(identity.to_owned()),
+        _ => ShieldedOutcome::Unknown,
+    };
+    let unresolved = match artifact.status {
+        ArtifactStatus::NotExecuted if artifact.disposition == pruned_disposition() => {
+            return Ok(released(session, wallet, lib, artifact).await);
+        }
         ArtifactStatus::NotExecuted => return Ok(ShieldedOutcome::Unsent),
-        ArtifactStatus::Executed => {}
-        _ => {
-            return Ok(match net.identity(id).await {
-                Ok((true, _)) => ShieldedOutcome::Registered(identity.to_owned()),
-                _ => ShieldedOutcome::Unknown,
+        ArtifactStatus::Executed => false,
+        ArtifactStatus::Unresolved { unrecorded: false } => true,
+        _ => return Ok(present().await),
+    };
+    let executed_by = match net.nullifiers(&artifact.published).await {
+        Ok(NullifierRead::Spent(at)) => at,
+        Ok(NullifierRead::Unspent(_)) if unresolved => {
+            return Ok(match present().await {
+                ShieldedOutcome::Unknown => {
+                    never_executes(session, wallet, (lib, net), artifact).await
+                }
+                registered => registered,
             });
         }
-    }
-    let Ok(Some(executed_by)) = net.spent_at(&artifact.published).await else {
-        return Ok(ShieldedOutcome::Unknown);
+        _ if unresolved => return Ok(present().await),
+        _ => return Ok(ShieldedOutcome::Unknown),
     };
     match net.identity(id).await {
         Ok((true, _)) => Ok(ShieldedOutcome::Registered(identity.to_owned())),
@@ -487,6 +541,74 @@ async fn evidence(
             Ok(ShieldedOutcome::Fallback)
         }
         _ => Ok(ShieldedOutcome::Unknown),
+    }
+}
+
+/// The disposition the engine writes for a create proved never to execute.
+fn pruned_disposition() -> Option<(String, Option<String>)> {
+    Some(("not_executed".into(), Some("pruned".into())))
+}
+
+/// An unresolved create none of whose published nullifiers is spent: its
+/// anchor proved pruned at height p, then a proved read at or above p of
+/// none spent means it never executed and never can (a pruned anchor never
+/// returns, and a create that executed did so below p, spending them). Its
+/// artifact is settled not executed and the library's hold on its notes
+/// lifted ([`released`]); otherwise it may still execute.
+async fn never_executes(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (lib, net): (&impl ShieldedLib, &impl CreateEvidence),
+    artifact: &ShieldedArtifact,
+) -> ShieldedOutcome {
+    let Some(anchor) = artifact.anchor else {
+        return ShieldedOutcome::Unknown;
+    };
+    let Ok((false, pruned_by)) = net.anchor_recorded(anchor).await else {
+        return ShieldedOutcome::Unknown;
+    };
+    match net.nullifiers(&artifact.published).await {
+        Ok(NullifierRead::Unspent(at)) if at >= pruned_by => {}
+        _ => return ShieldedOutcome::Unknown,
+    }
+    released(session, wallet, lib, artifact).await
+}
+
+/// Settles `artifact` not executed in the journal, then acknowledges the
+/// library's outcome of it, which frees its notes: unsent once both hold,
+/// else unknown and the next pass repeats them.
+async fn released(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    artifact: &ShieldedArtifact,
+) -> ShieldedOutcome {
+    let Some(st_hash) = artifact.st_hash else {
+        return ShieldedOutcome::Unknown;
+    };
+    let disposition = Some(("not_executed", Some("pruned")));
+    let settled = (session.leases)
+        .settle_shielded_artifact(
+            wallet,
+            st_hash,
+            ArtifactStatus::NotExecuted,
+            disposition,
+            true,
+        )
+        .await;
+    if !matches!(settled, Ok(dw_appdb::dispatch::ArtifactSettled::Settled)) {
+        tracing::warn!(
+            ?settled,
+            "a Shielded-funded create's release was not written"
+        );
+        return ShieldedOutcome::Unknown;
+    }
+    match lib.ack_spend(st_hash).await {
+        Ok(_) => ShieldedOutcome::Unsent,
+        Err(e) => {
+            tracing::warn!(error = %e, "a Shielded-funded create's notes stay held");
+            ShieldedOutcome::Unknown
+        }
     }
 }
 
