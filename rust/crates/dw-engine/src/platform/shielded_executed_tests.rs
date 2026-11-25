@@ -6,7 +6,10 @@
 //! across a restart, a Close or a quit, the notes are neither selectable
 //! nor counted spendable, and the next scan that finds their nullifiers
 //! marks them spent and drops the record. The balance the desktop shows is
-//! the spendable one.
+//! the spendable one. The disposition tests cover the same hold with a
+//! failed record delete and a scan the test writes itself
+//! (`shielded_disposition_tests.rs`, M2-a); these run the library's own
+//! scan, answered by a mock SDK.
 
 use dash_sdk::query_types::{
     NoParamQuery, ShieldedAnchors, ShieldedEncryptedNote, ShieldedEncryptedNotes,
@@ -284,6 +287,10 @@ fn relaunch_then_scan(root: &Path) {
 
     forced_pass(&engine, &session);
     assert_eq!(held_state(&engine, &session, wallet), marked(), "scanned");
+    assert!(
+        stored_rows(&session, wallet).is_empty(),
+        "the record is gone from disk"
+    );
     engine.block_on(session.unload_wallet(wallet)).unwrap();
     assert!(
         engine

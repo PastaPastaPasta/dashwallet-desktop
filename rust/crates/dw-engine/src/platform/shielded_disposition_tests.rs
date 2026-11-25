@@ -12,6 +12,8 @@
 //! reservation: a spend's record (`shielded_pending_spends`) holds its
 //! notes until the scan marks them spent, across a restart too (M2-a,
 //! [`an_executed_spend_whose_mark_spent_failed_stays_reserved_across_a_restart`]).
+//! The same hold with no mark at all, released by the library's own scan
+//! over a mock SDK, is in `shielded_executed_tests.rs`.
 
 use platform_wallet::wallet::shielded::ShieldedNote;
 

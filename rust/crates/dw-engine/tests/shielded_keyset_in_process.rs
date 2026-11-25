@@ -1,7 +1,8 @@
 //! K2: a shielded spend's Orchard key set is derived in this process,
 //! from the wallet's own seed inside the vault, for one library call. It
-//! never crosses IPC or the FFI, never comes from the renderer, and the
-//! engine keeps no copy past the call.
+//! never crosses IPC or the FFI and never comes from the renderer. The
+//! engine binds it to one local for that call; the line checks below are a
+//! tripwire for a change that keeps one longer, not a proof that none does.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// `path` is relative to the crate's manifest directory.
 fn is_test_file(path: &Path) -> bool {
     let name = path.file_name().unwrap().to_string_lossy();
     name == "tests.rs"
@@ -65,6 +67,11 @@ fn no_host_crate_names_a_spend_key_set() {
 #[test]
 fn no_renderer_binding_carries_a_key_set_or_spend_authority() {
     let generated = crates().join("../../apps/desktop/src/api/generated");
+    assert!(
+        generated.is_dir(),
+        "the generated bindings are missing at {}",
+        generated.display()
+    );
     let mut out = Vec::new();
     files(&generated, "ts", &mut out);
     assert!(out.len() > 100, "the generated bindings were not found");
@@ -104,13 +111,13 @@ fn the_engine_takes_a_key_set_only_for_one_library_call() {
     );
     let mut named = Vec::new();
     let mut calls = 0;
-    for path in out.iter().filter(|p| !is_test_file(p)) {
+    for path in &out {
+        let rel = path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap();
+        if is_test_file(rel) {
+            continue;
+        }
+        let rel = rel.to_string_lossy().into_owned();
         let src = fs::read_to_string(path).unwrap();
-        let rel = path
-            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
         if src
             .lines()
             .any(|l| l.contains("OrchardKeySet") && !l.trim_start().starts_with("//"))
