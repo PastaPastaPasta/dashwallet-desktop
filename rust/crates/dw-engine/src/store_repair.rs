@@ -197,7 +197,8 @@ fn stop_here(network_dir: &Path, stop: Stop) -> bool {
 static ROW_LIMITS: std::sync::Mutex<Vec<(std::path::PathBuf, usize)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Walks at most `rows` rows in the store of `network_dir`.
+/// Walks at most `rows` rows in the next repair of the store in
+/// `network_dir`.
 #[cfg(test)]
 pub(crate) fn limit_rows(network_dir: &Path, rows: usize) {
     (ROW_LIMITS.lock().unwrap()).push((network_dir.to_path_buf(), rows));
@@ -205,8 +206,11 @@ pub(crate) fn limit_rows(network_dir: &Path, rows: usize) {
 
 fn row_limit(network_dir: &Path) -> usize {
     #[cfg(test)]
-    if let Some((_, rows)) = (ROW_LIMITS.lock().unwrap().iter()).find(|(d, _)| d == network_dir) {
-        return *rows;
+    {
+        let mut limits = ROW_LIMITS.lock().unwrap();
+        if let Some(n) = limits.iter().position(|(d, _)| d == network_dir) {
+            return limits.remove(n).1;
+        }
     }
     let _ = network_dir;
     MAX_WALK_ROWS

@@ -35,10 +35,9 @@ fn edited_claim_on_a_held_coin(
     mempool(engine, session, id, &claim);
     let a = OutPoint::new(funding.txid(), 0);
     assert!(!spendable(engine, session, id, a), "the claim holds A");
-    assert!(
-        stored(session.data_dir(), id, claim.txid()),
-        "the claim is stored"
-    );
+    eventually("the claim is stored", || {
+        stored(session.data_dir(), id, claim.txid())
+    });
     (funding, claim)
 }
 
