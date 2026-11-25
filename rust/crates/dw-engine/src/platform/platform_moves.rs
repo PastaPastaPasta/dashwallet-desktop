@@ -4735,12 +4735,17 @@ async fn with_payment_pool<T>(
 /// the account its lowest unused address (the one Receive may be showing,
 /// at or above the highest handed out) and the next are marked used, and
 /// the next is the fallback. It is recorded durably, with its index,
-/// before it is returned.
+/// before it is returned. A recorded one that never left this install
+/// ([`unpublished_fallback`]) is given again instead, so registrations
+/// dropped before their create was sent take no more of the account.
 pub(crate) async fn fallback_address(
     session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<String, PlatformError> {
+    if let Some(address) = unpublished_fallback(session, wallet).await? {
+        return Ok(address);
+    }
     retire_handed_out(session, wallet).await?;
     let (fallback, index) = with_payment_pool(wallet, |pool, source| {
         let mut take = || -> Result<_, PlatformError> {
@@ -4772,6 +4777,55 @@ pub(crate) async fn fallback_address(
         .await)
         .map_err(PlatformError::from)?;
     Ok(address)
+}
+
+/// The lowest recorded fallback that no registration row names and no
+/// create published ([`dw_appdb::dp_registration_published`]): it never
+/// left this install. `None` while any row is of a funding this build does
+/// not read, as its fallback is unknown. A failed read, or a record that
+/// does not read as an index, refuses the hand-out.
+async fn unpublished_fallback(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<String>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, published) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        Ok((
+            db.registration_rows(&id)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)?,
+        ))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let mut named = HashSet::new();
+    for row in &rows {
+        match Funding::decode(&row.funding) {
+            Decoded::Known(Funding::Shielded { fallback, .. }) => {
+                named.insert(fallback);
+            }
+            Decoded::Known(_) => {}
+            Decoded::Unsupported => return Ok(None),
+        }
+    }
+    let published: HashSet<&str> = (published.iter())
+        .filter_map(|(key, _)| key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX))
+        .collect();
+    let mut free = Vec::new();
+    for (key, value) in &recorded {
+        let Some(address) = key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX) else {
+            continue;
+        };
+        let index = value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })?;
+        if !named.contains(address) && !published.contains(address) {
+            free.push((index, address.to_owned()));
+        }
+    }
+    Ok(free.into_iter().min().map(|(_, address)| address))
 }
 
 /// The outcome's write; tests make it fail.

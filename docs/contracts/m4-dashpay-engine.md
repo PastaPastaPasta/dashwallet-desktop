@@ -5106,7 +5106,10 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     used and the next is the fallback, recorded durably in the wallet's local scope
     (`dp_registration_fallback/<address>`, valued its index) before it is named, with the fallbacks the wallet's
     rows name, so none is offered again and no fallback is an address handed out before it, across restarts and
-    after its row is discarded) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
+    after its row is discarded; a recorded fallback that no row names and no create published, which the dispatch
+    hook marks durably (`dp_registration_published/<address>`) before it names the create, never left the install
+    and is given to the next start instead, the lowest first, so starts dropped before their create was sent take
+    no more of the account) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
     Platform's pool must hold at least `ShieldedReadiness.pool_required` notes (250, the protocol's floor for an
     outgoing spend) before an identity create, and `pool_notes` is the count the engine read (a proved count read at
     most 5 minutes ago, else read again within 5 s; an unknown count passes, and Platform's own refusal then decides).

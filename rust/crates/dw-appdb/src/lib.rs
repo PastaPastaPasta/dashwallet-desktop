@@ -146,8 +146,21 @@ pub fn dp_registration_proved(st_hash: &str) -> String {
 /// Shielded-funded registrations were given (C-funding F13), each valued
 /// its index in the Platform payment account: written durably before its
 /// registration may name it, and kept after the registration is gone, so
-/// the address is never handed out again.
+/// the address is never handed out as a receive address. One no row names
+/// and never published ([`DP_REGISTRATION_PUBLISHED_PREFIX`]) is given to
+/// the next registration again.
 pub const DP_REGISTRATION_FALLBACK_PREFIX: &str = "dp_registration_fallback/";
+
+/// The `local:` keys, by address (bech32m), of the fallbacks a create named
+/// (C-funding F13): written durably by the dispatch hook before it names
+/// the create in its row, so before the create may leave. Such a fallback
+/// is never given to a registration again.
+pub const DP_REGISTRATION_PUBLISHED_PREFIX: &str = "dp_registration_published/";
+
+/// [`DP_REGISTRATION_PUBLISHED_PREFIX`]'s key of `address`.
+pub fn dp_registration_published(address: &str) -> String {
+    format!("{DP_REGISTRATION_PUBLISHED_PREFIX}{address}")
+}
 
 /// The `local:` key of the highest index of the Platform payment account
 /// the wallet handed out as a receive address (C-funding F13), written

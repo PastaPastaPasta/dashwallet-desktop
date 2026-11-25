@@ -159,8 +159,9 @@ impl Drop for IntentSlot<'_> {
 /// no create armed, anything but a create, which the engine did not start;
 /// with one armed, only that create, and only once the identity its signed
 /// transition makes is named in the row, durably, with the activity's
-/// height then. The identity it named. Any failure refuses the spend, so
-/// nothing is sent.
+/// height then, its fallback marked published before
+/// ([`dw_appdb::dp_registration_published`]). The identity it named. Any
+/// failure refuses the spend, so nothing is sent.
 pub(crate) async fn accept_create(
     session: &NetworkSession,
     payload: &ShieldedDispatchPayload,
@@ -207,6 +208,11 @@ pub(crate) async fn accept_create(
     else {
         return Err("the registration's funding is not an unnamed Shielded one".into());
     };
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let published = dw_appdb::dp_registration_published(&fallback);
+    (session.appdb_op(move |db| db.set_setting_durable(&scope, &published, Some("1"))))
+        .await
+        .map_err(|e| format!("the registration's fallback was not marked published: {e}"))?;
     let name = b58(&id);
     let funding = Funding::Shielded {
         denomination,

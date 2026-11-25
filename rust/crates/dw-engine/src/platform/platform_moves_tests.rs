@@ -1943,9 +1943,18 @@ fn a_registration_fallback_is_never_the_receive_address() {
     let w = World::new();
     let first = w.receive_address();
     assert_eq!(first.index, 0);
+    insert_shielded_row(&w, &first.address);
+    let next = w.receive_address();
+    assert_eq!(next.index, 1, "{next:?}");
+    assert_ne!(next.address, first.address);
+    assert_eq!(w.receive_address(), next, "stable");
+}
+
+/// A Shielded-funded registration row of `fallback`.
+fn insert_shielded_row(w: &World, fallback: &str) {
     let funding = super::super::registration_rows::Funding::Shielded {
         denomination: DASH,
-        fallback: first.address.clone(),
+        fallback: fallback.to_owned(),
         identity: None,
     }
     .encode();
@@ -1966,10 +1975,6 @@ fn a_registration_fallback_is_never_the_receive_address() {
         Ok(())
     })
     .unwrap();
-    let next = w.receive_address();
-    assert_eq!(next.index, 1, "{next:?}");
-    assert_ne!(next.address, first.address);
-    assert_eq!(w.receive_address(), next, "stable");
 }
 
 /// The account's index of `address`.
@@ -1989,6 +1994,26 @@ fn new_fallback(w: &World) -> String {
         Ok(fallback_address(&s, &wallet, s.vault.network()).await?)
     })
     .unwrap()
+}
+
+/// `address` published by a create, as the dispatch hook marks it.
+fn mark_published(w: &World, address: &str) {
+    let key = dw_appdb::dp_registration_published(address);
+    w.call(move |_, s, _, id| async move {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        s.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A new fallback a create then published: never given again.
+fn published_fallback(w: &World) -> String {
+    let address = new_fallback(w);
+    mark_published(w, &address);
+    address
 }
 
 /// The account's in-memory marks of `indices` lost, as at a restart.
@@ -2040,13 +2065,13 @@ fn a_new_fallback_is_never_an_address_handed_out_before_or_after() {
 fn a_fallback_after_a_restart_is_above_every_address_handed_out() {
     let w = World::new();
     assert_eq!(w.receive_address().index, 0);
-    let first = new_fallback(&w);
+    let first = published_fallback(&w);
     assert_eq!(index_of(&w, first.clone()), Some(1));
     let shown = w.receive_address();
     assert_eq!(shown.index, 2);
     forget_marks(&w, 0..=2);
     assert_eq!(w.receive_address(), shown, "Receive's address stays");
-    let second = new_fallback(&w);
+    let second = published_fallback(&w);
     assert_eq!(index_of(&w, second.clone()), Some(3), "above the shown 2");
     assert_ne!(second, first);
     let after = w.receive_address();
@@ -2128,31 +2153,46 @@ fn reload_derived_to(w: &World, last: u32) {
 fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
     let w = World::new();
     assert_eq!(w.receive_address().index, 0);
-    let fallback = new_fallback(&w);
+    let fallback = published_fallback(&w);
     assert_eq!(index_of(&w, fallback.clone()), Some(1));
     let shown = w.receive_address();
     assert_eq!(shown.index, 2);
     reload_derived_to(&w, 0);
     assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
     assert_eq!(w.receive_address(), shown, "never the fallback");
-    let next = new_fallback(&w);
+    let next = published_fallback(&w);
     assert_eq!(index_of(&w, next), Some(3));
 }
 
-/// Known limit (#894): each fallback takes two payment indices with no
-/// payment, the one it skips and its own, kept on this install. Eleven
-/// starts accepted and then dropped unpaid put the next fallback at 21 and
-/// Receive at 22, past a seed restore's gap of 20 with nothing funded
-/// below, so a restore finds neither until the gap is raised. A start
-/// refused before its row takes none
-/// (`registration_tests::shielded::a_start_refused_in_progress_takes_no_fallback`).
+/// C-funding F13 (bot r4699213569): a fallback no row names and no create
+/// published never left this install, so the next registration is given
+/// it again: fifteen starts dropped before their create was sent take two
+/// indices in all, and Receive stays where the first left it. Mutant: never
+/// give one again.
 #[test]
-fn unpaid_fallbacks_widen_the_gap_two_indices_each() {
+fn starts_dropped_before_dispatch_take_no_more_indices() {
     let w = World::new();
-    let taken: Vec<Option<u32>> = (0..11).map(|_| index_of(&w, new_fallback(&w))).collect();
-    let expected: Vec<Option<u32>> = (0..11).map(|n| Some(2 * n + 1)).collect();
-    assert_eq!(taken, expected);
-    assert_eq!(w.receive_address().index, 22);
+    let first = new_fallback(&w);
+    assert_eq!(index_of(&w, first.clone()), Some(1));
+    for _ in 0..15 {
+        assert_eq!(new_fallback(&w), first);
+    }
+    assert_eq!(w.receive_address().index, 2);
+}
+
+/// C-funding F13: a fallback a create published, or a row still names, is
+/// never given again. Mutants: give a published one again; a named one.
+#[test]
+fn a_published_or_named_fallback_is_never_given_again() {
+    let w = World::new();
+    let published = published_fallback(&w);
+    let named = new_fallback(&w);
+    assert_ne!(named, published);
+    assert_eq!(index_of(&w, named.clone()), Some(3));
+    insert_shielded_row(&w, &named);
+    let third = new_fallback(&w);
+    assert_eq!(index_of(&w, third.clone()), Some(5));
+    assert!(third != published && third != named);
 }
 
 /// Q3: a P2SH Platform address of this network is a recipient, as a

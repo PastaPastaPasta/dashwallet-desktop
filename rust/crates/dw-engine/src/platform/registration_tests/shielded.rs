@@ -321,29 +321,40 @@ fn a_ready_start_writes_the_row_with_its_own_fallback() {
     );
 }
 
-/// F13: a start refused because another registration's payment is still
-/// open takes no fallback, so a refused start widens no gap of the
-/// Platform payment account.
+/// F13 (bot r4699213569): the fallback is taken only once nothing refuses
+/// the start, so fifteen starts refused while another registration's
+/// payment is open, and fifteen refused for their grant (an unknown one,
+/// as an expired one is), take none: no index of the Platform payment
+/// account is marked and no fallback recorded. Mutant: take it first.
 #[test]
-fn a_start_refused_in_progress_takes_no_fallback() {
+fn refused_starts_take_no_fallback() {
     let f = fixture(false);
     let lib = f.fake();
     lib.w().shielded = ready();
-    let open = f.insert(shielded_row(Some(created())));
     let quote = (f.engine.block_on(registration::quote(&*lib, &shielded(0)))).unwrap();
     let denomination = quote.readiness.unwrap().denomination.unwrap();
-    let g = f.grant(0, quote.grant.max_credits, f.credential());
-    let start = (f.engine).block_on(registration::start(
-        &f.session,
-        f.wallet,
-        Arc::clone(&lib),
-        shielded(denomination),
-        g,
-    ));
-    assert!(
-        matches!(&start, Err(RegistrationError::InProgress { draft }) if *draft == open.to_string()),
-        "{start:?}"
-    );
+    for _ in 0..15 {
+        let err = start(&f, &lib, shielded(denomination));
+        assert_eq!(
+            err,
+            RegistrationError::Platform(PlatformError::GrantInvalid)
+        );
+    }
+    let open = f.insert(shielded_row(Some(created())));
+    for _ in 0..15 {
+        let g = f.grant(0, quote.grant.max_credits, f.credential());
+        let start = (f.engine).block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            shielded(denomination),
+            g,
+        ));
+        assert!(
+            matches!(&start, Err(RegistrationError::InProgress { draft }) if *draft == open.to_string()),
+            "{start:?}"
+        );
+    }
     assert_eq!(f.rows().len(), 1);
     assert_eq!(lib.w().fallbacks_taken, 0);
 }

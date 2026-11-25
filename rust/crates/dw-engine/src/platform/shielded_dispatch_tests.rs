@@ -1922,8 +1922,9 @@ impl Hooked {
 /// C-funding F11: the hook names the identity a Shielded-funded create
 /// makes in its row, durably and with the activity's height, before the
 /// artifact exists (the artifact names it too), then records the dispatch
-/// before the library may send. Mutant: write the artifact without the
-/// identity (dw-appdb refuses it, so nothing is sent).
+/// before the library may send; its fallback is marked published first.
+/// Mutants: write the artifact without the identity (dw-appdb refuses it,
+/// so nothing is sent); leave the fallback unmarked.
 #[test]
 fn a_create_is_named_in_its_row_before_its_artifact() {
     let h = Hooked::new();
@@ -1940,6 +1941,12 @@ fn a_create_is_named_in_its_row_before_its_artifact() {
     );
     assert!(
         h.setting(dw_appdb::dp_registration_dispatched(&name))
+            .is_some()
+    );
+    // Its fallback left with it: never given to a registration again.
+    let fallback = own_platform().to_bech32m_string(dashcore::Network::Testnet);
+    assert!(
+        h.setting(dw_appdb::dp_registration_published(&fallback))
             .is_some()
     );
     let artifact = h.artifact(1).unwrap();
