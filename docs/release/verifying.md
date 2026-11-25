@@ -2,7 +2,7 @@
 
 Every file the release workflow publishes carries a GitHub build attestation: a signed statement, made by
 GitHub Actions for this repository, that the file was built or assembled by `.github/workflows/release.yml`
-(or `.github/workflows/release-publish-signed.yml` for detached-signed stable releases) from a given commit.
+(or `.github/workflows/release-publish-signed.yml` for detached-signed releases and candidates) from a given commit.
 Signed stable releases (starting with 1.0) also carry a detached PGP signature (`SHA256SUMS.asc`), Apple
 Developer ID signing and notarization on macOS, and Windows Authenticode signing. Release candidates
 (`vX.Y.Z-rc.N`), `main` builds, and `continuous` ship keyless: attestations only, with ad-hoc macOS and
@@ -37,8 +37,8 @@ gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop \
 ```
 
 For a tagged release use the tag, for example `--source-ref refs/tags/v0.1.0` (`--signer-workflow` alone checks
-the workflow file, not the branch or tag it ran on). Signed stable 1.0+ releases published via the detached-sigs
-workflow use `--signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release-publish-signed.yml`
+the workflow file, not the branch or tag it ran on). Signed 1.0+ releases and signed candidates (with `SHA256SUMS.asc`) published via the
+detached-sigs workflow use `--signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release-publish-signed.yml`
 for the final published assets (while the unsigned CI inputs carry attestations from `release.yml`).
 
 It prints the workflow, the commit and the run that built the file, and exits non-zero when the file's digest has
@@ -81,7 +81,7 @@ offline, so `gpg` prints both the primary key fingerprint and the signing subkey
 
 ## Check the macOS signature and notarization
 
-On signed stable releases (1.0 and later), both the `.dmg` and `Dash Wallet.app` inside it are
+On signed releases (1.0 and later) and signed candidates, both the `.dmg` and `Dash Wallet.app` inside it are
 signed with a Developer ID Application certificate and notarized by Apple. After copying `Dash Wallet.app` to
 `/Applications`:
 
