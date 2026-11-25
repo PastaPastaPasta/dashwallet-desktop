@@ -545,9 +545,11 @@ impl NetworkSession {
         {
             let (dir, db) = (data_dir.clone(), Arc::clone(&appdb));
             let repaired =
-                tokio::task::spawn_blocking(move || crate::store_repair::repair(&dir, &db)).await?;
-            if let Err(e) = repaired {
-                tracing::warn!(error = %e, "store repair: nothing repaired");
+                tokio::task::spawn_blocking(move || crate::store_repair::repair(&dir, &db)).await;
+            match repaired {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "store repair: stopped"),
+                Err(e) => tracing::warn!(error = %e, "store repair: panicked"),
             }
         }
         {

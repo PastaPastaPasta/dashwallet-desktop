@@ -139,9 +139,10 @@ pub(crate) struct Persisted {
     /// upgraded from the fork keeps the fork's own in
     /// `core_dropped_unsigned_spends`.
     pub(crate) dropped: HashSet<Txid>,
-    /// Of `dropped`, those whose stored record has an input script that
-    /// isn't push-only, or doesn't read: the store's verdict on them may be
-    /// wrong, so nothing built on them is dropped with them (#739).
+    /// Of `dropped`, those whose verdict may be wrong, so nothing built on
+    /// them is dropped with them (#739): a record that doesn't read, the
+    /// repair's structural drops, and the fork's drops whose record has an
+    /// input script that isn't push-only.
     pub(crate) dropped_doubtful: HashSet<Txid>,
     /// Transactions with a verified InstantSend lock stored and no record,
     /// by the transactions their lock names inputs of: what links a locked

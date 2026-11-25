@@ -342,7 +342,7 @@ struct Graph {
     children: HashMap<Txid, Vec<Txid>>,
     inputs: HashSet<OutPoint>,
     pending: Vec<([u8; 32], TransactionRecord)>,
-    unverified_locks: HashSet<([u8; 32], Txid)>,
+    unverified_locks: HashSet<Txid>,
 }
 
 /// Reads every wallet's transactions and InstantSend locks; `None` when the
@@ -426,7 +426,7 @@ fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Resu
             return incomplete("a lock key");
         };
         if !verified {
-            graph.unverified_locks.insert((wallet, txid));
+            graph.unverified_locks.insert(txid);
             continue;
         }
         let Some(lock) = blob.as_deref().and_then(crate::history_ops::decode_lock) else {
@@ -577,37 +577,46 @@ fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Opt
             tracing::warn!(claim = %record.txid, settled = %at, "store repair: kept an unsigned claim: something of its tree is settled");
             continue;
         }
+        if graph.unverified_locks.contains(&record.txid) || won_a_sweep(tx, record.txid)? {
+            tracing::warn!(claim = %record.txid, "store repair: kept an unsigned claim with a lock row or named a sweep's winner");
+            continue;
+        }
         claims.push((*wallet, record, cause));
     }
-    let mut by_wallet: BTreeMap<[u8; 32], Vec<(&TransactionRecord, Cause)>> = BTreeMap::new();
-    for (wallet, record, cause) in claims {
-        by_wallet.entry(wallet).or_default().push((record, cause));
+    if claims.is_empty() {
+        return Ok(Some(Vec::new()));
     }
+    let dropping: HashSet<Txid> = claims.iter().map(|(_, r, _)| r.txid).collect();
+    let Some(claimed) = claimed_by_others(tx, &dropping)? else {
+        return Ok(None);
+    };
     let mut drops = Vec::new();
-    for (wallet, records) in by_wallet {
-        let dropping: HashSet<Txid> = records.iter().map(|(r, _)| r.txid).collect();
-        let Some(claimed) = claimed_by_others(tx, &wallet, &dropping)? else {
-            return Ok(None);
-        };
-        for (record, cause) in records {
-            drops.push(drop_of(tx, &wallet, record, cause, &claimed)?);
-        }
+    for (wallet, record, cause) in claims {
+        drops.push(drop_of(tx, &wallet, record, cause, &claimed)?);
     }
     Ok(Some(drops))
 }
 
-/// Every outpoint a stored transaction of `wallet` other than `except`
-/// spends, whatever its finality; `None` when a record doesn't read.
+/// Whether a sweep named `claim` the winner of a coin: only a mined or
+/// InstantSend-locked transaction wins one, so the network took it.
+fn won_a_sweep(tx: &rusqlite::Transaction<'_>, claim: Txid) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM core_utxos WHERE spent_in_txid = ?1)",
+        [claim.as_byte_array().as_slice()],
+        |r| r.get(0),
+    )
+}
+
+/// Every outpoint a stored transaction of any wallet spends, whatever its
+/// finality, except the transactions of `except` (in every wallet that
+/// stores them); `None` when a record doesn't read.
 fn claimed_by_others(
     tx: &rusqlite::Transaction<'_>,
-    wallet: &[u8; 32],
     except: &HashSet<Txid>,
 ) -> rusqlite::Result<Option<HashSet<OutPoint>>> {
-    let mut stmt = tx.prepare(
-        "SELECT txid, record_blob FROM core_transactions \
-         WHERE wallet_id = ?1 AND record_blob IS NOT NULL",
-    )?;
-    let mut q = stmt.query([wallet.as_slice()])?;
+    let mut stmt = tx
+        .prepare("SELECT txid, record_blob FROM core_transactions WHERE record_blob IS NOT NULL")?;
+    let mut q = stmt.query([])?;
     let mut claimed = HashSet::new();
     while let Some(r) = q.next()? {
         let (txid, blob): (Vec<u8>, Vec<u8>) = (r.get(0)?, r.get(1)?);
@@ -867,8 +876,8 @@ fn resolve_staged(conn: &rusqlite::Connection, appdb: &AppDb) -> Result<(), Engi
 }
 
 /// The claims of `wallet` this repair dropped from the store, and of those
-/// the ones whose verdict may be wrong: a record whose input scripts
-/// aren't all push-only, or that doesn't read. A staged record counts only
+/// the ones whose verdict may be wrong: a structural drop (S4), or a
+/// record that doesn't read. A staged record counts only
 /// while the store doesn't hold its claim (`held`). Only the read itself
 /// fails.
 pub(crate) fn store_dropped(
@@ -891,9 +900,10 @@ pub(crate) fn store_dropped(
             .and_then(|r| hex::decode(&r.record_blob).ok())
             .and_then(|b| crate::history_ops::decode_record(&b))
             .filter(|r| r.txid == txid && r.transaction.txid() == txid);
-        let sure = tx.is_some_and(|r| {
-            (r.transaction.input.iter()).all(|i| crate::tx_actions::push_only(&i.script_sig))
-        });
+        // S3 makes a push-only unsigned input sure whatever the others
+        // are; only a structural drop (S4) or an unreadable record is
+        // doubtful.
+        let sure = tx.is_some() && record.as_ref().is_some_and(|r| r.cause == Cause::Unsigned);
         dropped.insert(txid);
         if !sure {
             doubtful.insert(txid);

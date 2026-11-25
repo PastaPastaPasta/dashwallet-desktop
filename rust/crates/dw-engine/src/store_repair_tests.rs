@@ -167,8 +167,9 @@ fn a_claim_on_a_held_coin_whose_input_script_isnt_push_only_is_kept() {
 }
 
 /// S3: one input isn't push-only (S1 alone keeps it), the other is
-/// push-only and unsigned for a stored coin: the claim drops, and both
-/// coins come back.
+/// push-only and unsigned for a stored coin: the claim drops, both coins
+/// come back, and the verdict is sure, so a payment built on the claim's
+/// change goes with it.
 #[test]
 fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -182,7 +183,11 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
         OutPoint::new(funding.txid(), 0),
         OutPoint::new(funding.txid(), 1),
     );
-    let mut claim = spend_of(a, vec![(elsewhere(), PAID)]);
+    let change = fresh_address(&engine, &session, id);
+    let mut claim = spend_of(
+        a,
+        vec![(elsewhere(), PAID), (change.script_pubkey(), CHANGE)],
+    );
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
     claim.input.push(TxIn {
         previous_output: b,
@@ -190,6 +195,15 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
     });
     mempool(&engine, &session, id, &claim);
     assert!(!spendable(&engine, &session, id, a) && !spendable(&engine, &session, id, b));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1)]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
 
     let session = reopen(&engine, session);
     assert!(!stored(session.data_dir(), id, claim.txid()), "dropped");
@@ -197,9 +211,14 @@ fn one_unsigned_push_only_input_drops_a_claim_whatever_the_others_are() {
     assert!(spendable(&engine, &session, id, b), "B is back");
     let (all, doubtful) = records(&session, id);
     assert!(all.contains(&claim.txid()));
-    assert!(
-        doubtful.contains(&claim.txid()),
-        "an input that isn't push-only makes the record doubtful"
+    assert!(doubtful.is_empty(), "sure: {doubtful:?}");
+    eventually("the payment on the claim's change goes", || {
+        dropped(&engine, &session, id, payment.txid())
+    });
+    assert_eq!(
+        balances(&session, id).total,
+        2 * PAID,
+        "A and B count, nothing else"
     );
 }
 
@@ -275,6 +294,38 @@ fn an_output_of_the_claim_spent_by_an_unknown_transaction_keeps_it() {
     let outcome = repair_closed(&dir);
     assert_eq!(outcome.schema, Some(24));
     assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// A claim a sweep named the winner of a coin (only a mined or locked
+/// transaction wins one), or with a lock row stored unverified, is kept.
+#[test]
+fn a_claim_a_sweep_named_the_winner_or_with_an_unverified_lock_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let dir = close(&engine, session);
+    let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    let txid = claim.txid().as_byte_array().to_vec();
+    on_store(
+        &dir,
+        "UPDATE core_utxos SET spent_in_txid = ?3 WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![id.0.as_slice(), a, txid],
+    );
+    assert!(repair_closed(&dir).dropped.is_empty(), "a sweep's winner");
+    on_store(
+        &dir,
+        "UPDATE core_utxos SET spent_in_txid = NULL WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![id.0.as_slice(), a],
+    );
+    on_store(
+        &dir,
+        "INSERT INTO core_instant_locks (wallet_id, txid, islock_blob, verified) VALUES (?1, ?2, x'00', 0)",
+        rusqlite::params![id.0.as_slice(), txid],
+    );
+    assert!(
+        repair_closed(&dir).dropped.is_empty(),
+        "an unverified lock row"
+    );
     assert!(stored(&dir, id, claim.txid()));
 }
 
