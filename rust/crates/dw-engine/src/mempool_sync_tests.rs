@@ -24,6 +24,8 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "dropped_claim_tests.rs"]
 mod dropped_claim_tests;
+#[path = "g1_islock_tests.rs"]
+mod g1_islock_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]
