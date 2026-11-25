@@ -1241,9 +1241,10 @@ pub(crate) struct HeldEvidence<'a> {
 /// settled when its winner is in the history and its block proven final
 /// (`chain_final`); when the history doesn't hold it, or it is unknown,
 /// when one of the coins it contested has a final spend: the evidence's,
-/// or one of a transaction of the history in a block proven final. An orphan's drop, which
-/// nothing beat, is settled once each parent a load found gone is dead
-/// for good (Q81c §2). A drop with no origin note awaits.
+/// or a spend by a transaction of the history in a block proven final. An
+/// orphan's drop, which nothing beat, is settled once each parent a load
+/// found gone is dead for good (Q81c §2). A drop with no origin note
+/// awaits.
 pub(crate) fn held_awaiting(
     held: &BTreeSet<OutPoint>,
     drops: &HeldDrops,
@@ -4424,7 +4425,7 @@ mod tests {
             ..no_evidence(None)
         };
         let in_hash = |hash: BlockHash| TransactionContext::InBlock(BlockInfo::new(10, hash, 0));
-        let w = |hash| {
+        let spend_of_a_in = |hash| {
             entry(
                 tx(vec![input(t(1), 0)], vec![out(20, &hash_addr(3))]),
                 in_hash(hash),
@@ -4436,7 +4437,7 @@ mod tests {
             ("a spender of a contested coin", false),
         ] {
             for (hash, awaits) in [(replaced, true), (kept, false)] {
-                let w = w(hash);
+                let w = spend_of_a_in(hash);
                 let w_id = w.tx.txid();
                 let txs = HashMap::from([(w_id, w)]);
                 let winner = match winner_in_history {
