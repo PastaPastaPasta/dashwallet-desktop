@@ -852,6 +852,10 @@ impl CallPermit {
     /// spend proves and signs with the key set itself, so once it is out
     /// the spend may be, and the permit keeps its quote. None once the
     /// permit ended.
+    #[allow(
+        dead_code,
+        reason = "no key set spend entry point at this platform pin (P13c)"
+    )]
     pub(crate) fn shielded_keys(&self) -> Result<OrchardKeySet, LeaseError> {
         let key = self.lease.call_shielded_spend_key()?;
         let count = self.signatures();
