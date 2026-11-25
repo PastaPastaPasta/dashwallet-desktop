@@ -32,7 +32,8 @@ KINDS = ("funds", "review")
 LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
-RECORD = re.compile(r"( {0,3})<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
+RECORD = re.compile(r"<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
+MARKER = re.compile(r"<!--\s*dwd-review\s+([^>]*?)\s*-->")
 FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -75,7 +76,7 @@ def is_funds(path, rules):
 def record_lines(body):
     """(in_code, line) for each line; a fence follows CommonMark, an unclosed one runs to the end."""
     fence = None
-    for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+    for line in body.split("\n"):
         m = FENCE.fullmatch(line)
         if fence:
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
@@ -88,6 +89,10 @@ def record_lines(body):
             yield False, line
 
 
+def fields_of(m):
+    return dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
+
+
 def parse_records(comments):
     """Records from trusted, non-bot comments, oldest first."""
     records = []
@@ -96,15 +101,15 @@ def parse_records(comments):
         user = c.get("user") or {}
         if c.get("author_association") not in TRUSTED or user.get("type") == "Bot":
             continue
-        for in_code, line in record_lines(c.get("body") or ""):
-            m = RECORD.fullmatch(line)
-            if not m:
-                continue
-            fields = dict(kv.split("=", 1) for kv in m.group(2).split() if "=" in kv)
-            # A block counts wherever it stands, so a stray one can only refuse; an approve counts only at
-            # the first column outside code.
-            if fields.get("verdict") != "block" and (m.group(1) or in_code):
-                continue
+        body = (c.get("body") or "").replace("\r\n", "\n").replace("\r", "\n")
+        # Any other verdict counts only on a line of its own at the first column outside code, so quoting
+        # never casts one; a block counts wherever its marker appears, since a stray block can only refuse.
+        # Blocks go last so that, within one comment, a block wins.
+        strict = [RECORD.fullmatch(line) for in_code, line in record_lines(body) if not in_code]
+        found = [fields_of(m) for m in strict if m]
+        found = [f for f in found if f.get("verdict") != "block"]
+        found += [f for f in map(fields_of, MARKER.finditer(body)) if f.get("verdict") == "block"]
+        for fields in found:
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")
             records.append(fields)

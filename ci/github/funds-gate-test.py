@@ -236,6 +236,23 @@ class Gate(unittest.TestCase):
         later = comment("```\n" + record("funds", verdict="block") + "\n```", at="2026-11-25T06:00:00Z", cid=2)
         self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
 
+    def test_block_anywhere_withdraws_an_approve(self):
+        block = record("funds", verdict="block")
+        for body in [
+            "as noted " + block + " above",
+            "- item\n  " + block,
+            "> " + block,
+            "    " + block,
+            "```\n" + block,
+            "Blocking.\r\n- x\r\n  " + block + "\r\n",
+        ]:
+            later = comment(body, at="2026-11-25T06:00:00Z", cid=2)
+            self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0], body)
+
+    def test_block_beats_approve_in_one_comment(self):
+        body = record("funds") + "\n" + record("review") + "\n> " + record("funds", verdict="block")
+        self.assertFalse(self.run_gate([comment(body)])[0])
+
     def test_inline_record_does_not_count(self):
         self.assertFalse(self.run_gate([comment("see " + record("funds") + "\n" + record("review"))])[0])
 
