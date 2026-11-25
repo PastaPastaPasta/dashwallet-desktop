@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 89
+Contract-Version: 90
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -970,7 +970,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: ed73e024e05b79073fb30d55a054128de0f3616dbc26e914b9a42013f30c428c version: 89 -->
+<!-- surface-sha256: 950d1e21403a74b063a3a7bf007bc0dc7152c8b078fa2378047deb3a297df86e version: 90 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2748,7 +2748,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   host's code table (`ServiceErrorCode`) needs both. It also carries the engine's `rescan_interrupted` (Contract-Version 49,
   0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again. A
   replay that runs is `platform.context_unavailable`, a wait for sync.
-- `platform.restored` (Contract-Version 89, the R3 restore's money gate): while the network's restored mark is set,
+- `platform.restored` (Contract-Version 90, the R3 restore's money gate): while the network's restored mark is set,
   every lease whose flow moves funds is refused before it begins, its grants unused. The mark clears at the first full
   sync after the restore; profile, contact, DashPay-key and voting flows are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
