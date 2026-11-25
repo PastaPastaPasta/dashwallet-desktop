@@ -3410,8 +3410,16 @@ fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
     let dead =
         crate::tx_actions::Dead::from([(c.txid(), crate::history::DropCause::InvalidSource)]);
-    crate::tx_actions::forget_swept(&session.live().unwrap().appdb, id, &[], &dead, &[], &[])
-        .unwrap();
+    crate::tx_actions::forget_swept(
+        &session.live().unwrap().appdb,
+        id,
+        &[],
+        &dead,
+        &[],
+        &[],
+        None,
+    )
+    .unwrap();
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
@@ -4033,4 +4041,263 @@ fn removing_and_reimporting_a_watch_only_wallet_drops_its_holds() {
     assert!(held(&engine, &session, id).contains(&a), "A is credited");
     let b = balances(&session, id);
     assert_eq!((b.held_unfinished, b.held_unvalued), (0, 0), "{b:?}");
+}
+
+/// The `drop_locked:` rows of wallet `id`, as stored, by key.
+fn lock_rows(session: &NetworkSession, id: WalletId) -> BTreeMap<String, Option<String>> {
+    (session.live().unwrap().appdb)
+        .settings_with_prefix_lossy(&id.to_string(), "drop_locked:")
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+/// The sweep note of `txid`, when one reads.
+fn swept_by_note(
+    session: &NetworkSession,
+    id: WalletId,
+    txid: Txid,
+) -> Option<crate::history::SweptBy> {
+    let value = (session.live().unwrap().appdb)
+        .setting_lossy(&id.to_string(), &format!("swept_by:{txid}"))
+        .unwrap()?;
+    crate::history::SweptBy::decode(&txid, &value)
+}
+
+/// Writes `value` as wallet `id`'s setting `key`.
+fn set_mark(session: &NetworkSession, id: WalletId, key: &str, value: &str) {
+    (session.live().unwrap().appdb)
+        .set_settings_durable(&id.to_string(), &[(key, Some(value))])
+        .unwrap();
+}
+
+/// What key-wallet's sweep of `p` for `winner`, out of a block, stores
+/// before the app stops, with the sweep's marks and notes: the next load
+/// finds P's child orphaned.
+fn swept_before_a_restart(session: &NetworkSession, id: WalletId, p: &Transaction, winner: Txid) {
+    store_raw(
+        session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            sweeps: vec![platform_wallet::changeset::changeset::SweepBatch {
+                txids: vec![p.txid()],
+                superseded_by: winner,
+                winner_mined_height: None,
+                released_outpoints: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    );
+    let sweep = crate::tx_actions::Sweep {
+        winner,
+        block: None,
+        claim: false,
+        txs: std::slice::from_ref(p),
+    };
+    crate::tx_actions::forget_swept(
+        &session.live().unwrap().appdb,
+        id,
+        &[p.txid()],
+        &crate::tx_actions::Dead::new(),
+        &[],
+        &[],
+        Some(&sweep),
+    )
+    .unwrap();
+}
+
+/// #749 (Q81c C1): D held, its drop's winner W ChainLocked: nothing awaits.
+/// key-wallet hears a lock of a transaction neither it nor the history
+/// holds, which may spend D: D awaits, and its note keeps it awaiting after
+/// a restart, which forgets the lock. Once a ChainLocked block spends D,
+/// the note goes and nothing awaits.
+#[test]
+fn a_lock_of_an_unknown_transaction_keeps_a_held_coin_awaiting_after_a_restart() {
+    use dashcore::hashes::Hash;
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let (_dir, engine, session, id, d, paid, w) = child_dropped_holding_d_beside_its_winner();
+    let x = paid.output[d.vout as usize].value;
+    let w_block = super::block_with(vec![w.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, w_block)]);
+    mined(&engine, &session, id, TIP + 1, vec![w]);
+    reconciled(&engine, &session, id);
+    chain_lock(&engine, &session, id, TIP + 1, w_block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, false), "W final");
+
+    let unknown = Txid::from_byte_array([42; 32]);
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        info.core_wallet
+            .mark_instant_send_utxos(&unknown, &dashcore::InstantLock::default());
+    });
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "a lock heard");
+    assert_eq!(
+        lock_rows(&session, id),
+        BTreeMap::from([(format!("drop_locked:{d}"), Some(unknown.to_string()))])
+    );
+
+    let session = reopen(&engine, session);
+    reload_with_headers(&engine, &session, id, &[(TIP + 1, w_block)]);
+    assert_eq!(held_report(&session, id), (x, 0, true), "restarted");
+
+    let spend = foreign_winner(&engine, &session, id, &paid, &[d]);
+    let block = super::block_with(vec![spend.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
+    mined(&engine, &session, id, TIP + 2, vec![spend]);
+    reconciled(&engine, &session, id);
+    chain_lock(&engine, &session, id, TIP + 2, block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (0, 0, false), "D's spend final");
+    assert!(lock_rows(&session, id).is_empty(), "the note goes");
+}
+
+/// #749 (Q81c §2 (b), Q81d S4): the app stops after key-wallet's sweep of
+/// P for W, an InstantSend-locked spend of A out of a block that pays the
+/// wallet too, before C goes. The load drops C as orphaned: D, held, awaits P's death, which
+/// only W's final block proves: W mined above the ChainLock still awaits,
+/// its block filled in P's sweep note from W's record; once ChainLocked, D
+/// awaits nothing, after a restart too.
+#[test]
+fn an_orphans_coin_awaits_the_unmined_winner_of_its_parents_sweep_until_chainlocked() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = rival(&engine, &session, id, &paid, a.vout);
+    swept_before_a_restart(&session, id, &p, winner.txid());
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "loaded");
+    let x = paid.output[d.vout as usize].value;
+    assert_eq!(held_report(&session, id), (x, 0, true), "W unmined");
+
+    let block = super::block_with(vec![winner.clone()]).block_hash();
+    let chain = [(TIP + 1, block)];
+    header_chain(&session, &chain);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined");
+    let note = swept_by_note(&session, id, p.txid()).expect("P's sweep is noted");
+    assert_eq!(note.block, Some((TIP + 1, block)));
+    chain_lock(&engine, &session, id, TIP + 1, block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, false), "W ChainLocked");
+
+    let session = reopen(&engine, session);
+    reload_with_headers(&engine, &session, id, &chain);
+    assert_eq!(held_report(&session, id), (x, 0, false), "restarted");
+}
+
+/// #749 (Q81c §2 (a), Q81d): C dropped as orphaned at the load, P's winner
+/// out of a block. P's abandoned copy and a claim-swept note of P prove
+/// nothing, nor does a `dropped:` mark of P that isn't a verdict by its
+/// bytes (a replaced payment's, or one that doesn't read): D awaits. A
+/// never-valid verdict (an invalid source, as the claim rule marks a
+/// payment built on a never-valid claim, or an empty value) settles it
+/// with no ChainLock. The mark is read at each evaluation; after a
+/// restart, whose walk of what the claim rule dropped reads it too, D
+/// still awaits nothing.
+#[test]
+fn an_orphans_coin_settles_on_its_parents_never_valid_verdict_with_no_chainlock() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    swept_before_a_restart(&session, id, &p, winner.txid());
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "loaded");
+    let x = paid.output[d.vout as usize].value;
+    assert_eq!(held_report(&session, id), (x, 0, true), "loaded");
+
+    let p_id = p.txid();
+    let copy = dashcore::consensus::encode::serialize_hex(&p);
+    set_mark(&session, id, &format!("abandoned:{p_id}"), &copy);
+    set_mark(&session, id, &format!("claim_swept:{p_id}"), "");
+    reconciled(&engine, &session, id);
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, true),
+        "copy and claim note"
+    );
+    let dropped = format!("dropped:{p_id}");
+    for (value, awaits) in [
+        (r#"{"cause":"replaced"}"#, true),
+        ("x:0,y:1", true),
+        (r#"{"cause":"invalidSource"}"#, false),
+        ("garbage", true),
+        ("", false),
+        (r#"{"cause":"invalidClaim"}"#, false),
+    ] {
+        set_mark(&session, id, &dropped, value);
+        reconciled(&engine, &session, id);
+        assert_eq!(held_report(&session, id).2, awaits, "{value:?}");
+    }
+    set_mark(&session, id, &dropped, r#"{"cause":"invalidSource"}"#);
+    let session = reopen(&engine, session);
+    assert!(!held_report(&session, id).2, "restarted");
+}
+
+/// #749 (Q81c §2, Q81d (c)): as above, P's `dropped:` mark a replaced
+/// payment's: D awaits until a transaction other than P, which the history
+/// holds, spends A, P's input, in a ChainLocked block.
+#[test]
+fn an_orphans_coin_of_a_replaced_parent_awaits_a_final_spend_of_its_input() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let unseen = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    swept_before_a_restart(&session, id, &p, unseen.txid());
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "loaded");
+    set_mark(
+        &session,
+        id,
+        &format!("dropped:{}", p.txid()),
+        r#"{"cause":"replaced"}"#,
+    );
+    let x = paid.output[d.vout as usize].value;
+    let spend = rival(&engine, &session, id, &paid, a.vout);
+    let block = super::block_with(vec![spend.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, block)]);
+    mined(&engine, &session, id, TIP + 1, vec![spend.clone()]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "A's spend mined");
+    chain_lock(&engine, &session, id, TIP + 1, block);
+    reconciled(&engine, &session, id);
+    let note = spend_note(&session, id, a).expect("A's spend is noted");
+    assert_eq!(note.spender, Some(spend.txid()));
+    assert_eq!(held_report(&session, id), (x, 0, false), "A's spend final");
+}
+
+/// #749 (Q81c C2): C, dropped holding D when key-wallet swept its parent P
+/// for W, a spend of A out of a block, loses its `drop_winner:` note, as an
+/// older drop has none: its roots' inputs come from P's sweep note. D
+/// awaits while W is mined above the ChainLock; once W's spend of A is
+/// ChainLocked, D awaits nothing, after a restart too.
+#[test]
+fn an_older_drop_settles_on_its_root_inputs_final_spend() {
+    let (_dir, engine, session, id, d, paid, w) = child_dropped_holding_d_beside_its_winner();
+    let x = paid.output[d.vout as usize].value;
+    let c = (session.live().unwrap().appdb)
+        .settings_with_prefix_lossy(&id.to_string(), "drop_winner:")
+        .unwrap();
+    assert_eq!(c.len(), 1, "C's drop alone: {c:?}");
+    (session.live().unwrap().appdb)
+        .set_settings_durable(&id.to_string(), &[(&c[0].0, None)])
+        .unwrap();
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W locked");
+
+    let w_block = super::block_with(vec![w.clone()]).block_hash();
+    let chain = [(TIP + 1, w_block)];
+    header_chain(&session, &chain);
+    mined(&engine, &session, id, TIP + 1, vec![w]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined");
+    chain_lock(&engine, &session, id, TIP + 1, w_block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, false), "W final");
+    let session = reopen(&engine, session);
+    reload_with_headers(&engine, &session, id, &chain);
+    assert_eq!(held_report(&session, id), (x, 0, false), "restarted");
 }
