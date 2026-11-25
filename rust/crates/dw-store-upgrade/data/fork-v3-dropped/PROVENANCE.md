@@ -1,5 +1,14 @@
 # fork-v3-dropped
 
+The nightly builds' form: the fork's drop path at the pin the v0.3.0-dev
+nightlies from v0.3.0-dev.1253 (and v0.0.0-rel1) use, c5917e6bd. The pins
+between v0.3.0's and this one (15da8553, 1046e899, 9cbd5eef) write the
+same form. v0.3.0 itself and its dev builds up to v0.3.0-dev.1117 pin
+373342cb3, whose form is `data/fork-v3-dropped-v030`. The two differ only in
+how a kept row's absent spender is written in `deleted_outputs` and
+`released_coins`: JSON null here, `""` (`hex(NULL)`) at 373342cb3. A P8
+reader adopting these rows must accept both forms for `spent_in_txid`.
+
 `wallet.sqlite` is the released v0.3.0 store
 (`testdata/upgrade/v0.3.0/data/regtest/wallet.sqlite`, sha256
 1ae77e693d6ad446d7725e2e39011516b253580e42ac8f290fe8dba87b7d3504, real
