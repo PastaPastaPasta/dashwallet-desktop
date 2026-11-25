@@ -894,11 +894,9 @@ impl FundLib for PwFund {
 
     async fn receive_address(&self) -> Result<PlatformAddress, PlatformError> {
         let (session, wallet) = (&self.pw.session, &self.pw.wallet);
-        let receive =
-            super::platform_moves::next_receive_address(session, wallet, self.network()).await?;
-        super::platform_moves::parse(&receive.address).ok_or_else(|| PlatformError::Internal {
-            detail: "the receive address does not parse".into(),
-        })
+        Ok(super::platform_moves::next_receive(session, wallet)
+            .await?
+            .0)
     }
 
     async fn apply<S>(

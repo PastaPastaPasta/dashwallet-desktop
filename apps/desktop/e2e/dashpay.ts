@@ -96,7 +96,7 @@ export async function platformRunFails(page: Page, label: string, outcome: "paid
 }
 
 /** A run paid from the Shielded balance whose create comes to `outcome` (C-funding F12). */
-export async function shieldedRunFails(page: Page, label: string, outcome: "refunded" | "consumed") {
+export async function shieldedRunFails(page: Page, label: string, outcome: "consumed") {
   await page.evaluate((o) => (window.__dwFixture!.world.dashpay.shieldedCreates = [o]), outcome);
   await runFails(page, label, "shielded");
 }

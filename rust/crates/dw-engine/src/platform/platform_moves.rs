@@ -4574,14 +4574,27 @@ pub(crate) async fn receive_address(
 }
 
 /// The payment account's lowest unused address, as [`receive_address`]
-/// names it, with no version check. Never the fallback of one of the
-/// wallet's Shielded-funded registrations (C-funding F13): published beside
-/// the identity it creates, it is marked used first ([`retire_fallbacks`]).
+/// names it, with no version check.
 pub(crate) async fn next_receive_address(
     session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
+    let (address, index) = next_receive(session, wallet).await?;
+    Ok(PlatformReceiveAddress {
+        address: bech32m(&address, network),
+        index,
+    })
+}
+
+/// [`next_receive_address`] with its index. Never the fallback of one of
+/// the wallet's Shielded-funded registrations (C-funding F13): published
+/// beside the identity it creates, it is marked used first
+/// ([`retire_fallbacks`]).
+pub(crate) async fn next_receive(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<(PlatformAddress, u32), PlatformError> {
     retire_fallbacks(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
@@ -4598,10 +4611,7 @@ pub(crate) async fn next_receive_address(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the receive address is not in the payment account".into(),
         })?;
-    Ok(PlatformReceiveAddress {
-        address: bech32m(&address, network),
-        index,
-    })
+    Ok((address, index))
 }
 
 /// Marks every fallback the wallet's Shielded-funded registrations were
@@ -4610,7 +4620,7 @@ pub(crate) async fn next_receive_address(
 /// `app.sqlite`, and the rows' own funding for one given before it: the
 /// account keeps such marks in memory only, so each hand-out of an address
 /// marks them again.
-pub(crate) async fn retire_fallbacks(
+async fn retire_fallbacks(
     session: &NetworkSession,
     wallet: &PlatformWallet,
 ) -> Result<(), PlatformError> {
@@ -4629,13 +4639,32 @@ pub(crate) async fn retire_fallbacks(
         _ => None,
     });
     let given = (recorded.into_iter()).filter_map(|(key, _)| {
-        Some(
-            key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?
-                .to_owned(),
-        )
+        key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)
+            .map(str::to_owned)
     });
     let fallbacks: Vec<PlatformAddress> = named.chain(given).filter_map(|a| parse(&a)).collect();
-    retire(wallet, &fallbacks).await
+    if fallbacks.is_empty() {
+        return Ok(());
+    }
+    let paths = pool(wallet).await?;
+    let indices: Vec<u32> = (fallbacks.iter())
+        .filter_map(|a| paths.get(a)?.as_ref().last().copied())
+        .map(u32::from)
+        .collect();
+    let mut wm = wallet.wallet_manager().write().await;
+    let info = wm
+        .get_wallet_info_mut(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let account = info
+        .core_wallet
+        .platform_payment_managed_account_at_index_mut(ACCOUNT)
+        .ok_or_else(|| PlatformError::Internal {
+            detail: "the wallet has no Platform payment account".into(),
+        })?;
+    for index in indices {
+        account.addresses.mark_index_used(index);
+    }
+    Ok(())
 }
 
 /// A new registration's fallback (C-funding F13), published beside the
@@ -4685,35 +4714,6 @@ pub(crate) async fn fallback_address(
         .await)
         .map_err(PlatformError::from)?;
     Ok(address)
-}
-
-/// Marks `addresses` of the payment account used: none is handed out again.
-async fn retire(
-    wallet: &PlatformWallet,
-    addresses: &[PlatformAddress],
-) -> Result<(), PlatformError> {
-    if addresses.is_empty() {
-        return Ok(());
-    }
-    let paths = pool(wallet).await?;
-    let indices: Vec<u32> = (addresses.iter())
-        .filter_map(|a| paths.get(a)?.as_ref().last().copied())
-        .map(u32::from)
-        .collect();
-    let mut wm = wallet.wallet_manager().write().await;
-    let info = wm
-        .get_wallet_info_mut(&wallet.wallet_id())
-        .ok_or(PlatformError::WalletNotFound)?;
-    let account = info
-        .core_wallet
-        .platform_payment_managed_account_at_index_mut(ACCOUNT)
-        .ok_or_else(|| PlatformError::Internal {
-            detail: "the wallet has no Platform payment account".into(),
-        })?;
-    for index in indices {
-        account.addresses.mark_index_used(index);
-    }
-    Ok(())
 }
 
 /// The outcome's write; tests make it fail.

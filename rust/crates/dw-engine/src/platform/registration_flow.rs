@@ -2949,13 +2949,13 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                         ShieldedOutcome::Fallback(_) => RegistrationError::Refunded,
                         _ => RegistrationError::PaymentConsumed,
                     };
+                    let code = failure.code();
                     tracing::warn!(
                         draft = row.id,
-                        code = failure.code(),
+                        code,
                         "a Shielded-funded create made no identity"
                     );
-                    self.advance(row, unnamed(Some((failure.code(), false))))
-                        .await
+                    self.advance(row, unnamed(Some((code, false)))).await
                 }
             },
             Ok(ShieldedOutcome::Cleared) => self.advance(row, unnamed(None)).await,

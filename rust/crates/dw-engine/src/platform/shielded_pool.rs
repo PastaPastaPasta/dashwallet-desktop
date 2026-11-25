@@ -3183,14 +3183,7 @@ impl ShieldedLib for PwShielded {
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
         let wallet = &self.pw.wallet;
-        let receive =
-            super::platform_moves::next_receive_address(&self.pw.session, wallet, self.network())
-                .await?;
-        let receive = super::platform_moves::parse(&receive.address).ok_or_else(|| {
-            PlatformError::Internal {
-                detail: "the receive address does not parse".into(),
-            }
-        })?;
+        let (receive, _) = super::platform_moves::next_receive(&self.pw.session, wallet).await?;
         let addresses = super::platform_moves::pool(wallet)
             .await?
             .into_keys()
