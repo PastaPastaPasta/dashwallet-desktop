@@ -24,6 +24,8 @@ pub mod csv_export;
 mod engine;
 mod error;
 mod events;
+#[cfg(test)]
+mod failed_open_tests;
 mod fees;
 mod fsutil;
 mod gate;

@@ -37,22 +37,26 @@ struct Fixture {
     session: Arc<NetworkSession>,
 }
 
+fn engine_at(data_root: &Path) -> Engine {
+    Engine::new(
+        EngineConfig {
+            data_root: data_root.to_path_buf(),
+            worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..VaultConfig::default()
+            },
+        },
+        Arc::new(NullSink),
+    )
+    .unwrap()
+}
+
 impl Fixture {
     fn new() -> Self {
         let dir = dw_testutil::private_tempdir();
-        let engine = Engine::new(
-            EngineConfig {
-                data_root: dir.path().join("data"),
-                worker_threads: Some(2),
-                vault: VaultConfig {
-                    kdf: KdfPolicy::Fixed(KdfParams::TEST),
-                    os_store: Arc::new(MemoryOsStore::new()),
-                    ..VaultConfig::default()
-                },
-            },
-            Arc::new(NullSink),
-        )
-        .unwrap();
+        let engine = engine_at(&dir.path().join("data"));
         let session = engine
             .block_on(engine.open_network(DashNetwork::Regtest, options()))
             .unwrap();
@@ -296,16 +300,76 @@ fn a_wallet_listed_only_in_the_app_db_keeps_its_rows_unresolved() {
 }
 
 /// A failed read of the imported spends fails the session's open: no
-/// session is returned and the rows stay unclassified. The next open reads
-/// them against the wallet set as it is, and a restore of the archived
-/// wallet's id afterwards leaves its row archived.
+/// session is returned and the rows stay unclassified. Its loaded wallet
+/// keeps the wallet database held, so the next open in this process is
+/// refused until a restart.
 #[test]
-fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
-    let mut f = Fixture::new();
+fn a_failed_classification_fails_the_open_and_leaves_the_rows_unclassified() {
+    let f = Fixture::new();
+    let a = f.import(PHRASE_A);
+    let data_dir = f.close();
+    as_schema_10(&data_dir, &[(a.0, [1; 32], [10; 32])], &[]);
+    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
+    let failed = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(failed, Err(crate::EngineError::Storage(_))),
+        "{:?}",
+        failed.err()
+    );
+    assert_eq!(statuses(artifacts_at(&data_dir)), ["unclassified"]);
+    let retried = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(
+            retried,
+            Err(crate::EngineError::StorageInUse {
+                retryable: false,
+                ..
+            })
+        ),
+        "{:?}",
+        retried.err()
+    );
+    assert_eq!(statuses(artifacts_at(&data_dir)), ["unclassified"]);
+}
+
+const FAILED_CLASSIFICATION_ROOT: &str = "DW_FAILED_CLASSIFICATION_ROOT";
+const VAULT_PASSPHRASE: &[u8] = b"pw";
+
+/// The child of [`the_open_after_a_failed_classification_reads_the_rows`]:
+/// loaded A, removed B, and an open whose read of their imported rows
+/// fails, leaving them unclassified.
+#[test]
+#[ignore = "run by the_open_after_a_failed_classification_reads_the_rows"]
+fn failed_classification_child() {
+    let Ok(root) = std::env::var(FAILED_CLASSIFICATION_ROOT) else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let engine = engine_at(&root.join("data"));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    engine
+        .block_on(session.vault_op(|v| v.create(Some(VAULT_PASSPHRASE))))
+        .unwrap();
+    let f = Fixture {
+        _dir: tempfile::tempdir_in(&root).unwrap(),
+        engine,
+        session,
+    };
     let a = f.import(PHRASE_A);
     let b = f.import(PHRASE_B);
     let wipe = (f.session.vault())
-        .authorize(GrantPurpose::Wipe, Some(&b.0), Credential::None)
+        .authorize(
+            GrantPurpose::Wipe,
+            Some(&b.0),
+            Credential::Passphrase(VAULT_PASSPHRASE),
+        )
         .unwrap()
         .id;
     f.engine.block_on(f.session.remove_wallet(b, wipe)).unwrap();
@@ -325,18 +389,62 @@ fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
         "{:?}",
         failed.err()
     );
-    let statuses = |rows: Vec<ArtifactRow>| rows.into_iter().map(|r| r.4).collect::<Vec<_>>();
     assert_eq!(
         statuses(artifacts_at(&data_dir)),
         ["unclassified", "unclassified"]
     );
+    std::fs::write(root.join("b"), b.to_string()).unwrap();
+    f.engine.block_on(f.engine.shutdown()).unwrap();
+}
 
-    f.open();
+/// The open after a failed read of the imported spends, in the next
+/// process, reads them against the wallet set as it is, and a restore of
+/// the archived wallet's id afterwards leaves its row archived.
+#[test]
+fn the_open_after_a_failed_classification_reads_the_rows() {
+    let dir = dw_testutil::private_tempdir();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "platform::lease::import_tests::failed_classification_child",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(FAILED_CLASSIFICATION_ROOT, dir.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "the failed open's process failed: {}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let b: WalletId = (std::fs::read_to_string(dir.path().join("b")).unwrap())
+        .parse()
+        .unwrap();
+    let engine = engine_at(&dir.path().join("data"));
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    let mut f = Fixture {
+        _dir: dir,
+        engine,
+        session,
+    };
+    assert!(f.session.leases.journal_ready());
     assert_eq!(statuses(artifacts(&f.session)), ["unresolved", "archived"]);
+    (f.engine)
+        .block_on((f.session).vault_op(|v| v.unlock(VAULT_PASSPHRASE, dw_vault::UnlockScope::Full)))
+        .unwrap();
     assert_eq!(f.import(PHRASE_B), b, "the same id, restored");
     f.close();
     f.open();
     assert_eq!(statuses(artifacts(&f.session)), ["unresolved", "archived"]);
+}
+
+fn statuses(rows: Vec<ArtifactRow>) -> Vec<String> {
+    rows.into_iter().map(|r| r.4).collect()
 }
 
 /// While the dispatch journal is unavailable (here unopenable), nothing

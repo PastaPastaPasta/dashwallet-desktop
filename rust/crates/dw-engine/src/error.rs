@@ -18,9 +18,10 @@ pub enum EngineError {
     /// The data root is held by another process (its instance lock,
     /// `dw_fs::instance`), or the wallet database for this network is still
     /// held by a previous session in this process (SqlitePersister's
-    /// open-path registry).
-    #[error("wallet storage in use: {0}")]
-    StorageInUse(String),
+    /// open-path registry). `retryable`: whether trying again in this
+    /// process may succeed; false when only a restart clears it.
+    #[error("wallet storage in use: {detail}")]
+    StorageInUse { detail: String, retryable: bool },
     #[error("storage error: {0}")]
     Storage(String),
     /// The wallet database was written by a newer build: its schema history
@@ -185,7 +186,7 @@ impl EngineError {
             EngineError::InvalidConfig(_) => "invalid_config",
             EngineError::InvalidArgument(_) => "invalid_argument",
             EngineError::NetworkNotOpen(_) => "network_not_open",
-            EngineError::StorageInUse(_) => "storage_in_use",
+            EngineError::StorageInUse { .. } => "storage_in_use",
             EngineError::Storage(_) => "storage",
             EngineError::StorageTooNew(_) => "storage_too_new",
             EngineError::StoreRefused(_) => "storage_refused",
@@ -259,6 +260,17 @@ impl From<dw_appdb::AppDbError> for EngineError {
     }
 }
 
+impl EngineError {
+    /// A held store that may clear in this process: a close in progress
+    /// releases it, or another process exits.
+    pub(crate) fn storage_in_use(detail: impl Into<String>) -> Self {
+        Self::StorageInUse {
+            detail: detail.into(),
+            retryable: true,
+        }
+    }
+}
+
 impl From<SignerError> for EngineError {
     fn from(e: SignerError) -> Self {
         EngineError::Signer(e)
@@ -268,7 +280,7 @@ impl From<SignerError> for EngineError {
 impl From<WalletStorageError> for EngineError {
     fn from(e: WalletStorageError) -> Self {
         match e {
-            WalletStorageError::AlreadyOpen { .. } => EngineError::StorageInUse(e.to_string()),
+            WalletStorageError::AlreadyOpen { .. } => EngineError::storage_in_use(e.to_string()),
             WalletStorageError::SchemaVersionUnsupported {
                 found,
                 max_supported,

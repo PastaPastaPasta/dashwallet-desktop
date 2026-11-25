@@ -19,13 +19,6 @@ use crate::error::EngineError;
 /// The store upgrade's screens (`screen_for`), for the hosts.
 pub use dw_store_upgrade::copy;
 
-/// Whether `storage_in_use` may clear without a restart. True at this
-/// platform pin: closing a network with a wallet loaded releases its
-/// persister, and the network reopens in the same process;
-/// `storage_in_use_retryable_matches_an_in_process_reopen` ties the constant
-/// to that behaviour.
-pub const STORAGE_IN_USE_RETRYABLE: bool = true;
-
 /// The start of the `internal` message a refusal without a screen maps to,
 /// followed by its `StoreUpgradeError` variant name.
 pub const NO_SCREEN: &str = "store refusal without a screen: ";
@@ -205,7 +198,7 @@ pub(crate) fn map_error(
         };
     }
     match e {
-        E::StoreHeld { .. } => EngineError::StorageInUse(e.to_string()),
+        E::StoreHeld { .. } => EngineError::storage_in_use(e.to_string()),
         E::PersisterOpen { source, .. } => EngineError::from(*source),
         E::Sqlite { ref source, .. } if is_damaged(source) => EngineError::Storage(e.to_string()),
         E::SnapshotFailed { .. } | E::Sqlite { .. } | E::Io { .. } => {
