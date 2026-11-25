@@ -645,6 +645,11 @@ impl WithdrawalRuntime {
         if !session.platform.enabled() {
             return;
         }
+        #[cfg(test)]
+        {
+            let gate = &session.hub.restore;
+            *gate.restored_at_recheck_start.lock().unwrap() = Some(gate.is_restored());
+        }
         let weak = Arc::downgrade(session);
         let task = async move {
             loop {
@@ -652,9 +657,12 @@ impl WithdrawalRuntime {
                 let every = s.masternodes.withdrawals.waits().recheck;
                 if !s.hub.restore.is_restored()
                     && let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
-                    && let Err(e) = recheck_all(&env, &net).await
                 {
-                    tracing::info!(error = %e, "the masternode withdrawals' recheck");
+                    #[cfg(test)]
+                    (s.hub.restore.recheck_runs).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Err(e) = recheck_all(&env, &net).await {
+                        tracing::info!(error = %e, "the masternode withdrawals' recheck");
+                    }
                 }
                 drop(s);
                 tokio::time::sleep(every).await;

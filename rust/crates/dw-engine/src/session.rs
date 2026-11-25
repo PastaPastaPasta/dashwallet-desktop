@@ -715,6 +715,7 @@ impl NetworkSession {
             .await??;
         }
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
+        hub.restore.set_dir(&data_dir);
         let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
             Arc::clone(&hub),
             Arc::clone(&appdb),

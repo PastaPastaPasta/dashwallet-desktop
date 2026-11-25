@@ -820,3 +820,30 @@ fn a_failed_clear_keeps_the_gate_closed_and_retries_after_a_pass() {
         "the retry ran its own pass"
     );
 }
+
+/// The gate reads on before the network's dir is set.
+#[test]
+fn a_gate_without_its_dir_reads_restored() {
+    assert!(crate::restore_gate::RestoreGate::default().is_restored());
+}
+
+/// M1: a network opened restored has the gate on before the masternode
+/// withdrawals' recheck starts, and the recheck does not run.
+#[test]
+fn the_withdrawal_recheck_starts_behind_the_gate() {
+    let (_dir, _engine, session, _id, _paid, _p) = held_payment();
+    let restore = &session.hub.restore;
+    assert_eq!(
+        *restore.restored_at_recheck_start.lock().unwrap(),
+        Some(true),
+        "the recheck started with the gate open"
+    );
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(
+        restore
+            .recheck_runs
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a recheck ran while restored"
+    );
+}

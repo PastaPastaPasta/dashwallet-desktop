@@ -60,20 +60,34 @@ pub(crate) struct RestoreGate {
     /// unreadable mark.
     #[cfg(test)]
     pub(crate) clear_fails: std::sync::atomic::AtomicU32,
+    /// Tests: the gate as the masternode withdrawals' recheck read it when
+    /// it started.
+    #[cfg(test)]
+    pub(crate) restored_at_recheck_start: Mutex<Option<bool>>,
+    /// Tests: how many masternode withdrawal rechecks ran.
+    #[cfg(test)]
+    pub(crate) recheck_runs: std::sync::atomic::AtomicU32,
 }
 
 impl RestoreGate {
     /// Whether the money gate is on: the network's restored mark is
-    /// present, as `NetworkInfo.restored` reads it.
+    /// present, as `NetworkInfo.restored` reads it. On before the
+    /// network's dir is set.
     pub(crate) fn is_restored(&self) -> bool {
-        (self.network_dir.get()).is_some_and(|d| dw_store_upgrade::restored_mark_present(d))
+        (self.network_dir.get()).is_none_or(|d| dw_store_upgrade::restored_mark_present(d))
+    }
+
+    /// Where the network's mark lives; set as the session opens, before
+    /// anything that reads the gate starts.
+    pub(crate) fn set_dir(&self, network_dir: &Path) {
+        let _ = self.network_dir.set(network_dir.to_path_buf());
     }
 
     /// Reads the network's mark; returns whether it is set. A mark whose
     /// pending list doesn't read keeps the gate on with no cross-check: the
     /// holds are the history's unmined own payments alone (Q102 102-3).
     fn init(&self, network_dir: &Path) -> bool {
-        let _ = self.network_dir.set(network_dir.to_path_buf());
+        self.set_dir(network_dir);
         if !self.is_restored() {
             return false;
         }
