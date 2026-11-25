@@ -4623,6 +4623,7 @@ fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
 
     lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
     shield_on(&fx, &lib);
 }
 
