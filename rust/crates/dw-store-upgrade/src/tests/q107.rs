@@ -64,8 +64,12 @@ fn failed_open() -> (Fixture, SnapshotInfo) {
         Outcome::Pending { .. }
     ));
     block_backups(&f);
-    assert!(PersisterOpened::open(config(&f.net)).is_err());
+    let err = PersisterOpened::open(config(&f.net))
+        .err()
+        .expect("the backup step fails");
     unblock_backups(&f);
+    let retry = crate::copy::retry_copy_for(&err).expect("retried, with its screen");
+    super::copy_table::assert_retry_copy(&retry);
     assert!(!column_present(&f));
     assert!(refinery_max(&f) <= crate::fork::FORK_REFINERY_MAX);
     (f, snapshot)

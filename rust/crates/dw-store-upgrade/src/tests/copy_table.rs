@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::copy::{
-    BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut, migrated, restore_screen_for,
-    screen_for,
+    BackupState, ProvedState, RefusedCause, RefusedScreen, ScreenCopy, WayOut, migrated,
+    restore_screen_for, retry_copy_for, screen_for,
 };
 use crate::error::StoreUpgradeError;
 use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
@@ -910,4 +910,75 @@ fn a_part_upgraded_file_never_offers_the_earlier_version() {
         precheck_refusal(f, &without_p4)
     });
     assert_eq!(s.way_out, WayOut::SupportMigrated);
+}
+
+/// MG's text for the start that stopped on the machine.
+const RETRY_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
+const RETRY_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+
+pub(super) fn assert_retry_copy(s: &ScreenCopy) {
+    assert_eq!(
+        (s.title_key, s.title),
+        ("storeUpgrade.retry.noSpace.title", RETRY_TITLE)
+    );
+    assert_eq!(
+        (s.text_key, s.text),
+        ("storeUpgrade.retry.noSpace.text", RETRY_TEXT)
+    );
+    let labels: Vec<_> = s.buttons.iter().map(|b| (b.key, b.label)).collect();
+    assert_eq!(
+        labels,
+        [
+            ("storeUpgrade.refused.report", "Report a problem"),
+            ("storeUpgrade.refused.quit", "Quit")
+        ]
+    );
+    assert_eq!(
+        s.hint,
+        Some((
+            "settings.about.links.issuesHint",
+            crate::copy::ISSUES_HINT.text
+        ))
+    );
+    assert!(
+        !s.render(FOLDER)
+            .contains("version of Dash Wallet you used before")
+    );
+}
+
+#[test]
+fn only_a_start_stopped_by_the_machine_gets_the_retry_screen() {
+    use StoreUpgradeError as E;
+    let sqlite = |code| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+    for e in every_variant() {
+        let want = matches!(variant(&e), "Io" | "SnapshotFailed");
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+        if want {
+            assert!(!e.is_refusal() && screen_for(&e, ProvedState::default()).is_none());
+        }
+    }
+    for (code, want) in [
+        (rusqlite::ffi::SQLITE_FULL, true),
+        (rusqlite::ffi::SQLITE_IOERR, true),
+        (rusqlite::ffi::SQLITE_CANTOPEN, true),
+        (rusqlite::ffi::SQLITE_BUSY, false),
+        (rusqlite::ffi::SQLITE_CORRUPT, false),
+    ] {
+        let e = E::Sqlite {
+            context: "x",
+            unchanged: true,
+            source: sqlite(code),
+        };
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+    }
+    let held = E::StoreHeld {
+        path: PathBuf::from("x"),
+    };
+    assert!(retry_copy_for(&held).is_none());
+    let e = E::Io {
+        context: "x",
+        unchanged: true,
+        source: std::io::Error::other("disk full"),
+    };
+    assert_retry_copy(&retry_copy_for(&e).unwrap());
 }

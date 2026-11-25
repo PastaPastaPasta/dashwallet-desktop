@@ -537,6 +537,46 @@ pub const PENDING_MG: &[&str] = &[
     "storeUpgrade.refused.keep",
 ];
 
+const RETRY_NO_SPACE_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
+const RETRY_NO_SPACE_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+
+/// `storeUpgrade.retry.noSpace.*` for a start that stopped on the machine
+/// (the disk full or not writable, an I/O fault) and is retried at the next
+/// start; `None` for every other error. Never the earlier version: the file
+/// may be part-upgraded. A retry that ends in a refusal shows that
+/// refusal's screen.
+pub fn retry_copy_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
+    use platform_wallet_storage::WalletStorageError as W;
+    use rusqlite::ErrorCode::{CannotOpen, DiskFull, SystemIoFailure};
+    let write_fault = |err: &(dyn std::error::Error + 'static)| {
+        std::iter::successors(Some(err), |e| e.source()).any(|e| {
+            e.downcast_ref::<std::io::Error>().is_some()
+                || e.downcast_ref::<rusqlite::Error>().is_some_and(|s| {
+                    matches!(
+                        s.sqlite_error_code(),
+                        Some(DiskFull | SystemIoFailure | CannotOpen)
+                    )
+                })
+                || e.downcast_ref::<W>()
+                    .is_some_and(|s| matches!(s, W::Io(_) | W::AutoBackupDirUnwritable { .. }))
+        })
+    };
+    let retried = match e {
+        StoreUpgradeError::Io { .. } | StoreUpgradeError::SnapshotFailed { .. } => true,
+        StoreUpgradeError::Sqlite { source, .. } => write_fault(source),
+        StoreUpgradeError::PersisterOpen { source, .. } => write_fault(source.as_ref()),
+        _ => false,
+    };
+    retried.then(|| ScreenCopy {
+        hint: Some((ISSUES_HINT.key, ISSUES_HINT.text)),
+        ..screen(
+            ("storeUpgrade.retry.noSpace.title", RETRY_NO_SPACE_TITLE),
+            ("storeUpgrade.retry.noSpace.text", RETRY_NO_SPACE_TEXT),
+            vec![REPORT, QUIT],
+        )
+    })
+}
+
 /// A screen's copy with its catalog keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenCopy {
