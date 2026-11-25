@@ -1605,6 +1605,13 @@ fn without_platform_every_platform_funds_flow_is_refused_up_front() {
 
 /// A real engine and offline regtest session with a vault and no wallet.
 fn engine_without_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>) {
+    let (dir, engine) = engine_without_network();
+    let session = with_vault(&engine);
+    (dir, engine, session)
+}
+
+/// A real engine with no network open yet.
+fn engine_without_network() -> (tempfile::TempDir, Engine) {
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::new(
@@ -1620,11 +1627,16 @@ fn engine_without_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>) {
         Arc::new(super::Recorder::default()) as Arc<dyn crate::EventSink>,
     )
     .unwrap();
-    let session = super::open(&engine);
+    (dir, engine)
+}
+
+/// Opens the offline regtest session and creates its vault.
+fn with_vault(engine: &Engine) -> Arc<NetworkSession> {
+    let session = super::open(engine);
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
-    (dir, engine, session)
+    session
 }
 
 fn import(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
@@ -1691,4 +1703,45 @@ fn the_platform_residue_stays_while_the_network_has_no_wallet() {
     import(&engine, &session);
     session.hub.restore.wake.notify_one();
     eventually("the residue clears", || !residue_present(&session));
+}
+
+/// Q107 C1 S1: the mark `recover` writes in a fresh folder (no pending
+/// lines, `from <left>`) stays with no wallet and clears once a wallet
+/// restored from its phrase has loaded and synced.
+#[test]
+fn a_recovered_folders_mark_clears_once_a_restored_wallet_has_synced() {
+    use crate::RestoreWait::Wallet;
+    let (_dir, engine) = engine_without_network();
+    let root = engine.config().data_root.clone();
+    let folder = crate::network_folders::recover(&root, &crate::DashNetwork::Regtest).unwrap();
+    let mark = std::fs::read_to_string(
+        (folder.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR)).join(dw_store_upgrade::RESTORED_MARK),
+    )
+    .unwrap();
+    let lines: Vec<&str> = mark.lines().collect();
+    assert_eq!(lines.len(), 3, "{mark}");
+    assert!(
+        lines[2].starts_with("restored ") && lines[2].ends_with("Z from regtest"),
+        "{mark}"
+    );
+    let session = with_vault(&engine);
+    assert_eq!(session.data_dir(), folder.as_path());
+    assert!(session.restored(), "the gate is on in the recovered folder");
+    all_synced(&session);
+    eventually("only a wallet is waited for", || {
+        waiting(&engine, &session) == Some(vec![Wallet])
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        session.restored() && mark_present(&session),
+        "the mark cleared with no wallet"
+    );
+    let id = import(&engine, &session);
+    let session = reopen(&engine, session);
+    assert_eq!(session.data_dir(), folder.as_path());
+    assert!(session.restored(), "the reopen cleared the mark");
+    all_synced(&session);
+    eventually("the mark clears", || !session.restored());
+    assert!(!mark_present(&session));
+    assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
 }
