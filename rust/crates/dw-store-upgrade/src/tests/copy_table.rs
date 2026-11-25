@@ -8,13 +8,12 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::copy::{
-    BackupState, ProvedState, RefusedCause, RefusedScreen, WayOut, migrated, restore_screen_for,
-    screen_for,
+    BackupState, ProvedState, RefusedCause, RefusedScreen, ScreenCopy, WayOut, migrated,
+    restore_screen_for, retry_copy_for, screen_for,
 };
 use crate::error::StoreUpgradeError;
 use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
 use crate::restore::{IncompleteCause, RefusalCause};
-use crate::snapshot::MissingSnapshot;
 
 const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 
@@ -22,7 +21,7 @@ const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 const TITLE: &str = "Dash Wallet can't open this wallet data safely";
 const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
 const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
-const CHANGED: &str = "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const CHANGED: &str = "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const KEEP: &str = "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
 const EARLIER: &str =
@@ -55,10 +54,6 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
         HistoryMismatch => (
             "historyMismatch",
             "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
-        ),
-        SnapshotMissing => (
-            "snapshotMissing",
-            "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
         ),
         ContactsTable => (
             "contactsTable",
@@ -127,7 +122,6 @@ fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
             [Restore, Unverified, Support, SupportMigrated].into()
         }
         TooNew => [Newer].into(),
-        SnapshotMissing => [Unverified, SupportMigrated].into(),
         ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
         RefusedCause::SelfCheck => [WayOut::SelfCheck, WayOut::SelfCheckNotMigrated].into(),
     }
@@ -166,7 +160,6 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let s = RefusedScreen::new(cause, state);
             let w = s.way_out;
             let at = format!("{cause:?} {state:?} -> {w:?}");
-            let part_done = cause == RefusedCause::SnapshotMissing;
             assert!(allowed(cause).contains(&w), "{at}");
             reached.insert((cause, w));
 
@@ -179,13 +172,11 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                     "{at}"
                 ),
                 WayOut::Unverified => assert_eq!(
-                    (part_done || state.migrated == Some(true), state.backup),
-                    (true, Some(BackupState::Unverified)),
+                    (state.migrated, state.backup),
+                    (Some(true), Some(BackupState::Unverified)),
                     "{at}"
                 ),
-                WayOut::SupportMigrated => {
-                    assert!(part_done || state.migrated == Some(true), "{at}")
-                }
+                WayOut::SupportMigrated => assert_eq!(state.migrated, Some(true), "{at}"),
                 WayOut::Support => assert_ne!(state.migrated, Some(true), "{at}"),
                 WayOut::SelfCheck => {
                     assert_eq!(cause, RefusedCause::SelfCheck, "{at}");
@@ -211,11 +202,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let (way_key, way_text) = way_out(w);
             assert_eq!(s.title.key, "storeUpgrade.refused.title");
             assert_eq!(s.intro.key, "storeUpgrade.refused.intro");
-            let shown_unchanged = match cause {
-                RefusedCause::SnapshotMissing => Some(false),
-                _ => state.unchanged,
-            };
-            let (unchanged_key, unchanged_text) = match shown_unchanged {
+            let (unchanged_key, unchanged_text) = match state.unchanged {
                 Some(true) => ("unchanged", UNCHANGED),
                 Some(false) => ("changedByUpgrade", CHANGED),
                 None => ("keep", KEEP),
@@ -327,14 +314,18 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
         ),
         (E::P9aBroken { detail: "x".into() }, Some(SelfCheck)),
         (
-            E::UpgradeSnapshotMissing {
-                state: MissingSnapshot::Absent,
-                dir: PathBuf::from("x"),
-            },
-            Some(SnapshotMissing),
+            E::WalletFileUnsupported { detail: "x".into() },
+            Some(Unexpected),
         ),
         (
-            E::WalletFileUnsupported { detail: "x".into() },
+            E::UpgradeCopyUnwritable { detail: "x".into() },
+            Some(Unexpected),
+        ),
+        (
+            E::SnapshotSourceDamaged {
+                store: "x".into(),
+                detail: "x".into(),
+            },
             Some(Unexpected),
         ),
         (
@@ -559,22 +550,6 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
         result.err().expect("refused without the probe")
     });
-    let f = fixture("v0.1.0");
-    let snapshot = crate::prepare_with(&f.net, build(), now())
-        .unwrap()
-        .snapshot
-        .unwrap();
-    assert!(matches!(
-        crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
-        crate::reconcile::Outcome::Pending { .. }
-    ));
-    fs::remove_dir_all(snapshot.dir()).unwrap();
-    let s = shows_unchanged(&f, SnapshotMissing, |f| {
-        crate::prepare_with(&f.net, build(), later(60)).unwrap_err()
-    });
-    assert_eq!(s.way_out, WayOut::SupportMigrated, "part-upgraded");
-    assert_eq!(s.unchanged.key, "storeUpgrade.refused.changedByUpgrade");
-    seen.insert(SnapshotMissing);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
 }
 
@@ -607,8 +582,10 @@ fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
     );
     assert!(shown(released).contains(&unchanged));
     assert!(!shown(released).contains(&changed));
-    assert_eq!(read(&f, true).unchanged, Some(false), "this start wrote");
-    assert!(shown(read(&f, true)).contains(&changed));
+    let put_back = read(&f, true);
+    assert_eq!(put_back.unchanged, None, "a restore this start put it back");
+    assert!(shown(put_back).contains(&KEEP.replace("{folder}", FOLDER)));
+    assert!(!shown(put_back).contains(&unchanged) && !shown(put_back).contains(&changed));
 
     let hidden = fixture("v0.1.0");
     exec(&hidden.wallet(), "PRAGMA wal_checkpoint(TRUNCATE)");
@@ -758,6 +735,10 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             detail: "x".into(),
         },
         E::SnapshotFailed { detail: "x".into() },
+        E::SnapshotSourceDamaged {
+            store: "x".into(),
+            detail: "x".into(),
+        },
         E::RestorePending {
             dir: PathBuf::from("x"),
         },
@@ -795,11 +776,8 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             detail: String::new(),
         },
         E::RestoreAfterOpen,
-        E::UpgradeSnapshotMissing {
-            state: MissingSnapshot::Mismatch,
-            dir: PathBuf::from("x"),
-        },
         E::WalletFileUnsupported { detail: "x".into() },
+        E::UpgradeCopyUnwritable { detail: "x".into() },
         E::InjectedFault("x"),
     ]
 }
@@ -817,6 +795,7 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::SchemaHistoryMismatch { .. } => "SchemaHistoryMismatch",
         E::SnapshotInvalid { .. } => "SnapshotInvalid",
         E::SnapshotFailed { .. } => "SnapshotFailed",
+        E::SnapshotSourceDamaged { .. } => "SnapshotSourceDamaged",
         E::RestorePending { .. } => "RestorePending",
         E::StoreHeld { .. } => "StoreHeld",
         E::NonStrictOpen { .. } => "NonStrictOpen",
@@ -829,8 +808,8 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::RestoreNoSpace { .. } => "RestoreNoSpace",
         E::RestoreIncomplete { .. } => "RestoreIncomplete",
         E::RestoreAfterOpen => "RestoreAfterOpen",
-        E::UpgradeSnapshotMissing { .. } => "UpgradeSnapshotMissing",
         E::WalletFileUnsupported { .. } => "WalletFileUnsupported",
+        E::UpgradeCopyUnwritable { .. } => "UpgradeCopyUnwritable",
         E::InjectedFault(_) => "InjectedFault",
     }
 }
@@ -840,7 +819,7 @@ fn every_refusal_variant_has_a_screen() {
     let all = every_variant();
     let names: BTreeSet<&str> = all.iter().map(variant).collect();
     assert_eq!(names.len(), all.len(), "each variant listed once");
-    assert_eq!(names.len(), 25, "every variant in `variant` is listed");
+    assert_eq!(names.len(), 26, "every variant in `variant` is listed");
     let mut refusals = 0;
     let mut unexpected = BTreeSet::new();
     for e in &all {
@@ -865,19 +844,16 @@ fn every_refusal_variant_has_a_screen() {
             );
         }
     }
-    assert_eq!(refusals, 10);
-    assert_eq!(unexpected, ["WalletFileUnsupported"].into());
-    let missing = all
-        .iter()
-        .find(|e| variant(e) == "UpgradeSnapshotMissing")
-        .unwrap();
-    for state in states() {
-        let s = screen_for(missing, state).unwrap();
-        assert_eq!(
-            s.unchanged.key, "storeUpgrade.refused.changedByUpgrade",
-            "an earlier start dropped a column: {state:?}"
-        );
-    }
+    assert_eq!(refusals, 11);
+    assert_eq!(
+        unexpected,
+        [
+            "SnapshotSourceDamaged",
+            "UpgradeCopyUnwritable",
+            "WalletFileUnsupported"
+        ]
+        .into()
+    );
     for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
         let e = all.iter().find(|e| variant(e) == name).unwrap();
         assert!(restore_screen_for(e).is_some(), "{name}");
@@ -940,7 +916,11 @@ fn a_part_upgraded_file_never_offers_the_earlier_version() {
     let s = shows_unchanged(&f, RefusedCause::ContactsTable, |f| {
         precheck_refusal(f, &absent)
     });
-    assert_eq!(s.way_out, WayOut::Restore, "backup verified");
+    assert_eq!(
+        s.way_out,
+        WayOut::Unverified,
+        "the snapshot lacks the row added since: not this data's backup"
+    );
 
     let f = part_upgraded();
     let mut without_p4 = build().clone();
@@ -949,4 +929,131 @@ fn a_part_upgraded_file_never_offers_the_earlier_version() {
         precheck_refusal(f, &without_p4)
     });
     assert_eq!(s.way_out, WayOut::SupportMigrated);
+}
+
+/// MG's text for the start that stopped on the machine.
+const RETRY_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
+const RETRY_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+
+pub(super) fn assert_retry_copy(s: &ScreenCopy) {
+    assert_eq!(
+        (s.title_key, s.title),
+        ("storeUpgrade.retry.noSpace.title", RETRY_TITLE)
+    );
+    assert_eq!(
+        (s.text_key, s.text),
+        ("storeUpgrade.retry.noSpace.text", RETRY_TEXT)
+    );
+    let labels: Vec<_> = s.buttons.iter().map(|b| (b.key, b.label)).collect();
+    assert_eq!(
+        labels,
+        [
+            ("storeUpgrade.refused.report", "Report a problem"),
+            ("storeUpgrade.refused.quit", "Quit")
+        ]
+    );
+    assert_eq!(
+        s.hint,
+        Some((
+            "settings.about.links.issuesHint",
+            crate::copy::ISSUES_HINT.text
+        ))
+    );
+    assert!(
+        !s.render(FOLDER)
+            .contains("version of Dash Wallet you used before")
+    );
+}
+
+#[test]
+fn only_a_start_stopped_by_the_machine_gets_the_retry_screen() {
+    use StoreUpgradeError as E;
+    let sqlite = |code| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+    for e in every_variant() {
+        let want = matches!(variant(&e), "Io" | "SnapshotFailed");
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+        if want {
+            assert!(!e.is_refusal() && screen_for(&e, ProvedState::default()).is_none());
+        }
+    }
+    for (code, want) in [
+        (rusqlite::ffi::SQLITE_FULL, true),
+        (rusqlite::ffi::SQLITE_IOERR, true),
+        (rusqlite::ffi::SQLITE_CANTOPEN, true),
+        (rusqlite::ffi::SQLITE_BUSY, false),
+        (rusqlite::ffi::SQLITE_CORRUPT, false),
+    ] {
+        let e = E::Sqlite {
+            context: "x",
+            unchanged: true,
+            source: sqlite(code),
+        };
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+    }
+    let held = E::StoreHeld {
+        path: PathBuf::from("x"),
+    };
+    assert!(retry_copy_for(&held).is_none());
+    use platform_wallet_storage::WalletStorageError as W;
+    let opened = |source: W| E::PersisterOpen {
+        dir: PathBuf::from("x"),
+        source: Box::new(source),
+    };
+    let io = |kind| std::io::Error::from(kind);
+    let short_blob = W::ConsensusCodec {
+        source: dashcore::consensus::encode::Error::Io(io(std::io::ErrorKind::UnexpectedEof)),
+    };
+    for (e, want) in [
+        (opened(W::Io(io(std::io::ErrorKind::StorageFull))), true),
+        (opened(W::Sqlite(sqlite(rusqlite::ffi::SQLITE_FULL))), true),
+        (opened(W::Io(io(std::io::ErrorKind::UnexpectedEof))), false),
+        (opened(short_blob), false),
+        (opened(disk_in_decode()), false),
+        (opened(W::BlobDecode { reason: "x" }), false),
+    ] {
+        assert_eq!(retry_copy_for(&e).is_some(), want, "{e:?}");
+    }
+    for (e, want) in [
+        (W::Io(io(std::io::ErrorKind::StorageFull)), true),
+        (W::Io(io(std::io::ErrorKind::UnexpectedEof)), false),
+        (disk_in_decode(), false),
+    ] {
+        assert_eq!(crate::precheck::storage_fault(&e), want, "{e:?}");
+    }
+    let e = E::Io {
+        context: "x",
+        unchanged: true,
+        source: std::io::Error::other("disk full"),
+    };
+    assert_retry_copy(&retry_copy_for(&e).unwrap());
+}
+
+#[test]
+fn the_notices_carry_mg_s_final_text() {
+    use crate::reconcile::UpgradeNotice;
+    assert_eq!(
+        crate::copy::notice_line(UpgradeNotice::SnapshotDamaged),
+        crate::copy::Line {
+            key: "storeUpgrade.notice.snapshotDamaged",
+            text: "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        }
+    );
+    assert_eq!(
+        crate::copy::notice_line(UpgradeNotice::SnapshotOther),
+        crate::copy::Line {
+            key: "storeUpgrade.notice.snapshotOther",
+            text: "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        }
+    );
+    assert!(crate::copy::PENDING_MG.is_empty());
+}
+
+/// A decode error stops the search for a machine fault, whatever its
+/// sources say.
+fn disk_in_decode() -> platform_wallet_storage::WalletStorageError {
+    platform_wallet_storage::WalletStorageError::ConsensusCodec {
+        source: dashcore::consensus::encode::Error::Io(std::io::Error::from(
+            std::io::ErrorKind::StorageFull,
+        )),
+    }
 }

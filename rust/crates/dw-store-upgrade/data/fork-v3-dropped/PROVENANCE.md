@@ -1,5 +1,14 @@
 # fork-v3-dropped
 
+The nightly builds' form: the fork's drop path at the pin the v0.3.0-dev
+nightlies from v0.3.0-dev.1253 (and v0.0.0-rel1) use, c5917e6bd. The pins
+between v0.3.0's and this one (15da8553, 1046e899, 9cbd5eef) write the
+same form. v0.3.0 itself and its dev builds up to v0.3.0-dev.1117 pin
+373342cb3, whose form is `data/fork-v3-dropped-v030`. The two differ only in
+how a kept row's absent spender is written in `deleted_outputs` and
+`released_coins`: JSON null here, `""` (`hex(NULL)`) at 373342cb3. A P8
+reader adopting these rows must accept both forms for `spent_in_txid`.
+
 `wallet.sqlite` is the released v0.3.0 store
 (`testdata/upgrade/v0.3.0/data/regtest/wallet.sqlite`, sha256
 1ae77e693d6ad446d7725e2e39011516b253580e42ac8f290fe8dba87b7d3504, real
@@ -48,6 +57,16 @@ T3 (a) and (d). Tests read copies only (`tests::v3_dropped`).
   re-applies fork V2 and V3 and runs `drop_unauthorized_pending_spends`. It
   then checks the three records, their lock blobs and released coins, and
   that the Strict load returns each released coin unspent.
+- Left out: the earlier generator also gave wallet B an owner-signed
+  control claim, one the drop keeps. Its coin must pay a script whose key
+  the generator holds, and no such script is in a real wallet's pool: with
+  the earlier helper those coins weren't the wallet's and didn't load. So
+  every claim here is unsigned and dropped. That an owner-signed spend
+  survives the upgrade is covered on the v0.3.0 fixture's own spend, beside
+  hand-built V3 rows:
+  `tests::v3::an_owner_signed_spend_survives_the_upgrade_beside_v3_rows`.
+  That the fork's drop keeps an owner-signed claim is the fork's own test,
+  not this crate's.
 - sha256 of `wallet.sqlite`:
   d132793137d4fd554245fbd709bf13986225f7f2289b8a99914f1700d335fec8
   (778240 bytes, no `-wal` or `-shm`; header journal mode WAL).

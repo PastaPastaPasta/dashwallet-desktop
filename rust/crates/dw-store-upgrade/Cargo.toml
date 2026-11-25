@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# `test_support`: a real between-state store for other crates' tests. Never
+# enabled by the app.
+test-support = []
+
 [dependencies]
 # The data root's instance lock, which proves no other process runs a check.
 dw-fs = { workspace = true }

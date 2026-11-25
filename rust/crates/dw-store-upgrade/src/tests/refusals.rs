@@ -213,3 +213,26 @@ fn reconcile_refusal_leaves_the_store_unchanged() {
     assert!(err.file_unchanged());
     assert_eq!(tree(&f.net), before);
 }
+
+/// A store the snapshot copies that SQLite reads as no database is refused
+/// with the unexpected-state screen, not retried: a retry fails the same way.
+#[test]
+fn a_damaged_store_stops_the_snapshot_with_a_refusal() {
+    let f = fixture("v0.1.0");
+    let dispatch = f.net.join("dispatch.sqlite");
+    let mut bytes = fs::read(&dispatch).unwrap();
+    bytes[..100].fill(0x5a);
+    fs::write(&dispatch, bytes).unwrap();
+    for _ in 0..2 {
+        crate::token::reset_opened_for_test();
+        let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
+        assert!(
+            matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { store, .. } if store == "dispatch.sqlite"),
+            "{err:?}"
+        );
+        assert!(err.is_refusal() && err.file_unchanged());
+        assert!(crate::copy::retry_copy_for(&err).is_none());
+        let screen = crate::copy::screen_for(&err, crate::copy::ProvedState::default()).unwrap();
+        assert_eq!(screen.cause, crate::copy::RefusedCause::Unexpected);
+    }
+}

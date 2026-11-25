@@ -136,7 +136,7 @@ fn a_start_that_stopped_after_the_drop_keeps_the_true_snapshot() {
 }
 
 #[test]
-fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
+fn a_part_done_upgrade_without_its_snapshot_goes_on_and_is_not_resnapshotted() {
     let f = fixture("v0.1.0");
     let first = crate::prepare_with(&f.net, build(), now())
         .unwrap()
@@ -144,21 +144,22 @@ fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
         .unwrap();
     reconcile_fork_store(&config(&f.net), &first, build()).unwrap();
     fs::remove_dir_all(first.dir()).unwrap();
-    let before = tree(&f.root);
-    let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
+    let part = crate::prepare_with(&f.net, build(), later(60))
+        .unwrap()
+        .snapshot
+        .unwrap();
     assert!(
-        matches!(
-            err,
-            StoreUpgradeError::UpgradeSnapshotMissing {
-                state: crate::snapshot::MissingSnapshot::Absent,
-                ..
-            }
-        ),
-        "{err:?}"
+        part.dir()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("part-upgraded-")
     );
-    assert!(err.file_unchanged());
+    assert_eq!(
+        part.missing(),
+        Some(crate::snapshot::MissingSnapshot::Absent)
+    );
     assert_eq!(before_upgrade_dirs(&f), 0);
-    assert_eq!(tree(&f.root), before);
 }
 
 #[test]

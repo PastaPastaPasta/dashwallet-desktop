@@ -140,3 +140,49 @@ fn removing_one_wallet_deletes_only_its_v3_rows() {
     assert_eq!(after, kept);
     assert_eq!(after.len(), wallets.len() - 1);
 }
+
+/// The v0.3.0 wallet's own spend, signed with its keys, the coin it spends
+/// and its change, every column quoted.
+fn owner_signed_spend(f: &Fixture) -> Vec<String> {
+    let conn = open_immutable(&f.wallet()).unwrap();
+    let mut rows: Vec<String> = conn
+        .prepare(
+            "SELECT 'tx ' || quote(wallet_id) || quote(txid) || quote(height) || quote(block_hash) || \
+             quote(block_time) || quote(finalized) || quote(record_blob) \
+             FROM core_transactions WHERE txid = ?1",
+        )
+        .unwrap()
+        .query_map([OWNER_SIGNED_TXID], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    rows.extend(
+        conn.prepare(
+            "SELECT 'coin ' || quote(wallet_id) || quote(outpoint) || quote(value) || quote(script) || \
+             quote(spent) || quote(spent_in_txid) FROM core_utxos \
+             WHERE wallet_id = (SELECT wallet_id FROM core_transactions WHERE txid = ?1) \
+             AND (spent = 1 OR substr(outpoint, 2, 32) = ?1) ORDER BY outpoint",
+        )
+        .unwrap()
+        .query_map([OWNER_SIGNED_TXID], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap()),
+    );
+    rows
+}
+
+/// Wallet A's spend of its 10 DASH coin with change.
+const OWNER_SIGNED_TXID: [u8; 32] = [
+    0xFE, 0x44, 0xCC, 0x50, 0x3D, 0x39, 0x4E, 0x9B, 0x8F, 0x7A, 0x17, 0x6A, 0x3E, 0x96, 0xF5, 0xD0,
+    0x1E, 0xFC, 0x8B, 0x55, 0x72, 0xCB, 0x7C, 0x10, 0x23, 0x3F, 0x2F, 0x38, 0x81, 0xAF, 0x03, 0xD1,
+];
+
+#[test]
+fn an_owner_signed_spend_survives_the_upgrade_beside_v3_rows() {
+    let f = fixture("v0.3.0");
+    add_dropped_rows(&f);
+    let before = owner_signed_spend(&f);
+    assert_eq!(before.len(), 3, "the spend, the coin it spends, its change");
+    upgrade_fully(&f);
+    assert_eq!(owner_signed_spend(&f), before);
+}

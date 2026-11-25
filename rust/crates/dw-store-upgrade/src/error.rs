@@ -33,6 +33,14 @@ pub enum StoreUpgradeError {
     #[error("the upgrade fails on a copy of this wallet file: {detail}")]
     UpgradeRehearsalFailed { detail: String },
 
+    /// SQLite would not write the rehearsal's copy of `wallet.sqlite`
+    /// (`SQLITE_READONLY`, `SQLITE_PERM`). The copy keeps the file's own
+    /// mode, so a write-protected `wallet.sqlite` ends here, and a retry
+    /// fails the same way. No defect of the data is claimed: its screen is
+    /// the unexpected-state refusal. File unchanged.
+    #[error("the upgrade can't write a copy of this wallet file: {detail}")]
+    UpgradeCopyUnwritable { detail: String },
+
     /// Fork V1 recorded as refinery version 19, before the fork history table
     /// existed. File unchanged.
     #[error("the file records the fork migration in upstream's history (pre-history shape)")]
@@ -57,6 +65,13 @@ pub enum StoreUpgradeError {
     /// the incomplete snapshot directory is redone on the next start.
     #[error("upgrade snapshot failed: {detail}")]
     SnapshotFailed { detail: String },
+
+    /// A store the snapshot copies is damaged: SQLite reads it as corrupt
+    /// (`SQLITE_CORRUPT`) or not a database (`SQLITE_NOTADB`), or the
+    /// integrity check of its copy fails. A retry would fail the same way:
+    /// its screen is the unexpected-state refusal. File unchanged.
+    #[error("{store} is damaged: {detail}")]
+    SnapshotSourceDamaged { store: String, detail: String },
 
     /// A restore is requested or part-done in {dir}: no store may open
     /// there until the next start runs it.
@@ -98,22 +113,12 @@ pub enum StoreUpgradeError {
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
 
-    /// An upgrade that stopped after R1's drop, and no before-upgrade
-    /// snapshot this upgrade can keep: none at all, none that verifies, or
-    /// none of this wallet (`storeUpgrade.refused.detail.snapshotMissing`).
-    /// The file stays as the earlier start left it; nothing more is written.
-    #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
-    UpgradeSnapshotMissing {
-        state: crate::snapshot::MissingSnapshot,
-        dir: PathBuf,
-    },
-
-    /// `wallet.sqlite` is a symbolic link or is owned by another user: the
-    /// upstream open refuses the first and can't make the second owner-only,
-    /// and the copy the upgrade is rehearsed on has neither. Refused before
-    /// R1's drop. Its screen is the unexpected-state refusal. Nothing
-    /// changed.
-    #[error("wallet.sqlite {detail}")]
+    /// `wallet.sqlite`, its `-wal` or its `-shm` is a symbolic link (unix
+    /// only, as upstream) or is owned by another user: the upstream open
+    /// refuses the first and can't make the second owner-only, and the copy
+    /// the upgrade is rehearsed on has neither. Refused before R1's drop.
+    /// Its screen is the unexpected-state refusal. Nothing changed.
+    #[error("{detail}")]
     WalletFileUnsupported { detail: String },
 
     /// [`crate::PersisterOpened::open`] was asked for a load policy other
@@ -175,6 +180,7 @@ impl StoreUpgradeError {
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
             | Self::UpgradeRehearsalFailed { .. }
+            | Self::UpgradeCopyUnwritable { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
@@ -183,7 +189,7 @@ impl StoreUpgradeError {
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
-            | Self::UpgradeSnapshotMissing { .. }
+            | Self::SnapshotSourceDamaged { .. }
             | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
             | Self::RestoreRefused { .. }
@@ -210,10 +216,11 @@ impl StoreUpgradeError {
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
                 | Self::UpgradeRehearsalFailed { .. }
+                | Self::UpgradeCopyUnwritable { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
-                | Self::UpgradeSnapshotMissing { .. }
+                | Self::SnapshotSourceDamaged { .. }
                 | Self::WalletFileUnsupported { .. }
         )
     }

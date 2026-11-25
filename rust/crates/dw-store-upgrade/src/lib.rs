@@ -40,6 +40,8 @@ mod snapshot;
 mod sql;
 mod token;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
 
@@ -51,17 +53,17 @@ pub use error::{Result, StoreUpgradeError};
 pub use precheck::{
     Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with, sweep_stale_scratch,
 };
-pub use reconcile::{Outcome, reconcile_fork_store};
+pub use reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
 pub use restore::{
     IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT, RESTORE_JOURNAL,
     RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
-    SAFE_TO_DELETE, clear_restored_mark_on_first_all_synced, keep_current_files, pending_restore,
-    request_restore, restore, restored_mark, restored_mark_present, run_pending_restore,
-    touched_paths,
+    SAFE_TO_DELETE, cancel_restore, clear_restored_mark_on_first_all_synced, keep_current_files,
+    pending_restore, request_restore, restore, restored_mark, restored_mark_present,
+    run_pending_restore, touched_paths,
 };
 pub use snapshot::{
-    ABSENT_SNAPSHOT_POLICY, AbsentSnapshotPolicy, MissingSnapshot, STORE_FILES, SnapshotFile,
-    SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot, snapshot_present,
+    MissingSnapshot, NOT_THIS_WALLET, PART_UPGRADED_BY, STORE_FILES, SnapshotFile, SnapshotInfo,
+    SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present,
     snapshot_state, take_snapshot, upgrade_copy_present,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
