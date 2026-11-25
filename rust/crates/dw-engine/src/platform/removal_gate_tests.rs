@@ -530,12 +530,15 @@ fn with_nothing_held_the_removal_goes_through() {
     assert!(opened(&engine, &session));
     removed(&engine, &session, wallet);
 
+    // Another seed: the removal's pre-delete backup is named by wallet id
+    // and second.
     let imported = engine.block_on(session.import_wallet(
-        Zeroizing::new(PHRASE.as_bytes().to_vec()),
+        Zeroizing::new(b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong".to_vec()),
         Zeroizing::new(Vec::new()),
         ImportOptions::default(),
     ));
     let other = imported.unwrap();
+    assert_ne!(other, wallet);
     let session = relaunch(&engine, session, |_| {});
     removed(&engine, &session, other);
     engine.block_on(engine.shutdown()).unwrap();
