@@ -2320,6 +2320,55 @@ fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark(
     );
 }
 
+/// A payment between two loaded wallets abandoned as received, in Activity
+/// or by the recipient's Remove unconfirmed transactions, leaves dash-spv's
+/// rebroadcast of it: the sender's retries are the client's, which both
+/// wallets share. The sender's own Abandon stops it.
+#[test]
+fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let pay = |vout: u32| {
+        let coin = OutPoint::new(paid.txid(), vout);
+        let source = CoinSource::Outpoints(vec![coin]);
+        let p = super::own_spend_disk_tests::send_to(
+            &engine,
+            &session,
+            id,
+            source,
+            &to,
+            COIN / 2,
+            false,
+        );
+        mempool(&engine, &session, id, &p);
+        wait_stored(&session, id, &[p.txid()]);
+        wait_stored(&session, other, &[p.txid()]);
+        p
+    };
+    let (p, q) = (pay(0), pay(1));
+    let stopped = || std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+
+    let abandoned = try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    assert_eq!(stopped(), [], "the receipt's abandon");
+    start_offline_spv(&engine, &session);
+    let removed = engine
+        .block_on(session.drop_unconfirmed(Some(other)))
+        .unwrap();
+    assert_eq!(removed, 1, "the recipient's other receipt");
+    assert_eq!(stopped(), [], "the recipient's removal");
+    for t in [p.txid(), q.txid()] {
+        assert!(
+            (session.hub.history.get(&id, &t)).is_some_and(|e| !e.is_abandoned()),
+            "the sender's payment stays pending"
+        );
+    }
+
+    try_abandon(&engine, &session, id, p.txid()).unwrap();
+    assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
+}
+
 /// An Activity Resend that checked a payment just before an Abandon
 /// committed its mark hands nothing off: it reads the mark again, held
 /// against the Abandon, before its bytes go out.

@@ -1675,6 +1675,40 @@ impl NetworkSession {
         Ok((entry, f))
     }
 
+    /// Of `txids`, those `wallet` sent: each spends one of its coins, as
+    /// key-wallet's record or the history's own inputs say, or keeps its
+    /// sent mark (a failed read counts). dash-spv's rebroadcast is the
+    /// client's, shared by every loaded wallet, so an abandon stops only
+    /// these: a payment abandoned as received leaves its sender's retries.
+    async fn sent_by(
+        &self,
+        wallet: WalletId,
+        txids: &BTreeSet<Txid>,
+        core: &ManagedWalletInfo,
+    ) -> BTreeSet<Txid> {
+        let spends: HashSet<Txid> = (core.accounts.all_accounts().into_iter())
+            .flat_map(|a| a.transactions().iter())
+            .filter(|(t, r)| txids.contains(*t) && !r.input_details.is_empty())
+            .map(|(t, _)| *t)
+            .collect();
+        let mut sent = BTreeSet::new();
+        for t in txids {
+            let own = spends.contains(t)
+                || (self.hub.history).read_wallet(&wallet, |h| {
+                    h.txs.get(t).is_some_and(|e| !e.own_inputs.is_empty())
+                        || h.drop_inputs.get(t).is_some_and(|i| !i.is_empty())
+                });
+            let marked = || {
+                let t = *t;
+                self.appdb_op(move |db| has_sent_mark(db, wallet, t))
+            };
+            if own || !matches!(marked().await, Ok(false)) {
+                sent.insert(*t);
+            }
+        }
+        sent
+    }
+
     /// Stops dash-spv's rebroadcast timer from sending `txid` again.
     async fn stop_rebroadcast(&self, manager: &Manager, _wallet: WalletId, txid: Txid) {
         manager.spv().stop_rebroadcast(&txid).await;
@@ -1956,11 +1990,11 @@ impl NetworkSession {
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
             // Before the marks, under the gate a resend's hand-off holds: no
-            // marked transaction is sent again by dash-spv's rebroadcast
-            // timer. One this abandon then fails is rebroadcast again only
+            // marked transaction this wallet sent is sent again by
+            // dash-spv's rebroadcast timer. One this abandon then fails is rebroadcast again only
             // after a resend of it lifts the stop.
-            for t in &planned {
-                self.stop_rebroadcast(manager, wallet, *t).await;
+            for t in self.sent_by(wallet, &planned, &info.core_wallet).await {
+                self.stop_rebroadcast(manager, wallet, t).await;
             }
             // A drop of what can never confirm is recorded with the marks,
             // and its sent marks go in the same write: a stop before the
