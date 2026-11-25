@@ -1,0 +1,233 @@
+# Funds paths: a pull request that changes any of these files merges only with a funds-reviewer
+# verdict and an Opus review, both recorded for its exact head commit (docs/ci.md, "Funds review gate").
+# The gate (ci/github/funds-gate.py), the PO's drain script and people all read this one file.
+#
+# Syntax: one glob per line, relative to the repository root. `*` matches within one path segment,
+# `**` matches across segments, `?` matches one character. A line starting with `!` takes matching
+# files back out. The last line that matches a file decides. `#` starts a comment line.
+# Check a change locally: git diff --no-renames --name-only -z origin/main... | ci/github/funds-gate.py match -z
+
+# The gate itself.
+ci/funds-paths.txt
+ci/github/funds-gate.py
+ci/github/funds-gate-test.py
+.github/workflows/funds-gate.yml
+
+# Dependency pins: key-wallet, dash-spv, platform-wallet and the SDK sign, select coins and keep UTXOs
+# (dw-engine's own Cargo.toml is covered by the engine rule).
+rust/Cargo.toml
+rust/Cargo.lock
+rust/crates/dw-vault/Cargo.toml
+
+# Keys, seeds, signing, transaction building.
+rust/crates/dw-vault/**
+rust/crates/dw-compat/**
+rust/crates/dw-psbt/**
+rust/crates/dw-protx/**
+rust/crates/dw-coinjoin/**
+rust/crates/dw-units/**
+rust/crates/dw-uri/**
+rust/crates/dw-message/**
+
+# Engine: every file counts as funds unless taken out below, so new engine files are gated from the start
+# (send, coins, fees, keys, backup, restore, CoinJoin, events and history, sync and rescan, Platform credits,
+# asset locks, shielded, unfinished locks, masternode collateral and payouts, proposal fees).
+rust/crates/dw-engine/**
+!rust/crates/dw-engine/src/rates/**
+!rust/crates/dw-engine/src/csv_export.rs
+!rust/crates/dw-engine/src/governance/voting*
+!rust/crates/dw-engine/src/governance/contested*
+!rust/crates/dw-engine/src/governance/reads.rs
+!rust/crates/dw-engine/src/governance/errors.rs
+!rust/crates/dw-engine/src/governance/mod.rs
+!rust/crates/dw-engine/src/platform/avatar**
+!rust/crates/dw-engine/src/platform/banner*
+!rust/crates/dw-engine/src/platform/profile_tests.rs
+!rust/crates/dw-engine/src/platform/contact_names.rs
+!rust/crates/dw-engine/src/platform/contacts_tests.rs
+!rust/crates/dw-engine/src/platform/contacts_tests/**
+!rust/crates/dw-engine/src/platform/contacts_perf_tests.rs
+!rust/crates/dw-engine/src/platform/notifications*
+!rust/crates/dw-engine/src/platform/users_tests.rs
+!rust/crates/dw-engine/src/platform/contest_watch*
+
+# The command-line wallet, owner-only wallet files, and the dash: links and QR codes that feed a send.
+rust/bin/dwcli/**
+rust/crates/dw-fs/**
+rust/crates/dw-desktop/src/uri_schemes.rs
+rust/crates/dw-desktop/src/qr.rs
+
+# The console: sendtoaddress, walletpassphrase and the other RPC-style wallet commands.
+rust/crates/dw-console/**
+rust/crates/dw-app/src/api/console.rs
+rust/crates/dw-ffi/src/api/console.rs
+
+# app.sqlite records of holds, barriers, withdrawals, registrations and shared-masternode sessions.
+rust/crates/dw-appdb/**
+!rust/crates/dw-appdb/src/avatar.rs
+
+# Bridges that carry sends, keys, backups and Platform money to the UI (Tauri commands, Swift FFI).
+rust/crates/dw-app/src/api/send.rs
+rust/crates/dw-app/src/api/send/**
+rust/crates/dw-app/src/api/vault.rs
+rust/crates/dw-app/src/api/backup.rs
+rust/crates/dw-app/src/api/coinjoin.rs
+rust/crates/dw-app/src/api/wallets.rs
+rust/crates/dw-app/src/api/units.rs
+rust/crates/dw-app/src/api/masternodes.rs
+rust/crates/dw-app/src/api/governance.rs
+rust/crates/dw-app/src/api/identity.rs
+rust/crates/dw-app/src/api/identity/**
+rust/crates/dw-app/src/api/social.rs
+rust/crates/dw-app/src/api/social/payments.rs
+rust/crates/dw-app/src/api/history.rs
+rust/crates/dw-app/src/api/scan.rs
+rust/crates/dw-app/src/api/network.rs
+rust/crates/dw-app/src/error/**
+rust/crates/dw-app/src/dto/platform.rs
+rust/crates/dw-app/src/dto/governance.rs
+rust/crates/dw-app/src/shell/links.rs
+rust/crates/dw-app/src/api/files.rs
+rust/crates/dw-app/src/shell/files.rs
+rust/crates/dw-app/src/state.rs
+rust/crates/dw-app/src/dto/masternodes*.rs
+rust/crates/dw-app/src/dto/protx.rs
+rust/crates/dw-app/capabilities/*.json
+rust/crates/dw-ffi/src/api/send*.rs
+rust/crates/dw-ffi/src/api/psbt.rs
+rust/crates/dw-ffi/src/api/vault*.rs
+rust/crates/dw-ffi/src/api/coins.rs
+rust/crates/dw-ffi/src/api/fees.rs
+rust/crates/dw-ffi/src/api/backup.rs
+rust/crates/dw-ffi/src/api/coinjoin.rs
+rust/crates/dw-ffi/src/api/compat.rs
+rust/crates/dw-ffi/src/api/masternode_keys.rs
+rust/crates/dw-ffi/src/api/multiwallet.rs
+rust/crates/dw-ffi/src/api/wallet.rs
+rust/crates/dw-ffi/src/api/tx_actions.rs
+rust/crates/dw-ffi/src/api/units.rs
+rust/crates/dw-ffi/src/api/uri.rs
+rust/crates/dw-ffi/src/api/message.rs
+rust/crates/dw-ffi/src/api/receive.rs
+rust/crates/dw-ffi/src/api/sync.rs
+rust/crates/dw-ffi/src/api/tools.rs
+rust/crates/dw-ffi/src/api/history.rs
+rust/crates/dw-ffi/src/api/labels.rs
+rust/crates/dw-ffi/src/api/session.rs
+rust/crates/dw-ffi/src/api/engine.rs
+
+# Renderer logic that turns what the user typed into amounts and send requests.
+apps/desktop/src/format/amount*
+apps/desktop/src/format/feeWarning*
+apps/desktop/src/api/send*
+apps/desktop/src/api/lockGate*
+apps/desktop/src/api/pending*
+apps/desktop/src/api/tauri.ts
+apps/desktop/src/api/backend.ts
+apps/desktop/src/app/files.ts
+apps/desktop/src/shielded/**
+apps/desktop/src/transfer/**
+apps/desktop/src/recovery/**
+apps/desktop/src/dashpay/topup*
+apps/desktop/src/dashpay/withdraw*
+apps/desktop/src/coinjoin/move*
+apps/desktop/src/coinjoin/queries*
+apps/desktop/src/masternodes/registration*
+apps/desktop/src/masternodes/shared*
+apps/desktop/src/masternodes/changeKeys*
+apps/desktop/src/masternodes/operations*
+apps/desktop/src/dashpay/wizard.ts
+apps/desktop/src/dashpay/payWith*
+apps/desktop/src/dashpay/registration*
+apps/desktop/src/masternodes/withdraw*
+apps/desktop/src/masternodes/keys*
+apps/desktop/src/payments/hold*
+apps/desktop/src/components/coins.tsx
+apps/desktop/src/components/phrase.tsx
+apps/desktop/src/app/rescan*
+apps/desktop/src/contacts/actions*
+apps/desktop/src/dashpay/editProfile*
+apps/desktop/src/governance/model*
+apps/desktop/src/settings/files*
+apps/desktop/src/fiat/entry*
+apps/desktop/src/format/fiat*
+apps/desktop/src/onboarding/recovery*
+apps/desktop/src/onboarding/phraseEntry*
+apps/desktop/src/onboarding/words*
+apps/desktop/src/onboarding/bip39English*
+apps/desktop/src/onboarding/passphrase*
+apps/desktop/src/onboarding/birthHeight*
+apps/desktop/src/onboarding/onboarding.ts
+apps/desktop/src/onboarding/lock.ts
+apps/desktop/src/settings/security.ts
+apps/desktop/src/platform/**
+apps/desktop/src/tools/psbt*
+apps/desktop/src/tools/coins*
+apps/desktop/src/tools/signVerify*
+apps/desktop/src/tools/grant*
+apps/desktop/src/tools/console*
+apps/desktop/src/tools/repair*
+
+# Renderer screens that send, receive, sign or move money, and the sheets that confirm it.
+apps/desktop/src/screens/pay/**
+apps/desktop/src/screens/Receive.tsx
+apps/desktop/src/screens/Onboarding.tsx
+apps/desktop/src/screens/settings/Security.tsx
+apps/desktop/src/screens/settings/CoinJoin.tsx
+apps/desktop/src/screens/coinjoin/CoinJoinCard.tsx
+apps/desktop/src/screens/coinjoin/CoinJoinPage.tsx
+apps/desktop/src/screens/TransferSheet.tsx
+apps/desktop/src/screens/PlatformFundSheet.tsx
+apps/desktop/src/screens/UnfinishedTransfersCard.tsx
+apps/desktop/src/screens/ShieldedSheet.tsx
+apps/desktop/src/screens/PlatformMoveSheet.tsx
+apps/desktop/src/screens/dashpay/Registration.tsx
+apps/desktop/src/screens/tools/Repair.tsx
+apps/desktop/src/screens/dashpay/TopUpSheet.tsx
+apps/desktop/src/screens/dashpay/WithdrawSheet.tsx
+apps/desktop/src/screens/coinjoin/MoveMixedSheet.tsx
+apps/desktop/src/screens/settings/Backups.tsx
+apps/desktop/src/screens/tools/CoinSelection.tsx
+apps/desktop/src/screens/tools/Psbt.tsx
+apps/desktop/src/screens/tools/SignVerify.tsx
+apps/desktop/src/screens/masternodes/CreateProposalSheet.tsx
+apps/desktop/src/screens/masternodes/RegisterSheet.tsx
+apps/desktop/src/screens/masternodes/ReleaseSheet.tsx
+apps/desktop/src/screens/masternodes/Shared.tsx
+apps/desktop/src/screens/masternodes/SharedSetup.tsx
+apps/desktop/src/screens/masternodes/ChangeKeysSheet.tsx
+apps/desktop/src/screens/masternodes/KeysSheet.tsx
+apps/desktop/src/screens/masternodes/credential.tsx
+
+# Swift app: the engine bridge, amounts, send, PSBT, coin control, mixed-coin sweep, vault, spending cap
+# and signing.
+Sources/DashKit/Amount.swift
+Sources/DashKit/EngineModels.swift
+Sources/DashKit/EngineClient.swift
+Sources/DashKit/EngineClient+M2.swift
+Sources/DashKit/EngineClient+M3CoinJoin.swift
+Sources/WalletRuntime/M2/EngineToolAdapters.swift
+Sources/WalletRuntime/M2/QuickUnlockService.swift
+Sources/WalletRuntime/Services/ToolServices.swift
+Sources/WalletRuntime/Services/TransactionSender.swift
+Sources/WalletRuntime/Services/VaultService.swift
+Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
+Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
+Sources/WalletFeatures/Security/SecurityViewModel.swift
+Sources/WalletFeatures/Onboarding/OnboardingViewModel.swift
+Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift
+Sources/WalletFeatures/Wallets/WalletWiper.swift
+Sources/WalletRuntime/M3/CoinJoinAdapters.swift
+Sources/CrossUI/ToolScreens.swift
+Sources/MacUI/SignVerify/**
+Sources/WalletFeatures/Common/AmountFormatter.swift
+Sources/WalletFeatures/Common/InputValidation.swift
+Sources/WalletFeatures/SignVerify/SignVerifyViewModel.swift
+Sources/CrossUI/SendScreen.swift
+Sources/CrossUI/CoinSelectionScreen.swift
+Sources/CrossUI/PSBTScreen.swift
+Sources/MacUI/Send/**
+Sources/MacUI/PSBT/**
+Sources/MacUI/CoinControl/**
+Sources/WalletFeatures/Send/**
+Sources/WalletFeatures/PSBT/**
