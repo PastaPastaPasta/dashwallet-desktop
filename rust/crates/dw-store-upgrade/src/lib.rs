@@ -1,17 +1,24 @@
 //! M3 store upgrade: moves wallet files written by released fork-pinned
 //! desktop builds onto upstream platform-wallet-storage.
 //!
-//! Startup order for one network directory `{folder}` (all before any store
-//! opens, in `spawn_blocking`):
+//! Startup order for one network directory `{folder}`, all under the data
+//! root's instance lock and before any store opens, in `spawn_blocking`:
+//! 0. [`sweep_stale_scratch`], once per start, before any check.
 //! 1. [`prepare`]: the refusal check ([`precheck`], [`precheck_locked`]),
 //!    the upgrade rehearsed on a private copy, then the snapshot
 //!    ([`take_snapshot`]) for a fork file. A refusal writes, renames and
 //!    locks nothing in `{folder}`. A pending restore keeps every store
 //!    closed ([`StoreUpgradeError::RestorePending`]).
-//! 2. [`reconcile_fork_store`] straight after, before any store opens: it
-//!    requires the snapshot to fingerprint all four stores as they are.
+//! 2. [`reconcile_fork_store`] straight after, before any store opens, with
+//!    the `SqlitePersisterConfig` step 4 will use: the upgrade is rehearsed
+//!    again with those settings, and the snapshot must fingerprint all four
+//!    stores as they are.
 //! 3. [`note_stores_opening`], then vault and `app.sqlite`.
-//! 4. [`PersisterOpened::open`].
+//! 4. [`PersisterOpened::open`] with that same config.
+//!
+//! A fork file's start copies `wallet.sqlite` (with its log) twice into
+//! scratch, once per rehearsal, besides the snapshot of all four stores: it
+//! needs about three times the wallet's size free under the data root.
 
 mod adopters;
 mod classify;

@@ -204,20 +204,12 @@ fn reconcile_refusal_leaves_the_store_unchanged() {
         "ALTER TABLE core_address_pool_retired ADD COLUMN extra INTEGER",
     );
     let before = tree(&f.net);
-    let err = crate::reconcile::reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap_err();
+    let err =
+        crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::ForkStoreShapeMismatch { .. }),
         "{err:?}"
     );
     assert!(err.file_unchanged());
     assert_eq!(tree(&f.net), before);
-}
-
-#[test]
-fn refuses_fork_v3_without_p8() {
-    let f = fixture("v0.3.0");
-    refused(
-        &f,
-        |e| matches!(e, StoreUpgradeError::ForkV3WithoutP8 { versions } if versions.iter().eq([1, 2, 3].iter())),
-    );
 }

@@ -1,19 +1,19 @@
 //! File-system helpers: private directories, durable writes, UTC stamps and
 //! the test-only fault points.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(path)
     }
-    builder.create(path)
+    #[cfg(not(unix))]
+    fs::DirBuilder::new().create(path)
 }
 
 pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
@@ -26,7 +26,7 @@ pub(crate) fn ensure_private_dir(path: &Path) -> io::Result<()> {
 pub(crate) fn fsync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        File::open(path)?.sync_all()
+        fs::File::open(path)?.sync_all()
     }
     #[cfg(not(unix))]
     {

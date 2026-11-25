@@ -25,16 +25,11 @@ pub enum StoreUpgradeError {
     #[error("this build's P9a support is broken: {detail}")]
     P9aBroken { detail: String },
 
-    /// The file carries fork V3 and this build has no P8 to adopt it. Refused
-    /// until the Q93 ruling. File unchanged.
-    #[error(
-        "fork store versions {versions:?} include V3, which this build cannot adopt without P8"
-    )]
-    ForkV3WithoutP8 { versions: BTreeSet<u32> },
-
     /// The upgrade, rehearsed on a private copy (R1's drop, then the upstream
-    /// open under `LoadPolicy::Strict`), failed: the real file would be left
-    /// part-upgraded. File unchanged.
+    /// open under `LoadPolicy::Strict` with the caller's settings), failed on
+    /// the data: the real file would be left part-upgraded. A failure of the
+    /// machine (disk full, I/O, the backup directory) is [`Self::Io`]
+    /// instead, which is retried and has no can't-open screen. File unchanged.
     #[error("the upgrade fails on a copy of this wallet file: {detail}")]
     UpgradeRehearsalFailed { detail: String },
 
@@ -78,6 +73,12 @@ pub enum StoreUpgradeError {
     /// than `Strict` (Q78 R6). Nothing was opened.
     #[error("the wallet store opens only with LoadPolicy::Strict, not {policy}")]
     NonStrictOpen { policy: String },
+
+    /// The `SqlitePersisterConfig` can't carry the upgrade: no auto-backup
+    /// directory, or not the config [`crate::reconcile_fork_store`]
+    /// rehearsed with. A caller bug, not the user's data. Nothing changed.
+    #[error("the wallet store config is not supported: {detail}")]
+    OpenConfigUnsupported { detail: String },
 
     /// [`crate::PersisterOpened::open`] ran before this build's probe
     /// ([`crate::Adopters::for_build`]). Nothing was opened.
@@ -126,12 +127,12 @@ impl StoreUpgradeError {
             | Self::ForkStoreShapeMismatch { .. }
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
-            | Self::ForkV3WithoutP8 { .. }
             | Self::UpgradeRehearsalFailed { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
             | Self::NonStrictOpen { .. }
+            | Self::OpenConfigUnsupported { .. }
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
@@ -154,7 +155,6 @@ impl StoreUpgradeError {
                 | Self::ForkStoreShapeMismatch { .. }
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
-                | Self::ForkV3WithoutP8 { .. }
                 | Self::UpgradeRehearsalFailed { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }

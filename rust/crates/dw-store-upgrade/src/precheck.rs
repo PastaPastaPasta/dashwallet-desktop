@@ -6,7 +6,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
+use platform_wallet_storage::{
+    LoadPolicy, SqlitePersister, SqlitePersisterConfig, WalletStorageError,
+};
 
 use crate::adopters::Adopters;
 use crate::classify::{Classification, ForkState, classify};
@@ -96,12 +98,50 @@ fn refuse_early(network_dir: &Path, adopters: &Adopters) -> Result<Option<Preche
     Ok(None)
 }
 
+/// The settings the public checks rehearse with: upstream's defaults under
+/// `LoadPolicy::Strict`. [`crate::reconcile_fork_store`] rehearses with the
+/// caller's own config before it writes.
+fn default_open(network_dir: &Path) -> SqlitePersisterConfig {
+    SqlitePersisterConfig::new(wallet_path(network_dir)).with_load_policy(LoadPolicy::Strict)
+}
+
 /// Read `wallet.sqlite` with `immutable=1`: no lock, no `-wal`/`-shm`, no
 /// file created. A non-empty `-wal` or `-journal` means the main file alone
 /// may be stale, so the answer is [`Precheck::NeedsLockedCheck`]. A fork file
 /// the upgrade will write is then rehearsed on a private copy
 /// ([`StoreUpgradeError::UpgradeRehearsalFailed`]).
 pub fn precheck_with(network_dir: &Path, adopters: &Adopters) -> Result<Precheck> {
+    check(network_dir, adopters, &default_open(network_dir))
+}
+
+/// The same check with the log applied: `wallet.sqlite` and its `-wal` or
+/// `-journal` are copied into a private directory beside `{folder}` (under
+/// the data root, never inside `{folder}`) and the copy is opened with a
+/// normal connection, which replays the log. The originals stay
+/// byte-identical: a normal connection on them would checkpoint the log or
+/// write `-shm`.
+pub fn precheck_locked_with(network_dir: &Path, adopters: &Adopters) -> Result<Precheck> {
+    check_locked(network_dir, adopters, &default_open(network_dir))
+}
+
+/// [`precheck_with`], then [`precheck_locked_with`] when it asks, the
+/// rehearsal opening the copy with `open`'s settings.
+pub(crate) fn check_all(
+    network_dir: &Path,
+    adopters: &Adopters,
+    open: &SqlitePersisterConfig,
+) -> Result<Precheck> {
+    match check(network_dir, adopters, open)? {
+        Precheck::NeedsLockedCheck => check_locked(network_dir, adopters, open),
+        other => Ok(other),
+    }
+}
+
+fn check(
+    network_dir: &Path,
+    adopters: &Adopters,
+    open: &SqlitePersisterConfig,
+) -> Result<Precheck> {
     if let Some(early) = refuse_early(network_dir, adopters)? {
         return Ok(early);
     }
@@ -114,20 +154,17 @@ pub fn precheck_with(network_dir: &Path, adopters: &Adopters) -> Result<Precheck
     drop(conn);
     match found {
         Classification::Fork(state) if state.upgrade_writes() => {
-            let copy = ScratchCopy::of(network_dir)?;
-            copy.rehearse(state)
+            ScratchCopy::of(network_dir)?.rehearse(state, open)
         }
         other => Ok(verdict(other)),
     }
 }
 
-/// The same check with the log applied: `wallet.sqlite` and its `-wal` or
-/// `-journal` are copied into a private directory beside `{folder}` (under
-/// the data root, never inside `{folder}`) and the copy is opened with a
-/// normal connection, which replays the log. The originals stay
-/// byte-identical: a normal connection on them would checkpoint the log or
-/// write `-shm`.
-pub fn precheck_locked_with(network_dir: &Path, adopters: &Adopters) -> Result<Precheck> {
+fn check_locked(
+    network_dir: &Path,
+    adopters: &Adopters,
+    open: &SqlitePersisterConfig,
+) -> Result<Precheck> {
     if let Some(early) = refuse_early(network_dir, adopters)? {
         return Ok(early);
     }
@@ -136,7 +173,7 @@ pub fn precheck_locked_with(network_dir: &Path, adopters: &Adopters) -> Result<P
     let found = classify(&conn, adopters);
     drop(conn);
     match found? {
-        Classification::Fork(state) if state.upgrade_writes() => copy.rehearse(state),
+        Classification::Fork(state) if state.upgrade_writes() => copy.rehearse(state, open),
         other => Ok(verdict(other)),
     }
 }
@@ -174,8 +211,12 @@ impl ScratchCopy {
     }
 
     /// M4: R1's drop, then the upstream open under `LoadPolicy::Strict`, on
-    /// the copy. A failure is a refusal before the real file is touched.
-    fn rehearse(&self, state: ForkState) -> Result<Precheck> {
+    /// the copy, with `open`'s settings (journal mode, synchronous, busy
+    /// timeout, flush mode, whether auto-backups are on) and its backup
+    /// directory moved into scratch. A failure on the data is a refusal
+    /// before the real file is touched; a failure of the machine is a
+    /// retryable [`StoreUpgradeError::Io`].
+    fn rehearse(&self, state: ForkState, open: &SqlitePersisterConfig) -> Result<Precheck> {
         let failed = |detail: String| {
             Ok(Precheck::Refuse {
                 reason: StoreUpgradeError::UpgradeRehearsalFailed { detail },
@@ -183,17 +224,30 @@ impl ScratchCopy {
         };
         let conn = match open_existing(&self.wallet) {
             Ok(c) => c,
+            Err(e) if sqlite_fault(&e) => return Err(machine_fault(e)),
             Err(e) => return failed(format!("open the copy: {e}")),
         };
-        if let Err(e) = crate::reconcile::drop_external_reference(&conn) {
-            return failed(format!("drop contacts.external_account_reference: {e}"));
+        match crate::reconcile::drop_external_reference(&conn) {
+            Ok(()) => {}
+            Err(e) if sqlite_fault(&e) => return Err(machine_fault(e)),
+            Err(e) => return failed(format!("drop contacts.external_account_reference: {e}")),
         }
         drop(conn);
-        let config = SqlitePersisterConfig::new(&self.wallet)
-            .with_load_policy(LoadPolicy::Strict)
-            .with_auto_backup_dir(Some(self.dir.path().join("auto")));
+        let mut config = open.clone();
+        config.path = self.wallet.clone();
+        config.load_policy = LoadPolicy::Strict;
+        if config.auto_backup_dir.is_some() {
+            let auto = self.dir.path().join("auto");
+            #[cfg(test)]
+            if BLOCK_REHEARSAL_BACKUP.with(|b| b.get()) {
+                fs::write(&auto, b"")
+                    .map_err(StoreUpgradeError::io("block the backup dir", true))?;
+            }
+            config.auto_backup_dir = Some(auto);
+        }
         match SqlitePersister::open(config) {
             Ok(persister) => drop(persister),
+            Err(e) if storage_fault(&e) => return Err(machine_fault(e)),
             Err(e) => return failed(format!("upstream open: {e}")),
         }
         Ok(Precheck::Fork {
@@ -202,35 +256,66 @@ impl ScratchCopy {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Puts a file where the rehearsal's backup directory goes.
+    pub(crate) static BLOCK_REHEARSAL_BACKUP: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// SQLite failing for the machine, not the data.
+fn sqlite_fault(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode::*;
+    matches!(
+        e.sqlite_error_code(),
+        Some(
+            DiskFull
+                | SystemIoFailure
+                | CannotOpen
+                | ReadOnly
+                | PermissionDenied
+                | DatabaseBusy
+                | DatabaseLocked
+                | OutOfMemory
+        )
+    )
+}
+
+/// Upstream's open failing for the machine: I/O, the backup directory, or
+/// a SQLite fault.
+fn storage_fault(e: &WalletStorageError) -> bool {
+    match e {
+        WalletStorageError::Io(_) | WalletStorageError::AutoBackupDirUnwritable { .. } => true,
+        WalletStorageError::Sqlite(s) => sqlite_fault(s),
+        other => other.is_transient(),
+    }
+}
+
+fn machine_fault(e: impl std::fmt::Display) -> StoreUpgradeError {
+    StoreUpgradeError::Io {
+        context: "rehearse the upgrade on a copy",
+        unchanged: true,
+        source: io::Error::other(e.to_string()),
+    }
+}
+
 /// Remove private copies left under `data_root` by a check that crashed.
-/// `instance_lock` must be the caller's locked handle on
-/// `<data_root>/instance.lock`: only the instance holding it may sweep, so no
-/// running check loses its copy. Returns how many were removed.
-pub fn sweep_stale_scratch(data_root: &Path, instance_lock: &fs::File) -> Result<usize> {
+/// Sweeps only when no other process holds the data root's instance lock
+/// ([`dw_fs::instance::InstanceLock::share`]: this process's own lock, or the
+/// lock taken for the sweep); another holder is
+/// [`StoreUpgradeError::StoreHeld`]. Call it once per start, after the
+/// instance lock and before any check: a check running in another thread of
+/// this process would lose its copy. Returns how many were removed.
+pub fn sweep_stale_scratch(data_root: &Path) -> Result<usize> {
     let io = |ctx| StoreUpgradeError::io(ctx, true);
-    let lock_path = data_root.join("instance.lock");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let held = instance_lock
-            .metadata()
-            .map_err(io("stat the instance lock"))?;
-        let named = fs::metadata(&lock_path).map_err(io("stat the instance lock"))?;
-        if (held.dev(), held.ino()) != (named.dev(), named.ino()) {
+    let lock_path = data_root.join(dw_fs::instance::InstanceLock::FILE);
+    let _lock = match dw_fs::instance::InstanceLock::share(data_root) {
+        Ok(lock) => lock,
+        Err(dw_fs::instance::InstanceError::Busy) => {
             return Err(StoreUpgradeError::StoreHeld { path: lock_path });
         }
-    }
-    let probe = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(io("open the instance lock"))?;
-    match probe.try_lock() {
-        Err(fs::TryLockError::WouldBlock) => {}
-        Ok(()) => return Err(StoreUpgradeError::StoreHeld { path: lock_path }),
-        Err(fs::TryLockError::Error(e)) => return Err(io("probe the instance lock")(e)),
-    }
-    drop(probe);
+        Err(dw_fs::instance::InstanceError::Io(e)) => return Err(io("take the instance lock")(e)),
+    };
     let mut removed = 0;
     for entry in fs::read_dir(data_root).map_err(io("list the data root"))? {
         let entry = entry.map_err(io("list the data root"))?;

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use platform_wallet_storage::{LoadPolicy, SqlitePersisterConfig};
 use rusqlite::Connection;
 
 use crate::adopters::Adopters;
@@ -11,7 +12,7 @@ use crate::classify::{Classification, ForkState, classify};
 use crate::error::{Result, StoreUpgradeError};
 use crate::fork;
 use crate::fsx::fault;
-use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
+use crate::precheck::{Precheck, check_all};
 use crate::snapshot::{self, SnapshotInfo};
 use crate::sql::{has_column, open_existing};
 
@@ -75,28 +76,61 @@ fn check_snapshot(
     Ok(())
 }
 
-/// Reconcile `wallet_db` (a network directory's `wallet.sqlite`) for this
-/// build. Every refusal is decided by a read that writes nothing, the upgrade
-/// rehearsed on a private copy first; the writes (R1's drop, the retire) run
-/// in one transaction after the snapshot is checked to be of the data held
-/// under that transaction's lock, so a crash leaves the file as before or as
-/// after. Never opens with `LoadPolicy::Recovery`.
+/// The config the persister will open with can carry the upgrade: Strict,
+/// with auto-backups on (upstream backs up before its pending migrations and
+/// fails without a directory, after R1's drop has committed).
+fn refuse_unsupported_config(config: &SqlitePersisterConfig) -> Result<()> {
+    if config.load_policy != LoadPolicy::Strict {
+        return Err(StoreUpgradeError::NonStrictOpen {
+            policy: format!("{:?}", config.load_policy),
+        });
+    }
+    if config.auto_backup_dir.is_none() {
+        return Err(StoreUpgradeError::OpenConfigUnsupported {
+            detail: "auto_backup_dir is None; the upgrade's migrations need it".into(),
+        });
+    }
+    Ok(())
+}
+
+/// Upstream's check of the auto-backup directory, before the drop: created
+/// owner-only and written to. A failure is a retryable I/O error with the
+/// wallet file unchanged.
+fn ensure_backup_dir(dir: &Path) -> Result<()> {
+    let io = StoreUpgradeError::io("check the auto-backup directory", true);
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir).map_err(&io)?;
+    tempfile::NamedTempFile::new_in(dir).map(drop).map_err(io)
+}
+
+/// Reconcile `config.path` (a network directory's `wallet.sqlite`) for this
+/// build. `config` must be the one [`crate::PersisterOpened::open`] gets next:
+/// the upgrade is rehearsed on a private copy with its settings, and the open
+/// refuses any other. Every refusal is decided by a read that writes nothing;
+/// the writes (R1's drop, the retire) run in one transaction after the
+/// snapshot is checked to be of the data held under that transaction's lock,
+/// so a crash leaves the file as before or as after. Never opens with
+/// `LoadPolicy::Recovery`.
 pub fn reconcile_fork_store(
-    wallet_db: &Path,
+    config: &SqlitePersisterConfig,
     snapshot: &SnapshotInfo,
     adopters: &Adopters,
 ) -> Result<Outcome> {
+    let wallet_db = config.path.as_path();
     let network_dir = crate::precheck::parent_dir(wallet_db)?;
     crate::token::refuse_if_held(network_dir)?;
     crate::restore::refuse_if_restore_pending(network_dir)?;
-    let read = match precheck_with(network_dir, adopters)? {
-        Precheck::NeedsLockedCheck => precheck_locked_with(network_dir, adopters)?,
-        other => other,
-    };
-    let versions = match read {
+    refuse_unsupported_config(config)?;
+    let versions = match check_all(network_dir, adopters, config)? {
         Precheck::NotForked => return Ok(Outcome::NotForked),
         Precheck::Refuse { reason } => return Err(reason),
-        Precheck::NeedsLockedCheck => unreachable!("precheck_locked never asks again"),
+        Precheck::NeedsLockedCheck => unreachable!("check_all never asks again"),
         Precheck::Fork { versions } => versions,
     };
     check_snapshot(network_dir, snapshot, &versions)?;
@@ -106,11 +140,18 @@ pub fn reconcile_fork_store(
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(StoreUpgradeError::sqlite("lock wallet.sqlite", true))?;
     let written = snapshot::require_reusable(snapshot, &conn, network_dir)
+        .and_then(|()| {
+            config
+                .auto_backup_dir
+                .as_deref()
+                .map_or(Ok(()), ensure_backup_dir)
+        })
         .and_then(|()| write_in_transaction(&conn, adopters, &versions));
     match written {
         Ok(outcome) => {
             conn.execute_batch("COMMIT")
                 .map_err(StoreUpgradeError::sqlite("commit the reconcile", false))?;
+            crate::token::note_reconciled(network_dir, config);
             tracing::info!(?outcome, "store upgrade: reconciled");
             Ok(outcome)
         }

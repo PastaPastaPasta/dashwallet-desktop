@@ -256,6 +256,11 @@ pub(crate) struct LiveState {
     refinery_max: i64,
     fork_versions: BTreeSet<u32>,
     fingerprint: String,
+    /// `wallet.sqlite`'s own part of `fingerprint`.
+    wallet_fingerprint: String,
+    /// R1's drop committed and upstream has not migrated yet: fork history
+    /// present, the column gone, refinery not past the fork's last version.
+    between: bool,
 }
 
 /// Table digests minus what the upgrade itself changes: the dropped column
@@ -302,8 +307,13 @@ pub(crate) fn live_state(
     } else {
         BTreeSet::new()
     };
+    let between = !fork_versions.is_empty()
+        && refinery_max <= fork::FORK_REFINERY_MAX
+        && has_table(wallet, fork::CONTACTS)?
+        && !sql::has_column(wallet, fork::CONTACTS, fork::EXTERNAL_REF)?;
+    let wallet_fingerprint = fingerprint(wallet)?;
     let mut h = Sha256::new();
-    h.update(format!("{}={}\n", STORE_FILES[0], fingerprint(wallet)?).as_bytes());
+    h.update(format!("{}={wallet_fingerprint}\n", STORE_FILES[0]).as_bytes());
     for name in &STORE_FILES[1..] {
         let path = dir.join(name);
         let digest = if path.exists() {
@@ -322,13 +332,19 @@ pub(crate) fn live_state(
         refinery_max,
         fork_versions,
         fingerprint: hex(&h.finalize()),
+        wallet_fingerprint,
+        between,
     })
 }
 
-/// A connection that reads a live store and writes nothing beside it: with
-/// no log, `immutable=1` (no lock, no `-wal`/`-shm` created); with a
-/// non-empty `-wal` or `-journal`, read-only, never checkpointing (not even
-/// on close), waiting at most `busy`.
+/// A connection that reads a live store without changing it: with no log,
+/// `immutable=1` (no lock, no `-wal`/`-shm` created); with a non-empty
+/// `-wal` or `-journal`, read-only, never checkpointing (not even on close),
+/// waiting at most `busy`. In that second case SQLite still opens `-shm`
+/// read-write, creating it if missing, and a hot rollback journal fails as
+/// `SQLITE_READONLY_ROLLBACK`; the stores run in WAL mode. The check for a
+/// log and the open are not atomic: they rely on running under the instance
+/// lock before any store opens, and M1 re-checks under the write lock.
 fn open_source(path: &Path, busy: std::time::Duration) -> rusqlite::Result<Connection> {
     let logged = ["-wal", "-journal"].iter().any(|suffix| {
         let mut side = path.as_os_str().to_owned();
@@ -363,7 +379,12 @@ pub(crate) fn require_reusable(
 ) -> Result<()> {
     let live = live_state(wallet, network_dir, open_live)
         .map_err(StoreUpgradeError::sqlite("read the live state", true))?;
-    if reusable(snapshot, &live) {
+    let ok = if live.between {
+        reusable_between(snapshot, &live)
+    } else {
+        reusable(snapshot, &live)
+    };
+    if ok {
         return Ok(());
     }
     Err(StoreUpgradeError::SnapshotInvalid {
@@ -378,6 +399,18 @@ pub(crate) fn require_reusable(
 pub(crate) fn reusable(info: &SnapshotInfo, live: &LiveState) -> bool {
     info.fork_versions == live.fork_versions
         && (live.refinery_max > info.refinery_max || live.fingerprint == info.fingerprint)
+}
+
+/// Between R1's drop and upstream's migration the other stores may have
+/// changed (a start that stopped before the persister opened), but a snapshot
+/// taken now would hold the file without the column, which no released build
+/// opens. Only the true pre-upgrade snapshot will do: verified, the same fork
+/// versions, and its `wallet.sqlite` the live one apart from the column.
+fn reusable_between(info: &SnapshotInfo, live: &LiveState) -> bool {
+    info.fork_versions == live.fork_versions
+        && sql::open_immutable(&info.dir.join(STORE_FILES[0]))
+            .and_then(|conn| fingerprint(&conn))
+            .is_ok_and(|f| f == live.wallet_fingerprint)
 }
 
 fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
@@ -417,11 +450,25 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     }
     if let Some(live) = &live {
         for dir in dirs.iter().rev().filter(|d| d.exists()) {
-            if let Ok(info) = read_snapshot(dir, true)
-                && reusable(&info, live)
-            {
+            let Ok(info) = read_snapshot(dir, true) else {
+                continue;
+            };
+            let ok = if live.between {
+                reusable_between(&info, live)
+            } else {
+                reusable(&info, live)
+            };
+            if ok {
                 return Ok(info);
             }
+        }
+        if live.between {
+            return Err(StoreUpgradeError::SnapshotInvalid {
+                dir: backups_dir(network_dir),
+                detail: "the upgrade is part-done and no verified before-upgrade snapshot \
+                         matches the wallet"
+                    .into(),
+            });
         }
     }
     let root = backups_dir(network_dir);
@@ -462,6 +509,8 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
         refinery_max: 0,
         fork_versions: BTreeSet::new(),
         fingerprint: "-".into(),
+        wallet_fingerprint: "-".into(),
+        between: false,
     });
     let mut info = SnapshotInfo {
         dir: dir.clone(),

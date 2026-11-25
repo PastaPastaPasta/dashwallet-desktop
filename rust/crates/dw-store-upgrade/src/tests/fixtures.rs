@@ -23,6 +23,15 @@ fn upgrade(version: &str, want: &[u32]) {
     let adopters = build();
     let versions = fork_versions(&f.wallet());
     assert_eq!(versions, want.iter().copied().collect::<BTreeSet<u32>>());
+    let refinery_max: i64 = open_immutable(&f.wallet())
+        .unwrap()
+        .query_row(
+            "SELECT MAX(version) FROM refinery_schema_history",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(refinery_max, crate::fork::FORK_REFINERY_MAX);
 
     let found = precheck_with(&f.net, adopters).unwrap();
     assert!(
@@ -70,7 +79,7 @@ fn upgrade(version: &str, want: &[u32]) {
             .exists()
     );
 
-    let outcome = reconcile_fork_store(&f.wallet(), &snapshot, adopters).unwrap();
+    let outcome = reconcile_fork_store(&config(&f.net), &snapshot, adopters).unwrap();
     assert_eq!(
         outcome,
         Outcome::Pending {
@@ -98,7 +107,7 @@ fn upgrade(version: &str, want: &[u32]) {
         snapshot.dir(),
         "the in-flight upgrade reuses its snapshot"
     );
-    let outcome = reconcile_fork_store(&f.wallet(), &snapshot, adopters).unwrap();
+    let outcome = reconcile_fork_store(&config(&f.net), &snapshot, adopters).unwrap();
     assert_eq!(outcome, Outcome::Retired { versions });
     let conn = open_immutable(&f.wallet()).unwrap();
     assert!(!has_table(&conn, "dw_fork_schema_history").unwrap());
@@ -122,8 +131,8 @@ fn v0_2_0_upgrades_and_retires() {
 }
 
 #[test]
-fn v0_3_0_upgrades_and_retires_once_v3_is_accepted() {
-    with_v3_accepted(|| upgrade("v0.3.0", &[1, 2, 3]));
+fn v0_3_0_upgrades_and_retires() {
+    upgrade("v0.3.0", &[1, 2, 3]);
 }
 
 #[test]

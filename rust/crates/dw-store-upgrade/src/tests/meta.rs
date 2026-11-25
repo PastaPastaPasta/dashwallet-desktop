@@ -90,6 +90,38 @@ fn crate_source_never_calls_wallet_removal() {
     }
 }
 
+/// Q93 T2: before P8 nothing in the crate writes `core_dropped_unsigned_spends`:
+/// outside the tests it is named only by the fork constants and read by the
+/// shape check.
+#[test]
+fn crate_source_never_writes_the_v3_table() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for e in fs::read_dir(&src).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_none_or(|x| x != "rs") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let text = fs::read_to_string(&p).unwrap();
+        let allowed: &[&str] = match name.as_str() {
+            "fork.rs" => &["core_dropped_unsigned_spends", "DROPPED_SPENDS", "V3_SQL"],
+            "shapes.rs" => &["DROPPED_SPENDS", "V3_SQL"],
+            _ => &[],
+        };
+        for needle in ["core_dropped_unsigned_spends", "DROPPED_SPENDS", "V3_SQL"] {
+            assert!(
+                allowed.contains(&needle) || !text.contains(needle),
+                "{name} names {needle}"
+            );
+        }
+        if name == "shapes.rs" {
+            for line in text.lines().filter(|l| l.contains("V3_SQL")) {
+                assert!(line.contains("mem.execute_batch"), "{line}");
+            }
+        }
+    }
+}
+
 #[test]
 fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
     let folder = "/home/u/.local/share/Dash Wallet/regtest";

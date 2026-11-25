@@ -74,8 +74,12 @@ fn rotated_contact_refusal_comes_before_the_drop_and_any_migration() {
     add_retired_row(&f.wallet());
     let snapshot = take_snapshot(&f.net, now()).unwrap();
     let before = tree(&f.net);
-    let err = reconcile_fork_store(&f.wallet(), &snapshot, &build().with_p9a(P9aStatus::Absent))
-        .unwrap_err();
+    let err = reconcile_fork_store(
+        &config(&f.net),
+        &snapshot,
+        &build().with_p9a(P9aStatus::Absent),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::RetiredPoolWithoutAdopter { .. }),
         "{err:?}"
@@ -102,12 +106,12 @@ fn rotated_contact_fork_file_counts_correctly_with_p9a() {
     ));
     let snapshot = take_snapshot(&f.net, now()).unwrap();
     assert!(matches!(
-        reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap(),
+        reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
         Outcome::Pending { .. }
     ));
     drop(open_and_load(&f.net));
     assert!(matches!(
-        reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap(),
+        reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
         Outcome::Retired { .. }
     ));
 }
@@ -126,13 +130,13 @@ fn empty_retired_table_opens(adopters: &Adopters, open: bool) {
     ));
     let snapshot = take_snapshot(&f.net, now()).unwrap();
     assert!(matches!(
-        reconcile_fork_store(&f.wallet(), &snapshot, adopters).unwrap(),
+        reconcile_fork_store(&config(&f.net), &snapshot, adopters).unwrap(),
         Outcome::Pending { .. }
     ));
     if open {
         drop(open_and_load(&f.net));
         assert!(matches!(
-            reconcile_fork_store(&f.wallet(), &snapshot, adopters).unwrap(),
+            reconcile_fork_store(&config(&f.net), &snapshot, adopters).unwrap(),
             Outcome::Retired { .. }
         ));
     }
