@@ -1391,19 +1391,25 @@ impl SessionHub {
     /// they were released: the balances are read again once it is.
     ///
     /// The snapshot comes without the excluded coins' share
-    /// (`crate::withhold`): while the wallet may hold some, the balances
-    /// are read again from the manager with it.
+    /// (`crate::withhold`): while the wallet may hold some, it is not
+    /// applied, and the balances are read again from the manager with it,
+    /// so no read pairs one with the other's share.
     fn update_balance(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) -> bool {
+        let reread = self.balance_reread.get();
+        if let Some(reread) = reread
+            && self.may_withhold(&id)
+        {
+            reread(id);
+            return false;
+        }
         let changed = self.write_balances(id, balance, accounts, None);
-        if (balance.locked() > 0
-            || accounts.values().any(|b| b.locked() > 0)
-            || self.may_withhold(&id))
-            && let Some(reread) = self.balance_reread.get()
+        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+            && let Some(reread) = reread
         {
             reread(id);
         }

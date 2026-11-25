@@ -128,13 +128,18 @@ impl SessionHub {
     }
 
     /// Whether wallet `id` may hold withheld coins now or after its next
-    /// change: some are, or its history holds an unmined transaction that
-    /// is neither abandoned nor InstantSend-locked. A wallet event's
-    /// balance is then read again with the excluded coins (an event's
+    /// change: some are, or its history holds an unmined transaction,
+    /// neither abandoned nor InstantSend-locked, that spends a coin the
+    /// history knows as the wallet's (its own input, claim or mark, or an
+    /// output of a stored transaction). A wallet event's balance is then
+    /// read again with the excluded coins, not applied (an event's
     /// snapshot comes without them).
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
-        excluded || (self.history).read(id, |txs| txs.values().any(withholding_candidate))
+        excluded
+            || (self.history).read_wallet(id, |h| {
+                (h.txs.iter()).any(|(t, e)| withholding_candidate(e) && spends_known_coin(h, t, e))
+            })
     }
 }
 
@@ -142,6 +147,18 @@ impl SessionHub {
 /// it.
 fn withholding_candidate(e: &TxEntry) -> bool {
     e.context.block_info().is_none() && !e.abandoned && !instant_locked(e)
+}
+
+/// Whether `e` spends a coin the history alone knows as the wallet's,
+/// as [`pending_unproven`]'s ownership test can find it without key-wallet.
+fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
+    (e.tx.input.iter().zip(0u32..)).any(|(i, n)| {
+        let o = &i.previous_output;
+        e.own_inputs.contains_key(&n)
+            || h.claimed.get(o) == Some(t)
+            || h.marked.get(t).is_some_and(|m| m.contains(o))
+            || h.txs.contains_key(&o.txid)
+    })
 }
 
 /// E1 (Q100): the coins of `core` withheld because a payment they descend

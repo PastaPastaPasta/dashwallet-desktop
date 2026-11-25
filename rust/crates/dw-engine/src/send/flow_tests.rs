@@ -4863,7 +4863,7 @@ mod normal_payment_beside_mixing {
                 let entry = TxEntry {
                     tx,
                     context: TransactionContext::Mempool,
-                    instant_locked: false,
+                    instant_locked: true,
                     first_seen: None,
                     own_inputs,
                     abandoned: false,
