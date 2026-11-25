@@ -359,12 +359,7 @@ impl NetworkSession {
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
             if let Err(e) = (this.platform)
-                .remove_from_manager(
-                    &this.leases,
-                    &live.manager,
-                    id,
-                    crate::platform::runtime::StoredSpends::Refuse,
-                )
+                .remove_from_manager(&this.leases, &live.manager, id)
                 .await
             {
                 live.store.set_unloaded(id.0, false);

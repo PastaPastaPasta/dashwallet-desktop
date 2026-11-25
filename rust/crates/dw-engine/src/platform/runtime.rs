@@ -102,17 +102,6 @@ pub(super) struct LockView {
     pub(super) locks: u64,
 }
 
-/// What [`PlatformRuntime::remove_from_manager`] does when the wallet holds
-/// a shielded spend whose result is not known (DEC-1046).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StoredSpends {
-    /// The wallet stays: `ShieldedSpendUnresolved` (Close Wallet, the
-    /// close, a restore's rollback).
-    Refuse,
-    /// The user removes the wallet: its stored spends go with it.
-    Purge,
-}
-
 /// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
 pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
@@ -887,13 +876,14 @@ impl PlatformRuntime {
     /// The engine's only route to platform-wallet's `remove_wallet`, which
     /// at the pin always purges the wallet's shielded store, its stored
     /// spends included (`wallet_lifecycle.rs:1011-1013` →
-    /// `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`). So with
-    /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
-    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046), as does one
-    /// with a marked spend (`leases`' journal, DEC-1057); only the
-    /// user's removal of the wallet passes [`StoredSpends::Purge`]. The
-    /// removal runs with no shielded pass in flight (`shielded_passes`,
-    /// R1-3): the coordinator's set of wallets changes only between passes.
+    /// `coordinator.rs:1041-1068` → `file_store.rs:1734-1761`). So a
+    /// wallet holding a spend whose result is not known stays
+    /// (`ShieldedSpendUnresolved`, DEC-1046), as does one with a marked
+    /// spend (`leases`' journal, DEC-1057), on every route: the user's
+    /// removal too (Q86 Q-PURGE C2), which checks first
+    /// (`shielded_pool::removal_hold`). The removal runs with no shielded
+    /// pass in flight (`shielded_passes`, R1-3): the coordinator's set of
+    /// wallets changes only between passes.
     /// Every caller ended the wallet's permits first (its revocation, the
     /// close's), so no spend of it stores a transition after the check.
     pub(crate) async fn remove_from_manager(
@@ -901,13 +891,10 @@ impl PlatformRuntime {
         leases: &super::lease::LeaseTable,
         manager: &Manager,
         id: WalletId,
-        spends: StoredSpends,
     ) -> Result<(), EngineError> {
         let _fence = self.contacts.fences.removal(id).await;
         let _passes = self.shielded_passes.write().await;
-        if spends == StoredSpends::Refuse
-            && super::shielded_pool::holds_unresolved(leases, manager, id).await
-        {
+        if super::shielded_pool::holds_unresolved(leases, manager, id).await {
             return Err(EngineError::ShieldedSpendUnresolved);
         }
         manager.remove_wallet(&id.0).await?;

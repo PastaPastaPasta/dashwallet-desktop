@@ -196,6 +196,12 @@ impl From<EngineError> for AppError {
             ),
             E::SpvNotRunning => (EngineCode::SpvNotRunning.into(), None),
             E::ShieldedSpendUnresolved => (EngineCode::ShieldedSpendUnresolved.into(), None),
+            E::ShieldedSpendHeld(hold) => (
+                EngineCode::ShieldedSpendUnresolved.into(),
+                Some(ErrorData::ShieldedHold {
+                    reason: hold.into(),
+                }),
+            ),
             E::LastStartupWallet => (EngineCode::LastStartupWallet.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
@@ -432,6 +438,7 @@ mod tests {
             E::OutpointNotFound(dashcore::OutPoint::null()),
             E::StuckFunding(dw_engine::platform::lease::StuckFundingRefusal::NoMarker),
             E::ShieldedSpendUnresolved,
+            E::ShieldedSpendHeld(dw_engine::ShieldedHold::CarriedOver),
             E::LastStartupWallet,
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).
