@@ -47,6 +47,8 @@ pub(crate) struct ProtocolRuntime {
     pass: tokio::sync::Mutex<()>,
     #[cfg(test)]
     pub(crate) test_fetch: Mutex<Option<TestProtocolFetch>>,
+    #[cfg(test)]
+    pub(crate) hold_fetch: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -62,6 +64,8 @@ impl Default for ProtocolRuntime {
             pass: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             test_fetch: Mutex::new(None),
+            #[cfg(test)]
+            hold_fetch: Mutex::new(None),
         }
     }
 }
@@ -115,6 +119,7 @@ impl ProtocolRuntime {
     async fn read_network(&self, sdk: &dash_sdk::Sdk) -> Option<u32> {
         #[cfg(test)]
         {
+            crate::coins::pause_at(&self.hold_fetch).await;
             let hook = guard(&self.test_fetch).clone();
             if let Some(hook) = hook {
                 return hook().ok().filter(|&v| v > 0);
@@ -189,7 +194,13 @@ impl NetworkSession {
                 crate::coins::pause_at(&this.platform.hold_refresh).await;
                 let _op = this.enter().await?;
                 let sdk = this.manager()?.sdk_arc();
-                let _ = this.platform.protocol.fetch(&sdk).await;
+                // A close does not wait for this read: its guard would hold
+                // the close's gate for as long as Platform takes to answer.
+                tokio::select! {
+                    biased;
+                    () = this.gate.until_closed() => return Err(this.not_open()),
+                    _ = this.platform.protocol.fetch(&sdk) => {}
+                }
                 Ok(sdk.protocol_version_number())
             })
             .await?)
