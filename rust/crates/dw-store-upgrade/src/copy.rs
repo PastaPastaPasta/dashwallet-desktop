@@ -213,10 +213,11 @@ impl RefusedCause {
 /// snapshot is a backup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupState {
-    /// A completed snapshot whose files all match their sizes and sha256.
-    /// That it is of this wallet's data is checked when the restore runs.
+    /// A completed snapshot whose files all match their sizes and sha256,
+    /// of this wallet's data before the upgrade.
     Verified,
-    /// A completed snapshot that fails verification, and no verified one.
+    /// A completed snapshot that fails verification or is of other data,
+    /// and no verified one of this wallet's.
     Unverified,
     /// No completed snapshot.
     None,
@@ -258,8 +259,14 @@ impl ProvedState {
             migrated: upgrade.map(|u| u != Upgrade::NotStarted),
             backup: crate::snapshot::snapshot_state(network_dir)
                 .ok()
-                .as_ref()
-                .map(BackupState::from),
+                .map(|s| match s {
+                    SnapshotState::Verified(info)
+                        if crate::snapshot::of_live(network_dir, &info) != Some(true) =>
+                    {
+                        BackupState::Unverified
+                    }
+                    s => BackupState::from(&s),
+                }),
             unchanged: match upgrade {
                 _ if wrote => Some(false),
                 Some(Upgrade::NotStarted | Upgrade::Done) => Some(true),

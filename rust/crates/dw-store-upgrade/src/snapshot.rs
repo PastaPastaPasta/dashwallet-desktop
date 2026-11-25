@@ -535,6 +535,14 @@ fn reusable_between(info: &SnapshotInfo, live: &LiveState) -> rusqlite::Result<b
             == live.wallet_fingerprint)
 }
 
+/// Whether `info` is of `network_dir`'s data before the upgrade
+/// ([`reusable`]), read with `immutable=1`. `None` when that can't be read.
+pub(crate) fn of_live(network_dir: &Path, info: &SnapshotInfo) -> Option<bool> {
+    let conn = sql::open_immutable(&network_dir.join(STORE_FILES[0])).ok()?;
+    let live = live_state(&conn, network_dir, sql::open_immutable).ok()?;
+    reusable(info, &live).ok()
+}
+
 fn restorable(info: &SnapshotInfo) -> bool {
     info.dir.file_name().is_some_and(|n| {
         n.to_string_lossy()

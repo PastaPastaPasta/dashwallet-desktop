@@ -897,7 +897,11 @@ fn a_part_upgraded_file_never_offers_the_earlier_version() {
     let s = shows_unchanged(&f, RefusedCause::ContactsTable, |f| {
         precheck_refusal(f, &absent)
     });
-    assert_eq!(s.way_out, WayOut::Restore, "backup verified");
+    assert_eq!(
+        s.way_out,
+        WayOut::Unverified,
+        "the snapshot lacks the row added since: not this data's backup"
+    );
 
     let f = part_upgraded();
     let mut without_p4 = build().clone();
