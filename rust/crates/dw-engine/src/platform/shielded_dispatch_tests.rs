@@ -584,6 +584,7 @@ fn admit_refuses_an_artifact_with_a_disposition() {
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
     for (kind, reason) in [
         ("'unresolved'", "'cancelled'"),
+        ("'unresolved'", "'unattributable'"),
         ("'not_executed'", "'refused'"),
         ("'executed'", "NULL"),
     ] {
@@ -1487,6 +1488,46 @@ fn a_send_through_the_library_spends_with_the_wallets_own_key_set() {
         .block_on(s.leases.shielded_artifacts(wallet))
         .unwrap();
     assert!(artifacts.is_empty());
+}
+
+/// The balance the desktop shows is the library's reservation-aware sum.
+/// With three notes scanned and one reserved by a spend in flight (its
+/// record saved and its reservation anchored, as before the first
+/// broadcast), the status reads two notes spendable and a spend may select
+/// only those two; once the reservation is released, all three.
+#[test]
+fn a_reserved_note_is_not_counted_spendable() {
+    let h = Hooked::new();
+    h.hold_notes(&[1, 2, 3]);
+    h.store_unsent(1, &[2]);
+    let reserved = note(2, NOTE).nullifier;
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        store.set_last_synced_note_index(id, 4).unwrap();
+        assert!(store.mark_pending(id, &reserved).unwrap());
+        (store.set_pending_spend(id, &reserved, [0xa0; 32], [1; 32], Some(ANCHOR_HEIGHT))).unwrap();
+    });
+    let read = || {
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine)
+            .block_on(on_pool(&s, wallet, |_, lib| async move {
+                let status = pool::status(&lib).await?;
+                let mut selectable: Vec<u64> =
+                    (lib.unspent().await?.iter()).map(|n| n.position).collect();
+                selectable.sort_unstable();
+                Ok((status.active, status.ready, status.balance, selectable))
+            }))
+            .unwrap()
+    };
+    assert_eq!(read(), (true, true, 2 * NOTE, vec![1, 3]));
+
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        assert!(store.clear_pending(id, &reserved).unwrap());
+    });
+    assert_eq!(read(), (true, true, 3 * NOTE, vec![1, 2, 3]));
 }
 
 // ---- C-routes C1b-2: the unshield's FromShielded record ----

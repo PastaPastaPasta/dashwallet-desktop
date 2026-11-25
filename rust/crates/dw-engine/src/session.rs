@@ -202,7 +202,7 @@ fn kept_key(data_dir: &Path) -> PathBuf {
 
 /// Whether a failed open still holds `data_dir`'s wallet database; an entry
 /// whose database was released since is dropped.
-fn held_after_failed_open(data_dir: &Path) -> bool {
+pub(crate) fn held_after_failed_open(data_dir: &Path) -> bool {
     let key = kept_key(data_dir);
     let mut kept = KEPT_AFTER_FAILED_OPEN
         .lock()
@@ -223,9 +223,10 @@ pub(crate) async fn release_after_failed_open(
     persister: Weak<SqlitePersister>,
     #[cfg_attr(not(test), allow(unused_variables))] left_loaded: bool,
 ) {
+    let released = persister_released(&persister).await;
     #[cfg(test)]
-    failed_open_probe::record_end(data_dir, left_loaded);
-    if persister_released(&persister).await {
+    failed_open_probe::record_end(data_dir, left_loaded, released);
+    if released {
         return;
     }
     tracing::warn!("the wallet database stays held after a failed open until the app restarts");
@@ -306,18 +307,22 @@ pub(crate) mod failed_open_probe {
     }
 
     /// For each failed open of a data directory that ended, whether it
-    /// dropped its manager with a wallet still loaded.
-    static ENDED: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+    /// dropped its manager with a wallet still loaded, and whether its
+    /// wallet database was released within the wait.
+    static ENDED: Mutex<Vec<(PathBuf, bool, bool)>> = Mutex::new(Vec::new());
 
-    pub(crate) fn record_end(data_dir: &Path, left_loaded: bool) {
-        (ENDED.lock().unwrap_or_else(|p| p.into_inner()))
-            .push((data_dir.to_path_buf(), left_loaded));
+    pub(crate) fn record_end(data_dir: &Path, left_loaded: bool, released: bool) {
+        (ENDED.lock().unwrap_or_else(|p| p.into_inner())).push((
+            data_dir.to_path_buf(),
+            left_loaded,
+            released,
+        ));
     }
 
-    pub(crate) fn ended(data_dir: &Path) -> Vec<bool> {
+    pub(crate) fn ended(data_dir: &Path) -> Vec<(bool, bool)> {
         (ENDED.lock().unwrap_or_else(|p| p.into_inner()).iter())
-            .filter(|(d, _)| d == data_dir)
-            .map(|(_, loaded)| *loaded)
+            .filter(|(d, ..)| d == data_dir)
+            .map(|(_, loaded, released)| (*loaded, *released))
             .collect()
     }
 }
