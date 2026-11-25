@@ -1164,10 +1164,11 @@ fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
 }
 
 /// BL-921: how a verified read of `SpentAssetLockTransactions` is read.
-/// No element is unspent, an empty item consumed, an item holding an
-/// `AssetLockValue` partly used with its remaining credits (#402); nothing
-/// back, the key missing from the answer, an item that is not an
-/// `AssetLockValue`, or an element of another sort is no answer.
+/// No element is unspent, an empty item or an `AssetLockValue` with nothing
+/// left consumed, any other `AssetLockValue` partly used with its remaining
+/// credits (#402); nothing back, the key missing from the answer, an item
+/// that is not an `AssetLockValue`, or an element of another sort is no
+/// answer.
 #[test]
 fn a_spent_read_follows_drives_asset_lock_tree() {
     use super::unfinished_locks::{SpentRead, read_spent, spent_key};
@@ -1203,6 +1204,8 @@ fn a_spent_read_follows_drives_asset_lock_tree() {
             credits: 400_000_000
         }
     );
+    let none_left = answer(Some(Element::new_item(stored_value(1_000_000_000, 0))));
+    assert_eq!(read_spent(Some(&none_left), &key), SpentRead::Consumed);
     let mut trailing = stored_value(1_000_000_000, 400_000_000);
     trailing.push(0);
     let trailing = answer(Some(Element::new_item(trailing)));

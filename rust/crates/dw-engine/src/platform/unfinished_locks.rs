@@ -178,7 +178,8 @@ pub(crate) const SPENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::
 pub(crate) enum SpentRead {
     /// No element: not consumed as of the proof's block.
     Unspent,
-    /// An empty item: consumed, for good.
+    /// An empty item, or an `AssetLockValue` with nothing left: consumed,
+    /// for good.
     Consumed,
     /// Any other item: partly used, `credits` left (dpp's `AssetLockValue`
     /// `remaining_credit_value`, which drive serializes into the item).
@@ -212,14 +213,16 @@ pub(crate) fn read_spent(
     }
 }
 
-/// [`SpentRead::Remaining`] of a stored `AssetLockValue`'s bytes;
-/// [`SpentRead::Unread`] when they are not one.
+/// [`SpentRead::Remaining`] of a stored `AssetLockValue`'s bytes,
+/// [`SpentRead::Consumed`] when nothing is left; [`SpentRead::Unread`]
+/// when they are not one.
 fn remaining(bytes: &[u8]) -> SpentRead {
     use dpp::asset_lock::reduced_asset_lock_value::{AssetLockValue, AssetLockValueGettersV0};
     use dpp::serialization::PlatformDeserializableUntrusted;
     match AssetLockValue::deserialize_from_bytes_untrusted_exact(bytes) {
-        Ok(value) => SpentRead::Remaining {
-            credits: value.remaining_credit_value(),
+        Ok(value) => match value.remaining_credit_value() {
+            0 => SpentRead::Consumed,
+            credits => SpentRead::Remaining { credits },
         },
         Err(e) => {
             tracing::warn!(error = %e, "a spent asset lock's stored value could not be read");
