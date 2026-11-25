@@ -21,18 +21,24 @@ function smallCoins(w: World, n: number): World {
   return w;
 }
 
-/** A main balance of one coin of 0.00005 DASH, too little for either route's smallest amount once the
- * fee comes out; with `mixed`, a mixed coin of 0.1 DASH as well, which Max leaves in the wallet. */
-function dustCoins(w: World, mixed: boolean): World {
+/** The main balance as these coins only (`amount`, then anything else that differs from a confirmed
+ * coin of account 0); `other` names the ones of another funding account. */
+function maxCoins(w: World, coins: Array<Partial<Utxo> & { amount: number }>, other: number[] = []): World {
   const main = w.wallets[0];
-  const coin = (amount: number, vout: number, extra: Partial<Utxo> = {}): Utxo => ({ ...main.coins[0], outpoint: { txid: "d5".repeat(32), vout }, amount, label: null, isChange: false, reserved: false, userLocked: false, ...extra });
-  main.coins = [coin(5_000, 0), ...(mixed ? [coin(10_000_100, 1, { coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds })] : [])];
-  const sum = main.coins.reduce((s, u) => s + u.amount, 0);
+  main.coins = coins.map((extra, vout): Utxo => ({ ...main.coins[0], outpoint: { txid: "d5".repeat(32), vout }, label: null, isChange: false, reserved: false, userLocked: false, ...extra }));
+  main.otherAccounts = other.map((vout) => `${"d5".repeat(32)}:${vout}`);
+  const sum = (f: (u: Utxo) => boolean) => main.coins.filter(f).reduce((s, u) => s + u.amount, 0);
+  const confirmed = sum((u) => u.confirmations > 0);
+  const unconfirmed = sum((u) => u.confirmations === 0);
   const b = main.summary.balances!;
-  const coinjoin = main.coins.filter((u) => u.coinjoinDenominated).reduce((s, u) => s + u.amount, 0);
-  main.summary = { ...main.summary, balances: { ...b, confirmed: sum, unconfirmed: 0, total: sum + b.immature + b.locked, coinjoin } };
+  main.summary = { ...main.summary, balances: { ...b, confirmed, unconfirmed, total: confirmed + unconfirmed + b.immature + b.locked, coinjoin: sum((u) => u.coinjoinDenominated) } };
   return w;
 }
+
+/** A main balance of one coin of 0.00005 DASH, too little for either route's smallest amount once the
+ * fee comes out; with `mixed`, a mixed coin of 0.1 DASH as well, which Max leaves in the wallet. */
+const dustCoins = (w: World, mixed: boolean) =>
+  maxCoins(w, [{ amount: 5_000 }, ...(mixed ? [{ amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds }] : [])]);
 
 export function transferScenarios(base: Base) {
   return {
@@ -42,6 +48,15 @@ export function transferScenarios(base: Base) {
     "transfer-max-dust": (t: ThemeName | null) => dustCoins(base(t), false),
     /** As "transfer-max-dust", with a mixed coin Max leaves in the Dash wallet. */
     "transfer-max-dust-left": (t: ThemeName | null) => dustCoins(base(t), true),
+    /** Max from the Dash wallet has nothing final to move: its one coin, 0.002 DASH of its own change, is still arriving. */
+    "transfer-max-arriving": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 200_000, confirmations: 0, blockHeight: null, instantLocked: false, chainLocked: false, isChange: true }]),
+    /** Max from the Dash wallet has nothing to move: its one coin of 0.002 DASH is another account's. */
+    "transfer-max-nothing": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 200_000 }], [0]),
+    /** Max from the Dash wallet moves nothing, its one coin of 500 duffs being less than the fee, and
+     * nothing is arriving or left out. */
+    "transfer-max-tiny": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 500 }]),
+    /** No coin in the Dash wallet: Max is not offered. */
+    "transfer-max-none": (t: ThemeName | null) => maxCoins(base(t), []),
     /** Shielded not active and no Platform addresses: Transfer has nowhere to go and says why. */
     "transfer-none": (t: ThemeName | null) => {
       const w = base(t);

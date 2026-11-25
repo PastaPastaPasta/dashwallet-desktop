@@ -157,9 +157,6 @@ export const TRANSFER_COPY = {
   get platformInactive() {
     return t("transfer.platformInactive");
   },
-  get noCoreBalance() {
-    return t("transfer.noCoreBalance");
-  },
   get loading() {
     return t("transfer.loading");
   },

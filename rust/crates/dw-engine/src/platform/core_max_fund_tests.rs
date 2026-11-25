@@ -210,7 +210,7 @@ fn core_max_fund_refuses_before_signing() {
 }
 
 /// A lock below the fund's floor is refused before signing, with what Max
-/// would move and what the other accounts hold.
+/// would move, what the other accounts hold and what is still arriving.
 #[test]
 fn core_max_fund_refuses_below_the_floor() {
     let fx = Fixture::new(0);
@@ -219,7 +219,7 @@ fn core_max_fund_refuses_below_the_floor() {
     let read = CoreCoins {
         coins: vec![bip44(0, floor + fee - 1)],
         left_duffs: 3_000,
-        arriving_duffs: 0,
+        arriving_duffs: 8_000,
     };
     let lib = maxer(&fx, read);
     let below = CreditsError::BelowMinimum {
@@ -227,6 +227,7 @@ fn core_max_fund_refuses_below_the_floor() {
         max: Some(CoreMaxShort {
             duffs: floor - 1,
             left_duffs: 3_000,
+            arriving_duffs: 8_000,
         }),
     };
     assert_eq!(max_quote(&fx, &lib).unwrap_err(), below);

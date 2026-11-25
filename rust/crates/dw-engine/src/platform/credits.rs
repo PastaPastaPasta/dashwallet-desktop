@@ -184,6 +184,8 @@ pub struct CoreMaxShort {
     pub duffs: u64,
     /// As [`CoreMax`]'s: spendable coins of the wallet's other accounts.
     pub left_duffs: u64,
+    /// As [`CoreMax`]'s: coins of the account not final yet.
+    pub arriving_duffs: u64,
 }
 
 /// What a withdrawal of `amount` takes and pays out, at the network's

@@ -323,7 +323,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           data-testid="transfer-max"
           aria-busy={line.maxing}
           disabled={blocked || !own || !probe || line.maxing}
-          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : null)}
+          why={why ?? (probe === null ? T.loading : null)}
           title={line.maxing ? T.why.max : undefined}
           whyId={why ? `${id}-why` : undefined}
           onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}

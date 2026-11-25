@@ -118,6 +118,34 @@ async function maxBelowMinimum(page: Page, route: "coreToShielded" | "coreToPlat
   expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
 }
 
+/** Max from the Dash wallet with nothing to move (`text`): its coins still arriving, every coin one Max
+ * leaves out, or, with neither, nothing to move at all. The refusal never says 0.00000000 or the
+ * smallest amount, and no line of what stays shows beside it. */
+async function maxZero(page: Page, route: "coreToShielded" | "coreToPlatform", text: string) {
+  await openTransfer(page, route);
+  await maxRefused(page, text);
+  await expect(page.getByTestId("transfer-fee")).not.toContainText(/0\.00000000|Too small/);
+  await expect(page.getByTestId("transfer-sheet").getByText(/stays in your Dash wallet|Enter an amount instead/)).toHaveCount(0);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
+}
+
+const MAX_ALL_ARRIVING = "Your Dash wallet's coins are still arriving (0.00200000 tDASH). Max can move them once they've confirmed.";
+const MAX_NOTHING = "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.";
+const MAX_EMPTY = "There's nothing in your Dash wallet to move.";
+
+/** No coin in the Dash wallet: Max is disabled with no line of why, nothing is quoted and the fee line
+ * keeps its hint, no refusal. */
+async function maxNone(page: Page, route: "coreToShielded" | "coreToPlatform") {
+  await openTransfer(page, route);
+  await expect(page.getByTestId("transfer-max")).toBeDisabled();
+  await expect(page.getByTestId("transfer-sheet").locator(".transfer-amount-row .dash-button-why")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/field-hint/);
+  await expect(page.getByTestId("transfer-fee")).not.toContainText(/nothing|Too small|0\.00000000/);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(0);
+}
+
 /** Max refused: the refusal shown, the field left as it was. */
 async function maxRefused(page: Page, text: RegExp | string) {
   await page.getByTestId("transfer-max").click();
@@ -196,6 +224,10 @@ export const TRANSFER_STATES: TransferState[] = [
   },
   { id: "coreToShielded-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", false) },
   { id: "coreToShielded-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", true) },
+  { id: "coreToShielded-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
+  { id: "coreToShielded-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToShielded", MAX_EMPTY) },
+  { id: "coreToShielded-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToShielded") },
   {
     id: "coreToShielded-confirm",
     scenario: "funded",
@@ -288,6 +320,10 @@ export const TRANSFER_STATES: TransferState[] = [
   },
   { id: "coreToPlatform-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", false) },
   { id: "coreToPlatform-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", true) },
+  { id: "coreToPlatform-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
+  { id: "coreToPlatform-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToPlatform", MAX_EMPTY) },
+  { id: "coreToPlatform-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToPlatform") },
   {
     id: "coreToPlatform-confirm",
     scenario: "funded",

@@ -128,6 +128,7 @@ pub(crate) fn plan(read: CoreCoins, floor: u64) -> Result<MaxPlan, MaxRefusal> {
             max: CoreMaxShort {
                 duffs,
                 left_duffs: read.left_duffs,
+                arriving_duffs: read.arriving_duffs,
             },
         });
     }

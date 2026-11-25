@@ -327,12 +327,14 @@ pub enum ErrorData {
     /// (the mixing minimum): a limit in duffs.
     Limit { duffs: u64 },
     /// `credits.below_minimum` and `shielded.below_minimum` of a Core Max:
-    /// the floor, what Max would move (the figure held against it) and the
-    /// spendable coins of the wallet's other accounts, all in duffs.
+    /// the floor, what Max would move (the figure held against it), the
+    /// spendable coins of the wallet's other accounts and the account's coins
+    /// not final yet, all in duffs.
     MaxMinimum {
         min: u64,
         duffs: u64,
         left_duffs: u64,
+        arriving_duffs: u64,
     },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },

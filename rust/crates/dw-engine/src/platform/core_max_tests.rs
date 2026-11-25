@@ -322,8 +322,8 @@ fn core_max_refuses_coins_changed_since_the_quote() {
 }
 
 /// A lock below the pool's floor, or none, is refused before signing,
-/// with what Max would move (the figure held against the floor) and what
-/// the other accounts hold.
+/// with what Max would move (the figure held against the floor), what the
+/// other accounts hold and what is still arriving.
 #[test]
 fn core_max_refuses_below_the_floor() {
     let fx = Fixture::new(0);
@@ -334,21 +334,34 @@ fn core_max_refuses_below_the_floor() {
         left_duffs,
         arriving_duffs: 0,
     };
-    let below = |duffs: u64, left_duffs: u64| ShieldedError::BelowMinimum {
+    let below = |duffs: u64, left_duffs: u64, arriving_duffs: u64| ShieldedError::BelowMinimum {
         min: floor,
-        max: Some(CoreMaxShort { duffs, left_duffs }),
+        max: Some(CoreMaxShort {
+            duffs,
+            left_duffs,
+            arriving_duffs,
+        }),
     };
     assert_eq!(
         quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 0))).unwrap_err(),
-        below(floor - 1, 0)
+        below(floor - 1, 0, 0)
     );
     assert_eq!(
         quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 7_000))).unwrap_err(),
-        below(floor - 1, 7_000)
+        below(floor - 1, 7_000, 0)
     );
     assert_eq!(
         quote_of(&fx, &maxer(&fx, CoreCoins::default())).unwrap_err(),
-        below(0, 0)
+        below(0, 0, 0)
+    );
+    let arriving = CoreCoins {
+        arriving_duffs: 90_000,
+        left_duffs: 7_000,
+        ..CoreCoins::default()
+    };
+    assert_eq!(
+        quote_of(&fx, &maxer(&fx, arriving)).unwrap_err(),
+        below(0, 7_000, 90_000)
     );
     quote_of(&fx, &maxer(&fx, one(floor + fee, 7_000))).unwrap();
 }
