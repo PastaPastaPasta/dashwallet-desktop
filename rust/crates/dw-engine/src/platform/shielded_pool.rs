@@ -3193,7 +3193,7 @@ impl ShieldedLib for PwShielded {
         {
             return on;
         }
-        false
+        true
     }
 
     async fn rest_clock(&self) -> Result<RestClock, PlatformError> {
