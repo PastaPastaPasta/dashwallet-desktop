@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,7 +68,9 @@ pub enum CloseRefused<B> {
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// Root data directory; each network lives in `<data_root>/<network>/`.
+    /// Root data directory; each network lives in `<data_root>/<network>/`,
+    /// or in the folder `network-folders.json` names for it
+    /// ([`Engine::network_dir`]).
     pub data_root: PathBuf,
     /// tokio worker threads; `None` = tokio's default (one per core).
     pub worker_threads: Option<usize>,
@@ -86,10 +88,32 @@ struct Shared {
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
     sessions: Mutex<HashMap<DashNetwork, Arc<NetworkSession>>>,
+    /// The networks whose last open the store-upgrade check refused
+    /// ([`EngineError::StoreRefused`]): only these may start over in a new
+    /// folder ([`Engine::recover_in_fresh_folder`]).
+    refused: std::sync::Mutex<HashSet<DashNetwork>>,
     /// The data root's instance lock (`dw_fs::instance`): another process's
     /// engine, dwcli's or an app's, is refused the root while this one has
     /// it.
     _instance: dw_fs::instance::InstanceLock,
+}
+
+impl Shared {
+    fn refused_contains(&self, network: &DashNetwork) -> bool {
+        self.refused
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(network)
+    }
+
+    fn set_refused(&self, network: &DashNetwork, refused: bool) {
+        let mut set = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        if refused {
+            set.insert(network.clone());
+        } else {
+            set.remove(network);
+        }
+    }
 }
 
 /// Owns the tokio runtime and the open network sessions.
@@ -167,6 +191,7 @@ impl Engine {
                 rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
+                refused: std::sync::Mutex::new(HashSet::new()),
                 _instance: instance,
             }),
         })
@@ -180,9 +205,53 @@ impl Engine {
         &self.shared.config
     }
 
-    /// Directory used for `network`.
-    pub fn network_dir(&self, network: &DashNetwork) -> PathBuf {
-        self.shared.config.data_root.join(network.dir_name())
+    /// Directory used for `network`: `<data_root>/<network>`, or the folder
+    /// `<data_root>/network-folders.json` names for it once it started over
+    /// ([`Self::recover_in_fresh_folder`]). A record that can't be read or
+    /// names anything else is a `Storage` error, never the default folder.
+    pub fn network_dir(&self, network: &DashNetwork) -> Result<PathBuf, EngineError> {
+        crate::network_folders::resolve(&self.shared.config.data_root, network)
+    }
+
+    /// The way out of a refused open (Q107 C1): `network` starts over in a
+    /// new, empty, owner-only folder beside its own,
+    /// `<dir name>-recovered-<n>` with the lowest `n` free, which
+    /// `network-folders.json` records for every open after this one, this
+    /// engine's and the next. Nothing in the network's current folder is
+    /// written, and none of its stores is opened: the refused data stays as
+    /// it is. Returns the new folder. `InvalidArgument` while the network
+    /// is open, or unless its last open in this engine was refused by the
+    /// store-upgrade check.
+    pub async fn recover_in_fresh_folder(
+        &self,
+        network: DashNetwork,
+    ) -> Result<PathBuf, EngineError> {
+        network.validate()?;
+        let shared = Arc::clone(&self.shared);
+        self.handle
+            .spawn(async move {
+                let sessions = shared.sessions.lock().await;
+                if sessions.contains_key(&network) {
+                    return Err(EngineError::InvalidArgument(format!(
+                        "{network} is open; only a network whose open was refused starts over"
+                    )));
+                }
+                if !shared.refused_contains(&network) {
+                    return Err(EngineError::InvalidArgument(format!(
+                        "the last open of {network} was not refused; nothing to start over from"
+                    )));
+                }
+                let (root, net) = (shared.config.data_root.clone(), network.clone());
+                let dir = tokio::task::spawn_blocking(move || {
+                    crate::network_folders::recover(&root, &net)
+                })
+                .await??;
+                shared.set_refused(&network, false);
+                drop(sessions);
+                tracing::info!(%network, folder = %dir.display(), "network starts over in a new folder");
+                Ok(dir)
+            })
+            .await?
     }
 
     /// Opens (or returns the already-open) session for `network`. `opts` only
@@ -194,21 +263,26 @@ impl Engine {
     ) -> Result<Arc<NetworkSession>, EngineError> {
         network.validate()?;
         let shared = Arc::clone(&self.shared);
-        let dir = self.network_dir(&network);
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
                 if let Some(existing) = sessions.get(&network) {
                     return Ok(Arc::clone(existing));
                 }
-                let session = NetworkSession::open(
+                let dir = crate::network_folders::resolve(&shared.config.data_root, &network)?;
+                let opened = NetworkSession::open(
                     network.clone(),
                     dir,
                     Arc::clone(&shared.sink),
                     opts,
                     shared.config.vault.clone(),
                 )
-                .await?;
+                .await;
+                shared.set_refused(
+                    &network,
+                    matches!(opened, Err(EngineError::StoreRefused(_))),
+                );
+                let session = opened?;
                 sessions.insert(network.clone(), Arc::clone(&session));
                 if network == DashNetwork::Mainnet {
                     session.hub.set_rates(Arc::downgrade(&shared.rates));
