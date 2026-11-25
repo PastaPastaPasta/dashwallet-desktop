@@ -111,7 +111,7 @@ test("a payment delivered while Home is open updates the balance and the row in 
         involvesWatchOnly: false,
       },
     ];
-    const balances = { confirmed: paid, unconfirmed: 0, immature: 0, locked: 0, total: paid, coinjoin: 0, withheld: 0, catchingUp: true };
+    const balances = { confirmed: paid, unconfirmed: 0, immature: 0, locked: 0, total: paid, coinjoin: 0, withheld: 0, catchingUp: true, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
     main.summary = { ...main.summary, balances };
     fx.emit({ kind: "newTransactions", network, walletId, txids: [txid], live: [true], count: 1, catchUp: true });
     fx.emit({ kind: "balances", network, walletId, balances });

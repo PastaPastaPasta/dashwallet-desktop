@@ -1365,6 +1365,11 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_un
         ),
         "A held by the payment's claim: {refused:?}"
     );
+    // The reconcile after the block drops it, apart from this thread: a
+    // Drop unconfirmed run before it would take the payment itself.
+    eventually("the other payment goes when its spend is mined", || {
+        abandoned(&engine, &session, id, other.txid())
+    });
     assert_eq!(
         engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
         0,
@@ -6194,7 +6199,7 @@ fn mined_below_a_chainlock(
 }
 
 /// Wallet `id` closed and opened again with `chain` as the header chain.
-fn reload_with_headers(
+pub(super) fn reload_with_headers(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
@@ -6492,6 +6497,53 @@ fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_ope
         BIRTH - 1,
         "the closed wallet"
     );
+}
+
+/// #749 (Q81b S3): Reset chain data deletes the header chain the drops'
+/// spend notes are proven against, so every `drop_spent:` row of every
+/// wallet goes, open or closed; the drops' holds and origins stay.
+#[test]
+fn reset_chain_data_deletes_the_spend_notes_of_open_and_closed_wallets() {
+    let (_dir, engine, session, open) = engine_wallet();
+    let closed = second_wallet(&engine, &session);
+    let note = crate::history::SpendNote {
+        height: TIP,
+        block: dashcore::BlockHash::from_byte_array([4; 32]),
+        spender: None,
+    }
+    .encode();
+    let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 1);
+    let dropped = Txid::from_byte_array([9; 32]);
+    let kept = [
+        (format!("drop_holds:{dropped}"), coin(1).to_string()),
+        (format!("drop_winner:{dropped}"), "||".to_owned()),
+    ];
+    let rows = |wallet: WalletId| {
+        (session.live().unwrap().appdb)
+            .settings_with_prefix_lossy(&wallet.to_string(), "drop_")
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, v.unwrap()))
+            .collect::<BTreeSet<_>>()
+    };
+    for wallet in [open, closed] {
+        let spent = [
+            (format!("drop_spent:{}", coin(1)), note.clone()),
+            (format!("drop_spent:{}", coin(2)), note.clone()),
+        ];
+        let writes: Vec<(&str, Option<&str>)> = (kept.iter().chain(&spent))
+            .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+            .collect();
+        (session.live().unwrap().appdb)
+            .set_settings_durable(&wallet.to_string(), &writes)
+            .unwrap();
+        assert_eq!(rows(wallet).len(), 4);
+    }
+    engine.block_on(session.unload_wallet(closed)).unwrap();
+    engine.block_on(session.reset_chain_data()).unwrap();
+    for wallet in [open, closed] {
+        assert_eq!(rows(wallet), kept.iter().cloned().collect(), "{wallet}");
+    }
 }
 
 /// A payment to another loaded wallet abandoned after the load, its lock
