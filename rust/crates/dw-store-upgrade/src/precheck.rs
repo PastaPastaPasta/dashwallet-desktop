@@ -325,7 +325,13 @@ impl ScratchCopy {
             }
             config.auto_backup_dir = Some(auto);
         }
-        let persister = match SqlitePersister::open(config) {
+        #[cfg(test)]
+        let opened = OPEN_FOR_TEST
+            .with(|o| o.take())
+            .map_or_else(|| SqlitePersister::open(config), |f| Err(f()));
+        #[cfg(not(test))]
+        let opened = SqlitePersister::open(config);
+        let persister = match opened {
             Ok(persister) => persister,
             Err(WalletStorageError::ConfigInvalid { reason }) => {
                 return Err(StoreUpgradeError::OpenConfigUnsupported {
@@ -361,6 +367,9 @@ thread_local! {
     /// Puts a file where the rehearsal's backup directory goes.
     pub(crate) static BLOCK_REHEARSAL_BACKUP: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+    /// Replaces the rehearsal's upstream open result with this error, once.
+    pub(crate) static OPEN_FOR_TEST: std::cell::Cell<Option<fn() -> WalletStorageError>> =
+        const { std::cell::Cell::new(None) };
     /// Replaces the rehearsal's load result with this error, once.
     pub(crate) static LOAD_FOR_TEST: std::cell::Cell<Option<fn() -> PersistenceError>> =
         const { std::cell::Cell::new(None) };

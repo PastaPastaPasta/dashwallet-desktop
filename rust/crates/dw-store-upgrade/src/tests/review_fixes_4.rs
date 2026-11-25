@@ -1,20 +1,24 @@
 //! The re-review of ffbc69cf: a snapshot whose marker was lost after R1's
 //! drop (M-A), snapshots of an upgraded file (M-B), a fault reading a
-//! snapshot (L-1), the wallet file's side files (L-5) and the file checked
-//! again under the write lock (L-4).
+//! snapshot (L-1), the wallet file's side files (L-5), the file checked
+//! again under the write lock (L-4), and tests of a snapshot past V018 and
+//! of the rehearsal's upstream open (L-7).
+
+use platform_wallet_storage::WalletStorageError;
 
 #[cfg(unix)]
 use super::review_fixes::column_present;
 #[cfg(unix)]
 use super::review_fixes_3::assert_file_refused;
-use super::review_fixes_3::{assert_missing, between};
+use super::review_fixes_3::{assert_missing, between, checked};
 use super::*;
-use crate::copy::{self, ProvedState};
+use crate::copy::{self, ProvedState, RefusedCause};
 use crate::error::StoreUpgradeError;
+use crate::precheck::{OPEN_FOR_TEST, Precheck};
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::{
     ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MARKER, MissingSnapshot, SnapshotInfo,
-    SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state,
+    SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state, take_snapshot,
 };
 
 #[test]
@@ -239,4 +243,118 @@ fn a_wallet_file_swapped_for_a_symlink_under_the_lock_is_refused() {
     );
     assert!(err.file_unchanged());
     assert!(column_present(&f), "the drop was rolled back");
+}
+
+#[test]
+fn a_restorable_snapshot_past_v018_is_never_kept_as_the_backup() {
+    let g = fixture("v0.1.0");
+    exec(
+        &g.wallet(),
+        "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) \
+         VALUES (23, 'V23__posing', '', '0')",
+    );
+    ABSENT_POLICY_FOR_TEST.with(|p| p.set(Some(AbsentSnapshotPolicy::ProceedUnrestorable)));
+    let past = take_snapshot(&g.net, now());
+    ABSENT_POLICY_FOR_TEST.with(|p| p.set(None));
+    let past = past.unwrap();
+    assert!(past.refinery_max() > 18);
+
+    let (f, s) = between();
+    fs::remove_dir_all(s.dir()).unwrap();
+    let posing = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join("before-upgrade-20991231T000000Z");
+    fs::create_dir(&posing).unwrap();
+    for entry in fs::read_dir(past.dir()).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), posing.join(entry.file_name())).unwrap();
+    }
+    assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
+    let copy = crate::sql::open_immutable(&posing.join("wallet.sqlite")).unwrap();
+    assert!(crate::sql::has_column(&copy, "contacts", "external_account_reference").unwrap());
+    drop(copy);
+    assert_missing(&f, MissingSnapshot::Mismatch);
+}
+
+fn readonly_migration() -> WalletStorageError {
+    let tmp = private_tempdir();
+    let path = tmp.path().join("ro.sqlite");
+    drop(Connection::open(&path).unwrap());
+    let mut ro =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let migration = refinery::Migration::unapplied("V1__a", "CREATE TABLE a (x INTEGER)").unwrap();
+    WalletStorageError::Migration(
+        refinery::Runner::new(&[migration])
+            .run(&mut ro)
+            .expect_err("read-only"),
+    )
+}
+
+fn integrity_run_disk_full() -> WalletStorageError {
+    WalletStorageError::IntegrityCheckRunFailed {
+        source: rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        ),
+    }
+}
+
+fn integrity_failed() -> WalletStorageError {
+    WalletStorageError::IntegrityCheckFailed {
+        report: "row 1 missing from index".into(),
+    }
+}
+
+#[test]
+fn the_rehearsal_reads_a_failed_upstream_open_by_its_cause() {
+    let f = fixture("v0.1.0");
+    let before = tree(&f.root);
+    let rehearse = |open: fn() -> WalletStorageError| {
+        OPEN_FOR_TEST.with(|o| o.set(Some(open)));
+        let got = checked(&f);
+        OPEN_FOR_TEST.with(|o| o.set(None));
+        got
+    };
+
+    let err = rehearse(integrity_run_disk_full).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::Io {
+                unchanged: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_refusal());
+
+    let got = rehearse(readonly_migration).unwrap();
+    let Precheck::Refuse { reason } = &got else {
+        panic!("{got:?}")
+    };
+    assert!(
+        matches!(reason, StoreUpgradeError::UpgradeCopyUnwritable { detail } if detail.contains("upstream open")),
+        "{reason:?}"
+    );
+    assert!(reason.is_refusal() && reason.file_unchanged());
+    assert_eq!(
+        copy::screen_for(reason, ProvedState::default()).map(|s| s.cause),
+        Some(RefusedCause::Unexpected)
+    );
+
+    let got = rehearse(integrity_failed).unwrap();
+    assert!(
+        matches!(
+            &got,
+            Precheck::Refuse {
+                reason: StoreUpgradeError::UpgradeRehearsalFailed { .. }
+            }
+        ),
+        "{got:?}"
+    );
+
+    assert_eq!(tree(&f.root), before, "nothing written");
+    assert!(matches!(checked(&f).unwrap(), Precheck::Fork { .. }));
 }
