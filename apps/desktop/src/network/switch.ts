@@ -46,6 +46,7 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
     }
     if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return { problem: NetworkText.walletOpening };
     if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return { problem: NetworkText.shieldedUnresolved };
+    if (data?.kind === "networkCloseRefused" && data.reason === "transferPreparing") return { problem: NetworkText.transferPreparing };
     if (e.code === "app.network_switch_failed" && data?.kind === "networkSwitch")
       return { reboot: data.rolledBack ? NetworkText.backOn(target, from) : NetworkText.noneOpen(target, from) };
     return { problem: NetworkText.notSwitchedBecause(errorMessage(e), e.code) };

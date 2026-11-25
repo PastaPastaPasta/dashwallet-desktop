@@ -60,10 +60,10 @@
 //! executes. A move is `done` only once a proved read shows every input at
 //! or past its signed nonce (the library's answer is a snapshot of the
 //! addresses, not proof of this transition); `failed` when it can never
-//! execute (not every input was signed, or Platform's structure or signature
-//! check refused it: deterministic, raised before the broadcast or by every
-//! node), or when a proof at a height above the first read after its call
-//! still shows its nonces unused. Nothing else ages a move out: an unknown
+//! execute (not every input was signed), or when a proof at a height above
+//! the first read after its call still shows its nonces unused. A node's
+//! error to a signed move, a consensus error too, settles nothing: it is one
+//! node's answer, not proof. Nothing else ages a move out: an unknown
 //! one stays `pending` and refuses the next move (`credits.move_pending`).
 //! A move `failed` by height may still execute (its transition stays valid
 //! while its nonces are unused), so a later move must sign exactly its
@@ -100,7 +100,6 @@ use dash_sdk::query_types::AddressInfo;
 use dashcore::OutPoint;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
-use dpp::consensus::ConsensusError;
 use dpp::dashcore::Network;
 use dpp::identity::Identity;
 use dpp::identity::accessors::IdentityGettersV0;
@@ -237,12 +236,18 @@ pub(crate) struct MoveRecord {
     /// (module doc, Moves): what the group took, unattributed.
     #[serde(default)]
     pub(crate) group: Option<GroupOutcome>,
-    /// The protocol version it was signed at (`None` before 0.2): a
-    /// definitive refusal of an identical transition at the same version
-    /// says this one can never execute either.
+    /// The protocol version it was signed at (`None` before 0.2).
     #[serde(default)]
     pub(crate) version: Option<u32>,
+    /// The outcome rule it was written under: [`HOLD_RULE`], or 0 for a
+    /// record from before it, which a node's consensus error to its signed
+    /// transition may have marked unable to land (#471).
+    #[serde(default)]
+    pub(crate) rule: u8,
 }
+
+/// Records written since #471: no error after a signature settles one.
+pub(crate) const HOLD_RULE: u8 = 1;
 
 /// [`MoveRecord::terms`]: the kind and fee rule, the inputs (address,
 /// nonce, credits), the fee estimate, the payout and the destination.
@@ -345,6 +350,10 @@ pub(crate) struct FundRecord {
     /// recorded (a restored one): only a proved apply completes it.
     #[serde(default)]
     pub(crate) restored: bool,
+    /// A recover of a partly used shield lock's remaining value
+    /// (`unfinished_remainder`), not an "Add from Dash wallet".
+    #[serde(default)]
+    pub(crate) recovered: bool,
     /// When each part of `absorbed` was read: a give-back offers each part
     /// to the `FromShielded` records armed before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -353,10 +362,13 @@ pub(crate) struct FundRecord {
 }
 
 impl FundRecord {
-    fn activity(&self) -> PlatformActivity {
+    pub(crate) fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: format!("fund-{}", self.txid),
-            kind: PlatformActivityKind::FromCore,
+            kind: match self.recovered {
+                true => PlatformActivityKind::Recovered,
+                false => PlatformActivityKind::FromCore,
+            },
             state: self.state,
             credits: self.credits,
             address: Some(self.address.clone()),
@@ -407,6 +419,7 @@ impl FundRecord {
             vout: outpoint.vout,
             armed: false,
             restored: false,
+            recovered: false,
             claims: Vec::new(),
             at: unix_now(),
         }
@@ -969,13 +982,14 @@ pub(crate) enum Arming {
 /// Records that an apply of the fund lock at `outpoint` is about to
 /// release a signature: its record armed (module doc), made first for a
 /// lock that has none (a restored one: paying `address`, about
-/// `credits`).
+/// `credits`; `recovered` for a recover's, `unfinished_remainder`).
 pub(crate) async fn arm_fund(
     session: &NetworkSession,
     wallet: WalletId,
     lock: (OutPoint, u64),
     address: String,
     credits: u64,
+    recovered: bool,
 ) -> Result<Arming, PlatformError> {
     let one = wallet_lock(wallet);
     let _one = one.lock().await;
@@ -997,6 +1011,7 @@ pub(crate) async fn arm_fund(
             let r = FundRecord {
                 armed: true,
                 restored: true,
+                recovered,
                 ..FundRecord::pending(lock, address, credits)
             };
             (r, Arming::Made)
@@ -2222,29 +2237,134 @@ pub(crate) fn movable(balances: &BTreeMap<PlatformAddress, u64>, limits: &Limits
     plan(balances, WithdrawAmount::All, limits).map_or(0, |p| p.credits())
 }
 
-/// A transition Platform can never take: its structure or a signature
-/// refused (consensus basic and signature errors are stateless, raised by
-/// the SDK's structure check before the broadcast or by every node).
-fn never_valid(e: &PlatformWalletError) -> bool {
-    match e {
-        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
-            dpp::ProtocolError::ConsensusError(ce),
-        )) => matches!(
-            **ce,
-            ConsensusError::BasicError(_) | ConsensusError::SignatureError(_)
-        ),
-        _ => false,
+/// The witnesses of a move's pre-check: one per input, never a signature.
+/// Platform's structure check counts them and never reads them.
+#[derive(Debug)]
+struct Placeholder;
+
+#[async_trait::async_trait]
+impl dpp::identity::signer::Signer<PlatformAddress> for Placeholder {
+    async fn sign(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::platform_value::BinaryData, dpp::ProtocolError> {
+        Ok(dpp::platform_value::BinaryData::new(vec![0; 65]))
+    }
+
+    async fn sign_create_witness(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::address_funds::AddressWitness, dpp::ProtocolError> {
+        Ok(dpp::address_funds::AddressWitness::P2pkh {
+            signature: dpp::platform_value::BinaryData::new(vec![0; 65]),
+        })
+    }
+
+    fn can_sign_with(&self, _: &PlatformAddress) -> bool {
+        true
     }
 }
 
-/// A transition the SDK's structure check refused (consensus basic
-/// errors, raised before the broadcast or by every node).
-fn structure_refused(e: &PlatformWalletError) -> bool {
-    match e {
-        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
-            dpp::ProtocolError::ConsensusError(ce),
-        )) => matches!(**ce, ConsensusError::BasicError(_)),
-        _ => false,
+/// The SDK's own structure check of the transition a move will sign, built
+/// by the SDK's builder at the version it signs at, with placeholder
+/// witnesses, before anything is signed. The SDK runs the same check after
+/// signing, before the broadcast, and its error reads exactly as a node's
+/// would; refused here, nothing is signed, and a structure error after the
+/// signature is a node's answer, which settles nothing (#471). A consensus
+/// refusal is [`refused`]; `network` is the proved network protocol
+/// version, if one was read.
+async fn pre_check(
+    target: Target<'_>,
+    inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+    (script, credits): (Option<&CoreScript>, u64),
+    fee_strategy: AddressFundsFeeStrategy,
+    version: &PlatformVersion,
+    network: Option<u32>,
+) -> Result<(), CreditsError> {
+    use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
+    use dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+    use dpp::state_transition::address_credit_withdrawal_transition::methods::AddressCreditWithdrawalTransitionMethodsV0;
+    use dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+    use dpp::state_transition::address_funds_transfer_transition::methods::AddressFundsTransferTransitionMethodsV0;
+    use dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+    use dpp::state_transition::identity_topup_from_addresses_transition::methods::IdentityTopUpFromAddressesTransitionMethodsV0;
+    let refusal = |e: dpp::ProtocolError| refused(e, target.kind(), version, network);
+    let inputs = inputs.clone();
+    let built = match (target, script) {
+        (Target::Platform(to), _) => {
+            AddressFundsTransferTransition::try_from_inputs_with_signer(
+                inputs,
+                [(to, credits)].into(),
+                fee_strategy,
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Core(_), Some(script)) => {
+            AddressCreditWithdrawalTransition::try_from_inputs_with_signer(
+                inputs,
+                None,
+                fee_strategy,
+                CORE_FEE_PER_BYTE,
+                dpp::withdrawal::Pooling::Never,
+                script.clone(),
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Identity(identity), _) => {
+            IdentityTopUpFromAddressesTransition::try_from_inputs_with_signer(
+                identity,
+                inputs,
+                &Placeholder,
+                0,
+                version,
+                None,
+            )
+            .await
+        }
+        // A payout's script is claimed later, and it has its own way out
+        // (C-funding P8).
+        (Target::Core(_), None) | (Target::Contact, _) => return Ok(()),
+    };
+    let transition = built.map_err(refusal)?;
+    ensure_valid_state_transition_structure(&transition, version).map_err(|e| match e {
+        dash_sdk::dash_platform_queries::Error::Protocol(e) => refusal(e),
+        e => PlatformError::from(PlatformWalletError::Sdk(e.into())).into(),
+    })
+}
+
+/// A pre-check's error. A structural consensus refusal is
+/// `credits.rules_unsupported` when the proved network protocol version is
+/// above both `version` and the latest this build knows, and
+/// `credits.preflight_refused` otherwise, an unread version included. The
+/// consensus error goes to the log with the transfer kind, never into the
+/// error. Anything else maps as the SDK's error.
+fn refused(
+    e: dpp::ProtocolError,
+    kind: MoveKind,
+    version: &PlatformVersion,
+    network: Option<u32>,
+) -> CreditsError {
+    let dpp::ProtocolError::ConsensusError(ce) = e else {
+        return PlatformError::from(PlatformWalletError::Sdk(e.into())).into();
+    };
+    if !matches!(*ce, dpp::consensus::ConsensusError::BasicError(_)) {
+        return PlatformError::from(PlatformWalletError::Sdk((*ce).into())).into();
+    }
+    let planned = version.protocol_version;
+    let latest = PlatformVersion::latest().protocol_version;
+    tracing::warn!(?kind, planned, ?network, error = ?ce, "Platform's structure pre-check refused the transfer; nothing was signed");
+    if network.is_some_and(|v| v > planned.max(latest)) {
+        CreditsError::RulesUnsupported
+    } else {
+        CreditsError::PreflightRefused
     }
 }
 
@@ -4120,6 +4240,7 @@ pub(crate) async fn run(
         group: None,
         unattributed: false,
         version: Some(version.protocol_version),
+        rule: HOLD_RULE,
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it, and when either pays a Platform
@@ -4155,6 +4276,19 @@ pub(crate) async fn run(
         },
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
+    let output = (script.as_ref(), planned.credits());
+    let proved_version = (session.platform.enabled())
+        .then(|| session.platform.protocol.observed())
+        .flatten();
+    pre_check(
+        target,
+        &inputs,
+        output,
+        planned.fee_strategy(),
+        version,
+        proved_version,
+    )
+    .await?;
     // The authority before anything is redeemed: a refusal keeps the grant.
     // A send pays someone else: only a fresh grant, redeemed into a lease
     // for this send alone, never a lease another action holds.
@@ -4265,37 +4399,13 @@ pub(crate) async fn run(
     permit.finish(call.is_ok());
     record.signed = released > 0;
     record.answered = call.is_ok();
-    // A payout's signed bytes may have reached a node, and a consensus error
-    // can come from a node's answer rather than the SDK's own check: only
-    // evidence settles it (P7, P8), never the call's error.
-    let definitive = |e: &PlatformWalletError| match target {
-        // A top-up signs no identity key: only the SDK's structure check,
-        // before the broadcast, says it never executes. A signature error
-        // can come back from a node and proves nothing.
-        Target::Identity(_) => structure_refused(e),
-        Target::Contact => false,
-        _ => never_valid(e),
-    };
-    let cannot_land =
-        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(definitive);
+    // Signed bytes may have reached a node, and a consensus error can be one
+    // node's unproven answer: only evidence settles a signed move (P7, P8,
+    // #471), never the call's error, whatever the version did since its
+    // pre-check. Its exact re-send stays open.
+    let cannot_land = released < record.inputs.len() as u64;
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
-    }
-    // An identical transition at the same protocol version that Platform's
-    // stateless checks refused: the held send it retried never executes
-    // either. A signer's shortfall says nothing about the held one.
-    let identical_refused = released == record.inputs.len() as u64
-        && call.as_ref().err().is_some_and(never_valid)
-        && retry_of.is_some();
-    if identical_refused
-        && let Some(h) = (moves.iter_mut()).find(|m| Some(m.id.as_str()) == retry_of)
-        && h.holds()
-        && h.version == record.version
-        && h.terms() == record.terms()
-    {
-        tracing::info!(id = %h.id, "an identical retry was refused for good: the held send never executes");
-        h.state = PlatformActivityState::Failed;
-        h.can_land = false;
     }
     moves.push(record);
     let at = moves.len() - 1;

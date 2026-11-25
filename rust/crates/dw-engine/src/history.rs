@@ -1392,6 +1392,10 @@ pub(crate) struct WalletHistory {
     /// Payments whose spend claims a load restored this session, from their
     /// sent marks: their marks may be all that holds those coins.
     pub claimed_at_load: HashSet<Txid>,
+    /// The sent marks the last load chose its spend claims from, when it
+    /// restored them: a lock the wallet learns of later chooses again from
+    /// them ([`HistoryStore::note_instant_lock`]).
+    pub claim_marks: Option<crate::tx_actions::Sent>,
     /// The wallet's coins each payment restored from its sent mark
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.
@@ -1807,6 +1811,23 @@ impl HistoryStore {
             Some(h) => f(h),
             None => f(&WalletHistory::default()),
         }
+    }
+
+    /// Marks `txid` InstantSend-locked in each loaded history but those of
+    /// `skip` that holds it out of a block without a known lock: key-wallet
+    /// tells only the wallets holding its record or coins (#828). The
+    /// wallets marked.
+    pub(crate) fn note_instant_lock(&self, txid: &Txid, skip: &HashSet<WalletId>) -> Vec<WalletId> {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        (map.iter_mut())
+            .filter(|(id, h)| {
+                !skip.contains(*id)
+                    && h.loaded
+                    && (h.txs.get(txid))
+                        .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+            })
+            .filter_map(|(id, h)| h.set_instant_locked(txid).then_some(*id))
+            .collect()
     }
 
     /// Forgets a load's claims of `txids` once their marks are gone or

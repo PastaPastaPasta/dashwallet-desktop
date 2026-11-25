@@ -107,6 +107,8 @@ export class IpcBackend implements Backend {
   resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
   unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
   finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
+  recoverTransferQuote = (...a: Parameters<typeof cmd.recoverTransferQuote>) => orUnavailable(cmd.recoverTransferQuote(...a));
+  recoverTransfer = (...a: Parameters<typeof cmd.recoverTransfer>) => orUnavailable(cmd.recoverTransfer(...a));
   shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));

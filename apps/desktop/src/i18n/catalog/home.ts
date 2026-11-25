@@ -71,7 +71,6 @@ export const home = {
     label: "Shortcuts",
     receive: "Receive",
     send: "Send",
-    scan: "Scan QR",
     backup: "Back up",
     backupWhy: "Backing up the recovery phrase is not available yet",
   },
