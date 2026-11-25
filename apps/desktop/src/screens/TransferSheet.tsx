@@ -23,7 +23,7 @@ import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { heldExitOps, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
 import { shieldedSpendsOff } from "../shielded/spends";
-import { shieldedSyncing } from "../shielded/syncing";
+import { shieldedSyncing, shieldedWait } from "../shielded/syncing";
 import {
   canSwap,
   defaultRoute,
@@ -72,7 +72,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   return {
     core,
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
-    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status), spendsOff: shieldedSpendsOff(status) } : status,
+    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status), spendsOff: shieldedSpendsOff(status) } : status,
     platform:
       !known(pools.platform)
         ? pools.platform === "loading"
@@ -272,7 +272,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
       ? null
       : route === "coreToPlatform"
         ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
-        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status), maxRefused, shieldedSpendsOff(status));
+        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedWait(status), maxRefused, shieldedSpendsOff(status));
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;

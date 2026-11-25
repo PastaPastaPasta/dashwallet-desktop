@@ -77,6 +77,16 @@ describe("fixture pending commands", () => {
     expect(await backend.platformActivity(W)).toBeNull();
   });
 
+  it("reports a first scan as running, a stopped failed pass as not, and a running retry as running", async () => {
+    const s = fixture.world.pending.shielded!;
+    s.ready = false;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true });
+    s.lastPassFailed = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: false, lastPassFailed: true });
+    s.scanning = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true, lastPassFailed: true });
+  });
+
   it("quotes a move to Core and refuses a grant that is too small", async () => {
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     expect(quote).toMatchObject({ credits: "40000000000", feeCredits: "2000000", expectedDuffs: 39_998_000, grant: { maxCredits: "40000000000" } });

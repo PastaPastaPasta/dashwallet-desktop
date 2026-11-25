@@ -9,7 +9,7 @@ import { t } from "../i18n";
 import type { ShieldedKind } from "./flow";
 
 /** Shielded is on and this build cannot spend from it. `null` (no command, or not read yet) is not off. */
-export function shieldedSpendsOff(status: ShieldedStatus | null | undefined): boolean {
+export function shieldedSpendsOff(status: Pick<ShieldedStatus, "active" | "spendsAvailable"> | null | undefined): boolean {
   return !!status && status.active && !status.spendsAvailable;
 }
 

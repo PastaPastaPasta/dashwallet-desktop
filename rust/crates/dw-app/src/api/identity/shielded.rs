@@ -73,6 +73,93 @@ pub struct ShieldedStatus {
     /// `platform.unavailable`; finishing a shield already sent, receive,
     /// sync and balance still work.
     pub spends_available: bool,
+    /// Whether the viewing key is bound, or what holds its first bind;
+    /// `null` while the network is not active. Once bound the receive
+    /// address reads before any scan.
+    pub account: Option<ShieldedAccount>,
+    /// The running pass's progress through the pool's note tree
+    /// (network-wide); `null` while no pass runs or before it knows the
+    /// pool's size.
+    pub scan: Option<ShieldedScanProgress>,
+    /// The last sync pass failed; cleared by the next one that succeeds.
+    pub last_pass_failed: bool,
+}
+
+/// Where the shielded account's viewing key stands. `locked` and
+/// `mixingOnly` clear with a full unlock; `watchOnly` does not clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedAccount {
+    Bound,
+    Binding,
+    Locked,
+    MixingOnly,
+    WatchOnly,
+}
+
+mirror_enum!(engine::ShieldedAccount => ShieldedAccount {
+    Bound, Binding, Locked, MixingOnly, WatchOnly
+});
+
+/// Tree positions a pass scanned of the pool's notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedScanProgress {
+    pub checked: u64,
+    pub total: u64,
+}
+
+impl From<engine::ShieldedScanProgress> for ShieldedScanProgress {
+    fn from(p: engine::ShieldedScanProgress) -> Self {
+        let engine::ShieldedScanProgress { checked, total } = p;
+        ShieldedScanProgress { checked, total }
+    }
+}
+
+/// Where the wallet's Shielded sync stands, for the status bar, Sync
+/// progress and Receive; read with no read of the note store, so it answers
+/// while a pass runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedSyncInfo {
+    /// The network takes shielded transitions and the session runs Platform.
+    pub active: bool,
+    /// `binding` for a key a status read binds next; `null` while not active.
+    pub account: Option<ShieldedAccount>,
+    /// A pass scanned the account this session, or a status read found its
+    /// ledger ready.
+    pub established: bool,
+    /// A pass is running.
+    pub syncing: bool,
+    pub scan: Option<ShieldedScanProgress>,
+    /// The wallet's last pass this session failed, until one succeeds.
+    pub last_pass_failed: bool,
+    /// As `ShieldedStatus.spendsAvailable`, and read on an inactive network
+    /// too.
+    pub spends_available: bool,
+}
+
+impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
+    fn from(s: engine::ShieldedSyncInfo) -> Self {
+        let engine::ShieldedSyncInfo {
+            active,
+            account,
+            established,
+            syncing,
+            scan,
+            last_pass_failed,
+            spends_available,
+        } = s;
+        ShieldedSyncInfo {
+            active,
+            account: account.map(Into::into),
+            established,
+            syncing,
+            scan: scan.map(Into::into),
+            last_pass_failed,
+            spends_available,
+        }
+    }
 }
 
 impl From<engine::ShieldedStatus> for ShieldedStatus {
@@ -94,6 +181,9 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             syncing,
             prover_ready,
             spends_available,
+            account,
+            scan,
+            last_pass_failed,
         } = s;
         ShieldedStatus {
             active,
@@ -112,6 +202,9 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             syncing,
             prover_ready,
             spends_available,
+            account: account.map(Into::into),
+            scan: scan.map(Into::into),
+            last_pass_failed,
         }
     }
 }

@@ -165,6 +165,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_shield_quote",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
+    "DashPay.shielded_sync_info",
     "DashPay.shielded_sync",
     "DashPay.shielded_receive_address",
     "DashPay.shield_quote",
@@ -1680,6 +1681,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         // 0.1 E1: shielded funds refuse an unknown wallet.
         for refused in [
             dp.shielded_status().await.map(drop),
+            dp.shielded_sync_info().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
             dp.shield_quote(FundAmount::Duffs { duffs: 1 })

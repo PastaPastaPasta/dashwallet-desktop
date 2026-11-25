@@ -10,6 +10,10 @@ export function syncPercent(s: SyncStatus): number | null {
   return raw === null ? null : Math.min(raw, MAX_SYNCING_PERCENT);
 }
 
+/** A percentage (0–100) as a percent with one decimal, in the formatting locale ("42.0%"). */
+export const percentText = (percent: number, locale?: string) =>
+  new Intl.NumberFormat(locale ?? formatLocale(undefined), { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(percent / 100);
+
 /** A sync percentage with one decimal, as `toFixed(1)` rounds it, in the formatting locale. */
 export const oneDecimal = (percent: number) => new Intl.NumberFormat(formatLocale(undefined), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(percent.toFixed(1)));
 
