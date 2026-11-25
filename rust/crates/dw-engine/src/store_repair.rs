@@ -51,8 +51,11 @@ use crate::{EngineError, WalletId};
 
 /// The `wallet.sqlite` schema versions (refinery's highest applied
 /// migration) whose tables this repair was checked against:
-/// platform-wallet-storage V024 at the platform pin.
-pub(crate) const KNOWN_SCHEMA: &[i64] = &[24];
+/// platform-wallet-storage V024, the stores of the builds before key-wallet
+/// refused unsigned spends, and V026 at the platform pin (V025 adds
+/// [`BLOCK_SPENDS`], V026 `core_dismissed_txids`, which the repair leaves
+/// alone).
+pub(crate) const KNOWN_SCHEMA: &[i64] = &[24, 26];
 
 /// The refinery version of the published fork builds' stores. Before the
 /// persister upgrades one, only the re-check runs, and only when the
@@ -63,6 +66,13 @@ const FORK_SCHEMA: i64 = 18;
 /// The table the fork's schema lacks (V021 creates it and indexes every
 /// stored record, a put-back's included).
 const INPUT_INDEX: &str = "core_transaction_inputs";
+
+/// The wallet's coins a processed block spent, whatever spent them (V025):
+/// a coin with a row is never given back, and counts as spent since.
+const BLOCK_SPENDS: &str = "core_block_spends";
+
+/// The tables of [`COLUMNS`] a later migration adds, with its version.
+const ADDED: &[(&str, i64)] = &[(INPUT_INDEX, 21), (BLOCK_SPENDS, 25)];
 
 /// The most rows (transactions and InstantSend locks, every wallet) the
 /// walk for a settled descendant reads; a larger file repairs nothing.
@@ -136,6 +146,7 @@ const COLUMNS: &[(&str, &[&str])] = &[
         &["wallet_id", "account_type", "script"],
     ),
     ("meta_data_versions", &["wallet_id", "domain", "seq"]),
+    (BLOCK_SPENDS, &["wallet_id", "outpoint", "spender_txid"]),
 ];
 
 /// The verifier's verdict on input `index` of `tx` for `prevout`: proven
@@ -397,14 +408,15 @@ pub(crate) fn repair(network_dir: &Path, appdb: &AppDb) -> Result<Outcome, Engin
         .map_err(storage)?;
     let max_rows = row_limit(network_dir);
     let fork = schema == FORK_SCHEMA;
+    let block_spends = schema >= 25;
     let restores = match legacy {
-        true => recheck(&tx, max_rows, !fork).map_err(storage)?,
+        true => recheck(&tx, max_rows, !fork, block_spends).map_err(storage)?,
         false => Vec::new(),
     };
     restore(&tx, &restores).map_err(storage)?;
     let drops = match fork {
         true => Vec::new(),
-        false => plan(&tx, max_rows).map_err(storage)?.unwrap_or_default(),
+        false => (plan(&tx, max_rows, block_spends).map_err(storage)?).unwrap_or_default(),
     };
     if drops.is_empty() && restores.is_empty() {
         return Ok(outcome);
@@ -462,7 +474,10 @@ fn known_schema(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(i64, bo
         return Ok(None);
     };
     for (table, columns) in COLUMNS {
-        if version == FORK_SCHEMA && *table == INPUT_INDEX {
+        if ADDED
+            .iter()
+            .any(|(t, since)| t == table && version < *since)
+        {
             continue;
         }
         let mut stmt = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
@@ -731,7 +746,11 @@ fn settled_in_tree(
 }
 
 /// The drops of the whole file, `None` when the walk can't complete.
-fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Option<Vec<Planned>>> {
+fn plan(
+    tx: &rusqlite::Transaction<'_>,
+    max_rows: usize,
+    block_spends: bool,
+) -> rusqlite::Result<Option<Vec<Planned>>> {
     let Some(graph) = read_graph(tx, max_rows)? else {
         return Ok(None);
     };
@@ -767,7 +786,7 @@ fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Opt
     };
     let mut drops = Vec::new();
     for (wallet, record, cause) in claims {
-        drops.push(drop_of(tx, &wallet, record, cause, &claimed)?);
+        drops.push(drop_of(tx, &wallet, record, cause, &claimed, block_spends)?);
     }
     Ok(Some(drops))
 }
@@ -816,14 +835,16 @@ const COIN_COLUMNS: &str =
 
 /// The drop of `record`: its output rows go, and each coin it held spent
 /// is given back when nothing else stored spends it (`claimed`), no
-/// sweep's winner holds it, and one of the wallet's own address pools, not
-/// a contact's, derived its script.
+/// sweep's winner holds it, no block spent it (with `block_spends`), and
+/// one of the wallet's own address pools, not a contact's, derived its
+/// script.
 fn drop_of(
     tx: &rusqlite::Transaction<'_>,
     wallet: &[u8; 32],
     record: &TransactionRecord,
     cause: Cause,
     claimed: &HashSet<OutPoint>,
+    block_spends: bool,
 ) -> rusqlite::Result<Planned> {
     let txid = record.txid;
     let key = txid.as_byte_array().as_slice().to_vec();
@@ -852,7 +873,14 @@ fn drop_of(
                AND (u.spent_in_txid IS NULL OR u.spent_in_txid = ?3) \
                AND EXISTS (SELECT 1 FROM core_address_pool p \
                            WHERE p.wallet_id = u.wallet_id AND p.script = u.script \
-                             AND p.account_type <> ?4)"
+                             AND p.account_type <> ?4){}",
+            match block_spends {
+                true => format!(
+                    " AND NOT EXISTS (SELECT 1 FROM {BLOCK_SPENDS} b \
+                     WHERE b.wallet_id = u.wallet_id AND b.outpoint = u.outpoint)"
+                ),
+                false => String::new(),
+            }
         ))?;
         let mut seen = HashSet::new();
         for input in &record.transaction.input {
@@ -958,6 +986,7 @@ fn recheck(
     tx: &rusqlite::Transaction<'_>,
     max_rows: usize,
     indexed: bool,
+    block_spends: bool,
 ) -> rusqlite::Result<Vec<Restore>> {
     let mut rows: BTreeMap<([u8; 32], Txid), Vec<LegacyRow>> = BTreeMap::new();
     {
@@ -1047,6 +1076,7 @@ fn recheck(
     let spenders = Spenders {
         graph: graph.as_ref(),
         indexed,
+        block_spends,
         kept: &kept_inputs,
     };
     let mut restores = Vec::new();
@@ -1123,17 +1153,18 @@ fn verdict(
 }
 
 /// What the re-check knows spends an outpoint: the stored transactions and
-/// verified locks of every wallet, their input index when the store has
-/// one, and the claims it puts back.
+/// verified locks of every wallet, their input index and block spends when
+/// the store has them, and the claims it puts back.
 struct Spenders<'a> {
     graph: Option<&'a Graph>,
     indexed: bool,
+    block_spends: bool,
     kept: &'a HashMap<OutPoint, HashSet<Txid>>,
 }
 
 /// Whether a transaction stored for any wallet, other than `claim` (which
-/// another wallet may store too), spends `outpoint`; with `kept`, a claim
-/// put back counts too.
+/// another wallet may store too), or a block's spend by another spends
+/// `outpoint`; with `kept`, a claim put back counts too.
 fn spent_elsewhere(
     tx: &rusqlite::Transaction<'_>,
     spenders: &Spenders<'_>,
@@ -1147,14 +1178,21 @@ fn spent_elsewhere(
     {
         return Ok(true);
     }
-    if !spenders.indexed {
+    let (op, by) = (encode_outpoint(outpoint), claim.as_byte_array().as_slice());
+    let spent_in = |sql: &str| tx.query_row(sql, params![op, by], |r| r.get::<_, bool>(0));
+    if spenders.indexed
+        && spent_in(
+            "SELECT EXISTS (SELECT 1 FROM core_transaction_inputs WHERE outpoint = ?1 AND txid <> ?2)",
+        )?
+    {
+        return Ok(true);
+    }
+    if !spenders.block_spends {
         return Ok(false);
     }
-    tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM core_transaction_inputs WHERE outpoint = ?1 AND txid <> ?2)",
-        params![encode_outpoint(outpoint), claim.as_byte_array().as_slice()],
-        |r| r.get(0),
-    )
+    spent_in(&format!(
+        "SELECT EXISTS (SELECT 1 FROM {BLOCK_SPENDS} WHERE outpoint = ?1 AND spender_txid <> ?2)"
+    ))
 }
 
 /// The put-back of the claim `txid` the fork dropped for `wallet`: its row
