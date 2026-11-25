@@ -22,4 +22,9 @@ poolNotes: number | null,
 /**
  * The count Platform requires before a payment may leave the pool.
  */
-poolRequired: number, };
+poolRequired: number,
+/**
+ * What returns to this wallet's Shielded balance after the create, in
+ * credits; `null` while the notes cannot pay.
+ */
+change: string | null, };

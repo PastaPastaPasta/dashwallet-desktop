@@ -233,6 +233,11 @@ pub struct ShieldedReadiness {
     pub pool_notes: Option<u64>,
     /// The count Platform requires before a payment may leave the pool.
     pub pool_required: u64,
+    /// What returns to this wallet's Shielded balance after the create, in
+    /// credits; `null` while the notes cannot pay.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub change: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -250,6 +255,7 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
             ready_at,
             pool_notes,
             pool_required,
+            change,
         } = r;
         ShieldedReadiness {
             denomination,
@@ -262,6 +268,7 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
             ready_at,
             pool_notes,
             pool_required,
+            change,
         }
     }
 }
@@ -597,6 +604,7 @@ mod tests {
             ready_at: Some(7),
             pool_notes: Some(12),
             pool_required: 250,
+            change: Some(7_000_000_000),
         });
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -606,6 +614,7 @@ mod tests {
                 "readyAt": 7,
                 "poolNotes": 12,
                 "poolRequired": 250,
+                "change": "7000000000",
             })
         );
     }

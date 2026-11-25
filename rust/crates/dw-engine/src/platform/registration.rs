@@ -12,7 +12,9 @@ use dpp::version::PlatformVersion;
 use dw_appdb::{ContestWatch, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{GrantKind, GrantPurpose};
 use platform_wallet::wallet::shielded::ShieldedNote;
-use platform_wallet::wallet::shielded::note_selection::select_notes;
+use platform_wallet::wallet::shielded::note_selection::{
+    select_notes, select_notes_for_denomination,
+};
 use serde::{Deserialize, Serialize};
 
 use super::contest_watch::watch_of;
@@ -126,6 +128,10 @@ pub struct ShieldedReadiness {
     pub pool_notes: Option<u64>,
     /// The count Platform requires before a create may leave the pool.
     pub pool_required: u64,
+    /// What the create's notes hold above the denomination, in credits:
+    /// the library pays it back to the wallet's own default shielded
+    /// address. `None` while the notes cannot pay the denomination.
+    pub change: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -777,7 +783,21 @@ pub(crate) fn shielded_readiness(
         ready_at,
         pool_notes: facts.pool_notes,
         pool_required,
+        change: denomination.and_then(|d| change(version, &facts.notes, d)),
     }
+}
+
+/// What the notes the library's create selects for `denomination` hold
+/// above it (`select_notes_for_denomination`, as the library calls it).
+pub(crate) fn change(
+    version: &PlatformVersion,
+    notes: &[ShieldedNote],
+    denomination: u64,
+) -> Option<u64> {
+    let keys = registration_specs().len();
+    let (_, total, _) =
+        select_notes_for_denomination(notes, denomination, MIN_ACTIONS, keys, version).ok()?;
+    total.checked_sub(denomination)
 }
 
 /// The start of a Shielded-funded request, before anything is written:

@@ -538,6 +538,40 @@ fn the_pinned_denominations_cover_every_name_and_leave_credits() {
     }
 }
 
+/// F20: the confirm's change line. The create selects its notes as the
+/// library does and pays what they hold above the denomination back to the
+/// wallet's own default shielded address, so a 0.1 note paying a plain name
+/// returns 0.07 to this wallet's Shielded balance, and an exact note none.
+#[test]
+fn the_change_of_a_create_returns_to_this_wallets_shielded_balance() {
+    for v in [PROTOCOL_VERSION_13, PROTOCOL_VERSION_14] {
+        let version = version(v);
+        let d = 3 * DASH / 100;
+        let readiness = |notes: Vec<ShieldedNote>| {
+            let facts = ShieldedFacts {
+                notes,
+                ..ShieldedFacts::default()
+            };
+            shielded_readiness(version, &facts, Some(d), 0)
+        };
+        assert_eq!(
+            readiness(vec![note(0, DASH / 10)]).change,
+            Some(7 * DASH / 100),
+            "PV{v}"
+        );
+        assert_eq!(readiness(vec![note(0, d)]).change, Some(0), "PV{v}");
+        assert_eq!(
+            readiness(vec![note(0, d / 2)]).change,
+            None,
+            "PV{v}: cannot pay"
+        );
+        assert_eq!(
+            shielded_readiness(version, &ShieldedFacts::default(), None, 0).change,
+            None
+        );
+    }
+}
+
 /// The repin rule and F11: one function of the engine names the library's
 /// pool-funded identity create, `PwShielded::identity_create`, and it
 /// names the keyset create (through the dispatch hook), never the seed
