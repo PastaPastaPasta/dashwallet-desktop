@@ -713,6 +713,9 @@ pub(crate) struct SessionHub {
     /// block's proof, before the write lock.
     #[cfg(test)]
     pub(crate) pause_drop_proven: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: as [`Self::pause_drop_proven`], at a payment's last recheck.
+    #[cfg(test)]
+    pub(crate) pause_drop_proven_last: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next truncation between its heights and the rest.
     #[cfg(test)]
     pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -948,6 +951,8 @@ impl SessionHub {
             #[cfg(test)]
             pause_drop_proven: Mutex::new(None),
             #[cfg(test)]
+            pause_drop_proven_last: Mutex::new(None),
+            #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             rescan_cancels: std::sync::atomic::AtomicU64::new(0),
@@ -1156,6 +1161,11 @@ impl SessionHub {
         truncations: u64,
         work: impl IntoIterator<Item = crate::tx_actions::DeadWork>,
     ) {
+        // Under the lock an unload forgets them under: none outlives it.
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         for w in work {
             let waiting = |(d, t, waiting): &(WalletId, u64, crate::tx_actions::DeadWork)| {
@@ -1191,6 +1201,10 @@ impl SessionHub {
     /// while only their proof was missing, with `drop`; a root kept already
     /// is kept once, with the later detection.
     pub(crate) fn carry_drops(&self, id: WalletId, roots: &[Txid], drop: CarriedDrop) {
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
         let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
         for t in roots {
             carried.insert((id, *t), drop.clone());

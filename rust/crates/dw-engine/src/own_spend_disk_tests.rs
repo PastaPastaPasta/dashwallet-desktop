@@ -1908,6 +1908,39 @@ fn a_beaten_payment_kept_to_recheck_is_void_when_another_block_takes_its_height_
     t.assert_kept(&t.session, "after the ChainLock");
 }
 
+/// #818, Q99 K5: the last recheck of the other payment reads its block's
+/// proof while the wallet applies no ChainLock, and the block's ChainLock
+/// applies before the recheck takes the write lock. The payment is kept
+/// with what its proof read, so the ChainLock it missed starts its drop: it,
+/// its child and `back` go, A is claimed for good and nothing is rewound.
+#[test]
+fn a_beaten_payment_goes_when_its_blocks_chainlock_applies_during_its_last_recheck() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
+    let last = Arc::new(crate::coins::TestPause::default());
+    *t.session.hub.pause_drop_proven_last.lock().unwrap() = Some(Arc::clone(&last));
+    let pause = t.mine_and_hold(&block);
+    t.note_chain_lock(TIP + 1);
+    let a = OutPoint::new(t.paid.txid(), 0);
+    assert!(
+        !t.observed().contains(&a),
+        "the noted ChainLock forgot the spend of A"
+    );
+    pause.release.notify_one();
+    assert!(
+        last.wait_reached(std::time::Duration::from_secs(20)),
+        "the last recheck read the block's proof"
+    );
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&block));
+    last.release.notify_one();
+    eventually("the other payment goes", || {
+        abandoned(&t.engine, &t.session, t.id, t.other.txid())
+    });
+    t.settle();
+    t.assert_spend_kept_final(a);
+}
+
 /// #818, Q99 T4: a payment kept to recheck is this session's only: after
 /// a restart nothing is kept, and the block's ChainLock applied then drops
 /// nothing on evidence from before it.

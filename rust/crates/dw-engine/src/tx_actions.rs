@@ -1365,7 +1365,7 @@ pub(crate) struct Recheck {
 /// What a drop leaves for [`NetworkSession::drop_dead`]: some roots had
 /// another winner, so the drop finds them again; the roots kept on the
 /// detection's evidence that could not go yet, to recheck with it, and the
-/// wallet's applied ChainLock that recheck read; and whether another
+/// wallet's applied ChainLock that recheck's proof read; and whether another
 /// wallet's history was not whole, so the drop waits for it
 /// ([`SessionHub::defer_drops`](crate::events::SessionHub::defer_drops)).
 #[derive(Debug, Default)]
@@ -2244,23 +2244,29 @@ impl NetworkSession {
 
     /// The height of the wallet's own applied ChainLock when the header
     /// chain holds its block, and the block `(height, hash)` at or below it
-    /// (Q89a C1); read apart from the manager's lock.
+    /// (Q89a C1), with the height of the applied ChainLock the proof read;
+    /// read apart from the manager's lock.
     async fn block_proven_final(
         &self,
         manager: &Manager,
         wallet: WalletId,
         (height, hash): (u32, BlockHash),
-    ) -> Option<u32> {
+    ) -> (Option<u32>, Option<u32>) {
         let chainlock = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            let info = wm.get_wallet_info(&wallet.0)?;
-            let lock = info.core_wallet.metadata.last_applied_chain_lock.as_ref()?;
-            (lock.block_height, lock.block_hash)
+            (wm.get_wallet_info(&wallet.0))
+                .and_then(|i| i.core_wallet.metadata.last_applied_chain_lock.as_ref())
+                .map(|l| (l.block_height, l.block_hash))
         };
-        let headers = (self.headers_under(chainlock, BTreeSet::from([height]))).await?;
-        crate::history::proven_final((height, hash), Some(chainlock), &headers)
-            .then_some(chainlock.0)
+        let Some(chainlock) = chainlock else {
+            return (None, None);
+        };
+        let headers = (self.headers_under(chainlock, BTreeSet::from([height]))).await;
+        let proven = headers.filter(|headers| {
+            crate::history::proven_final((height, hash), Some(chainlock), headers)
+        });
+        (proven.map(|_| chainlock.0), Some(chainlock.0))
     }
 
     /// Drops what can never confirm and key-wallet's conflict handling
@@ -2493,17 +2499,22 @@ impl NetworkSession {
         }
         // The detection's block proven final, read apart from the lock: a
         // truncation below the ChainLock it reads is refused.
-        let proven = match (recheck, unknown_block(winner)) {
+        let (proven, read) = match (recheck, unknown_block(winner)) {
             (Some(r), Some(at)) => match r.block {
                 Some(block) => (self.block_proven_final(manager, wallet, (at, block))).await,
-                None => None,
+                None => (None, None),
             },
-            _ => None,
+            _ => (None, None),
         };
         #[cfg(test)]
         let pause = (recheck.is_some())
             .then(|| self.hub.pause_drop_proven.lock().unwrap().take())
-            .flatten();
+            .flatten()
+            .or_else(|| {
+                (recheck.is_some_and(|r| r.tries == RECHECKS))
+                    .then(|| self.hub.pause_drop_proven_last.lock().unwrap().take())
+                    .flatten()
+            });
         #[cfg(test)]
         if let Some(pause) = &pause {
             pause.mark_reached();
@@ -2563,7 +2574,9 @@ impl NetworkSession {
                             .collect();
                     let mut groups: BTreeMap<Winner, Vec<Txid>> = BTreeMap::new();
                     let applied = core.last_applied_chain_lock().map(|l| l.block_height);
-                    out.applied = applied;
+                    // What a payment kept to recheck saw is what its proof
+                    // read: a ChainLock applied after that starts its drop.
+                    out.applied = read;
                     let still_final =
                         proven.is_some_and(|c| applied.is_some_and(|l| l >= c));
                     for t in roots {
