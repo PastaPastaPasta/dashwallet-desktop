@@ -513,9 +513,15 @@ fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
 }
 
 /// Take the pre-upgrade snapshot of `network_dir`, or return this upgrade's
-/// completed one. A directory left without its marker by an interrupted run
-/// is discarded and redone. The wallet files are not changed: the sources
-/// are read through read-only connections that never checkpoint.
+/// completed one. The wallet files are not changed: the sources are read
+/// through read-only connections that never checkpoint.
+///
+/// Between R1's drop and upstream's migration a `before-upgrade` directory
+/// without its marker is the true snapshot with its marker lost (the start
+/// that took it checked the marker before the drop): it counts as
+/// `Unverified` and is never deleted. Only right before a new snapshot is a
+/// directory of its prefix that an interrupted run left without its marker
+/// discarded and redone.
 pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo> {
     crate::token::refuse_if_held(network_dir)?;
     let wallet = network_dir.join(STORE_FILES[0]);
@@ -536,18 +542,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     let list = |prefix| {
         dirs_named(network_dir, prefix).map_err(|e| failed(format!("list snapshots: {e}")))
     };
-    let mut dirs = list(BEFORE_PREFIX)?;
-    let mut part_upgraded = list(UNRESTORABLE_PREFIX)?;
-    for list in [&mut dirs, &mut part_upgraded] {
-        for dir in list.iter() {
-            if !dir.join(MARKER).exists() {
-                tracing::warn!(dir = %dir.display(), "store upgrade: discarding an incomplete snapshot");
-                fs::remove_dir_all(dir)
-                    .map_err(|e| failed(format!("discard {}: {e}", dir.display())))?;
-            }
-        }
-        list.retain(|d| d.exists());
-    }
+    let dirs = list(BEFORE_PREFIX)?;
     let mut prefix = BEFORE_PREFIX;
     if let Some(live) = &live {
         let mut verified = false;
@@ -579,7 +574,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
                     dir: backups_dir(network_dir),
                 });
             }
-            for dir in part_upgraded.iter().rev() {
+            for dir in list(UNRESTORABLE_PREFIX)?.iter().rev() {
                 if let Ok(info) = read_snapshot(dir, true)
                     && reusable_between(&info, live)
                 {
@@ -588,6 +583,13 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
             }
             tracing::warn!("store upgrade: part-done upgrade without a snapshot; continuing");
             prefix = UNRESTORABLE_PREFIX;
+        }
+    }
+    for dir in list(prefix)? {
+        if !dir.join(MARKER).exists() {
+            tracing::warn!(dir = %dir.display(), "store upgrade: discarding an incomplete snapshot");
+            fs::remove_dir_all(&dir)
+                .map_err(|e| failed(format!("discard {}: {e}", dir.display())))?;
         }
     }
     let root = backups_dir(network_dir);

@@ -27,7 +27,7 @@ fn checked(f: &Fixture) -> crate::Result<Precheck> {
 }
 
 /// R1's drop committed, the persister never opened: the between state.
-fn between() -> (Fixture, SnapshotInfo) {
+pub(super) fn between() -> (Fixture, SnapshotInfo) {
     let f = fixture("v0.1.0");
     let snapshot = crate::prepare_with(&f.net, build(), now())
         .unwrap()
@@ -41,7 +41,7 @@ fn between() -> (Fixture, SnapshotInfo) {
     (f, snapshot)
 }
 
-fn assert_missing(f: &Fixture, want: MissingSnapshot) {
+pub(super) fn assert_missing(f: &Fixture, want: MissingSnapshot) {
     let before = tree(&f.root);
     let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
     assert!(
