@@ -6108,6 +6108,33 @@ fn a_chain_past_the_old_height_at_the_quit_leaves_no_record() {
     assert_eq!((record, reopened, synced), (None, None, 1_001));
 }
 
+/// #254: the fork's truncation applied only after the new chain's commit
+/// at 1001 is noted. That commit is the new chain's, past the old height:
+/// the record goes in session, as when the truncation is applied first.
+#[test]
+fn a_truncation_applied_after_the_new_chains_commit_leaves_no_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    // The commit at 1000 is applied first, so its read takes no truncation.
+    f.settle();
+    f.truncate_silently(900);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.records().pause_truncated.lock().unwrap() = Some(Arc::clone(&pause));
+    let _ = f.guard();
+    eventually("the truncation's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    pause.release.notify_one();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    assert_eq!((record, reopened, synced), (None, None, 1_001));
+}
+
 /// A fork at the highest checkpoint the wallet can have stored, or above
 /// it, leaves nothing to replay: no record is written.
 #[test]
