@@ -56,7 +56,7 @@ import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
-import { storageInUseError, storeRefusedError, storeRestoreError } from "./errors";
+import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
@@ -791,6 +791,8 @@ export const HANDLERS: Handlers = {
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
+    // A data folder others can change is refused before anything below it is read or written.
+    if (world.openNotPrivate) throw storeNotPrivateError(world.openNotPrivate);
     // A pending restore runs before the stores are checked, and any failure of it stops the open.
     const restore = world.openRestore;
     if (restore) {

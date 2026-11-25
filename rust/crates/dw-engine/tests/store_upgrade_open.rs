@@ -36,6 +36,58 @@ fn a_refused_open_keeps_existing_files_and_the_folder_mode() {
     assert_eq!(open_refused(&f), "ForkStoreUnsupported");
 }
 
+/// A data root the user left group-writable is refused before the open
+/// reads or writes anything below it: the error names the root and why, the
+/// root keeps its mode, and nothing in it is created or changed but the
+/// instance lock the engine takes as it starts.
+#[cfg(unix)]
+#[test]
+fn a_group_writable_data_root_is_refused_with_nothing_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let chmod = |p: &std::path::Path, m| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    let existing = fixture("v0.3.0");
+    let fresh = dw_testutil::private_tempdir();
+    let fresh_root = fresh.path().join("data");
+    std::fs::create_dir(&fresh_root).unwrap();
+    for root in [&existing.root, &fresh_root] {
+        chmod(root, 0o775);
+        let before = tree(root);
+        let engine = engine(root);
+        let err = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+            .err()
+            .expect("a group-writable data root is refused");
+        match &err {
+            EngineError::DataFolderNotPrivate { folder, reason, .. } => {
+                assert_eq!(folder, root, "{err}");
+                assert_eq!(*reason, dw_fs::InsecureReason::GroupWritable, "{err}");
+            }
+            other => panic!("not a data-folder refusal: {other:?}"),
+        }
+        assert_eq!(err.code(), "storage_not_private");
+        let changed = tree_diff(&before, &tree(root));
+        let lock = dw_fs::instance::InstanceLock::FILE;
+        assert!(
+            changed.iter().all(|p| p == lock) && !before.contains_key(lock),
+            "the refused open changed {changed:?}"
+        );
+        engine.block_on(engine.shutdown()).unwrap();
+        assert_eq!(
+            std::fs::metadata(root).unwrap().permissions().mode() & 0o7777,
+            0o775
+        );
+    }
+    assert!(!fresh_root.join("regtest").exists());
+    chmod(&fresh_root, 0o700);
+    let engine = engine(&fresh_root);
+    engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .expect("the same root opens once only the user can change it");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 #[test]
 fn a_fork_object_of_another_shape_is_refused_unchanged() {
     let f = fixture("v0.1.0");

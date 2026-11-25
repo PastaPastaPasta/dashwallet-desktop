@@ -6,16 +6,22 @@
 import type { NetworkInfo } from "./generated/NetworkInfo";
 
 import type { ErrorData } from "./generated/ErrorData";
+import type { NotPrivateReason } from "./generated/NotPrivateReason";
 import type { StoreButton } from "./generated/StoreButton";
 import type { StoreHint } from "./generated/StoreHint";
 import type { StoreScreen } from "./generated/StoreScreen";
 
-export type { StoreButton, StoreHint, StoreScreen };
+export type { NotPrivateReason, StoreButton, StoreHint, StoreScreen };
 
 /** `cause` is the engine's error variant, for tests and logs only: the screen never depends on it. */
 export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
 
 export type StorageInUseData = Extract<ErrorData, { kind: "storageInUse" }>;
+
+/** `storage_not_private`'s data: the directory others can change (the data root or one above it) and why. */
+export type NotPrivateData = Extract<ErrorData, { kind: "notPrivate" }>;
+
+export const NOT_PRIVATE_REASONS = ["groupWritable", "otherWritable", "otherOwner"] as const satisfies readonly NotPrivateReason[];
 
 /** Where a pending restore stopped the open (`run_pending_restore`); the request, on the next start. */
 export type RestoreState = "refused" | "noSpace" | "notStarted" | "incomplete";
@@ -34,12 +40,13 @@ const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
  * cause (MG (n), (q)). `neededBytes` is the space the copies need, `noSpace` only. */
 export type StoreRestoreData = { kind: "restore"; state: RestoreState; cause: string; neededBytes: number | null; folder: string };
 
-/** The open's refusals: a store refusal, StorageInUse with its `retryable`, or a pending restore that
- * stopped the open. */
+/** The open's refusals: a store refusal, StorageInUse with its `retryable`, a pending restore that
+ * stopped the open, or a data folder others can change. */
 export type StoreOpenError =
   | { code: "storage_refused"; message: string; data: StoreRefusedData }
   | { code: "storage_in_use"; message: string; data: StorageInUseData | null }
-  | { code: "storage_restore"; message: string; data: StoreRestoreData };
+  | { code: "storage_restore"; message: string; data: StoreRestoreData }
+  | { code: "storage_not_private"; message: string; data: NotPrivateData };
 
 const object = (e: unknown): e is { code?: unknown; data?: unknown } => typeof e === "object" && e !== null;
 
@@ -62,6 +69,16 @@ export function storeRefusal(e: unknown): StoreRefusedData | null {
   if (!isStoreRefusedCode(e) || !object(e.data)) return null;
   const data = e.data as Partial<StoreRefusedData>;
   return data.kind === "storeRefused" && isText(data.folder) && isScreen(data.screen) ? (data as StoreRefusedData) : null;
+}
+
+/** Whether `e` is a `storage_not_private`, whatever its data. */
+export const isNotPrivateCode = (e: unknown): e is { code: "storage_not_private"; data?: unknown } => object(e) && e.code === "storage_not_private";
+
+/** The folder and reason `e` carries, when it is `storage_not_private` with whole data; otherwise `null`. */
+export function storeNotPrivate(e: unknown): NotPrivateData | null {
+  if (!isNotPrivateCode(e) || !object(e.data)) return null;
+  const d = e.data as Partial<NotPrivateData>;
+  return d.kind === "notPrivate" && isText(d.folder) && NOT_PRIVATE_REASONS.includes(d.reason as NotPrivateReason) ? (d as NotPrivateData) : null;
 }
 
 /** `storage_in_use`'s `retryable`; `null` for any other error. Without the data (a dw-app before it)

@@ -139,6 +139,7 @@ impl From<dw_engine::EngineError> for TxActionError {
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
             | E::RetryableIo(_)
             | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },

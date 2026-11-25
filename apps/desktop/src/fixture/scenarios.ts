@@ -16,7 +16,7 @@ import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
-import type { StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
+import type { NotPrivateData, StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
@@ -85,6 +85,9 @@ export interface World {
   /** `open_network` refuses the wallet data as the engine does when it can't open it safely (it
    * changed nothing): every open, a restart's included. */
   openRefusal?: StoreRefusedData;
+  /** `open_network` refuses a data folder others can change, before anything else: every open, a
+   * restart's included, until a test clears it (the user changed the folder's permissions). */
+  openNotPrivate?: NotPrivateData;
   /** `open_network` fails with StorageInUse: `retryable`, once (Try again opens it); otherwise
    * every open until `restart_app`. */
   storageHeld?: { retryable: boolean };
