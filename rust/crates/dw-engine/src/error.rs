@@ -198,6 +198,12 @@ pub enum EngineError {
     /// wallets cannot be reached.
     #[error("at least one wallet opens at start")]
     LastStartupWallet,
+    /// The network's wallet data is a restore not yet cleared (its RESTORED
+    /// mark, Q107 C1): until its first full sync a wallet is added only from
+    /// its recovery phrase, so a new wallet, a file or key import and a
+    /// watch-only wallet are refused, nothing changed.
+    #[error("the wallet data is a restore not yet synced; add a wallet from its recovery phrase")]
+    RestoreOnly,
 }
 
 impl EngineError {
@@ -256,6 +262,7 @@ impl EngineError {
             EngineError::Contact(_) => "contact",
             EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
             EngineError::LastStartupWallet => "last_startup_wallet",
+            EngineError::RestoreOnly => "restore_only",
         }
     }
 }

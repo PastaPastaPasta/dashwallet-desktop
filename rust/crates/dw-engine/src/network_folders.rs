@@ -18,6 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::{DashNetwork, EngineError};
+use dw_store_upgrade::RESTORED_MARK;
 
 /// The record's name in the data root.
 pub(crate) const NETWORK_FOLDERS_FILE: &str = "network-folders.json";
@@ -148,14 +149,10 @@ fn sync_dir(dir: &Path) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// dw-store-upgrade's money-gate mark (`RESTORED_MARK`), in its
-/// `upgrade-backups` folder: set, the wallet set up in the new folder is a
-/// restore, held as one until its first full sync clears the mark.
-const RESTORED_MARK: &str = "RESTORED";
-
-/// Sets the RESTORED mark in the new folder `dir`, as the crate writes it,
-/// with no pending payment: the folder holds no store whose payments could
-/// be held. `left` names the folder the network left.
+/// Sets dw-store-upgrade's money-gate mark ([`RESTORED_MARK`]) in the new
+/// folder `dir`, in the crate's format (it has no public writer), with no
+/// pending payment: the folder holds no store whose payments could be held.
+/// `left` names the folder the network left.
 fn write_restored_mark(dir: &Path, left: &str) -> Result<(), EngineError> {
     use std::io::Write;
     let backups = dir.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);

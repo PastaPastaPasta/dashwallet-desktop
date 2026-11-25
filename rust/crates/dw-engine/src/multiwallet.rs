@@ -728,12 +728,14 @@ impl NetworkSession {
 
     /// Registers a watch-only wallet from a BIP44 account xpub (QT-114):
     /// no vault record, so sends fail with `send.watch_only`. Returns its
-    /// id. Refused (`Storage`) while the dispatch journal is unavailable.
+    /// id. Refused (`Storage`) while the dispatch journal is unavailable,
+    /// and `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_watch_only(
         self: &Arc<Self>,
         xpub: String,
         options: WatchOnlyOptions,
     ) -> Result<WalletId, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         let network = self.network.core_network();
         let (key, account) = parse_account_xpub(&xpub, network)?;
         let name = options.name.as_deref().map(validate_name).transpose()?;

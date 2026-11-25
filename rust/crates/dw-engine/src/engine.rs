@@ -88,10 +88,12 @@ struct Shared {
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
     sessions: Mutex<HashMap<DashNetwork, Arc<NetworkSession>>>,
-    /// The networks whose last open the store-upgrade check refused
-    /// ([`EngineError::StoreRefused`]): only these may start over in a new
-    /// folder ([`Engine::recover_in_fresh_folder`]).
-    refused: std::sync::Mutex<HashSet<DashNetwork>>,
+    /// The networks whose last open the store-upgrade check refused as
+    /// damaged ([`EngineError::StoreRefused`] with the
+    /// [`WayOut::Damaged`](dw_store_upgrade::copy::WayOut::Damaged) way
+    /// out): only these may start over in a new folder
+    /// ([`Engine::recover_in_fresh_folder`]).
+    damaged: std::sync::Mutex<HashSet<DashNetwork>>,
     /// The data root's instance lock (`dw_fs::instance`): another process's
     /// engine, dwcli's or an app's, is refused the root while this one has
     /// it.
@@ -99,16 +101,16 @@ struct Shared {
 }
 
 impl Shared {
-    fn refused_contains(&self, network: &DashNetwork) -> bool {
-        self.refused
+    fn damaged_contains(&self, network: &DashNetwork) -> bool {
+        self.damaged
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .contains(network)
     }
 
-    fn set_refused(&self, network: &DashNetwork, refused: bool) {
-        let mut set = self.refused.lock().unwrap_or_else(|p| p.into_inner());
-        if refused {
+    fn set_damaged(&self, network: &DashNetwork, damaged: bool) {
+        let mut set = self.damaged.lock().unwrap_or_else(|p| p.into_inner());
+        if damaged {
             set.insert(network.clone());
         } else {
             set.remove(network);
@@ -191,7 +193,7 @@ impl Engine {
                 rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
-                refused: std::sync::Mutex::new(HashSet::new()),
+                damaged: std::sync::Mutex::new(HashSet::new()),
                 _instance: instance,
             }),
         })
@@ -221,7 +223,8 @@ impl Engine {
     /// written, and none of its stores is opened: the refused data stays as
     /// it is. Returns the new folder. `InvalidArgument` while the network
     /// is open, or unless its last open in this engine was refused by the
-    /// store-upgrade check.
+    /// store-upgrade check as damaged (`SnapshotSourceDamaged`, the
+    /// `wayOut.damaged` screen); every other refusal keeps its own way out.
     pub async fn recover_in_fresh_folder(
         &self,
         network: DashNetwork,
@@ -236,9 +239,9 @@ impl Engine {
                         "{network} is open; only a network whose open was refused starts over"
                     )));
                 }
-                if !shared.refused_contains(&network) {
+                if !shared.damaged_contains(&network) {
                     return Err(EngineError::InvalidArgument(format!(
-                        "the last open of {network} was not refused; nothing to start over from"
+                        "the last open of {network} was not refused as damaged; nothing to start over from"
                     )));
                 }
                 let (root, net) = (shared.config.data_root.clone(), network.clone());
@@ -246,7 +249,7 @@ impl Engine {
                     crate::network_folders::recover(&root, &net)
                 })
                 .await??;
-                shared.set_refused(&network, false);
+                shared.set_damaged(&network, false);
                 drop(sessions);
                 tracing::info!(%network, folder = %dir.display(), "network starts over in a new folder");
                 Ok(dir)
@@ -269,7 +272,14 @@ impl Engine {
                 if let Some(existing) = sessions.get(&network) {
                     return Ok(Arc::clone(existing));
                 }
-                let dir = crate::network_folders::resolve(&shared.config.data_root, &network)?;
+                let dir = match crate::network_folders::resolve(&shared.config.data_root, &network)
+                {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        shared.set_damaged(&network, false);
+                        return Err(e);
+                    }
+                };
                 let opened = NetworkSession::open(
                     network.clone(),
                     dir,
@@ -278,9 +288,10 @@ impl Engine {
                     shared.config.vault.clone(),
                 )
                 .await;
-                shared.set_refused(
+                shared.set_damaged(
                     &network,
-                    matches!(opened, Err(EngineError::StoreRefused(_))),
+                    matches!(&opened, Err(EngineError::StoreRefused(r))
+                        if r.screen.way_out == dw_store_upgrade::copy::WayOut::Damaged),
                 );
                 let session = opened?;
                 sessions.insert(network.clone(), Arc::clone(&session));

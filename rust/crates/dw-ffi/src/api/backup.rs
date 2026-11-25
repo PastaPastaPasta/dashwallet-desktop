@@ -108,7 +108,7 @@ impl From<dw_engine::EngineError> for BackupError {
             },
             E::WalletAlreadyExists(wallet_id) => Self::AlreadyExists { wallet_id },
             E::Vault(V::NoVault | V::Locked | V::MixingOnly) => Self::VaultLocked,
-            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) => {
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::NameRejected(_) | E::RestoreOnly => {
                 Self::InvalidArgument { detail }
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },

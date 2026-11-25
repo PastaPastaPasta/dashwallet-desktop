@@ -496,7 +496,7 @@ commands! {
     /// folder changes. The next start opens the new folder; the renderer
     /// restarts the app after this (`restart_app`). `invalid_argument`
     /// unless the network's last open was refused by the store-upgrade
-    /// check, and while it is open.
+    /// check as damaged, and while it is open.
     #[facade("Engine::recover_in_fresh_folder")]
     fn recover_in_fresh_folder(state) -> () {
         let engines = state.engine.clone();

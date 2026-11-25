@@ -122,6 +122,9 @@ impl From<dw_engine::EngineError> for EngineError {
             // of theirs holds a shielded spend (0.1 E1, DEC-1046).
             E::ShieldedSpendUnresolved => Self::Wallet { detail },
             E::LastStartupWallet => Self::InvalidArgument { detail },
+            // The frozen Swift shells never open a restored folder's add
+            // flow with a mark set (Q107 C1 is the desktop's).
+            E::RestoreOnly => Self::InvalidArgument { detail },
         }
     }
 }
