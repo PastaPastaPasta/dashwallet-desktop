@@ -24,7 +24,7 @@ const fixture: Fixture = {
   // Engine
   open_network: ({ network, settings }) => {
     expect(settings).toBeNull();
-    return { network: { kind: "regtest", dirName: network ?? "regtest", unitName: "tDASH" }, lock: LOCK };
+    return { network: { kind: "regtest", dirName: network ?? "regtest", unitName: "tDASH" }, lock: LOCK, notice: null };
   },
   // Vault
   create_vault: ({ passphrase }) => ({ ...LOCK, state: passphrase === null ? "unencrypted" : "unlocked" }),

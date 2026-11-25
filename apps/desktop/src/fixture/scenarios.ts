@@ -17,6 +17,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { NotPrivateData, StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
+import type { StoreLine } from "../api/generated/StoreLine";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
@@ -96,6 +97,10 @@ export interface World {
   /** `open_network` stops at a restore the user asked for: `refused` and `noSpace` once (the request is
    * cleared), the others until it is cancelled. */
   openRestore?: StoreRestoreData;
+  /** `open_network` stops on the machine while it upgrades the store, every time. */
+  openRetry?: boolean;
+  /** The store upgrade's notice every `open_network` carries (`OpenedNetwork.notice`). */
+  upgradeNotice?: StoreLine;
   /** A verified snapshot is there (`restore_available`); `request_restore` refuses without one. */
   restoreAvailable?: boolean;
   /** `request_restore` asked for a restore: the next `restart_app` runs it. */
@@ -843,6 +848,27 @@ const SCENARIOS = {
   "shielded-inactive": (t) => {
     const w = base(t);
     w.pending.shielded!.active = false;
+    return w;
+  },
+  /** The upgrade's move of the old Shielded records stopped: Shielded stays closed, Home says why. */
+  "shielded-closed-in-use": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "in_use";
+    return w;
+  },
+  "shielded-closed-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "failed";
+    return w;
+  },
+  "shielded-closed-damaged": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "damaged";
+    return w;
+  },
+  "shielded-closed-no-copy": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "no_upgrade_copy";
     return w;
   },
   /** Platform addresses holding only what is too small to move: Home counts none of it. */

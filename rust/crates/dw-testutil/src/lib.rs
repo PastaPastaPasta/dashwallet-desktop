@@ -20,6 +20,16 @@ pub fn private_tempdir() -> tempfile::TempDir {
     builder.tempdir().expect("temp dir")
 }
 
+/// Creates the directory `path`, whose parent must exist, owner-only: a data
+/// root the engine's storage permission check accepts.
+pub fn private_dir(path: &std::path::Path) {
+    #[allow(unused_mut)] // only Unix sets a mode
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path).expect("private dir");
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;

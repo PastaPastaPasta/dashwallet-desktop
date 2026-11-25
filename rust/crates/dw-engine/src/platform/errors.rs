@@ -14,7 +14,7 @@ use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
 use super::registration::ShieldedCheck;
-pub use super::shielded::ShieldedSyncWait;
+pub use super::shielded::{ShieldedStoreClosed, ShieldedSyncWait};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -762,6 +762,12 @@ pub enum ShieldedError {
     /// nothing was tracked or sent. Quote again.
     #[error("the mixed coins changed since the move was planned: review it again")]
     CoinsChanged,
+    /// The network's shielded store stays closed this session: this
+    /// start's drain of a store an earlier build wrote did not finish
+    /// (`reason`), so nothing reads or spends its notes. Core and Platform
+    /// funds are unaffected; the next start drains again.
+    #[error("the shielded store stays closed this session ({reason})")]
+    StoreClosed { reason: ShieldedStoreClosed },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -791,6 +797,7 @@ impl ShieldedError {
             Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
             Self::MoveRunning => "shielded.move_running",
             Self::CoinsChanged => "shielded.coins_changed",
+            Self::StoreClosed { .. } => "shielded.store_closed",
             Self::Platform(e) => e.code(),
         }
     }
@@ -995,6 +1002,8 @@ impl From<crate::EngineError> for PlatformError {
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
             | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
             | E::RetryableIo(_)
             | E::Io(_)) => Self::Storage {
                 detail: e.to_string(),

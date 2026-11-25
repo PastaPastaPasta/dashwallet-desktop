@@ -13,4 +13,12 @@ dirName: string,
 /**
  * dash-qt's unit name on this network: `DASH` on mainnet, `tDASH` elsewhere (QT-003).
  */
-unitName: string, };
+unitName: string,
+/**
+ * The open network's wallet data is the one from before the upgrade,
+ * put back by a restore the engine has not yet cleared (its RESTORED
+ * mark; one that can't be checked reads as true). Read at each
+ * `openNetwork` and `activeNetwork`; absent where no open network is
+ * meant.
+ */
+restored?: boolean, };

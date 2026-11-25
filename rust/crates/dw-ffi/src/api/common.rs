@@ -76,7 +76,7 @@ macro_rules! domain_error_common {
                     E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
                     E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
                     E::WalletNotFound(_) => Self::WalletNotFound { detail },
-                    E::StorageInUse { .. } | E::Storage(_) | E::StorageTooNew(_) | E::StoreRefused(_) | E::DataFolderNotPrivate { .. } | E::RetryableIo(_) | E::Io(_) => Self::Storage { detail },
+                    E::StorageInUse { .. } | E::Storage(_) | E::StorageTooNew(_) | E::StoreRefused(_) | E::DataFolderNotPrivate { .. } | E::StoreRestore(_) | E::StoreRetry(_) | E::RetryableIo(_) | E::Io(_) => Self::Storage { detail },
                     E::NotImplemented(call) => Self::NotImplemented { call },
                     _ => Self::Internal { detail },
                 }

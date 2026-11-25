@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 88
+Contract-Version: 89
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -976,7 +976,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 88 -->
+<!-- surface-sha256: ed73e024e05b79073fb30d55a054128de0f3616dbc26e914b9a42013f30c428c version: 89 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1293,7 +1293,7 @@ impl BearerSecret {
 impl From<String> for BearerSecret;
 impl std::fmt::Debug for BearerSecret;
 // src/platform/errors.rs
-pub use super::shielded::ShieldedSyncWait;
+pub use super::shielded::{ ShieldedStoreClosed, ShieldedSyncWait };
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
     Unavailable,
@@ -1478,6 +1478,7 @@ pub enum ShieldedError {
     CoinsUnconfirmed { coins: u64 },
     MoveRunning,
     CoinsChanged,
+    StoreClosed { reason: ShieldedStoreClosed },
     Platform(PlatformError),
 }
 impl ShieldedError {
@@ -2476,6 +2477,19 @@ pub struct UnresolvedSpend {
     pub transition: String,
     pub attempts: u32,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedStoreClosed {
+    NoUpgradeCopy,
+    InUse,
+    Damaged,
+    Failed,
+}
+impl ShieldedStoreClosed {
+    pub fn as_str(self) -> &'static str;
+}
+impl std::fmt::Display for ShieldedStoreClosed;
+impl From<&dw_shielded_drain::ShieldedDrainError> for ShieldedStoreClosed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShieldedSyncWait {
@@ -2732,7 +2746,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending`, `credits.recipient_invalid`, `credits.send_out_of_range`, `credits.fund_pending`, `credits.too_many_inputs`, `credits.quote_changed`, `credits.coins_changed`, `credits.mixing_active`, `credits.move_running` |
-| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.spend_refused`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running`, `shielded.coins_changed` |
+| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.spend_refused`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running`, `shielded.coins_changed`, `shielded.store_closed` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
@@ -4893,3 +4907,16 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     identity before any resend. `PublicContactRequestUnconfirmed` also answers a second send or accept while the first
     is unconfirmed; it reads `broadcast_unknown` too, since the first may be out. No signature, record or code
     changes.
+
+107. **The drain of a fork-written shielded store (Q110 110-2; version 89).** Each start drains the network's
+    `shielded.sqlite`, when an earlier build wrote it, into the dispatch journal (DISPATCH_SCHEMA 12), right after the
+    journal opens and before it loads, beside this start's persister open and only with a copy of the store from this
+    upgrade (a verified before-upgrade snapshot or this upgrade's part-upgraded copy). Upstream's shielded store opens
+    only after a drain that leaves no fork rows (none to drain, drained, or a drain finished after its retire). While
+    the journal is not open, and after a drain that did not finish, the store stays closed for the session: every
+    `ShieldedError` call, `shielded_status` included, is `shielded.store_closed{reason}` (`reason`:
+    `no_upgrade_copy`, `in_use`, `damaged` or `failed`), the shielded passes do not run, and Core and Platform are
+    unaffected; the next start drains again. The notes a drained disposition holds stay out of selection and of the
+    spendable balance: the engine holds each in upstream's store from the bind and after every pass, and lifts the
+    hold once the journal reads the note spent. A re-send whose transition a drained disposition names is refused
+    (`admit`). No signature changes.

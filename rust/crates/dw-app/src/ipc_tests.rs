@@ -2856,3 +2856,64 @@ fn every_broadcast_command_counts_while_it_runs() {
         );
     }
 }
+
+/// Q107 107-1: `openNetwork`'s notice is the store upgrade's line (key and
+/// English text) when its open upgraded the wallet data without a
+/// before-upgrade copy it can restore, at every call while that session is
+/// open; `null` for any other open.
+#[test]
+fn the_open_network_carries_the_store_upgrade_notice() {
+    assert_eq!(Demo::new().open()["notice"], Value::Null);
+    let demo = Demo::launched(|_, dir| {
+        let root = dir.join("data");
+        dw_testutil::private_dir(&root);
+        dw_store_upgrade::test_support::between_state(
+            &root.join("regtest"),
+            dw_store_upgrade::test_support::BeforeSnapshot::Unverified,
+            false,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    });
+    let line = dw_engine::store_upgrade::copy::notice_line(
+        dw_store_upgrade::UpgradeNotice::SnapshotDamaged,
+    );
+    let notice = json!({ "key": line.key, "text": line.text });
+    assert_eq!(demo.open()["notice"], notice);
+    assert_eq!(demo.ok("open_network", json!({}))["notice"], notice);
+}
+
+/// `restored` follows the network's RESTORED mark at each `openNetwork` and
+/// `activeNetwork`: absent, false; present, true; a mark that can't be
+/// checked, true. Nothing here clears it.
+#[test]
+fn the_open_network_says_whether_its_data_was_restored() {
+    let demo = Demo::new();
+    let backups = demo.data_root().join("regtest").join("upgrade-backups");
+    let mark = backups.join("RESTORED");
+    assert_eq!(demo.open()["network"]["restored"], false);
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], false);
+    std::fs::create_dir_all(&backups).unwrap();
+    std::fs::write(&mark, b"not a mark").unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], true);
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["restored"],
+        true
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&backups, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = demo.ok("active_network", json!({}))["restored"].clone();
+        std::fs::set_permissions(&backups, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(unreadable, true);
+    }
+    assert!(mark.exists());
+    std::fs::remove_file(&mark).unwrap();
+    assert_eq!(demo.ok("active_network", json!({}))["restored"], false);
+    assert!(
+        demo.ok("launch_info", json!({}))["network"]
+            .get("restored")
+            .is_none()
+    );
+}

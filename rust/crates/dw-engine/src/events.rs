@@ -1862,6 +1862,7 @@ impl SessionHub {
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
+            WalletEvent::DismissalsChanged { .. } => {}
         }
     }
 }
@@ -1885,7 +1886,9 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
         } => (inserted.iter().chain(updated).chain(matured))
             .map(|r| r.txid)
             .collect(),
-        WalletEvent::SyncHeightAdvanced { .. } => Vec::new(),
+        WalletEvent::SyncHeightAdvanced { .. } | WalletEvent::DismissalsChanged { .. } => {
+            Vec::new()
+        }
         WalletEvent::ChainLockProcessed {
             locked_transactions,
             ..

@@ -151,6 +151,12 @@ pub struct SessionOptions {
     /// toggle ignored).
     #[cfg(test)]
     pub as_release_build: bool,
+    /// Tests: the SDK the session uses in place of one built from
+    /// `dapi_addresses`, a mock whose answers the test set. It is used as
+    /// given: no context provider, CA, initial version or protocol version
+    /// observer is set on it.
+    #[cfg(test)]
+    pub sdk: Option<dash_sdk::Sdk>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -422,6 +428,9 @@ pub struct NetworkSession {
     /// The previous session of this network did not close cleanly (its
     /// marker file was still there at open).
     pub(crate) unclean_previous: bool,
+    /// This open upgraded the wallet data without a before-upgrade copy it
+    /// can restore ([`NetworkSession::upgrade_notice`]).
+    upgrade_notice: Option<dw_store_upgrade::UpgradeNotice>,
     /// dash-qt's load-on-startup wallet list; `None` = load every wallet.
     pub(crate) startup_list: Mutex<Option<std::collections::BTreeSet<WalletId>>>,
     /// The console `walletpassphrase` relock timer (review L1): one per
@@ -521,14 +530,14 @@ impl NetworkSession {
             None => None,
         };
         let persister_config = crate::store_upgrade::persister_config(&data_dir);
-        {
+        let upgrade_notice = {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
                 crate::fsutil::refuse_insecure_root(&dir)?;
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
-            .await??;
-        }
+            .await??
+        };
         create_owned_dir(&data_dir, Path::new(""))?;
         crate::store_upgrade::stores_opening(&data_dir);
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
@@ -644,6 +653,7 @@ impl NetworkSession {
             crate::store_upgrade::open_persister(&dir, persister_config)
         })
         .await??;
+        let persister_opened = Arc::new(persister_opened);
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
         // them: with no wallet open, closed ones cannot be reached. Such a
@@ -818,8 +828,14 @@ impl NetworkSession {
             .chain(store.unloaded())
             .chain(listed)
             .collect();
-        let journal = match crate::platform::lease::session::open_journal(&data_dir, known).await {
-            Ok(journal) => journal,
+        let opened_journal = crate::platform::lease::session::open_journal(
+            &data_dir,
+            known,
+            Arc::clone(&persister_opened),
+        )
+        .await;
+        let (journal, shielded_drain) = match opened_journal {
+            Ok(opened) => opened,
             Err(e) => {
                 #[cfg(test)]
                 failed_open_probe::record(
@@ -873,7 +889,7 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
-                _persister_opened: Arc::new(persister_opened),
+                _persister_opened: persister_opened,
                 store,
                 appdb: Arc::clone(&appdb),
                 tap,
@@ -887,6 +903,7 @@ impl NetworkSession {
             withdrawal_nonces: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
+            upgrade_notice,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             backups: Default::default(),
@@ -907,6 +924,8 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
             governance,
         });
+        // Before anything can configure upstream's shielded store.
+        let _ = session.platform.shielded_drain.set(shielded_drain);
         session.governance.follow(&session);
         if session.governance.enabled() {
             session.governance.start(&session);
@@ -1094,6 +1113,16 @@ impl NetworkSession {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// What to tell the user about the store upgrade this session's open
+    /// ran, once its persister opened and its wallets loaded: `Some` when it
+    /// upgraded the wallet data without a before-upgrade copy it can restore
+    /// (Q107 107-1). It never blocks anything and is the same for the whole
+    /// session; nothing on disk records that it was shown.
+    pub fn upgrade_notice(&self) -> Option<crate::store_upgrade::copy::Line> {
+        self.upgrade_notice
+            .map(crate::store_upgrade::copy::notice_line)
     }
 
     /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could
@@ -1619,6 +1648,10 @@ fn build_sdk(
     context: SharedContext,
     observer: Option<dash_sdk::sdk::ProtocolVersionObserver>,
 ) -> Result<dash_sdk::Sdk, EngineError> {
+    #[cfg(test)]
+    if let Some(sdk) = &opts.sdk {
+        return Ok(sdk.clone());
+    }
     let builder = if opts.dapi_addresses.is_empty() {
         match network {
             DashNetwork::Mainnet => SdkBuilder::new_mainnet(),

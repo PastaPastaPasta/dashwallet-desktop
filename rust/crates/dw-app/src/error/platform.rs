@@ -149,6 +149,7 @@ codes! {
         CoinsUnconfirmed = "shielded.coins_unconfirmed",
         MoveRunning = "shielded.move_running",
         CoinsChanged = "shielded.coins_changed",
+        StoreClosed = "shielded.store_closed",
     }
 }
 
@@ -214,6 +215,12 @@ impl From<ShieldedError> for AppError {
             ),
             S::MoveRunning => (ShieldedCode::MoveRunning, None),
             S::CoinsChanged => (ShieldedCode::CoinsChanged, None),
+            S::StoreClosed { reason } => (
+                ShieldedCode::StoreClosed,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
             S::Platform(e) => return e.into(),
         };
         AppError {
@@ -534,7 +541,7 @@ impl From<CreditsError> for AppError {
 mod tests {
     use dw_engine::platform::{
         BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RecipientProblem, RevokeCause,
-        ShieldedCheck, ShieldedSyncWait, UsernameRule,
+        ShieldedCheck, ShieldedStoreClosed, ShieldedSyncWait, UsernameRule,
     };
 
     use super::*;
@@ -752,6 +759,9 @@ mod tests {
             ShieldedError::CoinsUnconfirmed { coins: 2 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::NoUpgradeCopy,
+            },
             ShieldedError::Platform(PlatformError::Unavailable),
         ];
         for e in shielded {
@@ -793,6 +803,16 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({"kind": "artifact", "artifact": "st"})
+        );
+        // Q110 110-2: why the shielded store stays closed.
+        let e = AppError::from(ShieldedError::StoreClosed {
+            reason: ShieldedStoreClosed::InUse,
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "shielded.store_closed");
+        assert_eq!(
+            v["data"],
+            serde_json::json!({"kind": "reason", "reason": "in_use"})
         );
         // DEC-1058 #4: what Shielded is still syncing.
         let e = AppError::from(ShieldedError::NotSynced {

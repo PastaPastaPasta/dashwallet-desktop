@@ -106,7 +106,6 @@ fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
 /// but not the payment (it rebuilds none at load). When the scan finds the
 /// coin key-wallet sweeps the claim, and the payment goes with it.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn a_payment_on_a_claim_swept_after_a_restart_goes_with_it() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, claim, payment) = payment_on_a_claims_change(&engine, &session, id);
@@ -127,7 +126,6 @@ fn a_payment_on_a_claim_swept_after_a_restart_goes_with_it() {
 /// The same within one session (#42's live path): key-wallet holds the
 /// payment and sweeps it with the claim.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn a_payment_on_a_dropped_claims_change_goes_with_it_in_the_session() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
@@ -835,7 +833,6 @@ fn dropped_records(
 /// sweeps it when the scan finds the coin, and the drop of S that follows
 /// releases b, which counts once when scanned again.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn a_coin_a_payment_on_a_swept_claim_spent_is_offered_again() {
     let (_dir, engine, session, id) = engine_wallet();
     let (b_funding, funding, claim, payment) =
@@ -856,7 +853,6 @@ fn a_coin_a_payment_on_a_swept_claim_spent_is_offered_again() {
 /// what is built on the claim ran: the sweep recorded the claim as
 /// dropped, and the next start drops S and releases b.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn a_sweep_whose_drop_never_ran_is_finished_at_the_next_start() {
     let (_dir, engine, session, id) = engine_wallet();
     let (b_funding, funding, claim, payment) =

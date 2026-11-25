@@ -18,7 +18,20 @@ import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
 import type { UpdatePhase } from "../api/generated/UpdatePhase";
 import { NOT_PRIVATE_REASONS, type NotPrivateReason } from "../api/storeOpen";
 import { startingPhase, UPDATE_FAULTS, type UpdateFault } from "./updates";
-import { isErrorClass, notPrivateFailure, RESTORE_FAILURE_NAMES, restoreFailure, sampleError, STORE_SCREEN_NAMES, STORE_SCREENS, type ErrorClass, type StoreScreenName } from "./errors";
+import {
+  isErrorClass,
+  notPrivateFailure,
+  RESTORE_FAILURE_NAMES,
+  restoreFailure,
+  sampleError,
+  STORE_SCREEN_NAMES,
+  STORE_SCREENS,
+  UPGRADE_NOTICE_NAMES,
+  UPGRADE_NOTICES,
+  type ErrorClass,
+  type StoreScreenName,
+  type UpgradeNoticeName,
+} from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
@@ -68,6 +81,10 @@ export interface FixtureOptions {
   /** `openRestore=<state>:<cause>`: `open_network` stops at a restore the user asked for (a fresh world
    * only). */
   openRestore?: string;
+  /** `openRetry=yes`: `open_network` stops on the machine while it upgrades the store (a fresh world only). */
+  openRetry?: boolean;
+  /** `upgradeNotice=<name>`: `open_network` carries the store upgrade's notice (a fresh world only). */
+  upgradeNotice?: UpgradeNoticeName;
   /** `restoreAvailable=yes|no`: whether a verified snapshot is there to restore (a fresh world only). */
   restoreAvailable?: boolean;
   /** `restored=yes`: the network's wallet data was restored and RESTORED is still set (a fresh world only). */
@@ -163,6 +180,8 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   if (!carried && opts.notPrivate) world.openNotPrivate = notPrivateFailure(opts.notPrivate, FIXTURE_DATA_DIR);
   if (!carried && opts.storageInUse) world.storageHeld = { retryable: opts.storageInUse === "retry" };
   if (!carried && opts.openRestore) world.openRestore = restoreFailure(opts.openRestore, dataDir);
+  if (!carried && opts.openRetry) world.openRetry = true;
+  if (!carried && opts.upgradeNotice) world.upgradeNotice = UPGRADE_NOTICES[opts.upgradeNotice];
   if (!carried && opts.restoreAvailable !== undefined) world.restoreAvailable = opts.restoreAvailable;
   if (!carried && opts.restored) world.restored = true;
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
@@ -283,6 +302,8 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const storageInUse = oneOf(p, "storageInUse", ["retry", "restart"] as const);
   const openRestore = oneOf(p, "openRestore", RESTORE_FAILURE_NAMES);
   const available = oneOf(p, "restoreAvailable", ["yes", "no"] as const);
+  const openRetry = oneOf(p, "openRetry", ["yes"] as const) === "yes" || undefined;
+  const upgradeNotice = oneOf(p, "upgradeNotice", UPGRADE_NOTICE_NAMES);
   const restored = oneOf(p, "restored", ["yes"] as const) === "yes" || undefined;
   return {
     scenario,
@@ -301,6 +322,8 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     notPrivate,
     storageInUse,
     openRestore,
+    openRetry,
+    upgradeNotice,
     restoreAvailable: available === undefined ? undefined : available === "yes",
     restored,
   };
