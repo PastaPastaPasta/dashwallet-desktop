@@ -342,6 +342,7 @@ impl DashPay {
         duffs: u64,
         grant: String,
     ) -> Result<TopUpOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             topup::top_up(&session, wallet, &*lib, &identity, duffs, &grant).await
@@ -376,6 +377,7 @@ impl DashPay {
         txid: String,
         grant: String,
     ) -> Result<TopUpOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet = self.wallet_id;
         topup::on_lib(&self.session, wallet, move |session, lib| async move {
             topup::resume(&session, wallet, &*lib, &txid, &grant).await
@@ -418,6 +420,7 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<WithdrawOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
@@ -460,6 +463,7 @@ impl DashPay {
         amount: WithdrawAmount,
         grant: String,
     ) -> Result<WithdrawToPlatformOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
@@ -502,6 +506,7 @@ impl DashPay {
         fee_input: Option<PlatformAddressRow>,
         grant: String,
     ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = platform_moves::SdkMoves {

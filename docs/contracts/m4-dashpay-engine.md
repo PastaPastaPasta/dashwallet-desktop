@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 90
+Contract-Version: 91
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -970,7 +970,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 950d1e21403a74b063a3a7bf007bc0dc7152c8b078fa2378047deb3a297df86e version: 90 -->
+<!-- surface-sha256: 950d1e21403a74b063a3a7bf007bc0dc7152c8b078fa2378047deb3a297df86e version: 91 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2751,6 +2751,11 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 - `platform.restored` (Contract-Version 90, the R3 restore's money gate): while the network's restored mark is set,
   every lease whose flow moves funds is refused before it begins, its grants unused. The mark clears at the first full
   sync after the restore; profile, contact, DashPay-key and voting flows are not refused.
+- `platform.unavailable` (Contract-Version 91) in a session without Platform: every funds flow that needs Platform is
+  refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
+  at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit
+  withdrawal's calls answer `masternodes.platform_unavailable` (mn-engine), as before. Core sends, CoinJoin and Core
+  transaction actions are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
   backfill), the balance, the coin list and Activity can include a coin spent above the rewound checkpoint until its
   spend replays. Spends of the wallet's coins are refused until the replay is back (`rescan_in_progress`, or
@@ -2814,6 +2819,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   | `LeaseError::Parked` or `NeedsGrant`: the flow needs a fresh grant (its own key passed `key_until`, an unlock, a scope or passphrase change, a budget at 0, or a lease without the call's purpose) | `platform.needs_grant{purpose}` |
   | a budget refusal: the charge does not fit | `platform.grant_exceeded{purpose, needed, remaining}` |
   | an unknown, used or other-wallet grant or lease id | `platform.grant_invalid` |
+  | `LeaseError::PlatformUnavailable`: a funds flow that needs Platform in a session without Platform | `platform.unavailable` |
   | the dispatch journal is unavailable, or its schema is newer (E0-04 §6.4) | `storage`, with `Notice{DispatchJournalUnavailable}` |
 
   `purpose` is the budget (`Funding`, `Credits`, `Spend`, `Crypto`, `Masternode`, `Voting`); `needed` and `remaining`

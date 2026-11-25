@@ -290,6 +290,10 @@ pub enum LeaseError {
     /// (the money gate, `restore_gate`): `platform.restored`.
     #[error("funds actions wait for the first sync after a restore")]
     Restored,
+    /// A flow that moves funds through Platform in a session without
+    /// Platform: `platform.unavailable`.
+    #[error("Platform is off in this session")]
+    PlatformUnavailable,
 }
 
 impl From<LeaseError> for PlatformError {
@@ -297,6 +301,7 @@ impl From<LeaseError> for PlatformError {
         match e {
             LeaseError::Locked => PlatformError::Cancelled,
             LeaseError::Restored => PlatformError::Restored,
+            LeaseError::PlatformUnavailable => PlatformError::Unavailable,
             LeaseError::Revoked(cause) => PlatformError::LeaseRevoked { cause },
             LeaseError::Ended => PlatformError::LeaseExpired,
             LeaseError::Parked(purpose) | LeaseError::NeedsGrant(purpose) => {

@@ -234,7 +234,9 @@ pub(crate) fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
     match e {
         // Mode B call steps only; a `TxDraft` never takes one.
         LeaseError::JournalUnavailable => return EngineError::Storage(e.to_string()),
-        LeaseError::StepKeyMismatch | LeaseError::FundingBlocked(_) => {
+        LeaseError::StepKeyMismatch
+        | LeaseError::FundingBlocked(_)
+        | LeaseError::PlatformUnavailable => {
             return EngineError::Internal(e.to_string());
         }
         LeaseError::Revoked(_) | LeaseError::Locked => SendFailure::Cancelled,

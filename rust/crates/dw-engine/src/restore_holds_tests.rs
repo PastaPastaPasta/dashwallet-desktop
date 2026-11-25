@@ -838,9 +838,11 @@ fn reopen_with(
         no_platform,
         ..super::offline()
     };
-    engine
+    let session = engine
         .block_on(engine.open_network(crate::DashNetwork::Regtest, options))
-        .unwrap()
+        .unwrap();
+    (session.platform.funds_off_in_tests).store(true, std::sync::atomic::Ordering::SeqCst);
+    session
 }
 
 fn waiting(engine: &Engine, session: &NetworkSession) -> Option<Vec<crate::RestoreWait>> {
@@ -1015,4 +1017,269 @@ fn a_mark_gone_outside_the_clear_ends_the_watcher_once() {
         1,
         "the watcher kept running"
     );
+}
+
+/// Row counts of every table of app.sqlite and the dispatch journal.
+fn table_rows(session: &NetworkSession) -> BTreeMap<String, i64> {
+    let mut out = BTreeMap::new();
+    for file in [dw_appdb::APP_DB_FILE, dw_appdb::dispatch::DISPATCH_DB_FILE] {
+        let conn = rusqlite::Connection::open_with_flags(
+            session.data_dir().join(file),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let tables: Vec<String> = (conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'"))
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+        for t in tables {
+            let n: i64 = (conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{t}\""), [], |r| r.get(0)))
+            .unwrap();
+            out.insert(format!("{file}/{t}"), n);
+        }
+    }
+    out
+}
+
+/// C7: in a session without Platform, every funds flow that needs
+/// Platform is `platform.unavailable` with its grant unused, no lease and
+/// no row written; a Core send is offered, and Core flows' leases are not
+/// refused for Platform.
+#[test]
+fn without_platform_every_platform_funds_flow_is_refused_up_front() {
+    use crate::masternodes::WithdrawalKeyChoice;
+    use crate::platform::{
+        FlowKind, FundAmount, LeaseError, LockKindId, PaymentSource, RegistrationFunding,
+        RegistrationRequest, WithdrawAmount,
+    };
+    use dw_vault::{Credential, GrantKind, GrantPurpose};
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let session = reopen_with(&engine, session, true);
+    assert!(!session.restored());
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let rows = table_rows(&session);
+    let grant = || {
+        let purpose = GrantPurpose::PlatformOp {
+            max_duffs: COIN,
+            max_credits: COIN * 1000,
+        };
+        (session
+            .vault()
+            .authorize(purpose, Some(&id.0), Credential::None))
+        .unwrap()
+        .id
+    };
+    let dp = session.dashpay(id);
+    let txid = "11".repeat(32);
+    let ident = "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF".to_string();
+    let request = || RegistrationRequest {
+        label: "alice".into(),
+        temporary_label: None,
+        funding: RegistrationFunding::CoreBalance,
+        initial_profile: None,
+    };
+    let amount = || WithdrawAmount::Credits { credits: 100_000 };
+    let fund = || FundAmount::Duffs { duffs: COIN / 10 };
+    let mut refused: Vec<(&str, String, String)> = Vec::new();
+    macro_rules! call {
+        ($name:expr, |$g:ident| $call:expr) => {{
+            let $g = grant();
+            let code = match engine.block_on($call) {
+                Ok(_) => "ok".to_string(),
+                Err(e) => e.code().to_string(),
+            };
+            refused.push(($name, code, $g));
+        }};
+    }
+    call!("shielded_send", |g| dp.shielded_send(
+        "x".into(),
+        1000,
+        None,
+        g.clone(),
+        false
+    ));
+    call!("unshield_to_core", |g| dp.unshield_to_core(
+        1000,
+        None,
+        g.clone(),
+        false
+    ));
+    call!("unshield_to_platform", |g| dp.unshield_to_platform(
+        1000,
+        None,
+        g.clone(),
+        false
+    ));
+    call!("shield_from_core", |g| dp
+        .shield_from_core(fund(), g.clone()));
+    call!("shield_mixed_coins", |g| dp.shield_mixed_coins(g.clone()));
+    call!("resume_shield", |g| dp
+        .resume_shield(txid.clone(), g.clone()));
+    call!("platform_send", |g| dp
+        .platform_send("op".into(), g.clone()));
+    call!("move_to_core", |g| dp.move_to_core(
+        amount(),
+        "x".into(),
+        None,
+        g.clone()
+    ));
+    call!("platform_fund", |g| dp.platform_fund(fund(), g.clone()));
+    call!("resume_platform_fund", |g| dp
+        .resume_platform_fund(txid.clone(), g.clone()));
+    call!("top_up", |g| dp.top_up(ident.clone(), COIN / 10, g.clone()));
+    call!("resume_top_up", |g| dp
+        .resume_top_up(txid.clone(), g.clone()));
+    call!("withdraw", |g| dp.withdraw(
+        ident.clone(),
+        "x".into(),
+        amount(),
+        g.clone()
+    ));
+    call!("withdraw_to_platform", |g| dp.withdraw_to_platform(
+        ident.clone(),
+        "x".into(),
+        amount(),
+        g.clone()
+    ));
+    call!("top_up_from_platform", |g| dp.top_up_from_platform(
+        ident.clone(),
+        amount(),
+        None,
+        g.clone()
+    ));
+    call!("start_registration", |g| dp
+        .start_registration(request(), g.clone()));
+    call!("start_registration_past_unknown_funding", |g| dp
+        .start_registration_past_unknown_funding(
+            request(),
+            g.clone(),
+            Vec::new()
+        ));
+    call!("resume_registration", |g| dp
+        .resume_registration("draft".into(), Some(g.clone())));
+    call!("finish_asset_locks", |g| dp.finish_asset_locks(g.clone()));
+    call!("register_name", |g| dp.register_name(
+        ident.clone(),
+        "alice".into(),
+        g.clone()
+    ));
+    for source in [PaymentSource::Shielded, PaymentSource::Platform] {
+        call!("contact_pay", |g| dp.contact_pay(
+            ident.clone(),
+            ident.clone(),
+            1000,
+            source,
+            None,
+            g.clone(),
+            false
+        ));
+    }
+    for kind in [LockKindId::Shielded, LockKindId::PlatformAddress] {
+        call!("finish_transfer", |g| dp.finish_transfer(
+            kind,
+            txid.clone(),
+            0,
+            g.clone()
+        ));
+    }
+    let flows = [
+        FlowKind::Registration,
+        FlowKind::TopUp,
+        FlowKind::Withdraw,
+        FlowKind::NameRegistration,
+        FlowKind::AcceptAndPay,
+        FlowKind::PlatformAddressMove,
+        FlowKind::PlatformAddressSend,
+        FlowKind::Shield,
+        FlowKind::PlatformAddressFund,
+        FlowKind::ShieldedSpend,
+        FlowKind::ShieldDrain,
+        FlowKind::MasternodeWithdraw,
+    ];
+    for flow in flows {
+        call!("begin_flow", |g| session.begin_flow(
+            id,
+            flow,
+            vec![g.clone()],
+            None
+        ));
+        let g = grant();
+        let lease = engine.block_on(session.begin_lease(id, flow, std::slice::from_ref(&g)));
+        assert!(
+            matches!(lease, Err(LeaseError::PlatformUnavailable)),
+            "{flow:?}: {:?}",
+            lease.err()
+        );
+        refused.push(("begin_lease", "platform.unavailable".into(), g));
+    }
+    for source in [PaymentSource::Shielded, PaymentSource::Platform] {
+        call!("begin_flow", |g| session.begin_flow(
+            id,
+            FlowKind::ContactPayFromBalance,
+            vec![g.clone()],
+            Some(source)
+        ));
+    }
+    for (name, code, g) in &refused {
+        assert_eq!(code, "platform.unavailable", "{name}");
+        assert!(
+            session
+                .vault()
+                .grant_purpose(g, GrantKind::PlatformOp, Some(&id.0))
+                .is_ok(),
+            "{name}: the grant was redeemed"
+        );
+    }
+    let g = grant();
+    let mn = engine.block_on(session.masternodes().withdraw_credits(
+        id,
+        "22".repeat(32),
+        WithdrawalKeyChoice::Owner,
+        amount(),
+        None,
+        g.clone(),
+    ));
+    assert_eq!(
+        mn.as_ref().err().map(|e| e.code()),
+        Some("masternodes.platform_unavailable"),
+        "{mn:?}"
+    );
+    assert!(
+        session
+            .vault()
+            .grant_purpose(&g, GrantKind::PlatformOp, Some(&id.0))
+            .is_ok()
+    );
+    assert!(session.lease_table().views().is_empty(), "a lease was made");
+    assert_eq!(table_rows(&session), rows, "a row was written");
+    for flow in [
+        FlowKind::ContactPayment,
+        FlowKind::MasternodeRegistration,
+        FlowKind::KeyChange,
+        FlowKind::SharedMasternode,
+        FlowKind::Dissolution,
+        FlowKind::Proposal,
+    ] {
+        let lease = engine.block_on(session.begin_lease(id, flow, &[]));
+        assert!(
+            !matches!(lease, Err(LeaseError::PlatformUnavailable)),
+            "{flow:?}"
+        );
+    }
+    let b = OutPoint::new(paid.txid(), 1);
+    let accept = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (_draft, prepared) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![b]),
+        COIN / 2,
+        false,
+        &accept,
+    );
+    assert!(prepared.is_ok(), "a Core send: {:?}", prepared.err());
 }

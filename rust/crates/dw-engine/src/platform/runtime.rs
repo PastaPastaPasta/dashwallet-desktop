@@ -121,6 +121,11 @@ pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
     /// SPV starts without a bring-up and no loop runs.
     pub(super) enabled: bool,
+    /// Unit tests drive Platform flows over fakes in sessions without
+    /// Platform; [`Self::funds_off`] refuses them there only when a test
+    /// sets this.
+    #[cfg(test)]
+    pub(crate) funds_off_in_tests: AtomicBool,
     pub(super) supervisor: Mutex<Option<Supervisor>>,
     /// Orders `start_spv`, `stop_spv` and `reset_chain_data`.
     pub(crate) lifecycle: tokio::sync::Mutex<()>,
@@ -521,6 +526,8 @@ impl PlatformRuntime {
     ) -> Self {
         Self {
             enabled,
+            #[cfg(test)]
+            funds_off_in_tests: AtomicBool::new(false),
             supervisor: Mutex::new(None),
             lifecycle: tokio::sync::Mutex::new(()),
             startup: RwLock::new(HashMap::new()),
@@ -619,6 +626,16 @@ impl PlatformRuntime {
     /// The session runs with Platform (not `SessionOptions::no_platform`).
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Funds flows that need Platform are refused up front (C7): the
+    /// session runs without Platform.
+    pub(crate) fn funds_off(&self) -> bool {
+        #[cfg(test)]
+        if !self.funds_off_in_tests.load(Ordering::SeqCst) {
+            return false;
+        }
+        !self.enabled
     }
 
     /// SPV runs under a supervisor, and with it the Platform loops.

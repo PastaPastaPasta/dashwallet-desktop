@@ -4336,6 +4336,7 @@ impl NetworkSession {
         address_grant: String,
         spend_grant: String,
     ) -> Result<PlatformAddressBalance, CreditsError> {
+        self.refuse_platform_funds()?;
         self.dashpay(wallet_id)
             .on_wallet(move |session, manager, wallet| async move {
                 // The input bound (`lock_inputs`), before a grant is redeemed.

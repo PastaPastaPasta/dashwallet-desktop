@@ -466,6 +466,7 @@ impl DashPay {
         exit_of: Option<String>,
         grant: String,
     ) -> Result<MoveToCoreOutcome, CreditsError> {
+        self.session.refuse_platform_funds()?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = platform_moves::SdkMoves {
@@ -564,6 +565,7 @@ impl DashPay {
                 let _ = release.await;
             }
         }
+        self.session.refuse_platform_funds()?;
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = platform_moves::SdkMoves {

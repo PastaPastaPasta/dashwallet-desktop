@@ -107,6 +107,23 @@ impl FlowKind {
                 | Self::Voting
         )
     }
+
+    /// Whether the flow writes to Platform or spends credits or shielded
+    /// notes: refused up front in a session without Platform. Core payments
+    /// to contacts, masternode and governance transactions, and votes need
+    /// Core alone.
+    pub(crate) fn needs_platform(self) -> bool {
+        !matches!(
+            self,
+            Self::ContactPayment
+                | Self::Voting
+                | Self::MasternodeRegistration
+                | Self::KeyChange
+                | Self::SharedMasternode
+                | Self::Dissolution
+                | Self::Proposal
+        )
+    }
 }
 
 /// A lease's budgets (E0-04 §4.2).

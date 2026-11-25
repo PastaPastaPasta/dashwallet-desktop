@@ -469,6 +469,16 @@ impl NetworkSession {
         }
     }
 
+    /// A funds action that needs Platform, before any grant, lease,
+    /// intent, journal row or signature: `platform.unavailable` in a
+    /// session without Platform (C7).
+    pub(crate) fn refuse_platform_funds(&self) -> Result<(), crate::platform::PlatformError> {
+        match self.platform.funds_off() {
+            true => Err(crate::platform::PlatformError::Unavailable),
+            false => Ok(()),
+        }
+    }
+
     /// Whether the network's restored mark is set (the money gate).
     #[cfg(test)]
     pub(crate) fn restored(&self) -> bool {

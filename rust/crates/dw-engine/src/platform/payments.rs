@@ -238,6 +238,7 @@ impl DashPay {
             confirm_unrecorded,
         };
         if source == PaymentSource::Shielded && shielded_payout::enabled_on(&self.session.network) {
+            self.session.refuse_platform_funds()?;
             // The payee, the pair's lock and rule 5 before the pool opens.
             let gated = self
                 .session
