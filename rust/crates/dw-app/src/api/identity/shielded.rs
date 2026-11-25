@@ -461,7 +461,9 @@ impl From<&dw_engine::EngineError> for ShieldRepairBlocked {
         use dw_engine::{CoinJoinFailure, EngineError as E, SendFailure};
         let reason = match e {
             E::StuckFunding(r) => match r {
-                R::RowsUnknown | R::CallRunning | R::JournalUnavailable => B::NotReady,
+                R::RowsUnknown | R::CallRunning | R::JournalUnavailable | R::LockAbandoned(_) => {
+                    B::NotReady
+                }
                 R::SpendUnsettled(_) => B::SpendUnsettled,
                 R::LockInputsSpent(_) | R::MissesSignedLock(_) => B::LockInputsSpent,
                 R::UnattributedLock(_) => B::UnattributedLock,

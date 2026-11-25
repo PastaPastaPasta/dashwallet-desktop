@@ -7,4 +7,4 @@ import type { UnsupportedLink } from "./UnsupportedLink";
 /**
  * Where a link sends the window.
  */
-export type LinkRoute = { "kind": "pay", uri: PaymentUri, username: string | null, } | { "kind": "scanQr" } | { "kind": "addContact", identity: string, username: string, } | { "kind": "invitation", linkId: string, } | { "kind": "saved", link: StashedLinkInfo, } | { "kind": "unsupported", what: UnsupportedLink, } | { "kind": "rejected", reason: LinkRejected, };
+export type LinkRoute = { "kind": "pay", uri: PaymentUri, username: string | null, } | { "kind": "scanQr" } | { "kind": "addContact", identity: string, username: string, } | { "kind": "invitation", linkId: string, } | { "kind": "appConnect", linkId: string, returnsTo: string | null, } | { "kind": "saved", link: StashedLinkInfo, } | { "kind": "unsupported", what: UnsupportedLink, } | { "kind": "rejected", reason: LinkRejected, };

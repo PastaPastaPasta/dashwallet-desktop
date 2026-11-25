@@ -5,4 +5,4 @@ import type { DispatchStateName } from "./DispatchStateName";
  * Why Repair refused a stuck funding step (E0-04 §6.5; the engine's
  * `StuckFundingRefusal`). Txids are display hex.
  */
-export type StuckFundingRefusalName = { "kind": "rowsUnknown" } | { "kind": "notStuck", status: DispatchStateName | null, } | { "kind": "noMarker" } | { "kind": "callRunning" } | { "kind": "journalUnavailable" } | { "kind": "spendUnsettled", txid: string, } | { "kind": "lockInputsSpent", txid: string, } | { "kind": "missesSignedLock", txid: string, } | { "kind": "unattributedLock", txid: string, } | { "kind": "noKnownLock" };
+export type StuckFundingRefusalName = { "kind": "rowsUnknown" } | { "kind": "notStuck", status: DispatchStateName | null, } | { "kind": "noMarker" } | { "kind": "callRunning" } | { "kind": "journalUnavailable" } | { "kind": "spendUnsettled", txid: string, } | { "kind": "lockInputsSpent", txid: string, } | { "kind": "lockAbandoned", txid: string, } | { "kind": "missesSignedLock", txid: string, } | { "kind": "unattributedLock", txid: string, } | { "kind": "noKnownLock" };

@@ -11,7 +11,7 @@ use crate::shell::links::{self, LinkRoute, Routed, StashedLinkInfo};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
     "NetworkSession::stash_link",
-    "internal: links reach the stash through `take_links` and `route_link` (shell::links::intake), so a link's text never comes from the renderer as its own command",
+    "internal: links reach the stash through `take_links` and `route_link` (shell::links::Inbox::intake), so a link's text never comes from the renderer as its own command",
 )];
 
 commands! {
@@ -32,7 +32,10 @@ commands! {
     #[facade()]
     fn route_link(state, network: String, text: String) -> LinkRoute {
         let session = state.session().await.ok();
-        links::intake(session, &network, &zeroize::Zeroizing::new(text)).await
+        let text = zeroize::Zeroizing::new(text);
+        (state.shell.inbox)
+            .intake(session, &network, &text, links::LinkOrigin::Entered)
+            .await
     }
 
     /// The links in the stash, oldest first, without their text (DP5-01):
@@ -61,7 +64,7 @@ commands! {
         Ok(Some(match links::route_text(&network, text.expose())? {
             Routed::Route(route) => route,
             // Not stashed as a payment or contact link: nothing to open.
-            Routed::Invitation => return Ok(None),
+            Routed::Invitation | Routed::Connect(_) => return Ok(None),
         }))
     }
 

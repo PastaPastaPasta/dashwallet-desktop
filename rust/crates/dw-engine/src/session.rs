@@ -1064,6 +1064,19 @@ impl NetworkSession {
         EngineError::NetworkNotOpen(self.network.to_string())
     }
 
+    /// Whether `wait`, a lock's proof wait, proves it before the session's
+    /// gate closes: a close does not wait for it, and ends it unproved.
+    pub(crate) async fn proved_unless_closed<E>(
+        &self,
+        wait: impl Future<Output = Result<(), E>>,
+    ) -> bool {
+        tokio::select! {
+            biased;
+            () = self.gate.until_closed() => false,
+            proved = wait => proved.is_ok(),
+        }
+    }
+
     /// Admits an async operation; `NetworkNotOpen` once close has started.
     /// Public entry points take one guard each; helpers they call do not
     /// (a nested admission behind a waiting close would deadlock).

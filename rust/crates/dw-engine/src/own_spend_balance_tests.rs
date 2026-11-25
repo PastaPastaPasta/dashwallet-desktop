@@ -2738,6 +2738,209 @@ fn a_payment_marked_abandoned_is_never_resent() {
     refused(&session);
 }
 
+/// An Abandon stops dash-spv's rebroadcast of every transaction it
+/// abandons, before it writes their marks; so does Remove unconfirmed
+/// transactions.
+#[test]
+fn an_abandon_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let abandoned = try_abandon(&engine, &session, id, txid).unwrap();
+    assert!(abandoned.contains(&txid), "{abandoned:?}");
+    let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+    assert_eq!(
+        stopped.iter().map(|(t, _)| *t).collect::<BTreeSet<_>>(),
+        abandoned,
+        "not every abandoned transaction was stopped"
+    );
+    assert!(
+        stopped.iter().all(|(_, marked)| !marked),
+        "stopped after the mark: {stopped:?}"
+    );
+}
+
+#[test]
+fn remove_unconfirmed_stops_the_rebroadcast_of_what_it_abandons_before_its_mark() {
+    let (_dir, engine, session, id, payment, _a, _paid) = pending_payment_of_one_coin();
+    start_offline_spv(&engine, &session);
+    let removed = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert!(removed >= 1, "nothing removed");
+    let stopped = std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+    assert!(
+        stopped.iter().any(|(t, _)| *t == payment.txid()),
+        "the payment was not stopped: {stopped:?}"
+    );
+    assert_eq!(stopped.len(), removed as usize, "{stopped:?}");
+    assert!(
+        stopped.iter().all(|(_, marked)| !marked),
+        "stopped after the mark: {stopped:?}"
+    );
+}
+
+/// A payment between two loaded wallets abandoned as received, in Activity
+/// or by the recipient's Remove unconfirmed transactions, leaves dash-spv's
+/// rebroadcast of it: the sender's retries are the client's, which both
+/// wallets share. The sender's own Abandon stops it.
+#[test]
+fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let pay = |vout: u32| {
+        let coin = OutPoint::new(paid.txid(), vout);
+        let source = CoinSource::Outpoints(vec![coin]);
+        let p = super::own_spend_disk_tests::send_to(
+            &engine,
+            &session,
+            id,
+            source,
+            &to,
+            COIN / 2,
+            false,
+        );
+        mempool(&engine, &session, id, &p);
+        wait_stored(&session, id, &[p.txid()]);
+        wait_stored(&session, other, &[p.txid()]);
+        p
+    };
+    let (p, q) = (pay(0), pay(1));
+    let stopped = || std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+
+    let abandoned = try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    assert_eq!(stopped(), [], "the receipt's abandon");
+    start_offline_spv(&engine, &session);
+    let removed = engine
+        .block_on(session.drop_unconfirmed(Some(other)))
+        .unwrap();
+    assert_eq!(removed, 1, "the recipient's other receipt");
+    assert_eq!(stopped(), [], "the recipient's removal");
+    for t in [p.txid(), q.txid()] {
+        assert!(
+            (session.hub.history.get(&id, &t)).is_some_and(|e| !e.is_abandoned()),
+            "the sender's payment stays pending"
+        );
+    }
+
+    try_abandon(&engine, &session, id, p.txid()).unwrap();
+    assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
+}
+
+/// A receipt whose funding the recipient's history also holds: that coin
+/// pays the sender's address, not the recipient's, so abandoning the
+/// receipt still leaves the sender's rebroadcast.
+#[test]
+fn abandoning_a_receipt_whose_funding_the_recipient_holds_leaves_the_senders_rebroadcast() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let source = CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]);
+    let p =
+        super::own_spend_disk_tests::send_to(&engine, &session, id, source, &to, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    wait_stored(&session, other, &[p.txid()]);
+    let funding = session
+        .hub
+        .history
+        .get(&id, &paid.txid())
+        .expect("the sender's funding");
+    (session.hub.history).with_wallet(other, |h| h.txs.insert(paid.txid(), funding));
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
+
+    let abandoned = try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    assert_eq!(
+        *session.hub.stopped_rebroadcasts.lock().unwrap(),
+        [],
+        "the receipt's abandon"
+    );
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+        "the sender's payment stays pending"
+    );
+}
+
+/// A pending payment the history holds that spends the wallet's coin,
+/// with no input of it named and no sent mark (another device's payment,
+/// read back after a restart with none of its inputs): Activity's Resend
+/// sends it, as it counts an input whose funding entry pays the wallet, so
+/// its Abandon stops dash-spv sending it again.
+#[test]
+fn abandoning_a_resent_payment_known_by_its_funding_stops_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let mut p = super::own_spend_disk_tests::foreign();
+    p.input = vec![dashcore::TxIn {
+        previous_output: OutPoint::new(paid.txid(), 0),
+        ..Default::default()
+    }];
+    let entry = crate::history::TxEntry {
+        tx: p.clone(),
+        context: key_wallet::transaction_checking::TransactionContext::Mempool,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: BTreeMap::new(),
+        abandoned: false,
+    };
+    (session.hub.history).with_wallet(id, |h| h.txs.insert(p.txid(), entry));
+    start_offline_spv(&engine, &session);
+    dash_spv::EventHandler::on_network_event(
+        &*session.hub,
+        &dash_spv::network::NetworkEvent::PeerConnected {
+            address: "127.0.0.1:9".parse().unwrap(),
+        },
+    );
+    let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+    *session.hub.resend_wire.lock().unwrap() = Some(Arc::clone(&wire));
+    engine
+        .block_on(session.resend_transaction(id, p.txid()))
+        .unwrap();
+    assert_eq!(*wire.lock().unwrap(), [p.txid()], "not resent");
+
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
+    let abandoned = try_abandon(&engine, &session, id, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    let stopped: Vec<Txid> = (session.hub.stopped_rebroadcasts.lock().unwrap().iter())
+        .map(|(t, _)| *t)
+        .collect();
+    assert_eq!(stopped, [p.txid()], "the resent payment keeps being sent");
+}
+
+/// An abandon whose sent-mark read fails stops nothing and marks nothing:
+/// the transaction may be another loaded wallet's payment, whose retries
+/// the client shares.
+#[test]
+fn an_unreadable_sent_mark_fails_the_abandon_before_any_stop() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let source = CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]);
+    let p =
+        super::own_spend_disk_tests::send_to(&engine, &session, id, source, &to, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    wait_stored(&session, other, &[p.txid()]);
+    let stopped = || std::mem::take(&mut *session.hub.stopped_rebroadcasts.lock().unwrap());
+
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::tx_actions::SENT_MARK_READ_FAULT, stage);
+    let refused = try_abandon(&engine, &session, other, p.txid());
+    dw_appdb::fault::disarm(&path);
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(stopped(), [], "the failed abandon's stops");
+    assert!(!abandon_marked(&session, other, p.txid()), "marked");
+    for w in [id, other] {
+        assert!(
+            (session.hub.history.get(&w, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+            "the payment stays pending"
+        );
+    }
+
+    try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert_eq!(stopped(), [], "the receipt's abandon");
+}
+
 /// An Activity Resend that checked a payment just before an Abandon
 /// committed its mark hands nothing off: it reads the mark again, held
 /// against the Abandon, before its bytes go out.
@@ -2980,6 +3183,35 @@ fn a_restored_payment_a_mined_rival_paying_the_wallet_beat_drops_its_change() {
 #[test]
 fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
+}
+
+/// #170 case 3: the drop of a beaten payment stops dash-spv's rebroadcast
+/// of it before its mark, as an Abandon does.
+#[test]
+fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
+    let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
+    assert!(
+        stopped.contains(&(p.txid(), false)),
+        "not stopped before its mark: {stopped:?}"
+    );
 }
 
 /// How the history lists `txid`: each record's status kind and drop.
@@ -5597,6 +5829,85 @@ fn an_older_drop_settles_on_its_root_inputs_final_spend() {
     let session = reopen(&engine, session);
     reload_with_headers(&engine, &session, id, &chain);
     assert_eq!(held_report(&session, id), (x, 0, false), "restarted");
+}
+
+/// #907: C, dropped holding D when key-wallet swept its parent P for W,
+/// another device's spend of A paying the wallet, out of a block. W is
+/// mined at `TIP + 1` in block B above the ChainLock, and the history holds
+/// it there: D awaits W. After a restart the header chain holds B' at
+/// `TIP + 1`, a fork having replaced B, and the ChainLock is of `TIP + 2`
+/// on that branch: W's stored record of B is no proof, so D awaits. Once W
+/// is mined again on the new branch and ChainLocked, D awaits nothing.
+#[test]
+fn a_drops_winner_in_a_block_a_fork_replaced_keeps_the_wallet_awaiting_after_a_reopen() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let w = rival(&engine, &session, id, &paid, a.vout);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: w.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
+    let x = paid.output[d.vout as usize].value;
+    let in_history = |session: &NetworkSession| {
+        (session.hub.history).read_wallet(&id, |h| {
+            (h.txs.get(&w.txid()))
+                .and_then(|e| e.context.block_info())
+                .map(|b| (b.height(), b.block_hash()))
+        })
+    };
+    assert_eq!(held_report(&session, id), (x, 0, true), "W out of a block");
+
+    let b = super::block_with(vec![w.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, b)]);
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    reconciled(&engine, &session, id);
+    assert_eq!(in_history(&session), Some((TIP + 1, b)), "W mined in B");
+    assert_eq!(held_report(&session, id), (x, 0, true), "W mined in B");
+
+    let replaced = super::block_with(vec![foreign()]).block_hash();
+    let next = super::block_with(vec![foreign(), foreign()]).block_hash();
+    let session = reopen(&engine, session);
+    reload_with_headers(
+        &engine,
+        &session,
+        id,
+        &[(TIP + 1, replaced), (TIP + 2, next)],
+    );
+    chain_lock(&engine, &session, id, TIP + 2, next);
+    reconciled(&engine, &session, id);
+    assert_eq!(
+        in_history(&session),
+        Some((TIP + 1, b)),
+        "W's record of B comes back"
+    );
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, true),
+        "B replaced, the ChainLock past it"
+    );
+
+    let again = super::block_with(vec![w.clone(), foreign()]).block_hash();
+    header_chain(
+        &session,
+        &[(TIP + 1, replaced), (TIP + 2, next), (TIP + 3, again)],
+    );
+    mined(&engine, &session, id, TIP + 3, vec![w.clone(), foreign()]);
+    chain_lock(&engine, &session, id, TIP + 3, again);
+    reconciled(&engine, &session, id);
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, false),
+        "W mined again and ChainLocked"
+    );
 }
 
 /// D held, its drop's winner W ChainLocked: nothing awaits.

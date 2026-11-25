@@ -61,5 +61,6 @@ export const lock = {
     shieldedSpend: "Shielded payment",
     shieldDrain: "Moving mixed coins to Shielded",
     contactPayFromBalance: "Contact payment",
+    appConnect: "App sign-in",
   },
 } as const satisfies Tree;

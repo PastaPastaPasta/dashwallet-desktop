@@ -4,6 +4,7 @@
 //! - [`core`]: dash-qt's exact parser and writer (`GUIUtil::parseBitcoinURI`,
 //!   `formatBitcoinURI`, `PaymentServer::handleURIOrFile`).
 //! - [`ext`]: the iOS wallet's wider payment-string parser and URI writer.
+//! - [`connect`]: App Connect v2 login requests (`dashpay://connect`).
 //! - [`deeplink`]: routing of opened or scanned links.
 //! - [`keyio`]: Dash Core's Base58 address and WIF decoding, plus Platform
 //!   and shielded address classification.
@@ -15,6 +16,7 @@
 //! (copied to `testdata/core/`).
 
 mod bech32_locate;
+pub mod connect;
 pub mod core;
 pub mod deeplink;
 pub mod ext;

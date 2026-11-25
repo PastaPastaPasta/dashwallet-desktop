@@ -1070,7 +1070,7 @@ fn block_hash(txs: &[Transaction]) -> dashcore::BlockHash {
 
 /// Installs the SPV client Abandon and Remove Unconfirmed need for their
 /// rescan, as the Platform bring-up would, without its run loop.
-fn start_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+pub(super) fn start_spv(engine: &Engine, session: &Arc<NetworkSession>) {
     let s = Arc::clone(session);
     engine
         .block_on(session.on_runtime(async move {
@@ -7478,6 +7478,223 @@ fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_ope
         synced(&engine, &session, id),
         BIRTH - 1,
         "the closed wallet"
+    );
+}
+
+/// Abandon, and Remove unconfirmed transactions, stop the running SPV
+/// client from sending again what they abandon.
+#[test]
+fn abandoning_stops_the_spv_client_sending_it() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let stopped = |txid: Txid| {
+        let manager = session.manager().unwrap();
+        engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await })
+    };
+    let pay_from = |vouts: [u32; 2]| {
+        let coins = vouts.map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+        let tx = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(coins),
+            COIN,
+            false,
+        );
+        mempool(&engine, &session, id, &tx);
+        tx
+    };
+    let payment = pay_from([0, 1]);
+    let next = pay_from([2, 3]);
+    wait_stored(&session, id, &[payment.txid(), next.txid()]);
+    start_spv(&engine, &session);
+    assert!(!stopped(payment.txid()), "stopped before the abandon");
+
+    engine
+        .block_on(session.abandon_transaction(id, payment.txid()))
+        .unwrap();
+    assert!(stopped(payment.txid()), "the abandoned payment");
+    assert!(!stopped(next.txid()), "stopped before the removal");
+
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 1);
+    assert!(stopped(next.txid()), "the removed payment");
+}
+
+/// A payment whose asset lock the wallet still tracks, broadcast and
+/// waiting for its proof, is neither abandoned nor stopped, in Activity or
+/// by Remove unconfirmed transactions, and nor is the unlocked payment it
+/// spends from, whose abandon would take it too: the catch-up resumes the
+/// lock and sends it again, which would lift the stop. Both stay pending.
+#[test]
+fn a_tracked_asset_locks_funding_is_neither_abandoned_nor_stopped() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let own = own_scripts(&engine, &session, id);
+    let coins = [0, 1].map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+    let parent = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &parent);
+    let change = CoinSource::Outpoints(vec![change_of(&parent, &own)]);
+    let funding = send(&engine, &session, id, change, COIN / 2, false);
+    mempool(&engine, &session, id, &funding);
+    wait_stored(&session, id, &[parent.txid(), funding.txid()]);
+    start_spv(&engine, &session);
+    use platform_wallet::AssetLockStatus::Broadcast;
+    track_lock(&engine, &session, id, &funding, Broadcast);
+    for txid in [funding.txid(), parent.txid()] {
+        assert_funding_refused(&engine, &session, id, txid);
+    }
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, funding.txid());
+    assert_kept(&engine, &session, id, parent.txid());
+}
+
+/// A lock built on an unlocked payment's change and not yet sent is in no
+/// history or key-wallet record, only in the tracked row the catch-up
+/// resumes: the payment is not abandoned while the row is `Built`, and is
+/// offered while it is past sending.
+#[test]
+fn a_built_lock_never_sent_keeps_the_payment_it_spends_from() {
+    use platform_wallet::AssetLockStatus::{Built, ChainLocked};
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let own = own_scripts(&engine, &session, id);
+    let coins = [0, 1].map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+    let parent = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &parent);
+    wait_stored(&session, id, &[parent.txid()]);
+    let script = own.iter().next().unwrap().clone();
+    let funding = super::spend_of(change_of(&parent, &own), vec![(script, COIN / 4)]);
+    start_spv(&engine, &session);
+
+    track_lock(&engine, &session, id, &funding, ChainLocked);
+    let exits = engine.block_on(session.activity_exits(id, parent.txid(), true, 1));
+    assert_eq!(
+        exits.unwrap().unwrap().abandon,
+        None,
+        "offered past sending"
+    );
+
+    track_lock(&engine, &session, id, &funding, Built);
+    assert_funding_refused(&engine, &session, id, parent.txid());
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, parent.txid());
+}
+
+/// A payment between two loaded wallets whose receipt funds the recipient's
+/// lock, not yet sent, is kept in the sender's wallet too: the recipient's
+/// catch-up would send the lock on the payment's output.
+#[test]
+fn a_lock_on_a_receipt_in_another_wallet_keeps_the_senders_payment() {
+    use platform_wallet::AssetLockStatus::Built;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other);
+    let coins = vec![OutPoint::new(paid.txid(), 0)];
+    let payment = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        &to.to_string(),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    wait_stored(&session, other, &[payment.txid()]);
+    let vout = (payment.output.iter())
+        .position(|o| o.script_pubkey == to.script_pubkey())
+        .unwrap() as u32;
+    let receipt = OutPoint::new(payment.txid(), vout);
+    let funding = super::spend_of(receipt, vec![(to.script_pubkey(), COIN / 4)]);
+    start_spv(&engine, &session);
+    track_lock(&engine, &session, other, &funding, Built);
+
+    assert_funding_refused(&engine, &session, id, payment.txid());
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, payment.txid());
+}
+
+/// Tracks `funding` as the wallet's top-up lock at `status`, replacing any
+/// row at its outpoint.
+fn track_lock(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    funding: &Transaction,
+    status: platform_wallet::AssetLockStatus,
+) {
+    let row = platform_wallet::TrackedAssetLock {
+        out_point: OutPoint::new(funding.txid(), 0),
+        transaction: funding.clone(),
+        account_index: 0,
+        funding_type: platform_wallet::AssetLockFundingType::IdentityTopUp,
+        identity_index: 0,
+        amount: funding.output[0].value,
+        status,
+        proof: None,
+    };
+    let s = Arc::clone(session);
+    (engine.block_on(session.on_runtime(async move {
+        let w = s.wallet(&id).await?;
+        w.state_mut()
+            .await
+            .tracked_asset_locks
+            .insert(row.out_point, row);
+        Ok(())
+    })))
+    .unwrap();
+}
+
+/// Activity's offer and Abandon both refuse `txid` as a Platform funding.
+pub(super) fn assert_funding_refused(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) {
+    let refused = crate::tx_actions::TxActionRefusal::PlatformFunding;
+    let exits = engine.block_on(session.activity_exits(id, txid, true, 1));
+    let offered = exits.unwrap().unwrap().abandon;
+    assert_eq!(
+        offered,
+        Some(crate::tx_actions::ActivityRefusal::Tx(refused)),
+        "{txid} offered"
+    );
+    let abandon = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(abandon, Err(crate::EngineError::TxActionRefused(r)) if r == refused),
+        "{abandon:?}"
+    );
+}
+
+/// `txid` is still pending: not stopped, marked or abandoned.
+fn assert_kept(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) {
+    let manager = session.manager().unwrap();
+    let stopped = engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await });
+    assert!(!stopped, "{txid} stopped");
+    assert!(
+        !engine.block_on(session.abandon_marked(id, txid)),
+        "{txid} marked"
+    );
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "{txid} abandoned"
     );
 }
 

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 100
+Contract-Version: 101
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -77,6 +77,7 @@ type is `pub(crate)`.
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync_info`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shield_mixed_quote`, `stuck_shield_fundings`, `shield_mixed_coins`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `unshield_to_platform_quote`, `unshield_to_platform`, `shielded_history` |
 | `unfinished.rs` | 0.2 RECOVERY | `unfinished_transfers`, `finish_transfer`, `recover_transfer_quote`, `recover_transfer` |
+| `app_connect.rs` | 1.0 F24 | `app_connect_sheet`, `app_connect_quote`, `app_connect_approve`, `app_connect_retry_send` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
 ## 1. Conventions (changes to m1-engine.md §1)
@@ -1010,6 +1011,35 @@ over every `ready` lock, under its own lease.
 | `recover_transfer(txid, vout, grant)` | async | Version 95 (#402). Moves what is left on the partly used type-5 lock at `txid`:`vout` to the wallet's own Platform receive address, its only destination: the library's `fund_from_shielded_remainder_asset_lock` (`AllOwned`, no address input, the receive address as the one remainder output), never a new lock. Off on mainnet as the quote is, refused first. The quote's gates and proved read come first, under the same locks; a remaining value below the fee is `notApplied{error: "credits.below_minimum"}`. Then a `PlatformAddressFund` lease redeemed from the vault grant `grant`, refused unredeemed when it names a held lease (`platform.grant_invalid`), has no `max_duffs` (`platform.needs_grant`) or a `max_credits` other than the read's credits (`platform.grant_invalid`). One call permit and the lease's funding signer narrowed to the lock's credit key (its vault scope, `PlatformFunding`, admits the shielded top-up credit key) sign it; just before the first signature a `Recovered` activity row (§2.12 `platform_activity`) is armed, as a fund's is, sized by what is left (its credits rounded up to a duff), not the lock. `LockFinish::applied` (proved: recorded settled as the shield kind records it, the library's row `Consumed`, the row `Done` with the address's proved gain or the estimate), `checking` (a failure after the signature: still listed; the next recover's proved read settles it when Platform shows it used up, the armed row completing with its estimate), `reportedUsed` (used up by no recover of this wallet's), or `notApplied{error}`. | `PlatformError` |
 | `finish_transfer(kind, txid, vout, grant)` | async | Finishes the unfinished lock of `kind` at `txid`:`vout`, as above. `invalid_argument` for a txid that is not hex or an outpoint no tracked lock of `kind` has; a type-4 lock is applied as `platform_fund` applies it (§2.12), to the address its activity record names, else the receive address, under a `PlatformAddressFund` lease of `grant` (`max_duffs` ≥ 1, none spent; one without a funding budget is refused before it is redeemed); `platform.unavailable` while the dispatch journal is not read or the lock's transaction is not tracked; the lease's refusals (`platform.grant_invalid` for a lease of another flow). | `PlatformError` |
 
+### 2.15 App Connect sign-ins (`app_connect.rs`; 1.0 F24, dips#181)
+
+An app's `dashpay://connect` request (dw-uri `connect`, parsed by the host; the request never crosses IPC from the
+renderer, dw-app keeps it by link id) asks for keys of the user's identity bound to the app's contracts, each with a
+credit budget and an expiry, and for a shared encryption key on the app's contract. The sheet and the quote read Platform
+only and derive and sign nothing. An approval runs under a vault `AppConnect{max_credits, request, plan}` grant (dw-vault;
+it needs a fresh credential, never a cached unlock): `request` is `hash160(appEphPub)`, `plan` the digest of everything
+the quote read (the request body, the identity, the selection, the terms, each key's budget, the app's owner, every
+group's owner, admins and members, what is done for each encryption binding). The approval reads it all again and
+refuses `connect.plan_changed` with the grant unused when the digest differs. Its lease (`FlowKind::AppConnect`, never
+a host's: `begin_flow` refuses it `platform.grant_invalid`) carries a `PlatformIdentity` signer and an `AppConnect`
+signer bound to the request: the session keys' paths are built in the vault from the request's ephemeral key. Session
+keys are AUTHENTICATION, `ECDSA_HASH160`, the binding's level (CRITICAL on a contract group only, else HIGH), bound as
+the binding is, V1 with the budget and the expiry: never TRANSFER or MASTER, never unbound. A derived session key
+already on the identity is reused only when equal, else `connect.failed{key_conflict}`. The MASTER-signed
+IdentityUpdate adds them with a new encryption key's proof of possession, and disables the session keys of the same
+connection id's previous grant. Every added key must show on Platform (three reads, 2 s then 4 s apart) before the
+vault seals the keys to the app (ECDH, HKDF-SHA256, AES-256-GCM, the DIP's AAD) and an unbound HIGH or CRITICAL key with
+no limits signs the `loginKeyResponse`. The groups are compared again before the update and before the response. A
+record (`appconnect.grants`, local scope: public keys and ids only) is written before the update. On mainnet every call
+is `connect.mainnet_off` until the keys ruling (`enabled_on`); testnet, devnet and regtest run.
+
+| Call | Kind | Semantics | Errors |
+|---|---|---|---|
+| `app_connect_sheet(link)` | async | `ConnectSheet{request, app_id, label, app_owner, identities, bindings, encryption, terms, max_funding_limit, earlier_approval, block_time_ms}`: the request's hash, the app and its owner, the wallet's identities with a username (the hinted one alone), each binding's level and scope (a group's owner, admins, contracts, document types and tokens as proved now; a contract's `tokens`: it has tokens or is not read-only, so an update could add them), the default terms (the app's total ask capped at `max_funding_limit`, 5 DASH, its earliest expiry kept between a day and a year), `max_funding_limit`, the most an approval may set, and `earlier_approval`: the choice of this wallet's last approval of the request when Platform holds no response to it, so its keys may be on the identity; approving that choice again reuses them, where the sheet's default terms (its expiry moves with the block time) would conflict with them (one with a response refuses the sheet, `connect.answered`). `label` is the app's claim. Refused before any read: another network (`connect.network`), mainnet (`connect.mainnet_off`), an encryption binding off the app's contract (`connect.unsupported`); after the reads: protocol below 14 (`connect.protocol`), a missing contract, document type or group, a system contract as the app's, a contract that did not opt in to encryption (`connect.invalid`), a group or contract of another owner (`connect.owner`), a group over 200 members (`connect.unsupported`), no identity with a username (`connect.no_identity`), a hint the wallet does not hold (`connect.hint`), a request more than 10 minutes before or 2 minutes after the proved block time (`connect.stale`). | `ConnectError` |
+| `app_connect_quote(link, choice)` | async | `ConnectQuote{request, plan, max_credits, fee, budgets, balance}` for `ConnectChoice{identity, selection, terms}`: the grant's `max_credits` (the update and three sends of the response: a send that may have gone out keeps its reservation), the `fee` (the update and one send), each selected binding's budget (a DashPay profile key 0.002 DASH, the app's keys the rest by their asks) and the plan digest. The sheet's refusals; a selection without the primary binding, terms over 5 DASH or a year, or under an hour (`invalid_argument`); a request this identity answered (`connect.answered`); a balance below the fee (`connect.credits{needed, available}`). | `ConnectError` |
+| `app_connect_approve(link, choice, grant)` | async | As above, then `ConnectDone{identity, keys_added}`. The quote's refusals with the grant unused; a grant that is not this wallet's `AppConnect` for the request (`platform.grant_invalid`), below the bound (`platform.grant_exceeded`) or for another plan (`connect.plan_changed`). A session key this request derived that is on the identity already is sealed again, never disabled. After the update: keys not shown in time (`connect.failed{not_confirmed}`; the request stays open, and approving it again re-reads the identity first, reusing the keys that landed), a group or encryption key changed (`connect.failed{scope_changed}`), no key to sign the response (`connect.failed{no_response_key}`), a response not published (`connect.send_failed`: kept, with its lease and the approved groups, for `app_connect_retry_send`). | `ConnectError` |
+| `app_connect_retry_send(link)` | async | Publishes the response an approval sealed and could not send, under that approval's lease and the identity's write lock, once the approved groups and the sealed encryption keys are still Platform's (else `connect.failed{scope_changed}`); a response Platform holds already finishes it. `connect.failed{nothing_to_send}` when none is kept or its lease cannot sign (a lock ends it), `connect.send_failed` again. | `ConnectError` |
+
 ## 3. Surface (generated)
 
 The exact public surface: records, enums, error enums, signatures and the headers of every trait impl, with the
@@ -1017,9 +1047,113 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 724600f64c3c5e996d02db5f2ffc1ca86647ca1ece465a6e1b3f308374ca7c96 version: 100 -->
+<!-- surface-sha256: 0c3dd1d911de998e2f57afed3e4a4560cb902de960da01c05a593e93a98833cc version: 101 -->
 
 ```rust
+// src/platform/app_connect.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectFailure {
+    KeyConflict,
+    NotConfirmed,
+    NoResponseKey,
+    NothingToSend,
+    ScopeChanged,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectTerms {
+    pub funding_limit: u64,
+    pub expires_at_ms: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectChoice {
+    pub identity: String,
+    pub selection: Vec<u8>,
+    pub terms: ConnectTerms,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectLevel {
+    Critical,
+    High,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectScope {
+    Contract { contract: String, tokens: bool },
+    DocumentType { contract: String, document_type: String },
+    Profile,
+    Group(ConnectGroup),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectGroup {
+    pub group: String,
+    pub owner: String,
+    pub admins: Vec<String>,
+    pub contracts: Vec<String>,
+    pub document_types: Vec<ConnectDocumentType>,
+    pub tokens: Vec<ConnectToken>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectDocumentType {
+    pub contract: String,
+    pub document_type: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectToken {
+    pub contract: String,
+    pub position: u16,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectBinding {
+    pub index: u8,
+    pub primary: bool,
+    pub level: ConnectLevel,
+    pub scope: ConnectScope,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectIdentity {
+    pub identity: String,
+    pub username: String,
+    pub balance: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectSheet {
+    pub request: String,
+    pub app_id: String,
+    pub label: String,
+    pub app_owner: String,
+    pub identities: Vec<ConnectIdentity>,
+    pub bindings: Vec<ConnectBinding>,
+    pub encryption: bool,
+    pub terms: ConnectTerms,
+    pub max_funding_limit: u64,
+    pub earlier_approval: Option<ConnectChoice>,
+    pub block_time_ms: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectQuote {
+    pub request: [u8 ; 20],
+    pub plan: [u8 ; 32],
+    pub max_credits: u64,
+    pub fee: u64,
+    pub budgets: Vec<u64>,
+    pub balance: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectDone {
+    pub identity: String,
+    pub keys_added: Vec<KeyID>,
+}
+impl From<ConnectRefusal> for ConnectError;
+impl std::fmt::Debug for ConnectUpdateSigner;
+impl Signer<IdentityPublicKey> for ConnectUpdateSigner;
+impl DashPay {
+    pub async fn app_connect_sheet(&self, link: ConnectUri) -> Result<ConnectSheet, ConnectError>;
+    pub async fn app_connect_quote(&self, link: ConnectUri, choice: ConnectChoice) -> Result<ConnectQuote, ConnectError>;
+    pub async fn app_connect_approve(&self, link: ConnectUri, choice: ConnectChoice, grant: String) -> Result<ConnectDone, ConnectError>;
+    pub async fn app_connect_retry_send(&self, link: ConnectUri) -> Result<ConnectDone, ConnectError>;
+}
 // src/platform/contacts.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1470,6 +1604,30 @@ impl InvitationError {
     pub fn platform(&self) -> Option<&PlatformError>;
 }
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectError {
+    Network,
+    MainnetOff,
+    Unsupported,
+    Invalid,
+    Stale,
+    Protocol,
+    NoIdentity,
+    Hint,
+    Owner,
+    Answered,
+    Credits { needed: u64, available: u64 },
+    PlanChanged,
+    SendFailed,
+    Failed { failure: ConnectFailure },
+    Platform(PlatformError),
+}
+impl ConnectError {
+    pub fn code(&self) -> &'static str;
+    pub fn platform(&self) -> Option<&PlatformError>;
+    pub fn keeps_open(&self) -> bool;
+    pub fn status(&self) -> Option<dw_uri::connect::Status>;
+}
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AvatarError {
     TooLarge,
     Unsupported,
@@ -1567,6 +1725,7 @@ pub enum FlowKind {
     ShieldDrain,
     MasternodeWithdraw,
     ContactPayFromBalance,
+    AppConnect,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2852,6 +3011,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
+| `ConnectError` | `connect.network`, `connect.mainnet_off`, `connect.unsupported`, `connect.invalid`, `connect.stale`, `connect.protocol`, `connect.no_identity`, `connect.hint`, `connect.owner`, `connect.answered`, `connect.credits`, `connect.plan_changed`, `connect.send_failed`, `connect.failed` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending`, `credits.recipient_invalid`, `credits.send_out_of_range`, `credits.fund_pending`, `credits.too_many_inputs`, `credits.quote_changed`, `credits.coins_changed`, `credits.mixing_active`, `credits.move_running`, `credits.preflight_refused`, `credits.rules_unsupported` |
 | `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.spend_refused`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running`, `shielded.coins_changed` |
 

@@ -8,6 +8,7 @@
 //! a `platform.*` code reaches the host whichever domain the call belongs to;
 //! `platform()` finds it again.
 
+use super::app_connect::ConnectFailure;
 use super::contacts::Eligibility;
 use super::credits::CoreMaxShort;
 use super::flows::{BudgetPurpose, RevokeCause};
@@ -501,6 +502,103 @@ impl InvitationError {
             Self::Platform(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+/// App Connect (DASHPAY F24): a refusal before anything is signed, or how
+/// an approved login stopped.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectError {
+    #[error("the request is for another network")]
+    Network,
+    #[error("app connect is off on mainnet")]
+    MainnetOff,
+    #[error("the request asks for what this wallet does not support")]
+    Unsupported,
+    #[error("the request breaks the protocol's rules")]
+    Invalid,
+    #[error("the request is too old or from the future")]
+    Stale,
+    #[error("the network's protocol is older than app connect")]
+    Protocol,
+    #[error("no identity with a username")]
+    NoIdentity,
+    #[error("the request names an identity this wallet does not hold")]
+    Hint,
+    #[error("the request names contracts its app's owner does not own")]
+    Owner,
+    #[error("the request was answered already")]
+    Answered,
+    #[error("insufficient credits: {needed} needed, {available} available")]
+    Credits { needed: u64, available: u64 },
+    /// What the grant was quoted on changed: the sheet reads again.
+    #[error("the request's facts changed since the quote")]
+    PlanChanged,
+    /// The keys are on the identity; the response is not out yet.
+    #[error("the response was not sent")]
+    SendFailed,
+    #[error("app connect failed: {failure:?}")]
+    Failed { failure: ConnectFailure },
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ConnectError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Network => "connect.network",
+            Self::MainnetOff => "connect.mainnet_off",
+            Self::Unsupported => "connect.unsupported",
+            Self::Invalid => "connect.invalid",
+            Self::Stale => "connect.stale",
+            Self::Protocol => "connect.protocol",
+            Self::NoIdentity => "connect.no_identity",
+            Self::Hint => "connect.hint",
+            Self::Owner => "connect.owner",
+            Self::Answered => "connect.answered",
+            Self::Credits { .. } => "connect.credits",
+            Self::PlanChanged => "connect.plan_changed",
+            Self::SendFailed => "connect.send_failed",
+            Self::Failed { .. } => "connect.failed",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The inbox reopens the request: a refusal that answers the app
+    /// nothing and kept no response for "Retry sending".
+    pub fn keeps_open(&self) -> bool {
+        self.status().is_none() && *self != Self::SendFailed
+    }
+
+    /// The status the app's return link carries for this refusal (DIP
+    /// "Status Codes"), for a refusal of the request itself or a login that
+    /// cannot finish; `None` for what the user can still fix or retry
+    /// (`plan_changed`, `credits`, `send_failed`, `not_confirmed`, which a
+    /// new approval re-reads the identity for, a Platform error) and for
+    /// `answered`, which Platform already holds.
+    pub fn status(&self) -> Option<dw_uri::connect::Status> {
+        use dw_uri::connect::Status;
+        Some(match self {
+            Self::Unsupported | Self::Protocol | Self::MainnetOff => Status::Unsupported,
+            Self::Invalid | Self::Owner => Status::Invalid,
+            Self::Stale => Status::Stale,
+            Self::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }
+            | Self::PlanChanged
+            | Self::Credits { .. }
+            | Self::SendFailed
+            | Self::Answered
+            | Self::Platform(_) => return None,
+            Self::Network | Self::NoIdentity | Self::Hint | Self::Failed { .. } => Status::Failed,
+        })
     }
 }
 

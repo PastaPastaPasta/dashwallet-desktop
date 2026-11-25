@@ -2,10 +2,10 @@ import type { Tree } from "../core";
 
 export const activity = {
   abandon: {
-    spending: "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+    spending: "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
     notSpending: "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.",
     unknownInputs:
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     rescanFirst: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
     /** Beside Abandon on a payment whose coin is pending because it may never confirm
      * (`coins.pendingUnproven`). */
@@ -18,6 +18,8 @@ export const activity = {
     catchingUp: "The wallet is catching up with the network. You can abandon this payment once it has finished.",
     settledChild:
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    platformFunding:
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     /** A saved transaction of {wallet} doesn't read; more than one wallet is open. */
     recordUnreadable:
       "Dash Wallet can't read one of the transaction records in {wallet}, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}, remove {wallet} and restore it with {addWallet} and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",

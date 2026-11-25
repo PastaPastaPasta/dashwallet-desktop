@@ -104,16 +104,28 @@ fn is_enabled_ecdsa(key: &IdentityPublicKey) -> bool {
     key.key_type() == KeyType::ECDSA_SECP256K1 && key.disabled_at().is_none()
 }
 
+/// Whether `key` can serve as the identity's DashPay key of its purpose: an
+/// enabled `ECDSA_SECP256K1` key with no bounds or bounds on the DashPay
+/// contract. A key bound to another contract, such as an app's encryption
+/// key, is not one.
+pub fn is_dashpay_key(key: &IdentityPublicKey) -> bool {
+    is_enabled_ecdsa(key)
+        && key
+            .contract_bounds()
+            .is_none_or(|b| b.contract_id() == Some(&dashpay_contract::ID))
+}
+
 /// The DashPay purposes `keys` (an identity's key set, from Platform) has no
-/// enabled `ECDSA_SECP256K1` key for, ENCRYPTION first (iOS
+/// [`is_dashpay_key`] for, ENCRYPTION first (iOS
 /// `DWIdentityKeyUpgrader.missingDashPayPurposes`). Empty means the identity
-/// has its DashPay keys. Bounds are not checked, as on iOS.
+/// has its DashPay keys. Unlike iOS, a key bound to another contract doesn't
+/// count.
 pub fn missing_dashpay_purposes<'a>(
     keys: impl IntoIterator<Item = &'a IdentityPublicKey>,
 ) -> Vec<Purpose> {
     let present: Vec<Purpose> = keys
         .into_iter()
-        .filter(|k| is_enabled_ecdsa(k))
+        .filter(|k| is_dashpay_key(k))
         .map(|k| k.purpose())
         .collect();
     DASHPAY_PURPOSES
@@ -353,6 +365,31 @@ mod tests {
             levels(&upgrade_specs(&keys, Some(3))),
             vec![(10, Purpose::DECRYPTION, SecurityLevel::MEDIUM)]
         );
+    }
+
+    /// A key bound to another contract (an app's encryption key) is not the
+    /// DashPay key; one bound to the DashPay contract is.
+    #[test]
+    fn only_unbounded_or_dashpay_bound_keys_count() {
+        let bound = |id, purpose, contract| {
+            let mut k = ecdsa(id, purpose);
+            if let IdentityPublicKey::V0(v) = &mut k {
+                v.contract_bounds = Some(ContractBounds::SingleContract { id: contract });
+            }
+            k
+        };
+        let mut keys = base_keys();
+        keys.extend([
+            ecdsa(4, Purpose::ENCRYPTION),
+            bound(5, Purpose::DECRYPTION, [7; 32].into()),
+        ]);
+        assert_eq!(missing_dashpay_purposes(&keys), vec![Purpose::DECRYPTION]);
+        assert_eq!(
+            levels(&upgrade_specs(&keys, None)),
+            vec![(6, Purpose::DECRYPTION, SecurityLevel::MEDIUM)]
+        );
+        keys.push(bound(6, Purpose::DECRYPTION, dashpay_contract::ID));
+        assert!(missing_dashpay_purposes(&keys).is_empty());
     }
 
     /// Local rows move the next id (a key the wallet derived but Platform

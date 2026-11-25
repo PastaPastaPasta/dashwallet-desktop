@@ -670,10 +670,9 @@ pub(crate) async fn resume<L: TopUpLib>(
         {
             return Err(PlatformError::WillBeSent { artifact: step }.into());
         }
-        if lib
-            .wait_proof(lock.outpoint, RESUME_PROOF_WAIT)
+        if !session
+            .proved_unless_closed(lib.wait_proof(lock.outpoint, RESUME_PROOF_WAIT))
             .await
-            .is_err()
         {
             return Ok(outcome(TopUpState::ProofWaiting));
         }

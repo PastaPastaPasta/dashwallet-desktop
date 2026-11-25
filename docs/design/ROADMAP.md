@@ -423,7 +423,7 @@ earlier without a decision. The cut order applies only when a deadline is at ris
 | 0.1.x | as fixes land | Patches | BL-614 (Core-mixed coins counted as mixed; 0.1 notes tell users not to mix such a wallet), BL-615 |
 | 0.2 | 2026-11-14 | Platform and shielded complete; privacy bridge | X1b per route; X2 rest (shielded-funded registration, Platform↔Shielded, Max drains, move mixed coins); MP-01 fiat; recovery cards; parity.md re-baselined on Tauri |
 | 0.3 | 2026-11-25 | Masternodes and governance for owners | MG-10, MG-10b, MG-13 (engine done on `dw/mg-13-withdrawal`), MG-08, MG-12; registration wizard; CoinJoin at Core parity; wallet.dat import |
-| 0.4 | 2026-12-09 | Mobile parity, remaining DashPay | X4 marketplace; X3 invitation creation; DashConnect; MP-04, MP-06, MP-07, MP-14 |
+| 0.4 | 2026-12-09 | Mobile parity, remaining DashPay | X4 marketplace; X3 invitation creation; DashConnect tokens (sign-ins moved to 1.0, §7.3); MP-04, MP-06, MP-07, MP-14 |
 | 0.5 | 2026-12-19 | Commerce | MP-09..MP-12; CrowdNode withdraw-only (needs B1 partner credentials) |
 | 0.6 | 2026-12-31 | Hardening | H-01, H-02, H-03, H-06, H-09, H-10; PK-03 auto-update |
 | 0.9 | 2027-01-12 | Release candidate | interactive QA on three OSes, H-05, H-07 mainnet canary; the real release key |
@@ -447,6 +447,7 @@ The "Release" column of §2's tables and the waves of §3 are superseded by this
 |---|---|---|
 | 2026-11-01 | Mainnet shielded: the pool is expected active (no "not active" notice on mainnet). The per-action protocol-version gate stays (ShieldFromIdentity and top-up from shielded need PV14). | Platform Explorer latest block appVersion 13 (mainnet) and 14 (testnet) on 11-01; the pin activates the pool at PV12 (`rs-platform-version/src/version/feature_initial_protocol_versions.rs`). |
 | 2026-11-01 | Every date is a deadline; each version and patch ships as soon as it is done (DEC-1029). | pasta, 11-01. |
+| 2026-11-24 | DashConnect (DASHPAY F24) moves from 0.4 into 1.0 as App Connect v2 sign-ins: testnet and devnet on, mainnet behind its flag until the keys ruling; Connected apps and Disconnect follow the sign-in. | Pasta, 11-24. |
 | 2026-11-01 | MG-08 (owner dwcli commands + nightly regtest suites) is in 0.3 with MG-10/10b/12/13; it had no version. | Manager, 11-01. |
 | 2026-11-01 | Added cut: if the shielded build lands late on Monday, the shielded screens ship as minimal forms (receive address + QR; amount + address send) and shielded Activity rows move to 0.1.1. The never-cut list is unchanged. | Manager, 11-01. |
 

@@ -17,6 +17,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { FixtureConnect } from "./connect";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -119,6 +120,8 @@ export interface World {
   links: LinkRoute[];
   /** The engine's link stash (DP5-01): links kept for after onboarding, and invitations. */
   stash: FixtureStashedLink[];
+  /** dw-app's App Connect requests by inbox id (fixture/connect.ts). */
+  connect?: Record<string, FixtureConnect>;
   /** DP5-03: `invitation_status` of a stashed invitation by its id; absent: valid, from Bob. */
   invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */
@@ -961,6 +964,42 @@ const SCENARIOS = {
     };
     wallet.rows = [row, ...wallet.rows];
     w.send.settledChildHidden = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment that funds an unfinished credit top-up's asset lock, built while its
+   * detail was open: Abandon is offered and refused, and the detail says why. */
+  "abandon-platform-funding": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "58".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFunding = [row.txid];
+    return w;
+  },
+  /** As `abandon-platform-funding`, with the lock already built when the detail opens: Abandon
+   * isn't offered. */
+  "abandon-platform-funding-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "57".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFundingHidden = [row.txid];
     return w;
   },
   /** A payment this wallet made on another device, seen only by its change before the coins it

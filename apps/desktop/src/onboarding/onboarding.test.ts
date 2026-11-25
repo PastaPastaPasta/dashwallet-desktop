@@ -722,7 +722,7 @@ describe("onboarding view model: restore", () => {
 
 describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
   it("names an unresolved shielded payment, and shows a wallet still opening in the engine's words", () => {
-    expect(failureText(appError("shielded_spend_unresolved"))).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(failureText(appError("shielded_spend_unresolved"))).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     expect(failureText({ code: "wallet", message: "a wallet is still opening; close the network once it is open", data: null })).toBe("A wallet is still opening; close the network once it is open.");
     // Any other `wallet` failure stays generic: the code is shared.
     expect(failureText({ code: "wallet", message: "disk full", data: null })).toBe("Something went wrong (wallet).");

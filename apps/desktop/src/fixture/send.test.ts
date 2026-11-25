@@ -327,6 +327,19 @@ describe("fixture send engine", () => {
       data: { kind: "txAction", refusal: "settledDescendant" },
     });
     clearMocks();
+    installFixture({ scenario: "abandon-platform-funding-hidden" });
+    const funding = "57".repeat(32);
+    expect(await cmd.txDetailExtras(W, funding)).toMatchObject({ canAbandon: false, canResend: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, funding)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "platformFunding" } });
+    clearMocks();
+    installFixture({ scenario: "abandon-platform-funding" });
+    const stale = "58".repeat(32);
+    expect(await cmd.txDetailExtras(W, stale)).toMatchObject({ canAbandon: true, abandoned: false });
+    await expect(cmd.abandonTransaction(W, stale)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      data: { kind: "txAction", refusal: "platformFunding" },
+    });
+    clearMocks();
     installFixture({ scenario: "abandon-record-unreadable-two-wallets" });
     const unread = "5f".repeat(32);
     expect(await cmd.txDetailExtras(W, unread)).toMatchObject({ canAbandon: true, abandoned: false });
