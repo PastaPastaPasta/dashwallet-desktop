@@ -8,8 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# `Adopters::cache_with_p9a_for_test` for other crates' tests (debug builds
-# only): a test binary's open path meets a chosen P9a outcome.
+# `test-support`, for other crates' tests and never enabled by the app:
+# `Adopters::cache_with_p9a_for_test` (debug builds only), so a test
+# binary's open path meets a chosen P9a outcome, and `test_support`, a real
+# between-state store.
 test-support = []
 
 [dependencies]

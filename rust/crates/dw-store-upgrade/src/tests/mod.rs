@@ -6,12 +6,17 @@ mod crash;
 mod fixtures;
 mod meta;
 mod p9a;
+mod q107;
 mod refusals;
 mod restore;
 mod review_fixes;
 mod review_fixes_2;
 mod review_fixes_3;
+mod review_fixes_4;
 mod startup_order;
+mod support;
+mod upgrade_copy;
+mod upgraded_from;
 mod v3;
 mod v3_dropped;
 

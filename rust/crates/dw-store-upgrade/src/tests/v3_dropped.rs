@@ -1,11 +1,18 @@
-//! T3 (a) and (d): `data/fork-v3-dropped/wallet.sqlite`, the released
-//! v0.3.0 store with records written by the fork's own drop path
-//! (PROVENANCE.md), goes through the whole upgrade, a Strict upstream open
+//! T3 (a) and (d): the released v0.3.0 store with records written by the
+//! fork's own drop path, once at v0.3.0's pin (`data/fork-v3-dropped-v030`)
+//! and once at the nightly builds' (`data/fork-v3-dropped`, each with its
+//! PROVENANCE.md), goes through the whole upgrade, a Strict upstream open
 //! and a stored changeset with its `core_dropped_unsigned_spends` byte for
 //! byte as found. The coins its drops gave back stay unspent and the Strict
 //! load returns them as the wallet's (T3 b), and removing one wallet deletes
 //! only that wallet's rows (T3 c).
 //! A V3 store the upstream load can't read is refused at the rehearsal.
+//!
+//! Each fixture's V1-era state is the fork's test seeding (its tests'
+//! `as_fork_v1_left_it`), not a file a V1 build wrote; the open that
+//! re-applied V2 and V3 and ran the drop is the fork's own. Each
+//! InstantSend lock is a test vector: an all-zero signature, stored
+//! unverified (`islock_verified` 0).
 
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::changeset::{
@@ -21,6 +28,7 @@ use crate::sql::{open_immutable, sha256_file};
 
 const TABLE: &str = "core_dropped_unsigned_spends";
 const SHA256: &str = "d132793137d4fd554245fbd709bf13986225f7f2289b8a99914f1700d335fec8";
+const SHA256_V030: &str = "0ab260fdfb032e2731c27e23aeb2fc174ef7f40f53beb179a4d56485bc356c5c";
 const NO_ACCOUNTS_SHA256: &str = "c89e5d5a29477ab2ff075f0efd8c97c05d199462a2dc96b67185b2f21948101b";
 const WALLET_A: [u8; 32] = id("0FF35F248C69653EFCE8336CE14B78E29CD3BBAF4162C42246259850AF2C2ADD");
 const WALLET_B: [u8; 32] = id("DA8B3E81EDB50926C70D3CD3C5DE4102FA7C1419B0559FE19D06813C64DCCA30");
@@ -63,8 +71,37 @@ fn data_fixture(name: &str, sha256: &str, network: &str) -> Fixture {
     }
 }
 
-fn v3_fixture() -> Fixture {
-    data_fixture("fork-v3-dropped", SHA256, "regtest")
+/// The drop's two forms of a kept row's absent spender: v0.3.0's pin wrote
+/// `hex(NULL)`, an empty string; the nightly builds' pin writes JSON null.
+/// A reader of these rows accepts both.
+const V3_FIXTURES: [(&str, &str, &str); 2] = [
+    ("fork-v3-dropped-v030", SHA256_V030, r#""spent_in_txid":"""#),
+    ("fork-v3-dropped", SHA256, r#""spent_in_txid":null"#),
+];
+
+/// Each fixture, its kept rows' absent spender in its own form.
+fn v3_fixtures() -> Vec<Fixture> {
+    V3_FIXTURES
+        .iter()
+        .map(|(name, sha256, form)| {
+            let f = data_fixture(name, sha256, "regtest");
+            let conn = open_immutable(&f.wallet()).unwrap();
+            let kept: Vec<String> = conn
+                .prepare(&format!(
+                    "SELECT deleted_outputs FROM {TABLE} UNION ALL SELECT released_coins FROM {TABLE}"
+                ))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let spenders: usize = kept.iter().map(|t| t.matches(r#""spent_in_txid":"#).count()).sum();
+            let own: usize = kept.iter().map(|t| t.matches(form).count()).sum();
+            assert!(spenders > 0 && own == spenders, "{name}: {kept:?}");
+            drop(conn);
+            f
+        })
+        .collect()
 }
 
 /// The table's and its index's SQL, and `SELECT *` of every row in id order.
@@ -163,7 +200,12 @@ fn upgrade_with_a_persist_cycle(f: &Fixture) {
 
 #[test]
 fn the_forks_own_v3_records_survive_the_upgrade_and_a_persist_cycle_byte_for_byte() {
-    let f = v3_fixture();
+    for f in v3_fixtures() {
+        records_survive(&f);
+    }
+}
+
+fn records_survive(f: &Fixture) {
     let before = dump(&f.wallet());
     let islock = before.rows.iter().any(|row| {
         matches!(&row[4], Value::Blob(b) if !b.is_empty())
@@ -181,7 +223,7 @@ fn the_forks_own_v3_records_survive_the_upgrade_and_a_persist_cycle_byte_for_byt
     );
     assert!(coins.iter().all(|c| c.3 == 0), "released coins are unspent");
 
-    upgrade_with_a_persist_cycle(&f);
+    upgrade_with_a_persist_cycle(f);
 
     assert_eq!(dump(&f.wallet()), before);
     assert_eq!(released(&f.wallet()), coins, "still unspent");
@@ -221,8 +263,13 @@ fn the_forks_own_v3_records_survive_the_upgrade_and_a_persist_cycle_byte_for_byt
 
 #[test]
 fn removing_wallet_a_deletes_only_its_v3_records() {
-    let f = v3_fixture();
-    upgrade_with_a_persist_cycle(&f);
+    for f in v3_fixtures() {
+        removing_a_keeps_b(&f);
+    }
+}
+
+fn removing_a_keeps_b(f: &Fixture) {
+    upgrade_with_a_persist_cycle(f);
     let before = dump(&f.wallet());
     let wallet = |row: &Vec<Value>| match &row[1] {
         Value::Blob(b) => b.clone(),
@@ -275,4 +322,40 @@ fn a_v3_store_the_upstream_load_cant_read_is_refused_at_the_rehearsal() {
     );
     assert!(reason.file_unchanged() && reason.is_refusal());
     assert_eq!(tree_diff(&tree(&f.root), &before), Vec::<String>::new());
+}
+
+/// The no-accounts V3 store (its PROVENANCE.md) serves the rehearsal refusal
+/// above and nothing else: no other code in the crate names it.
+#[test]
+fn the_no_accounts_store_serves_only_the_rehearsal_refusal() {
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let name = concat!("fork-v3-", "no-accounts");
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&crate_dir.join("src"), &mut files);
+    let mut uses = Vec::new();
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap();
+        for (at, _) in text.match_indices(name) {
+            uses.push((path.clone(), at, text.clone()));
+        }
+    }
+    let [(path, at, text)] = uses.as_slice() else {
+        panic!("{} uses of {name}", uses.len())
+    };
+    assert!(path.ends_with("tests/v3_dropped.rs"), "{}", path.display());
+    let start = text
+        .find("fn a_v3_store_the_upstream_load_cant_read_is_refused_at_the_rehearsal()")
+        .unwrap();
+    let end = start + text[start..].find("\n}\n").unwrap();
+    assert!((start..end).contains(at), "used outside the refusal test");
 }

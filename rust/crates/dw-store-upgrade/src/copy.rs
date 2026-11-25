@@ -19,8 +19,9 @@
 use std::path::Path;
 
 use crate::error::StoreUpgradeError;
+use crate::reconcile::UpgradeNotice;
 use crate::restore::IncompleteCause;
-use crate::snapshot::{MissingSnapshot, STORE_FILES, SnapshotState, UPGRADE_BACKUPS_DIR};
+use crate::snapshot::{STORE_FILES, SnapshotState, UPGRADE_BACKUPS_DIR};
 
 /// One button: its catalog key and label.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +72,7 @@ const REFUSED_UNCHANGED: Line = line(
 );
 const CHANGED_BY_UPGRADE: Line = line(
     "storeUpgrade.refused.changedByUpgrade",
-    "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    "Dash Wallet had already started upgrading it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 const REFUSED_KEEP: Line = line(
     "storeUpgrade.refused.keep",
@@ -101,10 +102,6 @@ pub enum RefusedCause {
     TooNew,
     /// [`StoreUpgradeError::SchemaHistoryMismatch`].
     HistoryMismatch,
-    /// [`StoreUpgradeError::UpgradeSnapshotMissing`]: part-upgraded, so
-    /// migrated whatever the state says, and with no snapshot to restore.
-    /// Detail pending MG.
-    SnapshotMissing,
     /// [`StoreUpgradeError::RetiredPoolWithoutAdopter`].
     ContactsTable,
     /// [`StoreUpgradeError::P9aBroken`]: this build's own check failed. It
@@ -117,14 +114,13 @@ pub enum RefusedCause {
 }
 
 impl RefusedCause {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::ForkUnsupported,
         Self::ShapeMismatch,
         Self::RehearsalFailed,
         Self::DevBuild,
         Self::TooNew,
         Self::HistoryMismatch,
-        Self::SnapshotMissing,
         Self::ContactsTable,
         Self::SelfCheck,
         Self::Unexpected,
@@ -148,7 +144,6 @@ impl RefusedCause {
             E::PreHistoryFork => Self::DevBuild,
             E::SchemaTooNew { .. } => Self::TooNew,
             E::SchemaHistoryMismatch { .. } => Self::HistoryMismatch,
-            E::UpgradeSnapshotMissing { .. } => Self::SnapshotMissing,
             E::RetiredPoolWithoutAdopter { .. } => Self::ContactsTable,
             E::P9aBroken { .. } => Self::SelfCheck,
             E::StoreHeld { .. }
@@ -161,6 +156,8 @@ impl RefusedCause {
             | E::RestoreIncomplete { .. }
             | E::RestoreAfterOpen => return None,
             E::WalletFileUnsupported { .. }
+            | E::UpgradeCopyUnwritable { .. }
+            | E::SnapshotSourceDamaged { .. }
             | E::NonStrictOpen { .. }
             | E::OpenConfigUnsupported { .. }
             | E::ProbeNotRun
@@ -197,10 +194,6 @@ impl RefusedCause {
                 "storeUpgrade.refused.detail.historyMismatch",
                 "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
             ),
-            Self::SnapshotMissing => line(
-                "storeUpgrade.refused.detail.snapshotMissing",
-                "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
-            ),
             Self::ContactsTable => line(
                 "storeUpgrade.refused.detail.contactsTable",
                 "it holds contact data that this version can't read yet.",
@@ -221,10 +214,11 @@ impl RefusedCause {
 /// snapshot is a backup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupState {
-    /// A completed snapshot whose files all match their sizes and sha256.
-    /// That it is of this wallet's data is checked when the restore runs.
+    /// A completed snapshot whose files all match their sizes and sha256,
+    /// of this wallet's data before the upgrade.
     Verified,
-    /// A completed snapshot that fails verification, and no verified one.
+    /// A completed snapshot that fails verification or is of other data,
+    /// and no verified one of this wallet's.
     Unverified,
     /// No completed snapshot.
     None,
@@ -250,8 +244,9 @@ pub struct ProvedState {
     pub backup: Option<BackupState>,
     /// `Some(true)`: this start changed nothing and the file is not
     /// part-upgraded, the only case the screen says Dash Wallet didn't
-    /// change anything. `Some(false)`: this start changed the files or an
-    /// earlier one part-upgraded it. `None`: not proved either way.
+    /// change anything. `Some(false)`: this start upgraded the files or an
+    /// earlier one part-upgraded it. `None`: not proved either way, or a
+    /// restore this start put the file back.
     pub unchanged: Option<bool>,
 }
 
@@ -260,19 +255,33 @@ impl ProvedState {
     /// writing. `wrote` is whether this start changed its files: a restore
     /// finished ([`crate::Prepared::restored`]) or
     /// [`crate::reconcile_fork_store`] returned `Pending` or `Retired`.
+    /// "Unchanged" is about this start alone, and the way out goes by the
+    /// file as read, never by the restored mark. A file this start wrote and
+    /// left not upgraded was put back by a restore: neither "didn't change
+    /// anything" nor "had already started upgrading" holds, so `unchanged`
+    /// is `None` (`storeUpgrade.refused.keep`).
     pub fn read(network_dir: &Path, wrote: bool) -> Self {
         let upgrade = upgrade(network_dir);
         Self {
             migrated: upgrade.map(|u| u != Upgrade::NotStarted),
             backup: crate::snapshot::snapshot_state(network_dir)
                 .ok()
-                .as_ref()
-                .map(BackupState::from),
-            unchanged: match upgrade {
-                _ if wrote => Some(false),
-                Some(Upgrade::NotStarted | Upgrade::Done) => Some(true),
-                Some(Upgrade::Part) => Some(false),
-                None => None,
+                .and_then(|s| match s {
+                    SnapshotState::Verified(info) => crate::snapshot::of_live(network_dir, &info)
+                        .map(|of| {
+                            if of {
+                                BackupState::Verified
+                            } else {
+                                BackupState::Unverified
+                            }
+                        }),
+                    s => Some(BackupState::from(&s)),
+                }),
+            unchanged: match (upgrade, wrote) {
+                (Some(Upgrade::NotStarted), true) => None,
+                (Some(Upgrade::Part), _) | (Some(Upgrade::Done) | None, true) => Some(false),
+                (Some(Upgrade::NotStarted | Upgrade::Done), false) => Some(true),
+                (None, false) => None,
             },
         }
     }
@@ -384,10 +393,6 @@ impl WayOut {
                 Some(true) => Self::SupportMigrated,
                 None => Self::Support,
             },
-            C::SnapshotMissing => match state.backup {
-                Some(BackupState::Unverified) => Self::Unverified,
-                _ => Self::SupportMigrated,
-            },
             C::ContactsTable if state.migrated == Some(false) => Self::Previous,
             C::ContactsTable
             | C::ShapeMismatch
@@ -472,14 +477,6 @@ pub struct RefusedScreen {
 
 impl RefusedScreen {
     pub fn new(cause: RefusedCause, state: ProvedState) -> Self {
-        let state = match cause {
-            RefusedCause::SnapshotMissing => ProvedState {
-                migrated: Some(true),
-                unchanged: Some(false),
-                ..state
-            },
-            _ => state,
-        };
         let way_out = WayOut::for_cause(cause, state);
         Self {
             cause,
@@ -524,35 +521,74 @@ impl RefusedScreen {
 /// ([`RefusedCause::of`]), its way out chosen by `state`. The caller proves
 /// `state`, normally with [`ProvedState::read`].
 pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedScreen> {
-    let cause = RefusedCause::of(e)?;
-    let state = match e {
-        StoreUpgradeError::UpgradeSnapshotMissing { state: missing, .. } => {
-            snapshot_missing_state(*missing)
-        }
-        _ => state,
-    };
-    Some(RefusedScreen::new(cause, state))
+    Some(RefusedScreen::new(RefusedCause::of(e)?, state))
 }
 
-/// A part-done upgrade is migrated and changed, and its backup is what the
-/// error found: a snapshot of other data is no backup of this wallet.
-fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
-    ProvedState {
-        migrated: Some(true),
-        unchanged: Some(false),
-        backup: Some(match missing {
-            MissingSnapshot::Unverified => BackupState::Unverified,
-            MissingSnapshot::Absent | MissingSnapshot::Mismatch => BackupState::None,
-        }),
+/// The notice the engine shows once, after the wallet opened and loaded,
+/// for the start that upgraded it without a before-upgrade copy it can
+/// restore ([`crate::Outcome::notice`]). It blocks nothing, and dismissing
+/// it changes nothing on disk.
+pub fn notice_line(notice: UpgradeNotice) -> Line {
+    match notice {
+        UpgradeNotice::SnapshotDamaged => line(
+            "storeUpgrade.notice.snapshotDamaged",
+            "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        ),
+        UpgradeNotice::SnapshotOther => line(
+            "storeUpgrade.notice.snapshotOther",
+            "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        ),
     }
 }
 
 /// Catalog keys whose text is a best guess until MG writes the final.
-pub const PENDING_MG: &[&str] = &[
-    "storeUpgrade.refused.detail.snapshotMissing",
-    "storeUpgrade.refused.changedByUpgrade",
-    "storeUpgrade.refused.keep",
-];
+pub const PENDING_MG: &[&str] = &[];
+
+const RETRY_NO_SPACE_TITLE: &str = "Dash Wallet couldn't finish upgrading your wallet data";
+const RETRY_NO_SPACE_TEXT: &str = "The disk is full, or Dash Wallet couldn't write to it. Free up some space, then quit Dash Wallet and open it again. Until then, don't open this wallet data with an earlier version.";
+
+/// `storeUpgrade.retry.noSpace.*` for a start that stopped on the machine
+/// (the disk full or not writable, an I/O fault) and is retried at the next
+/// start; `None` for every other error. Never the earlier version: the file
+/// may be part-upgraded. A retry that ends in a refusal shows that
+/// refusal's screen.
+pub fn retry_copy_for(e: &StoreUpgradeError) -> Option<ScreenCopy> {
+    use platform_wallet_storage::WalletStorageError as W;
+    use rusqlite::ErrorCode::{CannotOpen, DiskFull, SystemIoFailure};
+    let write_fault = |err: &(dyn std::error::Error + 'static)| {
+        std::iter::successors(Some(err), |e| e.source())
+            .take_while(|e| {
+                !e.downcast_ref::<W>()
+                    .is_some_and(crate::precheck::decode_defect)
+            })
+            .any(|e| {
+                e.downcast_ref::<std::io::Error>()
+                    .is_some_and(crate::precheck::machine_io)
+                    || e.downcast_ref::<rusqlite::Error>().is_some_and(|s| {
+                        matches!(
+                            s.sqlite_error_code(),
+                            Some(DiskFull | SystemIoFailure | CannotOpen)
+                        )
+                    })
+                    || e.downcast_ref::<W>()
+                        .is_some_and(|s| matches!(s, W::AutoBackupDirUnwritable { .. }))
+            })
+    };
+    let retried = match e {
+        StoreUpgradeError::Io { .. } | StoreUpgradeError::SnapshotFailed { .. } => true,
+        StoreUpgradeError::Sqlite { source, .. } => write_fault(source),
+        StoreUpgradeError::PersisterOpen { source, .. } => write_fault(source.as_ref()),
+        _ => false,
+    };
+    retried.then(|| ScreenCopy {
+        hint: Some((ISSUES_HINT.key, ISSUES_HINT.text)),
+        ..screen(
+            ("storeUpgrade.retry.noSpace.title", RETRY_NO_SPACE_TITLE),
+            ("storeUpgrade.retry.noSpace.text", RETRY_NO_SPACE_TEXT),
+            vec![REPORT, QUIT],
+        )
+    })
+}
 
 /// A screen's copy with its catalog keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -619,9 +655,8 @@ const INCOMPLETE_TEXT: &str = "Dash Wallet stopped partway through putting back 
 const NO_SPACE_TITLE: &str = "Not enough disk space to restore";
 const NO_SPACE_TEXT: &str = "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.";
 
-const NOT_STARTED_TITLE: &str =
-    "[MG placeholder] Dash Wallet couldn't start restoring your wallet data";
-const NOT_STARTED_TEXT: &str = "[MG placeholder] Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed. Restart Dash Wallet to try again.";
+const NOT_STARTED_TITLE: &str = "Dash Wallet couldn't start restoring your wallet data";
+const NOT_STARTED_TEXT: &str = "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.";
 
 /// `storeUpgrade.restore.confirm.*` (MG FINAL with R3 (1) and (ii)): every
 /// path to a restore goes through it.
@@ -683,15 +718,21 @@ pub fn restore_no_space() -> ScreenCopy {
 
 /// `storeUpgrade.restore.notStarted.*`: a fault before the journal other
 /// than disk space; nothing changed and the request is kept (design §7).
+/// MG's final (mg-r3-v2-notstarted-and-support.md, sha256 0b7e55bd…924b).
 pub fn restore_not_started(_cause: IncompleteCause) -> ScreenCopy {
-    screen(
-        ("storeUpgrade.restore.notStarted.title", NOT_STARTED_TITLE),
-        ("storeUpgrade.restore.notStarted.text", NOT_STARTED_TEXT),
-        vec![
-            button("storeUpgrade.restore.notStarted.restart", "Restart"),
-            button("storeUpgrade.restore.notStarted.quit", "Quit"),
-        ],
-    )
+    ScreenCopy {
+        hint: Some((ISSUES_HINT.key, ISSUES_HINT.text)),
+        ..screen(
+            ("storeUpgrade.restore.notStarted.title", NOT_STARTED_TITLE),
+            ("storeUpgrade.restore.notStarted.text", NOT_STARTED_TEXT),
+            vec![
+                button("storeUpgrade.restore.notStarted.restart", "Restart"),
+                button("storeUpgrade.restore.notStarted.cancel", "Cancel restore"),
+                button("storeUpgrade.restore.notStarted.report", "Report a problem"),
+                button("storeUpgrade.restore.notStarted.quit", "Quit"),
+            ],
+        )
+    }
 }
 
 /// The restore flow's screen for an error from this crate, if it has one.
