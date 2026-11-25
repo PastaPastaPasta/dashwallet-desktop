@@ -335,8 +335,6 @@ function WedgeSheet({ wiz, quote, inputs }: { wiz: RegistrationWizard; quote: Re
   );
 }
 
-/** Step 2's cost: the quote in Dash (D2) from the Dash wallet or the Platform balance (C-funding
- * F9), or what the identity's credits may pay (D6). */
 /** Why a Shielded quote cannot be paid now (C-funding F16), its first failing check; `null` for
  * another source's quote or one that can. */
 function useShieldedBlock(wiz: RegistrationWizard, quote: RegistrationQuote | undefined, inputs: StatusInputs): string | null {
@@ -345,6 +343,8 @@ function useShieldedBlock(wiz: RegistrationWizard, quote: RegistrationQuote | un
   return shieldedReason(quote.readiness, inputs.amount, (secs) => timeText(secs, b.locale));
 }
 
+/** Step 2's cost: the quote in Dash (D2) from the Dash wallet or the Platform balance (C-funding
+ * F9), or what the identity's credits may pay (D6). */
 function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizard; walletId: string; identity: string | null; inputs: StatusInputs }) {
   useT();
   const quote = useLabelQuote(walletId, wiz.label, identity === null, wiz.source ?? "core", wiz.temporaryLabel);
@@ -364,7 +364,7 @@ function CostLines({ wiz, walletId, identity, inputs }: { wiz: RegistrationWizar
   if (identity !== null)
     return <p className="registration-line">{credits.data ? REG_COPY.confirm.fromCredits(credits.data.maxCredits) : REG_COPY.confirm.quoting}</p>;
   if (!quote.data || !wiz.quoteStands(quote.dataUpdatedAt)) return <p className="registration-line">{REG_COPY.confirm.quoting}</p>;
-  const model = confirmModel(quote.data, inputs.amount, wiz.fromShielded && known(pools.shielded) ? pools.shielded : null);
+  const model = confirmModel(quote.data, inputs.amount, wiz.fromShielded && known(pools.shielded) ? pools.shielded : null, inputs.discreet);
   return (
     <>
       <p className="registration-fee">

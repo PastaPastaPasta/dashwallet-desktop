@@ -171,12 +171,13 @@ export interface ConfirmModel {
  * above zero), the change when there is some, and a note when the denomination is the whole
  * balance. The quote's grant is the denomination plus the names and the profile; its remaining
  * credits the denomination less the fee, the names and the profile. */
-function shieldedLines(quote: RegistrationQuote, denomination: string, change: string | null, amount: (duffs: number) => string, balanceDuffs: number | null): string[] {
+function shieldedLines(quote: RegistrationQuote, denomination: string, change: string | null, amount: (duffs: number) => string, balanceDuffs: number | null, discreet: boolean): string[] {
   const d = BigInt(denomination);
   const left = BigInt(quote.remainingCredits);
   const start = left + (BigInt(quote.grant.maxCredits) - d);
   const c = REG_COPY.confirm.shielded;
   const lines = [c.leaves(amount(creditsToDuffs(denomination))), c.fee(amount(creditsToDuffsUp(d > start ? d - start : 0n))), c.starts(amount(creditsToDuffs(String(start))), left > 0n ? amount(creditsToDuffs(String(left))) : null)];
+  if (discreet) return lines;
   if (change !== null && BigInt(change) > 0n) lines.push(c.change(amount(creditsToDuffs(change))));
   else if (change !== null && balanceDuffs === creditsToDuffs(denomination)) lines.push(c.whole);
   return lines;
@@ -184,12 +185,13 @@ function shieldedLines(quote: RegistrationQuote, denomination: string, change: s
 
 /** The quote's cost: from the Dash wallet, its total and what the funding can spend; from the
  * Platform balance (C-funding F9), what leaves it, the identity's funding and the fee; from the
- * Shielded balance (F20), its denomination. Neither balance quote has a shortfall: one the Platform
+ * Shielded balance (F20), its denomination, and in discreet mode nothing that tells the balance
+ * (its change, or that it is all spent). Neither balance quote has a shortfall: one the Platform
  * balance cannot pay is refused, and a Shielded one says why in its readiness. */
-export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string, shieldedDuffs: number | null = null): ConfirmModel {
+export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string, shieldedDuffs: number | null = null, discreet = false): ConfirmModel {
   const r = quote.readiness;
   if (r !== null && r.denomination !== null) {
-    const lines = shieldedLines(quote, r.denomination, r.change, amount, shieldedDuffs);
+    const lines = shieldedLines(quote, r.denomination, r.change, amount, shieldedDuffs, discreet);
     if (quote.contested) lines.push(REG_COPY.confirm.contested);
     return { cost: amount(creditsToDuffs(r.denomination)), lines, shortfall: null };
   }

@@ -680,9 +680,12 @@ test("keyboard only: while the wedge's OK runs after its passphrase, focus stays
 async function dashWalletByKeyboard(page: Page) {
   const core = page.getByTestId("pay-with-core").getByRole("radio");
   await expect(page.getByTestId("registration-next")).toBeDisabled();
-  await tabTo(page, core);
-  await page.keyboard.press("Space");
+  // One Tab stop for the group, its first row (Shielded when it can pay); the arrows choose.
+  const radios = page.getByTestId("registration-pay-with").getByRole("radio");
+  await tabTo(page, radios.first());
+  await page.keyboard.press((await radios.count()) > 1 ? "ArrowDown" : "Space");
   await expect(core).toBeChecked();
+  await expect(core).toBeFocused();
   await page.keyboard.press("Enter");
 }
 

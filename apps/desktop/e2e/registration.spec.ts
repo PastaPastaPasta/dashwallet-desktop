@@ -1,8 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
-import { checkUsername } from "../src/fixture/registration";
+// Scenarios first: it loads the fixture's handlers before the registration module's cycle
+// through recovery, which a worker loading this file alone would otherwise hit.
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
+import { checkUsername } from "../src/fixture/registration";
 import { seriousAxeViolations } from "./axe";
-import { payFrom, payFromDashWallet, platformRunFails } from "./dashpay";
+import { payFrom, payFromDashWallet, platformRunFails, setShielded } from "./dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-09: the username registration wizard on the fixture backend, by parity ID: IOS-066 (choose
@@ -234,18 +236,15 @@ test("C-funding F16: while Shielded cannot pay, a tip card and its two buttons r
   const step = page.getByTestId("registration-pay-with");
   const tip = page.getByTestId("privacy-tip");
   const shieldFirst = page.getByTestId("privacy-shield-first");
+  const FUNDED = await page.evaluate(() => window.__dwFixture!.world.pending.shielded!.balance);
   const states: { world: Record<string, unknown>; kind: string; title: string; enabled: boolean }[] = [
     { world: { balance: "0", notes: undefined }, kind: "nothing", title: "Privacy tip", enabled: true },
     { world: { balance: "1000000000", notes: undefined }, kind: "partly", title: "Not enough shielded funds", enabled: true },
-    { world: { restingUntil: 1_900_000_000 }, kind: "resting", title: "Funds are resting", enabled: false },
-    { world: { poolNotes: 120 }, kind: "pool", title: "Privacy pool too small", enabled: false },
+    { world: { balance: FUNDED, restingUntil: 1_900_000_000 }, kind: "resting", title: "Funds are resting", enabled: false },
+    { world: { balance: FUNDED, restingUntil: undefined, poolNotes: 120 }, kind: "pool", title: "Privacy pool too small", enabled: false },
   ];
   for (const s of states) {
-    await page.evaluate((w) => {
-      const f = window.__dwFixture!;
-      f.world.pending.shielded = { ...f.world.pending.shielded!, ...w };
-      f.emit({ kind: "eventsOverflowed" } as never);
-    }, s.world);
+    await setShielded(page, s.world);
     await page.getByTestId("join-create").click();
     await expect(step).toHaveAttribute("data-kind", "tip");
     await expect(tip).toHaveAttribute("data-kind", s.kind);
@@ -257,11 +256,7 @@ test("C-funding F16: while Shielded cannot pay, a tip card and its two buttons r
     await page.getByTestId("registration-cancel").click();
   }
   // Shield your funds first opens Transfer, Dash wallet → Shielded.
-  await page.evaluate(() => {
-    const f = window.__dwFixture!;
-    f.world.pending.shielded = { ...f.world.pending.shielded!, balance: "0", restingUntil: undefined, poolNotes: undefined };
-    f.emit({ kind: "eventsOverflowed" } as never);
-  });
+  await setShielded(page, { balance: "0", restingUntil: undefined, poolNotes: undefined });
   await page.getByTestId("join-create").click();
   await shieldFirst.click();
   await expect(page.getByTestId("transfer-sheet")).toBeVisible();
@@ -363,7 +358,7 @@ test("D5: a shortfall against what the wallet can spend holds Confirm & pay", as
   await toJoin(page);
   // C-funding F16: neither the Dash wallet nor the Shielded balance can pay.
   await expect(page.getByTestId("join-shortfall")).toHaveText(
-    "You need at least 0.031 tDASH to create a username. Your Dash wallet has 0 tDASH. Your Shielded balance has 0 tDASH.",
+    "You need at least 0.031 tDASH to create a username. Your Dash wallet has 0.00 tDASH. Your Shielded balance has 0.00 tDASH.",
   );
   await page.getByTestId("join-create").click();
   await payFromDashWallet(page);

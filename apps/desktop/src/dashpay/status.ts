@@ -13,6 +13,7 @@ import type { RegistrationPhaseName } from "../api/generated/RegistrationPhaseNa
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
+import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
@@ -512,14 +513,19 @@ export interface ShieldedFunds {
   duffs: number | null;
 }
 
-const NOT_OFFERED_CHECKS = new Set(["poolActive", "featureOn", "denomination"]);
+/** The checks that say the network takes no Shielded registration. */
+export const NOT_OFFERED: readonly ShieldedCheckName[] = ["poolActive", "featureOn", "denomination"];
+
+/** A Shielded readiness quote that failed: the Shielded balance is not offered, so the source
+ * step offers the Dash wallet and Join says the plain shortfall, rather than waiting on it. */
+export const READINESS_FAILED: ShieldedReadiness = { denomination: null, checks: [{ check: "poolActive", ready: false }], readyAt: null, poolNotes: null, poolRequired: 0, change: null };
 
 /** The Shielded readiness as the Join page's shortfall reads it: enough when a member of the
  * network's set fits and the notes cover it. */
 export function shieldedFunds(readiness: ShieldedReadiness | null, duffs: number | null): ShieldedFunds | null {
   if (readiness === null) return null;
   const ready = (check: string) => readiness.checks.find((c) => c.check === check)?.ready === true;
-  const offered = readiness.denomination !== null && readiness.checks.every((c) => c.ready || !NOT_OFFERED_CHECKS.has(c.check));
+  const offered = readiness.denomination !== null && readiness.checks.every((c) => c.ready || !NOT_OFFERED.includes(c.check));
   return { offered, enough: offered && ready("balance"), duffs };
 }
 
@@ -546,9 +552,9 @@ export function joinModel(
     const both = (core: number) =>
       !shielded?.offered
         ? JOIN_COPY.shortfall(price)
-        : i.discreet
+        : i.discreet || shielded.duffs === null
           ? JOIN_COPY.shortfallBothDiscreet(price)
-          : JOIN_COPY.shortfallBoth(price, i.amount(core), i.amount(shielded.duffs ?? 0));
+          : JOIN_COPY.shortfallBoth(price, i.amount(core), i.amount(shielded.duffs));
     return { kind: "join", cost: JOIN_COPY.cost(price), shortfall: short ? both(available) : null, waiting };
   }
   // The credits cards are My Profile's business: the Join page says the user has joined.

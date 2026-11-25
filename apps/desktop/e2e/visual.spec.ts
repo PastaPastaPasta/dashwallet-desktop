@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
-import { CARDS, CHIP_TEXT, CHIPS, payFrom, payFromDashWallet, platformRunFails, privacyTip } from "./dashpay";
+import { CARDS, CHIPS, CHIP_TEXT, payFrom, payFromDashWallet, platformRunFails, privacyTip, setShielded } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { openIdentities } from "./identities";
@@ -406,9 +406,10 @@ for (const theme of THEMES) {
 // readiness states, the voting info and the FAQ.
 const SHOT = { animations: "disabled", caret: "hide" } as const;
 
-const JOIN: Record<string, { scenario: string; ready: string }> = {
+const JOIN: Record<string, { scenario: string; ready: string; shielded?: Record<string, unknown> }> = {
   join: { scenario: "dashpay-no-identity", ready: "join-cost" },
-  "join-shortfall": { scenario: "empty", ready: "join-shortfall" },
+  // C-funding F16: neither balance can pay.
+  "join-shortfall": { scenario: "empty", ready: "join-shortfall", shielded: { balance: "0", notes: undefined } },
   "join-waiting": { scenario: "dashpay-waiting-for-sync", ready: "join-waiting" },
   "join-watch-only": { scenario: "dashpay-watch-only", ready: "join-watch-only" },
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
@@ -631,9 +632,10 @@ for (const theme of THEMES) {
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });
   }
-  for (const [name, { scenario, ready }] of Object.entries(JOIN)) {
+  for (const [name, { scenario, ready, shielded }] of Object.entries(JOIN)) {
     test(`visual dashpay-${name} ${theme}`, async ({ page }) => {
       await openJoin(page, scenario, theme);
+      if (shielded) await setShielded(page, shielded);
       await page.getByTestId(ready).waitFor();
       await shoot(page, `dashpay-${name}`, theme);
     });

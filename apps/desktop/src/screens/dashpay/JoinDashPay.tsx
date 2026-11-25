@@ -56,7 +56,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const { status } = inputs;
   const joining = status?.kind === "noIdentity" && status.reason !== "watchOnly";
   const quote = useUsernameQuote(walletId, joining);
-  const readiness = useShieldedReadiness(walletId);
+  const readiness = useShieldedReadiness(walletId, joining);
   const pools = usePoolBalances(walletId);
   const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null, shieldedFunds(readiness, known(pools.shielded) ? pools.shielded : null));
   const [sheet, setSheet] = useState<"voting" | "faq" | "invitation" | null>(null);

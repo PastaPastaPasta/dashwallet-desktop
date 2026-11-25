@@ -20,7 +20,7 @@ import type { PaySource, PayWithInputs } from "./payWith";
 import { AVAILABILITY_DEBOUNCE_MS, isRunning } from "./registration";
 import { AvailabilityChecker, needsAvailability, suggest } from "./instantName";
 import { contestRow, lacksTemporary, registrationOffered, rereadAfterSecond, rowSecond, temporaryOutcome, type InstantInputs, type NamesRead } from "./instantOffer";
-import { QUOTE_REQUEST, type StatusInputs } from "./status";
+import { QUOTE_REQUEST, READINESS_FAILED, type StatusInputs } from "./status";
 import { coreRequest, invitationRequest, platformRequest, shieldedRequest } from "./wizard";
 
 export const dashpayKeys = {
@@ -158,14 +158,15 @@ export function useStatusRegistration(walletId: string | undefined, status: Dash
 
 /** The "Pay with" step's Shielded row (C-funding F16): the quote's readiness, for the label the
  * Join page quotes (the denomination covers a plain name; the engine ignores the request's). */
-export function useShieldedReadiness(walletId: string) {
+export function useShieldedReadiness(walletId: string, enabled = true) {
   const b = useBackend();
   const quote = useQuery({
     queryKey: dashpayKeys.shieldedReadiness(walletId),
     queryFn: () => b.registrationQuote(walletId, shieldedRequest(QUOTE_REQUEST.label)),
+    enabled,
     retry: false,
   });
-  return quote.data?.readiness ?? null;
+  return quote.isError ? READINESS_FAILED : (quote.data?.readiness ?? null);
 }
 
 /** The "Pay with" step's Platform row (C-funding F19): a plain name's quote from the Platform

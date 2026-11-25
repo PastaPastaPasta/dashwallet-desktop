@@ -6,11 +6,10 @@
 
 import { hasCode } from "../api/backend";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
-import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import { creditsToDuffs, creditsToDuffsUp } from "../api/pending";
 import { messageTable, t } from "../i18n";
-import { withTable } from "./status";
+import { NOT_OFFERED, withTable } from "./status";
 
 export type PaySource = "core" | "platform" | "shielded";
 
@@ -76,7 +75,6 @@ export interface PaySourceRow {
 }
 
 /** The pool is not offered here: the start refuses `platform.feature_off` for these. */
-const NOT_OFFERED: readonly ShieldedCheckName[] = ["poolActive", "featureOn", "denomination"];
 
 /** The first readiness check that fails, in the engine's order, as the step says it (F16). */
 export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duffs: number) => string, clock: (secs: number) => string): string | null {

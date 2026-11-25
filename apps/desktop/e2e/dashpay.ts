@@ -70,14 +70,19 @@ export async function payFrom(page: Page, source: "shielded" | "platform") {
   await page.getByTestId("registration-name-field").waitFor();
 }
 
-/** From the Join page: the privacy step with the Shielded world changed by `world`, showing the
- * tip card `kind` (C-funding F16). */
-export async function privacyTip(page: Page, world: Record<string, unknown>, kind: string) {
+/** Changes the fixture's Shielded world by `world`, then lets every screen read it again. */
+export async function setShielded(page: Page, world: Record<string, unknown>) {
   await page.evaluate((w) => {
     const f = window.__dwFixture!;
     f.world.pending.shielded = { ...f.world.pending.shielded!, ...w };
     f.emit({ kind: "eventsOverflowed" } as never);
   }, world);
+}
+
+/** From the Join page: the privacy step with the Shielded world changed by `world`, showing the
+ * tip card `kind` (C-funding F16). */
+export async function privacyTip(page: Page, world: Record<string, unknown>, kind: string) {
+  await setShielded(page, world);
   await page.getByTestId("join-create").click();
   await expect(page.getByTestId("privacy-tip")).toHaveAttribute("data-kind", kind);
   await page.mouse.move(0, 0);

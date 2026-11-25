@@ -7,7 +7,7 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, shieldedFunds, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
+import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, READINESS_FAILED, roundedCost, shieldedFunds, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
 import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import { t } from "../i18n";
@@ -354,6 +354,10 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     // A network without Shielded registrations keeps the plain shortfall.
     expect(short(ready({ poolActive: false }), null)).toBe(JOIN_COPY.shortfall("0.031 tDASH"));
     expect(short(ready({}, null), null)).toBe(JOIN_COPY.shortfall("0.031 tDASH"));
+    // A failed readiness quote is not offered, never unread: the plain shortfall.
+    expect(short(READINESS_FAILED, null)).toBe(JOIN_COPY.shortfall("0.031 tDASH"));
+    // The Shielded balance not read yet: no amount for it.
+    expect(short(ready({ balance: false }), null)).toBe(JOIN_COPY.shortfallBothDiscreet("0.031 tDASH"));
   });
 
   it("J2: Create username waits for sync, with no shortfall from a partial balance; J7: an unread or failed quote says only that votes cost more", () => {

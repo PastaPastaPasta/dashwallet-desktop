@@ -12,6 +12,7 @@ import { newPlatformWorld } from "../fixture/pending";
 import { newShieldedWorld, type ShieldedWorld } from "../fixture/shielded";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
 import { dashpayKeys, platformSourceOf } from "./queries";
+import { READINESS_FAILED } from "./status";
 import { LIVE_SOURCES, PAY_WITH_COPY, PRESELECT_SHIELDED, PRIVACY_COPY, payWithRows, platformReason, privacyStep, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
 
 const amount = (duffs: number) => `${duffs / 1e8} Dash`;
@@ -183,6 +184,11 @@ describe("Make your username private (F19, mobile parity)", () => {
     expect(s.rows.map((r) => r.source)).toEqual(["shielded", "core"]);
     expect(PRESELECT_SHIELDED).toBe(false);
     expect(s.preselect).toBeNull();
+  });
+
+  it("a failed readiness quote offers the Dash wallet alone, never a step stuck loading", () => {
+    expect(sources({ readiness: READINESS_FAILED }).rows.map((r) => r.source)).toEqual(["core"]);
+    expect(step({ readiness: null }).kind).toBe("loading");
   });
 
   it("offers Platform behind Advanced only when its quote can pay (refused on mainnet)", () => {

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS, payFrom, payFromDashWallet, platformRunFails } from "./dashpay";
+import { CARDS, payFrom, payFromDashWallet, platformRunFails, setShielded } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -120,7 +120,15 @@ const card = (name: string): State => ({
 export const STATES: Record<string, State> = {
   ...Object.fromEntries(Object.keys(CARDS).map((name) => [`card-${name}`, card(name)])),
   join: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-cost").waitFor()) },
-  "join-shortfall": { scenario: "empty", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-shortfall").waitFor()) },
+  "join-shortfall": {
+    scenario: "empty",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await setShielded(page, { balance: "0", notes: undefined });
+      await page.getByTestId("join-shortfall").waitFor();
+    },
+  },
   "join-watch-only": { scenario: "dashpay-watch-only", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-watch-only").waitFor()) },
   "join-joined": { scenario: "dashpay-registered", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-joined").waitFor()) },
   "join-card": { scenario: "dashpay-not-started", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("dashpay-card").waitFor()) },
@@ -169,12 +177,8 @@ export const STATES: Record<string, State> = {
     scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],
     go: async (page) => {
-      await page.evaluate(() => {
-        const f = window.__dwFixture!;
-        f.world.pending.shielded = { ...f.world.pending.shielded!, balance: "1000000000", notes: undefined };
-        f.emit({ kind: "eventsOverflowed" } as never);
-      });
       await toJoin(page);
+      await setShielded(page, { balance: "1000000000", notes: undefined });
       await page.getByTestId("join-create").click();
       await page.getByTestId("privacy-tip").waitFor();
     },
@@ -222,7 +226,13 @@ export const STATES: Record<string, State> = {
   "confirm-shortfall": {
     scenario: "empty",
     roots: ["page-joinDashPay"],
-    go: (page) => confirm(page, LABEL).then(() => page.getByTestId("registration-shortfall").waitFor()),
+    go: async (page) => {
+      // Neither balance can pay: "Continue without privacy" reaches the Dash wallet's Confirm.
+      await toolbar(page);
+      await setShielded(page, { balance: "0", notes: undefined });
+      await confirm(page, LABEL);
+      await page.getByTestId("registration-shortfall").waitFor();
+    },
   },
   "start-refused": {
     scenario: "dashpay-no-identity",

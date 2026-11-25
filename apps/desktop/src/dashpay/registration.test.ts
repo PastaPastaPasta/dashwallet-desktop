@@ -159,6 +159,11 @@ describe("C-funding F20: Confirm from the Shielded balance", () => {
     expect(confirmModel(shielded("0"), amount, 3_000_000).lines[3]).toBe("This uses your whole Shielded balance.");
   });
 
+  it("discreet mode tells nothing of the Shielded balance: no change line, no whole-balance line", () => {
+    expect(confirmModel(shielded("7000000000"), amount, 10_000_000, true).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000, true).lines).toHaveLength(3);
+  });
+
   it("drops the credits-left clause at or below zero", () => {
     expect(confirmModel(shielded("0", "0"), amount).lines[2]).toBe("Your identity starts with 0.007 tDASH in credits. The username and profile are paid from it.");
   });
