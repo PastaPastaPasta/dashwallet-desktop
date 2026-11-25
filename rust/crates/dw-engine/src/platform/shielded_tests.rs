@@ -3731,6 +3731,58 @@ fn the_sync_read_and_a_bound_address_answer_while_a_pass_holds_the_store() {
     });
 }
 
+/// While the library cannot spend from the key set, every quote and every
+/// way into the pool refuses before the coordinator opens: a pass holding
+/// the note store delays none of them. With spends on, the same quote waits
+/// for the store.
+#[test]
+fn the_spends_off_refusals_wait_for_no_pass() {
+    let f = super::topup_tests::fixture(true);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        s.keyset_spends_off.store(true, Ordering::SeqCst);
+        let wait = Duration::from_secs(10);
+        macro_rules! refused {
+            ($call:expr) => {
+                (tokio::time::timeout(wait, $call).await)
+                    .expect("the refusal waits for no store")
+                    .unwrap_err()
+                    .code()
+            };
+        }
+        let one = FundAmount::Duffs { duffs: 100_000 };
+        let codes = [
+            refused!(dp.shielded_send_quote(String::new(), 1)),
+            refused!(dp.unshield_quote(1, None)),
+            refused!(dp.unshield_to_platform_quote(1, None)),
+            refused!(dp.shield_quote(one)),
+            refused!(dp.shield_quote(FundAmount::All)),
+            refused!(dp.shield_mixed_quote()),
+            refused!(dp.platform_shield_quote(super::WithdrawAmount::All)),
+            refused!(dp.shielded_send(String::new(), 1, None, String::new(), true)),
+            refused!(dp.unshield_to_core(1, None, String::new(), true)),
+            refused!(dp.unshield_to_platform(1, None, String::new(), true)),
+            refused!(dp.shield_from_core(one, String::new())),
+            refused!(dp.shield_mixed_coins(String::new())),
+        ];
+        assert_eq!(codes, ["platform.unavailable"; 12]);
+
+        s.keyset_spends_off.store(false, Ordering::SeqCst);
+        let quote = dp.shielded_send_quote(String::new(), 1);
+        let held = tokio::time::timeout(Duration::from_millis(300), quote);
+        assert!(
+            held.await.is_err(),
+            "with spends on, the quote opens the pool"
+        );
+    });
+}
+
 /// An engine with a regtest session and no vault.
 fn vaultless(no_platform: bool) -> (tempfile::TempDir, crate::Engine, Arc<NetworkSession>) {
     struct Quiet;
@@ -5125,27 +5177,41 @@ fn no_way_in_opens_while_the_library_cannot_spend_from_the_key_set() {
 }
 
 /// A payment to an address given out before the library lost key-set
-/// spends still lands: the pass finds it and the status shows it in the
-/// balance, while no new address is issued.
+/// spends still lands: the engine's sync runs its pass, which finds it, and
+/// the status shows it in the balance, while no new address is issued.
 #[test]
 fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the_key_set() {
-    let fx = Fixture::new(0);
+    let fx = Fixture::with_platform();
     let lib = Arc::new(FakeShielded::default());
     let early = run(&fx, &lib, |_, lib| async move {
         pool::receive_address(&*lib).await.unwrap()
     });
     assert_eq!(early.address, payee_text());
 
+    let (cancel, _cancelled) = tokio::sync::watch::channel(false);
+    let (signals, _signalled) = tokio::sync::mpsc::unbounded_channel();
+    *super::runtime::guard(&fx.s.platform.supervisor) = Some(super::runtime::Supervisor {
+        cancel,
+        signals,
+        task: None,
+        running: true,
+    });
     lib.no_keyset_spends.store(true, Ordering::SeqCst);
     *lib.scan_ledger.lock().unwrap() = Some(Ledger {
         spendable: NOTE,
         synced_index: None,
     });
-    let (status, again) = run(&fx, &lib, |_, lib| async move {
-        lib.sync_now().await;
-        let status = pool::status(&*lib).await.unwrap();
+    let (status, again) = run(&fx, &lib, |s, lib| async move {
+        let status = pool::sync(&s, &*lib).await.unwrap();
         (status, code(pool::receive_address(&*lib).await))
     });
+    let synced = lib
+        .scan_ledger
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|l| l.synced_index);
+    assert_eq!(synced, Some(Some(1)), "the sync ran its pass");
     assert_eq!(status.balance, NOTE);
     assert!(!status.spends_available);
     assert_eq!(again, "platform.unavailable");

@@ -2871,7 +2871,24 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, false, body).await
+    run_on_pool(session, wallet_id, false, false, body).await
+}
+
+/// [`on_pool`] for a quote of a spend or of a move into the pool:
+/// `platform.unavailable` while the library cannot spend from the key set
+/// ([`session_keyset_spends`]), after the wallet's check and before the
+/// coordinator opens, so the refusal waits for no pass.
+pub(crate) async fn on_pool_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    run_on_pool(session, wallet_id, false, true, body).await
 }
 
 /// [`on_pool`] for a call that signs (a send, an unshield, a shield or its
@@ -2890,13 +2907,29 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, true, body).await
+    run_on_pool(session, wallet_id, true, false, body).await
+}
+
+/// [`on_pool_signing`] for a spend or a move into the pool, refused as
+/// [`on_pool_keyset`] refuses.
+pub(crate) async fn on_pool_signing_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    run_on_pool(session, wallet_id, true, true, body).await
 }
 
 async fn run_on_pool<T, F, Fut>(
     session: &Arc<NetworkSession>,
     wallet_id: WalletId,
     signing: bool,
+    keyset: bool,
     body: F,
 ) -> Result<T, ShieldedError>
 where
@@ -2917,6 +2950,9 @@ where
         session
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
+        if keyset {
+            keyset_open(&session)?;
+        }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
     })
@@ -3011,12 +3047,27 @@ pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
 /// for [`ShieldedLib::keyset_spends`], [`ShieldedSyncInfo`] and the receive
 /// address (`DashPay::shielded_receive_address`).
 pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
+    session_keyset_spends(&pw.session)
+}
+
+/// [`keyset_spends`] from the session alone, read before any pool opens.
+pub(crate) fn session_keyset_spends(session: &NetworkSession) -> bool {
     #[cfg(test)]
-    if (pw.session.keyset_spends_off).load(Ordering::SeqCst) {
+    if (session.keyset_spends_off).load(Ordering::SeqCst) {
         return false;
     }
-    let _ = pw;
+    let _ = session;
     true
+}
+
+/// [`keyset_closed`] from the session alone: `platform.unavailable` while
+/// the library cannot spend from the key set.
+pub(crate) fn keyset_open(session: &NetworkSession) -> Result<(), ShieldedError> {
+    if session_keyset_spends(session) {
+        Ok(())
+    } else {
+        Err(PlatformError::Unavailable.into())
+    }
 }
 
 /// The address of an account whose key is bound, read from the wallet's

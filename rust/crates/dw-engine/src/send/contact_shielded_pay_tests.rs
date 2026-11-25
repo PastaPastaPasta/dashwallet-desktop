@@ -629,6 +629,44 @@ fn mainnet_refuses_a_shielded_payout_before_anything_is_written() {
     assert!(lib.withdrawn_to().is_empty(), "nothing sent");
 }
 
+/// While the library cannot spend from the key set, a Shielded contact
+/// quote and payment refuse `platform.unavailable` after the payee's gates
+/// and before the pool opens; a stranger is still refused as a stranger,
+/// and the grant is kept.
+#[test]
+fn a_shielded_contact_payment_refuses_after_the_payee_while_spends_are_off() {
+    let f = fixture(false);
+    f.session
+        .keyset_spends_off
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let dashpay = f.session.dashpay(f.wallet);
+    let quote = |to| {
+        let quoted =
+            dashpay.contact_pay_quote(b58(ME), b58(to), credits(), PaymentSource::Shielded);
+        code(&f.engine.block_on(quoted).unwrap_err())
+    };
+    assert_eq!(quote(BOB), "platform.unavailable");
+    assert_ne!(
+        quote(DAVE),
+        "platform.unavailable",
+        "the payee's gate first"
+    );
+    let grant = f.credits_grant();
+    let call = f.call(BOB, credits(), &grant, true);
+    let paid = f.engine.block_on(dashpay.contact_pay(
+        call.identity,
+        call.contact,
+        call.credits,
+        call.source,
+        call.note,
+        call.grant,
+        call.confirm_unrecorded,
+    ));
+    assert_eq!(code(&paid.unwrap_err()), "platform.unavailable");
+    assert!(f.grant_kept(&grant), "the grant is kept");
+    assert!(f.payout_rows().is_empty(), "no payout row");
+}
+
 /// A load that settles a payout an earlier load locked drops that lock
 /// from memory: a second bring-up without a restart leaves no stale lock.
 #[test]

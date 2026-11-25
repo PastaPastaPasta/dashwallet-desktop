@@ -20,7 +20,9 @@ use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::{DispatchState, GrantRequest};
 use super::payments::Counterparty;
-use super::shielded_pool::{self as pool, on_pool, on_pool_signing};
+use super::shielded_pool::{
+    self as pool, on_pool, on_pool_keyset, on_pool_signing, on_pool_signing_keyset,
+};
 use crate::EngineError;
 
 /// The protocol version from which Platform takes shielded-pool
@@ -600,7 +602,7 @@ impl DashPay {
     /// buys, with the refusals of [`Self::shield_from_core`].
     pub async fn shield_quote(&self, amount: FundAmount) -> Result<ShieldQuote, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_keyset(&self.session, wallet, move |session, lib| async move {
             match amount {
                 FundAmount::Duffs { duffs } => pool::shield_quote(&session, &lib, duffs).await,
                 FundAmount::All => pool::shield_max_quote(&session, wallet, &lib).await,
@@ -619,7 +621,7 @@ impl DashPay {
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             pool::shield(&session, wallet, &lib, amount, &grant).await
         })
         .await
@@ -629,7 +631,7 @@ impl DashPay {
     /// 0's coins in one asset lock. Reads coins only.
     pub async fn shield_mixed_quote(&self) -> Result<MixedShieldQuote, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool(&self.session, wallet, move |session, lib| async move {
+        on_pool_keyset(&self.session, wallet, move |session, lib| async move {
             super::shield_drain::quote(&session, wallet, &lib).await
         })
         .await
@@ -675,7 +677,7 @@ impl DashPay {
     /// it and `resume_shield` applies it.
     pub async fn shield_mixed_coins(&self, grant: String) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             super::shield_drain::drain(&session, wallet, &lib, &grant).await
         })
         .await
@@ -704,7 +706,7 @@ impl DashPay {
         to: String,
         credits: u64,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::send_quote(&lib, &to, credits).await
         })
         .await
@@ -725,7 +727,7 @@ impl DashPay {
         confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let what = (to.as_str(), credits);
             let (memo, confirmed) = (memo.as_deref(), confirm_unrecorded);
             pool::send(&session, wallet, &lib, what, memo, &grant, confirmed).await
@@ -740,7 +742,7 @@ impl DashPay {
         credits: u64,
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::unshield_quote(&lib, credits, to.as_deref()).await
         })
         .await
@@ -758,7 +760,7 @@ impl DashPay {
         confirm_unrecorded: bool,
     ) -> Result<ShieldedSpendOutcome, ShieldedError> {
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
@@ -774,7 +776,7 @@ impl DashPay {
         to: Option<String>,
     ) -> Result<ShieldedSpendQuote, ShieldedError> {
         pool::refuse_on_mainnet(self.session.network().core_network())?;
-        on_pool(&self.session, self.wallet_id, move |_, lib| async move {
+        on_pool_keyset(&self.session, self.wallet_id, move |_, lib| async move {
             pool::unshield_to_platform_quote(&lib, credits, to.as_deref()).await
         })
         .await
@@ -794,7 +796,7 @@ impl DashPay {
     ) -> Result<UnshieldToPlatformOutcome, ShieldedError> {
         pool::refuse_on_mainnet(self.session.network().core_network())?;
         let wallet = self.wallet_id;
-        on_pool_signing(&self.session, wallet, move |session, lib| async move {
+        on_pool_signing_keyset(&self.session, wallet, move |session, lib| async move {
             let (to, confirmed) = (to.as_deref(), confirm_unrecorded);
             pool::unshield_to_platform(&session, wallet, &lib, credits, to, &grant, confirmed).await
         })
