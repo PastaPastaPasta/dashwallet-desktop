@@ -4613,12 +4613,11 @@ pub(crate) async fn next_receive(
         })?;
     if handed_out.is_none_or(|h| index > h) {
         let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
-        let value = index.to_string();
         (session.appdb_op(move |db| {
-            db.set_setting_durable(
+            db.raise_setting_durable(
                 &scope,
                 dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
-                Some(&value),
+                u64::from(index),
             )
         }))
         .await

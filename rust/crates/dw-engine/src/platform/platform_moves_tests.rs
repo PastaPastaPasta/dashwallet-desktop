@@ -2055,6 +2055,52 @@ fn a_fallback_after_a_restart_is_above_every_address_handed_out() {
     assert_eq!(w.receive_address(), after, "stable after a second restart");
 }
 
+/// A reload that has derived the payment account only up to `last`, with
+/// no address marked: what the account holds before a sync restores it.
+fn reload_derived_to(w: &World, last: u32) {
+    w.call(move |_, _, wallet, _| async move {
+        use key_wallet::managed_account::address_pool::AddressState;
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
+        let pool = &mut (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap()
+            .addresses;
+        let dropped: Vec<u32> = pool.addresses.range(last + 1..).map(|(i, _)| *i).collect();
+        for i in dropped {
+            let gone = pool.addresses.remove(&i).unwrap();
+            pool.address_index.remove(&gone.address);
+            pool.script_pubkey_index.remove(&gone.script_pubkey);
+        }
+        for info in pool.addresses.values_mut() {
+            info.state = AddressState::Available;
+        }
+        pool.used_indices.clear();
+        pool.highest_used = None;
+        pool.highest_generated = Some(last);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// C-funding F13: a fallback and the addresses handed out below the
+/// highest are skipped even before a reload derives them again. Mutant:
+/// mark them without deriving them first.
+#[test]
+fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
+    let w = World::new();
+    assert_eq!(w.receive_address().index, 0);
+    let fallback = new_fallback(&w);
+    assert_eq!(index_of(&w, fallback.clone()), Some(1));
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 2);
+    reload_derived_to(&w, 0);
+    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
+    assert_eq!(w.receive_address(), shown, "never the fallback");
+    let next = new_fallback(&w);
+    assert_eq!(index_of(&w, next), Some(3));
+}
+
 /// Q3: a P2SH Platform address of this network is a recipient, as a
 /// P2PKH one is.
 #[test]
