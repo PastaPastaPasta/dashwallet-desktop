@@ -223,9 +223,9 @@ fn receive_addresses(account: AccountType, indexes: &[u32]) -> Vec<String> {
         .address_pools()[0]
         .clone();
     let top = *indexes.iter().max().unwrap();
-    let have = pool.highest_generated.unwrap_or(0);
+    let have = pool.highest_generated().unwrap_or(0);
     if top > have {
-        pool.generate_addresses(top - have, &wallet.key_source_for_account(account), true)
+        pool.generate_addresses(top - have, &wallet.key_source_for_account(account))
             .unwrap();
     }
     (indexes.iter())
