@@ -561,6 +561,9 @@ pub(crate) struct SessionHub {
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Tests: the balance rereads spawned and not yet done.
+    #[cfg(test)]
+    rereads_running: Arc<std::sync::atomic::AtomicUsize>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -848,6 +851,8 @@ impl SessionHub {
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            #[cfg(test)]
+            rereads_running: Arc::default(),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -950,6 +955,32 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Tests: counts a balance reread as running until the guard drops.
+    #[cfg(test)]
+    pub(crate) fn reread_started(&self) -> RereadRunning {
+        let n = Arc::clone(&self.rereads_running);
+        n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        RereadRunning(n)
+    }
+
+    /// Tests: waits up to 10 s for the balance rereads the events applied
+    /// so far spawned, so a read after them sees what they read.
+    #[cfg(test)]
+    pub(crate) fn settle_rereads(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while self
+            .rereads_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a balance reread never ended"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -1161,11 +1192,7 @@ impl SessionHub {
         excluded: Option<crate::withhold::Excluded>,
     ) {
         let changed = self.write_balances(id, balance, accounts, excluded);
-        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
-            && let Some(reread) = self.balance_reread.get()
-        {
-            reread(id);
-        }
+        self.reread_if_locked(id, balance, accounts);
         if changed {
             self.pump.mark_balances(id);
         }
@@ -1408,12 +1435,23 @@ impl SessionHub {
             return false;
         }
         let changed = self.write_balances(id, balance, accounts, None);
+        self.reread_if_locked(id, balance, accounts);
+        changed
+    }
+
+    /// Balances with locked coins were read while a funding held its
+    /// temporary locks: they are read again once it may have released them.
+    fn reread_if_locked(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) {
         if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
-            && let Some(reread) = reread
+            && let Some(reread) = self.balance_reread.get()
         {
             reread(id);
         }
-        changed
     }
 
     /// Applies the balances of `core`, read from the manager under its
@@ -2410,6 +2448,17 @@ impl PumpTarget for SessionPump {
             });
             self.hub.pump.mark_sync();
         }
+    }
+}
+
+/// Tests: a running balance reread ([`SessionHub::reread_started`]).
+#[cfg(test)]
+pub(crate) struct RereadRunning(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Drop for RereadRunning {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

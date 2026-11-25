@@ -180,7 +180,7 @@ where
     for event in &events {
         session.hub.on_wallet_event(event);
     }
-    engine.block_on(session.reread_balances(id));
+    session.hub.settle_rereads();
     session.live().unwrap().persister.flush(id.0).unwrap();
 }
 

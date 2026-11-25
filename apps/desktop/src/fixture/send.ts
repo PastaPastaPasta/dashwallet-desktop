@@ -106,7 +106,13 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  /** Abandoned payments a coin of which the engine's rescan is still checking before giving it
+   * back (`checkingSpentCoins`). */
+  checkingSpentCoins: string[];
 }
+
+/** The coins of `txid` the engine withholds (`coins.pendingUnproven`). */
+const withheldCoins = (coins: Utxo[], txid: string) => coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven");
 
 export const newSendWorld = (): SendWorld => ({
   drafts: {},
@@ -122,6 +128,7 @@ export const newSendWorld = (): SendWorld => ({
   settledChildHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  checkingSpentCoins: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -864,7 +871,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
-        withheldOutputs: wallet(world, walletId).coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven").map((u) => u.outpoint),
+        withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
+        checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
       return extras;
@@ -880,7 +888,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
       // A payment whose coin the engine withholds: its pending coin goes. The coins it spent come
       // back only once the engine's rescan finds them unspent, which the fixture doesn't run.
-      const withheld = w.coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven");
+      const withheld = withheldCoins(w.coins, txid);
       if (withheld.length > 0) {
         w.coins = w.coins.filter((u) => !withheld.includes(u));
         const b = w.summary.balances;

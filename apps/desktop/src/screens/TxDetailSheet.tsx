@@ -210,8 +210,25 @@ export function UnprovenAbandonHint({ x }: { x: Pick<TxDetailExtrasInfo, "withhe
   );
 }
 
-function PendingUnproven({ walletId, txid }: { walletId: string; txid: string }) {
-  return <PendingUnprovenLine x={useTxDetailExtras(walletId, txid).data} />;
+/** An abandoned payment's line while the engine's rescan checks a coin it spent before giving it
+ * back; it goes when the engine reports the check done. */
+export function CheckingSpentCoinsLine({ x }: { x: Pick<TxDetailExtrasInfo, "abandoned" | "checkingSpentCoins"> | undefined }) {
+  if (!x?.abandoned || !x.checkingSpentCoins) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-checking-spent-coins">
+      {t("activity.abandon.checkingSpentCoins")}
+    </p>
+  );
+}
+
+function CoinLines({ walletId, txid }: { walletId: string; txid: string }) {
+  const x = useTxDetailExtras(walletId, txid).data;
+  return (
+    <>
+      <PendingUnprovenLine x={x} />
+      <CheckingSpentCoinsLine x={x} />
+    </>
+  );
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
@@ -411,7 +428,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
               : droppedLine(d.status.dropped)}
           </p>
         )}
-        <PendingUnproven walletId={walletId} txid={d.txid} />
+        <CoinLines walletId={walletId} txid={d.txid} />
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">

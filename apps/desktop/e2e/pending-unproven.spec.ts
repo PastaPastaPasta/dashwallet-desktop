@@ -10,6 +10,8 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./h
 const TXID = "e7".repeat(32);
 const PENDING = en.coins.pendingUnproven;
 const HINT = en.activity.abandon.unprovenParentHint;
+const CHECKING_TXID = "e8".repeat(32);
+const CHECKING = en.activity.abandon.checkingSpentCoins;
 
 async function shot(page: Page, name: string, theme: Theme) {
   const dir = process.env.DW_PU_SHOTS;
@@ -23,8 +25,8 @@ test.describe("A withheld coin", () => {
     test(`Home shows it pending, Coin Selection says why, and the payment's details explain it (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl("pending-unproven", theme));
-      const hero = page.getByTestId("hero");
-      await expect(hero).toContainText("pending");
+      // The fixture's unconfirmed 0.20 plus the withheld 0.74999774.
+      await expect(page.getByTestId("breakdown-core")).toContainText("0.94999774 pending");
       await shot(page, "home", theme);
 
       await page.getByTestId("sidebar-pay").click();
@@ -53,6 +55,20 @@ test.describe("A withheld coin", () => {
       await expect(page.getByTestId("tx-abandon-unproven-hint")).toHaveCount(0);
       await page.getByTestId("tx-abandon-confirm").click();
       await expect(page.getByTestId("tx-detail-pending-unproven")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+  }
+
+  for (const theme of THEMES) {
+    test(`an abandoned payment's details say while a coin it spent is being checked (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("abandon-checking", theme));
+      await page.getByTestId("sidebar-activity").click();
+      await page.getByTestId("tx-list").waitFor();
+      await page.locator(`button.tx-row[data-txid="${CHECKING_TXID}"]`).click();
+      await expect(page.getByTestId("tx-detail-checking-spent-coins")).toHaveText(CHECKING);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await shot(page, "tx-detail-checking", theme);
       expect(errors).toEqual([]);
     });
   }

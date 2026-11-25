@@ -11,6 +11,9 @@ export const activity = {
      * (`coins.pendingUnproven`). */
     unprovenParentHint:
       "This payment may never confirm, for example if the coins it spends were already spent elsewhere. If it stays unconfirmed, you can abandon it so Dash Wallet stops showing its pending coin. Coins the payment spent come back once Dash Wallet has checked that they haven't been spent elsewhere. If it confirms anyway, the coin is counted again.",
+    /** In an abandoned payment's details while a rescan checks a coin it spent before giving it back. */
+    checkingSpentCoins:
+      "Dash Wallet is checking the coins this payment spent. Any that haven't been spent elsewhere come back to your balance when the check finishes.",
     settledChild:
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
     /** A saved transaction of {wallet} doesn't read; more than one wallet is open. */
