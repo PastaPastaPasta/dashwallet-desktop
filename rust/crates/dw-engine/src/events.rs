@@ -1118,19 +1118,14 @@ impl SessionHub {
     }
 
     /// The children of swept payments queued for wallet `id`'s drop: each
-    /// set with its winner and the swept payments.
-    pub(crate) fn take_dead_children(
-        &self,
-        id: WalletId,
-    ) -> Vec<(Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
+    /// set with its winner, the swept payments, and their inputs.
+    pub(crate) fn take_dead_children(&self, id: WalletId) -> Vec<DeadSet> {
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *queued)
             .into_iter()
             .partition(|(w, ..)| *w == id);
         *queued = others;
-        (mine.into_iter())
-            .map(|(_, children, winner, swept)| (children, winner, swept))
-            .collect()
+        (mine.into_iter()).map(|(_, set)| set).collect()
     }
 
     /// Keeps the drops' holds an open read, by wallet.
@@ -1825,11 +1820,17 @@ impl SessionHub {
                         txid: Some(*superseded_by),
                         mined: winner_block.as_ref().map(|b| b.height()),
                     };
+                    let took = (swept.iter())
+                        .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+                        .collect();
                     (self.dead_children.lock().unwrap_or_else(|p| p.into_inner())).push((
                         id,
-                        children.into_iter().collect(),
-                        winner,
-                        txids.iter().copied().collect(),
+                        (
+                            children.into_iter().collect(),
+                            winner,
+                            txids.iter().copied().collect(),
+                            took,
+                        ),
                     ));
                 }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
@@ -1984,9 +1985,18 @@ impl SessionHub {
     }
 }
 
-/// Children of swept payments queued for a drop: their wallet, their
-/// txids, the winner, and the swept payments.
-type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
+/// Children of swept payments queued for a drop, with their wallet.
+type DeadChildren = (WalletId, DeadSet);
+
+/// Children of swept payments to drop: their txids, the winner, the swept
+/// payments, and the coins those spent, read before the history forgot
+/// them.
+pub(crate) type DeadSet = (
+    Vec<Txid>,
+    crate::history::Winner,
+    BTreeSet<Txid>,
+    BTreeSet<dashcore::OutPoint>,
+);
 
 /// The transactions a wallet event names.
 fn carried_txids(event: &WalletEvent) -> Vec<Txid> {

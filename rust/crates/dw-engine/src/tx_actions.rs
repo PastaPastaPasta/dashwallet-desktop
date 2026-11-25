@@ -2050,7 +2050,9 @@ impl NetworkSession {
     ) {
         let _gate = self.hub.drop_gate.lock().await;
         let mut work: Vec<_> = (self.hub.take_dead_children(wallet).into_iter())
-            .map(|(roots, winner, swept)| (roots, winner, swept, false, BTreeSet::new()))
+            .map(|(roots, winner, swept, took)| {
+                (roots, winner, swept, false, (BTreeSet::new(), took))
+            })
             .collect();
         {
             let wm = manager.wallet_manager_arc();
@@ -2080,21 +2082,22 @@ impl NetworkSession {
                     }
                     work.extend(
                         (beaten.into_iter())
-                            .map(|(w, ts)| (ts, w, BTreeSet::new(), true, BTreeSet::new())),
+                            .map(|(w, ts)| (ts, w, BTreeSet::new(), true, Default::default())),
                     );
                     if let Some(stored) = stored {
                         let orphans = orphaned_unmined(&h.txs, stored.0, stored.1);
                         if !orphans.is_empty() {
                             let gone = gone_parents(&h.txs, stored.0, &orphans);
-                            work.push((orphans, Winner::default(), BTreeSet::new(), false, gone));
+                            let origin = (gone, BTreeSet::new());
+                            work.push((orphans, Winner::default(), BTreeSet::new(), false, origin));
                         }
                     }
                 });
             }
         }
-        for (roots, winner, links, recheck, gone) in work {
-            let dropped =
-                self.drop_dead_unmined(manager, wallet, &roots, (winner, &gone), &links, recheck);
+        for (roots, winner, links, recheck, (gone, took)) in work {
+            let origin = (winner, &gone, &took);
+            let dropped = self.drop_dead_unmined(manager, wallet, &roots, origin, &links, recheck);
             match dropped.await {
                 Ok(dropped) if !dropped.is_empty() => {
                     tracing::info!(%wallet, ?dropped, ?winner, "dropped transactions that can never confirm")
@@ -2303,7 +2306,7 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         roots: &[Txid],
-        (winner, gone): (Winner, &BTreeSet<Txid>),
+        (winner, gone, took): (Winner, &BTreeSet<Txid>, &BTreeSet<OutPoint>),
         links: &BTreeSet<Txid>,
         recheck: bool,
     ) -> Result<BTreeSet<Txid>, EngineError> {
@@ -2361,10 +2364,12 @@ impl NetworkSession {
                 }
             };
             // What the winner took: the roots' inputs, and the swept
-            // payments' the history holds.
+            // payments', which their sweep read before the history forgot
+            // them (`took`), or the history holds.
             let contested = (roots.iter().chain(links))
                 .filter_map(|t| h.txs.get(t))
                 .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+                .chain(took.iter().copied())
                 .collect();
             let origin = crate::history::DropOrigin {
                 winner: winner.txid,
