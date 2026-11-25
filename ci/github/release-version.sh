@@ -5,7 +5,7 @@
 #   ci/github/release-version.sh
 #
 # The app's version is the one in tauri.conf.json (the version source; Cargo.toml's workspace
-# version is the same, 0.3.0 everywhere). By trigger:
+# version is the same, 1.0.0 everywhere). By trigger:
 #   tag vX.Y.Z[-rc.N]  the tag without its `v`; X.Y.Z must equal tauri.conf.json: the binaries say what
 #                   the tag says;
 #   other tag       the tag without its `v` (a dry run such as v0.0.0-rel1);
