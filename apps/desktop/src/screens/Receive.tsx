@@ -10,7 +10,7 @@ import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, usePlatformAddresses, usePlatformReceiveAddress, useQrMatrix, useShieldedStatus, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
+import { keys, useBackend, usePlatformAddresses, usePlatformReceiveAddress, useQrMatrix, useShieldedSyncInfo, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
 import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
@@ -489,7 +489,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
   const [shown, setShown] = useState<ReceiveRequest | null>(null);
   const [pool, setPool] = useState<"dash" | "platform" | "shielded">("dash");
   const platform = usePlatformAddresses(walletId);
-  const shielded = useShieldedStatus(walletId);
+  const shielded = useShieldedSyncInfo(walletId);
   const selector = (
     <div className="segmented receive-selector" role="group" aria-label={t("receive.selector.label")}>
       {(["dash", "platform", "shielded"] as const).map((p) => (

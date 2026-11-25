@@ -1108,12 +1108,15 @@ export const HANDLERS: Handlers = {
   // session's quorum source (DP6-03).
   dashpay_sync_status: ({ walletId }, { world }) => {
     const d = dashpay(world, walletId);
+    if (d.syncStatusFails) throw fail("storage", "the fixture's sync read failed");
     return {
       startup: d.startup.startup,
       lastPass: d.lastPass ?? null,
       pendingContactCrypto: d.startup.contactAccountsPending,
       loops: fixtureLoops(world.sync.running),
       quorumSource: world.trust.source,
+      platformEnabled: true,
+      addresses: d.addresses ?? "done",
     };
   },
   quorum_source: (_, { world }) => world.trust.source,

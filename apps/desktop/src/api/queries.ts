@@ -8,6 +8,7 @@ import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
@@ -51,6 +52,7 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedSyncInfo: (walletId: string) => ["dashpay", "shielded", "syncInfo", walletId] as const,
   shieldedAll: ["dashpay", "shielded"] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
@@ -265,6 +267,27 @@ export function useShieldedStatus(walletId: string, pollWhileSyncing = false, en
     enabled,
     retry: false,
     refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+  });
+}
+
+/** While a pass runs, the account is not established and nothing but time holds it, or its last
+ * pass failed (the retry's start comes with no event); a failed read is tried again. */
+export function shieldedSyncInfoRefetchMs(info: ShieldedSyncInfo | null | undefined, failed: boolean): number | false {
+  if (failed) return SHIELDED_SCAN_POLL_MS;
+  if (!info?.active) return false;
+  return info.account === "binding" || info.syncing || info.lastPassFailed || (!info.established && info.account === "bound") ? SHIELDED_SCAN_POLL_MS : false;
+}
+
+/** Where the wallet's Shielded sync stands (`ShieldedSyncInfo`); `null` while dw-app has no such
+ * command. It answers while a pass holds the note store, which the full status waits for. */
+export function useShieldedSyncInfo(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedSyncInfo(walletId),
+    queryFn: () => b.shieldedSyncInfo(walletId),
+    enabled,
+    retry: false,
+    refetchInterval: (q) => shieldedSyncInfoRefetchMs(q.state.data, q.state.status === "error"),
   });
 }
 

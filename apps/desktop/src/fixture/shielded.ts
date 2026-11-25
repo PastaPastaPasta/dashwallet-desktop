@@ -7,6 +7,7 @@
 import type { AppError } from "../api/generated/AppError";
 import type { PendingShield } from "../api/generated/PendingShield";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
 import type { ShieldedAccount } from "../api/generated/ShieldedAccount";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
 import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
@@ -57,6 +58,8 @@ export interface ShieldedWorld {
   scan?: ShieldedScanProgress;
   /** The last pass failed. */
   lastPassFailed?: boolean;
+  /** `shielded_sync_info` fails (the status bar's read of it). */
+  syncInfoFails?: boolean;
   /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
   lastSyncAt?: number;
   /** The notes the balance is made of (credits): a spend is then priced per action, as the engine's
@@ -395,6 +398,13 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
 
 export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   shielded_status: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, "shielded_status", false)),
+  // The engine's reads with no read of the note store (shielded_pool.rs `sync_info`).
+  shielded_sync_info: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedSyncInfo => {
+    const s = shieldedOf(ctx, walletId, "shielded_sync_info", false);
+    if (s.syncInfoFails) raise("storage", "the fixture's sync read failed");
+    const st = status(s);
+    return { active: st.active, account: st.account, established: st.ready, syncing: st.syncing, scan: st.scan, lastPassFailed: st.lastPassFailed };
+  },
   shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
     const s = shieldedOf(ctx, walletId, "shielded_receive_address");
     // The viewing key's address: it reads once bound, before the first scan ends.

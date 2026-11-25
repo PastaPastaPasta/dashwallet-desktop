@@ -3390,6 +3390,140 @@ fn the_viewing_key_binds_once_and_from_storage_after_a_restart() {
     assert!(address.is_some(), "the address reads once bound");
 }
 
+/// Review: a pass holds the note store for the whole of a first scan. The
+/// status bar's sync read and a bound key's address answer under it; the
+/// full status waits for the store.
+#[test]
+fn the_sync_read_and_a_bound_address_answer_while_a_pass_holds_the_store() {
+    let f = super::topup_tests::fixture(true);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let (account, want) = bound_address(engine, session, wallet);
+    assert!(account.is_bound());
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        let wait = Duration::from_secs(10);
+        let info = (tokio::time::timeout(wait, dp.shielded_sync_info()).await)
+            .expect("the sync read waits for no store")
+            .unwrap();
+        assert!(info.active);
+        assert_eq!(info.account, Some(ShieldedAccount::Bound));
+        let address = (tokio::time::timeout(wait, dp.shielded_receive_address()).await)
+            .expect("a bound key's address waits for no store")
+            .unwrap();
+        assert_eq!(Some(address.address), want);
+        let status = tokio::time::timeout(Duration::from_millis(300), dp.shielded_status());
+        assert!(status.await.is_err(), "the full status reads the store");
+    });
+}
+
+/// An engine with a regtest session and no vault.
+fn vaultless(no_platform: bool) -> (tempfile::TempDir, crate::Engine, Arc<NetworkSession>) {
+    struct Quiet;
+    impl crate::EventSink for Quiet {
+        fn emit(&self, _: crate::EngineEvent) {}
+    }
+    let dir = dw_testutil::private_tempdir();
+    let engine = crate::Engine::new(
+        crate::EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(2),
+            vault: dw_vault::VaultConfig {
+                kdf: dw_vault::KdfPolicy::Fixed(dw_vault::KdfParams::TEST),
+                os_store: Arc::new(dw_vault::MemoryOsStore::new()),
+                ..dw_vault::VaultConfig::default()
+            },
+        },
+        Arc::new(Quiet),
+    )
+    .unwrap();
+    let options = crate::SessionOptions {
+        no_platform,
+        ..super::topup_tests::options()
+    };
+    let session = (engine.block_on(engine.open_network(DashNetwork::Regtest, options))).unwrap();
+    (dir, engine, session)
+}
+
+fn watch_only_xpub() -> String {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap()).to_string()
+}
+
+/// Review: a wallet without a seed is watch-only whatever the vault's
+/// state: unlocked for mixing only it is not asked for a full unlock (a
+/// seeded wallet still is), and with no vault at all its status reads.
+#[test]
+fn a_watch_only_wallet_is_watch_only_in_every_vault_state() {
+    let f = super::topup_tests::fixture(true);
+    let watch = (f.engine)
+        .block_on(
+            f.session
+                .import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()),
+        )
+        .unwrap();
+    f.session.vault.lock();
+    (f.engine)
+        .block_on(
+            f.session.vault_op(|v| {
+                v.unlock(super::topup_tests::PASS, dw_vault::UnlockScope::MixingOnly)
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        bound_address(&f.engine, &f.session, watch),
+        (ShieldedAccount::WatchOnly, None)
+    );
+    let info = (f.engine)
+        .block_on(f.session.dashpay(watch).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::WatchOnly));
+    assert_eq!(
+        bound_address(&f.engine, &f.session, f.wallet).0,
+        ShieldedAccount::MixingOnly
+    );
+    let info = (f.engine)
+        .block_on(f.session.dashpay(f.wallet).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::MixingOnly));
+
+    let (_dir, engine, session) = vaultless(false);
+    let watch = engine
+        .block_on(session.import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()))
+        .unwrap();
+    let status = engine
+        .block_on(session.dashpay(watch).shielded_status())
+        .unwrap();
+    assert_eq!(status.account, Some(ShieldedAccount::WatchOnly));
+    let info = engine
+        .block_on(session.dashpay(watch).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::WatchOnly));
+}
+
+/// Review: a session without Platform (`--no-platform`) runs no pass, so
+/// Shielded is not active there and nothing waits on it.
+#[test]
+fn shielded_is_not_active_in_a_session_without_platform() {
+    let (_dir, engine, session) = vaultless(true);
+    let watch = engine
+        .block_on(session.import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()))
+        .unwrap();
+    let dp = session.dashpay(watch);
+    let status = engine.block_on(dp.shielded_status()).unwrap();
+    assert!(!status.active);
+    let info = engine.block_on(dp.shielded_sync_info()).unwrap();
+    assert!(!info.active);
+    assert_eq!(info.account, None);
+    let sync = dp.sync_status().unwrap();
+    assert!(!sync.platform_enabled);
+}
+
 /// A spend stored under the hook is represented by its artifact, while a
 /// spend that predates the hook is re-recorded in the schema-9 journal.
 #[test]

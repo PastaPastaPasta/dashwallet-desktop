@@ -41,6 +41,9 @@ export const shell = {
     syncingShielded: "Syncing Shielded…",
     platformIncomplete: "Platform sync didn't finish",
     shieldedIncomplete: "Shielded sync didn't finish",
+    /** Platform's or Shielded's sync status could not be read. */
+    platformUnread: "Couldn't check Platform's sync",
+    shieldedUnread: "Couldn't check Shielded's sync",
     unlockFully: "Unlock fully",
     lock: {
       noVault: "No keys",
@@ -67,7 +70,9 @@ export const shell = {
       unlock: "Unlock to sync",
       watchOnly: "Not available in a watch-only wallet",
       platformIncomplete: "Didn't finish. It tries again the next time you start Dash Wallet.",
+      /** A failed Shielded or Platform-address pass: the next one retries it. */
       shieldedIncomplete: "The last pass failed. It tries again shortly.",
+      unread: "Couldn't check this sync. It tries again shortly.",
     },
     phase: {
       headers: "Block headers",

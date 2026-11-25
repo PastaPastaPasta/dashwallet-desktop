@@ -70,3 +70,19 @@ test("a failed Shielded pass is never Synced, and the bar clears once a pass suc
   await page.getByTestId("status-sync").click();
   await expect(page.getByTestId("sync-item-shielded")).toContainText("The last pass failed. It tries again shortly.");
 });
+
+test("a failed Platform-address pass of the wallet is never Synced", async ({ page }) => {
+  await page.goto(fixtureUrl("platform-addresses-failed", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("status-state")).toHaveText("Platform sync didn't finish");
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-item-platform")).toContainText("The last pass failed. It tries again shortly.");
+});
+
+test("a Shielded sync status that cannot be read is never Synced", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-sync-unread", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("status-state")).toHaveText("Couldn't check Shielded's sync");
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-item-shielded")).toContainText("Couldn't check this sync. It tries again shortly.");
+});

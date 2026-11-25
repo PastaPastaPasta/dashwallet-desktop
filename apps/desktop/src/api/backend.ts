@@ -33,6 +33,7 @@ import type { ShieldedAddress } from "./generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
@@ -276,6 +277,9 @@ export interface Backend {
   switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch>;
   /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
   shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
+  /** Where the wallet's Shielded sync stands, read with no read of the note store, so it answers
+   * while a pass runs (`shielded_sync_info`): the status bar, Sync progress and Receive. */
+  shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo | null>;
   /** The account's receive address, for Receive and its QR. */
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */

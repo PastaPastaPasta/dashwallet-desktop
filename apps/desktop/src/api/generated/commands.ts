@@ -199,6 +199,7 @@ import type { ShieldedAddress } from "./ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
+import type { ShieldedSyncInfo } from "./ShieldedSyncInfo";
 import type { SpvStateName } from "./SpvStateName";
 import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
@@ -2190,6 +2191,14 @@ export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
 }
 
 /**
+ * Where the wallet's Shielded sync stands, for the status bar, Sync
+ * progress and Receive; answers while a pass runs.
+ */
+export function shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo> {
+  return invoke<ShieldedSyncInfo>("shielded_sync_info", { walletId });
+}
+
+/**
  * Runs a shielded sync pass now; returns the status after.
  */
 export function shieldedSync(walletId: string): Promise<ShieldedStatus> {
@@ -3630,6 +3639,7 @@ export type CommandArgs = {
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
   shielded_status: { walletId: string };
+  shielded_sync_info: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; amount: FundAmount };
@@ -4011,6 +4021,7 @@ export type CommandResults = {
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
   shielded_status: ShieldedStatus;
+  shielded_sync_info: ShieldedSyncInfo;
   shielded_sync: ShieldedStatus;
   shielded_receive_address: ShieldedAddress;
   shield_quote: ShieldQuote;
@@ -4394,6 +4405,7 @@ export const COMMANDS: Record<CommandName, string> = {
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
   shielded_status: "identity",
+  shielded_sync_info: "identity",
   shielded_sync: "identity",
   shielded_receive_address: "identity",
   shield_quote: "identity",

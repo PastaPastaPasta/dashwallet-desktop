@@ -1099,6 +1099,18 @@ const SCENARIOS = {
     w.pending.shielded!.account = "watchOnly";
     return w;
   },
+  /** The wallet's last Platform-address pass failed: the bar says Platform did not finish. */
+  "platform-addresses-failed": (t) => {
+    const w = base(t);
+    w.dashpay.addresses = "failed";
+    return w;
+  },
+  /** Shielded's sync status cannot be read: the bar says so, never Synced. */
+  "shielded-sync-unread": (t) => {
+    const w = base(t);
+    w.pending.shielded!.syncInfoFails = true;
+    return w;
+  },
   /** Shielded is established and its last pass failed: the bar says it did not finish. */
   "shielded-pass-failed": (t) => {
     const w = base(t);

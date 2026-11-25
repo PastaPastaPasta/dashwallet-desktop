@@ -506,6 +506,11 @@ pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + S
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
 pub(crate) type Funded = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
 
+/// A hub set's guard; a poisoned one still holds its last state.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -578,6 +583,12 @@ pub(crate) struct SessionHub {
     shielded_synced: Mutex<HashSet<WalletId>>,
     /// The wallets whose last shielded pass failed, until one succeeds.
     shielded_failed: Mutex<HashSet<WalletId>>,
+    /// The wallets a status read found ready (a ledger restored from the
+    /// store), before any pass of this session scanned them.
+    shielded_ready: Mutex<HashSet<WalletId>>,
+    /// Each wallet's last Platform-address pass of this session: `true` it
+    /// succeeded. Absent until a pass ran for it.
+    platform_addresses: Mutex<HashMap<WalletId, bool>>,
     /// The children of payments key-wallet's conflict sweep took, which it
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
@@ -776,6 +787,24 @@ impl SessionHub {
             })
     }
 
+    /// `wallet`'s Shielded ledger is established this session: a pass
+    /// scanned it, or a status read found it ready.
+    pub(crate) fn shielded_established(&self, wallet: WalletId) -> bool {
+        lock(&self.shielded_synced).contains(&wallet)
+            || lock(&self.shielded_ready).contains(&wallet)
+    }
+
+    /// A status read found `wallet`'s ledger ready.
+    pub(crate) fn note_shielded_ready(&self, wallet: WalletId) {
+        lock(&self.shielded_ready).insert(wallet);
+    }
+
+    /// `wallet`'s last Platform-address pass of this session: `None` before
+    /// one ran for it, else whether it succeeded.
+    pub(crate) fn platform_addresses_synced(&self, wallet: WalletId) -> Option<bool> {
+        lock(&self.platform_addresses).get(&wallet).copied()
+    }
+
     /// `wallet`'s last shielded pass of this session failed.
     pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
         (self
@@ -876,6 +905,8 @@ impl SessionHub {
             shielded_scan: Mutex::new(None),
             shielded_synced: Mutex::new(HashSet::new()),
             shielded_failed: Mutex::new(HashSet::new()),
+            shielded_ready: Mutex::new(HashSet::new()),
+            platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
             dropped_holds: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
@@ -1339,6 +1370,8 @@ impl SessionHub {
     /// pass establishes its account again, and an earlier failure is not
     /// this load's.
     fn forget_shielded_passes(&self, id: &WalletId) {
+        lock(&self.shielded_ready).remove(id);
+        lock(&self.platform_addresses).remove(id);
         (self
             .shielded_synced
             .lock()
@@ -2146,16 +2179,24 @@ impl EventHandler for SessionHub {
 
 impl PlatformEventHandler for SessionHub {
     /// A Platform-address pass (release 0.1, m4 §2.12): every wallet it
-    /// synced re-reads its balance and activity. A skipped pass (another in
-    /// flight) names no wallet.
+    /// synced re-reads its balance and activity, and a wallet's first
+    /// outcome, or a changed one, re-reads its sync status. A skipped pass
+    /// (another in flight) names no wallet.
     fn on_platform_address_sync_completed(
         &self,
         summary: &platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary,
     ) {
+        let mut last = lock(&self.platform_addresses);
         for (id, outcome) in &summary.wallet_results {
-            if outcome.is_ok() {
+            let wallet = WalletId(*id);
+            let ok = outcome.is_ok();
+            let changed = last.insert(wallet, ok) != Some(ok);
+            if ok {
                 self.pump
-                    .mark_platform(WalletId(*id), [PlatformChange::PlatformAddresses]);
+                    .mark_platform(wallet, [PlatformChange::PlatformAddresses]);
+            }
+            if changed {
+                self.pump.mark_platform(wallet, [PlatformChange::Startup]);
             }
         }
     }
@@ -2199,10 +2240,24 @@ impl PlatformEventHandler for SessionHub {
         }
     }
 
-    /// The running pass's tree progress, for `ShieldedStatus::scan`.
+    /// The running pass's tree progress, for `ShieldedStatus::scan`. The
+    /// pass's first batch tells the established wallets' hosts a pass runs
+    /// (the others read their status until established).
     fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
-        *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((leaves_committed, total_target));
+        let started = (self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()))
+            .replace((leaves_committed, total_target))
+            .is_none();
+        if started {
+            let established: Vec<WalletId> = (lock(&self.shielded_synced).iter())
+                .chain(lock(&self.shielded_ready).iter())
+                .copied()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            for wallet in established {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+            }
+        }
     }
 }
 
@@ -2474,6 +2529,83 @@ mod tests {
             .filter(|(_, c)| c.contains(&PlatformChange::Shielded))
             .map(|(w, _)| w)
             .collect()
+    }
+
+    fn startup_marks(hub: &SessionHub) -> Vec<WalletId> {
+        let marks = hub.pump.platform_marks.lock().unwrap().replace(Vec::new());
+        (marks.unwrap_or_default().into_iter())
+            .filter(|(_, c)| c.contains(&PlatformChange::Startup))
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    /// A wallet's Platform addresses are synced once its own pass succeeded
+    /// this session, not after any pass of the network: pending until a
+    /// pass ran for it, failed until one succeeds, and its hosts re-read its
+    /// sync status at each change.
+    #[test]
+    fn a_wallet_platform_addresses_are_synced_by_its_own_pass() {
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let pass = |outcomes: Vec<(WalletId, bool)>| PlatformAddressSyncSummary {
+            wallet_results: (outcomes.into_iter())
+                .map(|(w, ok)| {
+                    let outcome = match ok {
+                        true => WalletSyncOutcome::Ok(Default::default()),
+                        false => WalletSyncOutcome::Err("unreachable".into()),
+                    };
+                    (w.0, outcome)
+                })
+                .collect(),
+            sync_unix_seconds: 1_700_000_000,
+        };
+        let other = WalletId([8; 32]);
+        assert_eq!(hub.platform_addresses_synced(W), None);
+        hub.on_platform_address_sync_completed(&pass(vec![(other, true)]));
+        assert_eq!(hub.platform_addresses_synced(W), None);
+        assert_eq!(startup_marks(&hub), [other]);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
+        assert_eq!(hub.platform_addresses_synced(W), Some(false));
+        assert_eq!(startup_marks(&hub), [W]);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
+        assert_eq!(startup_marks(&hub), []);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, true)]));
+        assert_eq!(hub.platform_addresses_synced(W), Some(true));
+        assert_eq!(startup_marks(&hub), [W]);
+        // A skipped pass (another in flight) names no wallet.
+        hub.on_platform_address_sync_completed(&PlatformAddressSyncSummary::default());
+        assert_eq!(hub.platform_addresses_synced(W), Some(true));
+        // A wallet loaded again waits for its own pass again.
+        hub.forget_shielded_passes(&W);
+        assert_eq!(hub.platform_addresses_synced(W), None);
+    }
+
+    /// A pass's first batch tells the established wallets' hosts a pass
+    /// runs, once per pass; a wallet not established reads its status until
+    /// it is.
+    #[test]
+    fn a_running_pass_tells_the_established_wallets_hosts() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let (ready, fresh) = (WalletId([8; 32]), WalletId([9; 32]));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        hub.note_shielded_ready(ready);
+        assert!(hub.shielded_established(W) && hub.shielded_established(ready));
+        assert!(!hub.shielded_established(fresh));
+        shielded_marks(&hub);
+        hub.on_shielded_tree_progress(10, 100);
+        let mut marked = shielded_marks(&hub);
+        marked.sort();
+        assert_eq!(marked, [W, ready]);
+        hub.on_shielded_tree_progress(50, 100);
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        shielded_marks(&hub);
+        hub.on_shielded_tree_progress(10, 100);
+        assert_eq!(shielded_marks(&hub).len(), 2);
     }
 
     /// The wallet's first shielded pass of the session establishes its

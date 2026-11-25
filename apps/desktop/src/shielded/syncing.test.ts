@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
-import { shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText, syncingRefusal } from "./syncing";
+import { scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText, syncingRefusal } from "./syncing";
 import { shieldedErrorText } from "./flow";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>
@@ -63,12 +63,11 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(shieldedReceiveGate(status({ ready: false, account: "watchOnly" }))).toBe("watchOnly");
   });
 
-  it("gives the first scan's share of the pool, never 100%, and none once established", () => {
-    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 25, total: 100 } }))).toBe(25);
-    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 100, total: 100 } }))).toBe(99.9);
-    expect(shieldedScanPercent(status({ ready: false, scan: null }))).toBeNull();
-    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 0, total: 0 } }))).toBeNull();
-    expect(shieldedScanPercent(status({ ready: true, scan: { checked: 25, total: 100 } }))).toBeNull();
+  it("gives a pass's share of the pool, never 100%", () => {
+    expect(scanShare({ checked: 25, total: 100 })).toBe(25);
+    expect(scanShare({ checked: 100, total: 100 })).toBe(99.9);
+    expect(scanShare(null)).toBeNull();
+    expect(scanShare({ checked: 0, total: 0 })).toBeNull();
   });
 
   // MG: Send, Add and Transfer name the cause when the vault's lock or a watch-only wallet holds the

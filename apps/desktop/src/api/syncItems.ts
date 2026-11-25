@@ -1,11 +1,12 @@
 // The syncs the status bar and Sync progress list (format/syncItems.ts), read for the open wallet.
-// Platform and Shielded are read again every few seconds while one is still syncing, as their
-// progress comes with no event; never while the window is hidden (TanStack's default).
+// Platform and Shielded are read again every few seconds while one is still syncing or its read
+// failed, as their progress comes with no event; never while the window is hidden (TanStack's
+// default). Shielded's is the read that answers while a pass holds the note store.
 
 import { useQuery } from "@tanstack/react-query";
 import { dashpayKeys } from "../dashpay/queries";
 import { coreItem, platformItem, shieldedItem, type SyncItem } from "../format/syncItems";
-import { SHIELDED_SCAN_POLL_MS, useBackend, useShieldedStatus, useSyncStatus } from "./queries";
+import { SHIELDED_SCAN_POLL_MS, useBackend, useShieldedStatus, useShieldedSyncInfo, useSyncStatus } from "./queries";
 
 /** The open wallet's syncs, the network's first; `null` items are not on this network or wallet. */
 export function useSyncItems(walletId: string | null): (SyncItem | null)[] {
@@ -16,9 +17,11 @@ export function useSyncItems(walletId: string | null): (SyncItem | null)[] {
     queryFn: () => b.dashpaySyncStatus(walletId!),
     enabled: walletId !== null,
     retry: false,
-    refetchInterval: (q) => (platformItem(q.state.data)?.state === "syncing" ? SHIELDED_SCAN_POLL_MS : false),
+    refetchInterval: (q) => (q.state.status === "error" || platformItem(q.state.data)?.state === "syncing" ? SHIELDED_SCAN_POLL_MS : false),
   });
-  const shielded = useShieldedStatus(walletId ?? "", true, walletId !== null);
+  const shielded = useShieldedSyncInfo(walletId ?? "", walletId !== null);
+  // The full status read binds a key the sync read finds bindable.
+  useShieldedStatus(walletId ?? "", true, walletId !== null && shielded.data?.account === "binding");
   if (walletId === null) return [coreItem(sync)];
-  return [coreItem(sync), platformItem(platform.data), shieldedItem(shielded.data)];
+  return [coreItem(sync), platformItem(platform.data, platform.isError), shieldedItem(shielded.data, shielded.isError)];
 }

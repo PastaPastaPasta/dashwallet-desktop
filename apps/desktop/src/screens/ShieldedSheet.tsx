@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { ui, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -19,7 +19,7 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SYNC_COPY, shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText } from "../shielded/syncing";
 import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
 import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
@@ -416,14 +416,17 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
-  const statusRead = useShieldedStatus(walletId, enabled);
-  const status = statusRead.data ?? null;
+  // The sync read answers while a pass holds the note store; the full status read binds a key it
+  // finds bindable.
+  const infoRead = useShieldedSyncInfo(walletId, enabled);
+  const status = infoRead.data ?? null;
   const gate = shieldedReceiveGate(status);
-  // Not before the status is read: an address read that a pass held back would stay unanswered.
-  const settled = statusRead.data !== undefined || statusRead.isError;
+  useShieldedStatus(walletId, true, enabled && status?.account === "binding");
+  const settled = infoRead.data !== undefined || infoRead.isError;
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
-  const percent = shieldedScanPercent(status);
-  const scanning = shieldedSyncing(status) && (gate === "address" || gate === "binding");
+  const firstScan = !!status?.active && !status.established;
+  const percent = firstScan ? scanShare(status?.scan) : null;
+  const scanning = firstScan && (gate === "address" || gate === "binding");
   const progress = scanning ? (
     <p className="field-hint" role="status" data-testid="shielded-receive-progress">
       {SHIELDED_SYNC_COPY.progress(percent === null ? null : percentText(percent))}

@@ -115,6 +115,36 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
       await expect(page.getByTestId("sync-item-shielded")).toContainText("Done");
     },
   },
+  "status-platform-incomplete": { scenario: "platform-addresses-failed", go: (page) => expect(page.getByTestId("status-state")).toHaveText("Platform sync didn't finish") },
+  "sync-items-failed": {
+    scenario: "shielded-pass-failed",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("The last pass failed");
+    },
+  },
+  "sync-items-unread": {
+    scenario: "shielded-sync-unread",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("Couldn't check this sync");
+    },
+  },
+  "sync-items-watch-only": {
+    scenario: "shielded-watch-only",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("Not available in a watch-only wallet");
+    },
+  },
+  "receive-shielded-watch-only": {
+    scenario: "shielded-watch-only",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-watch-only").waitFor();
+    },
+  },
   "receive-shielded-syncing": {
     scenario: "shielded-syncing",
     go: async (page) => {
