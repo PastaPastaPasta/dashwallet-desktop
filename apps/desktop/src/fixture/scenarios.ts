@@ -1684,6 +1684,24 @@ const SCENARIOS = {
     w.dashpay.runs = [];
     return w;
   },
+  /** Paid from the Shielded balance, its outcome unknown, and the app reopened since: nothing
+   * checks it, so Continue checks it again (F12). */
+  "dashpay-registering-shielded-recheck": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentUnknown",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromShielded: true,
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
   // DP1-09: a registration's screens (R2, R5, R8). Its run ended with the last launch.
   /** Funded, after a relaunch: no proof yet, so it reads `chainLock` with no key held, and waits for Continue (R2, D21). */
   "dashpay-registration-paused": (t) => {

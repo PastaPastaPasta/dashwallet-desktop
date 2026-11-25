@@ -579,6 +579,7 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
   held: { scenario: "dashpay-registering-held", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=held]").waitFor() },
+  "shielded-recheck": { scenario: "dashpay-registering-shielded-recheck", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
   refunded: { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "paidFailure") },

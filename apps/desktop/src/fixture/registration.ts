@@ -167,6 +167,8 @@ function runLease(world: World, walletId: string): Lease | undefined {
  * change) revokes its lease and parks it. A scenario's run without any lease counts as running. */
 function active(world: World, walletId: string, dp: DashPayWorld, draft: string): boolean {
   if (!dp.runs.includes(draft)) return false;
+  // F12: a named Shielded payment's check runs on its evidence alone, with no lease.
+  if (dp.registrations.some((r) => r.draft === draft && r.fromShielded && r.waiting === "paymentUnknown")) return true;
   return runLease(world, walletId) !== undefined || !world.leases.some((l) => l.walletId === walletId && l.flow === "registration");
 }
 
@@ -183,7 +185,7 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   // keeps that step's wait; any other failed row waits for nothing (f1, Sol r1 P2).
   if (r.phase === "failed") return { ...r, waiting: awaitingWait(r.waiting), holdsKey: false, running: false };
   // A Platform-funded row's payment reads its create's record (C-funding F7, F22).
-  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown" || (r.fromPlatform && (r.waiting === "paymentHeld" || r.waiting === "paymentUnknown"));
+  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown" || (r.fromPlatform && (r.waiting === "paymentHeld" || r.waiting === "paymentUnknown")) || (r.fromShielded && r.waiting === "paymentUnknown");
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
   const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
@@ -731,7 +733,16 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       // F5: a Platform-funded row is off on mainnet before anything else, its grant unredeemed.
       if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
       if (row.phase === "failed" && !row.failure?.retryable) throw invalid(`registration ${draft} failed for good (${row.failure?.code})`);
-      if (row.phase === "done" || active(world, walletId, dp, draft) || grant === null) return null;
+      if (row.phase === "done" || active(world, walletId, dp, draft)) return null;
+      // F12: a named Shielded payment's check runs again from its evidence alone, with no grant.
+      if (grant === null && row.fromShielded && row.waiting === "paymentUnknown" && !row.failure) {
+        Object.assign(row, { running: true, updatedAt: secs(FIXTURE_NOW) });
+        dp.runs = [...dp.runs.filter((x) => x !== draft), draft];
+        settleStatus(dp);
+        changed(ctx, walletId, draft);
+        return null;
+      }
+      if (grant === null) return null;
       // F5: a Platform-funded row's grant carries no duffs.
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (!g) throw fail("platform.grant_invalid", "grant invalid");
@@ -881,7 +892,8 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       // change returns to the balance. Unknown waits; executed without the identity is refunded.
       const outcome = dp.shieldedCreates?.shift() ?? "registered";
       const s = world.pending.shielded;
-      if (s) {
+      // A named create's check spends nothing again.
+      if (s && row.waiting !== "paymentUnknown") {
         s.balance = String(BigInt(s.balance) - SHIELDED_DENOMINATION);
         if (s.notes) s.notes = [s.balance];
         ctx.emit({ kind: "platform", network, walletId, change: { domain: "shielded" } });
