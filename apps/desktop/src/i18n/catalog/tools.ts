@@ -258,6 +258,7 @@ export const tools = {
     resolvedTopUp: "All coins were sent to yourself (transaction {txid}). You can top up again once it is confirmed.",
     stuckShieldsTitle: "Stuck moves into Shielded",
     stuckShieldsHint: "Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    stuckShieldsHintSpendsOff: "Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
     sendCoinsBack: "Send the coins back…",
     sendBackAndPay: "Send back and pay {fee}",
     shieldMixed: "A move of mixed coins into Shielded may have been sent",

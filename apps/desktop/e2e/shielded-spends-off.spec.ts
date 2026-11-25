@@ -114,6 +114,8 @@ test.describe("Shielded spends off", () => {
       const priced = page.getByTestId("repair-stuck-shield/0/funding");
       await expect(priced).toContainText(/Repair sends the move's 3 mixed coins \(0\.300003 t?DASH\) back to your wallet's main balance, at a network fee of 0\.00000488 t?DASH\./);
       await expect(priced).not.toContainText("into Shielded again");
+      await expect(page.getByText("Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.", { exact: true })).toBeVisible();
+      await expect(page.getByText("no new move into Shielded can start", { exact: false })).toHaveCount(0);
       await blocked.scrollIntoViewIfNeeded();
       await shot(page, `${theme}-repair-blocked-off`);
       expect(await seriousAxeViolations(page)).toEqual([]);

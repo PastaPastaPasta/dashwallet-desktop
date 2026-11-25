@@ -376,6 +376,12 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     const retry = { reason: "spendUnsettled", retryLater: true } as const;
     expect(shieldBlockedText(retry, true)).toBe(shieldBlockedText(retry));
     expect(RepairText.resolvedShield("ab".repeat(32), true)).toBe(`The coins were sent back to your wallet (transaction ${"ab".repeat(32)}).`);
+    expect(RepairText.stuckShieldsHint(true)).toBe(
+      "Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
+    expect(RepairText.stuckShieldsHint()).toBe(
+      "Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.",
+    );
     expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH", true)).toBe(
       "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH.",
     );

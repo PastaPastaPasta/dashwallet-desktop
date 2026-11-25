@@ -95,6 +95,7 @@ export const RepairText = {
     t(mixed ? "tools.repair.resolveStuckShieldMixed" : "tools.repair.resolveStuckShieldMain", { count: coins, total, fee }),
   /** `spendsOff`: this build cannot send from Shielded, so it names no move into Shielded. */
   resolvedShield: (txid: string, spendsOff = false) => t(spendsOff ? "tools.repair.resolvedShieldSpendsOff" : "tools.repair.resolvedShield", { txid }),
+  stuckShieldsHint: (spendsOff = false) => t(spendsOff ? "tools.repair.stuckShieldsHintSpendsOff" : "tools.repair.stuckShieldsHint"),
   get stuckShieldsUnreadable() {
     return t("tools.repair.stuckShieldsUnreadable");
   },

@@ -172,7 +172,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
       )}
       {model.stuckShields.length > 0 && (
         <ToolCard title={t("tools.repair.stuckShieldsTitle")} testId="repair-stuck-shields">
-          <p className="placeholder-note">{t("tools.repair.stuckShieldsHint")}</p>
+          <p className="placeholder-note">{RepairText.stuckShieldsHint(spendsOff)}</p>
           <ul className="tool-list">
             {model.stuckShields.map((f) => (
               <li key={f.step} data-testid={`repair-stuck-${f.step}`}>
