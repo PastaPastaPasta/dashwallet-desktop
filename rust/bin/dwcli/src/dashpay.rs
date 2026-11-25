@@ -980,7 +980,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::BelowMinimum { min, .. } => json!({"min": min}),
         CreditsError::CoinsLocked
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
@@ -1021,7 +1021,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::BelowMinimum { min, .. } => json!({"min": min}),
         ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
@@ -3975,7 +3975,10 @@ mod tests {
         }));
         assert_eq!(e["code"], "platform.will_be_sent");
         assert_eq!(e["params"], json!({"artifact": "topup/1/funding"}));
-        let e = error_json(CreditsError::BelowMinimum { min: 100 });
+        let e = error_json(CreditsError::BelowMinimum {
+            min: 100,
+            max: None,
+        });
         assert_eq!(
             (e["code"].clone(), e["params"].clone()),
             (json!("credits.below_minimum"), json!({"min": 100}))

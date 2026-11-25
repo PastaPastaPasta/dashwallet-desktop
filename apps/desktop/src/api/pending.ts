@@ -4,6 +4,7 @@
 // dw-app's (`generated/commands.ts`): lane E2's network choice and Platform addresses (contract
 // m4-dashpay-engine §2.12, §8) and lane E1's shielded funds (§2.13), integrated at m4 v47.
 
+import type { ErrorData } from "./generated/ErrorData";
 import type { FundAmount } from "./generated/FundAmount";
 import type { ShieldedCode } from "./generated/ShieldedCode";
 import { t } from "../i18n";
@@ -18,14 +19,15 @@ export const fundAmount = (r: { duffs: number; all?: boolean }): FundAmount => (
 
 /** The refusals only a Core Max meets (`shielded.*` or `credits.*`): mixing, another move of the coins,
  * coins changed since the quote. With `max` (the request was a Core Max) also its own words for a
- * locked coin and for more than 50 coins. `null`: another refusal. */
-export function coreMaxRefusal(e: unknown, max: boolean): string | null {
+ * locked coin, for more than 50 coins and for a lock below the smallest amount (`duffs` formats its
+ * figures). `null`: another refusal. */
+export function coreMaxRefusal(e: unknown, max: boolean, duffs: (d: number) => string): string | null {
   if (typeof e !== "object" || e === null || !("code" in e) || typeof e.code !== "string") return null;
   // A Max's grant is exactly its quote's total: coins that grew since then exceed it.
   if (max && e.code === "platform.grant_exceeded") return t("transfer.maxChanged");
   const [domain, code] = e.code.split(".");
   if (domain !== "shielded" && domain !== "credits") return null;
-  const data = "data" in e ? (e.data as { kind?: string; value?: unknown } | null) : null;
+  const data = "data" in e ? (e.data as ErrorData | null) : null;
   switch (code) {
     case "mixing_active":
       return t("transfer.maxMixing");
@@ -37,6 +39,9 @@ export function coreMaxRefusal(e: unknown, max: boolean): string | null {
       return max ? t("transfer.maxLocked") : null;
     case "too_many_inputs":
       return max && data?.kind === "number" ? t("transfer.maxTooMany", { count: String(data.value) }) : null;
+    case "below_minimum":
+      if (!max || data?.kind !== "maxMinimum") return null;
+      return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
     default:
       return null;
   }

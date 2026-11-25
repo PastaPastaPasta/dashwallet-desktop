@@ -119,6 +119,16 @@ describe("the Add from Dash wallet flow", () => {
     expect(text(appError("platform.grant_exceeded"))).not.toContain("Your Dash wallet changed");
   });
 
+  it("a Core Max below the smallest amount says what Max can move, and what it leaves out only when something is", () => {
+    const max = { request: { kind: "add" as const, duffs: 1, all: true } };
+    const below = (leftDuffs: number) => appError("credits.below_minimum", { kind: "maxMinimum", min: 56_001, duffs: 3_852, leftDuffs });
+    expect(fundErrorText(below(3_000), credits, duffs, max)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00056001 tDASH. Max doesn't include mixed coins, payments from contacts or coins in other accounts.");
+    expect(fundErrorText(below(0), credits, duffs, max)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00056001 tDASH.");
+    const typed = appError("credits.below_minimum", { kind: "limit", duffs: 56_001 });
+    expect(text(typed)).toBe("Too small to add: the smallest amount is 0.00056001 tDASH.");
+    expect(fundErrorText(typed, credits, duffs, max)).toBe(text(typed));
+  });
+
   it("finishes a lock that was not applied with one duff of grant and no confirm step", async () => {
     const { flow, vault, calls } = setup();
     await flow.resume("lock1");

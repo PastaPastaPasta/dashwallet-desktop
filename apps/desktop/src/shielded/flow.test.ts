@@ -111,6 +111,17 @@ describe("the shielded flow", () => {
     expect(shieldedCanChange(appError("shielded.coins_changed"))).toBe(true);
   });
 
+  it("a Core Max below the smallest amount says what Max can move, and what it leaves out only when something is", () => {
+    const text = (e: unknown, max: boolean) => shieldedErrorText(e, credits, duffs, "add", false, max);
+    const below = (leftDuffs: number) => appError("shielded.below_minimum", { kind: "maxMinimum", min: 10_001, duffs: 3_852, leftDuffs });
+    expect(text(below(10_000_100), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH. Max doesn't include mixed coins, payments from contacts or coins in other accounts.");
+    expect(text(below(0), true)).toBe("Max can move only 0.00003852 tDASH, which is less than the smallest amount, 0.00010001 tDASH.");
+    const typed = appError("shielded.below_minimum", { kind: "number", value: 10_001 });
+    expect(text(typed, false)).toBe("Too small to add: the smallest amount is 0.00010001 tDASH.");
+    expect(text(typed, true)).toBe(text(typed, false));
+    expect(shieldedCanChange(below(0))).toBe(true);
+  });
+
   it("sends with its memo and moves out to the wallet's own address (null)", async () => {
     const { flow, calls, answer } = setup();
     flow.begin("send");

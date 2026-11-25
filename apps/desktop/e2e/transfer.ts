@@ -107,6 +107,17 @@ async function maxConfirm(page: Page, route: "coreToShielded" | "coreToPlatform"
 const LEFT = /^.+ stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts\.$/;
 const ARRIVING = /^.+ still arriving stays in your Dash wallet\. Move it once it confirms\.$/;
 
+/** Max from the Dash wallet below the route's smallest amount (`min`): it names what Max can move (the
+ * one coin of 0.00005000 less the lock's fee bound of 0.00001148), and only when a coin stays in the
+ * wallet's other accounts (`left`), what Max leaves out. No line of what stays shows beside it. */
+async function maxBelowMinimum(page: Page, route: "coreToShielded" | "coreToPlatform", min: string, left: boolean) {
+  await openTransfer(page, route);
+  const below = `Max can move only 0.00003852 tDASH, which is less than the smallest amount, ${min} tDASH.`;
+  await maxRefused(page, left ? `${below} Max doesn't include mixed coins, payments from contacts or coins in other accounts.` : below);
+  await expect(page.getByTestId("transfer-sheet").getByText(/stays in your Dash wallet|Enter an amount instead/)).toHaveCount(0);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
+}
+
 /** Max refused: the refusal shown, the field left as it was. */
 async function maxRefused(page: Page, text: RegExp | string) {
   await page.getByTestId("transfer-max").click();
@@ -183,6 +194,8 @@ export const TRANSFER_STATES: TransferState[] = [
       expect(await callsOf(page, "shield_quote")).toBe(1);
     },
   },
+  { id: "coreToShielded-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", false) },
+  { id: "coreToShielded-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", true) },
   {
     id: "coreToShielded-confirm",
     scenario: "funded",
@@ -273,6 +286,8 @@ export const TRANSFER_STATES: TransferState[] = [
       expect(await callsOf(page, "platform_fund_quote")).toBe(1);
     },
   },
+  { id: "coreToPlatform-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", false) },
+  { id: "coreToPlatform-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", true) },
   {
     id: "coreToPlatform-confirm",
     scenario: "funded",

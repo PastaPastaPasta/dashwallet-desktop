@@ -235,7 +235,7 @@ export function endedBeforeApply(error: string, amount: string | null): string |
 export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, ctx: FundContext = { request: null }): string {
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
-  const maxText = coreMaxRefusal(e, ctx.request?.kind === "add" && !!ctx.request.all);
+  const maxText = coreMaxRefusal(e, ctx.request?.kind === "add" && !!ctx.request.all, duffs);
   if (maxText) return maxText;
   if (APPROVAL_ENDED.includes(e.code)) {
     const retry = finishAfter(e, ctx);

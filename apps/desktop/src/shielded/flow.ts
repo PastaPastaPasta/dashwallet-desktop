@@ -317,7 +317,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
   if (!err) return failureText(e);
   const d = err.data;
   if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
-  const maxText = coreMaxRefusal(err, max);
+  const maxText = coreMaxRefusal(err, max, duffs);
   if (maxText) return maxText;
   switch (err.code) {
     case SHIELDED_CODES.notActive:

@@ -533,9 +533,7 @@ function fundQuoteOf(ctx: Ctx, walletId: string, amount: FundAmount, call: strin
   const p = platformOf(ctx.world, call);
   const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
   if (blocking) throw fail("credits.fund_pending", "an earlier add is pending", { kind: "txid", txid: blocking.txid });
-  const plan = coreMaxPlan(ctx.world, walletId, "credits", FUND_MIN_DUFFS, () => {
-    throw fail("credits.below_minimum", "below the minimum", { kind: "limit", duffs: FUND_MIN_DUFFS });
-  });
+  const plan = coreMaxPlan(ctx.world, walletId, "credits", FUND_MIN_DUFFS);
   return { duffs: plan.duffs, feeDuffs: plan.feeDuffs, totalDuffs: plan.totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(plan.duffs)), to: p.receive.address, grant: { maxDuffs: plan.totalDuffs, maxCredits: "0" }, max: plan.max };
 }
 

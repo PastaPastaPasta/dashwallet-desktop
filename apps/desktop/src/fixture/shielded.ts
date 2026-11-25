@@ -173,8 +173,9 @@ const drainFee = (inputs: number) => 1_000 + 148 * Math.min(inputs, SHIELD_LOCK_
 /** A Core Max's plan (`core_max.rs`): one lock of every final coin of the wallet's main account (not
  * a CoinJoin coin), the fee out of it, no change. The other accounts' coins stay (`leftDuffs`), as do
  * the main coins not final yet (`arrivingDuffs`). Refused as the engine refuses, each code under
- * `domain` (the shield's `shielded.*`, the fund's `credits.*`); `belowMinimum` is the route's own. */
-export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shielded" | "credits", floor: number, belowMinimum: () => never) {
+ * `domain` (the shield's `shielded.*`, the fund's `credits.*`); below `floor` it names what Max would
+ * move and what stays in the other accounts. */
+export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shielded" | "credits", floor: number) {
   if (mixerBusy(world, walletId)) raise(`${domain}.mixing_active`, "stop mixing first");
   const w = wallet(world, walletId);
   const main = w.coins.filter((u) => u.coinjoinRounds === null && !u.coinjoinDenominated);
@@ -183,9 +184,9 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   if (final.length > SHIELD_LOCK_INPUTS) raise(`${domain}.too_many_inputs`, "too many inputs", { kind: "number", value: final.length });
   const totalDuffs = final.reduce((n, u) => n + u.amount, 0);
   const feeDuffs = drainFee(final.length);
-  const duffs = totalDuffs - feeDuffs;
-  if (final.length === 0 || duffs < floor) belowMinimum();
+  const duffs = Math.max(0, totalDuffs - feeDuffs);
   const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
+  if (duffs < floor) raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs });
   const arrivingDuffs = main.filter((u) => !final.includes(u)).reduce((n, u) => n + u.amount, 0);
   return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
 }
@@ -198,7 +199,7 @@ function shieldQuoteOf(ctx: Ctx, walletId: string, amount: FundAmount): ShieldQu
   const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
   if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
   const min = Number(POOL_FEE_CREDITS / CREDITS_PER_DUFF) + 1;
-  const p = coreMaxPlan(ctx.world, walletId, "shielded", min, () => raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: min }));
+  const p = coreMaxPlan(ctx.world, walletId, "shielded", min);
   return { duffs: p.duffs, feeDuffs: p.feeDuffs, totalDuffs: p.totalDuffs, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(p.duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: p.totalDuffs, maxCredits: "0" }, max: p.max };
 }
 

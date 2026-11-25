@@ -1137,7 +1137,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            CreditsError::BelowMinimum { min: 0 },
+            CreditsError::BelowMinimum { min: 0, max: None },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending {
                 txid: String::new(),
@@ -1182,7 +1182,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::BelowMinimum { min: 0, max: None },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
             ShieldedError::TooManyInputs { inputs: 0, max: 0 },

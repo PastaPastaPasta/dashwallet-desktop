@@ -138,7 +138,7 @@ fn a_drain_plan_refuses_a_held_or_unconfirmed_coin_too_many_coins_or_too_little(
     let at = |v: u64| vec![coin(0, v + crate::fees::asset_lock_fee_bound(1), true)];
     assert_eq!(
         drain::plan_of(&at(min - 1), fee).unwrap_err(),
-        ShieldedError::BelowMinimum { min }
+        ShieldedError::BelowMinimum { min, max: None }
     );
     drain::plan_of(&at(min), fee).unwrap();
 }

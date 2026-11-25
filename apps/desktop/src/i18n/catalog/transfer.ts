@@ -37,6 +37,10 @@ export const transfer = {
   maxMixing: "Max can't run while mixing. Stop mixing first, or enter an amount.",
   maxMoveRunning: "Another move of your coins is running. Try Max again when it's done.",
   maxChanged: "Your Dash wallet changed since this was worked out. Review the amount again.",
+  /** Max from the Dash wallet below the smallest amount: `amount` is what Max can move, `min` the
+   * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
+  maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */

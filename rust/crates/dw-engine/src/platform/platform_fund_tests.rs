@@ -679,7 +679,7 @@ fn a_fund_quote_names_the_fee_the_minimum_and_the_address() {
     assert_eq!(quote_of(&fx, &lib, min).unwrap().credits, 1_000);
     assert_eq!(
         quote_of(&fx, &lib, min - 1).unwrap_err(),
-        CreditsError::BelowMinimum { min }
+        CreditsError::BelowMinimum { min, max: None }
     );
 }
 
