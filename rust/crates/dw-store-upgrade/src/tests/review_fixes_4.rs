@@ -4,6 +4,8 @@
 //! again under the write lock (L-4), and tests of a snapshot past V018 and
 //! of the rehearsal's upstream open (L-7).
 
+use std::io::ErrorKind;
+
 use platform_wallet_storage::WalletStorageError;
 
 #[cfg(unix)]
@@ -17,8 +19,8 @@ use crate::error::StoreUpgradeError;
 use crate::precheck::{OPEN_FOR_TEST, Precheck};
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::{
-    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MARKER, MissingSnapshot, SnapshotInfo,
-    SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state, take_snapshot,
+    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MARKER, MissingSnapshot, SNAPSHOT_READ_FOR_TEST,
+    SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state, take_snapshot,
 };
 
 #[test]
@@ -165,16 +167,21 @@ fn a_part_upgraded_copy_renamed_after_the_migration_is_never_kept() {
     }
 }
 
-#[cfg(unix)]
+fn fail_reads_of(dir: &std::path::Path) {
+    SNAPSHOT_READ_FOR_TEST.with(|k| *k.borrow_mut() = Some((dir.to_path_buf(), ErrorKind::Other)));
+}
+
+fn read_snapshots() {
+    SNAPSHOT_READ_FOR_TEST.with(|k| *k.borrow_mut() = None);
+}
+
 #[test]
 fn a_fault_reading_the_snapshot_is_retried_and_a_missing_file_is_unverified() {
     let (f, s) = between();
     let before = tree(&f.root);
-    let app = s.dir().join("app.sqlite");
-    let kept = f.root.join("app.sqlite.kept");
-    fs::rename(&app, &kept).unwrap();
-    std::os::unix::fs::symlink(&app, &app).unwrap();
+    fail_reads_of(s.dir());
     let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
+    read_snapshots();
     assert!(
         matches!(
             err,
@@ -187,12 +194,37 @@ fn a_fault_reading_the_snapshot_is_retried_and_a_missing_file_is_unverified() {
     );
     assert!(!err.is_refusal());
     assert_eq!(copy::screen_for(&err, ProvedState::default()), None);
-    fs::remove_file(&app).unwrap();
-    fs::rename(&kept, &app).unwrap();
     assert_eq!(tree(&f.root), before, "nothing written");
 
-    fs::remove_file(&app).unwrap();
+    fs::remove_file(s.dir().join("app.sqlite")).unwrap();
     assert_missing(&f, MissingSnapshot::Unverified);
+}
+
+#[test]
+fn a_snapshot_that_fails_to_read_never_hides_the_true_one() {
+    let (f, s) = between();
+    let newer = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join("before-upgrade-20991231T000000Z");
+    fs::create_dir(&newer).unwrap();
+    fail_reads_of(&newer);
+    let kept = crate::prepare_with(&f.net, build(), later(60));
+    read_snapshots();
+    assert_eq!(kept.unwrap().snapshot.unwrap().dir(), s.dir());
+    assert!(newer.is_dir());
+
+    let g = fixture("v0.1.0");
+    let first = crate::prepare_with(&g.net, build(), now())
+        .unwrap()
+        .snapshot
+        .unwrap();
+    fail_reads_of(first.dir());
+    let again = crate::prepare_with(&g.net, build(), later(60));
+    read_snapshots();
+    let again = again.unwrap().snapshot.unwrap();
+    assert_ne!(again.dir(), first.dir(), "not upgraded: a new snapshot");
+    assert!(first.dir().join(MARKER).is_file());
 }
 
 #[cfg(unix)]
@@ -357,4 +389,26 @@ fn the_rehearsal_reads_a_failed_upstream_open_by_its_cause() {
 
     assert_eq!(tree(&f.root), before, "nothing written");
     assert!(matches!(checked(&f).unwrap(), Precheck::Fork { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_write_protected_wallet_file_is_refused_not_retried() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture("v0.1.0");
+    fs::set_permissions(f.wallet(), fs::Permissions::from_mode(0o444)).unwrap();
+    if fs::OpenOptions::new().write(true).open(f.wallet()).is_ok() {
+        eprintln!("skipped: this process writes a 0444 file");
+        return;
+    }
+    let before = tree(&f.root);
+    let got = checked(&f).unwrap();
+    let Precheck::Refuse { reason } = &got else {
+        panic!("{got:?}")
+    };
+    assert!(
+        matches!(reason, StoreUpgradeError::UpgradeCopyUnwritable { .. }),
+        "{reason:?}"
+    );
+    assert_eq!(tree(&f.root), before, "nothing written");
 }

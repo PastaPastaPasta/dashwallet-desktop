@@ -193,11 +193,15 @@ fn check_locked(
 /// fails on another user's file. Either would fail every start after R1's
 /// drop.
 fn refuse_unopenable_file(network_dir: &Path) -> Result<Option<Precheck>> {
-    for suffix in ["", "-wal", "-shm"] {
+    for (suffix, context) in [
+        ("", "stat wallet.sqlite"),
+        ("-wal", "stat wallet.sqlite-wal"),
+        ("-shm", "stat wallet.sqlite-shm"),
+    ] {
         let meta = match fs::symlink_metadata(side(network_dir, suffix)) {
             Ok(meta) => meta,
             Err(e) if !suffix.is_empty() && e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(StoreUpgradeError::io("stat wallet.sqlite", true)(e)),
+            Err(e) => return Err(StoreUpgradeError::io(context, true)(e)),
         };
         if let Some(what) = unsupported(&meta) {
             return Ok(Some(Precheck::Refuse {
