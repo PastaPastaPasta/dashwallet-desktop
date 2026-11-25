@@ -431,7 +431,9 @@ export function restoreAvailable(network: string | null): Promise<boolean> {
  * (`null`: the window's) verified before-upgrade snapshot at the next
  * start; the renderer then calls `restartApp`. Nothing is restored in
  * this process. Without a verified snapshot, `storage_restore`
- * (refused, missingBackup).
+ * (refused, missingBackup). While a wallet of `network` holds a
+ * shielded spend whose result is not known, or its stores don't read,
+ * `shielded_spend_unresolved` with its `shieldedHold` reason.
  */
 export function requestRestore(network: string | null): Promise<null> {
   return invoke<null>("request_restore", { network });

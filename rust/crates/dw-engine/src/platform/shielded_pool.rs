@@ -4386,7 +4386,6 @@ fn read_fork_holds(
     path: &std::path::Path,
 ) -> Result<(Vec<dw_appdb::dispatch::ForkHold>, BTreeSet<WalletId>), String> {
     use rusqlite::OpenFlags;
-    use rusqlite::types::Value;
     if !path.try_exists().map_err(|e| e.to_string())? {
         return Ok(Default::default());
     }
@@ -4397,6 +4396,14 @@ fn read_fork_holds(
     .map_err(|e| e.to_string())?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    fork_holds_in(&db)
+}
+
+/// [`read_fork_holds`] on an open connection to the store.
+pub(super) fn fork_holds_in(
+    db: &rusqlite::Connection,
+) -> Result<(Vec<dw_appdb::dispatch::ForkHold>, BTreeSet<WalletId>), String> {
+    use rusqlite::types::Value;
     let columns: Vec<String> = db
         .prepare("SELECT name FROM pragma_table_info('shielded_spend_dispositions')")
         .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
@@ -4580,6 +4587,15 @@ fn stored_on_disk(path: &std::path::Path, wallet: WalletId) -> Result<bool, Stri
     .map_err(|e| e.to_string())?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    pending_rows_in(&db, Some(wallet))
+}
+
+/// Whether the store open on `db` has a `shielded_pending_spends` row of
+/// `wallet`, or of any wallet. None with no table.
+pub(super) fn pending_rows_in(
+    db: &rusqlite::Connection,
+    wallet: Option<WalletId>,
+) -> Result<bool, String> {
     let table: bool = db
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_master \
@@ -4592,8 +4608,9 @@ fn stored_on_disk(path: &std::path::Path, wallet: WalletId) -> Result<bool, Stri
         return Ok(false);
     }
     db.query_row(
-        "SELECT EXISTS (SELECT 1 FROM shielded_pending_spends WHERE wallet_id = ?1)",
-        [&wallet.0[..]],
+        "SELECT EXISTS (SELECT 1 FROM shielded_pending_spends \
+         WHERE ?1 IS NULL OR wallet_id = ?1)",
+        [wallet.map(|w| w.0.to_vec())],
         |r| r.get(0),
     )
     .map_err(|e| e.to_string())

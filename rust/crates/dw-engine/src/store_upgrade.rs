@@ -91,8 +91,10 @@ pub struct RestoreFailure {
     pub state: RestoreState,
     /// `refused`: missingBackup, mismatchedBackup or garbledMarker;
     /// `noSpace`: diskFull; `notStarted` and `incomplete`: diskFull,
-    /// permissionDenied, fileVanished or other; `foreign`: otherLineage or
-    /// oldBuildWrote. For tests and logs.
+    /// permissionDenied, fileVanished or other; `notStarted` also
+    /// shieldedSpendInFlight or shieldedSpendCarriedOver (a shielded hold
+    /// the restore would replace, which the screen names); `incomplete`
+    /// also holdsUnchecked; `foreign`: otherLineage or oldBuildWrote.
     pub cause: &'static str,
     /// The extra space the copies need (`noSpace` only).
     pub needed_bytes: Option<u64>,
@@ -139,11 +141,38 @@ pub(crate) fn sweep_once(data_root: &Path) -> bool {
 /// The restore step, blocking, under the data root's instance lock and
 /// before the refusal check and any store of `network_dir` opens: a
 /// requested restore runs, a part-done one finishes, or nothing is pending.
-/// Any error stops the open.
+/// Any error stops the open. A requested restore first reads the live
+/// stores' shielded holds ([`restore_hold`](crate::platform::restore_hold));
+/// one held, or a store that does not read, stops it before anything moves
+/// (`notStarted`, `shieldedSpendInFlight` or `shieldedSpendCarriedOver`),
+/// the request kept.
 fn run_pending_restore(network_dir: &Path) -> Result<Option<RestoreInfo>, EngineError> {
     order::record(network_dir, order::Step::Restore);
-    let info = dw_store_upgrade::run_pending_restore(network_dir, SystemTime::now())
-        .map_err(|e| map_error(network_dir, StoreUpgradeStage::Restore, e, false))?;
+    let found = std::cell::Cell::new(None);
+    let holds = |dir: &Path| match crate::platform::restore_hold::restore_hold(dir) {
+        Some(hold) => {
+            found.set(Some(hold));
+            Err(format!("a shielded spend is held ({hold:?})"))
+        }
+        None => Ok(()),
+    };
+    let info = dw_store_upgrade::run_pending_restore(network_dir, SystemTime::now(), &holds)
+        .map_err(|e| {
+            let held = matches!(
+                e,
+                StoreUpgradeError::RestoreIncomplete {
+                    cause: IncompleteCause::HoldsOpen,
+                    ..
+                }
+            );
+            match map_error(network_dir, StoreUpgradeStage::Restore, e, false) {
+                EngineError::StoreRestore(mut r) if held => {
+                    r.cause = hold_cause(found.get());
+                    EngineError::StoreRestore(r)
+                }
+                e => e,
+            }
+        })?;
     if let Some(info) = &info {
         tracing::info!(?info, "store upgrade: wallet data restored");
     }
@@ -239,9 +268,12 @@ pub(crate) fn restore_available(network_dir: &Path) -> Result<bool, EngineError>
 
 /// Ask for the restore of the verified snapshot at the next start. While a
 /// restore is replacing files, `storage_restore` incomplete: that one can
-/// only be finished, whatever the snapshot reads as. Without a verified
-/// snapshot, refused (missingBackup); a snapshot that changed since it was
-/// read, refused (mismatchedBackup). Nothing else is written.
+/// only be finished, whatever the snapshot reads as. While the live stores
+/// keep a shielded hold the restore would replace, or don't read
+/// ([`restore_hold`](crate::platform::restore_hold)),
+/// [`EngineError::ShieldedSpendHeld`]. Without a verified snapshot, refused
+/// (missingBackup); a snapshot that changed since it was read, refused
+/// (mismatchedBackup). Nothing else is written.
 pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
     let refused = |cause: RefusalCause, detail: String| {
         EngineError::StoreRestore(Box::new(RestoreFailure {
@@ -265,6 +297,9 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             },
             false,
         ));
+    }
+    if let Some(hold) = crate::platform::restore_hold::restore_hold(network_dir) {
+        return Err(EngineError::ShieldedSpendHeld(hold));
     }
     match dw_store_upgrade::snapshot_state(network_dir)
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))?
@@ -352,7 +387,18 @@ fn incomplete_cause(c: IncompleteCause) -> &'static str {
         IncompleteCause::FileVanished => "fileVanished",
         IncompleteCause::S4OldBuildWrote => "oldBuildWrote",
         IncompleteCause::S4OtherLineage => "otherLineage",
+        IncompleteCause::HoldsOpen => hold_cause(None),
+        IncompleteCause::HoldsUnchecked => "holdsUnchecked",
         IncompleteCause::Other => "other",
+    }
+}
+
+/// The `notStarted` cause of a restore a shielded hold stopped; one not
+/// known is carried over.
+fn hold_cause(hold: Option<crate::ShieldedHold>) -> &'static str {
+    match hold {
+        Some(crate::ShieldedHold::InFlight) => "shieldedSpendInFlight",
+        Some(crate::ShieldedHold::CarriedOver) | None => "shieldedSpendCarriedOver",
     }
 }
 

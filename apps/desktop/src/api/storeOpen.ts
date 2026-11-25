@@ -28,19 +28,24 @@ export const NOT_PRIVATE_REASONS = ["groupWritable", "otherWritable", "otherOwne
 /** Where a pending restore stopped the open (`run_pending_restore`); the request, on the next start. */
 export type RestoreState = RestoreStateName;
 
-/** The causes the engine names, by state; `noSpace` has none of its own. */
+/** The causes the engine names, by state; `noSpace` has none of its own. `notStarted` names a shielded
+ * hold the live stores kept at the swap by its `shieldedHold` reason; `holdsUnchecked` is a part-done
+ * restore an earlier build began without that check. */
 export const RESTORE_CAUSES = {
   refused: ["missingBackup", "mismatchedBackup", "garbledMarker"],
   noSpace: ["diskFull"],
-  notStarted: ["diskFull", "permissionDenied", "fileVanished", "other"],
-  incomplete: ["diskFull", "permissionDenied", "fileVanished", "other"],
+  notStarted: ["diskFull", "permissionDenied", "fileVanished", "other", "shieldedSpendInFlight", "shieldedSpendCarriedOver"],
+  incomplete: ["diskFull", "permissionDenied", "fileVanished", "other", "holdsUnchecked"],
   foreign: ["otherLineage", "oldBuildWrote"],
 } as const satisfies Record<RestoreState, readonly string[]>;
 
 const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
 
+/** The `notStarted` causes of a shielded hold, and the `shieldedHold` reason each stands for. */
+export const RESTORE_HOLD_CAUSES = { shieldedSpendInFlight: "inFlight", shieldedSpendCarriedOver: "carriedOver" } as const;
+
 /** `storage_restore`'s data. `cause` is for tests and logs: each state's screen is the same for every
- * cause (MG (n), (q)). `neededBytes` is the space the copies need, `noSpace` only. */
+ * cause (MG (n), (q)) but a shielded hold's (`RESTORE_HOLD_CAUSES`). `neededBytes` is the space the copies need, `noSpace` only. */
 export type StoreRestoreData = Extract<ErrorData, { kind: "restore" }>;
 
 /** `storage_retry`'s data: the open's store upgrade stopped on the machine (the disk full or not writable,

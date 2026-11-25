@@ -91,6 +91,9 @@ mod registration_tests;
 #[cfg(test)]
 mod removal_gate_tests;
 mod requests;
+pub(crate) mod restore_hold;
+#[cfg(test)]
+mod restore_hold_tests;
 mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]

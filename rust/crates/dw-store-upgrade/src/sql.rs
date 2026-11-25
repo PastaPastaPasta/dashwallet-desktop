@@ -167,7 +167,7 @@ fn uri_path(raw: &[u8], windows: bool) -> String {
 
 /// A read-only connection that ignores `-wal`/`-shm`, takes no lock and
 /// creates no file (`immutable=1`).
-pub(crate) fn open_immutable(path: &Path) -> rusqlite::Result<Connection> {
+pub fn open_immutable(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(
         file_uri(path, "immutable=1"),
         OpenFlags::SQLITE_OPEN_READ_ONLY

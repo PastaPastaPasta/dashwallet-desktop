@@ -327,10 +327,24 @@ impl Engine {
     /// Asks for the restore of `network`'s verified before-upgrade snapshot
     /// at the next start of the app; nothing is restored in this process.
     /// Without a verified snapshot it is refused with `storage_restore`
-    /// (`refused`, missingBackup).
+    /// (`refused`, missingBackup). Refused with `ShieldedSpendHeld` while a
+    /// wallet of `network` holds a shielded spend whose result is not known:
+    /// the session's, when `network` is open (the removal gate's hold of
+    /// each loaded wallet), and the stores' on disk, open or not
+    /// (`store_upgrade::request_restore`); the next start reads the stores
+    /// again before the restore moves anything.
     pub async fn request_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
-        self.with_network_dir(network, crate::store_upgrade::request_restore)
-            .await
+        network.validate()?;
+        let sessions = self.shared.sessions.lock().await;
+        let dir = self.network_dir(network)?;
+        if let Some(session) = sessions.get(network).cloned()
+            && let Some(hold) = session.restore_hold().await
+        {
+            return Err(EngineError::ShieldedSpendHeld(hold));
+        }
+        self.handle
+            .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))
+            .await?
     }
 
     /// The foreign-lineage screen's Keep: ends `network`'s part-done
