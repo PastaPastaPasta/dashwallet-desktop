@@ -25,6 +25,7 @@ import { FiatLine, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
 import { useT } from "../i18n";
 import { useHeldAddress } from "../payments/hold";
+import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
@@ -152,14 +153,15 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
   };
 }
 
-/** The selected Platform address uses a bare QR; Dash payment URIs cannot carry it. */
-function usePlatformReceiveContent(walletId: string, enabled: boolean) {
+/** The selected Platform address uses a bare QR; Dash payment URIs cannot carry it. `off`: this version
+ * keeps the address off on this network (mainnet), so the line takes its place and nothing is read. */
+function usePlatformReceiveContent(walletId: string, enabled: boolean, off: boolean) {
   const t = useT();
   const b = useBackend();
   const client = useQueryClient();
-  const address = usePlatformReceiveAddress(walletId, enabled);
+  const address = usePlatformReceiveAddress(walletId, enabled && !off);
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || off) return;
     let live = true;
     b.platformAddressesSync(walletId)
       .then(() => live && void client.invalidateQueries({ queryKey: ["dashpay"] }))
@@ -167,7 +169,17 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean) {
     return () => {
       live = false;
     };
-  }, [b, client, walletId, enabled]);
+  }, [b, client, walletId, enabled, off]);
+  if (off)
+    return {
+      before: <>
+        <h2 id="receive-address-title" className="card-title">{t("receive.platform.title")}</h2>
+        <p className="field-hint" role="status" data-testid="platform-receive-mainnet-off">
+          {MAINNET_OFF_COPY.receive}
+        </p>
+      </>,
+      after: null,
+    };
   return {
     before: <>
       <h2 id="receive-address-title" className="card-title">{t("receive.platform.title")}</h2>
@@ -497,7 +509,8 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
     </div>
   );
   const dashContent = useDashReceiveContent(walletId, network);
-  const platformContent = usePlatformReceiveContent(walletId, pool === "platform");
+  const platformOff = addressSendsOff(network, platform.data);
+  const platformContent = usePlatformReceiveContent(walletId, pool === "platform", platformOff);
   const syncing = shieldedSyncing(shielded.data);
   const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded" && !syncing);
   const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
@@ -517,7 +530,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
         </section>
         <div className="receive-request" data-testid="receive-request-column">
           <RequestForm walletId={walletId} network={network} onCreated={setShown} inactive={pool !== "dash"} />
-          {pool !== "dash" && <RequestUnavailable pool={pool} />}
+          {pool !== "dash" && !(pool === "platform" && platformOff) && <RequestUnavailable pool={pool} />}
         </div>
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />

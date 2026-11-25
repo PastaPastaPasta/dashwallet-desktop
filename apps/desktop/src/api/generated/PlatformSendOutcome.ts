@@ -24,4 +24,9 @@ feeCredits: string | null,
 /**
  * Done: `credits` counts the fee estimate.
  */
-estimated: boolean, };
+estimated: boolean,
+/**
+ * `false` when its group settled with no evidence of which member
+ * went through; absent otherwise.
+ */
+winnerKnown?: boolean, };

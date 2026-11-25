@@ -457,8 +457,16 @@ impl NetworkSession {
     /// lock only when there are some (rare: a replay of a coin no restore
     /// placed). Under the read lock it also applies a fork truncation no
     /// event announced (`SessionHub::detect_truncation`); a drop of the
-    /// header tip starts it as well.
+    /// header tip starts it as well. Then it drops what can never confirm
+    /// and key-wallet's conflict handling left (`NetworkSession::drop_dead`).
     pub(crate) async fn reconcile_duplicate_coins(&self, id: WalletId) {
+        self.drop_duplicate_coins(id).await;
+        if let (Ok(_op), Ok(manager)) = (self.try_enter(), self.manager()) {
+            self.drop_dead(&manager, id, None).await;
+        }
+    }
+
+    async fn drop_duplicate_coins(&self, id: WalletId) {
         let Ok(manager) = self.manager() else {
             self.hub.reconcile_running(id);
             return;

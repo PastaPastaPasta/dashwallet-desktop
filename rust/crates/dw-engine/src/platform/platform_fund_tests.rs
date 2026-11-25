@@ -160,6 +160,7 @@ struct FakeFund {
     core_fenced: Mutex<Vec<bool>>,
     /// Platform's proved spent read of each outpoint; unread when unset.
     spent: Mutex<HashMap<OutPoint, SpentRead>>,
+    network: Network,
 }
 
 impl FakeFund {
@@ -195,6 +196,7 @@ impl FakeFund {
             core_drained: Mutex::default(),
             core_fenced: Mutex::default(),
             spent: Mutex::default(),
+            network: Network::Testnet,
         }
     }
 
@@ -259,7 +261,7 @@ impl FakeFund {
 
 impl FundLib for FakeFund {
     fn network(&self) -> Network {
-        Network::Testnet
+        self.network
     }
 
     async fn refresh_protocol_version(&self) -> u32 {
@@ -3014,6 +3016,69 @@ fn an_unauthenticated_already_consumed_is_never_final_across_a_restart() {
         state_of(&fx, &lib).is_empty(),
         "the proved read settles both"
     );
+}
+
+/// The mainnet flag (`platform_address_sends`): on mainnet, at a protocol
+/// with address funds, a new "Add from Dash wallet" is refused, quote and
+/// fund, before the hold, the fund lock, a read, the grant or a lock; a
+/// lock a build before the flag broadcast still finishes ("Check again").
+#[test]
+fn a_new_fund_is_off_on_mainnet_and_an_earlier_lock_still_finishes() {
+    let off = |code: &str, e: CreditsError| match e {
+        CreditsError::Platform(PlatformError::FeatureOff { feature })
+            if feature == "platform_address_sends" => {}
+        other => panic!("{code}: {other:?}"),
+    };
+    let fx = Fixture::new(0);
+    let mut mainnet = FakeFund::new(&fx);
+    mainnet.network = Network::Mainnet;
+    mainnet.hold = Some(RegistrationWait::Startup);
+    let mainnet = Arc::new(mainnet);
+    off("quote", quote_of(&fx, &mainnet, 1_000_000).unwrap_err());
+    let wallet = fx.wallet;
+    let g = grant(&fx, exact_grant(&fx, 1_000_000), 0);
+    let ga = g.clone();
+    let funded = run(&fx, &mainnet, move |s, lib| async move {
+        fund::fund(&s, wallet, &*lib, FundAmount::All, &ga).await
+    });
+    off("fund", funded.unwrap_err());
+    assert_eq!(mainnet.funds.load(Ordering::SeqCst), 0, "no lock");
+    assert!(mainnet.tracked.lock().unwrap().is_empty());
+    assert!(mainnet.applied().is_empty());
+    assert!(
+        super::journal_tests::grant_unused(&fx.s, fx.wallet, &g),
+        "the grant is not redeemed"
+    );
+
+    // A lock out before the flag, its proof in since.
+    let lib = Arc::new(FakeFund::new(&fx));
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(&fx, &lib).unwrap();
+    let outpoint = lib.outpoint(0);
+    lib.prove(outpoint);
+    let mut later = FakeFund::new(&fx);
+    later.network = Network::Mainnet;
+    *later.tracked.lock().unwrap() = lib.tracked.lock().unwrap().clone();
+    let later = Arc::new(later);
+    later.answer(Answer::Done(None));
+    assert_eq!(
+        resume_of(&fx, &later, outpoint).unwrap(),
+        PlatformFundState::Applied {
+            credits: 1_000_000_000 - fee()
+        }
+    );
+    assert_eq!(later.applied().len(), 1);
+
+    // The recovery's Finish of a lock found on chain, on mainnet.
+    let mut found = FakeFund::new(&fx);
+    found.network = Network::Mainnet;
+    let found = Arc::new(found);
+    found.track(found.lock(9, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    let at = found.outpoint(0);
+    found.answer(Answer::Done(Some(900_000_000)));
+    let (finished, asked) = finish(&fx, &found, at);
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert!(asked);
 }
 
 // ---- #585: a fund held on the wallet's bring-up ----

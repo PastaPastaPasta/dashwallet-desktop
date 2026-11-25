@@ -2861,3 +2861,40 @@ fn every_broadcast_command_counts_while_it_runs() {
         );
     }
 }
+
+/// The Platform addresses' mainnet flag crosses as its own feature: on
+/// mainnet the balance says `sendsOff: "platform_address_sends"` (and
+/// `sendsActive: false`), and a move's or a send's quote is
+/// `platform.feature_off` with that feature, not `platform_addresses`'s
+/// protocol refusal; regtest has neither.
+#[test]
+fn platform_address_sends_are_off_on_mainnet_as_their_own_feature() {
+    let off = json!({ "kind": "feature", "feature": "platform_address_sends" });
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert_eq!(balance["sendsActive"], false, "{balance}");
+    assert_eq!(balance["sendsOff"], "platform_address_sends", "{balance}");
+    let all = json!({ "kind": "all" });
+    let e = demo.err(
+        "platform_move_to_core_quote",
+        json!({ "walletId": wallet, "amount": all }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+    let e = demo.err(
+        "platform_send_quote",
+        json!({ "walletId": wallet, "to": "checked after the flag", "amount": all, "retryOf": null }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert!(balance["sendsOff"].is_null(), "{balance}");
+}

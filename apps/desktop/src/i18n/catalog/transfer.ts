@@ -32,6 +32,32 @@ export const transfer = {
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
   offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
+  /** The off routes on mainnet, where Dash wallet → Platform is off too: no detour through it. */
+  offOnMainnet: {
+    shieldedToPlatform: "This version can move from Shielded to Platform on test networks only.",
+    platformToShielded: "Moving from Platform to Shielded isn't available in this version.",
+  },
+  /** An Activity row whose group settled with no evidence of which payment or move went through. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
+    },
+  },
+  /** What this version keeps off on mainnet, each in place of its controls; `mainnetOffChip` beside the pool it can't reach. */
+  platform: {
+    mainnetOff: "This version can move and send from Platform addresses on test networks only.",
+    mainnetOffAdd: "This version can add Dash to Platform on test networks only.",
+    mainnetOffChip: "Test networks only",
+    /** In place of `mainnetOff` while the Platform addresses hold a balance. */
+    mainnetHeld: "{amount} is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.",
+    /** In place of both while a payment or move made earlier holds the addresses: its exit is offered. */
+    mainnetHeldExit: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+    /** `mainnetHeldExit` for a hold of `count` (2 or more) records. */
+    mainnetHeldExitSeveral: "{count} payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
+    /** After `mainnetHeldExit` while the addresses outside the hold hold credits. */
+    mainnetHeldExitRest: "The rest of your Platform balance, {rest}, is still yours. This version can move it on test networks only.",
+  },
   none: {
     absent: "Transfers move Dash between your Dash wallet, Shielded and Platform. This version has neither Shielded nor Platform addresses.",
     inactive: "Transfers move Dash between your Dash wallet, Shielded and Platform. Shielded is not active on this network yet, and this version has no Platform addresses.",
@@ -67,6 +93,8 @@ export const transfer = {
       text: "About {amount} is on its way to your Dash wallet. It shows in Activity once it arrives.",
       textWithFee: "About {amount} is on its way to your Dash wallet. The network fee was {fee}. It shows in Activity once it arrives.",
       debitOnly: "{taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.",
+      /** `debitOnly` when nothing says which member of its group went through. */
+      debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     },
     pending: {
       title: "Not confirmed yet",

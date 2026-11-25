@@ -16,6 +16,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
+import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { moveErrorText, onMoveSettledNotify } from "./move";
 
 export type PlatformFundApi = Pick<Backend, "platformFund" | "resumePlatformFund" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
@@ -254,7 +255,7 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
     case "credits.fund_pending":
       return t("transfer.fund.error.pending");
     case "platform.feature_off":
-      return t("transfer.fund.error.featureOff");
+      return isAddressSendsOff(e) ? MAINNET_OFF_COPY.add : t("transfer.fund.error.featureOff");
     case "platform.broadcast_unknown":
       return t("transfer.fund.error.broadcastUnknown");
     case "platform.will_be_sent":

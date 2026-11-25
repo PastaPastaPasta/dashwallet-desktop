@@ -226,6 +226,10 @@ pub(crate) struct MoveRecord {
     /// The proof height of the first read after its call returned.
     #[serde(default)]
     pub(crate) seen_at: Option<u64>,
+    /// Settled in a group whose proof does not say which member executed:
+    /// one of them did, and the history can't name it.
+    #[serde(default)]
+    pub(crate) unattributed: bool,
     /// Done: the fee the proved balances show it took.
     #[serde(default)]
     pub(crate) fee_taken: Option<u64>,
@@ -363,6 +367,7 @@ impl FundRecord {
             may_land: false,
             estimated: self.estimated,
             contact: None,
+            unattributed: false,
         }
     }
 
@@ -602,6 +607,7 @@ impl FromShieldedRecord {
             may_land: self.state == PlatformActivityState::Pending,
             estimated: false,
             contact: None,
+            unattributed: false,
         }
     }
 
@@ -691,6 +697,7 @@ fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, Platfo
         may_land: false,
         estimated: false,
         contact: None,
+        unattributed: false,
     };
     let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
     Ok(vec![(key, Some(json(&row)?))])
@@ -1156,7 +1163,14 @@ impl MoveRecord {
             may_land: self.holds(),
             estimated: self.estimated(),
             contact: None,
+            unattributed: self.winner_unknown(),
         }
+    }
+
+    /// Settled with no named winner: marked so, or a group's outcome stored
+    /// before the mark existed (only such a group has one).
+    fn winner_unknown(&self) -> bool {
+        self.unattributed || self.group.is_some()
     }
 
     /// What its inputs give: a send's amount (for Max, before the fee).
@@ -1369,8 +1383,11 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             of(|k| k == MoveKind::ToCore),
         );
         if !top_ups.is_empty() && !exit_moves.is_empty() {
-            let present: Vec<usize> = (exit_moves.iter().copied())
+            let found: Vec<usize> = (exit_moves.iter().copied())
                 .filter(|&i| exits.get(&moves[i].id) == Some(&true))
+                .collect();
+            let present: Vec<usize> = (exit_moves.iter().copied())
+                .filter(|&i| found.iter().any(|&f| moves[f].to == moves[i].to))
                 .collect();
             let known = (exit_moves.iter()).all(|&i| exits.contains_key(&moves[i].id));
             // Exits paying one address share one document: whichever of
@@ -1388,6 +1405,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
                 for &i in group.iter().filter(|&&i| i != newest) {
                     moves[i].state = PlatformActivityState::Failed;
                     moves[i].can_land = false;
+                }
+                for &i in &present {
+                    moves[i].unattributed = true;
                 }
                 changed.extend(group);
                 continue;
@@ -1446,6 +1466,9 @@ pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) 
             for &i in group.iter().filter(|&&i| i != newest) {
                 moves[i].state = PlatformActivityState::Replaced;
                 moves[i].can_land = false;
+            }
+            for &i in &group {
+                moves[i].unattributed = true;
             }
         }
         changed.extend(group);
@@ -1688,6 +1711,7 @@ pub(crate) fn changes(
             may_land: false,
             estimated: false,
             contact: None,
+            unattributed: false,
         };
         if is > was {
             let rose = is - was;
@@ -2796,6 +2820,7 @@ pub(crate) async fn balance(
         .collect();
     addresses.sort_by(|a, b| b.credits.cmp(&a.credits).then(a.address.cmp(&b.address)));
     let sync = manager.platform_address_sync();
+    let off = address_sends_open(network).is_err();
     PlatformAddressBalance {
         credits: cached.values().sum(),
         movable_credits: movable,
@@ -2803,7 +2828,8 @@ pub(crate) async fn balance(
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
-        sends_active: sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_active: !off && sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_off: off.then(|| PLATFORM_ADDRESS_SENDS.into()),
     }
 }
 
@@ -3285,6 +3311,13 @@ impl SendOps {
         })
     }
 
+    /// Whether the quoted send `id` of `wallet` is a held send's retry;
+    /// `false` for none.
+    fn retries(&self, id: &str, wallet: WalletId) -> bool {
+        self.with(id, wallet, |ops, at| Ok(ops[at].1.retry_of.is_some()))
+            .unwrap_or(false)
+    }
+
     /// Takes the quoted send `id` of `wallet` to pay under `grant`: each is
     /// sent at most once, and only under the grant issued for it. Any other
     /// grant (one issued for another send, or for none) is
@@ -3360,9 +3393,13 @@ pub(crate) async fn quote(
     amount: WithdrawAmount,
 ) -> Result<MoveToCoreQuote, CreditsError> {
     let network = session.vault.network();
-    let pool = pool(wallet).await?;
     let moves = Store::of(session, wallet_id)?.moves().await?;
+    held_exit_open(network, &moves)?;
+    let pool = pool(wallet).await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if !(moves.iter()).any(|m| m.holds() && !m.reached(&seen)) {
+        address_sends_open(network)?;
+    }
     // As the move will decide, before anything is asked of the user: a
     // send that may still execute holds the next move (it must have the
     // send's exact terms, which no move has).
@@ -3371,27 +3408,31 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    // A top-up from Platform or a registration's create not settled: its
-    // exit takes exactly its inputs (C-routes C3-9), so Confirm shows that
-    // move; one Platform has not answered holds the next move, as the move
-    // refuses it.
-    let top_up = (moves.iter()).find(|m| m.kind.credits_identity() && m.holds());
-    if let Some(h) = top_up.filter(|h| h.state == PlatformActivityState::Pending) {
+    // A move, contact payment, top-up or registration's create not settled:
+    // the move beside it takes exactly its inputs (C-routes C3-9), as `run`
+    // plans it, so Confirm shows that move; one Platform has not answered
+    // holds the next move, as the move refuses it.
+    let held = (moves.iter())
+        .find(|m| m.kind.credits_identity() && m.holds())
+        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(&seen)));
+    if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
     let version = net.version();
     let target = Target::Core("");
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
-    let planned = plan_beside(&target, balances, amount, &limits, top_up, network)?;
+    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
     // Its exit signs exactly its inputs, so a plan of only some of them
     // (an amount) is refused here, as the move would refuse it.
-    if let Some(h) = top_up {
-        let held: BTreeSet<&str> = h.inputs.iter().map(|i| i.address.as_str()).collect();
+    if let Some(h) = held {
+        let inputs: BTreeSet<&str> = h.inputs.iter().map(|i| i.address.as_str()).collect();
         let addresses: Vec<String> = (planned.inputs.keys())
             .map(|a| bech32m(a, network))
             .collect();
-        if addresses.len() != held.len() || !addresses.iter().all(|a| held.contains(a.as_str())) {
+        if addresses.len() != inputs.len() || !addresses.iter().all(|a| inputs.contains(a.as_str()))
+        {
+            address_sends_open(network)?;
             return Err(CreditsError::MovePending { id: h.id.clone() });
         }
     }
@@ -3409,7 +3450,7 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
-        exit_of: top_up.map(|h| h.id.clone()),
+        exit_of: (held.filter(|h| h.kind.credits_identity())).map(|h| h.id.clone()),
     })
 }
 
@@ -3456,6 +3497,7 @@ pub(crate) async fn send_quote(
     (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
 ) -> Result<PlatformSendQuote, CreditsError> {
     let network = session.vault.network();
+    retry_open(session, wallet_id, (to, amount, retry_of)).await?;
     let pool = pool(wallet).await?;
     let address = recipient(network, to, &pool)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -3575,9 +3617,6 @@ pub(crate) async fn shield_quote(
     })
 }
 
-/// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
-/// identity one of the wallet's own, address funds active, one proved read
-/// with rule 5, the hold, and the input-0 plan with the top-up's band.
 /// The mainnet flag of the top-up from the Platform balance: off on
 /// mainnet until its funds ruling, on every other network.
 pub(crate) const TOP_UP_FROM_PLATFORM: &str = "top_up_from_platform";
@@ -3592,6 +3631,66 @@ fn top_up_open(network: Network) -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// The mainnet flag of the Platform addresses' own funds paths: a send, a
+/// move to the Dash wallet, "Add from Dash wallet", a transfer of an
+/// identity's credits to them and their receive address. Off on mainnet
+/// until a release after their mainnet canary, whatever Platform's
+/// protocol version; on every other network.
+pub(crate) const PLATFORM_ADDRESS_SENDS: &str = "platform_address_sends";
+
+/// Whether [`PLATFORM_ADDRESS_SENDS`] is on for mainnet in this build.
+const ADDRESS_SENDS_ON_MAINNET: bool = false;
+
+/// Refused on mainnet while [`PLATFORM_ADDRESS_SENDS`] is off, before
+/// anything is read, written or redeemed. What settles, finishes or exits
+/// a move signed before is not refused (`held_exit_open`).
+pub(crate) fn address_sends_open(network: Network) -> Result<(), PlatformError> {
+    if network == Network::Mainnet && !ADDRESS_SENDS_ON_MAINNET {
+        return Err(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        });
+    }
+    Ok(())
+}
+
+/// [`address_sends_open`], or, with the flag off, a record of `moves`
+/// that holds the addresses: a move signed before, which only its exit
+/// (a move at its very inputs and nonces) or its exact retry may follow.
+fn held_exit_open(network: Network, moves: &[MoveRecord]) -> Result<(), PlatformError> {
+    match address_sends_open(network) {
+        Err(_) if moves.iter().any(MoveRecord::holds) => Ok(()),
+        open => open,
+    }
+}
+
+/// [`address_sends_open`], or, with the flag off, a send that `retry_of`
+/// names as the exact retry (the same recipient and amount) of a stored
+/// send that still holds; read from the local store only.
+async fn retry_open(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
+) -> Result<(), CreditsError> {
+    let network = session.vault.network();
+    let Err(off) = address_sends_open(network) else {
+        return Ok(());
+    };
+    let Some(id) = retry_of else {
+        return Err(off.into());
+    };
+    let to = parse(to.trim()).map(|a| bech32m(&a, network));
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let exact = (moves.iter()).find(|m| m.id == id).is_some_and(|m| {
+        m.kind == MoveKind::Transfer
+            && m.holds()
+            && to.as_deref().is_some_and(|to| m.retried_by(to, amount))
+    });
+    if exact { Ok(()) } else { Err(off.into()) }
+}
+
+/// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
+/// identity one of the wallet's own, address funds active, one proved read
+/// with rule 5, the hold, and the input-0 plan with the top-up's band.
 pub(crate) async fn top_up_quote(
     net: &impl MoveNet,
     session: &NetworkSession,
@@ -3702,6 +3801,7 @@ pub(crate) async fn move_to_core(
     (amount, to, exit_of): (WithdrawAmount, &str, Option<&str>),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
+    held_exit_open(session.vault.network(), &records(session, wallet_id).await?)?;
     let (record, _) = run(
         net,
         session,
@@ -3720,6 +3820,7 @@ pub(crate) async fn move_to_core(
         to: row.to,
         state: record.state,
         fee_credits: row.fee_credits,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -3733,6 +3834,9 @@ pub(crate) async fn send(
     operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
+    if !(session.platform.send_ops).retries(operation, wallet_id) {
+        address_sends_open(session.vault.network())?;
+    }
     let op = (session.platform.send_ops).take(operation, wallet_id, grant)?;
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -3755,6 +3859,7 @@ pub(crate) async fn send(
         may_land: row.may_land,
         fee_credits: row.fee_credits,
         estimated: row.estimated,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -3853,11 +3958,27 @@ pub(crate) async fn run(
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
+    // With the flag off only a held move's exit or a held send's exact
+    // retry signs: anything else is the flag's refusal, never a new plan.
+    let off = matches!(target, Target::Core(_) | Target::Platform(_))
+        && address_sends_open(network).is_err();
+    let flag = || {
+        CreditsError::from(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        })
+    };
     // A retry of a send that landed pays nothing and signs nothing.
-    if let (Target::Platform(to), Some(id)) = (target, named)
-        && let Some(settled) = retry_decision(&moves, id, (&bech32m(&to, network), amount))?
-    {
-        return Ok((settled.clone(), None));
+    if let (Target::Platform(to), Some(id)) = (target, named) {
+        match retry_decision(&moves, id, (&bech32m(&to, network), amount)) {
+            Ok(Some(_)) | Err(CreditsError::Platform(PlatformError::InvalidArgument { .. }))
+                if off =>
+            {
+                return Err(flag());
+            }
+            Ok(Some(settled)) => return Ok((settled.clone(), None)),
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
     }
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
@@ -3871,7 +3992,13 @@ pub(crate) async fn run(
         Some(id) => Some(
             (moves.iter())
                 .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
-                .ok_or(CreditsError::QuoteChanged)?,
+                .ok_or_else(|| {
+                    if off {
+                        flag()
+                    } else {
+                        CreditsError::QuoteChanged
+                    }
+                })?,
         ),
         None => None,
     };
@@ -3893,6 +4020,11 @@ pub(crate) async fn run(
                 });
             }
             let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
+            // The hold may have settled since the entry's check: with the
+            // flag off nothing new is planned, granted or signed.
+            if held.is_none() && off {
+                return Err(flag());
+            }
             if let (Target::Platform(_) | Target::Contact | Target::Identity(_), Some(h)) =
                 (target, held)
             {
@@ -3986,6 +4118,7 @@ pub(crate) async fn run(
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: Some(version.protocol_version),
     };
     // A move `failed` by height may still execute: only one at its very
@@ -3998,17 +4131,28 @@ pub(crate) async fn run(
                 && h.terms() != record.terms())
     };
     if exit_of.is_some() && held.is_some_and(|h| h.key() != record.key()) {
-        return Err(CreditsError::QuoteChanged);
+        return Err(if off {
+            flag()
+        } else {
+            CreditsError::QuoteChanged
+        });
     }
     // Beside an exit, any other hold blocks it as it would block a move.
     let mut others = (moves.iter()).filter(|m| m.holds() && exit_of.is_some_and(|id| m.id != id));
     if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
+        // A held send has no exit but its retry: it holds as before.
+        if off && (retry_of.is_some() || held.kind != MoveKind::Transfer) {
+            return Err(flag());
+        }
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });
     }
     let mut script = match target {
-        Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
+        Target::Core(to) => match own_core_destination(session, wallet_id, network, to).await {
+            Err(PlatformError::InvalidArgument { .. }) if off => return Err(flag()),
+            script => Some(script?),
+        },
         Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
     // The authority before anything is redeemed: a refusal keeps the grant.
@@ -4233,6 +4377,7 @@ pub(crate) async fn receive_address(
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
+    address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
     next_receive_address(wallet, network).await
 }

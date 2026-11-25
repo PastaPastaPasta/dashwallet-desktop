@@ -28,7 +28,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
@@ -540,7 +540,7 @@ function withdrawal(n: number, status: Withdrawal["status"], credits: number, ho
 }
 
 /** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
-function withContest(w: World, state: ContestStatus["state"]): World {
+function withContest(w: World, state: ContestStatus["state"], temporaryName = "alice007"): World {
   const s = w.dashpay.status;
   if (s.kind !== "contestPending") return w;
   const contest: ContestStatus = {
@@ -553,10 +553,19 @@ function withContest(w: World, state: ContestStatus["state"]): World {
     ],
     lockVotes: state.kind === "locked" ? 55 : 3,
     abstainVotes: 2,
-    temporaryName: "alice007",
+    temporaryName,
   };
   w.dashpay.credits = newCreditsWorld({ contest });
   return w;
+}
+
+/** "alice" contested by a registration that asked for the temporary "alice2" beside it (DP1-09
+ * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
+function withInstant(w: World, owned: boolean): World {
+  const c = contestPending(w, 1_900_000_000);
+  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
+  return c;
 }
 
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
@@ -872,6 +881,25 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
+  "platform-move-held-and-rest": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.heldInputs = { "pm-held": p.addresses.map((a) => a.address) };
+    p.addresses.push({ address: "tdash1q3rest7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr", credits: "10000000000" });
+    return w;
+  },
+  /** A move and its retry at the same inputs, both failed by height and able to land: one hold of two records. */
+  "platform-move-held-several": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, mayLand: true, estimated: false } as const;
+    p.activity = [{ ...row, id: "pm-held-2", at: at - 300 }, { ...row, id: "pm-held", at: at - 600 }, ...p.activity];
+    return w;
+  },
   /** The next "Add from Dash wallet" is applied (as the base world does). */
   "paddr-fund-applies": (t) => {
     const w = base(t);
@@ -948,6 +976,24 @@ const SCENARIOS = {
     p.activity = [
       { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600, mayLand: false, estimated: false },
       { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200, mayLand: false, estimated: false },
+      ...p.activity,
+    ];
+    return w;
+  },
+  /** Groups that settled with no evidence of which member went through, as the engine marks them: two moves
+   * of other terms at the same inputs, and two exits of a top-up that did not land, of other amounts. Only
+   * each group's newest row carries its debit. */
+  "platform-settled-unknown": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false } as const;
+    p.activity = [
+      { ...row, id: "pm-exit2", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800, winnerKnown: false },
+      { ...row, id: "pm-exit1", kind: "moveToCore", state: "failed", credits: "19000000000", at: at - 2100, winnerKnown: false },
+      { ...row, id: "pt-topup", kind: "toIdentity", state: "failed", credits: "20000000000", at: at - 2400 },
+      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600, winnerKnown: false },
+      { ...row, id: "pm-old", kind: "moveToCore", state: "replaced", credits: "25000000000", at: at - 7200, winnerKnown: false },
       ...p.activity,
     ];
     return w;
@@ -1657,6 +1703,19 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
     return w;
   },
+  /** "alice" contested with no temporary name and too few credits for one: Top up (D4 reversed). */
+  "dashpay-contest-instant-short": (t) => {
+    const w = contestPending(base(t), 1_900_000_000);
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null, balance: "1000000", creditLevel: "low" }));
+    return w;
+  },
+  /** DP1-09 D4 reversed: the registration's temporary "alice2" registered beside the contested
+   * "alice" (iOS's success line), or refused (its failure line and Try again). */
+  "dashpay-instant-ok": (t) => withInstant(base(t), true),
+  "dashpay-instant-failed": (t) => withInstant(base(t), false),
+  /** The vote on "alice" won (the main name switches, "alice2" kept) or lost ("alice2" stays main). */
+  "dashpay-instant-won": (t) => withContest(withInstant(base(t), true), { kind: "won" }, "alice2"),
+  "dashpay-instant-lost": (t) => withContest(withInstant(base(t), true), { kind: "lost", winner: IDENTITY.mallory }, "alice2"),
   /** The contest read before the status moved on: won (R3), lost to another user (R4), blocked (R5). */
   "dashpay-contest-won": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "won" }),
   "dashpay-contest-lost": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "lost", winner: IDENTITY.mallory }),
