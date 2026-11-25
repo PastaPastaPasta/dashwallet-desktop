@@ -443,8 +443,9 @@ fn names(record: &Lineage, info: &SnapshotInfo) -> bool {
 /// `network_dir`'s `wallet.sqlite` as the lineage gate reads it.
 enum LiveWallet {
     Absent,
-    /// It can't be read for what it holds (corrupt, not a database, or its
-    /// permissions), so whether it is upgraded is not known.
+    /// It can't be read for what it holds (corrupt, not a database, or a log
+    /// beside it unreadable for its permissions), so whether it is upgraded
+    /// is not known. A file SQLite can't open at all is retried.
     Unreadable,
     /// Upgraded (R1's drop committed, or refinery past V018), with its
     /// wallet ids.
@@ -1386,7 +1387,11 @@ pub(crate) fn copy_store(src_path: &Path, dest: &Path) -> Result<()> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(fail(&format!("copy journal mode is {mode}")));
     }
-    let copied = sql::integrity_ok(&dst).map_err(read)?;
+    let copied = match sql::integrity_ok(&dst) {
+        Ok(ok) => ok,
+        Err(e) if damaged(&e) => false,
+        Err(e) => return Err(fail(&e)),
+    };
     #[cfg(test)]
     let copied = copied && fault("copy.integrity").is_ok();
     if !copied {

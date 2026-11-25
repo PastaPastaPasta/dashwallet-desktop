@@ -519,3 +519,23 @@ fn r1_ends_an_earlier_part_upgraded_copy_record() {
     fs::write(&app, bytes).unwrap();
     assert!(!upgrade_copy_present(&f.net, "shielded.sqlite").unwrap());
 }
+
+/// Neither record is written while a restore is requested.
+#[test]
+fn nothing_records_a_snapshot_while_a_restore_is_requested() {
+    let (f, s) = failed_open();
+    crate::restore::request_restore(&f.net, &s).unwrap();
+    let backups = f.net.join(UPGRADE_BACKUPS_DIR);
+    let before = record(&f);
+    let conn = rusqlite::Connection::open(f.wallet()).unwrap();
+    assert!(matches!(
+        crate::snapshot::record_lineage(&f.net, &s, &conn),
+        Err(StoreUpgradeError::RestorePending { .. })
+    ));
+    assert!(matches!(
+        crate::snapshot::record_part(&f.net, &s),
+        Err(StoreUpgradeError::RestorePending { .. })
+    ));
+    assert_eq!(record(&f), before);
+    assert!(!backups.join(crate::snapshot::PART_UPGRADED_BY).exists());
+}
