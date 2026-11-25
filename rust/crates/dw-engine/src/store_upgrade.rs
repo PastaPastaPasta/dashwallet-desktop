@@ -230,6 +230,7 @@ pub(crate) mod order {
         StoresOpening,
         Vault,
         AppDb,
+        StoreRepair,
         Persister,
     }
 

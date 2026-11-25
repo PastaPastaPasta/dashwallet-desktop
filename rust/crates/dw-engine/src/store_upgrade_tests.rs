@@ -271,10 +271,12 @@ fn fixture_root(version: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 /// Q98 98-4: the open's order is instance lock → sweep → prepare →
-/// reconcile → note_stores_opening → vault → app.sqlite → persister, for a
-/// fork file the reconcile writes. A vault, app.sqlite or store open moved
-/// ahead of the reconcile fails here; a write between prepare and reconcile
-/// also changes the four-store fingerprint, and the reconcile refuses.
+/// reconcile → note_stores_opening → vault → app.sqlite → store repair →
+/// persister, for a fork file the reconcile writes. A vault, app.sqlite or
+/// store open moved ahead of the reconcile fails here; a write between
+/// prepare and reconcile also changes the four-store fingerprint, and the
+/// reconcile refuses. The store repair writes app.sqlite, so it follows
+/// that open, and wallet.sqlite before the persister holds it.
 #[test]
 fn the_open_runs_the_store_upgrade_before_any_store_opens() {
     let (_tmp, root) = fixture_root("v0.1.0");
@@ -290,6 +292,7 @@ fn the_open_runs_the_store_upgrade_before_any_store_opens() {
             Step::StoresOpening,
             Step::Vault,
             Step::AppDb,
+            Step::StoreRepair,
             Step::Persister,
         ]
     );
@@ -313,6 +316,7 @@ fn the_open_runs_the_store_upgrade_before_any_store_opens() {
             Step::StoresOpening,
             Step::Vault,
             Step::AppDb,
+            Step::StoreRepair,
             Step::Persister,
         ]
     );

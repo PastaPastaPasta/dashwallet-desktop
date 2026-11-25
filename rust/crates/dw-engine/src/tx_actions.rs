@@ -2377,9 +2377,9 @@ impl NetworkSession {
         self.drop_trees(manager, wallet, drops).await;
     }
 
-    /// Forgets the `dropped:` rows of `dead` the history now holds mined or
-    /// InstantSend-locked: the verdict that dropped them was wrong, and
-    /// they no longer seed the load's walk.
+    /// Forgets the `dropped:` rows and the store repair's records of `dead`
+    /// the history now holds mined or InstantSend-locked: the verdict that
+    /// dropped them was wrong, and they no longer seed the load's walk.
     async fn prune_dropped(&self, wallet: WalletId, dead: &BTreeSet<Txid>) {
         let settled: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
             (dead.iter())
@@ -2398,7 +2398,10 @@ impl NetworkSession {
         let result = self
             .appdb_op(move |db| {
                 let keys: Vec<String> = (settled.iter())
-                    .map(|t| format!("{DROPPED_PREFIX}{t}"))
+                    .flat_map(|t| {
+                        [DROPPED_PREFIX, crate::store_repair::STORE_DROPPED_PREFIX]
+                            .map(|p| format!("{p}{t}"))
+                    })
                     .collect();
                 let writes: Vec<(&str, Option<&str>)> =
                     keys.iter().map(|k| (k.as_str(), None)).collect();

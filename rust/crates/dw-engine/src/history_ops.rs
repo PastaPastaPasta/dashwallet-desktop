@@ -134,7 +134,10 @@ pub(crate) struct Persisted {
     /// no evidence that its transaction settled.
     pub(crate) unconfirmed: HashSet<Txid>,
     /// Spends the store's open dropped as not signed by their coins'
-    /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
+    /// owner: never restored from a mark. This build's repair records them
+    /// in the app database ([`crate::store_repair::store_dropped`]); a store
+    /// upgraded from the fork keeps the fork's own in
+    /// `core_dropped_unsigned_spends`.
     pub(crate) dropped: HashSet<Txid>,
     /// Of `dropped`, those whose stored record has an input script that
     /// isn't push-only, or doesn't read: the store's verdict on them may be
@@ -150,6 +153,23 @@ pub(crate) struct Persisted {
 }
 
 impl Persisted {
+    /// Adds the claims the open's repair dropped from `wallet`'s store
+    /// ([`crate::store_repair::store_dropped`]); false when they don't read.
+    pub(crate) fn add_store_dropped(&mut self, appdb: &AppDb, wallet: WalletId) -> bool {
+        let held = |t: &Txid| self.records.contains(t) || self.recordless.contains(t);
+        match crate::store_repair::store_dropped(appdb, wallet, held) {
+            Ok((dropped, doubtful)) => {
+                self.dropped.extend(dropped);
+                self.dropped_doubtful.extend(doubtful);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(%wallet, error = %e, "could not read the claims the store's repair dropped");
+                false
+            }
+        }
+    }
+
     /// Whether a load restores `txid`'s claims from its sent mark: not a
     /// spend the store's open dropped, nor an abandoned payment whose saved
     /// copy doesn't read back (`unread`) unless the store still holds it.
@@ -320,7 +340,7 @@ fn lock_size_limit() -> i64 {
 }
 
 /// A stored record's blob, decoded as the store encodes it.
-fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
+pub(crate) fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
     let config =
         bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
     match bincode::serde::decode_from_slice(blob, config) {
@@ -330,7 +350,7 @@ fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
 }
 
 /// A stored lock row's blob, decoded as the store encodes it.
-fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
+pub(crate) fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
     let config =
         bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
     match bincode::serde::decode_from_slice(blob, config) {
@@ -477,7 +497,8 @@ impl NetworkSession {
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
-                    let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
+                    let mut persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
+                    let store_read = persisted.add_store_dropped(&appdb, wallet);
                     let (records, read) = read_records(wallet, &persisted.records, |t| {
                         let read = persister.get_core_tx_record(wallet.0, t);
                         #[cfg(test)]
@@ -525,6 +546,7 @@ impl NetworkSession {
                         sent,
                         complete: clean
                             && dropped_read
+                            && store_read
                             && !persisted.locks_unread
                             && marks_read
                             && sent_read == crate::tx_actions::SentRead::Complete,
@@ -873,7 +895,7 @@ impl NetworkSession {
         let network = self.network.core_network();
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
-            let persisted = match persisted_txids(&db_path) {
+            let mut persisted = match persisted_txids(&db_path) {
                 Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
                 Err(e) => {
                     tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
@@ -897,10 +919,11 @@ impl NetworkSession {
             history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
             let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
+            let store_read = persisted.add_store_dropped(&appdb, wallet);
             sent.retain(|t, _| {
                 persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
             });
-            if !(read && marks_read && dropped_read && sent_read != crate::tx_actions::SentRead::Failed) {
+            if !(read && marks_read && dropped_read && store_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
             }
