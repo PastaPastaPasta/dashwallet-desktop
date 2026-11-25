@@ -201,7 +201,8 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const feeDuffs = drainFee(final.length);
   const duffs = Math.max(0, totalDuffs - feeDuffs);
   const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
-  const arriving = main.filter((u) => !final.includes(u));
+  // A coin the engine withholds counts nowhere, not even as arriving.
+  const arriving = main.filter((u) => !final.includes(u) && u.excluded === null);
   const arrivingDuffs = arriving.reduce((n, u) => n + u.amount, 0);
   if (duffs < floor) {
     const all = [...final, ...arriving];

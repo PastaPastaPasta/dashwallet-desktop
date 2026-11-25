@@ -208,6 +208,12 @@ pub(crate) struct ReplayRecords {
     pub(crate) fail_reads: std::sync::atomic::AtomicBool,
 }
 
+/// Whether `wallet` has a replay record stored, read from `appdb` alone
+/// (an open, before its session's records are read).
+pub(crate) fn stored_in(appdb: &AppDb, wallet: WalletId) -> Result<bool, dw_appdb::AppDbError> {
+    Ok(appdb.setting(&wallet.to_string(), KEY)?.is_some())
+}
+
 impl ReplayRecords {
     pub(crate) fn new(appdb: Arc<AppDb>) -> Arc<Self> {
         let (notes, receiver) = mpsc::unbounded_channel();

@@ -4972,6 +4972,7 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     keeps the arriving coins as it keeps the final ones (held by the same marks), and `arriving_clears` is the plan of
     the final and arriving coins together, every arriving coin taken as final, run against the same floor: false when
     an arriving coin is held, past 50 coins in all, below the floor plus the fee bound of all of them, or with nothing
-    arriving. The arriving coins are never planned or signed. dw-app's `maxMinimum` data gains `arrivingDuffs` and
+    arriving. A coin `crate::withhold` excludes that is not final yet counts in neither `arriving_duffs` nor that
+    plan. The arriving coins are never planned or signed. dw-app's `maxMinimum` data gains `arrivingDuffs` and
     `arrivingClears`. As item 108, they are set only on a Core Max refused below the floor, before any lease, grant
     or signature; nothing else changes.

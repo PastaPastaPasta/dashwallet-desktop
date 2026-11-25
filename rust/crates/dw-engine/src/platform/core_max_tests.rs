@@ -496,6 +496,7 @@ fn core_max_leaves_other_accounts() {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            excluded: None,
         }
     };
     let mut pending = coin(2, true);
@@ -519,6 +520,10 @@ fn core_max_leaves_other_accounts() {
     let mut pending_locked = coin(9, true);
     pending_locked.utxo.is_confirmed = false;
     pending_locked.user_locked = true;
+    // A withheld payment's output (`crate::withhold`): not even arriving.
+    let mut withheld = coin(15, true);
+    withheld.utxo.is_confirmed = false;
+    withheld.excluded = Some(crate::ExclusionReason::PendingUnproven);
     let snapshot = CoinSnapshot {
         height: 200,
         coins: vec![
@@ -531,6 +536,7 @@ fn core_max_leaves_other_accounts() {
             coinbase,
             denomination,
             pending_locked,
+            withheld,
             // Other accounts: BIP32, DashPay receiving, CoinJoin, a locked one,
             // a CoinJoin denomination.
             coin(10, true),
@@ -551,6 +557,7 @@ fn core_max_leaves_other_accounts() {
         (7, path("m/44'/1'/0'/0/7")),
         (8, path("m/44'/1'/0'/0/8")),
         (9, path("m/44'/1'/0'/0/9")),
+        (15, path("m/44'/1'/0'/0/15")),
     ]
     .into_iter()
     .map(|(n, p)| (OutPoint::new(Txid::from_byte_array([n; 32]), 0), p))

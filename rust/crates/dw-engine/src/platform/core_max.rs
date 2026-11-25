@@ -183,6 +183,11 @@ pub(crate) fn coins_of(
             continue;
         };
         let fin = (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_mature(height);
+        // An excluded coin counts nowhere (`crate::withhold`), not even as
+        // arriving; a final one the drain would take holds Max back below.
+        if !fin && c.excluded.is_some() {
+            continue;
+        }
         let path = (path.clone()).filter(|p| dw_vault::paths::is_bip44_address(p, network));
         let coin = DrainCoin {
             outpoint: utxo.outpoint,
