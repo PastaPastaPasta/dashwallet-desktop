@@ -4,7 +4,7 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage, isAppError } from "../api/backend";
+import { errorMessage, hasCode, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -174,11 +174,13 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal, why a `settledDescendant` one can't be abandoned, and which open wallet (of `wallets`)
- * a `recordUnreadable` one names from the catalog. */
-export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []): string {
+ * refusal, why a `settledDescendant` one can't be abandoned, which open wallet (of `wallets`)
+ * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
+ * tried once it has, from the catalog. */
+export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
   const unreadable = unreadableWallet(e);
   if (unreadable !== undefined) return recordUnreadableText(unreadable, wallets);
+  if (what === "abandon" && hasCode(e, "rescan_in_progress")) return t("activity.abandon.catchingUp");
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
@@ -210,7 +212,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
       const wallets = await b.listWallets().catch(() => []);
-      setNote({ text: actionProblem(e, wallets), problem: true });
+      setNote({ text: actionProblem(e, wallets, what), problem: true });
     } finally {
       setBusy(false);
     }
