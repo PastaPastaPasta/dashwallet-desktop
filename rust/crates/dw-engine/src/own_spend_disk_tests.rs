@@ -3215,19 +3215,29 @@ fn abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spen
     );
 }
 
-/// Waits for wallet.sqlite to hold `outpoint` spent or unspent: key-wallet's
-/// changes reach the store through the persister's own event task, so a row
-/// read right after an event can still be the one before it.
-fn wait_stored_spent(
+/// Waits up to 20 s for wallet.sqlite to hold `outpoint` as `want` (spent,
+/// unspent, or no row): key-wallet's changes reach the store through the
+/// persister's own event task, so a row read right after an event can still
+/// be the one before it.
+fn wait_stored_row(
     session: &NetworkSession,
     id: WalletId,
     outpoint: OutPoint,
-    spent: bool,
+    want: Option<bool>,
     what: &str,
 ) {
-    eventually(what, || {
-        stored_row(session, id, outpoint).map(|r| r.0) == Some(spent)
-    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let row = stored_row(session, id, outpoint).map(|r| r.0);
+        if row == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: stored {row:?}, want {want:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// What wallet.sqlite holds for `outpoint` of `id`: whether it is spent,
@@ -5873,7 +5883,7 @@ fn a_lock_arriving_after_the_funding_block_leaves_the_coin_spent() {
         "the lock claims A"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
-    wait_stored_spent(&session, id, a, true, "A is stored spent");
+    wait_stored_row(&session, id, a, Some(true), "A is stored spent");
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
@@ -6552,7 +6562,7 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         held(&engine, &session, id).contains(&c),
         "nothing claims C again"
     );
-    wait_stored_spent(&session, id, c, false, "C is stored unspent");
+    wait_stored_row(&session, id, c, Some(false), "C is stored unspent");
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
     assert!(
@@ -6601,19 +6611,20 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
             !spendable_for(&engine, session, id, change, COIN / 10),
             "{state}: P2's change is not offered"
         );
-        assert_eq!(
-            stored_row(session, id, change),
+        wait_stored_row(
+            session,
+            id,
+            change,
             None,
-            "{state}: P2's change is not stored"
+            &format!("{state}: P2's change is not stored"),
         );
         assert!(
             session.hub.history.get(&id, &p2.txid()).is_none(),
             "{state}: the history drops P2"
         );
-        assert!(
-            !stored_record(session, id, p2.txid()),
-            "{state}: the store drops P2"
-        );
+        eventually(&format!("{state}: the store drops P2"), || {
+            !stored_record(session, id, p2.txid())
+        });
     };
     gone(&session, "the lock");
     assert!(
