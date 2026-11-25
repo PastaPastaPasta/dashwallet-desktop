@@ -4372,6 +4372,68 @@ fn abandons_rescan_counts_but_never_offers_a_coin_a_pending_payment_from_elsewhe
     }
 }
 
+/// A prepared payment from A, dropped: key-wallet's reservation goes in a
+/// task the drop spawns, held here before it runs. Until it runs, A stays
+/// reserved to the engine too, so no plan takes it for key-wallet's build to
+/// drop (#745): coin control from A is refused by name, and the automatic
+/// choice of everything else spends exactly the other coins. Once it runs, A
+/// pays again.
+#[test]
+fn a_dropped_payments_coin_stays_reserved_until_key_wallet_releases_it() {
+    use crate::send::SendFailure;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let inputs = |source: CoinSource, amount: u64, subtract_fee: bool| {
+        let (_draft, prepared) = prepare(
+            &engine,
+            &session,
+            id,
+            source,
+            amount,
+            subtract_fee,
+            &Arc::new(Accept::default()),
+        );
+        prepared.map(|p| {
+            (p.summary().inputs.iter())
+                .map(|i| i.outpoint)
+                .collect::<BTreeSet<_>>()
+        })
+    };
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_release.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert!(
+        pause.wait_reached(std::time::Duration::from_secs(20)),
+        "the dropped payment's release is held"
+    );
+
+    let from_a = inputs(CoinSource::Outpoints(vec![a, b]), COIN * 3 / 2, false);
+    assert!(
+        matches!(
+            from_a,
+            Err(crate::EngineError::Send(SendFailure::OutpointUnavailable(o))) if o == a
+        ),
+        "coin control from A and B while the release is held: {from_a:?}"
+    );
+    let others: BTreeSet<OutPoint> = (1..COINS as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .collect();
+    let any = inputs(CoinSource::Any, (COINS as u64 - 1) * COIN, true);
+    assert_eq!(
+        any.as_ref().ok(),
+        Some(&others),
+        "the automatic choice while the release is held: {any:?}"
+    );
+
+    drop(release);
+    eventually("A and B pay once the releases ran", || {
+        inputs(CoinSource::Outpoints(vec![a, b]), COIN * 3 / 2, false).ok()
+            == Some(BTreeSet::from([a, b]))
+    });
+}
+
 /// A coin U of the wallet that only a pending payment from elsewhere
 /// spends: another device of the wallet's, or a payment with another
 /// party's input too (as a CoinJoin mix or a co-signed one is). key-wallet
