@@ -7,7 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useBalance, useUtxos, useWalletCatchUp } from "../../api/queries";
+import { keys, useUtxos, useWalletCatchUp } from "../../api/queries";
 import { restored } from "../../api/restoreHolds";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
@@ -59,7 +59,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const t = useT();
   const utxos = useUtxos(walletId, true);
-  const walletRestored = restored(useBalance(walletId).data);
+  const walletRestored = restored(network);
   const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
     rowCount: utxos.data?.length ?? 0,

@@ -13,7 +13,7 @@ import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
-import { keys, useBackend, useBalance, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { isRestoredRefusal, restored, restoreHeld } from "../api/restoreHolds";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
@@ -199,16 +199,15 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
-export function Actions({ walletId, txid }: { walletId: string; txid: string }) {
+export function Actions({ walletId, txid, network }: { walletId: string; txid: string; network: NetworkInfo }) {
   const b = useBackend();
   const client = useQueryClient();
   const extras = useTxDetailExtras(walletId, txid);
-  const balance = useBalance(walletId);
   const [confirming, setConfirming] = useState(false);
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  const walletRestored = restored(balance.data);
+  const walletRestored = restored(network);
   const abandon = actionOffer(!!x?.canAbandon, walletRestored);
   const resend = actionOffer(!!x?.canResend, walletRestored);
   useEffect(() => {
@@ -423,7 +422,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
         {d.message && <DetailRow label="Message">{d.message}</DetailRow>}
       </dl>
       <LabelEditor key={`label-${d.txid}`} walletId={walletId} txid={d.txid} label={d.label} />
-      <Actions key={`actions-${d.txid}`} walletId={walletId} txid={d.txid} />
+      <Actions key={`actions-${d.txid}`} walletId={walletId} txid={d.txid} network={network} />
       <details className="disclosure card-l1" data-testid="tx-detail-technical">
         <summary>Details</summary>
         <dl className="detail-list">

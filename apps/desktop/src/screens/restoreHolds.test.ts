@@ -10,16 +10,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../api/backend";
 import * as cmd from "../api/generated/commands";
-import type { Balances } from "../api/generated/Balances";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { Utxo } from "../api/generated/Utxo";
 import { BackendContext, keys } from "../api/queries";
-import { pendingUnproven, restored, restoreHeld, type HeldTxExtras, type HeldUtxo, type RestoredBalances } from "../api/restoreHolds";
+import { pendingUnproven, restored, restoreHeld, type HeldTxExtras, type HeldUtxo, type RestoredNetworkInfo } from "../api/restoreHolds";
 import { CoinTable } from "../components/coins";
 import { display } from "../format/display";
 import { coreSubtitle } from "../format/homeBalance";
 import { installFixture } from "../fixture/index";
-import { FUNDED_BALANCES } from "../fixture/wallet";
 import { FIXTURE_WALLET_ID as W, RESTORE_HELD_TXID as P } from "../fixture/scenarios";
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { t } from "../i18n";
@@ -142,23 +141,22 @@ describe("the abandon confirm of a payment from before a restore (H2)", () => {
 });
 
 describe("the RESTORED money gate", () => {
-  const actions = (x: TxDetailExtrasInfo, balances: Balances) => {
+  const actions = (x: TxDetailExtrasInfo, network: NetworkInfo) => {
     const client = new QueryClient();
     client.setQueryData(keys.txDetailExtras(W, P), x);
-    client.setQueryData(keys.balance(W), balances);
     return renderToStaticMarkup(
-      createElement(BackendContext.Provider, { value: {} as Backend }, createElement(QueryClientProvider, { client }, createElement(Actions, { walletId: W, txid: P }))),
+      createElement(BackendContext.Provider, { value: {} as Backend }, createElement(QueryClientProvider, { client }, createElement(Actions, { walletId: W, txid: P, network }))),
     );
   };
 
   it("puts its line where Abandon was, and the engine refuses Abandon", async () => {
     installFixture({ scenario: "restore-holds-restored" });
-    const b = (await cmd.balance(W))!;
+    const n = (await cmd.activeNetwork())!;
     const x = await cmd.txDetailExtras(W, P);
-    expect(restored(b)).toBe(true);
-    expect(actionOffer(x.canAbandon, restored(b))).toBe("gated");
-    expect(actionOffer(x.canResend, restored(b))).toBe("gated");
-    const html = actions(x, b);
+    expect(restored(n)).toBe(true);
+    expect(actionOffer(x.canAbandon, restored(n))).toBe("gated");
+    expect(actionOffer(x.canResend, restored(n))).toBe("gated");
+    const html = actions(x, n);
     expect(html).toContain(escaped(t("activity.abandon.restoredGate")));
     expect(html).not.toContain('data-testid="tx-abandon"');
     expect(html).not.toContain('data-testid="tx-resend"');
@@ -171,15 +169,22 @@ describe("the RESTORED money gate", () => {
 
   it("offers Abandon once RESTORED is cleared, the hold still there", async () => {
     installFixture({ scenario: "restore-holds" });
-    const b = (await cmd.balance(W))!;
+    const n = (await cmd.activeNetwork())!;
     const x = await cmd.txDetailExtras(W, P);
-    expect(restored(b)).toBe(false);
-    expect(actionOffer(x.canAbandon, restored(b))).toBe("offer");
-    const html = actions(x, b);
+    expect(restored(n)).toBe(false);
+    expect(actionOffer(x.canAbandon, restored(n))).toBe("offer");
+    const html = actions(x, n);
     expect(html).toContain('data-testid="tx-abandon"');
     expect(html).toContain('data-testid="tx-resend"');
     expect(html).not.toContain("tx-restored-gate");
     await cmd.abandonTransaction(W, P);
+  });
+
+  it("reads a network answer without the flag as not restored, and Balances never gates", async () => {
+    installFixture({ scenario: "restore-holds-restored" });
+    expect(restored({ kind: "testnet", dirName: "testnet", unitName: "tDASH" })).toBe(false);
+    expect(restored(null)).toBe(false);
+    expect(Object.keys((await cmd.balance(W))!)).not.toContain("restored");
   });
 
   it("offers nothing for an action the engine says doesn't apply", () => {
@@ -189,8 +194,8 @@ describe("the RESTORED money gate", () => {
 
   it("names the funds pause for a payment that can only be resent", () => {
     const x = { canAbandon: false, canResend: true, totalDebit: 1, inputsUnresolved: false } as TxDetailExtrasInfo;
-    const b: RestoredBalances = { ...FUNDED_BALANCES, restored: true };
-    const html = actions(x, b);
+    const n: RestoredNetworkInfo = { kind: "testnet", dirName: "testnet", unitName: "tDASH", restored: true };
+    const html = actions(x, n);
     expect(html).toContain(escaped(t("common.fundsPaused")));
     expect(html).not.toContain('data-testid="tx-resend"');
   });
