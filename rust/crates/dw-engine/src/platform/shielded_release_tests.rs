@@ -597,7 +597,7 @@ fn a_change_after_the_reads_writes_nothing() {
     let wallet = f.wallet;
     std::thread::scope(|scope| {
         let passing = scope.spawn(|| f.pass());
-        let wait = tokio::time::timeout(std::time::Duration::from_secs(120), reached_rx);
+        let wait = async { tokio::time::timeout(Duration::from_secs(120), reached_rx).await };
         (f.engine.block_on(wait))
             .expect("the release reached its pause")
             .unwrap();
