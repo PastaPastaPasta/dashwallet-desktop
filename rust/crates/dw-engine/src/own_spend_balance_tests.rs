@@ -2825,6 +2825,41 @@ fn abandoning_a_receipt_leaves_the_senders_rebroadcast() {
     assert_eq!(stopped(), [(p.txid(), false)], "the sender's abandon");
 }
 
+/// A receipt whose funding the recipient's history also holds: that coin
+/// pays the sender's address, not the recipient's, so abandoning the
+/// receipt still leaves the sender's rebroadcast.
+#[test]
+fn abandoning_a_receipt_whose_funding_the_recipient_holds_leaves_the_senders_rebroadcast() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = second_wallet(&engine, &session);
+    let to = fresh_address(&engine, &session, other).to_string();
+    let source = CoinSource::Outpoints(vec![OutPoint::new(paid.txid(), 0)]);
+    let p =
+        super::own_spend_disk_tests::send_to(&engine, &session, id, source, &to, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    wait_stored(&session, other, &[p.txid()]);
+    let funding = session
+        .hub
+        .history
+        .get(&id, &paid.txid())
+        .expect("the sender's funding");
+    (session.hub.history).with_wallet(other, |h| h.txs.insert(paid.txid(), funding));
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
+
+    let abandoned = try_abandon(&engine, &session, other, p.txid()).unwrap();
+    assert!(abandoned.contains(&p.txid()), "{abandoned:?}");
+    assert_eq!(
+        *session.hub.stopped_rebroadcasts.lock().unwrap(),
+        [],
+        "the receipt's abandon"
+    );
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+        "the sender's payment stays pending"
+    );
+}
+
 /// A pending payment the history holds that spends the wallet's coin,
 /// with no input of it named and no sent mark (another device's payment,
 /// read back after a restart with none of its inputs): Activity's Resend

@@ -1996,8 +1996,9 @@ impl NetworkSession {
     }
 
     /// Of `txids`, those `wallet` sent: each spends one of its coins, as
-    /// key-wallet's record or the history's own inputs say, or keeps its
-    /// sent mark. dash-spv's rebroadcast is the client's, shared by every
+    /// key-wallet's record, the history's own inputs or an input's funding
+    /// entry say (the rule Activity's Resend counts by), or keeps its sent
+    /// mark. dash-spv's rebroadcast is the client's, shared by every
     /// loaded wallet, so an abandon stops only these: a payment abandoned
     /// as received leaves its sender's retries. A mark that cannot be read
     /// is the error: it may be another wallet's payment.
@@ -2007,7 +2008,7 @@ impl NetworkSession {
         txids: &BTreeSet<Txid>,
         info: &platform_wallet::PlatformWalletInfo,
     ) -> Result<BTreeSet<Txid>, EngineError> {
-        let owned = crate::history_ops::owned_scripts(info);
+        let owned = std::cell::OnceCell::new();
         let spends: HashSet<Txid> = (info.core_wallet.accounts.all_accounts().into_iter())
             .filter(|a| !a.managed_account_type().is_contact_owned())
             .flat_map(|a| a.transactions().iter())
@@ -2018,11 +2019,11 @@ impl NetworkSession {
             (txids.iter().copied()).partition(|t| {
                 spends.contains(t)
                     || (self.hub.history).read_wallet(&wallet, |h| {
-                        // Activity's Resend counts an input whose funding
-                        // entry pays the wallet, so this does too.
                         let own = |i: &dashcore::TxIn| {
+                            let owned =
+                                owned.get_or_init(|| crate::history_ops::owned_scripts(info));
                             let prev = Some(&i.previous_output);
-                            crate::history::resolve_own_input(None, prev, &h.txs, &owned).is_some()
+                            crate::history::resolve_own_input(None, prev, &h.txs, owned).is_some()
                         };
                         h.txs
                             .get(t)
