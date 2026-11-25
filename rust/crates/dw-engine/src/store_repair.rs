@@ -14,7 +14,8 @@
 //! invalid (S3, S4); a script that isn't push-only can build its key and
 //! signature as it runs, so its `Ok(false)` alone keeps the claim (S1). It
 //! is kept when anything of its tree is settled in any wallet of the file,
-//! or when that can't be told (S2), and when it is mined or locked (S6).
+//! or may be (a lock row of any kind, a sweep's named winner), or when that
+//! can't be told (S2), and when it is mined or locked (S6).
 //!
 //! The store's schema is read only at the versions this build was checked
 //! against ([`KNOWN_SCHEMA`]); any other repairs nothing. The repair runs in
@@ -334,15 +335,15 @@ fn known_schema(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>> {
     Ok(Some(version))
 }
 
-/// What [`plan`] reads of the whole file: which transactions are settled,
-/// what spends each transaction's outputs, and the pending claims.
+/// What [`plan`] reads of the whole file: which transactions are settled
+/// or may be (mined, any lock row, a sweep's named winner), what spends
+/// each transaction's outputs, and the pending claims.
 #[derive(Default)]
 struct Graph {
     settled: HashSet<Txid>,
     children: HashMap<Txid, Vec<Txid>>,
     inputs: HashSet<OutPoint>,
     pending: Vec<([u8; 32], TransactionRecord)>,
-    unverified_locks: HashSet<Txid>,
 }
 
 /// Reads every wallet's transactions and InstantSend locks; `None` when the
@@ -351,7 +352,8 @@ struct Graph {
 fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Option<Graph>> {
     let limit = i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX);
     let rows: i64 = tx.query_row(
-        "SELECT (SELECT count(*) FROM core_transactions) + (SELECT count(*) FROM core_instant_locks)",
+        "SELECT (SELECT count(*) FROM core_transactions) + (SELECT count(*) FROM core_instant_locks) \
+         + (SELECT count(*) FROM core_utxos WHERE spent_in_txid IS NOT NULL)",
         [],
         |r| r.get(0),
     )?;
@@ -422,25 +424,36 @@ fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Resu
     while let Some(r) = q.next()? {
         let (wallet, txid, verified, blob): (Vec<u8>, Vec<u8>, bool, Option<Vec<u8>>) =
             (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-        let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
+        let (Ok(_), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
             return incomplete("a lock key");
         };
+        // Any lock row may be the network's: an unverified one, or one
+        // naming another transaction, keeps its transaction too.
+        graph.settled.insert(txid);
         if !verified {
-            graph.unverified_locks.insert(txid);
             continue;
         }
         let Some(lock) = blob.as_deref().and_then(crate::history_ops::decode_lock) else {
             return incomplete("an InstantSend lock");
         };
-        // The store ignores a lock row naming another transaction.
         if lock.txid != txid {
             continue;
         }
-        graph.settled.insert(txid);
         for parent in &lock.inputs {
             graph.children.entry(parent.txid).or_default().push(txid);
             graph.inputs.insert(*parent);
         }
+    }
+    drop(q);
+    // Only a mined or InstantSend-locked transaction wins a sweep.
+    let mut stmt = tx
+        .prepare("SELECT DISTINCT spent_in_txid FROM core_utxos WHERE spent_in_txid IS NOT NULL")?;
+    let mut q = stmt.query([])?;
+    while let Some(r) = q.next()? {
+        let Ok(winner) = Txid::from_slice(&r.get::<_, Vec<u8>>(0)?) else {
+            return incomplete("a sweep's winner");
+        };
+        graph.settled.insert(winner);
     }
     Ok(Some(graph))
 }
@@ -563,11 +576,16 @@ fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Opt
     };
     let mut claims: Vec<([u8; 32], &TransactionRecord, Cause)> = Vec::new();
     for (wallet, record) in &graph.pending {
+        // An unsigned input makes the drop sure (S3), whatever comes first.
         let mut cause = None;
         for index in 0..record.transaction.input.len() {
-            if let Some(c) = input_cause(tx, wallet, &record.transaction, index)? {
-                cause = Some(c);
-                break;
+            match input_cause(tx, wallet, &record.transaction, index)? {
+                Some(Cause::Unsigned) => {
+                    cause = Some(Cause::Unsigned);
+                    break;
+                }
+                Some(Cause::Structural) => cause = Some(Cause::Structural),
+                None => {}
             }
         }
         let Some(cause) = cause else {
@@ -575,10 +593,6 @@ fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Opt
         };
         if let Some(at) = settled_in_tree(tx, &graph, record.txid)? {
             tracing::warn!(claim = %record.txid, settled = %at, "store repair: kept an unsigned claim: something of its tree is settled");
-            continue;
-        }
-        if graph.unverified_locks.contains(&record.txid) || won_a_sweep(tx, record.txid)? {
-            tracing::warn!(claim = %record.txid, "store repair: kept an unsigned claim with a lock row or named a sweep's winner");
             continue;
         }
         claims.push((*wallet, record, cause));
@@ -595,16 +609,6 @@ fn plan(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Opt
         drops.push(drop_of(tx, &wallet, record, cause, &claimed)?);
     }
     Ok(Some(drops))
-}
-
-/// Whether a sweep named `claim` the winner of a coin: only a mined or
-/// InstantSend-locked transaction wins one, so the network took it.
-fn won_a_sweep(tx: &rusqlite::Transaction<'_>, claim: Txid) -> rusqlite::Result<bool> {
-    tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM core_utxos WHERE spent_in_txid = ?1)",
-        [claim.as_byte_array().as_slice()],
-        |r| r.get(0),
-    )
 }
 
 /// Every outpoint a stored transaction of any wallet spends, whatever its

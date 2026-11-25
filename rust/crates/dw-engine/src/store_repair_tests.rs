@@ -329,6 +329,106 @@ fn a_claim_a_sweep_named_the_winner_or_with_an_unverified_lock_is_kept() {
     assert!(stored(&dir, id, claim.txid()));
 }
 
+/// S2: a payment built on the claim's change that a sweep named the winner
+/// (so mined or locked, though the store holds neither), or a verified lock
+/// row on the claim naming another transaction, keeps the claim.
+#[test]
+fn a_sweep_winner_built_on_the_claim_or_a_stray_lock_row_keeps_it() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (funding, claim) = claim_on_a_held_coin(&engine, &session, id, &[]);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1)]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    eventually("the payment is stored", || {
+        stored(session.data_dir(), id, payment.txid())
+    });
+    let dir = close(&engine, session);
+    let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    on_store(
+        &dir,
+        "UPDATE core_utxos SET spent_in_txid = ?3 WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![
+            id.0.as_slice(),
+            a,
+            payment.txid().as_byte_array().as_slice()
+        ],
+    );
+    assert!(
+        repair_closed(&dir).dropped.is_empty(),
+        "a sweep's winner on the claim"
+    );
+    on_store(
+        &dir,
+        "UPDATE core_utxos SET spent_in_txid = NULL WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![id.0.as_slice(), a],
+    );
+    let stray = InstantLock {
+        txid: <Txid as dashcore::hashes::Hash>::from_byte_array([7; 32]),
+        ..InstantLock::default()
+    };
+    let blob = bincode::serde::encode_to_vec(&stray, bincode::config::standard()).unwrap();
+    on_store(
+        &dir,
+        "INSERT INTO core_instant_locks (wallet_id, txid, islock_blob, verified) VALUES (?1, ?2, ?3, 1)",
+        rusqlite::params![
+            id.0.as_slice(),
+            claim.txid().as_byte_array().as_slice(),
+            blob
+        ],
+    );
+    assert!(
+        repair_closed(&dir).dropped.is_empty(),
+        "a lock row naming another transaction"
+    );
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// S3 over S4: a claim whose first inputs spend one coin twice and whose
+/// last is a push-only unsigned input on another coin drops as sure.
+#[test]
+fn an_unsigned_input_after_structural_ones_makes_the_drop_sure() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to_a, to_b) = (
+        fresh_address(&engine, &session, id),
+        fresh_address(&engine, &session, id),
+    );
+    let funding = super::own_spend_disk_tests::funding(5, &[to_a, to_b], PAID);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let (a, b) = (
+        OutPoint::new(funding.txid(), 0),
+        OutPoint::new(funding.txid(), 1),
+    );
+    let mut claim = spend_of(a, vec![(elsewhere(), PAID)]);
+    claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    claim.input.push(claim.input[0].clone());
+    claim.input.push(TxIn {
+        previous_output: b,
+        ..Default::default()
+    });
+    mempool(&engine, &session, id, &claim);
+    eventually("the claim is stored", || {
+        stored(session.data_dir(), id, claim.txid())
+    });
+    let session = reopen(&engine, session);
+    assert!(!stored(session.data_dir(), id, claim.txid()), "dropped");
+    let raw = setting(
+        &session,
+        &id.to_string(),
+        &format!("store_dropped:{}", claim.txid()),
+    )
+    .expect("recorded");
+    assert!(raw.contains("\"cause\":\"unsigned\""), "{raw}");
+    let (all, doubtful) = records(&session, id);
+    assert!(all.contains(&claim.txid()) && doubtful.is_empty(), "sure");
+    assert!(spendable(&engine, &session, id, a) && spendable(&engine, &session, id, b));
+}
+
 /// S2: a row anywhere in the file that doesn't decode, or more rows than
 /// the walk reads, keeps every claim.
 #[test]
@@ -511,8 +611,8 @@ fn a_stop_after_the_store_commits_keeps_the_drop() {
 }
 
 /// The record round-trips through the history's listing: a drop is in
-/// `Persisted::dropped`, restored from no mark, and only an input script
-/// that isn't push-only makes it doubtful.
+/// `Persisted::dropped`, restored from no mark, and only a structural
+/// drop (S4) makes it doubtful.
 #[test]
 fn a_repair_record_reaches_the_listing_of_stored_transactions() {
     let (_dir, engine, session, id) = engine_wallet();
