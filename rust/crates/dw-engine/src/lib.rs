@@ -99,8 +99,9 @@ pub use fees::{
     fee_policy,
 };
 pub use history::{
-    AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
-    TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
+    AddressChain, DropCause, DropState, HistoryFilter, HistoryPage, HistoryQuery, HistorySort,
+    TxCategory, TxDetail, TxDrop, TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind,
+    TxType, WatchOnlyFilter,
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD, PaymentAuthentication};
 pub use labels::{BookEntryInfo, LabelsFailure};
@@ -126,5 +127,7 @@ pub use tools::{
     BUILD_VERSION, ChainLockInfo, ENGINE_VERSION, EngineWarning, HistoryGap, MasternodeCount,
     NodeInfo, RescanProgress, USER_AGENT, WarningCode,
 };
-pub use tx_actions::{TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal};
+pub use tx_actions::{
+    DroppedNotice, TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal,
+};
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};

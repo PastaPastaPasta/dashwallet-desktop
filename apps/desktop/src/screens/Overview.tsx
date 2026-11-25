@@ -30,6 +30,7 @@ import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
+import { DroppedNoticeBanner } from "./DroppedNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
@@ -285,6 +286,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <HistoryGapNotice />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
+        <DroppedNoticeBanner walletId={walletId} network={network} />
         <ExportStagingBanner />
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
