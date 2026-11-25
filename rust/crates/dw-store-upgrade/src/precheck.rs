@@ -188,19 +188,28 @@ fn check_locked(
 }
 
 /// What the rehearsal's copy can't show: upstream's real open refuses a
-/// symlinked `wallet.sqlite` and makes the file owner-only, which fails on
-/// another user's file. Either would fail every start after R1's drop.
+/// symlinked `wallet.sqlite` on unix (its `reject_symlink` has a unix body
+/// only) and makes the file owner-only, which fails on another user's file.
+/// Either would fail every start after R1's drop.
 fn refuse_unopenable_file(network_dir: &Path) -> Result<Option<Precheck>> {
     let meta = fs::symlink_metadata(wallet_path(network_dir))
         .map_err(StoreUpgradeError::io("stat wallet.sqlite", true))?;
-    let detail = if meta.file_type().is_symlink() {
-        Some("is a symbolic link".to_string())
-    } else {
-        foreign_owner(&meta)
-    };
-    Ok(detail.map(|detail| Precheck::Refuse {
+    Ok(unsupported(&meta).map(|detail| Precheck::Refuse {
         reason: StoreUpgradeError::WalletFileUnsupported { detail },
     }))
+}
+
+#[cfg(unix)]
+fn unsupported(meta: &fs::Metadata) -> Option<String> {
+    if meta.file_type().is_symlink() {
+        return Some("is a symbolic link".to_string());
+    }
+    foreign_owner(meta)
+}
+
+#[cfg(not(unix))]
+fn unsupported(_meta: &fs::Metadata) -> Option<String> {
+    None
 }
 
 #[cfg(unix)]
@@ -208,11 +217,6 @@ fn foreign_owner(meta: &fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let me = effective_uid();
     (meta.uid() != me).then(|| format!("is owned by uid {}, not {me}", meta.uid()))
-}
-
-#[cfg(not(unix))]
-fn foreign_owner(_meta: &fs::Metadata) -> Option<String> {
-    None
 }
 
 #[cfg(unix)]
