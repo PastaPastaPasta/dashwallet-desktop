@@ -1146,7 +1146,7 @@ pub(crate) fn swept_by_block(
     }
 }
 
-/// What can prove a gone parent of an orphan's drop dead for good
+/// What can prove a dropped or swept transaction dead for good
 /// ([`dead_for_good`]).
 #[derive(Debug, Default)]
 pub(crate) struct Deaths {
@@ -1168,8 +1168,9 @@ impl Deaths {
     }
 }
 
-/// Whether `parent`, a gone parent of an orphan's drop, is dead for good
-/// (#749 Q81c §2, Q81d): it is not live in the history, and (a) its
+/// Whether `parent`, a gone parent of an orphan's drop or a transaction of
+/// a drop's chain ([`chain_dead_for_good`]), is dead for good (#749 Q81c
+/// §2, Q81d): it is not live in the history, and (a) its
 /// `dropped:` mark is a never-valid verdict, (b) a conflict sweep removed
 /// it for a winner whose block the header chain proves final (`proven`),
 /// or (c) another transaction spent one of its inputs
@@ -1210,6 +1211,30 @@ pub(crate) fn dead_for_good(
         || deaths.inputs_of(parent).any(spent_finally)
 }
 
+/// Whether the dropped transaction `t` can never confirm: it, or a
+/// transaction it builds on through a chain of parents `ancestor` names
+/// (dropped or swept, [`Deaths::inputs_of`]), is dead for good (`dead`,
+/// [`dead_for_good`]). The walk stops at a parent `ancestor` doesn't name.
+pub(crate) fn chain_dead_for_good(
+    t: &Txid,
+    deaths: &Deaths,
+    ancestor: impl Fn(&Txid) -> bool,
+    dead: impl Fn(&Txid) -> bool,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut next = vec![*t];
+    while let Some(u) = next.pop() {
+        if !seen.insert(u) {
+            continue;
+        }
+        if dead(&u) {
+            return true;
+        }
+        next.extend((deaths.inputs_of(&u).map(|o| o.txid)).filter(|p| ancestor(p)));
+    }
+    false
+}
+
 /// What [`held_awaiting`] reads beside the drops and the history.
 pub(crate) struct HeldEvidence<'a> {
     /// The header chain proves a transaction's block final
@@ -1229,6 +1254,8 @@ pub(crate) struct HeldEvidence<'a> {
     /// A gone parent of an orphan's drop is dead for good
     /// ([`dead_for_good`]).
     pub dead_for_good: &'a dyn Fn(&Txid) -> bool,
+    /// A dropped transaction can never confirm ([`chain_dead_for_good`]).
+    pub drop_dead: &'a dyn Fn(&Txid) -> bool,
 }
 
 /// Whether a coin the drops still hold (`held`, [`still_held`]) awaits
@@ -1237,13 +1264,14 @@ pub(crate) struct HeldEvidence<'a> {
 /// dropped transaction's note holds, and its origin's note): a coin is
 /// settled when no live transaction of the history or key-wallet record
 /// spends it, no InstantSend lock of a transaction the wallet holds no
-/// copy of may spend it, and every drop holding it is settled. A drop is
-/// settled when its winner is in the history and its block proven final
-/// (`chain_final`); when the history doesn't hold it, or it is unknown,
-/// when one of the coins it contested has a final spend: the evidence's,
-/// or a spend by a transaction of the history in a block proven final. An
-/// orphan's drop, which nothing beat, is settled once each parent a load
-/// found gone is dead for good (Q81c §2). A drop with no origin note
+/// copy of may spend it, and every drop holding it is settled. A drop
+/// whose winner the history holds is settled when the winner's block is
+/// proven final (`chain_final`) or the drop's own transaction can never
+/// confirm (`drop_dead`); one whose winner the history doesn't hold, or
+/// is unknown, when one of the coins it contested has a final spend: the
+/// evidence's, or a spend by a transaction of the history in a block proven
+/// final. An orphan's drop, which nothing beat, is settled once each parent
+/// a load found gone is dead for good (Q81c §2). A drop with no origin note
 /// awaits.
 pub(crate) fn held_awaiting(
     held: &BTreeSet<OutPoint>,
@@ -1266,12 +1294,12 @@ pub(crate) fn held_awaiting(
             }
         }
     }
-    let settled_drop = |origin: &DropOrigin| match origin {
+    let settled_drop = |t: &Txid, origin: &DropOrigin| match origin {
         DropOrigin {
             winner: None, gone, ..
         } if !gone.is_empty() => gone.iter().all(evidence.dead_for_good),
         _ => match (origin.winner.and_then(|w| txs.get(&w))).filter(|e| !e.is_abandoned()) {
-            Some(winner) => (evidence.chain_final)(winner),
+            Some(winner) => (evidence.chain_final)(winner) || (evidence.drop_dead)(t),
             None => {
                 (origin.contested.iter()).any(|o| locked.contains(o) || (evidence.final_spend)(o))
             }
@@ -1281,9 +1309,9 @@ pub(crate) fn held_awaiting(
         live.contains(coin)
             || (evidence.spent_by_record)(coin)
             || (evidence.unknown_lock)(coin)
-            || (drops.values())
-                .filter(|(holds, _)| holds.contains(coin))
-                .any(|(_, origin)| !origin.as_ref().is_some_and(settled_drop))
+            || (drops.iter())
+                .filter(|(_, (holds, _))| holds.contains(coin))
+                .any(|(t, (_, origin))| !origin.as_ref().is_some_and(|o| settled_drop(t, o)))
     })
 }
 
@@ -4464,6 +4492,144 @@ mod tests {
         }
     }
 
+    /// #907, beside a winner W stuck in a block the header chain replaced
+    /// (B at 10, under a ChainLock of 11, the header chain holding B'): a
+    /// drop settles once its own dropped transaction can never confirm
+    /// ([`chain_dead_for_good`]). C, dropped holding D, builds on P, swept
+    /// for W: a rival's spend of P's input A, proven final, kills P and so
+    /// C; P itself mined and proven final kills neither, since a
+    /// transaction live in the history is never dead. Roots R1 and R2, beaten by one winner,
+    /// share its origin: a rival's spend of R1's input E1 kills R1 alone,
+    /// and K, a dropped child of R1, with it; R1 itself mined kills none.
+    #[test]
+    fn a_drop_beside_a_stale_winner_settles_only_once_its_own_chain_is_dead() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (replaced, kept, lock) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+            BlockHash::from_byte_array([3; 32]),
+        );
+        let headers = HashMap::from([(10, kept), (11, lock)]);
+        let proven = |b: (u32, BlockHash)| proven_final(b, Some((11, lock)), &headers);
+        let chain_final = |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| proven((b.height(), b.block_hash())))
+        };
+        let in_hash = |hash: BlockHash| TransactionContext::InBlock(BlockInfo::new(10, hash, 0));
+        let spends = |coins: &[OutPoint], n: u8| {
+            let inputs = coins.iter().map(|o| input(o.txid, o.vout)).collect();
+            tx(inputs, vec![out(10, &hash_addr(n))])
+        };
+        let awaits = |stale: &Transaction,
+                      origin: DropOrigin,
+                      keys: &[(Txid, OutPoint)],
+                      deaths: &Deaths,
+                      mined: Vec<Transaction>| {
+            let drops: HeldDrops = (keys.iter())
+                .map(|(k, h)| (*k, (BTreeSet::from([*h]), Some(origin.clone()))))
+                .collect();
+            let txs: HashMap<Txid, TxEntry> =
+                (std::iter::once(entry(stale.clone(), in_hash(replaced))))
+                    .chain(mined.into_iter().map(|m| entry(m, in_hash(kept))))
+                    .map(|e| (e.tx.txid(), e))
+                    .collect();
+            let no_notes = BTreeMap::new();
+            let dead = |u: &Txid| dead_for_good(u, deaths, &txs, &no_notes, proven);
+            let ancestor = |u: &Txid| drops.contains_key(u) || deaths.swept_by.contains_key(u);
+            let drop_dead = |u: &Txid| chain_dead_for_good(u, deaths, ancestor, dead);
+            let evidence = HeldEvidence {
+                chain_final: &chain_final,
+                dead_for_good: &dead,
+                drop_dead: &drop_dead,
+                ..no_evidence(None)
+            };
+            (keys.iter())
+                .map(|(_, h)| held_awaiting(&BTreeSet::from([*h]), &drops, &txs, &evidence))
+                .collect::<Vec<_>>()
+        };
+
+        let (a, d) = (OutPoint::new(t(1), 0), OutPoint::new(t(2), 0));
+        let stale = spends(&[a], 3);
+        let p = spends(&[a], 1);
+        let c = tx(
+            vec![input(p.txid(), 0), input(d.txid, d.vout)],
+            vec![out(40, &hash_addr(2))],
+        );
+        let deaths = Deaths {
+            swept_by: BTreeMap::from([(
+                p.txid(),
+                SweptBy {
+                    claim: false,
+                    winner: stale.txid(),
+                    block: None,
+                    tx: p.clone(),
+                },
+            )]),
+            copies: BTreeMap::from([(c.txid(), c.clone())]),
+            ..Deaths::default()
+        };
+        let origin = DropOrigin {
+            winner: Some(stale.txid()),
+            contested: BTreeSet::from([a, OutPoint::new(p.txid(), 0), d]),
+            gone: BTreeSet::new(),
+        };
+        let c_drop = [(c.txid(), d)];
+        let mut rows = Vec::new();
+        for (name, mined, d_awaits) in [
+            ("nothing else", vec![], true),
+            (
+                "a rival's spend of A proven final",
+                vec![spends(&[a], 4)],
+                false,
+            ),
+            ("P mined and proven final", vec![p.clone()], true),
+        ] {
+            let got = awaits(&stale, origin.clone(), &c_drop, &deaths, mined);
+            rows.push((format!("D, {name}"), got, vec![d_awaits]));
+        }
+
+        let (a1, e1) = (OutPoint::new(t(5), 0), OutPoint::new(t(5), 1));
+        let (a2, e2) = (OutPoint::new(t(6), 0), OutPoint::new(t(6), 1));
+        let (h1, h2, h3) = (
+            OutPoint::new(t(7), 0),
+            OutPoint::new(t(7), 1),
+            OutPoint::new(t(7), 2),
+        );
+        let stale = spends(&[a1, a2], 3);
+        let (r1, r2) = (spends(&[a1, e1], 5), spends(&[a2, e2], 6));
+        let k = spends(&[OutPoint::new(r1.txid(), 0)], 8);
+        let deaths = Deaths {
+            copies: BTreeMap::from([
+                (r1.txid(), r1.clone()),
+                (r2.txid(), r2.clone()),
+                (k.txid(), k.clone()),
+            ]),
+            ..Deaths::default()
+        };
+        let origin = DropOrigin {
+            winner: Some(stale.txid()),
+            contested: BTreeSet::from([a1, e1, a2, e2]),
+            gone: BTreeSet::new(),
+        };
+        let roots = [(r1.txid(), h1), (r2.txid(), h2), (k.txid(), h3)];
+        for (name, mined, r_await) in [
+            (
+                "a rival's spend of E1 proven final",
+                vec![spends(&[e1], 4)],
+                vec![false, true, false],
+            ),
+            (
+                "R1 mined and proven final",
+                vec![r1.clone()],
+                vec![true, true, true],
+            ),
+        ] {
+            let got = awaits(&stale, origin.clone(), &roots, &deaths, mined);
+            rows.push((format!("R1's, R2's and K's coins, {name}"), got, r_await));
+        }
+        let wrong: Vec<_> = rows.iter().filter(|(_, got, want)| got != want).collect();
+        assert!(wrong.is_empty(), "(row, awaits, expected): {wrong:?}");
+    }
+
     /// [`HeldEvidence`] of nothing, under `chainlock`, whose header chain
     /// proves every block at or below it.
     fn no_evidence(chainlock: Option<u32>) -> HeldEvidence<'static> {
@@ -4476,6 +4642,7 @@ mod tests {
             spent_by_record: &|_| false,
             unknown_lock: &|_| false,
             dead_for_good: &|_| false,
+            drop_dead: &|_| false,
         }
     }
 
