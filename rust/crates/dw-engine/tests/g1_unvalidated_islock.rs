@@ -444,7 +444,7 @@ fn g1_a_verified_lock_stays_instantsend_after_a_reopen() {
 }
 
 #[test]
-fn g1_an_unverified_lock_validated_later_is_final_after_a_reopen() {
+fn g1_an_unverified_lock_stored_again_as_verified_is_final_after_a_reopen() {
     let mut f = Fixture::new(offline_options(), PHRASE);
     let (tx, lock) = payment_to(&f.address);
     let txid = tx.txid();

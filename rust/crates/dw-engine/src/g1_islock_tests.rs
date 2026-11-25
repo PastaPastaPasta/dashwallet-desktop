@@ -11,12 +11,15 @@
 //! production SPV runtime builds the same client over the peer network, which
 //! a test cannot feed a lock that fails validation.
 //!
-//! The client is built as the runtime builds it, with two differences that
-//! do not touch the lock path: no compact filters (the mock serves no
-//! chain to filter), and the session hub as its only engine handler, not
-//! platform-wallet's event manager. The store's writer hears the wallet
-//! manager's own events, not the handlers, and the other handlers act only on
-//! a validated `InstantLockReceived` or a `TransactionInstantLocked`.
+//! The client is built as the runtime builds it (masternodes on, mempool
+//! during sync), with two differences that do not touch the lock path: no
+//! compact filters (the mock serves no chain to filter), and the session hub
+//! as its only engine handler, not platform-wallet's event manager. The
+//! store's writer hears the wallet manager's own events, not the handlers.
+//! Of the other handlers, platform-wallet's lock notifier wakes on any
+//! `InstantLockReceived` and the rest act only on a
+//! `TransactionInstantLocked`; the tests check that no `InstantLockReceived`
+//! is emitted for the unvalidated lock at all.
 //!
 //! A control runs the same checks on a lock the wallet takes directly, so
 //! each check is shown able to fail. A lock row stored unverified, and a lock
@@ -28,22 +31,22 @@ use std::time::{Duration, Instant};
 
 use dash_spv::error::NetworkResult;
 use dash_spv::network::{Inbound, MessageType, NetworkEvent, NetworkManager, RequestKey};
-use dash_spv::test_utils::{test_socket_address, MockNetworkManager};
+use dash_spv::test_utils::{MockNetworkManager, test_socket_address};
 use dash_spv::{ClientConfig, DashSpvClient, MempoolStrategy, SyncEvent};
 use dashcore::bls_sig_utils::BLSSignature;
 use dashcore::network::message::NetworkMessage;
 use dashcore::{InstantLock, Transaction, Txid};
+use platform_wallet::PlatformWalletInfo;
 use platform_wallet::changeset::PlatformWalletPersistence;
 use platform_wallet::key_wallet_manager::WalletManager;
-use platform_wallet::PlatformWalletInfo;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::{balances, engine_wallet, payment, receive_address, reopen, rows, PAID};
+use super::{PAID, balances, engine_wallet, payment, receive_address, reopen, rows};
 use crate::coins::{CoinFilter, CoinInfo};
 use crate::history::TxStatusKind;
 use crate::session::{NetworkSession, WALLET_DB_FILE};
-use crate::{Engine, WalletId};
+use crate::{CoinSource, Engine, FeeMode, WalletId};
 
 const BARRIER: Duration = Duration::from_secs(60);
 const SETTLE: Duration = Duration::from_secs(3);
@@ -126,11 +129,14 @@ impl dash_spv::EventHandler for LockEvents {
 
 impl LockEvents {
     fn of(&self, txid: &Txid) -> Vec<bool> {
-        (self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
-            .iter()
-            .filter(|(t, _)| t == txid)
-            .map(|(_, validated)| *validated)
-            .collect()
+        (self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .iter()
+        .filter(|(t, _)| t == txid)
+        .map(|(_, validated)| *validated)
+        .collect()
     }
 }
 
@@ -184,23 +190,22 @@ fn record_stored(session: &NetworkSession, txid: &Txid) -> bool {
 struct Coin {
     /// The coin list's InstantSend flag.
     listed_locked: bool,
-    /// Confirmed, InstantSend-locked or own change (Dash Core `IsTrusted`):
-    /// what lets automatic selection spend it. `None`: not in the snapshot
-    /// the spends select from.
-    trusted: Option<bool>,
     /// Neither user-locked, reserved nor immature: whether it is held back for
     /// another reason.
     selectable: Option<bool>,
 }
 
-/// What the engine shows of the payment: its history rows, the balances,
-/// and its coins.
+/// What the engine shows of the payment: its detail's InstantSend flag, its
+/// history rows, the balances, its coins and what a send without coin control
+/// may spend.
 #[derive(Debug)]
 struct View {
+    detail_locked: bool,
     rows: Vec<(TxStatusKind, bool, i64)>,
     confirmed: u64,
     unconfirmed: u64,
     coins: Vec<Coin>,
+    auto_spendable: u64,
 }
 
 fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txid) -> View {
@@ -214,6 +219,19 @@ fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txi
             },
         ))
         .unwrap();
+    let detail_locked = engine
+        .block_on(session.tx_detail(id, txid.to_string()))
+        .unwrap()
+        .status
+        .instant_locked;
+    // Before the fence: a send takes it too.
+    let auto_spendable = engine
+        .block_on(session.max_spendable(
+            id,
+            CoinSource::Any,
+            FeeMode::Recommended { target_blocks: 6 },
+        ))
+        .unwrap();
     let fence = engine.block_on(session.coin_fence(id)).unwrap();
     let wallet = engine.block_on(session.wallet(&id)).unwrap();
     let snap = engine
@@ -223,11 +241,11 @@ fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txi
         let held = snap.coins.iter().find(|w| w.utxo.outpoint == c.outpoint);
         Coin {
             listed_locked: c.instant_locked,
-            trusted: held.map(|w| w.utxo.is_confirmed || w.utxo.is_instantlocked || w.utxo.is_trusted),
             selectable: held.map(|w| w.chosen_selectable(snap.height)),
         }
     };
     View {
+        detail_locked,
         rows: (rows(engine, session, id).into_iter())
             .filter(|(t, ..)| *t == txid.to_string())
             .map(|(_, kind, locked, amount)| (kind, locked, amount))
@@ -239,28 +257,32 @@ fn view(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: &Txi
             .filter(|c| c.outpoint.txid == *txid)
             .map(coin)
             .collect(),
+        auto_spendable,
     }
 }
 
 const NOT_FINAL_COIN: Coin = Coin {
     listed_locked: false,
-    trusted: Some(false),
     selectable: Some(true),
 };
 
-/// The payment is in the engine and not final: one unconfirmed row without
-/// a lock, its amount unconfirmed and none confirmed, and one coin that is
-/// not InstantSend-locked or trusted and is held back for nothing else.
+/// The payment is in the engine and not final: its detail not locked, one
+/// unconfirmed row without a lock, its amount unconfirmed and none confirmed,
+/// one coin that is not InstantSend-locked and is held back for nothing else,
+/// and nothing a send without coin control may spend.
 fn not_final_violation(v: &View) -> Option<String> {
     let amount = i64::try_from(PAID).unwrap();
-    let ok = v.rows == [(TxStatusKind::Unconfirmed, false, amount)]
+    let ok = !v.detail_locked
+        && v.rows == [(TxStatusKind::Unconfirmed, false, amount)]
         && v.confirmed == 0
         && v.unconfirmed == PAID
-        && v.coins == [NOT_FINAL_COIN];
+        && v.coins == [NOT_FINAL_COIN]
+        && v.auto_spendable == 0;
     (!ok).then(|| {
         format!(
-            "want one Unconfirmed row without a lock for {PAID}, confirmed 0, \
-             unconfirmed {PAID} and one selectable coin neither locked nor trusted; got {v:?}"
+            "want a detail and one Unconfirmed row without a lock for {PAID}, confirmed 0, \
+             unconfirmed {PAID}, one selectable coin not locked and 0 spendable without \
+             coin control; got {v:?}"
         )
     })
 }
@@ -299,6 +321,7 @@ impl Spv {
         let config = ClientConfig::regtest()
             .without_filters()
             .with_mempool_tracking(MempoolStrategy::FetchAll)
+            .with_mempool_during_sync(true)
             .with_storage_path(dir.path());
         assert!(
             config.enable_masternodes,
@@ -309,10 +332,9 @@ impl Spv {
             Arc::clone(&locks) as Arc<dyn dash_spv::EventHandler>,
         ];
         let client = engine.block_on(async {
-            let client =
-                DashSpvClient::new(config, SharedNetwork(Arc::clone(&net)), wm, handlers)
-                    .await
-                    .expect("spv client");
+            let client = DashSpvClient::new(config, SharedNetwork(Arc::clone(&net)), wm, handlers)
+                .await
+                .expect("spv client");
             client.run().await.expect("run spv client");
             client
         });
@@ -456,22 +478,33 @@ fn g1_engine_unvalidated_lock_after_its_transaction_is_never_final() {
     run(Order::TxFirst);
 }
 
-/// The payment is InstantSend-final in the engine: its row is locked, its
-/// one coin locked, trusted and selectable, and its amount confirmed balance
-/// (key-wallet counts an InstantSend-locked coin as confirmed).
+/// The payment is InstantSend-final in the engine: its detail and row are
+/// locked, its one coin locked and selectable, its amount confirmed balance
+/// (key-wallet counts an InstantSend-locked coin as confirmed), and a send
+/// without coin control may spend it.
 fn assert_final(v: &View, amount: u64, what: &str) {
     let signed = i64::try_from(amount).unwrap();
+    assert!(
+        v.detail_locked,
+        "{what}: the detail is InstantSend-locked; got {v:?}"
+    );
     assert!(
         matches!(v.rows.as_slice(), [(_, true, a)] if *a == signed),
         "{what}: one InstantSend-locked row for {amount}; got {v:?}"
     );
     let final_coin = Coin {
         listed_locked: true,
-        trusted: Some(true),
         selectable: Some(true),
     };
-    assert_eq!(v.coins, [final_coin], "{what}: one locked, trusted coin");
-    assert_eq!(v.confirmed, amount, "{what}: the payment is confirmed balance");
+    assert_eq!(v.coins, [final_coin], "{what}: one locked coin");
+    assert_eq!(
+        v.confirmed, amount,
+        "{what}: the payment is confirmed balance"
+    );
+    assert!(
+        v.auto_spendable > 0,
+        "{what}: a send without coin control may spend it; got {v:?}"
+    );
 }
 
 /// Control: the same harness and checks report a lock the wallet takes
@@ -491,6 +524,10 @@ fn g1_engine_control_a_lock_the_wallet_takes_is_final() {
     });
     assert_final(&view(&engine, &session, id, &txid), PAID, "live");
     let session = reopen(&engine, session);
-    assert_eq!(lock_rows(&session, id, &txid), [1], "after reopen: the verified row");
+    assert_eq!(
+        lock_rows(&session, id, &txid),
+        [1],
+        "after reopen: the verified row"
+    );
     assert_final(&view(&engine, &session, id, &txid), PAID, "after reopen");
 }
