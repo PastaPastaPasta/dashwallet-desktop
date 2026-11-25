@@ -156,6 +156,10 @@ export const STORE_COPY = {
   refusedTitle: "Dash Wallet can't open this wallet data safely",
   refusedRestoreText:
     "This version of Dash Wallet can't safely open the wallet data in {folder}: it was written by a development build of Dash Wallet. Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it. Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+  refusedSupportText:
+    "This version of Dash Wallet can't safely open the wallet data in {folder}: it's in a state this version doesn't expect. Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it. Choose Report a problem.",
+  refusedDamagedText:
+    "This version of Dash Wallet can't safely open the wallet data in {folder}: it can't be read as wallet data, so it may be damaged. Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it. Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
   issuesHint: "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
 };
 
@@ -206,13 +210,48 @@ const refusedRestoreScreen = (folder: string): StoreRefusedData => ({
   },
 });
 
+/** A damaged store (SnapshotSourceDamaged) on the unexpected-state screen, as dw-store-upgrade gives it
+ * before Q107 C1: Report a problem and Quit only. */
+const damagedScreen = (folder: string): StoreRefusedData => ({
+  kind: "storeRefused",
+  cause: "SnapshotSourceDamaged",
+  folder,
+  screen: {
+    titleKey: "storeUpgrade.refused.title",
+    title: STORE_COPY.refusedTitle,
+    textKey: "storeUpgrade.refused.wayOut.support",
+    text: STORE_COPY.refusedSupportText.replaceAll("{folder}", folder),
+    buttons: [plain("storeUpgrade.refused.report", "Report a problem"), plain("storeUpgrade.refused.quit", "Quit")],
+    hint: { key: "settings.about.links.issuesHint", text: STORE_COPY.issuesHint },
+  },
+});
+
+/** The same refusal on Q107 C1's damaged-store screen (dw-store-upgrade 0a535bef7), which carries Set up
+ * from recovery phrase itself. */
+const damagedRecoverScreen = (folder: string): StoreRefusedData => ({
+  kind: "storeRefused",
+  cause: "SnapshotSourceDamaged",
+  folder,
+  screen: {
+    titleKey: "storeUpgrade.refused.title",
+    title: STORE_COPY.refusedTitle,
+    textKey: "storeUpgrade.refused.wayOut.damaged",
+    text: STORE_COPY.refusedDamagedText.replaceAll("{folder}", folder),
+    buttons: [plain("storeUpgrade.refused.recover", "Set up from recovery phrase"), plain("storeUpgrade.refused.report", "Report a problem"), plain("storeUpgrade.refused.quit", "Quit")],
+    hint: { key: "settings.about.links.issuesHint", text: STORE_COPY.issuesHint },
+  },
+});
+
 /** `screen_for`'s screens, each with the variant that gives it: `cantOpen` with a verified backup, and
- * without one; the foreign lineage's; and a refusal that offers Restore earlier data. */
+ * without one; the foreign lineage's; a refusal that offers Restore earlier data; and a damaged store, before
+ * and after Q107 C1. */
 export const STORE_SCREENS = {
   cantOpen: (folder: string) => cantOpenScreen(folder, "RetiredPoolWithoutAdopter", "text", STORE_COPY.cantOpenText),
   cantOpenWithoutBackup: (folder: string) => cantOpenScreen(folder, "P9aBroken", "textWithoutBackup", STORE_COPY.cantOpenTextWithoutBackup),
   restoreForeign: foreignScreen,
   refusedRestore: refusedRestoreScreen,
+  damaged: damagedScreen,
+  damagedRecover: damagedRecoverScreen,
 };
 
 export type StoreScreenName = keyof typeof STORE_SCREENS;

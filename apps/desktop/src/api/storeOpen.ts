@@ -13,7 +13,8 @@ import type { StoreScreen } from "./generated/StoreScreen";
 
 export type { NotPrivateReason, StoreButton, StoreHint, StoreScreen };
 
-/** `cause` is the engine's error variant, for tests and logs only: the screen never depends on it. */
+/** `cause` is the engine's error variant, for tests and logs; the screen reads it only for a way out the
+ * engine's screen doesn't carry yet (StoreRefusal's `LOCAL_WAYS_OUT`). */
 export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
 
 export type StorageInUseData = Extract<ErrorData, { kind: "storageInUse" }>;

@@ -22,7 +22,20 @@ import { buildWorld } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { flatten } from "../i18n/core";
 import { en } from "../i18n/en";
-import { buttonAction, NOT_PRIVATE_BUTTONS, OpenFailureActions, perform, RESTORE_BUTTONS, RestoreConfirmView, StorageInUseView, StoreNotPrivateView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
+import {
+  buttonAction,
+  NOT_PRIVATE_BUTTONS,
+  OpenFailureActions,
+  perform,
+  RecoverConfirmView,
+  refusalButtons,
+  RESTORE_BUTTONS,
+  RestoreConfirmView,
+  StorageInUseView,
+  StoreNotPrivateView,
+  StoreRefusalView,
+  StoreRestoreView,
+} from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
@@ -98,7 +111,7 @@ describe("the store refusal screen", () => {
         expect(html).toContain(FOLDER);
         expect(html).not.toContain("{folder}");
         for (const b of screen.buttons) expect(button(html, `store-refused-button-${b.key}`)?.label).toBe(escaped(b.label));
-        expect(html.match(/<button/g)).toHaveLength(screen.buttons.length);
+        expect(html.match(/<button/g)).toHaveLength(refusalButtons(refusal).buttons.length);
         expect(html).not.toContain("disabled");
         expect(html.includes('data-testid="store-refused-hint"')).toBe(screen.hint !== null);
         expectNoWalletFallthrough(html);
@@ -110,8 +123,15 @@ describe("the store refusal screen", () => {
     for (const [, refusal] of FIXTURES) sameInBothThemes(() => renderRefusal(refusal));
   });
 
-  it("covers today's screens: cantOpen with and without a backup, the foreign lineage's, and one that offers Restore earlier data", () => {
-    expect(FIXTURES.map(([, r]) => r.screen.textKey)).toEqual(["storeUpgrade.cantOpen.text", "storeUpgrade.cantOpen.textWithoutBackup", "storeUpgrade.restore.foreign.text", "storeUpgrade.refused.wayOut.restore"]);
+  it("covers today's screens: cantOpen with and without a backup, the foreign lineage's, one that offers Restore earlier data, and a damaged store's before and after Q107 C1", () => {
+    expect(FIXTURES.map(([, r]) => r.screen.textKey)).toEqual([
+      "storeUpgrade.cantOpen.text",
+      "storeUpgrade.cantOpen.textWithoutBackup",
+      "storeUpgrade.restore.foreign.text",
+      "storeUpgrade.refused.wayOut.restore",
+      "storeUpgrade.refused.wayOut.support",
+      "storeUpgrade.refused.wayOut.damaged",
+    ]);
   });
 
   it("has an action for every button key the engine sends", () => {
@@ -340,6 +360,7 @@ function api(calls: string[], fail: Record<string, unknown> = {}) {
     keepCurrentFiles: call("keep"),
     cancelRestore: call("cancelRestore"),
     requestRestore: call("requestRestore"),
+    recoverInFreshFolder: call("recover"),
     openProjectLink: async (link: string) => {
       calls.push(`link:${link}`);
       if ("link" in fail) throw fail.link;
@@ -802,5 +823,148 @@ describe("the not-private screen", () => {
     world.openNotPrivate = undefined;
     world.openRestore = undefined;
     expect(open({}, ctx)).toMatchObject({ network: expect.anything() });
+  });
+});
+
+describe("Set up from recovery phrase (Q107 C1)", () => {
+  const damaged = STORE_SCREENS.damaged(FOLDER);
+  const RECOVER = "storeUpgrade.refused.recover";
+  const recoverButton = `store-refused-button-${RECOVER}`;
+  const RC = en.storeUpgrade.recover;
+  const buttonKeys = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
+
+  it("shows only for a damaged store, whatever else the screen offers", () => {
+    for (const [name, refusal] of FIXTURES) expect(button(renderRefusal(refusal), recoverButton) !== null, name).toBe(refusal.cause === "SnapshotSourceDamaged");
+    for (const cause of ["Unexpected", "SchemaHistoryMismatch", "PreHistoryFork", "snapshotsourcedamaged", "", "__proto__", "constructor"])
+      expect(button(renderRefusal({ ...damaged, cause }), recoverButton), cause).toBeNull();
+    for (const [, refusal] of FIXTURES.filter(([, r]) => r.cause !== "SnapshotSourceDamaged")) expect(renderRefusal(refusal)).not.toContain("store-refused-recover-meaning");
+  });
+
+  for (const theme of THEMES)
+    it(`in ${theme}, comes first, unfocused and plain, with what it does under the text`, () => {
+      ui.set({ theme });
+      const html = renderRefusal(damaged);
+      expect(buttonKeys(html)).toEqual([RECOVER, "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
+      const recover = button(html, recoverButton);
+      expect(recover?.label).toBe("Set up from recovery phrase");
+      expect(recover?.tag).toContain("dash-button-plainBlue");
+      expect(recover?.tag).not.toContain("autofocus");
+      expect(html).not.toContain("autofocus");
+      expect(html).toContain(`data-testid="store-refused-recover-meaning">${escaped(RC.meaning.replaceAll("{folder}", FOLDER))}</p>`);
+      expect(html).toContain(`data-testid="store-refused-text">${escaped(damaged.screen.text)}</p>`);
+      expect(html).toContain(`data-testid="store-refused-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+      expectNoWalletFallthrough(html);
+      expectStyledClasses(html);
+    });
+
+  it("names the refused folder's real path wherever the copy says {folder}, never the placeholder", () => {
+    const other = "/srv/other/Dash Wallet/testnet";
+    for (const folder of [FOLDER, other]) {
+      const html = renderRefusal(STORE_SCREENS.damaged(folder));
+      const meaning = html.match(/data-testid="store-refused-recover-meaning">([^<]*)<\/p>/)?.[1] ?? "";
+      expect(meaning).toContain(`leaves ${escaped(folder)} as it is and doesn&#x27;t delete anything`);
+      expect(meaning).toContain(`they stay in ${escaped(folder)}.`);
+      const confirm = renderToStaticMarkup(createElement(RecoverConfirmView, { folder, busy: false, problem: null, onConfirm: noop, onClose: noop }));
+      expect(confirm).toContain(`leaves ${escaped(folder)} as it is`);
+      for (const out of [html, confirm]) expect(out).not.toContain("{folder}");
+    }
+  });
+
+  it("renders the same in light and dark, and holds the button while an action runs", () => {
+    sameInBothThemes(() => renderRefusal(damaged));
+    const busy = renderToStaticMarkup(createElement(StoreRefusalView, { refusal: damaged, problem: null, busy: true, onAction: noop }));
+    expect(button(busy, recoverButton)?.tag).toContain('disabled=""');
+    expect(button(busy, "store-refused-button-storeUpgrade.refused.quit")?.tag).not.toContain("disabled");
+  });
+
+  it("shows the engine's own button once, without the local line, once dw-store-upgrade carries it", () => {
+    const html = renderRefusal(STORE_SCREENS.damagedRecover(FOLDER));
+    expect(buttonKeys(html)).toEqual([RECOVER, "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
+    expect(html).not.toContain("store-refused-recover-meaning");
+    expect(button(html, recoverButton)?.label).toBe("Set up from recovery phrase");
+  });
+
+  it("is the recover action, labelled from the catalog as the engine labels it", () => {
+    expect(buttonAction(RECOVER)).toBe("recover");
+    expect(en.storeUpgrade.refused.recover).toBe(STORE_SCREENS.damagedRecover(FOLDER).screen.buttons[0].label);
+    expect(refusalButtons(damaged).buttons.filter((b) => b.key === RECOVER)).toEqual([{ key: RECOVER, label: en.storeUpgrade.refused.recover, destructive: false, defaultFocus: false }]);
+  });
+
+  const renderConfirm = (busy = false, problem: string | null = null) => renderToStaticMarkup(createElement(RecoverConfirmView, { folder: FOLDER, busy, problem, onConfirm: noop, onClose: noop }));
+
+  for (const theme of THEMES)
+    it(`in ${theme}, asks first: Cancel focused, Restart and set up after it`, () => {
+      ui.set({ theme });
+      const html = renderConfirm();
+      expect(html).toContain('role="dialog"');
+      expect(html).toContain(`>${escaped(RC.confirm.title)}</h2>`);
+      const paragraphs = [...html.matchAll(/data-testid="recover-confirm-text">([^<]*)<\/p>/g)].map((m) => m[1]);
+      expect(paragraphs).toEqual(RC.confirm.text.replaceAll("{folder}", FOLDER).split("\n\n").map(escaped));
+      expect(paragraphs[0]).toContain(`leaves ${FOLDER} as it is, without deleting anything`);
+      const cancel = button(html, "recover-confirm-cancel");
+      expect(cancel?.label).toBe(RC.confirm.cancel);
+      expect(cancel?.tag).toContain("data-autofocus");
+      const confirm = button(html, "recover-confirm-confirm");
+      expect(confirm?.label).toBe(RC.confirm.confirm);
+      expect(confirm?.tag).not.toContain("data-autofocus");
+      expectNoWalletFallthrough(html);
+      expectStyledClasses(html);
+    });
+
+  it("renders the confirm the same in light and dark, holds both buttons while it runs, and shows a failure", () => {
+    sameInBothThemes(() => renderConfirm());
+    const busy = renderConfirm(true);
+    expect(button(busy, "recover-confirm-confirm")?.tag).toContain('disabled=""');
+    expect(button(busy, "recover-confirm-cancel")?.tag).toContain('disabled=""');
+    expect(renderConfirm(false, "Something went wrong.")).toContain('data-testid="recover-confirm-problem">Something went wrong.</p>');
+  });
+
+  it("confirm: recover_in_fresh_folder once, then restart_app", async () => {
+    const calls: string[] = [];
+    const actions = new OpenFailureActions(api(calls));
+    await actions.recover();
+    expect(calls).toEqual(["recover", "restart"]);
+    expect(actions.problem).toBeNull();
+    expect(actions.running).toBe(false);
+  });
+
+  it("never restarts when the move was refused, and says why", async () => {
+    const calls: string[] = [];
+    const actions = new OpenFailureActions(api(calls, { recover: new Error("The last open was not refused.") }));
+    await actions.recover();
+    expect(calls).toEqual(["recover"]);
+    expect(actions.problem).toBe("The last open was not refused.");
+    expect(actions.recovered).toBe(false);
+  });
+
+  it("after a failed restart, tries only the restart again", async () => {
+    const calls: string[] = [];
+    const actions = new OpenFailureActions(api(calls, { restart: new Error("The restart failed.") }));
+    await actions.recover();
+    expect(actions.problem).toBe("The restart failed.");
+    expect(actions.recovered).toBe(true);
+    await actions.recover();
+    expect(calls).toEqual(["recover", "restart", "restart"]);
+  });
+
+  describe("the fixture", () => {
+    type Ctx = Parameters<(typeof PENDING_HANDLERS)["restart_app"]>[1];
+    const call = (handler: unknown) => handler as (args: object, ctx: Ctx) => unknown;
+    const [open, recover, restart] = [call(HANDLERS.open_network), call(HANDLERS.recover_in_fresh_folder), call(PENDING_HANDLERS.restart_app)];
+
+    it("starts over only after a refused open, in an empty folder held as a restore", () => {
+      const world = buildWorld("funded", null);
+      const ctx: Ctx = { world, emit: noop };
+      expect(() => recover({}, ctx)).toThrow(expect.objectContaining({ code: "invalid_argument" }));
+      expect(world.wallets).toHaveLength(1);
+      world.openRefusal = damaged;
+      expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_refused" }));
+      expect(recover({}, ctx)).toBeNull();
+      restart({}, ctx);
+      expect(open({}, ctx)).toMatchObject({ network: { restored: true }, lock: { state: "noVault" } });
+      expect(world.wallets).toEqual([]);
+      expect(world.restoreCalls).toEqual(["recoverInFreshFolder"]);
+      expect(world.appExits).toEqual(["restart"]);
+    });
   });
 });

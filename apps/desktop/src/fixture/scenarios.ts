@@ -103,7 +103,7 @@ export interface World {
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
   /** The restore commands called, in order. */
-  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore")[];
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "recoverInFreshFolder")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
@@ -202,6 +202,16 @@ export interface FixtureGrant {
 
 /** dw-app's `MAX_REPORT_WALLETS`: a lock report lists this many wallets and counts the rest. */
 export const MAX_REPORT_WALLETS = 16;
+
+/** `recover_in_fresh_folder`: the network's new folder, as the next open finds it: no vault, no wallet,
+ * and the restore's RESTORED mark (`restored`). The refused folder's world is gone from the window. */
+export function startOverInNewFolder(w: World) {
+  w.openRefusal = undefined;
+  w.wallets = [];
+  w.phrases = {};
+  w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+  w.restored = true;
+}
 
 const unlocked = (walletIds: string[]): LockStatus => ({
   state: "unlocked",

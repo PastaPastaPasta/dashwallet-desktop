@@ -10,6 +10,8 @@ export const onboarding = {
     title: "Welcome to Dash Wallet",
     addTitle: "Add a wallet",
     text: "Create a new wallet, or restore one with its recovery phrase or a backup file.",
+    restoreOnly: "Dash Wallet started with a new data folder. Set up your wallet again from its recovery phrase.",
+    restoreOnlyAdd: "Until this wallet data has finished syncing, a wallet can only be added from its recovery phrase.",
     create: "Create a new wallet",
     restore: "Restore from recovery phrase",
     restoreFile: "Restore from a file",

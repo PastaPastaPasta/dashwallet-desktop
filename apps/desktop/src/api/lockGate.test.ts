@@ -118,7 +118,7 @@ describe("the lock gate", () => {
     expect(asked).toEqual(["quitApp", "restartApp"]);
   });
 
-  it("lets the refused open's restore calls and Report a problem through a gate that never opened", async () => {
+  it("lets the refused open's restore and recover calls and Report a problem through a gate that never opened", async () => {
     resetWalletGate(true);
     const asked: string[] = [];
     const ask = (name: string, answer: unknown = null) => async () => (asked.push(name), answer);
@@ -127,6 +127,7 @@ describe("the lock gate", () => {
       requestRestore: ask("requestRestore"),
       keepCurrentFiles: ask("keepCurrentFiles"),
       cancelRestore: ask("cancelRestore"),
+      recoverInFreshFolder: ask("recoverInFreshFolder"),
       openProjectLink: ask("openProjectLink"),
       contactPay: ask("contactPay"),
     } as unknown as Backend);
@@ -135,8 +136,9 @@ describe("the lock gate", () => {
     expect(await backend.requestRestore()).toBeNull();
     expect(await backend.keepCurrentFiles()).toBeNull();
     expect(await backend.cancelRestore()).toBeNull();
+    expect(await backend.recoverInFreshFolder()).toBeNull();
     expect(await backend.openProjectLink("issues")).toBeNull();
-    expect(asked).toEqual(["restoreAvailable", "requestRestore", "keepCurrentFiles", "cancelRestore", "openProjectLink"]);
+    expect(asked).toEqual(["restoreAvailable", "requestRestore", "keepCurrentFiles", "cancelRestore", "recoverInFreshFolder", "openProjectLink"]);
   });
 
   it("stays closed from the start until a status says the vault is not locked", () => {

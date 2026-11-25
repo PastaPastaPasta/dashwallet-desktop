@@ -58,7 +58,7 @@ import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
-import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
+import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, startOverInNewFolder, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
 
@@ -811,6 +811,13 @@ export const HANDLERS: Handlers = {
     return { network: restoredNetwork(world), lock: world.lock };
   },
   active_network: (_, { world }) => restoredNetwork(world),
+  // Engine::recover_in_fresh_folder: only after a refused open; the next open is the new folder's.
+  recover_in_fresh_folder: (_, { world }) => {
+    if (!world.openRefusal) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
+    (world.restoreCalls ??= []).push("recoverInFreshFolder");
+    startOverInNewFolder(world);
+    return null;
+  },
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one

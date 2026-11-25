@@ -4,9 +4,23 @@ import type { Tree } from "../core";
  * (dw-store-upgrade's copy). The screen shows the engine's own text for a key missing here. `folder` is
  * the network's data folder. `restore` and `restored` are the restore flow's (MG's restore copy): the
  * renderer's own screens for `storage_restore`, its confirm and banner, and the foreign screen's keys,
- * which come in the engine's screen. `notPrivate` is the renderer's own screen for `storage_not_private`:
+ * which come in the engine's screen. `refused.recover` is the damaged store's way out (Q107 C1), with its own
+ * line and confirm under `recover`, until the engine's screen carries the button. `notPrivate` is the renderer's own screen for `storage_not_private`:
  * `folder` there is the directory others can change, and `reason` says why. */
 export const storeUpgrade = {
+  refused: {
+    recover: "Set up from recovery phrase",
+  },
+  recover: {
+    meaning:
+      "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
+    confirm: {
+      title: "Set up this wallet again?",
+      text: "Dash Wallet restarts with a new data folder. There, set up a wallet again from its recovery phrase, then add any other wallets, each from its own. Dash Wallet leaves {folder} as it is, without deleting anything.\n\nUntil the wallet has finished syncing, anything that moves your funds is paused.",
+      confirm: "Restart and set up",
+      cancel: "Cancel",
+    },
+  },
   notPrivate: {
     title: "Dash Wallet can't use this data folder",
     text: "Other accounts on this computer can change files in {folder}. To keep your wallet safe, Dash Wallet won't open it until only your account can change that folder.\n\nChange the folder's permissions so only you can write to it, then try again. Your wallet files weren't changed.",

@@ -6,7 +6,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { errorMessage } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { useBackend, useWallets } from "../api/queries";
+import { useBackend, useRestored, useWallets } from "../api/queries";
 import { walletReadyToOpen } from "../components/emptyStates";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
@@ -256,24 +256,38 @@ function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() =>
   // A wallet is made on the network this window runs on. Choosing the other one moves the window
   // there (the page boots again), so until then neither action may go on. "Add a wallet" adds to
   // this network and has no picker: switching networks is Settings' (row 74).
+  // While the network's data is a restore not yet synced (RESTORED; a damaged store set up again in a
+  // new folder starts so), a wallet comes only from its recovery phrase: no new wallet, no file.
   const t = useT();
+  const restoreOnly = useRestored().data === true;
   const picker = useNetworkPicker();
   const showPicker = onCancel === null && (picker.available || picker.loading);
   const wait = showPicker && (picker.loading || picker.switching !== null);
   return (
     <>
       <Title>{onCancel ? t("onboarding.welcome.addTitle") : t("onboarding.welcome.title")}</Title>
-      <p className="onboarding-text">{t("onboarding.welcome.text")}</p>
+      <p className="onboarding-text" data-testid="onboarding-welcome-text">
+        {restoreOnly ? t(onCancel ? "onboarding.welcome.restoreOnlyAdd" : "onboarding.welcome.restoreOnly") : t("onboarding.welcome.text")}
+      </p>
       {/* Without the command (a build before it) the first screen shows no picker. */}
       {showPicker && <NetworkPicker state={picker} testId="onboarding-network" />}
       <div className="onboarding-actions">
-        <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
-          {t("onboarding.welcome.create")}
-        </DashButton>
-        <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
+        {!restoreOnly && (
+          <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
+            {t("onboarding.welcome.create")}
+          </DashButton>
+        )}
+        <DashButton
+          variant={restoreOnly ? "filledBlue" : "plainBlue"}
+          size="large"
+          fill
+          disabled={model.busy || wait}
+          data-testid="onboarding-restore"
+          onClick={() => void model.startRestore()}
+        >
           {t("onboarding.welcome.restore")}
         </DashButton>
-        {model.file && (
+        {model.file && !restoreOnly && (
           <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore-file" onClick={() => void model.startFileRestore()}>
             {t("onboarding.welcome.restoreFile")}
           </DashButton>
@@ -284,18 +298,20 @@ function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() =>
           </DashButton>
         )}
       </div>
-      <details className="onboarding-advanced">
-        <summary>{t("onboarding.advanced")}</summary>
-        <label className="check-row">
-          <input
-            type="checkbox"
-            data-testid="onboarding-24-words"
-            checked={model.wordCount === 24}
-            onChange={(e) => model.setWordCount(e.target.checked ? 24 : 12)}
-          />
-          {t("onboarding.welcome.words24")}
-        </label>
-      </details>
+      {!restoreOnly && (
+        <details className="onboarding-advanced">
+          <summary>{t("onboarding.advanced")}</summary>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              data-testid="onboarding-24-words"
+              checked={model.wordCount === 24}
+              onChange={(e) => model.setWordCount(e.target.checked ? 24 : 12)}
+            />
+            {t("onboarding.welcome.words24")}
+          </label>
+        </details>
+      )}
     </>
   );
 }
