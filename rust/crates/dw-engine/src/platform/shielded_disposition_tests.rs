@@ -1675,12 +1675,16 @@ const UNDECIDED: &str =
     "the spend takes a note of an imported spend whose outcome is not recorded yet";
 
 /// #931's first launch, in a child process: an imported spend's notes come
-/// free while every delete of its record fails, so the record stays on
-/// disk. `unmarked`: a pass reads its row unknown and the journal's write
-/// of the mark fails. `crash`: its row is read unknown and nothing more,
-/// the cut before the mark's write. Then another spend takes the freed
-/// notes in the same session, and the process exits with no quit. Its
-/// answer and the wallet are left in the data root.
+/// free. Its record's delete fails, so the record stays on disk, except at
+/// `deleted`, where it reaches disk.
+/// - `unmarked`: a pass reads its row unknown and the journal's write of
+///   the mark fails;
+/// - `unread` and `deleted`: its row is read unknown, the cut before the
+///   mark's write.
+///
+/// Then, but at `deleted`, another spend takes the freed notes in the same
+/// session. The process exits with no quit, leaving the hook's answer
+/// (`accepted`, its refusal, or `none`) and the wallet in the data root.
 #[test]
 #[ignore = "the child process of the #931 tests"]
 fn an_undecided_import_child() {
@@ -1696,47 +1700,57 @@ fn an_undecided_import_child() {
     }
     let shielded = session.data_dir().join(pool::SHIELDED_DB_FILE);
     let journal = shielded.with_file_name(dw_appdb::dispatch::DISPATCH_DB_FILE);
-    fail_record_deletes(&shielded, true);
+    fail_record_deletes(&shielded, cut != "deleted");
     assert_eq!(free_notes(&engine, &session, wallet, &spend), Some(true));
     fail_record_deletes(&shielded, false);
-    match cut.as_str() {
-        "unmarked" => {
-            fail_journal_settlements(&journal, true);
-            pass(&engine, &session);
-        }
-        "crash" => {
-            let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-            let artifact = engine
-                .block_on(session.leases.shielded_artifact(wallet, spend.activity_id))
-                .unwrap()
-                .unwrap();
-            engine.block_on(async move {
-                let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
-                let mut store = coordinator.store().write().await;
-                pool::spend_outcome(&mut *store, subwallet(wallet), &artifact).unwrap();
-            });
-        }
-        cut => panic!("{cut}"),
+    if cut == "unmarked" {
+        fail_journal_settlements(&journal, true);
+        pass(&engine, &session);
+    } else {
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        let artifact = engine
+            .block_on(session.leases.shielded_artifact(wallet, spend.activity_id))
+            .unwrap()
+            .unwrap();
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let mut store = coordinator.store().write().await;
+            pool::spend_outcome(&mut *store, subwallet(wallet), &artifact).unwrap();
+        });
     }
     assert_eq!(
         import_rows(&engine, &session, wallet, spend.activity_id),
         [ShieldedActivityStatus::Unknown]
     );
     assert_eq!(settlement(&engine, &session, wallet, 1).1, None);
-    let answer = spend_freed_notes(&engine, &session, wallet, &spend);
+    let answer = match cut.as_str() {
+        "deleted" => "none".to_owned(),
+        _ => match spend_freed_notes(&engine, &session, wallet, &spend) {
+            Ok(()) => "accepted".to_owned(),
+            Err(why) => why,
+        },
+    };
     fail_journal_settlements(&journal, false);
     let root = Path::new(&root);
-    std::fs::write(root.join("answer"), format!("{answer:?}")).unwrap();
+    std::fs::write(root.join("answer"), answer).unwrap();
     std::fs::write(root.join("wallet"), wallet.to_string()).unwrap();
     std::process::exit(0);
 }
 
-/// #931 (D1): the relaunch after [`an_undecided_import_child`] cut at
-/// `cut`. The hook refused the spend of the import's freed notes, so they
-/// are unspent; the import's record is back from disk, its notes held
-/// again, and a pass settles nothing: the import never reads executed.
-fn relaunch_after_an_undecided_import(cut: &str) {
-    let dir = dw_testutil::private_tempdir();
+/// The relaunch after [`an_undecided_import_child`] cut at `cut`, spends
+/// forced on and the wallet loaded: the engine, the session, the wallet,
+/// the imported spend and the hook's answer in the first launch. Its data
+/// root is `root`.
+fn relaunch_after_an_undecided_import(
+    root: &Path,
+    cut: &str,
+) -> (
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    PendingRedrive,
+    String,
+) {
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "platform::shielded_close_tests::disposition_tests::an_undecided_import_child",
@@ -1744,7 +1758,7 @@ fn relaunch_after_an_undecided_import(cut: &str) {
             "--ignored",
             "--test-threads=1",
         ])
-        .env(UNDECIDED_ROOT, dir.path())
+        .env(UNDECIDED_ROOT, root)
         .env(UNDECIDED_CUT, cut)
         .output()
         .unwrap();
@@ -1753,11 +1767,11 @@ fn relaunch_after_an_undecided_import(cut: &str) {
         "the first launch failed: {}",
         String::from_utf8_lossy(&child.stderr)
     );
-    let answer = std::fs::read_to_string(dir.path().join("answer")).unwrap();
-    let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
+    let answer = std::fs::read_to_string(root.join("answer")).unwrap();
+    let wallet: WalletId = (std::fs::read_to_string(root.join("wallet")).unwrap())
         .parse()
         .unwrap();
-    let engine = engine_at(dir.path());
+    let engine = engine_at(root);
     let session = open(&engine);
     pool::force_keyset_spends(&session, true);
     engine
@@ -1768,35 +1782,32 @@ fn relaunch_after_an_undecided_import(cut: &str) {
         anchor_height: None,
         ..spends().remove(0)
     };
-    let (s, m, nullifiers) = (
-        Arc::clone(&session),
-        session.manager().unwrap(),
-        spend.nullifiers.clone(),
-    );
-    let spent = engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
-        let store = coordinator.store().read().await;
-        (store.get_all_notes(subwallet(wallet)).unwrap().into_iter())
-            .filter(|n| nullifiers.contains(&n.nullifier) && n.is_spent)
-            .count()
-    });
+    (engine, session, wallet, spend, answer)
+}
+
+/// #931 (D1): the relaunch after [`an_undecided_import_child`] cut at
+/// `cut`, the hook having answered the spend of the import's freed notes.
+/// The import's notes are found again, spent if that spend went (its notes
+/// were spent on Platform). The hook refused it, so they are unspent: the
+/// import's record is back from disk with its notes held, and a pass
+/// settles nothing. The import never reads executed.
+fn an_undecided_import_never_reads_executed(cut: &str) {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, wallet, spend, answer) =
+        relaunch_after_an_undecided_import(dir.path(), cut);
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, answer == "accepted");
+    }
     pass(&engine, &session);
     let (status, disposition, _) = settlement(&engine, &session, wallet, 1);
     assert_eq!(
         (
             answer.as_str(),
-            spent,
-            stored_rows(&session, wallet),
             status == ArtifactStatus::Executed,
             disposition,
+            stored_rows(&session, wallet),
         ),
-        (
-            format!("{:?}", Err::<(), _>(UNDECIDED)).as_str(),
-            0,
-            vec![spend.activity_id],
-            false,
-            None,
-        ),
+        (UNDECIDED, false, None, vec![spend.activity_id]),
         "{cut}"
     );
     assert_eq!(
@@ -1813,15 +1824,92 @@ fn relaunch_after_an_undecided_import(cut: &str) {
 /// record never reads executed.
 #[test]
 fn a_spend_of_an_imports_freed_notes_waits_for_its_mark() {
-    relaunch_after_an_undecided_import("unmarked");
+    an_undecided_import_never_reads_executed("unmarked");
 }
 
-/// #931: a crash between an imported spend's unknown row and the journal's
-/// write of its mark. A spend of its freed notes before the crash is
-/// refused, and the relaunch never reads it executed.
+/// #931: the window between an imported spend's unknown row and the
+/// journal's write of its mark, then a crash. A spend of its freed notes in
+/// that window is refused, and the relaunch never reads the import
+/// executed.
 #[test]
 fn a_crash_before_an_imports_mark_never_settles_it_executed() {
-    relaunch_after_an_undecided_import("crash");
+    an_undecided_import_never_reads_executed("unread");
+}
+
+/// #931, no lockout: a crash before an imported spend's mark, after the
+/// library's delete of its record reached disk. The relaunch has no record
+/// and no row of it, nothing reads it again, and a spend of its notes is
+/// accepted though the journal never marked it.
+#[test]
+fn an_unmarked_import_with_no_record_left_does_not_hold_its_notes() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, session, wallet, spend, answer) =
+        relaunch_after_an_undecided_import(dir.path(), "deleted");
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, false);
+    }
+    assert_eq!(
+        (
+            answer.as_str(),
+            import_rows(&engine, &session, wallet, spend.activity_id),
+            settlement(&engine, &session, wallet, 1).1,
+            stored_rows(&session, wallet),
+        ),
+        ("none", Vec::new(), None, Vec::new())
+    );
+    assert_eq!(spend_freed_notes(&engine, &session, wallet, &spend), Ok(()));
+}
+
+/// #931 for a release: an imported spend released (its row failed, its
+/// notes freed) whose `not_executed` settlement fails to write. A spend of
+/// its notes is refused until a pass writes it, then accepted.
+#[test]
+fn a_spend_of_a_released_imports_notes_waits_for_its_settlement() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    pool::force_keyset_spends(&session, true);
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, false);
+    }
+    free_notes(&engine, &session, wallet, &spend);
+    let (s, m, r) = (
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        spend.clone(),
+    );
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        history_row(
+            &mut *store,
+            subwallet(wallet),
+            &r,
+            ShieldedActivityStatus::Failed,
+        );
+    });
+    let journal = (session.data_dir().join(pool::SHIELDED_DB_FILE))
+        .with_file_name(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    fail_journal_settlements(&journal, true);
+    pass(&engine, &session);
+    let unwritten = settlement(&engine, &session, wallet, 1).0;
+    let refused = spend_freed_notes(&engine, &session, wallet, &spend);
+    fail_journal_settlements(&journal, false);
+    pass(&engine, &session);
+    assert_eq!(
+        (
+            unwritten == ArtifactStatus::NotExecuted,
+            refused,
+            settlement(&engine, &session, wallet, 1).0,
+            spend_freed_notes(&engine, &session, wallet, &spend),
+        ),
+        (
+            false,
+            Err(UNDECIDED.to_owned()),
+            ArtifactStatus::NotExecuted,
+            Ok(())
+        )
+    );
 }
 
 /// #931: the wait ends with the mark. An imported spend's pending row

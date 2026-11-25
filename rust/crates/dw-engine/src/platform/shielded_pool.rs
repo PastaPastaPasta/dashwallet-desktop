@@ -3749,15 +3749,16 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
     Ok(outcome_of(row.as_ref(), &held))
 }
 
-/// Whether a spend selecting `selected` takes a note named by an open
-/// imported spend of `wallet` that the journal has not marked
-/// [`FREED_UNKNOWN`], while the library's store has a history row of it
-/// (#931). That row lives in memory only: until the journal holds the
-/// spend's settlement, a restart can bring its record back from disk over
-/// notes the new spend spent, and read it executed. So the new spend waits
-/// for the pass that writes the mark. With no row (a restart with no record
-/// left), nothing reads the import again and its notes are free. A
-/// journal or store that cannot be read refuses the spend.
+/// Whether a spend selecting `selected` takes a note named by the history
+/// row the library's store holds of an open imported spend of `wallet` that
+/// the journal has not settled or marked [`FREED_UNKNOWN`] yet (#931). The
+/// row lives in memory only, and its notes are those [`spend_outcome`]
+/// reads: until the journal holds the spend's settlement, a restart can
+/// bring its record back from disk over notes the new spend spent, and read
+/// it executed. So the new spend waits for the pass that writes the
+/// settlement. With no row (a restart with no record left), nothing reads
+/// the import again and its notes are free. A journal or store that cannot
+/// be read refuses the spend.
 async fn undecided_import_note(
     session: &NetworkSession,
     coordinator: &NetworkShieldedCoordinator,
@@ -3768,20 +3769,13 @@ async fn undecided_import_note(
     let artifacts = (session.leases.shielded_artifacts(wallet).await)
         .map_err(|e| refused(format!("the shielded artifacts could not be read: {e}")))?;
     let store = coordinator.store().read().await;
-    for artifact in artifacts
-        .iter()
-        .filter(|a| imported(a) && !freed_unknown(a))
-    {
+    for artifact in (artifacts.iter()).filter(|a| imported(a) && !freed_unknown(a)) {
         let row = (store.get_activity_by_entry_id(subwallet, &artifact.activity)).map_err(|e| {
             refused(format!(
                 "an imported spend's history row could not be read: {e}"
             ))
         })?;
-        let Some(row) = row else {
-            continue;
-        };
-        let named = (artifact.selected.iter().map(|(n, _)| n)).chain(&row.spent_nullifiers);
-        if named.into_iter().any(|n| selected.contains(n)) {
+        if row.is_some_and(|row| row.spent_nullifiers.iter().any(|n| selected.contains(n))) {
             return Ok(true);
         }
     }
