@@ -97,6 +97,7 @@ export const storeUpgrade = {
     platformRestored:
       "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
     platformOff: "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.",
+    platformOffNotSending: "Dash Platform is off until you next start Dash Wallet, and this needs it.",
     finishBusy: {
       waitBefore: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform.",
       waitOrStopMixing: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform.",

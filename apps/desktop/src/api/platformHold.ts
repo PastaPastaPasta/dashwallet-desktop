@@ -17,10 +17,11 @@ const platformOff = (e: AppError) =>
   (e.code === "platform.feature_off" || e.code === "platform.unavailable") && e.data?.kind === "feature" && e.data.feature === "platform";
 
 /** The line for a Platform or Shielded funds action the restore's hold refused (C6), or that Dash
- * Platform being off this session refused (C7); null for any other failure. */
-export function platformHoldText(e: unknown): string | null {
+ * Platform being off this session refused (C7); null for any other failure. `sending` is false where
+ * nothing was being sent (a quote, a Max, an address, a check). */
+export function platformHoldText(e: unknown, sending = true): string | null {
   if (!isAppError(e)) return null;
   if (e.code === "platform.restored") return t("storeUpgrade.restore.platformRestored");
-  if (platformOff(e)) return t("storeUpgrade.restore.platformOff");
+  if (platformOff(e)) return t(sending ? "storeUpgrade.restore.platformOff" : "storeUpgrade.restore.platformOffNotSending");
   return null;
 }

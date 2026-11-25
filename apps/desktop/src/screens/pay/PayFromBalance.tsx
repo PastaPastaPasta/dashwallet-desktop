@@ -18,6 +18,7 @@ import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { FormField, type usePayAmount } from "./form";
 import { contactPayFor, fromErrorText, outcomeText, sourceLabel, totalText, type ContactPayFlow, type FromRow, type PaySource } from "./fromBalance";
+import { platformHoldText } from "../../api/platformHold";
 
 /** The sources, each with its balance and, when it cannot pay, its reason (P16). */
 export function FromStep({ rows, source, onChange }: { rows: readonly FromRow[]; source: PaySource; onChange: (s: PaySource) => void }) {
@@ -118,7 +119,7 @@ export function useBalancePay({
     enabled: credits !== null && !open,
     retry: false,
   });
-  const problem = !active ? null : (blocked ?? (credits !== null && quote.isError ? fromErrorText(quote.error, credits, credit) : null));
+  const problem = !active ? null : (blocked ?? (credits !== null && quote.isError ? (platformHoldText(quote.error, false) ?? fromErrorText(quote.error, credits, credit)) : null));
   const q = quote.data && quote.data.credits === credits && quote.data.source === source ? quote.data : null;
   return {
     active,

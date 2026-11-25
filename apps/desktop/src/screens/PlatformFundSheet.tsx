@@ -12,6 +12,7 @@ import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
+import { platformHoldText } from "../api/platformHold";
 
 /** Formats for the sheet: Dash in the display unit with its full decimals, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
@@ -47,7 +48,7 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-fund-quote-error">
-          {fundErrorText(quote.error, credits, duffs)}
+          {platformHoldText(quote.error, false) ?? fundErrorText(quote.error, credits, duffs)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
