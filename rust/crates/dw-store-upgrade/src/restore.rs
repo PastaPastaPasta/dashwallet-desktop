@@ -1233,7 +1233,9 @@ pub fn restored_mark_present(network_dir: &Path) -> bool {
 
 /// The money gate's mark and the before set's pending payments, if set. An
 /// entry that can't be read fails the call: the holds must never be
-/// silently short.
+/// silently short. The engine answers that error by opening the wallet with
+/// the money gate closed (every unmined own payment's outputs withheld, as
+/// under H1), never by refusing to open (Q102 102-3).
 pub fn restored_mark(network_dir: &Path) -> Result<Option<RestoredMark>> {
     let text = match fs::read_to_string(root(network_dir).join(RESTORED_MARK)) {
         Ok(t) => t,
@@ -1266,9 +1268,13 @@ pub fn restored_mark(network_dir: &Path) -> Result<Option<RestoredMark>> {
     Ok(Some(RestoredMark { pending }))
 }
 
-/// Clear the mark on the first all-Synced (Core, Platform, Shielded; off
-/// counts as satisfied). Returns whether a mark was cleared. The token
-/// proves this process opened the restored store.
+/// Remove the money gate's mark. Only the engine's restore-hold code calls
+/// this, and only once both H3 and H4 hold (Q102 102-2): the holds were
+/// written by a complete history load, every source is Synced (Core,
+/// Platform, Shielded; off counts as satisfied), and one `drop_dead` pass
+/// has completed after that. All-Synced alone is not enough. Returns whether
+/// a mark was removed. The token proves this process opened the restored
+/// store.
 pub fn clear_restored_mark_on_first_all_synced(opened: &PersisterOpened) -> Result<bool> {
     let mark = root(opened.network_dir()).join(RESTORED_MARK);
     if !exists(&mark) {
