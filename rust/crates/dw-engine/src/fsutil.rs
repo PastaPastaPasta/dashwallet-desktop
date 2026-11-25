@@ -25,6 +25,22 @@ pub(crate) fn create_owned_file(data_dir: &Path, rel: &Path) -> io::Result<()> {
     dw_fs::create_owned_file(root, &Path::new(network).join(rel))
 }
 
+/// Refuses the network directory `data_dir` when someone other than the
+/// user or root could replace entries in the data root or a directory above
+/// it ([`dw_fs::insecure_ancestor`]), naming that directory. A network
+/// directory that is a symlink is checked through its target too, since
+/// [`create_owned_dir`] changes nothing behind a symlink. Reads only.
+pub(crate) fn refuse_insecure_root(data_dir: &Path) -> Result<(), crate::error::EngineError> {
+    let (root, _) = split(data_dir)?;
+    let linked = std::fs::symlink_metadata(data_dir).is_ok_and(|m| m.file_type().is_symlink());
+    match dw_fs::insecure_ancestor(if linked { data_dir } else { root })? {
+        None => Ok(()),
+        Some(why) => Err(crate::error::EngineError::Storage(format!(
+            "the data folder is not private: {why}"
+        ))),
+    }
+}
+
 fn split(data_dir: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     match (data_dir.parent(), data_dir.file_name()) {
         (Some(root), Some(network)) => Ok((root, network)),
