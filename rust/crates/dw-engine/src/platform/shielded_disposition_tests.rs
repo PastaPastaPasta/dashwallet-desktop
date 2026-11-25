@@ -1038,6 +1038,242 @@ fn an_imported_spends_row_is_kept_at_the_stores_open() {
     engine.block_on(session.unload_wallet(wallet)).unwrap();
 }
 
+/// A launch over a spend the 0.1 build stored, its record with no anchor
+/// height and its artifact imported and classified, the wallet loaded: its
+/// pending history row is saved at the shielded store's open.
+fn launch_with_import(engine: &Engine) -> (Arc<NetworkSession>, WalletId, PendingRedrive) {
+    let (session, wallet) = first_launch(engine);
+    let spend = PendingRedrive {
+        anchor_height: None,
+        ..spends().remove(0)
+    };
+    let st_hash: [u8; 32] = Sha256::digest(&spend.st_bytes).into();
+    let r = spend.clone();
+    let session = reopen_with(engine, session, move |path| {
+        let mut store =
+            platform_wallet::wallet::shielded::FileBackedShieldedStore::open_path(path, 100)
+                .unwrap();
+        reserve_and_record(&mut store, subwallet(wallet), r.clone());
+        drop(store);
+        let journal = path.with_file_name(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        let inserted = rusqlite::Connection::open(journal)
+            .unwrap()
+            .execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at) \
+                 VALUES (?1, ?2, 'imported_redrive', ?3, 'unresolved', 1)",
+                rusqlite::params![&wallet.0[..], &r.activity_id[..], &st_hash[..]],
+            )
+            .unwrap();
+        assert_eq!(inserted, 1);
+    });
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert_eq!(
+        import_rows(engine, &session, wallet, spend.activity_id),
+        [ShieldedActivityStatus::Pending]
+    );
+    (session, wallet, spend)
+}
+
+/// Frees the notes of imported spend `r` in the library's store, which
+/// drops its record, leaving its history row as it is; then whether the
+/// library reports an outcome the journal has not read
+/// (`shielded_pool::reported_outcome`).
+fn free_notes(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    r: &PendingRedrive,
+) -> Option<bool> {
+    let (s, m, r) = (Arc::clone(session), session.manager().unwrap(), r.clone());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        {
+            let mut store = coordinator.store().write().await;
+            let id = subwallet(wallet);
+            for nullifier in &r.nullifiers {
+                assert!(store.clear_pending(id, nullifier).unwrap());
+            }
+            assert!(store.pending_redrives(id).unwrap().is_empty());
+        }
+        s.ensure_background().await;
+        pool::reported_outcome(&s.leases, &coordinator, wallet).await
+    })
+}
+
+/// Whether the library reports an outcome of `wallet`'s spends the journal
+/// has not read (`shielded_pool::reported_outcome`).
+fn reported(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Option<bool> {
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        pool::reported_outcome(&s.leases, &coordinator, wallet).await
+    })
+}
+
+/// The journal's settlement of an imported spend freed with no proof of
+/// its outcome: open, under the library's `Unattributable` strings.
+fn freed_unknown() -> Settlement {
+    (
+        ArtifactStatus::Unresolved { unrecorded: false },
+        Some(("unresolved".to_owned(), Some("unattributable".to_owned()))),
+        false,
+    )
+}
+
+/// An imported spend's pending row with nothing of it held is an outcome
+/// the journal has not read: the close and an idle pass wait for it. A
+/// pass reads it unknown (its notes are not spent), which holds them until
+/// the journal marks it; the mark lifts the wait for good.
+#[test]
+fn a_freed_imports_pending_row_holds_until_the_journal_marks_it() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    assert_eq!(reported(&engine, &session, wallet), Some(false));
+
+    assert_eq!(free_notes(&engine, &session, wallet, &spend), Some(true));
+    let (s, m, activity) = (
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        spend.activity_id,
+    );
+    let artifact = engine
+        .block_on(session.leases.shielded_artifact(wallet, activity))
+        .unwrap()
+        .unwrap();
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        pool::spend_outcome(&mut *store, subwallet(wallet), &artifact).unwrap();
+    });
+    assert_eq!(
+        import_rows(&engine, &session, wallet, activity),
+        [ShieldedActivityStatus::Unknown]
+    );
+    assert_eq!(reported(&engine, &session, wallet), Some(true));
+
+    pass(&engine, &session);
+    assert_eq!(settlement(&engine, &session, wallet, 1), freed_unknown());
+    assert_eq!(reported(&engine, &session, wallet), Some(false));
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+}
+
+/// M1: an imported spend whose notes came free with its row pending reads
+/// unknown and the journal marks it so. The library's delete of its record
+/// never reached disk, so the record comes back at the next launch, and
+/// the notes it took are then spent by another payment, which drops the
+/// record. The marked spend gets no row at the open, and the passes read
+/// nothing of it: never pending, never done, never settled executed, and
+/// nothing holds the close.
+#[test]
+fn a_freed_imports_returning_record_never_settles_executed() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    let activity = spend.activity_id;
+    free_notes(&engine, &session, wallet, &spend);
+    pass(&engine, &session);
+    assert_eq!(
+        import_rows(&engine, &session, wallet, activity),
+        [ShieldedActivityStatus::Unknown]
+    );
+    let marked = settlement(&engine, &session, wallet, 1);
+
+    let r = spend.clone();
+    let session = reopen_with(&engine, session, move |path| {
+        let mut store =
+            platform_wallet::wallet::shielded::FileBackedShieldedStore::open_path(path, 100)
+                .unwrap();
+        reserve_and_record(&mut store, subwallet(wallet), r);
+    });
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    let rows_at_open = import_rows(&engine, &session, wallet, activity);
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, true);
+    }
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let store = coordinator.store().read().await;
+        assert!(
+            store
+                .pending_redrives(subwallet(wallet))
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+        s.ensure_background().await;
+    });
+    pass(&engine, &session);
+    assert_eq!(
+        (
+            rows_at_open,
+            import_rows(&engine, &session, wallet, activity),
+            settlement(&engine, &session, wallet, 1),
+        ),
+        (Vec::new(), Vec::new(), freed_unknown())
+    );
+    assert_eq!(marked, freed_unknown());
+    assert_eq!(reported(&engine, &session, wallet), Some(false));
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+}
+
+/// A spend the engine dispatched is never confirmed by a pass: its pending
+/// row, with nothing of it held and every note it took read spent, settles
+/// nothing (the library's own scan confirms its rows), and the row stays
+/// pending.
+#[test]
+fn a_pass_never_confirms_a_dispatched_spends_pending_row() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let spend = spends().remove(0);
+    let (s, m, r) = (
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        spend.clone(),
+    );
+    engine.block_on(async move {
+        let dispatched = NewShieldedArtifact {
+            activity: r.activity_id,
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some(Sha256::digest(&r.st_bytes).into()),
+            kind: Some(ArtifactKind::Transfer),
+            anchor: Some(r.anchor),
+            identity_id: None,
+            selected: r.nullifiers.clone(),
+            published: r.nullifiers.clone(),
+        };
+        assert!(
+            s.leases
+                .record_shielded_artifact(wallet, dispatched)
+                .await
+                .unwrap()
+        );
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        history_row(
+            &mut *coordinator.store().write().await,
+            subwallet(wallet),
+            &r,
+            ShieldedActivityStatus::Pending,
+        );
+        s.ensure_background().await;
+    });
+    for nullifier in &spend.nullifiers {
+        store_note(&engine, &session, wallet, *nullifier, true);
+    }
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::Registered, None, false)
+    );
+    assert_eq!(
+        import_rows(&engine, &session, wallet, spend.activity_id),
+        [ShieldedActivityStatus::Pending]
+    );
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+}
+
 /// The fork's tests, against its dispositions (`resolve_redrive`,
 /// `spend_dispositions`, `ack_spend_disposition`), which upstream does not
 /// have.
