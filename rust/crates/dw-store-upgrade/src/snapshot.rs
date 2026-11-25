@@ -35,6 +35,10 @@ pub(crate) const BEFORE_PREFIX: &str = "before-upgrade";
 /// never listed as a backup, never restored.
 pub(crate) const UNRESTORABLE_PREFIX: &str = "part-upgraded";
 pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
+/// Written into a before-upgrade snapshot that verifies but is not of this
+/// wallet before the upgrade: the snapshot is retired, never read as a
+/// backup again, and never deleted.
+pub const NOT_THIS_WALLET: &str = "NOT-THIS-WALLET";
 const MARKER_HEADER: &str = "dw-store-upgrade snapshot";
 const MARKER_FORMAT: u32 = 1;
 
@@ -234,6 +238,15 @@ fn check_snapshot(
     }) {
         return Err(snapshot_fault("read marker")(io::Error::from(kind)));
     }
+    match fs::symlink_metadata(dir.join(NOT_THIS_WALLET)) {
+        Ok(_) => {
+            return Err(SnapshotFault::Defect(
+                "retired: not of this wallet before the upgrade".into(),
+            ));
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(snapshot_fault(NOT_THIS_WALLET)(e)),
+    }
     let text = fs::read_to_string(dir.join(MARKER)).map_err(snapshot_fault("read marker"))?;
     let info = parse_marker(dir, &text).map_err(SnapshotFault::Defect)?;
     for f in &info.files {
@@ -326,6 +339,22 @@ pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
         snapshot_state(network_dir)?,
         SnapshotState::Verified(_)
     ))
+}
+
+/// Whether an upgrade copy of `store` (one of [`STORE_FILES`]) exists: the
+/// newest verified before-upgrade snapshot lists it, or a `part-upgraded`
+/// copy with its marker that verifies does. A copy marked
+/// [`NOT_THIS_WALLET`] never counts. Reads only.
+pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool> {
+    let lists = |info: &SnapshotInfo| info.files.iter().any(|f| f.name == store);
+    if let SnapshotState::Verified(info) = snapshot_state(network_dir)?
+        && lists(&info)
+    {
+        return Ok(true);
+    }
+    Ok(dirs_named(network_dir, UNRESTORABLE_PREFIX)?
+        .iter()
+        .any(|dir| dir.join(MARKER).exists() && read_snapshot(dir, true).is_ok_and(|i| lists(&i))))
 }
 
 /// The newest completed snapshot, its files checked against their sha256.
