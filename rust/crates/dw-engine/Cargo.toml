@@ -97,7 +97,8 @@ md-5 = "0.10"
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
-# `test-utils`: signs a test's own spend of a held coin, as a send does.
+# `test-utils`: TestWalletContext and dashcore's test transactions for the
+# input authorization tests.
 key-wallet = { workspace = true, features = ["test-utils"] }
 dash-spv = { workspace = true, features = ["test-utils"] }
 bech32 = { version = "0.11.1", default-features = false, features = ["alloc"] }
