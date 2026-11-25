@@ -4593,7 +4593,7 @@ fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
 #[test]
 fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     let fx = Fixture::new(0);
-    let lib = Arc::new(FakeShielded::default());
+    let lib = real_rows(&fx);
     let wallet = fx.wallet;
     lib.no_keyset_spends.store(true, Ordering::SeqCst);
     let quoted = run(&fx, &lib, |s, lib| async move {
@@ -4623,7 +4623,7 @@ fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
 
     lib.no_keyset_spends.store(false, Ordering::SeqCst);
-    assert!(shield_with(&fx, &lib).is_ok());
+    shield_on(&fx, &lib);
 }
 
 /// Without the dispatch hook no spend starts: a send and an unshield are
