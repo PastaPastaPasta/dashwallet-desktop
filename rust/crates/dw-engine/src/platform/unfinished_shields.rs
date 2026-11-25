@@ -102,8 +102,8 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
             Err(e) => return Readiness::Held(e.code().into()),
         }
         match self.lib.bind().await {
-            Ok(true) => Readiness::Ready,
-            Ok(false) => Readiness::Held(
+            Ok(a) if a.is_bound() => Readiness::Ready,
+            Ok(_) => Readiness::Held(
                 ShieldedError::not_synced(ShieldedSyncWait::Account)
                     .code()
                     .into(),

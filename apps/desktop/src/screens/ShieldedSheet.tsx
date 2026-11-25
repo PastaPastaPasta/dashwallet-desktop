@@ -8,17 +8,18 @@ import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
-import { useUi } from "../app/ui";
+import { ui, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { percentText } from "../format/sync";
 import { useT } from "../i18n";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SYNC_COPY, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
 import { TRANSFER_COPY } from "../transfer/model";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
@@ -388,31 +389,75 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
   );
 }
 
-/** The Shielded address with its QR (Receive's Shielded section). */
+/** Receive in Shielded's content (Receive's Shielded tab, the card's body). The address is the
+ * viewing key's, so it shows as soon as the key is bound, while the first scan still runs, with that
+ * scan's progress under it. Without the key (the first bind needs an unlock, or the wallet is
+ * watch-only) it says why and shows no address. `enabled`: read the address now. */
 export function useShieldedReceiveContent(walletId: string, network: NetworkInfo, enabled = true) {
   const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
-  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
+  const statusRead = useShieldedStatus(walletId, enabled);
+  const status = statusRead.data ?? null;
+  const gate = shieldedReceiveGate(status);
+  // Not before the status is read: an address read that a pass held back would stay unanswered.
+  const settled = statusRead.data !== undefined || statusRead.isError;
+  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
+  const percent = shieldedScanPercent(status);
+  const scanning = shieldedSyncing(status) && (gate === "address" || gate === "binding");
+  const progress = scanning ? (
+    <p className="field-hint" role="status" data-testid="shielded-receive-progress">
+      {SHIELDED_SYNC_COPY.progress(percent === null ? null : percentText(percent))}
+    </p>
+  ) : null;
+  const waiting = address.isError && isCode(address.error, SHIELDED_CODES.notSynced);
+  const loading = (
+    <p className="sheet-text" role="status">
+      {C.receive.loading}
+    </p>
+  );
+  const before = (() => {
+    if (gate === "unlock")
+      return (
+        <div className="shielded-receive-why" data-testid="shielded-receive-locked">
+          <p className="sheet-text">{C.receive.locked}</p>
+          <DashButton variant="tintedBlue" size="small" data-testid="shielded-receive-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
+            {C.receive.unlock}
+          </DashButton>
+        </div>
+      );
+    if (gate === "watchOnly")
+      return (
+        <p className="sheet-text" data-testid="shielded-receive-watch-only">
+          {C.receive.watchOnly}
+        </p>
+      );
+    if (gate === "binding" || waiting) return progress ?? loading;
+    if (address.isError)
+      return (
+        <p className="form-problem" role="alert" data-testid="shielded-receive-error">
+          {shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
+        </p>
+      );
+    if (address.data) return <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />;
+    return loading;
+  })();
+  const shown = gate === "address" && !address.isError && address.data;
   return {
     text: <p className="sheet-text">{C.receive.text}</p>,
-    before: <>
-      {address.isError ? (
-        <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
+    before,
+    after: shown ? (
+      <>
+        <p className="withdraw-to" data-testid="shielded-receive-address">
+          <CopyValue value={address.data.address} action={tr("transfer.shielded.receive.copyAddress")} mono />
         </p>
-      ) : address.data ? (
-        <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />
-      ) : (
-        <p className="sheet-text" role="status">
-          {C.receive.loading}
-        </p>
-      )}
-    </>,
-    after: !address.isError && address.data ? (
-      <p className="withdraw-to" data-testid="shielded-receive-address">
-        <CopyValue value={address.data.address} action={tr("transfer.shielded.receive.copyAddress")} mono />
-      </p>
+        {scanning && (
+          <div className="shielded-receive-scan" data-testid="shielded-receive-scan">
+            {progress}
+            <p className="field-hint">{C.receive.early}</p>
+          </div>
+        )}
+      </>
     ) : null,
   };
 }
@@ -423,35 +468,18 @@ export function ShieldedReceiveBody({ walletId, network }: { walletId: string; n
 }
 
 /** Receive in Shielded (Receive's page): collapsed like Receive on Platform; open, the Shielded address
- * and its QR. There while Shielded is active on this network; it waits while Shielded syncs. */
+ * and its QR, or why there is none yet. There while Shielded is active on this network. */
 export function ShieldedReceiveCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const status = useShieldedStatus(walletId).data ?? null;
   const [open, setOpen] = useState(false);
   const id = useId();
   if (!status?.active) return null;
-  const syncing = shieldedSyncing(status);
   return (
     <section className="disclosure card-l1 platform-receive" data-testid="shielded-receive-section" aria-labelledby={`${id}-toggle`}>
-      <button
-        type="button"
-        id={`${id}-toggle`}
-        className="disclosure-toggle"
-        data-testid="shielded-receive-open"
-        aria-expanded={open && !syncing}
-        aria-controls={`${id}-body`}
-        disabled={syncing}
-        title={syncing ? SHIELDED_SYNC_COPY.syncing : undefined}
-        aria-describedby={syncing ? `${id}-why` : undefined}
-        onClick={() => setOpen(!open)}
-      >
+      <button type="button" id={`${id}-toggle`} className="disclosure-toggle" data-testid="shielded-receive-open" aria-expanded={open} aria-controls={`${id}-body`} onClick={() => setOpen(!open)}>
         {C.titles.receive}
       </button>
-      {syncing && (
-        <p className="field-hint disclosure-why" id={`${id}-why`} data-testid="shielded-receive-why">
-          {SHIELDED_SYNC_COPY.syncing}
-        </p>
-      )}
-      {open && !syncing && (
+      {open && (
         <div className="platform-receive-body" id={`${id}-body`} data-testid="shielded-receive-body">
           <ShieldedReceiveBody walletId={walletId} network={network} />
         </div>

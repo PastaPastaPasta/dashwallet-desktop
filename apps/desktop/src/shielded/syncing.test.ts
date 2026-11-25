@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
-import { shieldedSyncing, shieldedSyncText, syncingRefusal } from "./syncing";
+import { shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText, syncingRefusal } from "./syncing";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>
   ({ active: true, ready: true, syncing: false, balance: "0", pending: "0", pendingShields: [], proverReady: true, ...over }) as ShieldedStatus;
@@ -41,5 +41,32 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(shieldedStatusRefetchMs(status({ syncing: false }))).toBe(false);
     expect(shieldedStatusRefetchMs(null)).toBe(false);
     expect(shieldedStatusRefetchMs(undefined)).toBe(false);
+  });
+
+  it("re-reads it while the account is not established and only time holds it, not an unlock", () => {
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "bound" }))).toBe(5_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "binding" }))).toBe(15_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, syncing: true, account: "binding" }))).toBe(15_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "locked" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "mixingOnly" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "watchOnly" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ active: false, ready: false, account: null }))).toBe(false);
+  });
+
+  it("shows the address once the key is bound, a wait while it binds, and why there is none", () => {
+    expect(shieldedReceiveGate(status({ ready: false, account: "bound" }))).toBe("address");
+    expect(shieldedReceiveGate(status({ account: "bound" }))).toBe("address");
+    expect(shieldedReceiveGate(status({ ready: false, account: "binding" }))).toBe("binding");
+    expect(shieldedReceiveGate(status({ ready: false, account: "locked" }))).toBe("unlock");
+    expect(shieldedReceiveGate(status({ ready: false, account: "mixingOnly" }))).toBe("unlock");
+    expect(shieldedReceiveGate(status({ ready: false, account: "watchOnly" }))).toBe("watchOnly");
+  });
+
+  it("gives the first scan's share of the pool, never 100%, and none once established", () => {
+    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 25, total: 100 } }))).toBe(25);
+    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 100, total: 100 } }))).toBe(99.9);
+    expect(shieldedScanPercent(status({ ready: false, scan: null }))).toBeNull();
+    expect(shieldedScanPercent(status({ ready: false, scan: { checked: 0, total: 0 } }))).toBeNull();
+    expect(shieldedScanPercent(status({ ready: true, scan: { checked: 25, total: 100 } }))).toBeNull();
   });
 });

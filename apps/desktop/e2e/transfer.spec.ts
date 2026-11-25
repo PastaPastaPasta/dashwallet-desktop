@@ -229,7 +229,7 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
     expect(await callsOf(page, "shield_quote")).toBe(1);
     await ready(false);
-    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
     await expect(page.getByTestId("transfer-fee")).toHaveText("");
     await ready(true);
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);

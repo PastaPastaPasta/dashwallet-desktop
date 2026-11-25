@@ -12,6 +12,7 @@
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_CODES } from "../api/pending";
 import { ago } from "../governance/model";
+import { MAX_SYNCING_PERCENT } from "../format/sync";
 import { t } from "../i18n";
 
 /** Shielded is on this network and its account is not established yet: Receive, Add, Send and Move
@@ -29,10 +30,39 @@ export function syncingRefusal(code: string, syncing: boolean): boolean {
   return code === SHIELDED_CODES.notSynced || (syncing && PLATFORM_REFUSALS.includes(code));
 }
 
+/** The first scan's share of the pool's note tree, 0–99.9, while Shielded is not established yet;
+ * `null` before the pass knows the pool's size, or once established. The tree is the whole pool's,
+ * not the user's notes, so only the share is shown. */
+export function shieldedScanPercent(status: ShieldedStatus | null | undefined): number | null {
+  if (!status?.active || status.ready || !status.scan || status.scan.total <= 0) return null;
+  return Math.min((status.scan.checked / status.scan.total) * 100, MAX_SYNCING_PERCENT);
+}
+
+/** What Receive in Shielded can show: the address (bound; the first scan may still run), a wait
+ * while the key binds, or why there is none: the first bind needs an unlock (`locked`, also a
+ * mixing-only unlock), or the wallet is watch-only. */
+export type ShieldedReceiveGate = "address" | "binding" | "unlock" | "watchOnly";
+
+export function shieldedReceiveGate(status: ShieldedStatus | null | undefined): ShieldedReceiveGate {
+  switch (status?.account) {
+    case "locked":
+    case "mixingOnly":
+      return "unlock";
+    case "watchOnly":
+      return "watchOnly";
+    case "binding":
+      return "binding";
+    default:
+      return "address";
+  }
+}
+
 export const SHIELDED_SYNC_COPY = {
   get syncing() {
     return t("transfer.shielded.sync.syncing");
   },
+  /** `percent` formatted, or `null`: "Syncing Shielded…" alone. */
+  progress: (percent: string | null) => (percent === null ? t("shell.status.syncingShielded") : t("transfer.shielded.sync.progress", { percent })),
   get scanning() {
     return t("transfer.shielded.sync.scanning");
   },

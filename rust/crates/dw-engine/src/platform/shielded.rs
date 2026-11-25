@@ -74,6 +74,51 @@ pub struct ShieldedStatus {
     /// engine builds it in the background when the session's Platform side
     /// starts on an active network).
     pub prover_ready: bool,
+    /// Whether the account's viewing key is bound, or what holds its first
+    /// bind; `None` while the network is not active. Once bound the receive
+    /// address reads before any scan ([`ShieldedAddress`]).
+    pub account: Option<ShieldedAccount>,
+    /// How far the running pass has scanned the pool's note tree; `None`
+    /// while no pass runs or before its first batch proves the pool's size.
+    pub scan: Option<ShieldedScanProgress>,
+    /// The wallet's last sync pass this session failed; cleared by the next
+    /// one that succeeds (passes run again by themselves).
+    pub last_pass_failed: bool,
+}
+
+/// Where the account's viewing key stands. Its first bind reads the key
+/// from the vault; a restart binds it again from the stored key, locked or
+/// not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedAccount {
+    /// The key is bound: the address reads, and passes scan for it.
+    Bound,
+    /// Not bound yet, for no reason the user can act on: a pass held the
+    /// bind back. A later read binds it.
+    Binding,
+    /// The first bind needs the vault unlocked.
+    Locked,
+    /// The first bind needs the vault unlocked fully, not for mixing only.
+    MixingOnly,
+    /// A watch-only wallet: the vault holds no secret to derive the key.
+    WatchOnly,
+}
+
+impl ShieldedAccount {
+    pub fn is_bound(self) -> bool {
+        self == Self::Bound
+    }
+}
+
+/// The running pass's progress through the pool's note tree, network-wide:
+/// one pass scans for every bound wallet of the network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedScanProgress {
+    /// Tree positions scanned, the ones before the pass included.
+    pub checked: u64,
+    /// The pool's notes, as the pass's latest batch proved them.
+    pub total: u64,
 }
 
 /// A shielded payment address of the wallet, for "Receive" and its QR.

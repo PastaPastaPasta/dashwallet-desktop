@@ -45,6 +45,6 @@ test.describe("a Shielded address in Pay to", () => {
     await expect(button).toBeDisabled();
     const id = await button.getAttribute("aria-describedby");
     expect(id).toBeTruthy();
-    await expect(page.locator(`[id="${id}"]`)).toHaveText("Shielded is still syncing; try again when it finishes.");
+    await expect(page.locator(`[id="${id}"]`)).toHaveText("Shielded is still syncing. Try again when it finishes.");
   });
 });

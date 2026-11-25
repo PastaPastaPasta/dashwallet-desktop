@@ -570,6 +570,14 @@ pub(crate) struct SessionHub {
     /// Payments whose own block a wallet's ChainLock named, by wallet:
     /// their sent marks go at the next history flush.
     final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
+    /// The running shielded pass's tree progress (`checked`, `total`), from
+    /// its latest batch; cleared when the pass ends.
+    shielded_scan: Mutex<Option<(u64, u64)>>,
+    /// The wallets a shielded pass has synced this session: the first one
+    /// establishes the account, which hosts hear even when it found nothing.
+    shielded_synced: Mutex<HashSet<WalletId>>,
+    /// The wallets whose last shielded pass failed, until one succeeds.
+    shielded_failed: Mutex<HashSet<WalletId>>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -736,6 +744,26 @@ impl SessionHub {
         hook.is_some_and(|hook| hook(id))
     }
 
+    /// The running shielded pass's tree progress, once a batch proved the
+    /// pool's size.
+    pub(crate) fn shielded_scan(&self) -> Option<crate::platform::ShieldedScanProgress> {
+        let scan = *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner());
+        scan.filter(|&(_, total)| total > 0)
+            .map(|(checked, total)| crate::platform::ShieldedScanProgress {
+                checked: checked.min(total),
+                total,
+            })
+    }
+
+    /// `wallet`'s last shielded pass of this session failed.
+    pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
+        (self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .contains(&wallet)
+    }
+
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
         let _ = self.rates.set(rates);
     }
@@ -824,6 +852,9 @@ impl SessionHub {
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
+            shielded_scan: Mutex::new(None),
+            shielded_synced: Mutex::new(HashSet::new()),
+            shielded_failed: Mutex::new(HashSet::new()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -1237,6 +1268,34 @@ impl SessionHub {
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
+        self.forget_shielded_passes(id);
+    }
+
+    /// Tests' passes fail for want of Platform: those that pin the rules
+    /// of a succeeding pass forget the failures.
+    #[cfg(test)]
+    pub(crate) fn forget_shielded_failures(&self) {
+        (self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .clear();
+    }
+
+    /// A wallet loaded again starts its shielded passes afresh: its first
+    /// pass establishes its account again, and an earlier failure is not
+    /// this load's.
+    fn forget_shielded_passes(&self, id: &WalletId) {
+        (self
+            .shielded_synced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .remove(id);
+        (self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .remove(id);
     }
 
     /// Publishes rescan state: `f` changes the running rescan under the
@@ -1299,6 +1358,7 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        self.forget_shielded_passes(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -1941,22 +2001,48 @@ impl PlatformEventHandler for SessionHub {
     }
 
     /// A shielded sync pass that found notes or spends of a wallet's account
-    /// (not a cooldown skip) tells its hosts (m4 §2.13).
+    /// (not a cooldown skip) tells its hosts (m4 §2.13), and so does the
+    /// wallet's first pass of the session, which establishes its account
+    /// (`ShieldedStatus::ready`) whatever it found. A cooldown skip ran no
+    /// pass: it is neither a wallet's first nor a recovery.
     fn on_shielded_sync_completed(&self, summary: &ShieldedSyncPassSummary) {
+        *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut synced = self
+            .shielded_synced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut failed = self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (id, outcome) in &summary.wallet_results {
-            if let WalletShieldedOutcome::Ok(pass) = outcome
-                && !pass.is_cooldown_skip
-                && (pass
-                    .notes_result
-                    .new_notes_per_account
-                    .values()
-                    .any(|n| *n > 0)
-                    || pass.newly_spent_per_account.values().any(|n| *n > 0))
-            {
-                self.pump
-                    .mark_platform(WalletId(*id), [PlatformChange::Shielded]);
+            let wallet = WalletId(*id);
+            let pass = match outcome {
+                WalletShieldedOutcome::Ok(pass) if pass.is_cooldown_skip => continue,
+                WalletShieldedOutcome::Ok(pass) => pass,
+                WalletShieldedOutcome::Err(_) => {
+                    if failed.insert(wallet) {
+                        self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+                    }
+                    continue;
+                }
+                WalletShieldedOutcome::Skipped => continue,
+            };
+            let recovered = failed.remove(&wallet);
+            let first = synced.insert(wallet);
+            let found = (pass.notes_result.new_notes_per_account.values())
+                .chain(pass.newly_spent_per_account.values())
+                .any(|n| *n > 0);
+            if first || found || recovered {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
             }
         }
+    }
+
+    /// The running pass's tree progress, for `ShieldedStatus::scan`.
+    fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
+        *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((leaves_committed, total_target));
     }
 }
 
@@ -2207,6 +2293,140 @@ mod tests {
             balance: WalletCoreBalance::new(balance, 0, 0, 0),
             account_balances: BTreeMap::new(),
         }
+    }
+
+    fn shielded_pass(
+        outcomes: impl IntoIterator<Item = (WalletId, WalletShieldedOutcome)>,
+    ) -> ShieldedSyncPassSummary {
+        ShieldedSyncPassSummary {
+            wallet_results: (outcomes.into_iter()).map(|(w, o)| (w.0, o)).collect(),
+            sync_unix_seconds: 1_700_000_000,
+        }
+    }
+
+    fn found_nothing() -> WalletShieldedOutcome {
+        WalletShieldedOutcome::Ok(Default::default())
+    }
+
+    fn shielded_marks(hub: &SessionHub) -> Vec<WalletId> {
+        let marks = hub.pump.platform_marks.lock().unwrap().replace(Vec::new());
+        (marks.unwrap_or_default().into_iter())
+            .filter(|(_, c)| c.contains(&PlatformChange::Shielded))
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    /// The wallet's first shielded pass of the session establishes its
+    /// account (`ready`) even when it finds nothing, so hosts hear of it;
+    /// later passes that find nothing stay quiet.
+    #[test]
+    fn a_first_shielded_pass_that_finds_nothing_tells_the_hosts() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W]);
+        for _ in 0..3 {
+            hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        }
+        assert_eq!(shielded_marks(&hub), []);
+        // A skipped wallet (not bound) has had no pass.
+        let other = WalletId([8; 32]);
+        hub.on_shielded_sync_completed(&shielded_pass([(other, WalletShieldedOutcome::Skipped)]));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(other, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [other]);
+    }
+
+    /// A failed pass is the wallet's state until a pass succeeds, before
+    /// the account is established or after; hosts hear each change.
+    #[test]
+    fn a_failed_shielded_pass_holds_until_one_succeeds() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let failed = || WalletShieldedOutcome::Err("unreachable".into());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert!(!hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        // After the account is established: fails, then recovers.
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert!(!hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        // A skipped pass changes nothing.
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, WalletShieldedOutcome::Skipped)]));
+        assert!(hub.shielded_pass_failed(W));
+    }
+
+    /// A cooldown skip ran no pass: a wallet bound just before it is still
+    /// told of its real first pass, and a failed one stays failed.
+    #[test]
+    fn a_cooldown_skip_is_neither_a_first_pass_nor_a_recovery() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let skip = || {
+            WalletShieldedOutcome::Ok(platform_wallet::wallet::shielded::ShieldedSyncSummary {
+                is_cooldown_skip: true,
+                ..Default::default()
+            })
+        };
+        hub.on_shielded_sync_completed(&shielded_pass([(W, skip())]));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W], "the real first pass");
+        hub.on_shielded_sync_completed(&shielded_pass([(
+            W,
+            WalletShieldedOutcome::Err("x".into()),
+        )]));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, skip())]));
+        assert!(hub.shielded_pass_failed(W), "a skip is no recovery");
+        assert_eq!(shielded_marks(&hub), []);
+    }
+
+    /// A wallet closed and opened again in the session is told of its
+    /// first pass again, and an earlier failure is forgotten.
+    #[test]
+    fn an_unloaded_wallet_starts_its_shielded_passes_afresh() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        hub.on_shielded_sync_completed(&shielded_pass([(
+            W,
+            WalletShieldedOutcome::Err("x".into()),
+        )]));
+        assert_eq!(shielded_marks(&hub), [W, W]);
+        hub.unload_wallet(&W);
+        assert!(!hub.shielded_pass_failed(W));
+        hub.admit(W);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W], "its first pass again");
+    }
+
+    /// The tree progress reads once a batch proved the pool's size, never
+    /// past it, and clears when the pass ends.
+    #[test]
+    fn the_shielded_scan_progress_lasts_the_pass() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        assert_eq!(hub.shielded_scan(), None);
+        hub.on_shielded_tree_progress(500, 0);
+        assert_eq!(hub.shielded_scan(), None);
+        hub.on_shielded_tree_progress(4_000, 10_000);
+        let scan = hub.shielded_scan().unwrap();
+        assert_eq!((scan.checked, scan.total), (4_000, 10_000));
+        hub.on_shielded_tree_progress(10_200, 10_000);
+        let scan = hub.shielded_scan().unwrap();
+        assert_eq!((scan.checked, scan.total), (10_000, 10_000));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(hub.shielded_scan(), None);
     }
 
     /// A checkpoint advance outside a rescan tells whoever reads the

@@ -50,6 +50,7 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedAll: ["dashpay", "shielded"] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
   unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
@@ -234,19 +235,30 @@ export function usePendingPlatformFunds(walletId: string) {
   return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
-/** How often a sheet that shows the sync line re-reads the status while a pass runs: the engine
- * sends no event when a pass ends. */
+/** How often a view that shows Shielded's sync re-reads the status while a pass runs or the account
+ * is not established: the scan's progress comes with no event. */
 export const SHIELDED_SCAN_POLL_MS = 5_000;
 
-export const shieldedStatusRefetchMs = (status: ShieldedStatus | null | undefined): number | false => (status?.syncing ? SHIELDED_SCAN_POLL_MS : false);
+/** While a first bind is held back by a pass: each read tries the bind and waits on the pass, so
+ * the status bar reads it less often. */
+export const SHIELDED_BIND_POLL_MS = 15_000;
+
+/** While a pass runs, or the account is not established and nothing but time holds it (not an
+ * unlock, not a watch-only wallet). */
+export function shieldedStatusRefetchMs(status: ShieldedStatus | null | undefined): number | false {
+  if (status?.active && status.account === "binding") return SHIELDED_BIND_POLL_MS;
+  return status?.syncing || (status?.active && !status.ready && (status.account === null || status.account === "bound")) ? SHIELDED_SCAN_POLL_MS : false;
+}
 
 /** The shielded account's status; `null` while dw-app has no such command (api/pending.ts).
- * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while a pass runs. */
-export function useShieldedStatus(walletId: string, pollWhileSyncing = false) {
+ * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while it syncs (not while the window
+ * is hidden: TanStack pauses interval reads in the background). */
+export function useShieldedStatus(walletId: string, pollWhileSyncing = false, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: keys.shieldedStatus(walletId),
     queryFn: () => b.shieldedStatus(walletId),
+    enabled,
     retry: false,
     refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
   });

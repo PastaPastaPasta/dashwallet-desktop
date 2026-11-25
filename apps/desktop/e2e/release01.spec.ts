@@ -1069,7 +1069,7 @@ test.describe("Shielded", () => {
         for (const id of ids) {
           const b = page.getByTestId(id);
           await expect(b).toBeDisabled();
-          await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
+          await expect(b).toHaveAttribute("title", "Shielded is still syncing. Try again when it finishes.");
           // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
           expect(await contrast(b)).toBeGreaterThanOrEqual(3);
         }
@@ -1077,7 +1077,7 @@ test.describe("Shielded", () => {
       // Both of its Transfer routes wait and say why.
       for (const route of ["coreToShielded", "shieldedToCore"] as const) {
         await openTransfer(page, route);
-        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
         await expect(page.getByTestId("transfer-amount")).toBeDisabled();
         await waits(["transfer-max", "transfer-continue"]);
         if (route === "shieldedToCore") await shot(page, `${theme}-shielded-syncing-disabled`);
@@ -1085,7 +1085,9 @@ test.describe("Shielded", () => {
       }
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();
-      await expect(page.getByTestId("shielded-receive-why")).toHaveText("Shielded is still syncing; try again when it finishes.");
+      // Receive does not wait: the address shows with the first scan's progress.
+      await expect(page.getByTestId("shielded-receive-progress")).toHaveText("Syncing Shielded… 42.0%");
+      await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
       await page.getByTestId("sidebar-pay").click();
       await waits(["shielded-send"]);
       expect(errors).toEqual([]);

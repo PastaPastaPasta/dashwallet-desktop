@@ -113,7 +113,7 @@ fn unbound_launch_with(
 fn bind(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
     engine
         .block_on(on_pool(session, wallet, |_, lib| async move {
-            Ok(pool::ShieldedLib::bind(&lib).await?)
+            Ok(pool::ShieldedLib::bind(&lib).await?.is_bound())
         }))
         .unwrap()
 }
@@ -1783,6 +1783,7 @@ mod idle_tests {
                 .set_last_synced_note_index(subwallet(wallet), watermark)
                 .unwrap();
         });
+        session.hub.forget_shielded_failures();
     }
 
     /// Whether one pass (`force`: the user's) with Platform's count `count`
@@ -1802,6 +1803,9 @@ mod idle_tests {
             engine.block_on(pool::periodic_pass(s, m, |_| true))
         };
         assert!(ran, "the pass was admitted");
+        // The pass failed for want of Platform: these tests pin a
+        // succeeding pass's rules (a failed one is never idle).
+        session.hub.forget_shielded_failures();
         session.platform.passes_run.load(Ordering::SeqCst) > before
     }
 
@@ -1860,6 +1864,41 @@ mod idle_tests {
         assert!(!periodic(&engine, &session, Some(0)));
     }
 
+    /// A failed last pass is tried again by the next periodic pass (every
+    /// minute, no user action), even with the pool unchanged; once one
+    /// succeeds, the idle pool is skipped again.
+    #[test]
+    fn a_failed_last_pass_runs_the_next_periodic_scan() {
+        use platform_wallet::PlatformEventHandler;
+        use platform_wallet::manager::shielded_sync::{
+            ShieldedSyncPassSummary, WalletShieldedOutcome,
+        };
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        assert_eq!(
+            session.manager().unwrap().shielded_sync().interval(),
+            Duration::from_secs(60),
+            "the periodic pass runs every minute"
+        );
+        scanned(&engine, &session, wallet, 3, 3);
+        assert!(!periodic(&engine, &session, Some(3)), "idle: skipped");
+        let outcome = |o: WalletShieldedOutcome| ShieldedSyncPassSummary {
+            wallet_results: [(wallet.0, o)].into_iter().collect(),
+            sync_unix_seconds: 1_700_000_000,
+        };
+        (session.hub)
+            .on_shielded_sync_completed(&outcome(WalletShieldedOutcome::Err("unreachable".into())));
+        assert!(
+            periodic(&engine, &session, Some(3)),
+            "a failed pass runs again"
+        );
+        (session.hub)
+            .on_shielded_sync_completed(&outcome(WalletShieldedOutcome::Ok(Default::default())));
+        assert!(!session.hub.shielded_pass_failed(wallet));
+        assert!(!periodic(&engine, &session, Some(3)), "idle again: skipped");
+    }
+
     /// A count that is not read runs the pass, as the network's unreachable
     /// count does here.
     #[test]
@@ -1878,6 +1917,7 @@ mod idle_tests {
             before + 1,
             "the network's count is unreachable offline"
         );
+        session.hub.forget_shielded_failures();
         assert!(!periodic(&engine, &session, Some(1)));
     }
 

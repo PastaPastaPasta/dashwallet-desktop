@@ -596,6 +596,9 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
       setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
   }
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
+  // A full unlock lets Shielded bind its viewing key (the engine's next status read binds it).
+  const shielded = world.pending.shielded;
+  if (state === "unlocked" && shielded && (shielded.account === "locked" || shielded.account === "mixingOnly")) shielded.account = "bound";
   setLock(ctx, state);
   world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
   world.windowCharged = 0;

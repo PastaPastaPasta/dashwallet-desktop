@@ -965,11 +965,29 @@ const SCENARIOS = {
     w.sync = syncing();
     return w;
   },
-  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  /** Shielded is on and its account is not established yet: its actions wait and say why, the
+   * status bar says so with the first scan's progress, and Receive shows the address already. */
   "shielded-syncing": (t) => {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
+    w.pending.shielded!.scan = { checked: 42_000, total: 100_000 };
+    return w;
+  },
+  /** Shielded's first bind needs an unlock: Receive says so and shows no address; the bar is Synced,
+   * Sync progress says "Unlock to sync". */
+  "shielded-locked": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "mixingOnly";
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** Shielded is established and its last pass failed: the bar says it did not finish. */
+  "shielded-pass-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastPassFailed = true;
     return w;
   },
   /** Shielded is not ready and an earlier shield is waiting to be finished. */

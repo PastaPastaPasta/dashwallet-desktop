@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 86
+Contract-Version: 91
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -864,7 +864,7 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing` and `prover_ready`; and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
+| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing`, `prover_ready`, `account` (`ShieldedAccount`: `bound`, or what holds the first bind of the viewing key: `binding` while a pass holds it back, `locked` and `mixing_only` until a full unlock, `watch_only` for good; `None` while not active; once bound the receive address reads before any scan), `scan` (`ShieldedScanProgress { checked, total }`: the running pass's network-wide progress through the pool's note tree, `None` between passes and before a batch proved the pool's size) and `last_pass_failed` (the wallet's last pass this session failed, until one succeeds); and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
 | `shielded_sync()` | async | Runs a pass of the wallet's notes now (bypassing the 30 s skip), then returns `shielded_status`. The gate; `platform.unavailable` while the Platform side is not running. | `ShieldedError` |
 | `shielded_receive_address()` | async | `ShieldedAddress{address, account}`: the account's default payment address, bech32m (`dash1z…`/`tdash1z…`, dpp `OrchardAddress::to_bech32m_string`), for "Receive" and its QR. The gate; `shielded.not_synced{account}` until the keys are bound. | `ShieldedError` |
 | `shield_quote(amount)` | async | `ShieldQuote` for `amount` (`FundAmount`, §2.12): the lock's fee bound and total in duffs, Platform's flat `pool_fee_credits` for the shield, the `credits` the balance gains, and the `grant` (`max_duffs` = total). The gate; `shielded.below_minimum{min}` for a lock whose credits do not clear the pool fee (`min` in duffs); `shielded.funding_insufficient{needed, available}` above the spendable Core balance; `shielded.coins_locked`; `shielded.too_many_inputs{inputs, max}` when the fewest coins that cover the lock are more than 50 ("combine coins first"); `shielded.shield_pending{txid}` while an earlier shield is not applied; `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be). `max` is `None`. **Core Max (`All`, version 72, §7 item 92):** as `platform_fund_quote(All)`'s, with the pool fee: `credits` = `duffs` × 1000 − `pool_fee_credits`, and the floor the pool's (`pool_fee_credits` / 1000 + 1 duffs); the refusals are `shielded.mixing_active`, `shielded.move_running`, `shielded.coins_locked`, `shielded.too_many_inputs{inputs, max}`, `shielded.below_minimum{min}`, `shielded.shield_pending{txid}` and `shielded.not_synced{journal}`. | `ShieldedError` |
@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 86 -->
+<!-- surface-sha256: db521f85c25e0dd0dee30928bf05cf499459595417efacd321a2f0e1317228a5 version: 91 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2388,6 +2388,26 @@ pub struct ShieldedStatus {
     pub last_sync_at: Option<u64>,
     pub syncing: bool,
     pub prover_ready: bool,
+    pub account: Option<ShieldedAccount>,
+    pub scan: Option<ShieldedScanProgress>,
+    pub last_pass_failed: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedAccount {
+    Bound,
+    Binding,
+    Locked,
+    MixingOnly,
+    WatchOnly,
+}
+impl ShieldedAccount {
+    pub fn is_bound(self) -> bool;
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedScanProgress {
+    pub checked: u64,
+    pub total: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedAddress {
@@ -4867,3 +4887,17 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `platform.grant_invalid`, and a held row signs only its stored plan, once more. A grant is not bound to the
     row it was sized for: like every `PlatformOp` grant it caps what any one redemption may take, which the user
     approves.
+
+106. **Shielded's sync as the status bar reads it (version 91).** `ShieldedStatus` gains `account`
+    (`ShieldedAccount`), `scan` (`ShieldedScanProgress`) and `last_pass_failed`. `account` is what the bind of the
+    viewing key answered: `bound`; `binding` while a pass held the first bind back (a later read binds it);
+    `locked`, `mixing_only` and `watch_only` when the vault refused the first bind's viewing key (`Locked`,
+    `MixingOnly`, `NoSecret`); any other vault error is still the call's. A read binds as before: no caller gates
+    differently, and `shielded_receive_address` still answers `shielded.not_synced{account}` while not bound and
+    the address once bound, scanned or not. `scan` is the library's tree progress (`on_shielded_tree_progress`),
+    network-wide, while a pass runs and once a batch proved the pool's size; a wallet bound after others rescans
+    below the tree's size, which the library counts as already checked. `last_pass_failed` is the wallet's last
+    pass's outcome this session. `PlatformChange::Shielded` is also marked for a wallet's first pass of the session
+    (it establishes the account, `ready`, whatever it found), when a pass fails where the last did not, and when
+    one succeeds after a failure. A wallet whose last pass failed is never idle: the next periodic pass (every
+    minute) scans it even with the pool's note count unchanged.

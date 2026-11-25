@@ -288,11 +288,20 @@ export const SHIELDED_COPY = {
     get copy() {
       return t("transfer.shielded.receive.copy");
     },
-    get notSynced() {
-      return SHIELDED_SYNC_COPY.syncing;
-    },
     get loading() {
       return t("transfer.shielded.receive.loading");
+    },
+    get early() {
+      return t("transfer.shielded.receive.early");
+    },
+    get locked() {
+      return t("transfer.shielded.receive.locked");
+    },
+    get unlock() {
+      return t("transfer.shielded.receive.unlock");
+    },
+    get watchOnly() {
+      return t("transfer.shielded.receive.watchOnly");
     },
   },
 };

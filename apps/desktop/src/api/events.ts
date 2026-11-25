@@ -78,7 +78,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       // A lock drops the wallet's queries (lockGate.ts): only the lock screen's are read again.
       if (event.state === "locked") return [keys.lockStatus, keys.lockReconcile];
       // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
+      // A full unlock lets Shielded bind its viewing key: its status and address are read again.
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];

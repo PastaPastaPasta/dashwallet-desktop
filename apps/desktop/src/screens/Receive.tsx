@@ -28,7 +28,6 @@ import { useHeldAddress } from "../payments/hold";
 import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
-import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
 import { Page } from "./Routes";
 import { SHIELDED_COPY } from "../shielded/flow";
 import { useShieldedReceiveContent } from "./ShieldedSheet";
@@ -498,14 +497,13 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
   );
   const dashContent = useDashReceiveContent(walletId, network);
   const platformContent = usePlatformReceiveContent(walletId, pool === "platform");
-  const syncing = shieldedSyncing(shielded.data);
-  const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded" && !syncing);
+  const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded");
   const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
     before: <>
       <h2 id="receive-address-title" className="card-title">{t("receive.shielded.title")}</h2>
-      {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNC_COPY.syncing}</p> : shieldedContent.before}
+      {shieldedContent.before}
     </>,
-    after: syncing ? null : shieldedContent.after,
+    after: shieldedContent.after,
   };
   return (
     <Page route="receive">
