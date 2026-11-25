@@ -7,6 +7,13 @@ export const activity = {
     unknownInputs:
       "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     rescanFirst: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
+    /** Beside Abandon on a payment whose coin is pending because it may never confirm
+     * (`coins.pendingUnproven`). */
+    unprovenParentHint:
+      "This payment may never confirm, for example if the coins it spends were already spent elsewhere. If it stays unconfirmed, you can abandon it so Dash Wallet stops showing its pending coin. Coins the payment spent come back once Dash Wallet has checked that they haven't been spent elsewhere. If it confirms anyway, the coin is counted again.",
+    /** In an abandoned payment's details while a rescan checks a coin it spent before giving it back. */
+    checkingSpentCoins:
+      "Dash Wallet is checking the coins this payment spent. Any that haven't been spent elsewhere come back to your balance when the check finishes.",
     /** The engine refused with `rescan_in_progress`: after a chain fork it catches up for about a block. */
     catchingUp: "The wallet is catching up with the network. You can abandon this payment once it has finished.",
     settledChild:

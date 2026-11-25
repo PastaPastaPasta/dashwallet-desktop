@@ -418,10 +418,43 @@ pub(super) fn assert_holds(
     assert_eq!(&got, want, "{state}: {held:?}");
     let b = balances(session, id);
     assert_eq!(
-        b.total,
+        b.total + b.withheld,
         held.iter().map(|(_, v)| v).sum::<u64>(),
         "{state}: {b:?}"
     );
+    b
+}
+
+/// [`assert_holds`] while the coins of `waiting` wait for the rescan an
+/// abandon or a drop owes them (#818): key-wallet holds those of `want`,
+/// but the balance counts none of them.
+pub(super) fn assert_holds_waiting(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    want: &BTreeSet<OutPoint>,
+    waiting: &BTreeSet<OutPoint>,
+    state: &str,
+) -> WalletBalances {
+    let held = coins(engine, session, id);
+    let got: BTreeSet<OutPoint> = held.iter().map(|(o, _)| *o).collect();
+    assert_eq!(
+        got.len(),
+        held.len(),
+        "{state}: an outpoint held twice: {held:?}"
+    );
+    assert_eq!(&got, want, "{state}: {held:?}");
+    assert_eq!(
+        &session.hub.rescan_held(&id),
+        waiting,
+        "{state}: the coins waiting for their rescan"
+    );
+    let b = balances(session, id);
+    let counted: u64 = (held.iter())
+        .filter(|(o, _)| !waiting.contains(o))
+        .map(|(_, v)| v)
+        .sum();
+    assert_eq!(b.total, counted, "{state}: {b:?}");
     b
 }
 
@@ -629,7 +662,15 @@ fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restar
     let session = reopen(&engine, session);
     let mut want = outputs(&paid);
     want.remove(&b);
-    assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    let waiting = BTreeSet::from([a]);
+    assert_holds_waiting(
+        &engine,
+        &session,
+        id,
+        &want,
+        &waiting,
+        "abandoned, then a restart",
+    );
     mined(&engine, &session, id, TIP, vec![winner]);
     assert_holds(&engine, &session, id, &want, "replayed after a restart");
     assert!(!spendable(&engine, &session, id, b), "B is not offered");
@@ -5004,6 +5045,68 @@ fn abandons_rescan_counts_but_never_offers_a_coin_a_pending_payment_from_elsewhe
             "{state}: the automatic choice takes U"
         );
     }
+}
+
+/// A prepared payment from A, dropped: key-wallet's reservation goes in a
+/// task the drop spawns, held here before it runs. Until it runs, A stays
+/// reserved to the engine too, so no plan takes it for key-wallet's build to
+/// drop (#745): coin control from A is refused by name, and the automatic
+/// choice of everything else spends exactly the other coins. Once it runs, A
+/// pays again.
+#[test]
+fn a_dropped_payments_coin_stays_reserved_until_key_wallet_releases_it() {
+    use crate::send::SendFailure;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let inputs = |source: CoinSource, amount: u64, subtract_fee: bool| {
+        let (_draft, prepared) = prepare(
+            &engine,
+            &session,
+            id,
+            source,
+            amount,
+            subtract_fee,
+            &Arc::new(Accept::default()),
+        );
+        prepared.map(|p| {
+            (p.summary().inputs.iter())
+                .map(|i| i.outpoint)
+                .collect::<BTreeSet<_>>()
+        })
+    };
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_release.lock().unwrap() = Some(Arc::clone(&pause));
+    let release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert!(
+        pause.wait_reached(std::time::Duration::from_secs(20)),
+        "the dropped payment's release is held"
+    );
+
+    let from_a = inputs(CoinSource::Outpoints(vec![a, b]), COIN * 3 / 2, false);
+    assert!(
+        matches!(
+            from_a,
+            Err(crate::EngineError::Send(SendFailure::OutpointUnavailable(o))) if o == a
+        ),
+        "coin control from A and B while the release is held: {from_a:?}"
+    );
+    let others: BTreeSet<OutPoint> = (1..COINS as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .collect();
+    let any = inputs(CoinSource::Any, (COINS as u64 - 1) * COIN, true);
+    assert_eq!(
+        any.as_ref().ok(),
+        Some(&others),
+        "the automatic choice while the release is held: {any:?}"
+    );
+
+    drop(release);
+    eventually("A and B pay once the releases ran", || {
+        inputs(CoinSource::Outpoints(vec![a, b]), COIN * 3 / 2, false).ok()
+            == Some(BTreeSet::from([a, b]))
+    });
 }
 
 /// A coin U of the wallet that only a pending payment from elsewhere
