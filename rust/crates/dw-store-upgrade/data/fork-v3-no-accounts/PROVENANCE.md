@@ -5,7 +5,13 @@ fork's own `drop_unauthorized_pending_spends`, but whose wallets were
 inserted with the fork's bare `wallet_db_in` test helper: it has no
 `account_registrations`. The upstream Strict load refuses it ("required
 account information is missing"), so the upgrade refuses it at the
-rehearsal. Kept only for that test (`tests::v3_dropped`); the fixture for
+rehearsal. Only the test that it is refused at the rehearsal with the tree
+byte-equal
+(`tests::v3_dropped::a_v3_store_the_upstream_load_cant_read_is_refused_at_the_rehearsal`)
+may use it: its wallets are not real wallets, so it proves nothing about
+records surviving the upgrade. The guard test
+`tests::v3_dropped::the_no_accounts_store_serves_only_the_rehearsal_refusal`
+fails if any other code in the crate names this directory. The fixture for
 the upgrade itself is `fork-v3-dropped`.
 
 - Fork rev: PastaPastaPasta/platform `c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0`,

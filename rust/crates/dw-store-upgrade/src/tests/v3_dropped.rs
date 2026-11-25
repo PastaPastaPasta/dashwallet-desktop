@@ -276,3 +276,39 @@ fn a_v3_store_the_upstream_load_cant_read_is_refused_at_the_rehearsal() {
     assert!(reason.file_unchanged() && reason.is_refusal());
     assert_eq!(tree_diff(&tree(&f.root), &before), Vec::<String>::new());
 }
+
+/// The no-accounts V3 store (its PROVENANCE.md) serves the rehearsal refusal
+/// above and nothing else: no other code in the crate names it.
+#[test]
+fn the_no_accounts_store_serves_only_the_rehearsal_refusal() {
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let name = concat!("fork-v3-", "no-accounts");
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&crate_dir.join("src"), &mut files);
+    let mut uses = Vec::new();
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap();
+        for (at, _) in text.match_indices(name) {
+            uses.push((path.clone(), at, text.clone()));
+        }
+    }
+    let [(path, at, text)] = uses.as_slice() else {
+        panic!("{} uses of {name}", uses.len())
+    };
+    assert!(path.ends_with("tests/v3_dropped.rs"), "{}", path.display());
+    let start = text
+        .find("fn a_v3_store_the_upstream_load_cant_read_is_refused_at_the_rehearsal()")
+        .unwrap();
+    let end = start + text[start..].find("\n}\n").unwrap();
+    assert!((start..end).contains(at), "used outside the refusal test");
+}
