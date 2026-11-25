@@ -2308,30 +2308,27 @@ fn a_session_open_that_cannot_widen_a_done_wallet_marks_it_pending() {
     );
 }
 
-const OWED_REPLAY_ROOT: &str = "DW_OWED_REPLAY_ROOT";
-
-/// The child of [`a_session_open_that_cannot_store_an_owed_replay_does_not_open`]:
-/// the failed open keeps its wallet loaded (Q104 104-F1), so the next open
-/// in this process is refused until a restart.
+/// Review r2 finding 1: a session open that can neither widen a wallet nor
+/// store the replay it then owes does not open, so SPV never scans that
+/// wallet with narrow pools unmarked. The failed open unloads no wallet,
+/// and a healthy open after it opens, with the wallet's marker as it was.
 #[test]
-#[ignore = "run by a_session_open_that_cannot_store_an_owed_replay_does_not_open"]
-fn owed_replay_failed_open_child() {
-    let Ok(root) = std::env::var(OWED_REPLAY_ROOT) else {
-        return;
-    };
-    let root = std::path::PathBuf::from(root);
-    let (engine, session) = open_engine(root.join("data"));
+fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
     create_vault(&engine, &session);
     let id = created(&engine, &session);
     store_checkpoint(&engine, &session, id, HEIGHT);
     set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
     let data_dir = session.data_dir().to_path_buf();
+    let before = crate::failed_open_tests::shown(&engine, &session, id);
     drop(session);
     assert!(
         engine
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap()
     );
+    let rows = crate::failed_open_tests::stored_rows(&data_dir, id);
 
     let opened = failing(&crate::keys::FAIL_WIDEN, id, || {
         failing(&crate::keys::FAIL_WIDE_SCAN_IO, id, || {
@@ -2340,43 +2337,24 @@ fn owed_replay_failed_open_child() {
     });
 
     assert!(opened.is_err());
-    crate::failed_open_tests::assert_held(&engine, &data_dir, id);
-    std::fs::write(root.join("wallet"), id.to_string()).unwrap();
-    engine.block_on(engine.shutdown()).unwrap();
-}
-
-/// Review r2 finding 1: a session open that can neither widen a wallet nor
-/// store the replay it then owes does not open, so SPV never scans that
-/// wallet with narrow pools unmarked. A healthy open in the next process
-/// opens, with the wallet's marker as it was.
-#[test]
-fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "restore_tests::owed_replay_failed_open_child",
-            "--exact",
-            "--ignored",
-            "--test-threads=1",
-        ])
-        .env(OWED_REPLAY_ROOT, dir.path())
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
-    assert!(
-        child.status.success(),
-        "the failed open's process failed: {}{}",
-        String::from_utf8_lossy(&child.stdout),
-        String::from_utf8_lossy(&child.stderr)
+    // The failed open owes the wallet a replay from its birth height, which
+    // the retry resumes: it shows the wallet catching up, its stored
+    // checkpoint as it was.
+    let session = crate::failed_open_tests::assert_kept_and_reopened(
+        &engine,
+        &data_dir,
+        id,
+        &rows,
+        &before.catching_up(),
     );
-    let id: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
-        .parse()
-        .unwrap();
-
-    let (engine, session) = open_engine(dir.path().join("data"));
     assert_eq!(
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::Done)
+    );
+    let db = data_dir.join(crate::session::WALLET_DB_FILE);
+    assert_eq!(
+        crate::store::stored_heights(&db, &id.0).unwrap().0,
+        Some(HEIGHT)
     );
 }
 

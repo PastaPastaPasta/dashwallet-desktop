@@ -224,6 +224,8 @@ pub(crate) async fn release_after_failed_open(
     persister: Weak<SqlitePersister>,
     left_loaded: bool,
 ) {
+    #[cfg(test)]
+    failed_open_probe::record_end(data_dir, left_loaded);
     if !left_loaded && persister_released(&persister).await {
         return;
     }
@@ -278,8 +280,10 @@ pub(crate) static FAIL_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 #[cfg(test)]
 pub(crate) static FAIL_HISTORY_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// Tests: for each failed journal open of a data directory, whether its
-/// manager had a shielded coordinator, and how many wallets it kept loaded.
+/// Tests: what the failed opens of a data directory left. For each failed
+/// journal open, whether its manager had a shielded coordinator and how
+/// many wallets it kept loaded (`seen`); for each failed open, whether it
+/// ended with a wallet loaded (`ended`).
 #[cfg(test)]
 pub(crate) mod failed_open_probe {
     use std::path::{Path, PathBuf};
@@ -299,6 +303,22 @@ pub(crate) mod failed_open_probe {
         (SEEN.lock().unwrap_or_else(|p| p.into_inner()).iter())
             .filter(|(d, ..)| d == data_dir)
             .map(|(_, c, n)| (*c, *n))
+            .collect()
+    }
+
+    /// For each failed open of a data directory that ended, whether it
+    /// dropped its manager with a wallet still loaded.
+    static ENDED: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record_end(data_dir: &Path, left_loaded: bool) {
+        (ENDED.lock().unwrap_or_else(|p| p.into_inner()))
+            .push((data_dir.to_path_buf(), left_loaded));
+    }
+
+    pub(crate) fn ended(data_dir: &Path) -> Vec<bool> {
+        (ENDED.lock().unwrap_or_else(|p| p.into_inner()).iter())
+            .filter(|(d, _)| d == data_dir)
+            .map(|(_, loaded)| *loaded)
             .collect()
     }
 }

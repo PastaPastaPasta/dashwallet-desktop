@@ -300,14 +300,16 @@ fn a_wallet_listed_only_in_the_app_db_keeps_its_rows_unresolved() {
 }
 
 /// A failed read of the imported spends fails the session's open: no
-/// session is returned and the rows stay unclassified. Its loaded wallet
-/// keeps the wallet database held, so the next open in this process is
-/// refused until a restart.
+/// session is returned and the rows stay unclassified. The open unloads
+/// no wallet, and the next open in this process opens with the wallet as
+/// it was and reads the rows.
 #[test]
 fn a_failed_classification_fails_the_open_and_leaves_the_rows_unclassified() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
     let a = f.import(PHRASE_A);
+    let before = crate::failed_open_tests::shown(&f.engine, &f.session, a);
     let data_dir = f.close();
+    let rows = crate::failed_open_tests::stored_rows(&data_dir, a);
     as_schema_10(&data_dir, &[(a.0, [1; 32], [10; 32])], &[]);
     let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
     dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
@@ -320,21 +322,10 @@ fn a_failed_classification_fails_the_open_and_leaves_the_rows_unclassified() {
         failed.err()
     );
     assert_eq!(statuses(artifacts_at(&data_dir)), ["unclassified"]);
-    let retried = f
-        .engine
-        .block_on(f.engine.open_network(DashNetwork::Regtest, options()));
-    assert!(
-        matches!(
-            retried,
-            Err(crate::EngineError::StorageInUse {
-                retryable: false,
-                ..
-            })
-        ),
-        "{:?}",
-        retried.err()
-    );
-    assert_eq!(statuses(artifacts_at(&data_dir)), ["unclassified"]);
+    f.session =
+        crate::failed_open_tests::assert_kept_and_reopened(&f.engine, &data_dir, a, &rows, &before);
+    assert!(f.session.leases.journal_ready());
+    assert_eq!(artifacts(&f.session), [unresolved(a, [1; 32], [10; 32])]);
 }
 
 const FAILED_CLASSIFICATION_ROOT: &str = "DW_FAILED_CLASSIFICATION_ROOT";
