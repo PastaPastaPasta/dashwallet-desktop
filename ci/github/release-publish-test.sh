@@ -438,16 +438,17 @@ import hashlib, json, sys
 from pathlib import Path
 v, d, f, m = sys.argv[1:]
 names = [
-    "SHA256SUMS", "SHA256SUMS.asc", "latest.json",
+    "SHA256SUMS", "SHA256SUMS.asc",
     f"dash-wallet-{v}-linux-amd64.deb",
     f"dash-wallet-{v}-linux-x86_64.AppImage",
     f"dash-wallet-{v}-linux-x86_64.flatpak",
-    f"dash-wallet-{v}-macos-universal.app.tar.gz",
     f"dash-wallet-{v}-macos-universal.dmg",
     f"dash-wallet-{v}-sbom-npm.cdx.json",
     f"dash-wallet-{v}-sbom-rust.cdx.json",
     f"dash-wallet-{v}-windows-x64-setup.exe",
 ]
+if "-rc." not in v:  # a signed candidate has no updater feed
+    names += ["latest.json", f"dash-wallet-{v}-macos-universal.app.tar.gz"]
 files = {}
 for n in sorted(names):
     p = Path(d) / n
@@ -498,7 +499,7 @@ DIST=$work/tagdist DW_SIGNED_DISPATCH=1 DW_ALLOW_UNSIGNED_STABLE=1 run workflow_
 refused "Blocker #1: DW_SIGNED_DISPATCH=1 refuses unsigned even if DW_ALLOW_UNSIGNED_STABLE=1"
 fs_reset
 DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
-check "Blocker #1: DW_SIGNED_DISPATCH=1 never publishes a release candidate" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+check "Blocker #1: DW_SIGNED_DISPATCH=1 never publishes an unsigned release candidate" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 # H2: signed-manifest.json missing pgp_fpr is refused
 jq 'del(.pgp_fpr)' "$work/signed-manifest.json" > "$work/signed-manifest-nofpr.json"
 fs_reset
@@ -534,6 +535,41 @@ tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist DW_SIGNING_REQUIRED=1 run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
 check "keyless release candidate publishes 8 assets unchanged (no .asc, no feed, no override needed)" \
   '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 8 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && ! log_has "SHA256SUMS.asc" && ! log_has "latest.json"'
+# Signed release candidate (DW_SIGN_RC=1, docs/release/RC-SIGNING.md): published only by the signed dispatch,
+# with SHA256SUMS.asc and a 9-file manifest (no updater feed), as a prerelease
+fs_reset
+DIST=$work/tagdist DW_SIGN_RC=1 run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+refused "signed RC: with DW_SIGN_RC=1 a pushed candidate never publishes keyless (release.yml waits for signatures)"
+check "signed RC: the refusal names SHA256SUMS.asc, the manifest and RC-SIGNING.md, not an updater feed" \
+  'grep -qF "SHA256SUMS.asc" "$work/prep.out" && grep -qF "signed-manifest.json" "$work/prep.out" && grep -qF "RC-SIGNING.md" "$work/prep.out" && ! grep -qF "updater feed" "$work/prep.out"'
+printf -- '-----BEGIN PGP SIGNATURE-----\nrc\n-----END PGP SIGNATURE-----\n' > "$work/tagdist/SHA256SUMS.asc"
+write_manifest 0.1.0-rc.1 "$work/tagdist" "$work/no-feed" "$work/rc-manifest.json"
+fs_reset
+SIGNED_MANIFEST=$work/rc-manifest.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 DW_SIGNING_REQUIRED=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "signed RC: the signed dispatch publishes 9 attested assets as a prerelease, with SHA256SUMS.asc and no feed" \
+  '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 9 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "--latest=false" && log_has "/attest/SHA256SUMS.asc" && ! log_has "latest.json" && ! log_has "app.tar.gz"'
+SIGNED_MANIFEST=$work/rc-manifest.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 DW_SIGNING_REQUIRED=1 FAKE_RELEASES=v0.1.0-rc.1 FAKE_ASSET_COUNT=9 FAKE_TAG_MANIFEST=$work/rc-manifest.json run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "signed RC: a rerun over the complete 9-asset release with matching digests leaves it as it is" \
+  '[[ $status -eq 0 ]] && ! log_has "release create" && grep -qF "all 9 published assets match" "$work/pub.out"'
+fs_reset
+SIGNED_MANIFEST=$work/rc-manifest.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 FAKE_RELEASES=v0.1.0-rc.1 FAKE_ASSET_COUNT=9 FAKE_TAG_MANIFEST=$work/rc-manifest.json FAKE_TAG_DIGEST_MISMATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "signed RC: a rerun over a release whose asset digest differs fails closed" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+jq '.files["latest.json"] = ("c" * 64)' "$work/rc-manifest.json" > "$work/rc-manifest-10.json"
+fs_reset
+SIGNED_MANIFEST=$work/rc-manifest-10.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+refused "signed RC: a manifest with other than 9 files (here an updater feed entry) is refused"
+rm -rf "$work/rc-feed"; mkdir -p "$work/rc-feed"
+echo '{}' > "$work/rc-feed/latest.json"; echo app > "$work/rc-feed/dash-wallet-0.1.0-rc.1-macos-universal.app.tar.gz"
+fs_reset
+SIGNED_MANIFEST=$work/rc-manifest.json FEED=$work/rc-feed DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+refused "signed RC: an updater feed on a candidate is refused, even on the signed dispatch"
+rm -f "$work/tagdist/SHA256SUMS.asc"; fs_reset
+SIGNED_MANIFEST=$work/rc-manifest.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+refused "signed RC: the signed dispatch without SHA256SUMS.asc is refused"
+echo "tampered" >> "$work/tagdist/dash-wallet-0.1.0-rc.1-windows-x64-setup.exe"
+printf -- '-----BEGIN PGP SIGNATURE-----\nrc\n-----END PGP SIGNATURE-----\n' > "$work/tagdist/SHA256SUMS.asc"; fs_reset
+SIGNED_MANIFEST=$work/rc-manifest.json DIST=$work/tagdist DW_SIGNED_DISPATCH=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+refused "signed RC: an installer that differs from the manifest is refused"
 rm -rf "$work/maindist"; cp -R "$dist" "$work/maindist"
 printf -- '-----BEGIN PGP SIGNATURE-----\nmain\n-----END PGP SIGNATURE-----\n' > "$work/maindist/SHA256SUMS.asc"; fs_reset; unset FAKE_CONT_RELEASE
 DIST=$work/maindist run push refs/heads/main "$c2" "$ver"
@@ -628,6 +664,8 @@ export GITHUB_SHA=$c2
 check "classify: main push" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify) == main ]]'
 check "classify: release tag" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0-rc.2 "$here/release-publish.sh" classify) == tag ]]'
 check "classify: signed workflow_dispatch on stable tag" '[[ $(GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/v0.1.0 DW_SIGNED_DISPATCH=1 "$here/release-publish.sh" classify) == tag ]]'
+check "classify: signed workflow_dispatch on a candidate tag; a dry-run tag stays skip" \
+  '[[ $(GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/v0.1.0-rc.1 DW_SIGNED_DISPATCH=1 "$here/release-publish.sh" classify) == tag && $(GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/v0.0.0-rel8 DW_SIGNED_DISPATCH=1 "$here/release-publish.sh" classify) == skip ]]'
 check "classify: dry-run tag, branch, PR, dispatch" '[[ $({ for r in refs/tags/v0.0.0-rel8 refs/heads/dw/x; do GITHUB_EVENT_NAME=push GITHUB_REF=$r "$here/release-publish.sh" classify; done; for e in pull_request workflow_dispatch; do GITHUB_EVENT_NAME=$e GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify; done; } | tr "\n" " ") == "skip skip skip skip " ]]'
 # decide <event> <ref> <sha> <base> [repo]: prints "publish build"
 decide() {
@@ -655,6 +693,16 @@ check "decide: an rc, a dry run, a tag off main, main and a dispatch set stable_
   '[[ "$(stable_tag push refs/tags/v0.1.0-rc.1 "$c2" "") $(stable_tag push refs/tags/v0.0.0-rel8 "$c2" "") $(stable_tag push refs/tags/v0.1.0 "$side" "") $(stable_tag push refs/heads/main "$c2" "") $(stable_tag workflow_dispatch refs/tags/v0.1.0 "$c2" "")" == "false false false false false" ]]'
 check "Blocker #6: decide sets signed_stable=true by default, false under DW_ALLOW_UNSIGNED_STABLE=1, true when DW_SIGNING_REQUIRED=1 overrides" \
   '[[ $(signed_stable push refs/tags/v0.1.0 "$c2" "") == true && $(DW_ALLOW_UNSIGNED_STABLE=1 signed_stable push refs/tags/v0.1.0 "$c2" "") == false && $(DW_ALLOW_UNSIGNED_STABLE=1 DW_SIGNING_REQUIRED=1 signed_stable push refs/tags/v0.1.0 "$c2" "") == true ]]'
+signed_rc() { decide "$@" > /dev/null; sed -n 's/^signed_rc=//p' "$work/decide.out"; }
+detached() { decide "$@" > /dev/null; sed -n 's/^detached=//p' "$work/decide.out"; }
+check "decide: a candidate stays keyless by default (signed_rc=false, detached=false)" \
+  '[[ $(signed_rc push refs/tags/v0.1.0-rc.1 "$c2" "") == false && $(detached push refs/tags/v0.1.0-rc.1 "$c2" "") == false ]]'
+check "decide: DW_SIGN_RC=1 opts a candidate on main in to detached signing, never to the updater feed (signed_stable=false)" \
+  '[[ $(DW_SIGN_RC=1 signed_rc push refs/tags/v0.1.0-rc.1 "$c2" "") == true && $(DW_SIGN_RC=1 detached push refs/tags/v0.1.0-rc.1 "$c2" "") == true && $(DW_SIGN_RC=1 signed_stable push refs/tags/v0.1.0-rc.1 "$c2" "") == false ]]'
+check "decide: DW_SIGN_RC=1 leaves a candidate off main, a dry run, main and a dispatch alone" \
+  '[[ "$(DW_SIGN_RC=1 detached push refs/tags/v0.1.0-rc.1 "$side" "") $(DW_SIGN_RC=1 detached push refs/tags/v0.0.0-rel8 "$c2" "") $(DW_SIGN_RC=1 detached push refs/heads/main "$c2" "") $(DW_SIGN_RC=1 detached workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" "")" == "false false false false" ]]'
+check "decide: a stable tag is detached whatever DW_SIGN_RC says, and never signed_rc" \
+  '[[ $(detached push refs/tags/v0.1.0 "$c2" "") == true && $(DW_SIGN_RC=1 signed_rc push refs/tags/v0.1.0 "$c2" "") == false && $(DW_ALLOW_UNSIGNED_STABLE=1 detached push refs/tags/v0.1.0 "$c2" "") == false ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
 check "decide: a docs-only push after a code push on the branch still builds (measured from main, not the last push)" '[[ $(decide push refs/heads/dw/x "$docsafter" "$code") == "false true" ]]'
@@ -1102,6 +1150,31 @@ try:
     subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", atk_fpr,
                     "--output", str(wk / "SHA256SUMS.atk.asc"), str(sigs / "SHA256SUMS")], check=True, env=atk_env, capture_output=True)
     subprocess.run(["gpgconf", "--kill", "all"], env=atk_env, capture_output=True)
+
+    # Signed release candidate: the same unsigned and signed bytes under 0.1.0-rc.1 names, no updater feed,
+    # and SHA256SUMS over the 7 bundles and SBOMs, PGP-signed with the pinned key.
+    rcv = "0.1.0-rc.1"
+    rc_unsigned = e2e / "rc-unsigned"
+    rc_sigs = e2e / "rc-sigs"
+    rc_unsigned.mkdir()
+    (rc_sigs / "win").mkdir(parents=True)
+    rc_name = lambda n: n.replace(f"dash-wallet-{ver}-", f"dash-wallet-{rcv}-")
+    for p in sorted(unsigned.iterdir(), key=lambda x: x.name):
+        if p.name != "unsigned.SHA256SUMS":
+            shutil.copy2(p, rc_unsigned / rc_name(p.name))
+    rc_u_text = "".join(f"{sha256_file(p)}  {p.name}\n" for p in sorted(rc_unsigned.iterdir(), key=lambda x: x.name))
+    (rc_unsigned / "unsigned.SHA256SUMS").write_text(rc_u_text)
+    (rc_sigs / "unsigned.SHA256SUMS").write_text(rc_u_text)
+    shutil.copytree(sigs / "osx", rc_sigs / "osx")
+    shutil.copy2(sigs / "win" / f"{win_name}.pem", rc_sigs / "win" / f"{rc_name(win_name)}.pem")
+    shutil.copy2(signed_dmg, wk / rc_name(signed_dmg.name))
+    rc_final = [(sha256_file(unsigned / f"dash-wallet-{ver}-{suf}"), f"dash-wallet-{rcv}-{suf}")
+                for suf in ("linux-amd64.deb", "linux-x86_64.AppImage", "linux-x86_64.flatpak", "sbom-npm.cdx.json", "sbom-rust.cdx.json")]
+    rc_final += [(sha256_file(signed_dmg), rc_name(signed_dmg.name)), (sha256_file(win_signed), rc_name(win_name))]
+    (rc_sigs / "SHA256SUMS").write_text("".join(f"{h}  {n}\n" for h, n in sorted(rc_final, key=lambda t: t[1])))
+    subprocess.run(["gpg", "--batch", "--yes", "--armor", "--detach-sign", "--digest-algo", "SHA256", "--local-user", primary_fpr,
+                    "--output", str(rc_sigs / "SHA256SUMS.asc"), str(rc_sigs / "SHA256SUMS")], check=True, env=env, capture_output=True)
+    subprocess.run(["gpgconf", "--kill", "all"], env=env, capture_output=True)
 finally:
     shutil.rmtree(gpg_root, ignore_errors=True)
 PY
@@ -1517,6 +1590,32 @@ PY
     "SHA-256 mismatch" "$e2e/attach-badsums.out" \
     "${attach_base[@]}" --sigs-dir "$e2e/sigs-badsums" --out-dir "$e2e/attached-badsums"
 
+  # Signed release candidate (docs/release/RC-SIGNING.md): attach, verify and publish a candidate with no updater feed
+  rc_attach_base=("${attach_base[@]}" --version 0.1.0-rc.1 --unsigned-dir "$e2e/rc-unsigned"
+    --sigs-dir "$e2e/rc-sigs" --signed-dmg "$e2e/work/dash-wallet-0.1.0-rc.1-macos-universal.dmg")
+  rc_attach_rc=0
+  PATH="$attach_path" "$here/release-attach.sh" "${rc_attach_base[@]}" --out-dir "$e2e/rc-attached" > "$e2e/rc-attach.out" 2>&1 || rc_attach_rc=$?
+  check "signed RC: release-attach verifies the candidate's Windows+macOS sigs and PGP over 7 files; 9-file manifest, empty feed" \
+    '[[ $rc_attach_rc -eq 0 && -z "$(ls -A "$e2e/rc-attached/feed")" ]] && jq -e --arg fpr "$e2e_fpr" ".pgp_fpr == \$fpr and (.files | length) == 9 and (.files | has(\"latest.json\") | not)" "$e2e/rc-attached/signed-manifest.json" >/dev/null && grep -qF "all 7 final release files match SHA256SUMS" "$e2e/rc-attach.out"'
+  if [[ $rc_attach_rc -ne 0 ]]; then cat "$e2e/rc-attach.out" >&2 || true; fi
+  fs_reset
+  SIGNED_MANIFEST=$e2e/rc-attached/signed-manifest.json FEED=$e2e/rc-attached/feed DIST=$e2e/rc-attached/dist \
+    DW_SIGNED_DISPATCH=1 DW_SIGNING_REQUIRED=1 run workflow_dispatch refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+  check "signed RC: release-attach -> release-publish (signed dispatch) publishes the 9 verified assets as a prerelease" \
+    '[[ $status -eq 0 && $(ls "$OUT/attest" | wc -l) -eq 9 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "/attest/SHA256SUMS.asc" && ! log_has "latest.json"'
+  cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-feed"
+  mkdir -p "$e2e/rc-sigs-feed/updater"
+  expect_attach_fail \
+    "signed RC: release-attach refuses a candidate whose signatures carry an updater/ directory, even an empty one" \
+    "publishes no updater feed" "$e2e/rc-attach-feed.out" \
+    "${rc_attach_base[@]}" --sigs-dir "$e2e/rc-sigs-feed" --out-dir "$e2e/rc-attached-feed"
+  cp -R "$e2e/rc-sigs" "$e2e/rc-sigs-stablesums"
+  cp "$e2e/sigs/SHA256SUMS" "$e2e/sigs/SHA256SUMS.asc" "$e2e/rc-sigs-stablesums/"
+  expect_attach_fail \
+    "signed RC: release-attach refuses a validly signed SHA256SUMS that lists other files" \
+    "SHA256SUMS must list 7 files" "$e2e/rc-attach-stablesums.out" \
+    "${rc_attach_base[@]}" --sigs-dir "$e2e/rc-sigs-stablesums" --out-dir "$e2e/rc-attached-stablesums"
+
   # Blocker #7: ci/release/fetch-unsigned.sh pins locally verified --tag-sha, verifies run + attestations + checksums before exposing files
   fu=$e2e/fetch-unsigned-test
   mkdir -p "$fu/bin"
@@ -1633,6 +1732,39 @@ FGH
   check "L3: fetch-unsigned.sh refuses world-writable existing --sigs-dir" \
     '[[ $fu_rc -ne 0 && ! -d "$fu/out-ww" ]] && grep -q "group- or world-writable" "$fu/ww.out"'
 
+  # Signed release candidate: fetch-unsigned takes a vX.Y.Z-rc.N tag; sign-checksums signs 7 files without a feed;
+  # sign-updater refuses a candidate (no updater feed)
+  fu_rc=0
+  PATH="$fu/bin:$PATH" FU_SRC_DIR="$e2e/rc-unsigned" FU_REMOTE_SHA="$fu_sha" FU_RUN_BRANCH=v0.1.0-rc.1 \
+    "$here/../release/fetch-unsigned.sh" --tag v0.1.0-rc.1 --tag-sha "$fu_sha" --run-id 555 --repo o/r \
+    --unsigned-dir "$fu/rc-out" --sigs-dir "$fu/rc-sigs" > "$fu/rc.out" 2>&1 || fu_rc=$?
+  check "signed RC: fetch-unsigned.sh fetches and verifies a candidate tag's unsigned build" \
+    '[[ $fu_rc -eq 0 && -f "$fu/rc-out/dash-wallet-0.1.0-rc.1-macos-unsigned.tar.gz" && -f "$fu/rc-sigs/unsigned.SHA256SUMS" ]]'
+  sc=$e2e/sign-checksums-rc
+  mkdir -p "$sc/dist" "$sc/sigs"
+  cp "$e2e/rc-unsigned/unsigned.SHA256SUMS" "$sc/sigs/"
+  for s in linux-x86_64.AppImage linux-amd64.deb linux-x86_64.flatpak sbom-rust.cdx.json sbom-npm.cdx.json; do
+    cp "$e2e/rc-unsigned/dash-wallet-0.1.0-rc.1-$s" "$sc/dist/"
+  done
+  cp "$e2e/work/dash-wallet-0.1.0-rc.1-macos-universal.dmg" "$sc/dist/"
+  cp "$e2e/work/dash-wallet-0.1.0-windows-x64-setup.exe" "$sc/dist/dash-wallet-0.1.0-rc.1-windows-x64-setup.exe"
+  sc_gpg=$(umask 077 && mktemp -d /tmp/dwsc.XXXXXX)
+  sc_rc=0
+  GNUPGHOME=$sc_gpg gpg --batch --passphrase '' --quick-generate-key "RC checksums test <rc@example.com>" ed25519 sign never > /dev/null 2>&1 &&
+    sc_fpr=$(GNUPGHOME=$sc_gpg gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }') &&
+    GNUPGHOME=$sc_gpg "$here/../release/sign-checksums.sh" --version 0.1.0-rc.1 --dist-dir "$sc/dist" \
+      --sigs-dir "$sc/sigs" --gpg-key "$sc_fpr" > "$sc/out" 2>&1 || sc_rc=$?
+  GNUPGHOME=$sc_gpg gpgconf --kill all > /dev/null 2>&1 || true
+  rm -rf "$sc_gpg"
+  check "signed RC: sign-checksums.sh signs SHA256SUMS over the 7 bundles and SBOMs, with no --feed-dir" \
+    '[[ $sc_rc -eq 0 && $(wc -l < "$sc/sigs/SHA256SUMS") -eq 7 && -s "$sc/sigs/SHA256SUMS.asc" && -f "$sc/dist/SHA256SUMS.asc" ]] && ! grep -qE "latest.json|app.tar.gz" "$sc/sigs/SHA256SUMS" && (cd "$sc/dist" && sha256sum -c --quiet SHA256SUMS)'
+  if [[ $sc_rc -ne 0 ]]; then cat "$sc/out" >&2 || true; fi
+  su_rc=0
+  "$here/../release/sign-updater.sh" --version 0.1.0-rc.1 --dist-dir "$sc/dist" --feed-dir "$sc" --sigs-dir "$sc/sigs" \
+    --key-file "$sc/out" > "$sc/updater.out" 2>&1 || su_rc=$?
+  check "signed RC: sign-updater.sh refuses a candidate (no updater feed)" \
+    '[[ $su_rc -ne 0 && ! -e "$sc/sigs/updater" ]] && grep -qF "publishes no updater feed" "$sc/updater.out"'
+
   # L3: Local signing scripts re-verify unsigned inputs against unsigned.SHA256SUMS before signing
   l3=$e2e/l3-tamper
   mkdir -p "$l3/unsigned" "$l3/sigs" "$l3/dist" "$l3/feed" "$l3/out"
@@ -1686,6 +1818,7 @@ required_env = {
     "DW_ALLOW_UNSIGNED_STABLE": "${{ vars.DW_ALLOW_UNSIGNED_STABLE }}",
     "DW_SIGNING_REQUIRED": "${{ vars.DW_SIGNING_REQUIRED }}",
     "DW_UPDATER_REQUIRED": "${{ vars.DW_UPDATER_REQUIRED }}",
+    "DW_SIGN_RC": "${{ vars.DW_SIGN_RC }}",
 }
 found = set()
 for step in steps:
@@ -1706,8 +1839,17 @@ for step in steps:
                 if got_v != want_v:
                     raise SystemExit(f"release.yml publish/{label} step env missing {k}: {want_v} (got {got_v!r})")
 assert found == set(want_steps), f"did not find all release-publish.sh steps: {found}"
+# A signed candidate: decide reads DW_SIGN_RC and outputs detached; every signing-input and wait step keys on it,
+# and only signed_stable embeds the updater endpoint.
+d = re.search(r"(?m)^  decide:\n([\s\S]*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text)
+assert d and "DW_SIGN_RC: ${{ vars.DW_SIGN_RC }}" in d.group(1), "decide step does not pass DW_SIGN_RC"
+assert "detached: ${{ steps.kind.outputs.detached }}" in d.group(1), "decide does not output detached"
+gated = re.findall(r"if: \$\{\{ needs\.decide\.outputs\.(\w+) == 'true' \}\}", text)
+assert gated and set(gated) == {"detached"} and len(gated) == 7, f"signing-input/wait steps must key on detached: {gated}"
+upd = re.findall(r"DW_ENABLE_UPDATER: \$\{\{ needs\.decide\.outputs\.(\w+) == 'true'", text)
+assert upd == ["signed_stable"] * 3, f"DW_ENABLE_UPDATER must follow signed_stable on all three builds: {upd}"
 PY
-check "r4688012522: release.yml publish job maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, and DW_ALLOW_UNSIGNED_STABLE on both prepare and publish steps" \
+check "r4688012522: release.yml maps DW_UPDATER_REQUIRED, DW_SIGNING_REQUIRED, DW_ALLOW_UNSIGNED_STABLE and DW_SIGN_RC on prepare and publish, passes DW_SIGN_RC to decide, gates signing inputs on detached and the updater on signed_stable" \
   '[[ $wiring_rc -eq 0 ]]'
 if [[ $wiring_rc -ne 0 ]]; then cat "$work/wiring.out" >&2; fi
 

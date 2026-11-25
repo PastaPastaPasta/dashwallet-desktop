@@ -792,6 +792,24 @@ const SCENARIOS = {
     w.send.rescanFirst = [row.txid];
     return w;
   },
+  /** Just after a chain fork, while the wallet catches up: an unconfirmed payment offers Abandon,
+   * and Abandon and Remove Unconfirmed are refused with `rescan_in_progress`. */
+  "abandon-catching-up": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5b".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.catchingUp = true;
+    return w;
+  },
   /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
    * offered and refused, and the detail says why. */
   "abandon-settled-child": (t) => {

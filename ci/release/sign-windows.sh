@@ -48,7 +48,7 @@ done
 
 die() { echo "sign-windows: $*" >&2; exit 1; }
 
-[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be X.Y.Z"
+[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--version must be X.Y.Z or X.Y.Z-rc.N"
 [[ -d "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir not found"
 [[ -n "$sigs_dir" && -n "$out_dir" ]] || die "--sigs-dir and --out-dir are required"
 [[ -n "$pkcs11_module" && -f "$pkcs11_module" ]] || die "--pkcs11-module not found: ${pkcs11_module:-<unset>}"
