@@ -29,6 +29,8 @@ const sync = (over: Partial<DashPaySyncStatus> = {}): DashPaySyncStatus => ({
   pendingContactCrypto: 0,
   loops: LOOPS,
   quorumSource: "spv",
+  platformEnabled: true,
+  addresses: "done",
   ...over,
 });
 

@@ -144,12 +144,14 @@ export function homeBalance(core: Balances, shielded: PoolReading, platform: Poo
 }
 
 /**
- * The Core row's subtitle: what is still arriving (already in the row's number), then what is in
+ * The Core row's subtitle: what is still arriving (already in the row's number, and the coins the
+ * engine withholds, which are not: a payment they come from may never confirm), then what is in
  * the wallet but not spendable (not in it): immature rewards and locked coins.
  */
 export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fallback: string): string {
   const parts: string[] = [];
-  if (core.unconfirmed > 0) parts.push(t("home.core.pending", { amount: fmt(core.unconfirmed) }));
+  const pending = core.unconfirmed + core.withheld;
+  if (pending > 0) parts.push(t("home.core.pending", { amount: fmt(pending) }));
   if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
   if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
   return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;

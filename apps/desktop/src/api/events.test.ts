@@ -74,7 +74,7 @@ describe("event bridge", () => {
     ]);
     // A lock drops the wallet's queries rather than reading them again; an unlock reads them.
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.lockReconcile]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "unlocked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "unlocked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;

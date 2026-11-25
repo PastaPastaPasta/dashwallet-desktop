@@ -335,7 +335,7 @@ test.describe("disabled reasons are visible and described", () => {
   }
 
   test("Shielded's actions, Finish included, are described by the syncing text", async ({ page }) => {
-    const syncing = "Shielded is still syncing; try again when it finishes.";
+    const syncing = "Shielded is still syncing. Try again when it finishes.";
     await page.goto(fixtureUrl("shielded-syncing-pending", "light"));
     await page.getByTestId("hero-amount").waitFor();
     expect(await reasonOf(page, "shielded-finish")).toContain(syncing);
@@ -346,7 +346,9 @@ test.describe("disabled reasons are visible and described", () => {
     }
     await page.getByTestId("sidebar-receive").click();
     await page.getByTestId("shielded-receive-open").click();
-    await expect(page.getByTestId("shielded-receive-why")).toHaveText(syncing);
+    // Receive is not one of them: the address shows while the first scan runs.
+    await expect(page.getByTestId("shielded-receive-progress")).toHaveText("Syncing Shielded…");
+    await expect(page.getByTestId("shielded-receive-address")).toBeVisible();
     await page.getByTestId("sidebar-pay").click();
     expect(await reasonOf(page, "shielded-send")).toContain(syncing);
   });
@@ -374,7 +376,7 @@ test.describe("disabled reasons are visible and described", () => {
     // Readiness lost with the form open: Next waits too.
     await page.evaluate(`(() => { const f = window.__dwFixture; f.world.pending.shielded.ready = false; f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } }); f.emit({ kind: "eventsOverflowed" }); })()`);
     // The form stays open; Confirm and Next both wait.
-    expect(await reasonOf(page, "transfer-continue")).toContain("Shielded is still syncing; try again when it finishes.");
+    expect(await reasonOf(page, "transfer-continue")).toContain("Shielded is still syncing. Try again when it finishes.");
   });
 
   test("inactive Shielded has no Home card or action reason lines", async ({ page }) => {

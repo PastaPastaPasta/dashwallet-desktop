@@ -673,8 +673,14 @@ fn a_prepared_tx_releases_only_its_own_claim() {
     f.session.spends.release(&f.wallet, other);
     assert!(f.reserved().is_empty());
     let p = prepare();
+    let mine = SpendOwner::Tx(p.summary().txid.parse().unwrap());
     f.session.spends.reserve(f.wallet, other, [a]);
     drop(p);
+    // The dropped payment's claim goes after key-wallet's, in the task the
+    // drop spawned (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.session.spends.held_by(&f.wallet, mine).is_empty()
+    });
     assert_eq!(f.reserved(), vec![a]);
     f.session.spends.release(&f.wallet, other);
     assert!(f.reserved().is_empty());
@@ -706,8 +712,11 @@ fn broadcast_needs_spv_and_drop_releases() {
         .unwrap();
     assert_eq!(f.reserved(), vec![a]);
     drop(p);
-    assert!(f.reserved().is_empty());
-    // key-wallet's reservation is released by a task the drop spawned.
+    // Both reservations are released by a task the drop spawned, the
+    // engine's after key-wallet's (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.reserved().is_empty()
+    });
     let mut ok = false;
     for _ in 0..50 {
         let d = f.draft(vec![pay(FOREIGN, 10_000_000)]);
@@ -2312,6 +2321,9 @@ impl Fixture {
                 height,
             },
         );
+        // A coin a replay gives back is released by the reread the height
+        // starts (`crate::rescan_hold`).
+        self.session.hub.settle_rereads();
     }
 
     /// The wallet's own transaction `seed`, spending `inputs`, in `context`.
@@ -4863,7 +4875,7 @@ mod normal_payment_beside_mixing {
                 let entry = TxEntry {
                     tx,
                     context: TransactionContext::Mempool,
-                    instant_locked: false,
+                    instant_locked: true,
                     first_seen: None,
                     own_inputs,
                     abandoned: false,
@@ -6097,6 +6109,8 @@ fn a_chain_past_the_old_height_at_the_quit_leaves_no_record() {
     f.advance(1_000);
     f.truncate_silently(900);
     let _ = f.guard();
+    // The truncation is applied before the new chain's commit is noted.
+    f.settle();
     f.advance(1_001);
     f.commit(1_001).unwrap();
     let record = f.record();
@@ -6106,6 +6120,113 @@ fn a_chain_past_the_old_height_at_the_quit_leaves_no_record() {
         "ROW5965 silent fork to 900, new chain stored at 1001: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}"
     );
     assert_eq!((record, reopened, synced), (None, None, 1_001));
+}
+
+/// #254: the fork's truncation applied only after a commit at 1001 is
+/// noted. That commit may be the new chain's or the old chain's, stored
+/// late: it counts as the old chain's, so the record stays in session and
+/// a clean close, with the chain past it, ends it.
+#[test]
+fn a_commit_noted_before_the_truncation_is_applied_keeps_the_record_to_the_close() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.settle();
+    f.truncate_silently(900);
+    let pause = hold_truncation(&f);
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    pause.release.notify_one();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    assert_eq!(
+        (
+            record.map(|r| (r.target, r.reached, r.forked_from)),
+            reopened,
+            synced
+        ),
+        (Some((1_001, 900, 1_001)), None, 1_001)
+    );
+}
+
+/// An old chain's batch at 1001 committed after the fork's truncation is
+/// noted, applied once the new chain is at 1002 in memory: nothing of the
+/// new chain is stored above 900, so a crash leaves the record.
+#[test]
+fn a_late_old_chain_commit_keeps_the_record_over_a_crash() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.settle();
+    f.truncate_silently(900);
+    let pause = hold_truncation(&f);
+    f.commit(1_001).unwrap();
+    f.advance(1_002);
+    pause.release.notify_one();
+    let record = f.record();
+    f.crash_on_close();
+    let f = f.reopen();
+    let reopened = f.record();
+    let fields = |r: Option<crate::replay_record::ReplayRecord>| {
+        r.map(|r| (r.target, r.reached, r.forked_from))
+    };
+    assert_eq!(
+        (fields(record), fields(reopened)),
+        (Some((1_001, 900, 1_001)), Some((1_001, 900, 1_001)))
+    );
+}
+
+/// The truncation's record read fails, and an old chain's batch at 1002,
+/// above the wallet's 900, commits meanwhile; then the new chain commits
+/// 1001. The store keeps 1002, the old chain's, so a crash leaves the
+/// record.
+#[test]
+fn an_old_chain_commit_during_a_failed_read_keeps_the_record_over_a_crash() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.settle();
+    let records = f.records();
+    records
+        .fail_reads
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.settle();
+    f.commit(1_002).unwrap();
+    f.settle();
+    records
+        .fail_reads
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    let record = f.record();
+    f.crash_on_close();
+    let f = f.reopen();
+    let reopened = f.record();
+    let fields = |r: Option<crate::replay_record::ReplayRecord>| {
+        r.map(|r| (r.target, r.reached, r.forked_from))
+    };
+    assert_eq!(
+        (fields(record), fields(reopened)),
+        (Some((900, 900, 1_002)), Some((900, 900, 1_002)))
+    );
+}
+
+/// The replay guard hears `f`'s silent truncation and holds its note
+/// before it is applied, until the returned pause is released.
+fn hold_truncation(f: &Fixture) -> Arc<crate::coins::TestPause> {
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.records().pause_truncated.lock().unwrap() = Some(Arc::clone(&pause));
+    let _ = f.guard();
+    eventually("the truncation's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    pause
 }
 
 /// A fork at the highest checkpoint the wallet can have stored, or above
