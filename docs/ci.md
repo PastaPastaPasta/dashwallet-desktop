@@ -20,11 +20,14 @@ actions call are not all pinned: `compnerd/gha-setup-swift` (pinned) is a compos
 are off by default, and the artifact upload runs only when its installer fails. Accepted, as for its
 unverified installer below; pinning them would mean vendoring the action.
 
-A new push to a branch or pull request cancels that ref's running CI. `main` has one concurrency group per
-workflow that never cancels a running run: one `main` run is in progress at a time, and GitHub keeps at most
-one pending behind it, replacing an older pending run with the newer one. A burst of merges therefore runs the
-first and the newest commit, not every commit in between; the scheduled and dispatched runs on `main` share
-that group. Every `run` step uses bash with `pipefail` (Git Bash on
+A new push to a branch, a pull request or `main` cancels that ref's running CI: a burst of merges runs only
+the newest commit, which covers the merges before it. The scheduled and dispatched runs have their own groups
+(the event is part of the group), so a merge never cancels them, and a re-run of an older run gets its own
+group, so it never cancels the newest commit's run. `main-result.yml` counts a cancelled `main` run that had
+already failed a job as red. `release.yml` no longer runs on `main` pushes; its scheduled and dispatched runs on
+`main` share one group that never cancels a running run.
+A merge that changes only docs (`docs/` and `*.md`, except the docs tests read and `Vendor/`) starts no CI
+run. Every `run` step uses bash with `pipefail` (Git Bash on
 Windows) unless it names another shell. Checkouts do not keep the job token (`persist-credentials: false`).
 
 **Triggers.** A branch is checked once, through its pull request; branch pushes start no run. A pull
@@ -33,9 +36,10 @@ cross-linted for MinGW on Linux: the workspace, then dw-app with `selftest`; not
 and `ui-playwright` in `ci.yml`, picked by its changed files (below), and `script-tests` and `decide` in `release.yml` only when it changes
 `release.yml`, `ci/`, `packaging/` or `rust/crates/dw-app/tauri.conf.json`. These four `ci.yml` jobs and
 `changes` are the required status checks on `main`. The hosted macOS runners (five at a time across the
-account) were the bottleneck, so the macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs, the
-release bundles, and Playwright run on every push to `main` (each merge), on a 02:47 UTC schedule
-(both workflows; the scheduled release run builds and never publishes) and on a dispatch. The non-blocking
+account) were the bottleneck, so the macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs and
+Playwright run on every push to `main` that is not docs-only (each merge), on a 02:47 UTC schedule and on a
+dispatch. The release bundles build on a release tag, on the same schedule (builds, never publishes) and on a
+dispatch, not on each merge. The non-blocking
 Windows Swift job runs only on the schedule and on a dispatch. To run everything for a branch before it
 merges: `gh workflow run ci.yml --ref <branch>` and `gh workflow run release.yml --ref <branch>`.
 
@@ -72,10 +76,11 @@ schedule, or any failure of `changes` runs every job. GitHub counts a skipped re
 cancelling a run while `changes` is pending skips the four jobs, so `changes` ("What this pull request
 changes") is itself a required check: cancelled or failed, it blocks the merge.
 
-**A red main is a stop.** The full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
-Windows and the release bundles) runs on pushes to `main`; a burst of merges is covered by one run (see the
-concurrency note above). `main-result.yml` runs when a `ci.yml` or
-`release.yml` run on `main` finishes: while the newest finished run of a workflow is red, one open issue
+**A red main is a stop.** CI's full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
+Windows) runs on pushes to `main`; a burst of merges is covered by one run (see the concurrency note above).
+The release bundles build on tags, at 02:47 UTC and on a dispatch, not per merge, so a green merge does not
+mean Release packaged that commit. `main-result.yml` runs when a `ci.yml` push or scheduled run on `main`
+finishes, and when a scheduled `release.yml` run does (a dispatched run is not reported): while the newest finished run of a workflow is red, one open issue
 labelled `nightly-failure` ("Nightly failure: CI on main" or "Nightly failure: Release on main") names its
 failed jobs and the pull requests merged since that workflow's last green run (the batch that broke it); the
 next green run closes it. Main is fixed before anything else merges; the issue says so, and the required
@@ -111,7 +116,8 @@ row):
 | Tauri E2E (tauri-driver, Linux) | `ubuntu-24.04` | `linux-host-deps.sh tauri` (WebKitGTK, `webkit2gtk-driver`, Xvfb), `cargo install tauri-driver --version 2.1.0 --locked`, then `xvfb-run -a pnpm e2e:tauri`: the debug app with the production renderer and the real engine, driven through one smoke flow; screenshots and logs uploaded as `e2e-tauri-linux` |
 | Deep links (linux, macos, windows) | `ubuntu-24.04`, `macos-latest`, `windows-latest` | U-01: `pnpm tauri build --debug --features selftest` with one bundle per OS (deb, app, NSIS), then `ci/github/deep-links.sh`: the bundle's scheme registration (`.desktop` `MimeType`, `CFBundleURLTypes`, `HKCU\Software\Classes`) checked, the app launched with a `dash:` link, and `pay:`, `dashpay:`, `dashwallet:` and a refused `dash:` link opened through the OS (`xdg-open` under `dbus-run-session`, `open`, `start`) and followed in the link trace; trace, logs and the registration files uploaded as `deep-links-<os>`. Passing on the hosted linux, macos and windows runners |
 | Swift + UI T0 (Linux) | `ubuntu-24.04`, Swift 6.3.3 (swiftly) | `scripts/build-core.sh --check-bindings`; the Swift suites of `scripts/linux-docker-test.sh` (`SwiftCrossUIPatchTests`, the vendored SwiftCrossUI patches, among them) plus `DashUICrossTests`; `dash-wallet --demo` launched under Xvfb, with a screenshot of its window |
-| macOS | `macos-latest` (arm64) | `cargo test --workspace --locked`; `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
+| macOS (engine) | `macos-latest` (arm64) | `cargo test --workspace --locked` |
+| macOS (Swift, app) | `macos-latest` (arm64), beside macOS (engine) | `build-core.sh --check-bindings`; `swift build` and `swift test` (every suite; `MacUITests` write their offscreen renders with `DWD_WRITE_SCREENSHOTS=1`); the app generated with XcodeGen, built with `xcodebuild`, installed to `/Applications`, launched through LaunchServices with `--demo` in light and dark, with screenshots of its window; then, **non-blocking** (see "Known gaps"), `dash-wallet --demo` (SwiftCrossUI, AppKitBackend) |
 | Windows (engine) | `windows-latest` | `cargo build --workspace --locked`, `cargo test --workspace --exclude dw-app --locked` (see "Known gaps") and `cargo clippy --workspace --all-targets -- -D warnings` (MSVC; clippy lints the Windows code paths, which the Linux job never compiles) |
 | Windows Swift | `windows-latest` | **non-blocking**, see "Known gaps": the Windows core bundle, the headless Swift suites, `dash-wallet` with WinUIBackend, then a launch screenshot if it built |
 
@@ -226,8 +232,13 @@ deep-links leg, Swift + UI T0 and `release.yml`'s Linux build) uninstalls every 
 every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
 depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.
-In `ci.yml` and `release.yml` only `main` saves the Rust caches; `gate.yml`, `nightly.yml` and
-`tauri-selftest.yml` save from whatever branch they run on. A cache is saved only when its job
+Only `ci.yml` on `main` saves the regular Rust caches (`ci-Linux`, `ci-mingw-Linux`, `ci-macOS`,
+`ci-Windows`; a busy merge day can cancel every main run before macOS saves, and the 02:47 UTC run, in its own
+group, saves then); `release.yml`'s build jobs and `nightly.yml` restore them and never save (nightly's fuzz job
+keeps its own cache, since it also installs a nightly toolchain). Each restoring job installs its toolchains
+as the saving job does, since the key hashes every installed toolchain: only `rust/rust-toolchain.toml`'s on
+Linux, and that plus the image's stable on macOS and Windows. The manual
+`gate.yml` and `tauri-selftest.yml` still save from whatever branch they run on. A cache is saved only when its job
 succeeds. Past the repository's cache limit (10 GB by default), GitHub evicts the least recently
 used caches, so a branch whose workflows still save their own caches can push `main`'s out.
 
@@ -330,6 +341,37 @@ hosted runners' CPUs rasterise identically is unproven, so CI runs the compariso
 step. A mismatch leaves the actual and diff PNGs in the `ui-playwright` artifact. Make the step blocking
 once it has passed on the runners; regenerate the baselines in the image whenever a screen changes on
 purpose. The per-state screenshots of the other suites are artifacts only.
+
+## Main CI wall time
+
+Measured over the 24 hours to 11-25 05:40Z (Actions API: 13 finished `ci.yml` main runs, 25 `release.yml`):
+
+- Runners were not the bottleneck. A job waited for a runner 0.1 min at the median, 8.5 min at most
+  (macOS included). The wait before a main run starts is the one-run-at-a-time concurrency group:
+  16 min at the median, 49 min at most (7d52864dc, behind 6e9a194e9).
+- A main CI run took 83–130 min (median ~104). Its last job was macOS in 10 of 12 runs, and Windows in the other 2.
+- macOS `cargo test --workspace` took 45–90 min: the workspace compile took 5–55 min, and the
+  dw-engine unit tests alone ~25 min. The Swift steps added another 10–30 min after it, one by one in the
+  same job.
+- The repository's Actions caches held 12.1 GB against GitHub's 10 GB cap, so saves evicted other
+  caches. In 24 hours the CI Rust cache missed in 3 of 12 macOS runs, 3 of 13 Windows runs and 1 of 13
+  Linux runs. A Windows miss costs 29–39 min of compile instead of 4–9. Release's own macOS cache took
+  2.3 GB and saved its compile little (6–33 min on a hit, 11–43 min on a miss). Nightly's five Rust
+  caches missed every night and were saved again.
+
+So, trimming only (no new runners):
+
+- `macos-swift` runs the Swift side beside `macos` instead of after it.
+- A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
+- A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; on a very large push
+  GitHub matches only part of the changed files). A merge never cancels the 02:47 UTC run or a dispatch: the event
+  is part of the concurrency group.
+- Release builds on tags, at 02:47 UTC and on a dispatch, not on every merge.
+- Release's macOS job and nightly (except fuzz) restore CI's Rust cache (`ci-<os>`) and never save one, which
+  leaves CI's four (about 9.2 GB) as the only Rust caches the regular workflows save. Delete the old `v0-rust-release-macOS-*` entry once, after the
+  merge (`gh cache delete <key>`), or it stays until it ages out.
+- When runners are the wait, build and test on other compute (strix, agentbox, the Studio, boat.dev) and merge
+  on that green build plus the required checks; fix a regression on main after.
 
 ## `nightly.yml`
 
@@ -442,8 +484,8 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
-`selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
+On a tag `v*`, the 02:47 UTC schedule and a dispatch; a push to `main` no longer starts it (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
+`selftest` feature (each job restores CI's `ci-<os>` Rust cache and saves nothing; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
 | Job | Runner | Output (staged by `ci/github/release-stage.sh` as `dash-wallet-<version>-<suffix>`) | Measured (cold cache, rel6) |
@@ -484,7 +526,8 @@ as `release-v<version>`.
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
 
-**Triggers and publishing (DEC-1058).** The workflow runs on pushes to `main`, on tags `v*`, on pull requests that touch the release paths,
+**Triggers and publishing (DEC-1058).** The workflow runs on tags `v*` (no longer on pushes to `main`; the
+`main`-push publishing path below stays in the script but is historical), on pull requests that touch the release paths,
 on its schedule and on `workflow_dispatch`; all but pull requests build and upload CI artifacts with `contents: read`. Only the `publish` job
 has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
 tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
@@ -496,11 +539,12 @@ deployment policy or a tag ruleset in the repository settings. `release-publish.
 (second line). `decide` also gates the build: a branch push or pull request that changes only `docs/`, `*.md`, the
 Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the build
 jobs and so `checksums` (`script-tests` still runs); main, tags and dispatches always build. A new push to a branch
-or pull request cancels that ref's running release build. Main and tags are never cancelled; main builds one
-commit at a time, and a newer pending main run replaces an older pending one. The `publish` job checks
+or pull request cancels that ref's running release build. Tags are never cancelled. A push to main no longer starts a
+release run. The `publish` job checks
 out the full history, runs `ci/github/release-publish.sh` and publishes:
 
-- push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
+- push to `main` (historical: no `main` push starts Release now, so `continuous` stays at the last merge built
+  before 11-25 and is no longer repaired automatically): an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
   and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
   `SHA256SUMS`. `continuous` is replaced as one generation, with a transaction record (the asset `txn.json`: old and
   new commit, old and new notes, the hash of the new `SHA256SUMS`): recover from an interrupted earlier run (in every
@@ -526,8 +570,8 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
 
 The publish concurrency group is per ref (`release-publish-main`, and one per tag), never cancelling. GitHub
-keeps one pending job per group and cancels the older pending one when another arrives. Main's builds run one at
-a time and a newer pending build replaces an older one, so a burst of pushes skips the immutable release of a
+keeps one pending job per group and cancels the older pending one when another arrives. Historically, main's
+builds ran one at a time and a newer pending build replaces an older one, so a burst of pushes skips the immutable release of a
 middle commit; `continuous` follows the newest build that published (it never moves backwards, and its notes
 name its commit). A tag's
 release cannot be displaced by a main push. Repository setting: "Immutable releases" must stay **off**, since
