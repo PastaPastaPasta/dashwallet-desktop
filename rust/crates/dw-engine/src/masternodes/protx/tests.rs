@@ -3185,16 +3185,23 @@ fn mg04_an_updates_service_is_not_claimed() {
         .unwrap();
     assert_eq!(update.state, ProTxOperationState::Sent);
     assert_eq!(update.terms.service, "1.2.3.4:19899");
-    let mut moved = entry_of(&reg);
-    moved.service_address = Some("1.2.3.7:19899".parse().unwrap());
-    *f.seam.list.lock().unwrap() = Some(vec![moved]);
     f.credit(3, MASTERNODE_COLLATERAL + COIN);
-    f.engine
-        .block_on(
+    let preview = || {
+        f.engine.block_on(
             f.mn()
                 .preview_registration(f.wallet, request(CollateralChoice::FundNew)),
         )
-        .unwrap();
+    };
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg)]);
+    assert!(
+        matches!(preview().unwrap_err(), MasternodesError::ProtxRefused { reason, .. } if reason == "bad-protx-dup-netinfo-entry")
+    );
+    let mut moved = entry_of(&reg);
+    let service: std::net::SocketAddr = "1.2.3.7:19899".parse().unwrap();
+    moved.service_address = Some(service);
+    moved.service_addresses = vec![service];
+    *f.seam.list.lock().unwrap() = Some(vec![moved]);
+    preview().unwrap();
 }
 
 /// D54 (review r2 m-2): a conflicted registration never confirms, so its

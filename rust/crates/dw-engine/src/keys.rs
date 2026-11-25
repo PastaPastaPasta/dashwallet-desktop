@@ -1190,8 +1190,6 @@ impl NetworkSession {
                 undo.1 = Some((lowered, birth.saturating_add(1)));
             }
             let applied = async {
-                self.cover_imported_range(&manager, wallet_id, &state)
-                    .await?;
                 let mut raised = true;
                 if let Some(gap) = lookahead {
                     let wallet = (manager.get_wallet(&wallet_id.0).await)
@@ -1200,6 +1198,10 @@ impl NetworkSession {
                         raised = false;
                         tracing::warn!(%wallet_id, error = %e, "could not raise the attached keys' lookahead");
                     }
+                }
+                self.cover_imported_range(&manager, wallet_id, &state)
+                    .await?;
+                if let Some(gap) = lookahead {
                     self.write_lookahead(wallet_id, gap).await?;
                 }
                 Ok::<_, EngineError>(raised)
@@ -1630,14 +1632,6 @@ impl NetworkSession {
                 Err(EngineError::Internal("test: ranges not applied".into())),
             );
         }
-        let covered = match self.stored_issued(id).await {
-            Ok(Some(issued)) => self.cover_issued(manager, id, issued).await,
-            Ok(None) => Ok(()),
-            Err(e) => Err(e),
-        };
-        if let Err(e) = &covered {
-            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
-        }
         let lookahead = self.stored_lookahead(id).await;
         let raised = match &lookahead {
             Ok(Some(gap)) => match manager.get_wallet(&id.0).await {
@@ -1649,6 +1643,10 @@ impl NetworkSession {
         };
         if let Err(e) = &raised {
             tracing::warn!(wallet_id = %id, error = %e, "could not raise the loaded wallet's lookahead");
+        }
+        let covered = self.cover_stored_issued(manager, id).await;
+        if let Err(e) = &covered {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
         }
         (!matches!(lookahead, Ok(None)), covered.and(raised))
     }
@@ -2046,10 +2044,13 @@ impl NetworkSession {
         }
     }
 
-    /// Raises open wallet `id`'s BIP44 and CoinJoin lookahead to `gap`, then
-    /// places the coins only the larger gap reaches in the accounts that
-    /// derive them ([`Self::restore_coins`]), before anything replays them.
-    /// Callers refresh the hub.
+    /// Raises open wallet `id`'s BIP44 and CoinJoin lookahead to `gap` and
+    /// keeps it past Dash Core's stored counters, then places the coins only
+    /// the larger gap reaches in the accounts that derive them
+    /// ([`Self::restore_coins`]), before anything replays them. A stored
+    /// range that cannot be applied is logged; it keeps a wide-scan marker
+    /// from completing ([`Self::apply_stored_ranges`]). Callers refresh the
+    /// hub.
     pub(crate) async fn raise_lookahead(
         &self,
         manager: &crate::session::Manager,
@@ -2059,6 +2060,9 @@ impl NetworkSession {
         let wallet = (manager.get_wallet(&id.0).await)
             .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
         let raised = apply_lookahead(&wallet, gap, false).await;
+        if let Err(e) = self.cover_stored_issued(manager, id).await {
+            tracing::warn!(wallet_id = %id, error = %e, "could not keep the raised lookahead past the legacy wallet's address range");
+        }
         // A partial raise still grew some pools, so the restore runs either way.
         let restored = self.restore_coins(manager, id).await;
         match (raised, restored) {
