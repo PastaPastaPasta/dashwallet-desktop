@@ -1659,6 +1659,14 @@ pub(crate) type DeadWork = (
     (BTreeSet<Txid>, BTreeSet<OutPoint>),
 );
 
+/// The height whose block a swept payment's children put off by a block
+/// must still find in the header chain (#891): key-wallet's processed
+/// height at the take, or the winner's block above it, which a wallet
+/// behind the chain is swept by.
+fn take_anchor(processed: u32, winner: Winner) -> u32 {
+    processed.max(winner.mined.unwrap_or(0))
+}
+
 /// How often a detection's roots are rechecked with its evidence.
 const RECHECKS: u8 = 3;
 
@@ -2649,7 +2657,6 @@ impl NetworkSession {
             }
             !stale
         });
-        let carried = self.carried_drops(wallet, truncations).await;
         // A sweep's children queued before a truncation may have lost their
         // winner too (#891).
         let children = (self.hub.take_dead_children(wallet).into_iter()).filter(|(t, (roots, ..))| {
@@ -2664,19 +2671,21 @@ impl NetworkSession {
                 (roots, winner, swept, None, (BTreeSet::new(), took))
             })
             .chain(waited.map(|(_, w)| w))
-            .chain(carried)
             .collect();
-        let all = stored;
-        // The chain key-wallet's processed height stood on at the take: a
-        // swept payment's children a move of that height put off go back
-        // to the queue only while it still holds that block (#891).
-        let children_taken = work
-            .iter()
-            .any(|(_, _, links, r, _)| r.is_none() && !links.is_empty());
-        let anchor = match processed.filter(|_| children_taken) {
-            Some(p) => self.hub.header_hash(p).await,
-            None => None,
+        // The blocks the chain holds, with the take, at the heights a swept
+        // payment's children anchor to: one a move of key-wallet's height
+        // put off goes back to the queue only while its block stands (#891).
+        let anchors = match processed {
+            Some(p) => {
+                let swept =
+                    (work.iter()).filter(|(_, _, links, r, _)| r.is_none() && !links.is_empty());
+                let heights = swept.map(|(_, winner, ..)| take_anchor(p, *winner));
+                self.hub.header_hashes(heights.collect()).await
+            }
+            None => HashMap::new(),
         };
+        work.extend(self.carried_drops(wallet, truncations).await);
+        let all = stored;
         let mut stored = stored;
         for _ in 0..=DETECTIONS {
             self.queue_dead(manager, wallet, stored.take(), &mut work)
@@ -2695,20 +2704,22 @@ impl NetworkSession {
                 if let Err(e) = dropped.await {
                     tracing::warn!(%wallet, error = %e, "could not drop transactions that can never confirm")
                 }
-                // Blocks on top of that block leave the winner where it was:
-                // the next drop decides the children again. A fork below
-                // it, or a header not read, leaves them to the next sweep
-                // or orphan pass.
+                // Blocks on top of the anchor's block leave the winner where
+                // it was: the next drop decides the children again. A fork
+                // at or below it, or a header not read, leaves them to the
+                // next sweep or orphan pass.
                 if out.put_off {
-                    let now = match processed {
-                        Some(p) if anchor.is_some() => self.hub.header_hash(p).await,
+                    let at = processed.map(|p| take_anchor(p, winner));
+                    let then = at.and_then(|h| anchors.get(&h).copied());
+                    let now = match (at, then) {
+                        (Some(h), Some(_)) => self.hub.header_hash(h).await,
                         _ => None,
                     };
-                    if now.is_some() && now == anchor {
+                    if then.is_some() && now == then {
                         let set = (roots.clone(), winner, links.clone(), took.clone());
                         (self.hub).requeue_dead_children(wallet, truncations, set);
                     } else {
-                        tracing::warn!(%wallet, ?roots, ?anchor, ?now, "a swept payment's children are not dropped: the chain they were taken on may have changed");
+                        tracing::warn!(%wallet, ?roots, ?at, ?then, ?now, "a swept payment's children are not dropped: the chain they were taken on may have changed");
                     }
                 }
                 // Another wallet's history is not whole: this drop and the
@@ -3451,9 +3462,12 @@ impl NetworkSession {
             let held_again: Vec<Txid> = links.iter().copied().filter(|t| held(t)).collect();
             let moved = processed != Some(core.last_processed_height());
             if truncations != since || moved || !held_again.is_empty() {
-                // Only key-wallet's height moved: the drop decides once
-                // it has read the chain again (`NetworkSession::drop_dead`).
-                out.put_off = truncations == since && held_again.is_empty();
+                // Only key-wallet's height rose: the drop decides once it
+                // has read the chain again (`NetworkSession::drop_dead`). A
+                // height that fell is a fork key-wallet applied before the
+                // header chain did.
+                let rose = processed.is_some_and(|p| core.last_processed_height() > p);
+                out.put_off = truncations == since && held_again.is_empty() && rose;
                 tracing::warn!(%wallet, ?roots, ?held_again, moved, put_off = out.put_off, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
                 return Ok(BTreeSet::new());
             }

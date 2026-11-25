@@ -3312,11 +3312,23 @@ fn swept(
     p: &Transaction,
     winner: &Transaction,
 ) -> platform_wallet::events::WalletEvent {
+    swept_by_block(id, p, winner, None)
+}
+
+/// [`swept`], by `winner` mined at `at` when it names a height.
+fn swept_by_block(
+    id: WalletId,
+    p: &Transaction,
+    winner: &Transaction,
+    at: Option<u32>,
+) -> platform_wallet::events::WalletEvent {
+    use key_wallet::transaction_checking::BlockInfo;
+    let block = super::block_with(vec![winner.clone()]).block_hash();
     platform_wallet::events::WalletEvent::TransactionsSwept {
         wallet_id: id.0,
         txids: vec![p.txid()],
         superseded_by: winner.txid(),
-        winner_block: None,
+        winner_block: at.map(|h| BlockInfo::new(h, block, 0)),
         released_outpoints: Vec::new(),
         balance: Default::default(),
         account_balances: Default::default(),
@@ -3557,35 +3569,98 @@ fn a_swept_payments_child_goes_when_nothing_changes_after_its_take() {
     eventually("C goes", || !live_in_history(&session, id, c.txid()));
 }
 
-/// #891: a block without P lands after the drop took C, on top of the
-/// block it was taken at. Key-wallet's processed height moved, so that
-/// drop puts C off; the header chain still holds that block, so C goes
-/// back to the queue, and the drop the block's reconcile runs drops it.
-#[test]
-fn a_swept_payments_child_goes_when_a_block_after_its_take_leaves_the_payment_unmined() {
+/// #891: key-wallet sweeps P, by a winner mined at `winner_at` when it
+/// names a height, and its drop takes C while the header chain holds
+/// `before` and the winner's block; a block without P then lands at
+/// `TIP + 2`, and the header chain holds `after`. Key-wallet's processed
+/// height rose, so that drop puts C off. `check` runs once the drops the
+/// block started are done.
+fn block_after_its_take(
+    winner_at: Option<u32>,
+    (before, after): (&[(u32, Vec<Transaction>)], &[(u32, Vec<Transaction>)]),
+    check: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, (&Transaction, OutPoint, OutPoint)),
+) {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     mined(&engine, &session, id, TIP + 1, vec![foreign()]);
-    headers(&session, &[(TIP + 1, vec![foreign()])]);
     reconciles_done(&engine, &session);
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    let winners = winner_at.map(|h| (h, vec![winner.clone()]));
+    headers(&session, &[before, &Vec::from_iter(winners)].concat());
     let pause = Arc::new(crate::coins::TestPause::default());
     *session.hub.pause_drop_child.lock().unwrap() = Some(Arc::clone(&pause));
-    session.hub.apply_wallet_event(&swept(id, &p, &winner));
+    session
+        .hub
+        .apply_wallet_event(&swept_by_block(id, &p, &winner, winner_at));
     eventually("the drop took C", || {
         pause.reached.load(std::sync::atomic::Ordering::SeqCst)
     });
     let heard = session.hub.truncations();
-    headers(
-        &session,
-        &[(TIP + 1, vec![foreign()]), (TIP + 2, vec![unrelated(11)])],
-    );
+    headers(&session, after);
     mined(&engine, &session, id, TIP + 2, vec![unrelated(11)]);
     assert_eq!(session.hub.truncations(), heard, "no fork is counted");
     pause.release.notify_one();
-    eventually("C goes", || !live_in_history(&session, id, c.txid()));
     drops_done(&engine, &session);
-    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the block");
+    check(&engine, &session, id, (&c, c_change, d));
+}
+
+/// #891: a block without P lands after the drop took C, on top of the
+/// block it was taken at. The header chain still holds that block, so C
+/// goes back to the queue, and the drop the block's reconcile runs drops
+/// it.
+#[test]
+fn a_swept_payments_child_goes_when_a_block_after_its_take_leaves_the_payment_unmined() {
+    let tip = [(TIP + 1, vec![foreign()])];
+    let after = [(TIP + 1, vec![foreign()]), (TIP + 2, vec![unrelated(11)])];
+    block_after_its_take(
+        None,
+        (&tip, &after),
+        |engine, session, id, (c, c_change, d)| {
+            eventually("C goes", || !live_in_history(session, id, c.txid()));
+            drops_done(engine, session);
+            assert_child_dropped(engine, session, id, (c, c_change, d), "after the block");
+        },
+    );
+}
+
+/// The drop that put C off, and every drop after it, kept C and its
+/// change.
+fn kept_after_the_block(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    (c, c_change, _): (&Transaction, OutPoint, OutPoint),
+) {
+    reconciled(engine, session, id);
+    assert!(live_in_history(session, id, c.txid()), "C is dropped");
+    assert!(
+        held(engine, session, id).contains(&c_change),
+        "C's change is not held"
+    );
+}
+
+/// #891: as above, but the header chain holds no block at the height C
+/// was taken at, before or after: nothing shows the winner stands, and C
+/// stays.
+#[test]
+fn a_swept_payments_child_stays_when_a_block_after_its_take_has_no_header_to_stand_on() {
+    block_after_its_take(None, (&[], &[]), kept_after_the_block);
+}
+
+/// #891: the winner is mined above the height key-wallet had processed at
+/// the take (a wallet behind the chain), and after the take a fork
+/// replaces the winner's block while the block at that height stands: the
+/// winner may be undone, and C stays.
+#[test]
+fn a_swept_payments_child_stays_when_a_fork_replaces_its_winners_block_above_the_take() {
+    let winner_at = TIP + 3;
+    let tip = [(TIP + 1, vec![foreign()])];
+    let after = [
+        (TIP + 1, vec![foreign()]),
+        (TIP + 2, vec![unrelated(11)]),
+        (winner_at, vec![unrelated(12)]),
+    ];
+    block_after_its_take(Some(winner_at), (&tip, &after), kept_after_the_block);
 }
 
 /// #891: with no fork the hub counts, a block after the drop took C mines
