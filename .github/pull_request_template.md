@@ -9,3 +9,4 @@ Visual: N passed, 0 failed; e2e <specs>: M passed, 0 failed (Chromium + WebKit) 
 
 - [ ] Tests cover the change.
 - [ ] UI changes only: light and dark screenshots or a short recording of every changed state are on this PR, with before (base) and after (head) for changed states. Images are on a non-main assets branch, linked by SHA-pinned raw URLs, fixture data only, each captioned with its state and revision. See CLAUDE.md, "UI artifacts on every UI pull request".
+- [ ] Funds paths only (`ci/funds-paths.txt`; check with `git diff --no-renames --name-only origin/main... | ci/github/funds-gate.py match`): a funds-reviewer verdict and an Opus review are recorded for the head SHA (docs/ci.md, "Funds review gate"). A push makes them stale.
