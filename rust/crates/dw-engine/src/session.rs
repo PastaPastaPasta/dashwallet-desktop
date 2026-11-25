@@ -367,11 +367,6 @@ impl NetworkSession {
             ),
             None => None,
         };
-        create_owned_dir(&data_dir, Path::new(""))?;
-        // M3 (dw-store-upgrade): under the instance lock and before any store
-        // opens, the refusal check, the snapshot and the reconcile, with the
-        // config the persister opens with below. A refusal changes nothing
-        // in the folder.
         let persister_config = crate::store_upgrade::persister_config(&data_dir);
         {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
@@ -380,31 +375,19 @@ impl NetworkSession {
             })
             .await??;
         }
-        dw_store_upgrade::note_stores_opening();
-        use crate::store_upgrade::order::{Step, record};
-        record(&data_dir, Step::StoresOpening);
+        create_owned_dir(&data_dir, Path::new(""))?;
+        crate::store_upgrade::stores_opening(&data_dir);
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
         let unclean_previous = marker.exists();
 
-        let vault_dir = data_dir.join(VAULT_DIR);
-        record(&data_dir, Step::Vault);
-        let (core_network, tag) = (network.core_network(), network.dir_name());
-        let vault = tokio::task::spawn_blocking(move || {
-            Vault::open(vault_dir, core_network, &tag, vault_config)
-        })
-        .await??;
+        let (dir, core_network, tag) =
+            (data_dir.clone(), network.core_network(), network.dir_name());
+        let vault =
+            tokio::task::spawn_blocking(move || open_vault(&dir, core_network, &tag, vault_config))
+                .await??;
 
-        let appdb_path = data_dir.join(APP_DB_FILE);
-        record(&data_dir, Step::AppDb);
-        create_owned_file(&data_dir, Path::new(APP_DB_FILE))?;
-        create_owned_file(&data_dir, Path::new(APP_DB_LOCK_FILE))?;
-        let (appdb, names) = tokio::task::spawn_blocking(move || {
-            let db = AppDb::open(&appdb_path)?;
-            let names = db.wallets()?;
-            Ok::<_, dw_appdb::AppDbError>((db, names))
-        })
-        .await?
-        .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
+        let dir = data_dir.clone();
+        let (appdb, names) = tokio::task::spawn_blocking(move || open_app_db(&dir)).await??;
         let appdb = Arc::new(appdb);
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
@@ -489,10 +472,9 @@ impl NetworkSession {
                 ))
             })?;
         create_owned_dir(&data_dir, auto_backups)?;
-        // Only through the store upgrade's token, with the config the
-        // reconcile used; the token lives as long as the persister (`Live`).
+        let dir = data_dir.clone();
         let (persister, persister_opened) = tokio::task::spawn_blocking(move || {
-            crate::store_upgrade::open_persister(persister_config)
+            crate::store_upgrade::open_persister(&dir, persister_config)
         })
         .await??;
         // dash-qt loads only the wallets of its settings list; a missing
@@ -1346,6 +1328,36 @@ impl SdkOptions {
             initial_version,
         })
     }
+}
+
+/// The network's vault, its open recorded with it for the startup-order pin.
+fn open_vault(
+    data_dir: &Path,
+    network: key_wallet::Network,
+    tag: &str,
+    config: VaultConfig,
+) -> Result<Vault, EngineError> {
+    use crate::store_upgrade::order::{Step, record};
+    record(data_dir, Step::Vault);
+    Ok(Vault::open(data_dir.join(VAULT_DIR), network, tag, config)?)
+}
+
+/// `(wallet_id, name, created_at)` of every named wallet in `app.sqlite`.
+type NamedWallets = Vec<(String, String, u64)>;
+
+/// The network's `app.sqlite` (created owner-only first) and its named
+/// wallets, the open recorded with it for the startup-order pin.
+fn open_app_db(data_dir: &Path) -> Result<(AppDb, NamedWallets), EngineError> {
+    use crate::store_upgrade::order::{Step, record};
+    record(data_dir, Step::AppDb);
+    create_owned_file(data_dir, Path::new(APP_DB_FILE))?;
+    create_owned_file(data_dir, Path::new(APP_DB_LOCK_FILE))?;
+    let open = || {
+        let db = AppDb::open(&data_dir.join(APP_DB_FILE))?;
+        let names = db.wallets()?;
+        Ok::<_, dw_appdb::AppDbError>((db, names))
+    };
+    open().map_err(|e| EngineError::Storage(format!("app database: {e}")))
 }
 
 /// Reads and checks a PEM CA file the way the SDK will use it. The SDK parses

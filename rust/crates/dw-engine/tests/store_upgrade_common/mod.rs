@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use dw_engine::store_upgrade::NO_SCREEN;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, SessionOptions,
 };
@@ -111,29 +112,49 @@ pub fn exec(path: &Path, sql: &str) {
         .unwrap();
 }
 
-/// Every file and directory under `dir`: relative path → sha256, or "dir".
+/// `dir` itself (as ".") and every file and directory under it: relative
+/// path → its mode and sha256, or its mode and "dir".
 pub fn tree(dir: &Path) -> BTreeMap<String, String> {
+    fn mode(meta: &fs::Metadata) -> String {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            format!("{:o}", meta.permissions().mode() & 0o7777)
+        }
+        #[cfg(not(unix))]
+        {
+            format!("ro={}", meta.permissions().readonly())
+        }
+    }
     fn walk(base: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let rel = (entry.path().strip_prefix(base).unwrap())
                 .to_string_lossy()
                 .into_owned();
-            if entry.file_type().unwrap().is_dir() {
-                out.insert(rel, "dir".into());
+            let meta = fs::symlink_metadata(entry.path()).unwrap();
+            if meta.is_dir() {
+                out.insert(rel, format!("{} dir", mode(&meta)));
                 walk(base, &entry.path(), out);
             } else {
                 let bytes = fs::read(entry.path()).unwrap();
-                out.insert(rel, hex::encode(Sha256::digest(&bytes)));
+                out.insert(
+                    rel,
+                    format!("{} {}", mode(&meta), hex::encode(Sha256::digest(&bytes))),
+                );
             }
         }
     }
     let mut out = BTreeMap::new();
+    out.insert(
+        ".".into(),
+        format!("{} dir", mode(&fs::metadata(dir).unwrap())),
+    );
     walk(dir, dir, &mut out);
     out
 }
 
-/// The paths whose hash differs between two trees, or that one lacks.
+/// The paths whose mode or hash differs between two trees, or that one lacks.
 pub fn tree_diff(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<String> {
     let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
     keys.sort();
@@ -144,9 +165,32 @@ pub fn tree_diff(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> 
         .collect()
 }
 
+/// What a refused open may add to the network directory: the snapshot and
+/// upstream's auto-backup directory. Everything that was there stays
+/// byte-identical, mode included.
+const MAY_ADD: [&str; 2] = ["upgrade-backups", "backups/auto"];
+
+/// [`tree_diff`] less what a refused open may add.
+pub fn refused_open_diff(
+    before: &BTreeMap<String, String>,
+    after: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let added = |k: &str| {
+        !before.contains_key(k)
+            && MAY_ADD.iter().any(|d| {
+                k == *d || k.starts_with(&format!("{d}/")) || d.starts_with(&format!("{k}/"))
+            })
+    };
+    (tree_diff(before, after).into_iter())
+        .filter(|k| !added(k))
+        .collect()
+}
+
 /// Opens `f`'s network through a new engine on its data root and requires
-/// it refused with every file of the network directory (the four stores,
-/// their logs, the vault, everything) byte-identical afterwards. Returns the
+/// it refused with every existing file and directory of the network
+/// directory (the four stores, their logs, the vault, everything, and the
+/// directory itself) byte-identical afterwards, modes included; only
+/// [`MAY_ADD`] may be new. Returns the
 /// refusal's `StoreUpgradeError` variant: from `storage_refused`, or from
 /// the `internal` error a refusal without a screen maps to until
 /// dw-store-upgrade has one (`every_refusal_has_a_screen`).
@@ -162,11 +206,10 @@ pub fn open_refused_err(f: &Fixture) -> EngineError {
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .err()
         .expect("the open is refused");
-    let after = tree(&f.net);
+    let changed = refused_open_diff(&before, &tree(&f.net));
     assert!(
-        tree_diff(&before, &after).is_empty(),
-        "the refused open changed {:?} ({err})",
-        tree_diff(&before, &after)
+        changed.is_empty(),
+        "the refused open changed {changed:?} ({err})"
     );
     engine.block_on(engine.shutdown()).unwrap();
     err
@@ -183,8 +226,6 @@ pub fn refusal_cause(err: &EngineError) -> String {
         other => panic!("not a store refusal: {other:?}"),
     }
 }
-
-const NO_SCREEN: &str = "store refusal without a screen: ";
 
 /// A retired contact-pool row, as a fork build rotating a contact writes it.
 pub fn add_retired_row(path: &Path) {

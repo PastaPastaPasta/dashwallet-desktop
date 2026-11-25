@@ -161,7 +161,8 @@ mod tests {
 
     /// The §4 row of `EngineError` lists exactly the codes its variants
     /// have, plus the engine codes it marks as not in the frozen dw-ffi
-    /// (`shielded_spend_unresolved`, reported as `wallet`).
+    /// (`shielded_spend_unresolved`, reported as `wallet`; `storage_refused`,
+    /// reported as `storage`).
     #[test]
     fn engine_error_codes_match_the_contract() {
         let contract = contract_engine_codes();
@@ -169,10 +170,15 @@ mod tests {
             .filter(|(_, engine_only)| *engine_only)
             .map(|(code, _)| code.as_str())
             .collect();
-        assert_eq!(engine_only, ["shielded_spend_unresolved"]);
+        assert_eq!(
+            engine_only,
+            ["shielded_spend_unresolved", "storage_refused"]
+        );
         // Reported as the row says.
         let mapped = EngineError::from(dw_engine::EngineError::ShieldedSpendUnresolved);
         assert_eq!(mapped.code(), "wallet");
+        let mapped = EngineError::from(dw_engine::EngineError::RetryableIo(String::new()));
+        assert_eq!(mapped.code(), "io");
         let mut listed: Vec<&str> = (contract.iter())
             .filter(|(_, engine_only)| !engine_only)
             .map(|(code, _)| code.as_str())

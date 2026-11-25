@@ -155,7 +155,7 @@ impl From<EngineError> for AppError {
                 (
                     EngineCode::StorageRefused.into(),
                     Some(ErrorData::StoreRefused {
-                        screen: super::StoreScreen::new(&r.screen, &folder),
+                        screen: Box::new(super::StoreScreen::new(&r.screen, &folder)),
                         folder,
                         cause: r.cause.into(),
                     }),
@@ -283,12 +283,11 @@ mod tests {
     /// `{folder}` filled in, with the folder and the cause's name.
     #[test]
     fn a_store_refusal_rides_in_data_as_its_screen() {
-        let e = serde_json::to_value(AppError::from(EngineError::StoreRefused(refusal()))).unwrap();
+        let r = refusal();
+        let screen = r.screen.clone();
+        let e =
+            serde_json::to_value(AppError::from(EngineError::StoreRefused(Box::new(r)))).unwrap();
         assert_eq!(e["code"], "storage_refused");
-        let screen = dw_engine::store_upgrade::copy::cant_open(
-            dw_engine::store_upgrade::copy::CantOpenCause::RetiredPoolWithoutP9a,
-            true,
-        );
         assert_eq!(
             e["data"],
             serde_json::json!({
@@ -355,7 +354,7 @@ mod tests {
             E::StorageInUse(s()),
             E::Storage(s()),
             E::StorageTooNew(s()),
-            E::StoreRefused(refusal()),
+            E::StoreRefused(Box::new(refusal())),
             E::RetryableIo(s()),
             E::WalletNotFound(s()),
             E::InvalidMnemonic(s()),

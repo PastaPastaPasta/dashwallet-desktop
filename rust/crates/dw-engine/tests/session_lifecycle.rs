@@ -313,7 +313,7 @@ fn second_engine_on_same_data_dir_gets_storage_in_use() {
 /// open's store-upgrade check refuses it before any store opens
 /// (`SchemaTooNew`), so every file of the network directory is unchanged.
 #[test]
-fn a_wallet_file_from_a_newer_build_is_storage_too_new() {
+fn a_wallet_file_from_a_newer_build_is_refused_unchanged() {
     let tree = |dir: &std::path::Path| -> Vec<(std::path::PathBuf, Vec<u8>)> {
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -359,7 +359,10 @@ fn a_wallet_file_from_a_newer_build_is_storage_too_new() {
             assert!(r.detail.contains("schema version 999 is newer"), "{err}");
         }
         EngineError::Internal(m) => {
-            assert_eq!(m, "store refusal without a screen: SchemaTooNew")
+            assert_eq!(
+                m,
+                &format!("{}SchemaTooNew", dw_engine::store_upgrade::NO_SCREEN)
+            )
         }
         other => panic!("{other:?}"),
     }

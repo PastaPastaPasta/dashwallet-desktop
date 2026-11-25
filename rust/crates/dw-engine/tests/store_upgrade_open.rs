@@ -20,6 +20,23 @@ fn a_fork_version_set_no_build_published_is_refused_unchanged() {
     assert_eq!(open_refused(&f), "ForkStoreUnsupported");
 }
 
+/// A refused open leaves every existing file and directory of the folder
+/// byte-identical, the folder's own mode included (nothing chmods it before
+/// the refusal check); only `upgrade-backups/` and `backups/auto` may be new.
+#[cfg(unix)]
+#[test]
+fn a_refused_open_keeps_existing_files_and_the_folder_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture("v0.1.0");
+    exec(
+        &f.wallet(),
+        "INSERT INTO dw_fork_schema_history VALUES (6, 'later', 'x', '1')",
+    );
+    std::fs::set_permissions(&f.net, std::fs::Permissions::from_mode(0o750)).unwrap();
+    std::fs::set_permissions(f.wallet(), std::fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(open_refused(&f), "ForkStoreUnsupported");
+}
+
 #[test]
 fn a_fork_object_of_another_shape_is_refused_unchanged() {
     let f = fixture("v0.1.0");

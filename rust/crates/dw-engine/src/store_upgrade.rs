@@ -19,12 +19,16 @@ use crate::error::EngineError;
 /// The store upgrade's screens (`screen_for`), for the hosts.
 pub use dw_store_upgrade::copy;
 
-/// Whether `storage_in_use` may clear without a restart. False at this
-/// platform pin: a closed session's persister stays held in the process
-/// until it ends. True from the pin carrying the persister-release fix
-/// (P16); `storage_in_use_retryable_matches_an_in_process_reopen` ties it
+/// Whether `storage_in_use` may clear without a restart. True at this
+/// platform pin: closing a network with a wallet loaded releases its
+/// persister, and the network reopens in the same process;
+/// `storage_in_use_retryable_matches_an_in_process_reopen` ties the constant
 /// to that behaviour.
-pub const STORAGE_IN_USE_RETRYABLE: bool = false;
+pub const STORAGE_IN_USE_RETRYABLE: bool = true;
+
+/// The start of the `internal` message a refusal without a screen maps to,
+/// followed by its `StoreUpgradeError` variant name.
+pub const NO_SCREEN: &str = "store refusal without a screen: ";
 
 /// Where in the open the refusal came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +64,32 @@ pub(crate) fn persister_config(network_dir: &Path) -> SqlitePersisterConfig {
         .with_load_policy(LoadPolicy::Strict)
 }
 
+/// The data roots this process has swept.
+static SWEPT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Remove the private copies a crashed store-upgrade check left under
+/// `data_root`, under its instance lock, once per data root per process: a
+/// second engine on the same root shares the lock, and its sweep would
+/// delete a check the first engine is running. Returns whether this call
+/// swept.
+pub(crate) fn sweep_once(data_root: &Path) -> bool {
+    let key = data_root
+        .canonicalize()
+        .unwrap_or_else(|_| data_root.to_path_buf());
+    let mut swept = SWEPT.lock().unwrap_or_else(|p| p.into_inner());
+    order::record(data_root, order::Step::Sweep);
+    if swept.contains(&key) {
+        return false;
+    }
+    match dw_store_upgrade::sweep_stale_scratch(data_root) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(removed = n, "store upgrade: stale scratch copies removed"),
+        Err(e) => tracing::warn!(error = %e, "store upgrade: stale scratch copies not removed"),
+    }
+    swept.push(key);
+    true
+}
+
 /// Steps 1 and 2 of the crate's startup order, blocking, under the data
 /// root's instance lock and before any store of `network_dir` opens: this
 /// build's probe, the refusal check and snapshot, and the reconcile straight
@@ -72,13 +102,13 @@ pub(crate) fn prepare_and_reconcile(
         .parent()
         .ok_or_else(|| EngineError::Internal(format!("{} has no parent", network_dir.display())))?;
     let adopters = Adopters::for_build(data_root);
-    let failed = |stage| move |e| map_error(network_dir, stage, e);
+    let failed = |stage, e| map_error(network_dir, stage, e);
     let prepared = prepare_with(network_dir, adopters, SystemTime::now())
-        .map_err(failed(StoreUpgradeStage::Prepare))?;
+        .map_err(|e| failed(StoreUpgradeStage::Prepare, e))?;
     order::record(network_dir, order::Step::Prepare);
     match prepared.precheck {
         Precheck::NotForked => Ok(()),
-        Precheck::Refuse { reason } => Err(failed(StoreUpgradeStage::Prepare)(reason)),
+        Precheck::Refuse { reason } => Err(failed(StoreUpgradeStage::Prepare, reason)),
         Precheck::NeedsLockedCheck => Err(EngineError::Internal(
             "store upgrade: prepare left the locked check undone".into(),
         )),
@@ -87,7 +117,7 @@ pub(crate) fn prepare_and_reconcile(
                 EngineError::Internal("store upgrade: a fork file without its snapshot".into())
             })?;
             let outcome = reconcile_fork_store(config, &snapshot, adopters)
-                .map_err(failed(StoreUpgradeStage::Reconcile))?;
+                .map_err(|e| failed(StoreUpgradeStage::Reconcile, e))?;
             order::record(network_dir, order::Step::Reconcile);
             tracing::info!(?versions, ?outcome, snapshot = %snapshot.dir().display(),
                 "store upgrade: fork store reconciled");
@@ -96,18 +126,21 @@ pub(crate) fn prepare_and_reconcile(
     }
 }
 
+/// Step 3: the stores may open from here, recorded for the startup-order
+/// pin.
+pub(crate) fn stores_opening(network_dir: &Path) {
+    dw_store_upgrade::note_stores_opening();
+    order::record(network_dir, order::Step::StoresOpening);
+}
+
 /// Step 4: the persister, opened only through the crate's token, which the
 /// caller keeps as long as the persister.
 pub(crate) fn open_persister(
+    network_dir: &Path,
     config: SqlitePersisterConfig,
 ) -> Result<(Arc<SqlitePersister>, PersisterOpened), EngineError> {
-    let network_dir = config
-        .path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    order::record(&network_dir, order::Step::Persister);
-    PersisterOpened::open(config).map_err(|e| map_error(&network_dir, StoreUpgradeStage::Open, e))
+    order::record(network_dir, order::Step::Persister);
+    PersisterOpened::open(config).map_err(|e| map_error(network_dir, StoreUpgradeStage::Open, e))
 }
 
 /// The `StoreUpgradeError` variant's name. Exhaustive: a new variant must
@@ -142,6 +175,7 @@ pub(crate) fn variant_name(e: &StoreUpgradeError) -> &'static str {
 ///   sentence only for a verified snapshot; a refusal without a screen as
 ///   `Internal`, never a generic screen;
 /// - a held store as `StorageInUse`;
+/// - a wallet file that isn't a database, or is corrupt, as `Storage`;
 /// - a failure of the machine (disk, I/O, the snapshot, the rehearsal's
 ///   I/O) as a retryable io error, never a refusal;
 /// - upstream's own open error by its usual mapping;
@@ -160,24 +194,33 @@ pub(crate) fn map_error(
     if e.is_refusal() {
         let backup_present = latest_snapshot(network_dir).is_ok_and(|s| s.is_some());
         return match screen_for(&e, backup_present) {
-            Some(screen) => EngineError::StoreRefused(StoreRefusal {
+            Some(screen) => EngineError::StoreRefused(Box::new(StoreRefusal {
                 screen,
                 folder: network_dir.to_path_buf(),
                 cause,
                 stage,
                 detail: e.to_string(),
-            }),
-            None => EngineError::Internal(format!("store refusal without a screen: {cause}")),
+            })),
+            None => EngineError::Internal(format!("{NO_SCREEN}{cause}")),
         };
     }
     match e {
         E::StoreHeld { .. } => EngineError::StorageInUse(e.to_string()),
         E::PersisterOpen { source, .. } => EngineError::from(*source),
+        E::Sqlite { ref source, .. } if is_damaged(source) => EngineError::Storage(e.to_string()),
         E::SnapshotFailed { .. } | E::Sqlite { .. } | E::Io { .. } => {
             EngineError::RetryableIo(e.to_string())
         }
         _ => EngineError::Internal(format!("store upgrade: {cause}: {e}")),
     }
+}
+
+/// A wallet file that isn't a database or is corrupt: retrying can't help.
+fn is_damaged(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt)
+    )
 }
 
 /// The open's store steps in the order they ran, per data root (tests

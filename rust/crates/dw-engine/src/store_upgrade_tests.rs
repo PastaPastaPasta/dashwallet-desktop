@@ -126,7 +126,7 @@ fn crate_errors_map_to_their_engine_errors() {
             }
             (EngineError::Internal(m), _) if refusal => {
                 assert!(screen.is_none(), "{name}");
-                assert_eq!(m, &format!("store refusal without a screen: {name}"));
+                assert_eq!(m, &format!("{NO_SCREEN}{name}"));
             }
             (EngineError::StorageInUse(_), "StoreHeld") => {}
             (EngineError::RetryableIo(_), "SnapshotFailed" | "Sqlite" | "Io") => {}
@@ -142,6 +142,29 @@ fn crate_errors_map_to_their_engine_errors() {
             (other, _) => panic!("{name}: {other:?}"),
         }
     }
+}
+
+/// A wallet file that isn't a database, or is corrupt, is `storage` (no
+/// retry helps); any other SQLite failure stays retryable `io`.
+#[test]
+fn a_damaged_wallet_file_is_storage_not_retryable_io() {
+    let dir = dw_testutil::private_tempdir();
+    let sqlite = |code| StoreUpgradeError::Sqlite {
+        context: "read the wallet file's tables",
+        unchanged: true,
+        source: rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None),
+    };
+    let map = |e| map_error(dir.path(), StoreUpgradeStage::Prepare, e);
+    for code in [rusqlite::ffi::SQLITE_NOTADB, rusqlite::ffi::SQLITE_CORRUPT] {
+        assert!(
+            matches!(map(sqlite(code)), EngineError::Storage(_)),
+            "{code}"
+        );
+    }
+    assert!(matches!(
+        map(sqlite(rusqlite::ffi::SQLITE_IOERR)),
+        EngineError::RetryableIo(_)
+    ));
 }
 
 /// The backup sentence only for a verified snapshot (98-5): an incomplete
@@ -289,4 +312,32 @@ fn the_open_runs_the_store_upgrade_before_any_store_opens() {
         ]
     );
     engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A second engine on a root this process already swept shares the
+/// instance lock, so it must not sweep: the copy a check of the first engine
+/// is using stays.
+#[test]
+fn a_second_engine_on_a_swept_root_does_not_sweep() {
+    let tmp = dw_testutil::private_tempdir();
+    let stale = tmp.path().join(".store-upgrade-precheck-stale");
+    fs::create_dir(&stale).unwrap();
+    let first = engine(tmp.path());
+    assert!(
+        !stale.exists(),
+        "the first engine sweeps a crashed check's copy"
+    );
+    let running = tmp.path().join(".store-upgrade-precheck-running");
+    fs::create_dir(&running).unwrap();
+    let second = engine(tmp.path());
+    assert!(
+        running.exists(),
+        "the second engine swept a running check's copy"
+    );
+    assert_eq!(
+        steps(tmp.path()),
+        [Step::Instance, Step::Sweep, Step::Instance, Step::Sweep]
+    );
+    drop(second);
+    first.block_on(first.shutdown()).unwrap();
 }

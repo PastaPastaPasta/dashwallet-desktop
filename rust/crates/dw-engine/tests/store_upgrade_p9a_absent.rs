@@ -15,11 +15,11 @@ fn a_rotated_contact_fork_file_is_refused_unchanged_without_p9a() {
     let f = fixture("v0.1.0");
     add_retired_row(&f.wallet());
     let err = open_refused_err(&f);
-    assert_eq!(refusal_cause(&err), "RetiredPoolWithoutAdopter");
     let r = match err {
         EngineError::StoreRefused(r) => r,
         other => panic!("{other:?}"),
     };
+    assert_eq!(r.cause, "RetiredPoolWithoutAdopter");
     assert_eq!(r.folder, f.net);
     assert_eq!(r.screen.text_key, "storeUpgrade.cantOpen.textWithoutBackup");
 

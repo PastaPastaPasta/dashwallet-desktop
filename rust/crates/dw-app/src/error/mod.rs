@@ -493,7 +493,7 @@ pub enum ErrorData {
     /// store upgrade's own screen with `{folder}` filled in; `folder` is the
     /// network directory; `cause` names the refusal for tests and logs only.
     StoreRefused {
-        screen: StoreScreen,
+        screen: Box<StoreScreen>,
         folder: String,
         cause: String,
     },

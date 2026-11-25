@@ -27,11 +27,13 @@ fn a_broken_p9a_refuses_every_open_unchanged() {
         .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
         .err()
         .expect("refused");
-    assert_eq!(refusal_cause(&err), "P9aBroken");
-    assert!(matches!(err, EngineError::StoreRefused(_)), "{err:?}");
+    match &err {
+        EngineError::StoreRefused(r) => assert_eq!(r.cause, "P9aBroken"),
+        other => panic!("{other:?}"),
+    }
     assert!(
-        !fresh.path().join("regtest/wallet.sqlite").exists(),
-        "no store was created"
+        !fresh.path().join("regtest").exists(),
+        "a refused fresh open created the network folder"
     );
     engine.block_on(engine.shutdown()).unwrap();
 }
