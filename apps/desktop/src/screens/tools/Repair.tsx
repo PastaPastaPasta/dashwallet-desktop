@@ -4,11 +4,12 @@
 // funding (D12, DP1-10 D16), and finishing stranded asset locks (DP1-09 D10). Unrecorded asset
 // locks wait on DP1-02's facade call.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useBackend, useUnfinishedTransfers } from "../../api/queries";
+import { keys, useBackend, useShieldedSyncInfo, useUnfinishedTransfers } from "../../api/queries";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -28,7 +29,12 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
   const shown = useDisplay(network);
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
   const client = useQueryClient();
-  const [model] = useState(() => new RepairModel(b, grants, wallet.walletId));
+  const spendsOff = shieldedSpendsOff(useShieldedSyncInfo(wallet.walletId).data);
+  const spendsOffNow = useRef(spendsOff);
+  useEffect(() => {
+    spendsOffNow.current = spendsOff;
+  }, [spendsOff]);
+  const [model] = useState(() => new RepairModel(b, grants, wallet.walletId, () => spendsOffNow.current));
   const unfinished = useUnfinishedTransfers(wallet.walletId);
   useModel(model);
   const [from, setFrom] = useState("");
@@ -176,7 +182,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                     detail: f.repair
                       ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
                       : f.blocked
-                        ? shieldBlockedText(f.blocked)
+                        ? shieldBlockedText(f.blocked, spendsOff)
                         : "",
                   })}
                 </span>

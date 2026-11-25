@@ -279,10 +279,14 @@ export const tools = {
       other: "Send all {count} spendable coins of your main balance ({total}) back to your wallet? You pay a network fee of {fee}. Whether the move's payment reached the network is settled either way.",
     },
     resolvedShield: "The coins were sent back to your wallet (transaction {txid}). You can move Dash into Shielded again once it is confirmed.",
+    /** `resolvedShield` where this version cannot send from Shielded, so moves into it stay off. */
+    resolvedShieldSpendsOff: "The coins were sent back to your wallet (transaction {txid}).",
     shieldLine: "{what}. {detail}",
     stuckShieldsUnreadable: "This wallet's moves into Shielded could not be read, so their stuck funding cannot be checked here.",
     shieldBlockedRetry: "Repair can't send these coins back yet: {why} Check again later.",
     shieldBlockedPermanent: "Repair can't send these coins back: {why} New moves into Shielded stay paused while this move is open.",
+    /** `shieldBlockedPermanent` where this version cannot send from Shielded, so moves into it stay off anyway. */
+    shieldBlockedPermanentSpendsOff: "Repair can't send these coins back: {why}",
     shieldBlockedReason: {
       notReady: "The wallet is still reading this move's records.",
       spendUnsettled: "An earlier payment from this wallet is not confirmed yet.",

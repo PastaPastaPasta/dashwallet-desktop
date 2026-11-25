@@ -104,6 +104,28 @@ test.describe("Shielded spends off", () => {
     });
   }
 
+  for (const theme of THEMES) {
+    test(`Tools ▸ Repair names no move into Shielded again (${theme})`, async ({ page }) => {
+      const errors = await open(page, "repair-shield-spends-off", theme);
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" }));
+      const blocked = page.getByTestId("repair-stuck-shield/1/funding");
+      await expect(blocked).toContainText("Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back.");
+      await expect(blocked).not.toContainText("New moves into Shielded");
+      await blocked.scrollIntoViewIfNeeded();
+      await shot(page, `${theme}-repair-blocked-off`);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      await page.getByTestId("repair-resolve-shield/0/funding").click();
+      await page.getByTestId("repair-confirm-ok").click();
+      await authorize(page);
+      const outcome = page.getByTestId("repair-outcome");
+      await expect(outcome).toHaveText(/^The coins were sent back to your wallet \(transaction [0-9a-f]{64}\)\.$/);
+      await outcome.scrollIntoViewIfNeeded();
+      await shot(page, `${theme}-repair-resolved-off`);
+      expect(await seriousAxeViolations(page)).toEqual([]);
+      expect(errors).toEqual([]);
+    });
+  }
+
   test("moving mixed coins into Shielded waits with the ways-in reason", async ({ page }) => {
     const errors = trackPageErrors(page);
     for (const scenario of ["coinjoin-move-spends-off", "coinjoin-move"] as const) {

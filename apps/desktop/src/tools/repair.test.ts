@@ -369,6 +369,25 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(text).not.toMatch(/\byet\b|registration/);
   });
 
+  it("where this build cannot send from Shielded, a sent-back or unsettleable move names no move into Shielded again", async () => {
+    expect(shieldBlockedText({ reason: "noKnownLock", retryLater: false }, true)).toBe(
+      "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back.",
+    );
+    const retry = { reason: "spendUnsettled", retryLater: true } as const;
+    expect(shieldBlockedText(retry, true)).toBe(shieldBlockedText(retry));
+    expect(RepairText.resolvedShield("ab".repeat(32), true)).toBe(`The coins were sent back to your wallet (transaction ${"ab".repeat(32)}).`);
+
+    const { api, vault } = setup({ encrypted: false });
+    const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => true);
+    const stuck: StuckShieldFunding = { step: "shield/0/funding", state: "maybeSent", repair: { mixed: true, inputs: 2, totalDuffs: 110_001_100, feeDuffs: 340 }, blocked: null };
+    api.stuckShieldFundings.mockResolvedValue([stuck]);
+    await model.refresh();
+    model.ask("resolveStuck", model.stuckShields[0]);
+    api.stuckShieldFundings.mockResolvedValue([]);
+    await model.confirm();
+    expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedShield("ab".repeat(32), true) });
+  });
+
   it("a failed read of the stuck moves into Shielded is said, not hidden", async () => {
     const { model, api } = setup();
     api.stuckShieldFundings.mockRejectedValueOnce(appError("platform.unavailable"));

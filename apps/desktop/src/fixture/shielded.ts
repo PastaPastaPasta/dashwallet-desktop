@@ -92,8 +92,9 @@ export interface ShieldedWorld {
    * them yet. Unset: rested. */
   restingUntil?: number;
   /** A shield from the main balance whose lock signed and got no verdict (`SHIELD_STEP`): Tools ▸
-   * Repair lists it, priced on every spendable coin of the main balance. */
-  shieldUnknown?: boolean;
+   * Repair lists it, priced on every spendable coin of the main balance. `"blocked"`: Repair lists it
+   * and can never settle it (no known lock). */
+  shieldUnknown?: boolean | "blocked";
 }
 
 /** The step of the shield `shieldUnknown` leaves possibly sent. */
