@@ -25,16 +25,11 @@ pub enum StoreUpgradeError {
     #[error("this build's P9a support is broken: {detail}")]
     P9aBroken { detail: String },
 
-    /// The file carries fork V3 and this build has no P8 to adopt it. Refused
-    /// until the Q93 ruling. File unchanged.
-    #[error(
-        "fork store versions {versions:?} include V3, which this build cannot adopt without P8"
-    )]
-    ForkV3WithoutP8 { versions: BTreeSet<u32> },
-
     /// The upgrade, rehearsed on a private copy (R1's drop, then the upstream
-    /// open under `LoadPolicy::Strict`), failed: the real file would be left
-    /// part-upgraded. File unchanged.
+    /// open under `LoadPolicy::Strict` with the caller's settings), failed on
+    /// the data: the real file would be left part-upgraded. A failure of the
+    /// machine (disk full, I/O, the backup directory) is [`Self::Io`]
+    /// instead, which is retried and has no can't-open screen. File unchanged.
     #[error("the upgrade fails on a copy of this wallet file: {detail}")]
     UpgradeRehearsalFailed { detail: String },
 
@@ -103,10 +98,34 @@ pub enum StoreUpgradeError {
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
 
+    /// An upgrade that stopped after R1's drop, and no before-upgrade
+    /// snapshot this upgrade can keep: none at all, none that verifies, or
+    /// none of this wallet (`storeUpgrade.refused.detail.snapshotMissing`).
+    /// The file stays as the earlier start left it; nothing more is written.
+    #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
+    UpgradeSnapshotMissing {
+        state: crate::snapshot::MissingSnapshot,
+        dir: PathBuf,
+    },
+
+    /// `wallet.sqlite` is a symbolic link or is owned by another user: the
+    /// upstream open refuses the first and can't make the second owner-only,
+    /// and the copy the upgrade is rehearsed on has neither. Refused before
+    /// R1's drop. Its screen is the unexpected-state refusal. Nothing
+    /// changed.
+    #[error("wallet.sqlite {detail}")]
+    WalletFileUnsupported { detail: String },
+
     /// [`crate::PersisterOpened::open`] was asked for a load policy other
     /// than `Strict` (Q78 R6). Nothing was opened.
     #[error("the wallet store opens only with LoadPolicy::Strict, not {policy}")]
     NonStrictOpen { policy: String },
+
+    /// The `SqlitePersisterConfig` can't carry the upgrade: no auto-backup
+    /// directory, or not the config [`crate::reconcile_fork_store`]
+    /// rehearsed with. A caller bug, not the user's data. Nothing changed.
+    #[error("the wallet store config is not supported: {detail}")]
+    OpenConfigUnsupported { detail: String },
 
     /// [`crate::PersisterOpened::open`] ran before this build's probe
     /// ([`crate::Adopters::for_build`]). Nothing was opened.
@@ -155,15 +174,17 @@ impl StoreUpgradeError {
             | Self::ForkStoreShapeMismatch { .. }
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
-            | Self::ForkV3WithoutP8 { .. }
             | Self::UpgradeRehearsalFailed { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
             | Self::NonStrictOpen { .. }
+            | Self::OpenConfigUnsupported { .. }
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
+            | Self::UpgradeSnapshotMissing { .. }
+            | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
             | Self::RestoreRefused { .. }
             | Self::RestoreNoSpace { .. }
@@ -179,9 +200,8 @@ impl StoreUpgradeError {
         }
     }
 
-    /// Whether this is a refusal the user sees on a "can't open" screen
-    /// ([`crate::copy::screen_for`]): this build cannot take this data, and
-    /// left it unchanged.
+    /// Whether this build refuses this data as it is, leaving it unchanged.
+    /// Every refusal has a screen ([`crate::copy::screen_for`], Q98 98-2).
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
@@ -189,11 +209,12 @@ impl StoreUpgradeError {
                 | Self::ForkStoreShapeMismatch { .. }
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
-                | Self::ForkV3WithoutP8 { .. }
                 | Self::UpgradeRehearsalFailed { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
+                | Self::UpgradeSnapshotMissing { .. }
+                | Self::WalletFileUnsupported { .. }
         )
     }
 

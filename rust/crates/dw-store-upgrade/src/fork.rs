@@ -25,6 +25,10 @@ pub(crate) const EXTERNAL_REF: &str = "external_account_reference";
 pub(crate) const INSTANT_LOCKS: &str = "core_instant_locks";
 pub(crate) const VERIFIED: &str = "verified";
 
+/// The last refinery version every published fork pin wrote: a fork file
+/// whose refinery history goes no further has not been migrated by upstream.
+pub(crate) const FORK_REFINERY_MAX: i64 = 18;
+
 /// Tables later fork versions create (dev builds only; never released).
 pub(crate) const UNRELEASED_TABLES: &[(u32, &str)] =
     &[(4, "core_dismissed_txids"), (5, "core_block_spends")];

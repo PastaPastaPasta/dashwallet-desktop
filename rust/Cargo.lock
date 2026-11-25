@@ -2731,12 +2731,14 @@ name = "dw-store-upgrade"
 version = "0.3.0"
 dependencies = [
  "dashcore",
+ "dw-fs",
  "grovedb-bincode",
  "key-wallet",
  "platform-wallet",
  "platform-wallet-storage",
  "refinery",
  "rusqlite",
+ "rustix 1.1.6",
  "serde",
  "sha2 0.10.9",
  "tempfile",

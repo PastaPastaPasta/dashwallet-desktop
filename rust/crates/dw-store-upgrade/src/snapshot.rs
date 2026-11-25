@@ -31,6 +31,9 @@ pub const UPGRADE_BACKUPS_DIR: &str = "upgrade-backups";
 /// SQLite's side files of a store.
 pub(crate) const SIDE_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 pub(crate) const BEFORE_PREFIX: &str = "before-upgrade";
+/// A copy taken mid-upgrade under [`AbsentSnapshotPolicy::ProceedUnrestorable`]:
+/// never listed as a backup, never restored.
+pub(crate) const UNRESTORABLE_PREFIX: &str = "part-upgraded";
 pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
 const MARKER_HEADER: &str = "dw-store-upgrade snapshot";
 const MARKER_FORMAT: u32 = 1;
@@ -221,6 +224,11 @@ pub(crate) fn read_snapshot(
 
 /// Every `before-upgrade-*` directory, oldest name first.
 fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    dirs_named(network_dir, BEFORE_PREFIX)
+}
+
+/// Every `<prefix>-*` directory in `upgrade-backups/`, oldest name first.
+fn dirs_named(network_dir: &Path, prefix: &str) -> io::Result<Vec<PathBuf>> {
     let root = backups_dir(network_dir);
     let entries = match fs::read_dir(&root) {
         Ok(e) => e,
@@ -231,10 +239,7 @@ fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if name
-            .to_string_lossy()
-            .starts_with(&format!("{BEFORE_PREFIX}-"))
-            && entry.file_type()?.is_dir()
+        if name.to_string_lossy().starts_with(&format!("{prefix}-")) && entry.file_type()?.is_dir()
         {
             dirs.push(entry.path());
         }
@@ -274,10 +279,13 @@ pub fn snapshot_state(network_dir: &Path) -> io::Result<SnapshotState> {
     Ok(unverified.unwrap_or(SnapshotState::None))
 }
 
-/// Whether a verified before-upgrade snapshot exists (chooses
-/// `storeUpgrade.cantOpen.text` over `textWithoutBackup`).
+/// Whether a verified before-upgrade snapshot exists: only then does a
+/// refusal screen offer Restore earlier data.
 pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
-    Ok(crate::copy::backup_sentence(&snapshot_state(network_dir)?))
+    Ok(matches!(
+        snapshot_state(network_dir)?,
+        SnapshotState::Verified(_)
+    ))
 }
 
 /// The newest completed snapshot, its files checked against their sha256.
@@ -292,6 +300,11 @@ pub(crate) struct LiveState {
     refinery_max: i64,
     fork_versions: BTreeSet<u32>,
     fingerprint: String,
+    /// `wallet.sqlite`'s own part of `fingerprint`.
+    wallet_fingerprint: String,
+    /// R1's drop committed and upstream has not migrated yet: fork history
+    /// present, the column gone, refinery not past the fork's last version.
+    between: bool,
 }
 
 /// Table digests minus what the upgrade itself changes: the dropped column
@@ -338,8 +351,13 @@ pub(crate) fn live_state(
     } else {
         BTreeSet::new()
     };
+    let between = !fork_versions.is_empty()
+        && refinery_max <= fork::FORK_REFINERY_MAX
+        && has_table(wallet, fork::CONTACTS)?
+        && !sql::has_column(wallet, fork::CONTACTS, fork::EXTERNAL_REF)?;
+    let wallet_fingerprint = fingerprint(wallet)?;
     let mut h = Sha256::new();
-    h.update(format!("{}={}\n", STORE_FILES[0], fingerprint(wallet)?).as_bytes());
+    h.update(format!("{}={wallet_fingerprint}\n", STORE_FILES[0]).as_bytes());
     for name in &STORE_FILES[1..] {
         let path = dir.join(name);
         let digest = if path.exists() {
@@ -358,13 +376,19 @@ pub(crate) fn live_state(
         refinery_max,
         fork_versions,
         fingerprint: hex(&h.finalize()),
+        wallet_fingerprint,
+        between,
     })
 }
 
-/// A connection that reads a live store and writes nothing beside it: with
-/// no log, `immutable=1` (no lock, no `-wal`/`-shm` created); with a
-/// non-empty `-wal` or `-journal`, read-only, never checkpointing (not even
-/// on close), waiting at most `busy`.
+/// A connection that reads a live store without changing it: with no log,
+/// `immutable=1` (no lock, no `-wal`/`-shm` created); with a non-empty
+/// `-wal` or `-journal`, read-only, never checkpointing (not even on close),
+/// waiting at most `busy`. In that second case SQLite still opens `-shm`
+/// read-write, creating it if missing, and a hot rollback journal fails as
+/// `SQLITE_READONLY_ROLLBACK`; the stores run in WAL mode. The check for a
+/// log and the open are not atomic: they rely on running under the instance
+/// lock before any store opens, and M1 re-checks under the write lock.
 fn open_source(path: &Path, busy: std::time::Duration) -> rusqlite::Result<Connection> {
     let logged = ["-wal", "-journal"].iter().any(|suffix| {
         let mut side = path.as_os_str().to_owned();
@@ -399,7 +423,12 @@ pub(crate) fn require_reusable(
 ) -> Result<()> {
     let live = live_state(wallet, network_dir, open_live)
         .map_err(StoreUpgradeError::sqlite("read the live state", true))?;
-    if reusable(snapshot, &live) {
+    let ok = if live.between {
+        reusable_between(snapshot, &live)
+    } else {
+        reusable(snapshot, &live)
+    };
+    if ok {
         return Ok(());
     }
     Err(StoreUpgradeError::SnapshotInvalid {
@@ -414,6 +443,68 @@ pub(crate) fn require_reusable(
 pub(crate) fn reusable(info: &SnapshotInfo, live: &LiveState) -> bool {
     info.fork_versions == live.fork_versions
         && (live.refinery_max > info.refinery_max || live.fingerprint == info.fingerprint)
+}
+
+/// Between R1's drop and upstream's migration the other stores may have
+/// changed (a start that stopped before the persister opened), but a snapshot
+/// taken now would hold the file without the column, which no released build
+/// opens. Only the true pre-upgrade snapshot will do: verified, the same fork
+/// versions, its `wallet.sqlite` the live one apart from the column, and
+/// itself still a file a released build opens (the column, refinery at most
+/// V018). A `part-upgraded` copy is matched on the wallet alone.
+fn reusable_between(info: &SnapshotInfo, live: &LiveState) -> bool {
+    let restorable = info.dir.file_name().is_some_and(|n| {
+        n.to_string_lossy()
+            .starts_with(&format!("{BEFORE_PREFIX}-"))
+    });
+    info.fork_versions == live.fork_versions
+        && (!restorable || info.refinery_max <= fork::FORK_REFINERY_MAX)
+        && sql::open_immutable(&info.dir.join(STORE_FILES[0]))
+            .and_then(|conn| {
+                let released =
+                    !restorable || sql::has_column(&conn, fork::CONTACTS, fork::EXTERNAL_REF)?;
+                Ok(released && fingerprint(&conn)? == live.wallet_fingerprint)
+            })
+            .unwrap_or(false)
+}
+
+/// Why a part-done upgrade has no snapshot to keep (M1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingSnapshot {
+    /// No completed before-upgrade snapshot at all.
+    Absent,
+    /// Completed ones exist, and none verifies.
+    Unverified,
+    /// Verified ones exist, and none is of this wallet before the upgrade.
+    Mismatch,
+}
+
+/// What a part-done upgrade does when no before-upgrade snapshot exists at
+/// all. `Unverified` and `Mismatch` are refused under either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbsentSnapshotPolicy {
+    /// [`StoreUpgradeError::UpgradeSnapshotMissing`].
+    Refuse,
+    /// Finish the upgrade with a `part-upgraded-<UTC>/` copy that is never
+    /// offered as a backup.
+    ProceedUnrestorable,
+}
+
+/// M1 (b), pending the PO and funds ruling on (a).
+pub const ABSENT_SNAPSHOT_POLICY: AbsentSnapshotPolicy = AbsentSnapshotPolicy::Refuse;
+
+fn absent_snapshot_policy() -> AbsentSnapshotPolicy {
+    #[cfg(test)]
+    if let Some(p) = ABSENT_POLICY_FOR_TEST.with(|p| p.get()) {
+        return p;
+    }
+    ABSENT_SNAPSHOT_POLICY
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ABSENT_POLICY_FOR_TEST: std::cell::Cell<Option<AbsentSnapshotPolicy>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
@@ -443,27 +534,67 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     } else {
         None
     };
-    let dirs = before_dirs(network_dir).map_err(|e| failed(format!("list snapshots: {e}")))?;
-    for dir in &dirs {
-        if !dir.join(MARKER).exists() {
-            tracing::warn!(dir = %dir.display(), "store upgrade: discarding an incomplete snapshot");
-            fs::remove_dir_all(dir)
-                .map_err(|e| failed(format!("discard {}: {e}", dir.display())))?;
+    let list = |prefix| {
+        dirs_named(network_dir, prefix).map_err(|e| failed(format!("list snapshots: {e}")))
+    };
+    let mut dirs = list(BEFORE_PREFIX)?;
+    let mut part_upgraded = list(UNRESTORABLE_PREFIX)?;
+    for list in [&mut dirs, &mut part_upgraded] {
+        for dir in list.iter() {
+            if !dir.join(MARKER).exists() {
+                tracing::warn!(dir = %dir.display(), "store upgrade: discarding an incomplete snapshot");
+                fs::remove_dir_all(dir)
+                    .map_err(|e| failed(format!("discard {}: {e}", dir.display())))?;
+            }
         }
+        list.retain(|d| d.exists());
     }
+    let mut prefix = BEFORE_PREFIX;
     if let Some(live) = &live {
-        for dir in dirs.iter().rev().filter(|d| d.exists()) {
-            if let Ok(info) = read_snapshot(dir, true)
-                && reusable(&info, live)
-            {
+        let mut verified = false;
+        for dir in dirs.iter().rev() {
+            let Ok(info) = read_snapshot(dir, true) else {
+                continue;
+            };
+            verified = true;
+            let ok = if live.between {
+                reusable_between(&info, live)
+            } else {
+                reusable(&info, live)
+            };
+            if ok {
                 return Ok(info);
             }
+        }
+        if live.between {
+            let state = match (verified, dirs.is_empty()) {
+                (true, _) => MissingSnapshot::Mismatch,
+                (false, false) => MissingSnapshot::Unverified,
+                (false, true) => MissingSnapshot::Absent,
+            };
+            if state != MissingSnapshot::Absent
+                || absent_snapshot_policy() == AbsentSnapshotPolicy::Refuse
+            {
+                return Err(StoreUpgradeError::UpgradeSnapshotMissing {
+                    state,
+                    dir: backups_dir(network_dir),
+                });
+            }
+            for dir in part_upgraded.iter().rev() {
+                if let Ok(info) = read_snapshot(dir, true)
+                    && reusable_between(&info, live)
+                {
+                    return Ok(info);
+                }
+            }
+            tracing::warn!("store upgrade: part-done upgrade without a snapshot; continuing");
+            prefix = UNRESTORABLE_PREFIX;
         }
     }
     let root = backups_dir(network_dir);
     fsx::ensure_private_dir(&root)
         .map_err(|e| failed(format!("create {UPGRADE_BACKUPS_DIR}: {e}")))?;
-    let dir = root.join(fsx::fresh_name(&root, BEFORE_PREFIX, now));
+    let dir = root.join(fsx::fresh_name(&root, prefix, now));
     fsx::create_private_dir(&dir).map_err(|e| failed(format!("create {}: {e}", dir.display())))?;
     fsx::fsync_dir(&root).map_err(|e| failed(format!("fsync {UPGRADE_BACKUPS_DIR}: {e}")))?;
     let mut files = Vec::new();
@@ -498,6 +629,8 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
         refinery_max: 0,
         fork_versions: BTreeSet::new(),
         fingerprint: "-".into(),
+        wallet_fingerprint: "-".into(),
+        between: false,
     });
     let mut info = SnapshotInfo {
         dir: dir.clone(),

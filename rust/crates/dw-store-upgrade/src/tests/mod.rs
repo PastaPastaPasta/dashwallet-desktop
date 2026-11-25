@@ -1,6 +1,7 @@
 //! Tests over copies of the released fixtures (testdata/upgrade/*, never
 //! edited), each in its own 0700 temp directory.
 
+mod copy_table;
 mod crash;
 mod fixtures;
 mod meta;
@@ -8,6 +9,11 @@ mod p9a;
 mod refusals;
 mod restore;
 mod review_fixes;
+mod review_fixes_2;
+mod review_fixes_3;
+mod startup_order;
+mod v3;
+mod v3_dropped;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -193,14 +199,6 @@ pub(crate) fn fresh_store() -> (tempfile::TempDir, PathBuf) {
         .unwrap(),
     );
     (dir, path)
-}
-
-/// Run `f` with fork V3 accepted, as if P8 or the Q93 ruling allowed it.
-pub(crate) fn with_v3_accepted<T>(f: impl FnOnce() -> T) -> T {
-    crate::classify::ACCEPT_V3_FOR_TEST.with(|a| a.set(true));
-    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    crate::classify::ACCEPT_V3_FOR_TEST.with(|a| a.set(false));
-    out.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
 pub(crate) fn exec(path: &Path, sql: &str) {

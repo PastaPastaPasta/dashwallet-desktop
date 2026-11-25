@@ -6,6 +6,7 @@
 use std::sync::OnceLock;
 
 use super::*;
+use crate::copy;
 use crate::error::StoreUpgradeError;
 use crate::fsx::{arm_fault, disarm_fault};
 use crate::precheck::{Precheck, precheck_with};
@@ -134,7 +135,7 @@ fn upgrade_fixture(prep: impl FnOnce(&Path)) -> (tempfile::TempDir, PathBuf) {
         Precheck::Fork { .. }
     ));
     let snapshot = take_snapshot(&f.net, now()).unwrap();
-    reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap();
+    reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
     drop(open_and_load(&f.net));
     crate::token::reset_opened_for_test();
     fold_logs(&f.net);
@@ -642,9 +643,8 @@ fn s4_other_lineage_refuses_with_keep_action() {
             "{foreign}: {err}"
         );
         assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
-        let state = snapshot_state(&u.net).unwrap();
-        let screen = crate::copy::screen_for(&err, &state).expect("a screen");
-        assert_eq!(screen, crate::copy::restore_foreign(), "{foreign}");
+        let screen = crate::copy::restore_screen_for(&err).expect("a screen");
+        assert_eq!(screen, crate::copy::restore_foreign::screen(), "{foreign}");
         assert_eq!(screen.buttons[0].key, "storeUpgrade.restore.foreign.keep");
         assert!(
             screen
@@ -916,30 +916,25 @@ fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
     }
 }
 
-/// Q98 98-5: only a verified snapshot drives the backup sentence; an
-/// unverified one (a corrupt byte, a garbled marker) and none at all (no
-/// snapshot, or one without its marker) get the without-backup text.
+/// Q98 98-5: only a verified snapshot is a backup to the refusal screens; an
+/// unverified one (a corrupt byte, a garbled marker) is Unverified, and none
+/// at all (no snapshot, or one without its marker) is None.
 #[test]
 fn only_a_verified_snapshot_gets_the_backup_sentence() {
-    use crate::copy::{self, CantOpenCause};
-    let err = StoreUpgradeError::P9aBroken {
-        detail: "test".into(),
-    };
+    use crate::copy::{BackupState, ProvedState};
     let key = |net: &Path| {
         let state = snapshot_state(net).unwrap();
-        let screen = copy::screen_for(&err, &state).unwrap();
-        assert_eq!(
-            screen,
-            copy::cant_open_for(CantOpenCause::P9aBroken, &state)
-        );
+        let backup = BackupState::from(&state);
+        assert_eq!(ProvedState::read(net, false).backup, Some(backup));
         assert_eq!(
             snapshot_present(net).unwrap(),
-            copy::backup_sentence(&state)
+            backup == BackupState::Verified
         );
-        (state, screen.text_key)
+        (state, backup)
     };
-    let with = "storeUpgrade.cantOpen.text";
-    let without = "storeUpgrade.cantOpen.textWithoutBackup";
+    let with = BackupState::Verified;
+    let without = BackupState::Unverified;
+    let none = BackupState::None;
 
     let u = upgraded();
     let (state, k) = key(&u.net);
@@ -975,12 +970,12 @@ fn only_a_verified_snapshot_gets_the_backup_sentence() {
         SnapshotState::None,
         "no marker: not a completed snapshot"
     );
-    assert_eq!(k, without);
+    assert_eq!(k, none);
 
     fs::remove_dir_all(u.snapshot.dir()).unwrap();
     let (state, k) = key(&u.net);
     assert_eq!(state, SnapshotState::None);
-    assert_eq!(k, without, "no snapshot");
+    assert_eq!(k, none, "no snapshot");
 }
 
 /// One corrupt byte in a snapshot file makes it Unverified: no backup
@@ -1016,4 +1011,182 @@ fn snapshot_state_one_corrupt_byte_is_unverified() {
     );
     assert_eq!(u.live(), live);
     assert!(!u.root().join(RESTORE_REQUESTED).exists(), "MG (k)");
+}
+
+const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
+
+#[test]
+fn restore_confirm_copy_is_verbatim_and_cancel_has_default_focus() {
+    let c = copy::restore_confirm();
+    assert_eq!(c.title_key, "storeUpgrade.restore.confirm.title");
+    assert_eq!(c.title, "Restore wallet data from before the upgrade?");
+    assert!(c.text.starts_with(
+        "Dash Wallet restarts and puts back the wallet data it saved before the upgrade, so the wallet won't show anything recorded since then. "
+    ));
+    assert!(c.text.contains(&format!(
+        "kept in the {UPGRADE_BACKUPS_DIR} folder inside {{folder}}. Don't delete it"
+    )));
+    assert!(c.text.contains(
+        "An earlier version may offer coins this version is holding back, and a payment that uses them can fail.\n\n"
+    ));
+    assert!(c.text.ends_with(
+        "\n\nIf Dash Wallet closes before the restore finishes, start this version again before you open an earlier one."
+    ));
+    let [restore, cancel] = &c.buttons[..] else {
+        panic!("two buttons")
+    };
+    assert_eq!(
+        (restore.label, restore.destructive, restore.default_focus),
+        ("Restart and restore", true, false)
+    );
+    assert_eq!(
+        (cancel.label, cancel.destructive, cancel.default_focus),
+        ("Cancel", false, true)
+    );
+    assert!(
+        c.render(FOLDER)
+            .contains(&format!("folder inside {FOLDER}."))
+    );
+}
+
+#[test]
+fn restore_refusal_copy_renders_for_each_cause() {
+    for cause in [
+        RefusalCause::MissingBackup,
+        RefusalCause::MismatchedBackup,
+        RefusalCause::GarbledMarker,
+    ] {
+        let err = StoreUpgradeError::RestoreRefused { cause };
+        let shown = copy::restore_screen_for(&err).unwrap().render(FOLDER);
+        assert!(shown.starts_with("The earlier wallet data couldn't be restored\n\n"));
+        assert!(shown.contains("so nothing was changed."));
+        assert!(shown.ends_with("[OK]"));
+    }
+}
+
+#[test]
+fn restore_incomplete_copy_renders_for_each_cause() {
+    for cause in [
+        IncompleteCause::DiskFull,
+        IncompleteCause::PermissionDenied,
+        IncompleteCause::FileVanished,
+        IncompleteCause::Other,
+    ] {
+        let err = StoreUpgradeError::RestoreIncomplete {
+            cause,
+            journal_written: true,
+            detail: String::new(),
+        };
+        let screen = copy::restore_screen_for(&err).unwrap();
+        assert_eq!(screen.title_key, "storeUpgrade.restore.incomplete.title");
+        assert_eq!(screen.hint.unwrap().0, "settings.about.links.issuesHint");
+        let shown = screen.render(FOLDER);
+        assert!(shown.contains(&format!("hasn't opened the wallet data in {FOLDER}.")));
+        assert!(shown.contains("don't delete anything there"));
+        assert!(shown.contains("[Restart][Report a problem][Quit]"));
+        assert!(!err.file_unchanged());
+
+        let err = StoreUpgradeError::RestoreIncomplete {
+            cause,
+            journal_written: false,
+            detail: String::new(),
+        };
+        let screen = copy::restore_screen_for(&err).unwrap();
+        assert_eq!(screen.title_key, "storeUpgrade.restore.notStarted.title");
+        assert!(err.file_unchanged());
+    }
+    assert_eq!(
+        IncompleteCause::of(&std::io::Error::from(std::io::ErrorKind::StorageFull)),
+        IncompleteCause::DiskFull
+    );
+    assert_eq!(
+        IncompleteCause::of(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        IncompleteCause::PermissionDenied
+    );
+    assert_eq!(
+        IncompleteCause::of(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+        IncompleteCause::FileVanished
+    );
+}
+
+#[test]
+fn restore_no_space_copy_renders_with_and_without_size() {
+    for needed in [Some(123_456), None] {
+        let err = StoreUpgradeError::RestoreNoSpace { needed };
+        let shown = copy::restore_screen_for(&err).unwrap().render(FOLDER);
+        assert!(shown.starts_with("Not enough disk space to restore\n\n"));
+        assert!(shown.contains(&format!("the disk that holds {FOLDER}, then")));
+        assert!(shown.ends_with("[OK]"));
+    }
+}
+
+#[test]
+fn no_screen_says_funds_are_held_on_the_network() {
+    let source = include_str!("../copy.rs");
+    assert!(!source.contains("held on the network"));
+    for s in copy::all_screens() {
+        let all = [s.title, s.text]
+            .into_iter()
+            .chain(s.buttons.iter().map(|b| b.label))
+            .chain(s.hint.map(|h| h.1));
+        for text in all {
+            assert!(!text.contains("held on the network"), "{text}");
+            assert!(!text.contains("Your funds"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn placeholders_are_only_the_keys_mg_has_not_written() {
+    let mut keys: Vec<&str> = copy::all_screens()
+        .iter()
+        .filter(|s| s.title.starts_with(copy::PLACEHOLDER))
+        .map(|s| s.title_key)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "storeUpgrade.restore.keepCurrent.title",
+            "storeUpgrade.restore.notStarted.title",
+        ]
+    );
+}
+
+#[test]
+fn touched_paths_name_every_marker_and_dir() {
+    let all = crate::restore::touched_paths().join("\n");
+    for name in [
+        crate::restore::RESTORE_REQUESTED,
+        crate::restore::RESTORE_JOURNAL,
+        crate::restore::RESTORED_MARK,
+        crate::restore::RESTORE_ATTEMPT,
+        crate::restore::SAFE_TO_DELETE,
+        crate::restore::KEPT,
+        "after-upgrade-<UTC>",
+        "restore-staging-<UTC>",
+        "during-restore-<UTC>",
+        "before-upgrade-<UTC>",
+    ] {
+        assert!(all.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn restore_foreign_screen_renders_the_folder_in_its_hint() {
+    let s = copy::restore_foreign::screen();
+    assert!(copy::all_screens().contains(&s));
+    let keys: Vec<_> = s.buttons.iter().map(|b| b.key).collect();
+    assert_eq!(
+        keys,
+        [
+            "storeUpgrade.restore.foreign.keep",
+            "settings.about.links.issues",
+            "storeUpgrade.restore.foreign.quit",
+        ]
+    );
+    assert!(s.buttons.iter().all(|b| !b.default_focus && !b.destructive));
+    let shown = s.render(FOLDER);
+    assert!(shown.contains(&format!("opens the files in {FOLDER} as they are now")));
+    assert!(!shown.contains("{folder}"));
 }

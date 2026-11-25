@@ -227,13 +227,18 @@ fn decide(supported: bool, behaviour: Result<Checks, String>) -> P9aStatus {
     }
 }
 
-/// A 0700 directory under the data root, removed on drop.
+/// Name prefix of the probe's private directory under the data root.
+pub(crate) const PROBE_PREFIX: &str = ".store-upgrade-probe-";
+
+/// A 0700 directory under the data root, removed on drop: it lives only for
+/// the probe's call, so one is left behind only by a crash
+/// ([`crate::sweep_stale_scratch`]).
 struct ProbeDir(tempfile::TempDir);
 
 impl ProbeDir {
     fn create(data_root: &Path) -> Result<Self, String> {
         let dir = tempfile::Builder::new()
-            .prefix(".store-upgrade-probe-")
+            .prefix(PROBE_PREFIX)
             .tempdir_in(data_root)
             .map_err(|e| format!("create probe dir under {}: {e}", data_root.display()))?;
         #[cfg(unix)]

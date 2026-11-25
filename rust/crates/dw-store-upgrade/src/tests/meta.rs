@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::copy::{self, CantOpenCause};
+use crate::copy;
 
 #[test]
 fn published_pins_give_the_accepted_sets() {
@@ -90,41 +90,36 @@ fn crate_source_never_calls_wallet_removal() {
     }
 }
 
+/// Q93 T2: before P8 nothing in the crate writes `core_dropped_unsigned_spends`:
+/// outside the tests it is named only by the fork constants and read by the
+/// shape check.
 #[test]
-fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
-    let folder = "/home/u/.local/share/Dash Wallet/regtest";
-    for cause in [
-        CantOpenCause::RetiredPoolWithoutP9a,
-        CantOpenCause::P9aBroken,
-    ] {
-        let with = copy::cant_open(cause, true);
-        let shown = with.render(folder);
-        assert!(shown.starts_with("Dash Wallet can't open this wallet data\n"));
-        assert!(shown.contains(&format!(
-            "the wallet data in {folder}. Nothing in it was changed, and"
-        )));
-        assert!(shown.contains(&format!("upgrade-backups folder inside {folder}.")));
-        assert!(shown.ends_with("[Quit]"));
-        assert_eq!(with.text_key, "storeUpgrade.cantOpen.text");
-        let without = copy::cant_open(cause, false);
-        assert_eq!(without.text_key, "storeUpgrade.cantOpen.textWithoutBackup");
-        assert!(!without.render(folder).contains("upgrade-backups"));
-        assert!(
-            without
-                .render(folder)
-                .contains("Nothing in it was changed. Your funds")
-        );
+fn crate_source_never_writes_the_v3_table() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for e in fs::read_dir(&src).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_none_or(|x| x != "rs") {
+            continue;
+        }
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let text = fs::read_to_string(&p).unwrap();
+        let allowed: &[&str] = match name.as_str() {
+            "fork.rs" => &["core_dropped_unsigned_spends", "DROPPED_SPENDS", "V3_SQL"],
+            "shapes.rs" => &["DROPPED_SPENDS", "V3_SQL"],
+            _ => &[],
+        };
+        for needle in ["core_dropped_unsigned_spends", "DROPPED_SPENDS", "V3_SQL"] {
+            assert!(
+                allowed.contains(&needle) || !text.contains(needle),
+                "{name} names {needle}"
+            );
+        }
+        if name == "shapes.rs" {
+            for line in text.lines().filter(|l| l.contains("V3_SQL")) {
+                assert!(line.contains("mem.execute_batch"), "{line}");
+            }
+        }
     }
-    let err = crate::StoreUpgradeError::RetiredPoolWithoutAdopter { rows: 1 };
-    assert_eq!(
-        CantOpenCause::of(&err),
-        Some(CantOpenCause::RetiredPoolWithoutP9a)
-    );
-    let err = crate::StoreUpgradeError::P9aBroken { detail: "x".into() };
-    assert_eq!(
-        copy::screen_for(&err, &crate::snapshot::SnapshotState::None),
-        Some(copy::cant_open(CantOpenCause::P9aBroken, false))
-    );
 }
 
 #[test]
@@ -140,9 +135,9 @@ fn backup_sentence_follows_snapshot_presence() {
 #[test]
 fn copy_names_the_folder_the_snapshot_writes() {
     assert_eq!(copy::COPY_FOLDER_NAME, "upgrade-backups");
-    let text = copy::cant_open(CantOpenCause::P9aBroken, true).text;
+    let text = copy::restore_foreign::KEEP_MEANING.text;
     assert!(text.contains(&format!(
-        "the {} folder inside {{folder}}",
+        "stay in the {} folder.",
         crate::snapshot::UPGRADE_BACKUPS_DIR
     )));
 }

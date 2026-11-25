@@ -137,11 +137,6 @@ pub(crate) fn classify(conn: &Connection, adopters: &Adopters) -> Result<Classif
             StoreUpgradeError::ForkStoreUnsupported { versions },
         ));
     }
-    if versions.contains(&3) && !v3_adoptable() {
-        return Ok(Classification::Refuse(StoreUpgradeError::ForkV3WithoutP8 {
-            versions,
-        }));
-    }
     for row in &fork_rows {
         let known = KNOWN.iter().find(|k| i64::from(k.version) == row.version);
         if !known.is_some_and(|k| k.name == row.name && k.checksum == row.checksum) {
@@ -197,8 +192,9 @@ fn history_mismatch(history: &[HistoryRow], adopters: &Adopters) -> Option<Store
 /// Q78 R4: the published sets, each version's adopter present in this build.
 /// Fork V1: its column is dropped (R1) and its table kept, refused with rows
 /// unless P9a is Present (checked after the shape). Fork V2 needs P4.
-/// Fork V3: refused as [`StoreUpgradeError::ForkV3WithoutP8`] until P8
-/// exists or the Q93 ruling loosens it ([`v3_adoptable`]). Fork V4/V5:
+/// Fork V3: accepted without P8 (Q93 T1-T4): only the exact published V3
+/// (history name, checksum, shape), and V3's table is kept as found, never
+/// written, until P8 adopts its rows. Fork V4/V5:
 /// refused until their adopters and exact shapes are compiled in
 /// (FIXTURES-TODO.md).
 pub(crate) fn version_set_accepted(versions: &BTreeSet<u32>, adopters: &Adopters) -> bool {
@@ -206,19 +202,6 @@ pub(crate) fn version_set_accepted(versions: &BTreeSet<u32>, adopters: &Adopters
         return false;
     }
     !versions.contains(&2) || p4_present(adopters)
-}
-
-/// Q93 (pending): fork V3 refuses by default. No platform pin carries P8.
-fn v3_adoptable() -> bool {
-    #[cfg(test)]
-    return ACCEPT_V3_FOR_TEST.with(|a| a.get());
-    #[cfg(not(test))]
-    false
-}
-
-#[cfg(test)]
-thread_local! {
-    pub(crate) static ACCEPT_V3_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// P4 adopts fork V2: embedded by name, and the fresh schema's

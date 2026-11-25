@@ -17,7 +17,10 @@ use crate::error::{Result, StoreUpgradeError};
 /// Sealed: the only constructor is [`PersisterOpened::open`], which opens the
 /// persister itself, so a token can't exist without a successful open. The
 /// store counts as held while any clone of the returned `Arc` lives, whether
-/// or not the token does.
+/// or not the token does. Taking the persister out of its `Arc`
+/// (`Arc::into_inner`, `Arc::try_unwrap`) ends the hold while the store is
+/// open: callers must not. A wrapper can't close that, since
+/// `PlatformWalletManager` takes the `Arc<SqlitePersister>` itself.
 #[derive(Debug)]
 pub struct PersisterOpened {
     network_dir: PathBuf,
@@ -61,6 +64,39 @@ pub(crate) fn reset_opened_for_test() {
 /// refuses: a restore runs only before any store opens in the process.
 pub fn note_stores_opening() {
     set_opened();
+}
+
+/// The config [`crate::reconcile_fork_store`] rehearsed and reconciled with,
+/// by network directory, as `Debug` text.
+fn reconciled() -> &'static Mutex<HashMap<PathBuf, String>> {
+    static RECONCILED: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    RECONCILED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn note_reconciled(network_dir: &Path, config: &SqlitePersisterConfig) {
+    reconciled()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key(network_dir), format!("{config:?}"));
+}
+
+fn refuse_unreconciled_config(network_dir: &Path, config: &SqlitePersisterConfig) -> Result<()> {
+    if config.auto_backup_dir.is_none() {
+        return Err(StoreUpgradeError::OpenConfigUnsupported {
+            detail: "auto_backup_dir is None".into(),
+        });
+    }
+    let same = reconciled()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&key(network_dir))
+        .is_none_or(|rehearsed| *rehearsed == format!("{config:?}"));
+    if !same {
+        return Err(StoreUpgradeError::OpenConfigUnsupported {
+            detail: "not the config reconcile_fork_store rehearsed".into(),
+        });
+    }
+    Ok(())
 }
 
 fn key(network_dir: &Path) -> PathBuf {
@@ -117,10 +153,13 @@ pub(crate) fn refuse_if_held(network_dir: &Path) -> Result<()> {
 impl PersisterOpened {
     /// Open the persister for `config.path` (a network directory's
     /// `wallet.sqlite`) and mint the token. Refuses, opening nothing, when
-    /// the load policy is not `Strict` (Q78 R6), when this build's probe has
-    /// not run or read Broken (Q78-A A4), and while a restore is requested or
-    /// part-done there. Upstream's `AlreadyOpen` comes back as
-    /// [`StoreUpgradeError::StoreHeld`], never as an empty store (F4-d).
+    /// the load policy is not `Strict` (Q78 R6), when auto-backups are off or
+    /// `config` is not the one [`crate::reconcile_fork_store`] used in this
+    /// process, when this build's probe has not run or read Broken (Q78-A
+    /// A4), and while a restore is requested or part-done there. Upstream's
+    /// `AlreadyOpen` comes back as [`StoreUpgradeError::StoreHeld`], never as
+    /// an empty store (F4-d). The process gate is set first, so even a
+    /// refused open keeps restore off until the next start.
     pub fn open(config: SqlitePersisterConfig) -> Result<(Arc<SqlitePersister>, Self)> {
         let network_dir = crate::precheck::parent_dir(&config.path)?.to_path_buf();
         set_opened();
@@ -129,6 +168,7 @@ impl PersisterOpened {
                 policy: format!("{:?}", config.load_policy),
             });
         }
+        refuse_unreconciled_config(&network_dir, &config)?;
         refuse_unless_probed()?;
         crate::restore::refuse_if_restore_pending(&network_dir)?;
         let persister =

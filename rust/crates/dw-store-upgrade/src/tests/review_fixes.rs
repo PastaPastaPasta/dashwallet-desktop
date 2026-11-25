@@ -11,7 +11,7 @@ use crate::snapshot::take_snapshot;
 use crate::sql::{has_column, open_immutable, sha256_file};
 use crate::token::PROBE_FOR_OPEN;
 
-fn column_present(f: &Fixture) -> bool {
+pub(super) fn column_present(f: &Fixture) -> bool {
     let conn = open_immutable(&f.wallet()).unwrap();
     has_column(&conn, "contacts", "external_account_reference").unwrap()
 }
@@ -44,7 +44,7 @@ fn reconcile_refuses_a_snapshot_of_other_data() {
          UPDATE core_utxos SET spent = 1 - spent",
     );
     let before = tree(&f.net);
-    let err = reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap_err();
+    let err = reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
         "{err:?}"
@@ -65,7 +65,7 @@ fn snapshot_fingerprint_covers_every_store() {
     let second = take_snapshot(&f.net, later(1)).unwrap();
     assert_ne!(first.dir(), second.dir(), "dispatch.sqlite changed");
     let before = tree(&f.net);
-    let err = reconcile_fork_store(&f.wallet(), &first, build()).unwrap_err();
+    let err = reconcile_fork_store(&config(&f.net), &first, build()).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
         "{err:?}"
@@ -105,7 +105,7 @@ fn open_refuses_when_the_probe_is_missing_or_broken() {
 fn dropping_the_token_early_keeps_the_store_held() {
     let f = fixture("v0.1.0");
     let snapshot = take_snapshot(&f.net, now()).unwrap();
-    reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap();
+    reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
     let (persister, token) = open_and_load(&f.net);
     drop(token);
     assert!(crate::token::is_held(&f.net));
@@ -186,7 +186,7 @@ fn reconcile_rehearses_before_the_drop() {
     add_undecodable_record(&f.wallet());
     let snapshot = take_snapshot(&f.net, now()).unwrap();
     let before = tree(&f.net);
-    let err = reconcile_fork_store(&f.wallet(), &snapshot, build()).unwrap_err();
+    let err = reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::UpgradeRehearsalFailed { .. }),
         "{err:?}"
@@ -198,8 +198,9 @@ fn reconcile_rehearses_before_the_drop() {
     assert_eq!(tree(&f.net), before);
 }
 
-/// Leave `-wal` holding a change the main file lacks, as a crash does.
-fn hot_wal(f: &Fixture) {
+/// Leave `-wal` holding `sql`'s change, which the main file lacks, as a
+/// crash does.
+pub(super) fn hot_wal(f: &Fixture, sql: &str) {
     let wallet = f.wallet();
     let pristine = fs::read(&wallet).unwrap();
     let wal = f.net.join("wallet.sqlite-wal");
@@ -208,11 +209,8 @@ fn hot_wal(f: &Fixture) {
         .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
         .unwrap();
     assert_eq!(mode, "wal");
-    conn.execute_batch(
-        "PRAGMA wal_autocheckpoint = 0; \
-         CREATE TABLE dwsu_hot (a INTEGER); INSERT INTO dwsu_hot VALUES (42)",
-    )
-    .unwrap();
+    conn.execute_batch(&format!("PRAGMA wal_autocheckpoint = 0; {sql}"))
+        .unwrap();
     let held = fs::read(&wal).unwrap();
     drop(conn);
     fs::write(&wallet, &pristine).unwrap();
@@ -223,7 +221,10 @@ fn hot_wal(f: &Fixture) {
 #[test]
 fn snapshot_reads_a_hot_wal_without_checkpointing_it() {
     let f = fixture("v0.1.0");
-    hot_wal(&f);
+    hot_wal(
+        &f,
+        "CREATE TABLE dwsu_hot (a INTEGER); INSERT INTO dwsu_hot VALUES (42)",
+    );
     let main = sha256_file(&f.wallet()).unwrap();
     let wal = sha256_file(&f.net.join("wallet.sqlite-wal")).unwrap();
     let app_main = sha256_file(&f.net.join("app.sqlite")).unwrap();
@@ -275,36 +276,45 @@ fn a_store_kept_locked_is_held_not_waited_on_forever() {
 }
 
 #[test]
-fn stale_scratch_is_swept_only_by_the_instance_lock_holder() {
+fn stale_scratch_is_swept_only_when_no_other_process_holds_the_lock() {
     let tmp = private_tempdir();
     let root = tmp.path();
     let stale = root.join(format!("{}crashed", crate::precheck::SCRATCH_PREFIX));
-    fs::create_dir(&stale).unwrap();
-    fs::write(stale.join("wallet.sqlite"), b"copy").unwrap();
+    let make_stale = || {
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("wallet.sqlite"), b"copy").unwrap();
+    };
+    make_stale();
     fs::create_dir(root.join("regtest")).unwrap();
-    let lock = fs::OpenOptions::new()
+    let other_process = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(root.join("instance.lock"))
+        .open(root.join(dw_fs::instance::InstanceLock::FILE))
         .unwrap();
-    let err = crate::precheck::sweep_stale_scratch(root, &lock).unwrap_err();
+    other_process.lock().unwrap();
+    let err = crate::precheck::sweep_stale_scratch(root).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::StoreHeld { .. }),
         "{err:?}"
     );
-    assert!(stale.exists(), "not swept without the lock");
-    let other = fs::File::create(root.join("other.lock")).unwrap();
-    lock.lock().unwrap();
-    assert!(crate::precheck::sweep_stale_scratch(root, &other).is_err());
-    assert!(stale.exists(), "not swept with another file's handle");
-    assert_eq!(
-        crate::precheck::sweep_stale_scratch(root, &lock).unwrap(),
-        1
+    assert!(
+        stale.exists(),
+        "not swept while another process holds the lock"
     );
+    drop(other_process);
+    let ours = dw_fs::instance::InstanceLock::acquire(root, Duration::ZERO).unwrap();
+    assert_eq!(crate::precheck::sweep_stale_scratch(root).unwrap(), 1);
     assert!(!stale.exists());
     assert!(root.join("regtest").is_dir());
+    drop(ours);
+    make_stale();
+    assert_eq!(
+        crate::precheck::sweep_stale_scratch(root).unwrap(),
+        1,
+        "nobody holds it: the sweep takes it"
+    );
 }
 
 /// `adopters` with this fixture's fork-shaped retired table as its own fresh
@@ -334,6 +344,9 @@ fn with_fresh_retired(f: &Fixture, extra: &[(&str, &str)]) -> crate::adopters::A
         });
     }
     let mut adopters = build().with_p9a(P9aStatus::Present);
+    adopters
+        .fresh
+        .retain(|o| o.table != crate::fork::RETIRED_POOL);
     adopters.fresh.extend(objects);
     adopters
 }

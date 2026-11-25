@@ -18,7 +18,7 @@ fn start(
         other => panic!("expected a fork file, got {other:?}"),
     }
     let snapshot = take_snapshot(&f.net, at)?;
-    let outcome = reconcile_fork_store(&f.wallet(), &snapshot, build())?;
+    let outcome = reconcile_fork_store(&config(&f.net), &snapshot, build())?;
     drop(open_and_load(&f.net));
     Ok((snapshot, outcome))
 }
@@ -48,10 +48,6 @@ fn finish(f: &Fixture) {
 
 #[test]
 fn crash_during_the_drop_transaction_converges() {
-    with_v3_accepted(crash_during_the_drop_transaction);
-}
-
-fn crash_during_the_drop_transaction() {
     for version in ["v0.1.0", "v0.3.0"] {
         let (want, snapshots) = uninterrupted(version);
         let f = fixture(version);
@@ -123,10 +119,6 @@ fn crash_mid_snapshot_converges() {
 
 #[test]
 fn crash_before_the_snapshot_marker_converges() {
-    with_v3_accepted(crash_before_the_snapshot_marker);
-}
-
-fn crash_before_the_snapshot_marker() {
     let (want, snapshots) = uninterrupted("v0.3.0");
     let f = fixture("v0.3.0");
     arm_fault("snapshot.before_marker", 0);
