@@ -174,7 +174,7 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 }
 
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
- * refusal, why a `settledDescendant` one can't be abandoned, which open wallet (of `wallets`)
+ * refusal, why a `settledDescendant` or `platformFunding` one can't be abandoned, which open wallet (of `wallets`)
  * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
  * tried once it has, from the catalog. */
 export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
@@ -184,6 +184,7 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+    if (e.data.refusal === "platformFunding") return t("activity.abandon.platformFunding");
   }
   return errorMessage(e);
 }
