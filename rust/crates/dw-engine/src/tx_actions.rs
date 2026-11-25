@@ -891,14 +891,22 @@ struct Facts {
 }
 
 /// Whether one of the transactions `is` picks funds an asset lock of
-/// `locks` the catch-up's resume may still send (`Built`, `Broadcast`).
-fn funds_a_pending_lock<'a>(
-    locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
-    is: impl Fn(&Txid) -> bool,
-) -> bool {
-    (locks.into_iter()).any(|l| {
-        crate::platform::lease::TrackedStatus::from(&l.status).pending() && is(&l.out_point.txid)
-    })
+/// `locks` the catch-up's resume may still send (`Built`, `Broadcast`): is
+/// its funding, or has an output the funding spends. A lock not yet sent is
+/// in no history or key-wallet record, so only its inputs show it.
+fn funds_a_pending_lock<'a, L>(locks: L, is: impl Fn(&Txid) -> bool) -> bool
+where
+    L: IntoIterator<Item = &'a platform_wallet::TrackedAssetLock> + Clone,
+{
+    let pending = |l: &&platform_wallet::TrackedAssetLock| {
+        crate::platform::lease::TrackedStatus::from(&l.status).pending()
+    };
+    (locks.clone().into_iter())
+        .filter(pending)
+        .any(|l| is(&l.out_point.txid))
+        || crate::coins::pending_lock_inputs(locks)
+            .iter()
+            .any(|o| is(&o.txid))
 }
 
 /// Abandons `root`, then each of `descendants` key-wallet's own walk did

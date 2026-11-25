@@ -6389,17 +6389,76 @@ fn a_tracked_asset_locks_funding_is_neither_abandoned_nor_stopped() {
     mempool(&engine, &session, id, &funding);
     wait_stored(&session, id, &[parent.txid(), funding.txid()]);
     start_spv(&engine, &session);
+    use platform_wallet::AssetLockStatus::Broadcast;
+    track_lock(&engine, &session, id, &funding, Broadcast);
+    for txid in [funding.txid(), parent.txid()] {
+        assert_funding_refused(&engine, &session, id, txid);
+    }
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, funding.txid());
+    assert_kept(&engine, &session, id, parent.txid());
+}
+
+/// A lock built on an unlocked payment's change and not yet sent is in no
+/// history or key-wallet record, only in the tracked row the catch-up
+/// resumes: the payment is not abandoned while the row is `Built`, and is
+/// offered while it is past sending.
+#[test]
+fn a_built_lock_never_sent_keeps_the_payment_it_spends_from() {
+    use platform_wallet::AssetLockStatus::{Built, ChainLocked};
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let own = own_scripts(&engine, &session, id);
+    let coins = [0, 1].map(|vout| OutPoint::new(paid.txid(), vout)).to_vec();
+    let parent = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &parent);
+    wait_stored(&session, id, &[parent.txid()]);
+    let script = own.iter().next().unwrap().clone();
+    let funding = super::spend_of(change_of(&parent, &own), vec![(script, COIN / 4)]);
+    start_spv(&engine, &session);
+
+    track_lock(&engine, &session, id, &funding, ChainLocked);
+    let exits = engine.block_on(session.activity_exits(id, parent.txid(), true, 1));
+    assert_eq!(
+        exits.unwrap().unwrap().abandon,
+        None,
+        "offered past sending"
+    );
+
+    track_lock(&engine, &session, id, &funding, Built);
+    assert_funding_refused(&engine, &session, id, parent.txid());
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 0, "removed");
+    assert_kept(&engine, &session, id, parent.txid());
+}
+
+/// Tracks `funding` as the wallet's top-up lock at `status`, replacing any
+/// row at its outpoint.
+fn track_lock(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    funding: &Transaction,
+    status: platform_wallet::AssetLockStatus,
+) {
     let row = platform_wallet::TrackedAssetLock {
         out_point: OutPoint::new(funding.txid(), 0),
         transaction: funding.clone(),
         account_index: 0,
         funding_type: platform_wallet::AssetLockFundingType::IdentityTopUp,
         identity_index: 0,
-        amount: COIN / 2,
-        status: platform_wallet::AssetLockStatus::Broadcast,
+        amount: funding.output[0].value,
+        status,
         proof: None,
     };
-    let s = Arc::clone(&session);
+    let s = Arc::clone(session);
     (engine.block_on(session.on_runtime(async move {
         let w = s.wallet(&id).await?;
         w.state_mut()
@@ -6409,40 +6468,43 @@ fn a_tracked_asset_locks_funding_is_neither_abandoned_nor_stopped() {
         Ok(())
     })))
     .unwrap();
-    let kept = |txid: Txid| {
-        let manager = session.manager().unwrap();
-        let stopped =
-            engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await });
-        assert!(!stopped, "{txid} stopped");
-        assert!(
-            !engine.block_on(session.abandon_marked(id, txid)),
-            "{txid} marked"
-        );
-        assert!(
-            (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
-            "{txid} abandoned"
-        );
-    };
-    let refused = crate::tx_actions::TxActionRefusal::PlatformFunding;
+}
 
-    for txid in [funding.txid(), parent.txid()] {
-        let exits = engine.block_on(session.activity_exits(id, txid, true, 1));
-        let offered = exits.unwrap().unwrap().abandon;
-        assert_eq!(
-            offered,
-            Some(crate::tx_actions::ActivityRefusal::Tx(refused)),
-            "{txid} offered"
-        );
-        let abandon = engine.block_on(session.abandon_transaction(id, txid));
-        assert!(
-            matches!(abandon, Err(crate::EngineError::TxActionRefused(r)) if r == refused),
-            "{abandon:?}"
-        );
-    }
-    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
-    assert_eq!(dropped, 0, "removed");
-    kept(funding.txid());
-    kept(parent.txid());
+/// Activity's offer and Abandon both refuse `txid` as a Platform funding.
+fn assert_funding_refused(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) {
+    let refused = crate::tx_actions::TxActionRefusal::PlatformFunding;
+    let exits = engine.block_on(session.activity_exits(id, txid, true, 1));
+    let offered = exits.unwrap().unwrap().abandon;
+    assert_eq!(
+        offered,
+        Some(crate::tx_actions::ActivityRefusal::Tx(refused)),
+        "{txid} offered"
+    );
+    let abandon = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(abandon, Err(crate::EngineError::TxActionRefused(r)) if r == refused),
+        "{abandon:?}"
+    );
+}
+
+/// `txid` is still pending: not stopped, marked or abandoned.
+fn assert_kept(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) {
+    let manager = session.manager().unwrap();
+    let stopped = engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await });
+    assert!(!stopped, "{txid} stopped");
+    assert!(
+        !engine.block_on(session.abandon_marked(id, txid)),
+        "{txid} marked"
+    );
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "{txid} abandoned"
+    );
 }
 
 /// A payment to another loaded wallet abandoned after the load, its lock

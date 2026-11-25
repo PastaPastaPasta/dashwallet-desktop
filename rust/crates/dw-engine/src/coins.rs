@@ -797,7 +797,7 @@ fn collect(
 
 /// The inputs of the tracked asset locks that may be sent (`Built`,
 /// `Broadcast`): reserved for them (module doc).
-fn pending_lock_inputs<'a>(
+pub(crate) fn pending_lock_inputs<'a>(
     locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
 ) -> HashSet<OutPoint> {
     locks
