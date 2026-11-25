@@ -3652,6 +3652,272 @@ mod tests {
         );
     }
 
+    /// #749 (Q81b): a drop's origin note reads back as written, with or
+    /// without a winner and with any number of coins; a value it did not
+    /// write reads as none.
+    #[test]
+    fn a_drop_origin_reads_back_and_refuses_what_it_did_not_write() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let beaten = DropOrigin {
+            winner: Some(t(1)),
+            contested: BTreeSet::from([
+                OutPoint::new(t(2), 0),
+                OutPoint::new(t(2), 3),
+                OutPoint::new(t(4), 1),
+            ]),
+            gone: BTreeSet::from([t(5), t(6)]),
+        };
+        let orphan = DropOrigin {
+            winner: None,
+            contested: BTreeSet::from([OutPoint::new(t(2), 0)]),
+            gone: BTreeSet::from([t(7)]),
+        };
+        for origin in [beaten, orphan, DropOrigin::default()] {
+            assert_eq!(DropOrigin::decode(&origin.encode()), Some(origin));
+        }
+        assert_eq!(DropOrigin::default().encode(), "||");
+        let w = t(1).to_string();
+        for bad in [
+            String::new(),
+            format!("{w}|"),
+            format!("{w}|||"),
+            "nope||".to_owned(),
+            format!("|{w}|"),
+            format!("||{w}:0"),
+        ] {
+            assert_eq!(DropOrigin::decode(&bad), None, "{bad:?}");
+        }
+    }
+
+    /// #749 (Q81b S3): a spend note reads back as written, with or without
+    /// its spender; a value it did not write reads as none.
+    #[test]
+    fn a_spend_note_reads_back_and_refuses_what_it_did_not_write() {
+        let block = BlockHash::from_byte_array([3; 32]);
+        let spender = Txid::from_byte_array([4; 32]);
+        for note in [
+            SpendNote {
+                height: 12,
+                block,
+                spender: Some(spender),
+            },
+            SpendNote {
+                height: 0,
+                block,
+                spender: None,
+            },
+        ] {
+            assert_eq!(SpendNote::decode(&note.encode()), Some(note));
+        }
+        let unknown = SpendNote {
+            height: 7,
+            block,
+            spender: None,
+        };
+        assert_eq!(unknown.encode(), format!("7,{block},"));
+        for bad in [
+            String::new(),
+            format!("7,{block}"),
+            format!("7,{block},,"),
+            format!("x,{block},"),
+            format!("-1,{block},"),
+            "7,nope,".to_owned(),
+            format!("7,{block},nope"),
+        ] {
+            assert_eq!(SpendNote::decode(&bad), None, "{bad:?}");
+        }
+    }
+
+    /// #749: of the coins the drops hold, those `left_out` names (a final
+    /// spend's note, an output of a gone parent) are no longer held; the
+    /// rest are.
+    #[test]
+    fn still_held_leaves_out_the_coins_left_out_names() {
+        let gone = Txid::from_byte_array([1; 32]);
+        let other = Txid::from_byte_array([2; 32]);
+        let (noted, kept, orphaned) = (
+            OutPoint::new(other, 0),
+            OutPoint::new(other, 1),
+            OutPoint::new(gone, 0),
+        );
+        let holds = BTreeSet::from([noted, kept, orphaned]);
+        let (txs, observed) = (HashMap::new(), BTreeMap::new());
+        let left_out = |o: &OutPoint| *o == noted || o.txid == gone;
+        assert_eq!(
+            still_held(&holds, &txs, &observed, left_out),
+            BTreeSet::from([kept])
+        );
+        assert_eq!(still_held(&holds, &txs, &observed, |_| false), holds);
+    }
+
+    /// #170 case 4 (#749): an orphan's gone parents are the parents of its
+    /// own inputs with no stored row and no live entry (none, or
+    /// abandoned); a stored parent, a live one, and the parent of an input
+    /// not its own are not, nor is anything of a txid the history lacks.
+    #[test]
+    fn gone_parents_are_the_own_inputs_parents_with_no_row_and_no_live_entry() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (gone, stored_parent, not_own) = (t(1), t(2), t(5));
+        let mut txs = HashMap::new();
+        let live = entry(
+            tx(vec![foreign_input(9)], vec![out(10, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        );
+        let live_parent = live.tx.txid();
+        txs.insert(live_parent, live);
+        let mut dead = entry(
+            tx(vec![foreign_input(8)], vec![out(20, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        );
+        dead.abandoned = true;
+        let dead_parent = dead.tx.txid();
+        txs.insert(dead_parent, dead);
+        let mut orphan = entry(
+            tx(
+                vec![
+                    input(gone, 0),
+                    input(stored_parent, 0),
+                    input(live_parent, 0),
+                    input(dead_parent, 0),
+                    input(not_own, 0),
+                ],
+                vec![out(5, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        for i in 0..4 {
+            orphan.own_inputs.insert(i, (10, hash_addr(1)));
+        }
+        let orphan_id = orphan.tx.txid();
+        txs.insert(orphan_id, orphan);
+        let stored = HashSet::from([stored_parent, orphan_id]);
+
+        assert_eq!(
+            gone_parents(&txs, &stored, &[orphan_id, t(6)]),
+            BTreeSet::from([gone, dead_parent])
+        );
+    }
+
+    /// #749 (Q81b S1, S2): whether a held coin awaits, rule by rule. R,
+    /// dropped, spent a and b; W, its winner, spends a, mined at 10; W2
+    /// spends b, InstantSend-locked and out of a block. b awaits W2 though
+    /// W is ChainLocked, awaits W above the ChainLock, and is settled once W
+    /// is ChainLocked and nothing live spends it. A winner the history
+    /// doesn't hold settles on a contested coin's final spend only. A
+    /// record spending the coin, or a second drop holding it unsettled,
+    /// keeps it awaiting; nothing held awaits nothing.
+    #[test]
+    fn held_awaiting_judges_each_held_coin() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (a, b) = (OutPoint::new(t(1), 0), OutPoint::new(t(1), 1));
+        let mut txs = HashMap::new();
+        let mut r = entry(
+            tx(
+                vec![input(t(1), 0), input(t(1), 1)],
+                vec![out(10, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        r.abandoned = true;
+        let r_id = r.tx.txid();
+        txs.insert(r_id, r);
+        let w = entry(
+            tx(vec![input(t(1), 0)], vec![out(20, &hash_addr(3))]),
+            in_block(10, 0),
+        );
+        let w_id = w.tx.txid();
+        txs.insert(w_id, w);
+        let mut w2 = entry(
+            tx(vec![input(t(1), 1)], vec![out(30, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        w2.instant_locked = true;
+        let mut with_w2 = txs.clone();
+        with_w2.insert(w2.tx.txid(), w2);
+        let origin = |winner: Txid| {
+            Some(DropOrigin {
+                winner: Some(winner),
+                contested: BTreeSet::from([a, b]),
+                gone: BTreeSet::new(),
+            })
+        };
+        let dropped =
+            |origin: Option<DropOrigin>| HeldDrops::from([(r_id, (BTreeSet::from([b]), origin))]);
+        let held = BTreeSet::from([b]);
+        let awaits = |drops: &HeldDrops, txs: &HashMap<Txid, TxEntry>, chainlock: Option<u32>| {
+            held_awaiting(&held, drops, txs, chainlock, |_| false, |_| false, false)
+        };
+
+        assert!(
+            awaits(&dropped(origin(w_id)), &with_w2, Some(10)),
+            "b awaits W2 though W is ChainLocked"
+        );
+        assert!(
+            awaits(&dropped(origin(w_id)), &txs, Some(9)),
+            "W mined above the ChainLock"
+        );
+        assert!(
+            !awaits(&dropped(origin(w_id)), &txs, Some(10)),
+            "W ChainLocked, nothing live spends b"
+        );
+        let unheld = t(9);
+        assert!(
+            !held_awaiting(
+                &held,
+                &dropped(origin(unheld)),
+                &txs,
+                Some(9),
+                |o| *o == a,
+                |_| false,
+                false
+            ),
+            "a contested coin's final spend settles a winner the history doesn't hold"
+        );
+        assert!(
+            awaits(&dropped(origin(unheld)), &txs, Some(9)),
+            "a winner the history doesn't hold, and no final spend"
+        );
+        assert!(
+            !awaits(&dropped(origin(unheld)), &txs, Some(10)),
+            "a ChainLocked transaction of the history spends a contested coin"
+        );
+        assert!(
+            held_awaiting(
+                &held,
+                &dropped(origin(w_id)),
+                &txs,
+                Some(10),
+                |_| false,
+                |o| *o == b,
+                false
+            ),
+            "a key-wallet record spends b"
+        );
+        let mut two = dropped(origin(w_id));
+        let elsewhere = DropOrigin {
+            winner: Some(unheld),
+            contested: BTreeSet::from([OutPoint::new(t(2), 0)]),
+            gone: BTreeSet::new(),
+        };
+        two.insert(t(8), (BTreeSet::from([b]), Some(elsewhere)));
+        assert!(
+            awaits(&two, &txs, Some(10)),
+            "another drop holding b awaits"
+        );
+        assert!(
+            !held_awaiting(
+                &BTreeSet::new(),
+                &dropped(origin(w_id)),
+                &with_w2,
+                None,
+                |_| false,
+                |_| true,
+                false
+            ),
+            "nothing held"
+        );
+    }
+
     /// #88: the claims restored at load are the inputs of each payment this
     /// app sent that is out of a block and not abandoned (a lock outranks
     /// the abandon), never those of a pending spend it did not send nor of
