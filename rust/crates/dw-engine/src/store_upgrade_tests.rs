@@ -53,9 +53,12 @@ fn every_variant(dir: &Path) -> Vec<StoreUpgradeError> {
             detail: "rename".into(),
         },
         E::RestoreAfterOpen,
-        E::UpgradeSnapshotMissing {
-            state: dw_store_upgrade::MissingSnapshot::Absent,
-            dir: dir.into(),
+        E::UpgradeCopyUnwritable {
+            detail: "readonly".into(),
+        },
+        E::SnapshotSourceDamaged {
+            store: "wallet.sqlite".into(),
+            detail: "corrupt".into(),
         },
         E::WalletFileUnsupported {
             detail: "is a symbolic link".into(),
@@ -98,7 +101,7 @@ fn every_variant_is_listed_once() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), listed, "a variant is listed twice");
-    assert_eq!(listed, 24, "a variant is missing from every_variant");
+    assert_eq!(listed, 25, "a variant is missing from every_variant");
 }
 
 /// Every state the engine may prove of a refused folder.

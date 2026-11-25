@@ -137,9 +137,10 @@ fn a_requested_restore_runs_at_the_next_open() {
 }
 
 /// A refusal after the start's restore put the before-upgrade files back
-/// says Dash Wallet had started changing them (ProvedState's `wrote`), never
-/// that it changed nothing: here the restored fork file holds a rotated
-/// contact and the build has no P9a.
+/// never says Dash Wallet changed nothing (ProvedState's `wrote`): the
+/// restored file isn't upgraded, so the screen only asks to keep the folder.
+/// Here the restored fork file holds a rotated contact and the build has no
+/// P9a.
 #[test]
 fn a_refusal_after_a_restore_says_the_files_changed() {
     let f = fixture("v0.1.0");
@@ -152,7 +153,7 @@ fn a_refusal_after_a_restore_says_the_files_changed() {
     close(engine);
     assert_eq!(
         open_in_child_with(&f.root, true),
-        "refused RetiredPoolWithoutAdopter storeUpgrade.refused.changedByUpgrade"
+        "refused RetiredPoolWithoutAdopter storeUpgrade.refused.keep"
     );
     assert!(dw_store_upgrade::restored_mark_present(&f.net));
     assert_eq!(
@@ -211,6 +212,30 @@ fn a_cancelled_request_never_runs() {
     assert_eq!(open_in_child(&f.root), "ok");
     assert!(!dw_store_upgrade::restored_mark_present(&f.net));
     assert_eq!(after_dirs(&f), 0);
+}
+
+/// A restore already replacing files can only be finished: asking for
+/// another is the incomplete-restore screen (never the foreign one, never
+/// internal), and no request is written.
+#[test]
+fn a_request_while_a_restore_is_replacing_files_is_the_incomplete_screen() {
+    let f = upgraded();
+    std::fs::write(
+        backups(&f).join(dw_store_upgrade::RESTORE_JOURNAL),
+        b"journal",
+    )
+    .unwrap();
+    let before = tree(&f.net);
+    let engine = engine(&f.root);
+    match engine.block_on(engine.request_restore(&DashNetwork::Regtest)) {
+        Err(EngineError::StoreRestore(r)) => {
+            assert_eq!((r.state, r.cause), (RestoreState::Incomplete, "other"));
+            assert_eq!(r.folder, f.net);
+        }
+        other => panic!("{other:?}"),
+    }
+    close(engine);
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
 }
 
 /// Without a verified snapshot there is nothing to restore: the request is
