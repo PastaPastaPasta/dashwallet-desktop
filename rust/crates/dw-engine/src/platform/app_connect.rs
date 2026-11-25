@@ -1034,7 +1034,9 @@ fn key_plan(
 }
 
 /// The previous grant's session keys for the same identity, app and
-/// connection id that are still enabled: disabled in the same update.
+/// connection id that are still enabled: disabled in the same update. Only
+/// a confirmed record's ids are known to hold its keys; a submitted one's
+/// may since belong to another key.
 fn superseded(
     records: &[ConnectRecord],
     identity: &Identity,
@@ -1051,6 +1053,7 @@ fn superseded(
                 && r.identity == owner
                 && r.connection_id.as_deref() == Some(&connection)
                 && r.request != this
+                && r.state != RecordState::Submitted
         })
         .flat_map(|r| r.session_keys.iter().copied())
         .filter(|id| {
@@ -1085,6 +1088,9 @@ async fn put_record(
     wallet: WalletId,
     record: ConnectRecord,
 ) -> Result<(), PlatformError> {
+    static WRITE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(Default::default);
+    let _write = WRITE.lock().await;
     let mut all = records(session, wallet).await?;
     all.retain(|r| r.request != record.request || r.identity != record.identity);
     all.push(record);

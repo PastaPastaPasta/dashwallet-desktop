@@ -1221,6 +1221,47 @@ fn approving_again_after_not_confirmed_adds_keys_that_never_landed() {
     }
 }
 
+/// Renewing a connection whose last approval never landed leaves alone a
+/// key that has since taken one of its ids.
+#[test]
+fn a_renewal_keeps_a_key_that_took_an_unlanded_id() {
+    let f = Fixture::new();
+    let mut first = request();
+    first.connection_id = Some([9; 16]);
+    let l = devnet(first.clone());
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    let grant = f.quoted_grant(&l, &Fixture::choice());
+    assert_eq!(
+        f.approve(&l, &Fixture::choice(), &grant).unwrap_err(),
+        ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed
+        }
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    let taken = (f.net.updates.lock().unwrap()[0].0.iter())
+        .find(|k| k.purpose() == Purpose::AUTHENTICATION)
+        .unwrap()
+        .id();
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        let mut other = master_key(me).unwrap().clone();
+        other.set_id(taken);
+        other.set_purpose(Purpose::ENCRYPTION);
+        other.set_security_level(SecurityLevel::MEDIUM);
+        me.public_keys_mut().insert(taken, other);
+    }
+    let mut again = first;
+    again.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+    let l2 = devnet(again);
+    let grant = f.quoted_grant(&l2, &Fixture::choice());
+    f.approve(&l2, &Fixture::choice(), &grant).unwrap();
+    let updates = f.net.updates.lock().unwrap().clone();
+    assert!(!updates[1].1.contains(&taken), "{:?}", updates[1].1);
+    assert!(!f.net.me().public_keys()[&taken].is_disabled());
+}
+
 /// An update Platform refused says so, instead of claiming the keys may
 /// still land; the request stays open and approving again succeeds.
 #[test]
