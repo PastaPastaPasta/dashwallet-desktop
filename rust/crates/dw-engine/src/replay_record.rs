@@ -160,15 +160,6 @@ pub(crate) enum ReplayNote {
     Settled(tokio::sync::oneshot::Sender<()>),
 }
 
-/// A noted truncation: to `height`, the highest checkpoint seen before
-/// (`from`), and the session's highest commit noted before it.
-#[derive(Debug, Clone, Copy)]
-struct Truncation {
-    height: u32,
-    from: u32,
-    committed: u32,
-}
-
 /// The session's replay records: every read and write of one goes through
 /// `records`, so each wallet has one writer.
 pub(crate) struct ReplayRecords {
@@ -186,10 +177,11 @@ pub(crate) struct ReplayRecords {
     /// commit above it as well as above the target, which a fork or a
     /// resume can leave lower.
     stale: std::sync::Mutex<HashMap<WalletId, u32>>,
-    /// Truncations noted ([`ReplayNote::Truncated`]) and not yet applied
-    /// to the wallet's record, in order: every read applies them first, so
-    /// a write that follows a note sees it.
-    truncations: std::sync::Mutex<HashMap<WalletId, Vec<Truncation>>>,
+    /// Truncations noted ([`ReplayNote::Truncated`]: height, and the
+    /// highest checkpoint seen before) and not yet applied to the wallet's
+    /// record, in order: every read applies them first, so a write that
+    /// follows a note sees it.
+    truncations: std::sync::Mutex<HashMap<WalletId, Vec<(u32, u32)>>>,
     /// The highest checkpoint a wallet can have stored before one of this
     /// session's forks, above the chain the fork left: a record written
     /// after it keeps it as `forked_from`, as one the fork truncated does.
@@ -247,15 +239,11 @@ impl ReplayRecords {
         })
     }
 
-    /// Queues `note` for the task [`Self::start`] runs. A truncation keeps
-    /// the commits noted before it, however late it is applied: one noted
-    /// after it is the new chain's unless it is above the wallet's
-    /// checkpoint when applied ([`Self::raise_forked`]). The commits' lock
-    /// is held to the send, so that order is the notes' order.
+    /// Queues `note` for the task [`Self::start`] runs.
     pub(crate) fn note(&self, note: ReplayNote) {
-        let mut commits = self.commits.lock().unwrap_or_else(|p| p.into_inner());
         match note {
             ReplayNote::Committed { wallet, height } => {
+                let mut commits = self.commits.lock().unwrap_or_else(|p| p.into_inner());
                 let entry = commits.entry(wallet).or_default();
                 entry.0 = entry.0.max(height);
             }
@@ -263,17 +251,10 @@ impl ReplayRecords {
                 wallet,
                 height,
                 from,
-            } => {
-                let committed = commits.get(&wallet).map_or(0, |c| c.0);
-                (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
-                    .entry(wallet)
-                    .or_default()
-                    .push(Truncation {
-                        height,
-                        from,
-                        committed,
-                    });
-            }
+            } => (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
+                .entry(wallet)
+                .or_default()
+                .push((height, from)),
             #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             ReplayNote::Settled(_) => {}
         }
@@ -419,8 +400,8 @@ impl ReplayRecords {
         wallet: WalletId,
     ) -> Result<Option<ReplayRecord>, EngineError> {
         let mut record = self.load_stored(records, wallet).await?;
-        while let Some(truncation) = self.next_truncation(wallet) {
-            record = (self.truncate_record(records, wallet, record, truncation)).await?;
+        while let Some((height, from)) = self.next_truncation(wallet) {
+            record = (self.truncate_record(records, wallet, record, height, from)).await?;
             let mut noted = self.truncations.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(queue) = noted.get_mut(&wallet) {
                 queue.remove(0);
@@ -447,7 +428,7 @@ impl ReplayRecords {
     }
 
     /// The first truncation of `wallet` noted and not yet applied.
-    fn next_truncation(&self, wallet: WalletId) -> Option<Truncation> {
+    fn next_truncation(&self, wallet: WalletId) -> Option<(u32, u32)> {
         (self.truncations.lock().unwrap_or_else(|p| p.into_inner()))
             .get(&wallet)
             .and_then(|queue| queue.first().copied())
@@ -906,13 +887,12 @@ impl ReplayRecords {
         }
     }
 
-    /// A fork (`truncation`) truncated the wallet to `height`, whose highest checkpoint
+    /// A fork truncated the wallet to `height`, whose highest checkpoint
     /// the hub had seen was `from`: the replay is done at the new chain's
     /// height, not above it. The old target stays the bound of the
     /// in-session clear, and the record keeps the highest checkpoint the
-    /// wallet can have stored before the fork (`committed`: the session's
-    /// highest commit noted before the truncation), which a resume does
-    /// not replay to; so does a record written later this session. With no
+    /// wallet can have stored before the fork, which a resume does not
+    /// replay to; so does a record written later this session. With no
     /// record, a stored checkpoint above the fork gets one from the fork:
     /// the store keeps the old chain's checkpoint, which a reopen would
     /// otherwise scan from. Returns the record, or the failed write's
@@ -922,24 +902,18 @@ impl ReplayRecords {
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
         wallet: WalletId,
         old: Option<ReplayRecord>,
-        truncation: Truncation,
+        height: u32,
+        from: u32,
     ) -> Result<Option<ReplayRecord>, EngineError> {
-        let Truncation {
-            height,
-            from,
-            committed,
-        } = truncation;
+        let committed = (self.commits.lock().unwrap_or_else(|p| p.into_inner()))
+            .get(&wallet)
+            .map_or(0, |c| c.0);
         let stored = old.map_or(0, |r| r.target).max(committed).max(from);
-        // With this session's forks of the wallet (`forked`): an old
-        // chain's commit applied since a failed write of this one is there.
-        let forked_from = if stored > height {
+        if stored > height {
             let mut forked = self.forked.lock().unwrap_or_else(|p| p.into_inner());
             let entry = forked.entry(wallet).or_default();
             *entry = (*entry).max(stored);
-            *entry
-        } else {
-            stored
-        };
+        }
         let Some(old) = old else {
             if stored <= height {
                 return Ok(None);
@@ -948,9 +922,9 @@ impl ReplayRecords {
                 target: height,
                 reached: height,
                 cancelled: false,
-                forked_from,
+                forked_from: stored,
             };
-            self.note_stale(wallet, forked_from);
+            self.note_stale(wallet, stored);
             self.write(records, wallet, Some(record)).await?;
             return Ok(Some(record));
         };
@@ -959,7 +933,7 @@ impl ReplayRecords {
             target: old.target.min(height),
             reached: old.reached.min(height),
             forked_from: if stored > height {
-                old.forked_from.max(forked_from)
+                old.forked_from.max(stored)
             } else {
                 old.forked_from
             },
