@@ -66,7 +66,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const hold = shieldedHold(status);
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
-  const spendsOff = kind !== "add" && shieldedSpendsOff(status);
+  const spendsOff = shieldedSpendsOff(status);
   const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", syncing, false, spendsOff) : null;
   const maxWhy = spendsOff ? SHIELDED_SPENDS_COPY.unavailable : syncing ? SHIELDED_SYNC_COPY.syncing : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = spendsOff
@@ -218,7 +218,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
   const kind = flow.kind;
   const syncing = shieldedSyncing(status);
   const spendsOff = shieldedSpendsOff(status);
-  const spendBlocked = spendsOff && kind !== "add" && kind !== "resume";
+  const spendBlocked = spendsOff && kind !== "resume";
   // DEC-1057: a send or move from a wallet with an unrecorded spend needs the user's confirmation
   // first, and passes it to the engine; a shield does not.
   const unrecorded = kind !== "add" && (status?.unrecordedSpends.length ?? 0) > 0;
@@ -274,11 +274,6 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
       {warning && (
         <p className="fee-warning" role="alert" data-testid="shielded-fee-warning">
           {feeWarningText(warning)}
-        </p>
-      )}
-      {kind === "add" && spendsOff && (
-        <p className="field-hint" data-testid="shielded-spends-off-in">
-          {SHIELDED_SPENDS_COPY.shieldIn}
         </p>
       )}
       {kind !== "add" && (
@@ -428,16 +423,15 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
-  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
   const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
+  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && !spendsOff });
   return {
     text: <p className="sheet-text">{C.receive.text}</p>,
-    before: <>
-      {spendsOff && address.data && (
-        <p className="field-hint" data-testid="shielded-receive-spends-off">
-          {SHIELDED_SPENDS_COPY.unavailable}
-        </p>
-      )}
+    before: spendsOff ? (
+      <p className="field-hint" data-testid="shielded-receive-spends-off">
+        {SHIELDED_SPENDS_COPY.unavailable}
+      </p>
+    ) : <>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
           {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
@@ -450,7 +444,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
         </p>
       )}
     </>,
-    after: !address.isError && address.data ? (
+    after: !spendsOff && !address.isError && address.data ? (
       <p className="withdraw-to" data-testid="shielded-receive-address">
         <CopyValue value={address.data.address} action={tr("transfer.shielded.receive.copyAddress")} mono />
       </p>

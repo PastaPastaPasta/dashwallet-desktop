@@ -191,13 +191,14 @@ describe("routes", () => {
     expect(listedPools({ ...POOLS, shielded: null, platform: null })).toEqual(["core"]);
   });
 
-  it("hold the moves out of Shielded with one reason where this build cannot spend from it", () => {
+  it("hold the moves into and out of Shielded with one reason where this build cannot spend from it", () => {
     const { shielded, fund, move } = flows();
     const f = { shielded, fund, move };
     const off: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: true } };
     expect(routeWhy("shieldedToCore", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
     expect(routeWhy("shieldedToPlatform", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
-    expect(routeWhy("coreToShielded", off, f)).toBeNull();
+    expect(routeWhy("coreToShielded", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("coreToPlatform", off, f)).toBeNull();
     const on: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: false } };
     for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, on, f), r).toBe(routeWhy(r, POOLS, f));
   });

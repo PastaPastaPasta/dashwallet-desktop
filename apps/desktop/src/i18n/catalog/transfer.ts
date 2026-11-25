@@ -248,7 +248,6 @@ export const transfer = {
     /** Where this version cannot send from Shielded (shielded/spends.ts). `source`: a "Pay from" row. */
     spends: {
       unavailable: "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
-      shieldIn: "You can't send from Shielded in this version yet, so anything you move there stays there until a later update.",
       source: "Not available in this version",
     },
     card: {

@@ -1,7 +1,8 @@
-// Spending from Shielded where this build's engine cannot (`ShieldedStatus.spendsAvailable`): Send
-// from Shielded, the moves to the Dash wallet and to Platform, and paying a contact from Shielded
-// wait with one reason line, and the engine's refusal of one reads the same. Shielding, Receive,
-// sync and the balance carry on. The engine's flag is the only switch.
+// Where this build's engine cannot spend from Shielded (`ShieldedStatus.spendsAvailable`): Send from
+// Shielded, the moves to the Dash wallet and to Platform, paying a contact from Shielded, and every
+// way into Shielded (shielding, CoinJoin's move, Receive's address) wait with one reason line, and
+// the engine's refusal of a spend reads the same. Finishing a shield already sent, sync, the
+// balance and history carry on. The engine's flag is the only switch.
 
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { t } from "../i18n";
@@ -21,10 +22,6 @@ export const SHIELDED_SPENDS_COPY = {
   /** Where a spend from Shielded would be. */
   get unavailable() {
     return t("transfer.shielded.spends.unavailable");
-  },
-  /** Above the confirmation of a move into Shielded. */
-  get shieldIn() {
-    return t("transfer.shielded.spends.shieldIn");
   },
   /** A source picker's Shielded row. */
   get source() {

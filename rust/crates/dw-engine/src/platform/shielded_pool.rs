@@ -1671,11 +1671,11 @@ pub(super) async fn send_armed(
     }
 }
 
-/// Refuses a spend while this build cannot spend from the pool
-/// ([`ShieldedLib::keyset_spends`]) or the coordinator has no dispatch hook:
-/// the library would send what the engine never accepted. `send` and
-/// `unshield` ask before anything else, so the refusal quotes nothing, issues
-/// no address and keeps the grant.
+/// Refuses a spend while the library cannot spend from the key set
+/// ([`ShieldedLib::keyset_spends`]), or while the coordinator has no dispatch
+/// hook, when the library would send what the engine never accepted. `send`
+/// and `unshield` ask before anything else, so the refusal quotes nothing,
+/// issues no address and keeps the grant.
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if !lib.keyset_spends() || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());

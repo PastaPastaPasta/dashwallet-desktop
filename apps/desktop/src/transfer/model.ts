@@ -303,7 +303,7 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
-      if (route !== "coreToShielded" && s.spendsOff) return SHIELDED_SPENDS_COPY.unavailable;
+      if (s.spendsOff) return SHIELDED_SPENDS_COPY.unavailable;
       if (s.syncing || (route === "coreToShielded" && pools.coreSyncing)) return SHIELDED_SYNC_COPY.syncing;
       const f = flows.shielded;
       // The flow is shared: another of its moves is running, or its result waits to be seen.
