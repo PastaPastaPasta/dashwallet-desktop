@@ -129,7 +129,7 @@ fn plain_keys(keys: &BTreeMap<u32, IdentityPublicKey>) -> PlainKeys {
     let mut plain = BTreeMap::new();
     for (id, key) in keys {
         let path = keys_policy::key_path(NETWORK, INDEX, *id).unwrap();
-        let secret = master.derive_priv(&path).unwrap().private_key;
+        let secret = master.derive_priv(&path).unwrap().private_key.clone();
         let public = secret.public_key().to_compressed();
         assert_eq!(key.data().as_slice(), public.as_slice(), "key {id}");
         plain.insert(public.to_vec(), *secret.to_bytes());

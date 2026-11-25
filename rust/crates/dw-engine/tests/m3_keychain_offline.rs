@@ -80,7 +80,7 @@ fn secp_at(path: &str) -> (String, String) {
     let wif = dashcore::PrivateKey {
         compressed: true,
         network: dashcore::Network::Regtest,
-        inner: child.private_key,
+        inner: child.private_key.clone(),
     }
     .to_wif();
     (address, wif)
