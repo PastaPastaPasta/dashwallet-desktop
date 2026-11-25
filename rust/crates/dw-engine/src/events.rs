@@ -1661,6 +1661,20 @@ impl SessionHub {
                 reread(id);
             }
             self.pump.mark_balances(id);
+            // The abandoned payments that spent them no longer say their
+            // coins are being checked.
+            let spenders: Vec<Txid> = self.history.read(&id, |txs| {
+                (txs.iter())
+                    .filter(|(_, e)| {
+                        e.is_abandoned()
+                            && (e.tx.input.iter()).any(|i| released.contains(&i.previous_output))
+                    })
+                    .map(|(t, _)| *t)
+                    .collect()
+            });
+            if !spenders.is_empty() {
+                self.pump.mark_history(id, Some(&spenders));
+            }
         }
         released
     }
@@ -2946,6 +2960,44 @@ mod tests {
         hub.apply_wallet_event(&truncated(105, Vec::new(), Vec::new(), 0));
         assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 105);
         assert!(hub.pump.sync_marked());
+    }
+
+    /// #818: a coin's hold going marks the abandoned payment that spent it,
+    /// so its details stop saying the coin is being checked.
+    #[test]
+    fn a_released_hold_marks_the_abandoned_payment_that_spent_its_coin() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 110,
+        });
+        let (spender, other) = (tx(1), tx(2));
+        let coin = spender.input[0].previous_output;
+        hub.history.with_wallet(W, |h| {
+            h.mark_abandoned(&[
+                (spender.txid(), spender.clone()),
+                (other.txid(), other.clone()),
+            ]);
+            h.rescan_holds.insert(
+                coin,
+                crate::rescan_hold::RescanHold {
+                    checkpoint: 100,
+                    target: 110,
+                    armed: true,
+                },
+            );
+        });
+        hub.pump.take_wallet_marks();
+
+        assert_eq!(
+            hub.settle_rescan_holds(W, Some(110)),
+            BTreeSet::from([coin])
+        );
+        let mut history = hub.pump.take_wallet_marks().1;
+        let Some(TxidSet::Some(changed)) = history.remove(&W) else {
+            panic!("history marks: {history:?}");
+        };
+        assert_eq!(changed, BTreeSet::from([spender.txid()]));
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance
