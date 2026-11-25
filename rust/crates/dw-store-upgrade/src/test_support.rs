@@ -62,8 +62,22 @@ pub fn between_state(
     again: bool,
     now: SystemTime,
 ) -> Result<BetweenState> {
+    between_state_with(network_dir, before, again, now, |_| Ok(()))
+}
+
+/// [`between_state`], with `adjust` run on `network_dir` right after the
+/// fixture is copied in and before the first prepare (to put a store of
+/// the caller's in place, for one).
+pub fn between_state_with(
+    network_dir: &Path,
+    before: BeforeSnapshot,
+    again: bool,
+    now: SystemTime,
+    adjust: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<BetweenState> {
     let io = |ctx| StoreUpgradeError::io(ctx, true);
     copy_tree(&fork_fixture(), network_dir).map_err(io("copy the fork fixture"))?;
+    adjust(network_dir).map_err(io("adjust the fork fixture"))?;
     let adopters = Adopters::for_build(crate::precheck::parent_dir(network_dir)?);
     let config = SqlitePersisterConfig::new(network_dir.join("wallet.sqlite"))
         .with_load_policy(LoadPolicy::Strict)

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::snapshot::{NOT_THIS_WALLET, SnapshotState, snapshot_state, upgrade_copy_present};
-use crate::test_support::{BeforeSnapshot, between_state};
+use crate::test_support::{BeforeSnapshot, between_state, between_state_with};
 
 #[test]
 fn between_state_builds_each_snapshot_state() {
@@ -50,4 +50,46 @@ fn between_state_builds_each_snapshot_state() {
             "{before:?}"
         );
     }
+}
+
+/// `adjust` puts the caller's store in place before the first prepare, and
+/// both copies hold it: every table as written (SQLite's online backup
+/// rewrites the header's change counter, so the file bytes differ there).
+#[test]
+fn between_state_with_copies_the_adjusted_store() {
+    let tmp = private_tempdir();
+    let root = tmp.path().join("data");
+    crate::fsx::create_private_dir(&root).unwrap();
+    let net = root.join("regtest");
+    let own = tmp.path().join("own.sqlite");
+    let conn = Connection::open(&own).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = DELETE; CREATE TABLE own (a TEXT); \
+         INSERT INTO own VALUES ('the caller''s shielded store')",
+    )
+    .unwrap();
+    drop(conn);
+    let written = tables(&own);
+    build();
+    let b = between_state_with(&net, BeforeSnapshot::Unverified, true, now(), |dir| {
+        fs::copy(&own, dir.join("shielded.sqlite")).map(drop)
+    })
+    .unwrap();
+    assert_eq!(tables(&net.join("shielded.sqlite")), written, "live");
+    let part = b.kept.unwrap();
+    for dir in [b.snapshot.dir(), part.dir()] {
+        assert_eq!(tables(&dir.join("shielded.sqlite")), written, "{dir:?}");
+    }
+    let refused = between_state_with(
+        &root.join("other"),
+        BeforeSnapshot::Present,
+        false,
+        now(),
+        |_| Err(std::io::Error::other("adjust failed")),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(refused, crate::StoreUpgradeError::Io { .. }),
+        "{refused:?}"
+    );
 }

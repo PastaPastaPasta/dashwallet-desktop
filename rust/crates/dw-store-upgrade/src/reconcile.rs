@@ -50,12 +50,22 @@ impl Outcome {
 /// wallet (Q107 107-1, [`crate::copy::notice_line`]). It blocks nothing. A
 /// missing before-upgrade copy gets none, and so does a start once upstream
 /// has migrated: only the between state judges the snapshot.
+///
+/// Best effort: nothing records that it was shown. Every between-state start
+/// that finds the condition carries it, and the engine shows it only after
+/// that start's open and load succeed, which ends the between state, so in
+/// practice it shows once. It is lost when the condition is first found
+/// once upstream has migrated (no start then judges the snapshot), and when
+/// the open or load fails after upstream's migration has committed (the next
+/// start is past the between state). It shows twice when a second build
+/// starts on the store before the first one's start has finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpgradeNotice {
     /// The before-upgrade snapshot doesn't verify.
     SnapshotDamaged,
     /// The before-upgrade snapshot verifies but is of other data; it is now
-    /// marked [`crate::NOT_THIS_WALLET`].
+    /// marked [`crate::NOT_THIS_WALLET`], or, when it can't be, no longer
+    /// named in [`crate::UPGRADED_FROM`].
     SnapshotOther,
 }
 

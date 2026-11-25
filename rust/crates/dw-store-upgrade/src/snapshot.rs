@@ -405,7 +405,8 @@ fn write_lineage(
 
 /// R1, under its lock (`wallet` holds it) and before the drop: record
 /// `snapshot` and the file's wallet ids as what it is upgraded from, or
-/// `none` for a `part-upgraded` copy.
+/// `none` for a `part-upgraded` copy. A new before-upgrade snapshot starts a
+/// new upgrade, so an earlier one's [`PART_UPGRADED_BY`] goes.
 pub(crate) fn record_lineage(
     network_dir: &Path,
     snapshot: &SnapshotInfo,
@@ -416,7 +417,10 @@ pub(crate) fn record_lineage(
     }
     let wallets =
         wallet_ids(wallet).map_err(StoreUpgradeError::sqlite("read the wallet ids", true))?;
-    write_lineage(network_dir, Some((snapshot, &wallets)))
+    write_lineage(network_dir, Some((snapshot, &wallets)))?;
+    fsx::remove_durable(&backups_dir(network_dir).join(PART_UPGRADED_BY)).map_err(
+        StoreUpgradeError::io("remove an earlier part-upgraded copy record", true),
+    )
 }
 
 /// The `wallets.wallet_id` set, as upper-case hex.
@@ -439,39 +443,63 @@ fn names(record: &Lineage, info: &SnapshotInfo) -> bool {
 /// `network_dir`'s `wallet.sqlite` as the lineage gate reads it.
 enum LiveWallet {
     Absent,
-    /// It can't be read, so whether it is upgraded is not known.
+    /// It can't be read for what it holds (corrupt, not a database, or a log
+    /// beside it unreadable for its permissions), so whether it is upgraded
+    /// is not known. A file SQLite can't open at all is retried.
     Unreadable,
     /// Upgraded (R1's drop committed, or refinery past V018), with its
-    /// wallet ids, `None` when they can't be read.
-    Upgraded(Option<BTreeSet<String>>),
+    /// wallet ids.
+    Upgraded(BTreeSet<String>),
     NotUpgraded,
 }
 
-fn live_wallet(network_dir: &Path) -> LiveWallet {
-    match fs::symlink_metadata(network_dir.join(STORE_FILES[0])) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return LiveWallet::Absent,
-        Err(_) => return LiveWallet::Unreadable,
+/// Read through [`open_copy`]. A fault that may pass (`SQLITE_IOERR`,
+/// `SQLITE_FULL`, `SQLITE_CANTOPEN`, busy, an I/O error copying it) is
+/// returned, never taken for an unreadable file.
+fn live_wallet(network_dir: &Path) -> io::Result<LiveWallet> {
+    let path = network_dir.join(STORE_FILES[0]);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(LiveWallet::Absent),
+        Err(e) => {
+            return match snapshot_fault(STORE_FILES[0])(e) {
+                SnapshotFault::Defect(_) => Ok(LiveWallet::Unreadable),
+                SnapshotFault::Io(e) => Err(e),
+            };
+        }
         Ok(_) => {}
     }
-    let read = read_live_wallet(network_dir, |conn| {
+    let read = open_copy(&path).and_then(|copy| {
+        let conn: &Connection = copy.borrow();
         let (refinery_max, _, between) = upgrade_state(conn)?;
-        Ok((
-            between || refinery_max > fork::FORK_REFINERY_MAX,
-            wallet_ids(conn).ok(),
-        ))
+        if between || refinery_max > fork::FORK_REFINERY_MAX {
+            wallet_ids(conn).map(LiveWallet::Upgraded)
+        } else {
+            Ok(LiveWallet::NotUpgraded)
+        }
     });
     match read {
-        Some((true, ids)) => LiveWallet::Upgraded(ids),
-        Some((false, _)) => LiveWallet::NotUpgraded,
-        None => LiveWallet::Unreadable,
+        Ok(live) => Ok(live),
+        Err(e) if transient(&e) => Err(io::Error::other(format!("read {}: {e}", STORE_FILES[0]))),
+        Err(_) => Ok(LiveWallet::Unreadable),
     }
 }
 
-fn read_live_wallet<T>(
-    network_dir: &Path,
-    read: impl FnOnce(&Connection) -> rusqlite::Result<T>,
-) -> Option<T> {
-    read(open_copy(&network_dir.join(STORE_FILES[0])).ok()?.borrow()).ok()
+/// An SQLite failure that may pass on a retry.
+fn transient(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode as C;
+    matches!(
+        e.sqlite_error_code(),
+        Some(
+            C::SystemIoFailure
+                | C::DiskFull
+                | C::CannotOpen
+                | C::DatabaseBusy
+                | C::DatabaseLocked
+                | C::OutOfMemory
+                | C::OperationInterrupted
+                | C::FileLockingProtocolFailed
+        )
+    )
 }
 
 /// A store read by [`open_copy`]; its scratch copy, if any, goes once the
@@ -492,8 +520,17 @@ impl Borrow<Connection> for CopyRead {
 /// file and its log copied into a private 0700 directory under the data
 /// root (swept as precheck scratch) and opened there. [`open_live`] would
 /// make or change `-shm` beside the live file, whoever owns its side files
-/// then (a restore reads snapshots while it does).
+/// then (a restore reads snapshots while it does). An I/O error copying is
+/// `SQLITE_PERM` for its permissions, `SQLITE_FULL` for space and
+/// `SQLITE_IOERR` otherwise.
 fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
+    #[cfg(test)]
+    fault("snapshot.open_copy").map_err(|_| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            Some("injected".into()),
+        )
+    })?;
     if !logged(path) {
         return Ok(CopyRead {
             conn: sql::open_immutable(path)?,
@@ -501,15 +538,19 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
         });
     }
     let ioerr = |e: io::Error| {
+        let code = match e.kind() {
+            io::ErrorKind::PermissionDenied => rusqlite::ffi::SQLITE_PERM,
+            io::ErrorKind::StorageFull => rusqlite::ffi::SQLITE_FULL,
+            _ => rusqlite::ffi::SQLITE_IOERR,
+        };
         rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            rusqlite::ffi::Error::new(code),
             Some(format!("copy {} to read it: {e}", path.display())),
         )
     };
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| ioerr(io::Error::from(io::ErrorKind::NotFound)))?;
+    let root = crate::precheck::parent_dir(path)
+        .and_then(crate::precheck::parent_dir)
+        .map_err(|_| ioerr(io::Error::from(io::ErrorKind::NotFound)))?;
     let scratch = tempfile::Builder::new()
         .prefix(crate::precheck::SCRATCH_PREFIX)
         .tempdir_in(root)
@@ -542,11 +583,12 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
 /// only if [`UPGRADED_FROM`] names it with this manifest and the live wallet
 /// ids are exactly those R1 recorded: a restore replaces every store, so a
 /// wallet added since would be lost and another wallet's file would be
-/// rolled back to this one. Ids that can't be read prove nothing. A file
-/// that can't be read is held to the record when there is one. While a
-/// restore's journal exists the restore owns the stores, the live file may
-/// be any it is replacing, and it holds the snapshot to the journal's
-/// manifest: the gate is not applied.
+/// rolled back to this one. With a record, a missing `wallet.sqlite` is held
+/// to the named snapshot and one that can't be read proves nothing; with
+/// none, either leaves the snapshot as it verified. A fault reading the live
+/// file that may pass is [`SnapshotFault::Io`]. While a restore's journal
+/// names this snapshot and manifest the gate is not applied: the restore
+/// owns the stores, and the live file may be any it is replacing.
 fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), SnapshotFault> {
     let Some(network_dir) = dir
         .parent()
@@ -555,22 +597,20 @@ fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), S
     else {
         return Ok(());
     };
-    if !restorable(info)
-        || fs::symlink_metadata(backups_dir(network_dir).join(crate::restore::RESTORE_JOURNAL))
-            .is_ok()
-    {
+    if !restorable(info) || journal_names(network_dir, info) {
         return Ok(());
     }
-    let live = match live_wallet(network_dir) {
-        LiveWallet::Absent | LiveWallet::NotUpgraded => return Ok(()),
-        LiveWallet::Upgraded(ids) => Some(ids),
-        LiveWallet::Unreadable => None,
-    };
+    let live = live_wallet(network_dir).map_err(SnapshotFault::Io)?;
+    if matches!(live, LiveWallet::NotUpgraded) {
+        return Ok(());
+    }
     let record = read_lineage(network_dir).map_err(snapshot_fault(UPGRADED_FROM))?;
-    let held = match (&record, &live) {
-        (None, None) => return Ok(()),
-        (Some(record), Some(Some(ids))) if names(record, info) => {
-            matches!(record, Lineage::Snapshot { wallets, .. } if wallets == ids)
+    let held = match (live, &record) {
+        (LiveWallet::Absent | LiveWallet::Unreadable, None) => true,
+        (LiveWallet::Absent, Some(record)) => names(record, info),
+        (LiveWallet::Upgraded(ids), Some(record)) => {
+            names(record, info)
+                && matches!(record, Lineage::Snapshot { wallets, .. } if *wallets == ids)
         }
         _ => false,
     };
@@ -582,6 +622,20 @@ fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), S
         ))
     }
 }
+
+/// Whether the restore journal (`RESTORE-IN-PROGRESS`) names `info`'s
+/// directory and manifest.
+fn journal_names(network_dir: &Path, info: &SnapshotInfo) -> bool {
+    let Ok(text) =
+        fs::read_to_string(backups_dir(network_dir).join(crate::restore::RESTORE_JOURNAL))
+    else {
+        return false;
+    };
+    let field = |key: &str| text.lines().find_map(|l| l.strip_prefix(key));
+    field("snapshot ") == Some(name_of(&info.dir).as_str())
+        && field("manifest ") == Some(info.manifest_sha256.as_str())
+}
+
 /// Every `before-upgrade-*` directory, oldest name first.
 fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
     dirs_named(network_dir, BEFORE_PREFIX)
@@ -1333,8 +1387,25 @@ pub(crate) fn copy_store(src_path: &Path, dest: &Path) -> Result<()> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(fail(&format!("copy journal mode is {mode}")));
     }
-    if !sql::integrity_ok(&dst).map_err(read)? {
-        return Err(source_damaged("integrity_check of the copy failed".into()));
+    let copied = match sql::integrity_ok(&dst) {
+        Ok(ok) => ok,
+        Err(e) if damaged(&e) => false,
+        Err(e) => return Err(fail(&e)),
+    };
+    #[cfg(test)]
+    let copied = copied && fault("copy.integrity").is_ok();
+    if !copied {
+        return Err(
+            match open_source(src_path, std::time::Duration::ZERO)
+                .and_then(|c| sql::integrity_ok(&c))
+            {
+                Ok(false) => {
+                    source_damaged("integrity_check of the store and its copy failed".into())
+                }
+                Err(e) if damaged(&e) => source_damaged(e.to_string()),
+                _ => fail(&"integrity_check of the copy failed"),
+            },
+        );
     }
     dst.close().map_err(|(_, e)| fail(&e))?;
     #[cfg(unix)]
