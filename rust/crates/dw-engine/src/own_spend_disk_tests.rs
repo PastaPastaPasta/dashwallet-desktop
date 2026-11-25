@@ -1879,7 +1879,8 @@ fn a_beaten_payment_kept_to_recheck_stays_when_a_chainlock_names_another_block()
 /// unproven again, and the payment is void, not kept again with that
 /// ChainLock read, where nothing would recheck it: nothing goes.
 #[test]
-fn a_beaten_payment_kept_to_recheck_is_void_when_another_block_takes_its_height_during_its_recheck() {
+fn a_beaten_payment_kept_to_recheck_is_void_when_another_block_takes_its_height_during_its_recheck()
+{
     let t = beaten_payment_with_a_child();
     let block = [t.winner.clone(), t.elsewhere_spend.clone()];
     t.kept_to_recheck(&block);
