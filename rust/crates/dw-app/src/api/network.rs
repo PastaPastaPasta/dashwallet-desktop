@@ -423,6 +423,56 @@ commands! {
         let networks = engines.wait().await?.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
+
+    /// Whether `network` (`null`: the window's) has a verified
+    /// before-upgrade snapshot to restore: "Restore earlier data" shows
+    /// only then.
+    #[facade("Engine::restore_available")]
+    fn restore_available(state, network: Option<String>) -> bool {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.restore_available(&network).await?)
+    }
+
+    /// Restore earlier data: asks for the restore of `network`'s
+    /// (`null`: the window's) verified before-upgrade snapshot at the next
+    /// start; the renderer then calls `restartApp`. Nothing is restored in
+    /// this process. Without a verified snapshot, `storage_restore`
+    /// (refused, missingBackup).
+    #[facade("Engine::request_restore")]
+    fn request_restore(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.request_restore(&network).await?)
+    }
+
+    /// The foreign-lineage screen's Keep the current files: ends
+    /// `network`'s (`null`: the window's) part-done restore keeping its
+    /// files as they are; the renderer then opens the network again.
+    #[facade("Engine::keep_current_files")]
+    fn keep_current_files(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.keep_current_files(&network).await?)
+    }
+
+    /// Cancel restore: drops `network`'s (`null`: the window's) restore
+    /// request while it hasn't begun replacing files; once it has,
+    /// `storage_restore` (incomplete).
+    #[facade("Engine::cancel_restore")]
+    fn cancel_restore(state, network: Option<String>) -> () {
+        let network = restore_network(&state, network)?;
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.cancel_restore(&network).await?)
+    }
+}
+
+/// The network a restore command names; `null`: the window's.
+fn restore_network(state: &AppState, network: Option<String>) -> Result<DashNetwork, AppError> {
+    Ok(match network.as_deref().map(parse_network).transpose()? {
+        Some(n) => n,
+        None => state.window_network(),
+    })
 }
 
 /// Opens `network` as the window's: with the launch flags (or, on a

@@ -219,7 +219,8 @@ pub fn open_refused_err(f: &Fixture) -> EngineError {
 pub fn refusal_cause(err: &EngineError) -> String {
     match err {
         EngineError::StoreRefused(r) => {
-            assert!(!r.screen.text.is_empty());
+            let text = r.screen.text("");
+            assert!(!text.is_empty());
             r.cause.to_string()
         }
         EngineError::Internal(m) if m.starts_with(NO_SCREEN) => m[NO_SCREEN.len()..].to_string(),

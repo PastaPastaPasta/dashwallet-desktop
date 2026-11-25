@@ -84,6 +84,7 @@ impl From<dw_engine::EngineError> for CoinsError {
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::StoreRestore(_)
             | E::RetryableIo(_)
             | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(_) => Self::NotImplemented { call: detail },

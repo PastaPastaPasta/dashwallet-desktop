@@ -18,6 +18,7 @@ codes! {
         Storage = "storage",
         StorageTooNew = "storage_too_new",
         StorageRefused = "storage_refused",
+        StorageRestore = "storage_restore",
         WalletNotFound = "wallet_not_found",
         InvalidMnemonic = "invalid_mnemonic",
         WalletAlreadyExists = "wallet_already_exists",
@@ -159,6 +160,15 @@ impl From<EngineError> for AppError {
                     }),
                 )
             }
+            E::StoreRestore(r) => (
+                EngineCode::StorageRestore.into(),
+                Some(ErrorData::Restore {
+                    state: r.state.into(),
+                    cause: r.cause.into(),
+                    needed_bytes: r.needed_bytes,
+                    folder: r.folder.display().to_string(),
+                }),
+            ),
             E::RetryableIo(_) => (
                 EngineCode::Io.into(),
                 Some(ErrorData::Io { retryable: true }),
@@ -264,55 +274,115 @@ mod tests {
 
     use super::*;
 
-    fn refusal() -> dw_engine::store_upgrade::StoreRefusal {
-        dw_engine::store_upgrade::StoreRefusal {
-            screen: dw_engine::store_upgrade::copy::cant_open(
-                dw_engine::store_upgrade::copy::CantOpenCause::RetiredPoolWithoutP9a,
-                true,
-            ),
+    use dw_engine::store_upgrade::copy::{BackupState, ProvedState, RefusedCause, RefusedScreen};
+    use dw_engine::store_upgrade::{RestoreFailure, RestoreState, StoreRefusal, StoreUpgradeStage};
+
+    /// A migrated development-build file with a verified backup: the
+    /// refusal that offers Restore earlier data.
+    fn refusal() -> StoreRefusal {
+        let state = ProvedState {
+            migrated: Some(true),
+            backup: Some(BackupState::Verified),
+            unchanged: Some(true),
+        };
+        StoreRefusal {
+            screen: RefusedScreen::new(RefusedCause::DevBuild, state),
             folder: std::path::PathBuf::from("/data/regtest"),
-            cause: "RetiredPoolWithoutAdopter",
-            stage: dw_engine::store_upgrade::StoreUpgradeStage::Prepare,
-            detail: "1 retired contact-pool rows and this build has no P9a".into(),
+            cause: "PreHistoryFork",
+            stage: StoreUpgradeStage::Prepare,
+            detail: "the file records the fork migration in upstream's history".into(),
         }
     }
 
+    fn refused_json(r: StoreRefusal) -> serde_json::Value {
+        let e =
+            serde_json::to_value(AppError::from(EngineError::StoreRefused(Box::new(r)))).unwrap();
+        assert_eq!(e["code"], "storage_refused");
+        e["data"].clone()
+    }
+
     /// A store refusal rides in data as the store upgrade's own screen,
-    /// `{folder}` filled in, with the folder and the cause's name.
+    /// `{folder}` filled in, with the folder and the cause's name: its text
+    /// the four lines of `RefusedScreen::text`, its text key the way out's.
     #[test]
     fn a_store_refusal_rides_in_data_as_its_screen() {
         let r = refusal();
         let screen = r.screen.clone();
-        let e =
-            serde_json::to_value(AppError::from(EngineError::StoreRefused(Box::new(r)))).unwrap();
-        assert_eq!(e["code"], "storage_refused");
+        let button = |key: &str, label: &str| serde_json::json!({ "key": key, "label": label, "destructive": false, "defaultFocus": false });
+        let data = refused_json(r);
         assert_eq!(
-            e["data"],
+            data,
             serde_json::json!({
                 "kind": "storeRefused",
                 "screen": {
-                    "titleKey": "storeUpgrade.cantOpen.title",
-                    "title": screen.title,
-                    "textKey": "storeUpgrade.cantOpen.text",
-                    "text": screen.text.replace("{folder}", "/data/regtest"),
-                    "buttons": [{
-                        "key": "storeUpgrade.cantOpen.quit",
-                        "label": "Quit",
-                        "destructive": false,
-                        "defaultFocus": false,
-                    }],
-                    "hint": null,
+                    "titleKey": "storeUpgrade.refused.title",
+                    "title": "Dash Wallet can't open this wallet data safely",
+                    "textKey": "storeUpgrade.refused.wayOut.restore",
+                    "text": screen.text("/data/regtest"),
+                    "buttons": [
+                        button("storeUpgrade.refused.restore", "Restore earlier data"),
+                        button("storeUpgrade.refused.report", "Report a problem"),
+                        button("storeUpgrade.refused.quit", "Quit"),
+                    ],
+                    "hint": {
+                        "key": "settings.about.links.issuesHint",
+                        "text": dw_engine::store_upgrade::copy::ISSUES_HINT.text,
+                    },
                 },
                 "folder": "/data/regtest",
-                "cause": "RetiredPoolWithoutAdopter",
+                "cause": "PreHistoryFork",
             })
         );
-        assert!(
-            !e["data"]["screen"]["text"]
-                .as_str()
-                .unwrap()
-                .contains("{folder}")
-        );
+        let text = data["screen"]["text"].as_str().unwrap();
+        assert!(text.starts_with(
+            "This version of Dash Wallet can't safely open the wallet data in /data/regtest: "
+        ));
+        assert!(!text.contains("{folder}"));
+    }
+
+    /// A restore that stopped the open rides as `storage_restore` with its
+    /// state, cause, the space it needs and the folder (DTO v3).
+    #[test]
+    fn a_stopped_restore_rides_as_storage_restore() {
+        for (state, name, cause, needed) in [
+            (RestoreState::Refused, "refused", "missingBackup", None),
+            (
+                RestoreState::NoSpace,
+                "noSpace",
+                "diskFull",
+                Some(2_147_483_648u64),
+            ),
+            (
+                RestoreState::NotStarted,
+                "notStarted",
+                "permissionDenied",
+                None,
+            ),
+            (RestoreState::Incomplete, "incomplete", "other", None),
+            (RestoreState::Foreign, "foreign", "otherLineage", None),
+        ] {
+            let e = serde_json::to_value(AppError::from(EngineError::StoreRestore(Box::new(
+                RestoreFailure {
+                    state,
+                    cause,
+                    needed_bytes: needed,
+                    folder: "/data/regtest".into(),
+                    detail: "x".into(),
+                },
+            ))))
+            .unwrap();
+            assert_eq!(e["code"], "storage_restore");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({
+                    "kind": "restore",
+                    "state": name,
+                    "cause": cause,
+                    "neededBytes": needed,
+                    "folder": "/data/regtest",
+                })
+            );
+        }
     }
 
     /// `storage_in_use` carries the engine's own `retryable`: true for a
@@ -360,6 +430,13 @@ mod tests {
             E::Storage(s()),
             E::StorageTooNew(s()),
             E::StoreRefused(Box::new(refusal())),
+            E::StoreRestore(Box::new(RestoreFailure {
+                state: RestoreState::Refused,
+                cause: "missingBackup",
+                needed_bytes: None,
+                folder: "/data".into(),
+                detail: s(),
+            })),
             E::RetryableIo(s()),
             E::WalletNotFound(s()),
             E::InvalidMnemonic(s()),

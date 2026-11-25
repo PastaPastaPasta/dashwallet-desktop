@@ -62,6 +62,7 @@ impl From<dw_engine::EngineError> for DesktopError {
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::StoreRestore(_)
             | E::RetryableIo(_) => Self::OsError { detail },
             _ => Self::Internal { detail },
         }

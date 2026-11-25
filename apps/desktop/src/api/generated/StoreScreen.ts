@@ -3,8 +3,10 @@ import type { StoreButton } from "./StoreButton";
 import type { StoreHint } from "./StoreHint";
 
 /**
- * A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for` gives
- * it: catalog keys with their English, `{folder}` filled in.
+ * A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for`
+ * gives it: catalog keys with their English, `{folder}` filled in. Its
+ * text is the refusal's four lines joined (`RefusedScreen::text`);
+ * `text_key` is its way out's.
  */
 export type StoreScreen = { titleKey: string, title: string, textKey: string, text: string, buttons: Array<StoreButton>,
 /**

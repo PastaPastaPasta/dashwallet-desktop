@@ -35,6 +35,10 @@ pub enum EngineError {
     /// cause and the way out the folder's proved state allows.
     #[error("this build can't safely open the wallet data in {}: {}", .0.folder.display(), .0.detail)]
     StoreRefused(Box<crate::store_upgrade::StoreRefusal>),
+    /// A requested or part-done restore stopped the open, or a restore
+    /// command was refused (dw-store-upgrade): its state says what changed.
+    #[error("the restore in {} stopped ({:?}, {}): {}", .0.folder.display(), .0.state, .0.cause, .0.detail)]
+    StoreRestore(Box<crate::store_upgrade::RestoreFailure>),
     /// The open's store-upgrade step failed for the machine (disk full, an
     /// I/O error, the snapshot), not the data: trying again may succeed.
     #[error("io error: {0}")]
@@ -190,6 +194,7 @@ impl EngineError {
             EngineError::Storage(_) => "storage",
             EngineError::StorageTooNew(_) => "storage_too_new",
             EngineError::StoreRefused(_) => "storage_refused",
+            EngineError::StoreRestore(_) => "storage_restore",
             EngineError::RetryableIo(_) => "io",
             EngineError::WalletNotFound(_) => "wallet_not_found",
             EngineError::InvalidMnemonic(_) => "invalid_mnemonic",
