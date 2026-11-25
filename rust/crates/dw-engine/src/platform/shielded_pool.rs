@@ -2763,9 +2763,9 @@ impl ShieldedDispatch for EngineDispatch {
     /// settled nor archived; the wallet holds its background lease; the
     /// session is open; a contact payout's dispatch is recorded beside its
     /// row, as `dispatch` records it before the first send; an unshield's
-    /// pending `FromShielded` record is armed; its history row does not read
-    /// confirmed. An artifact, a record or a row that is missing or cannot be
-    /// read is refused.
+    /// pending `FromShielded` record is armed; its history row, when there
+    /// is one, does not read confirmed. An artifact or a record that is
+    /// missing, or a row that cannot be read, is refused.
     async fn admit(
         &self,
         wallet_id: [u8; 32],

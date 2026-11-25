@@ -644,8 +644,8 @@ fn shown(
 /// confirmed with its record and reservations gone (the scan's path), spend
 /// 2's with both kept (a success arm whose mark-spent failed). Before a pass
 /// reads them and after, the hook admits no re-send of either; the pass
-/// settles both `executed`, the proof a payout and a `FromShielded` row read
-/// as done; each history row shows confirmed, never failed.
+/// settles both with the `executed` disposition; each history row shows
+/// confirmed, never failed.
 #[test]
 fn a_confirmed_row_reads_done_and_offers_no_retry() {
     use crate::platform::shielded::ShieldedActivityStatus as Shown;
@@ -684,8 +684,11 @@ fn a_confirmed_row_reads_done_and_offers_no_retry() {
     });
     let confirmed = |n: u8| (hex::encode([n; 32]), Shown::Confirmed);
     for n in [1, 2] {
-        let refusal = admit(&engine, &session, wallet, n).unwrap_err();
-        assert!(refusal.contains("confirmed"), "spend {n}: {refusal}");
+        assert_eq!(
+            admit(&engine, &session, wallet, n),
+            Err("the spend's history row reads confirmed".into()),
+            "spend {n}"
+        );
         assert_eq!(
             settlement(&engine, &session, wallet, n).0,
             ArtifactStatus::Registered
