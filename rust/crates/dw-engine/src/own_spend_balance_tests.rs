@@ -3881,6 +3881,39 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallets_history_
 /// still holds at the load's next drop: C goes then.
 #[test]
 fn a_child_orphaned_by_a_sweep_goes_after_a_block_between_its_take_and_the_lock() {
+    orphan_after_its_take(
+        |_| vec![unrelated((TIP + 2) as u8)],
+        |engine, session, id, (c, c_change, d)| {
+            eventually("C goes", || !live_in_history(session, id, c.txid()));
+            drops_done(engine, session);
+            assert_child_dropped(engine, session, id, (c, c_change, d), "after the load");
+        },
+    );
+}
+
+/// #891: as above, but the block mines P, C's gone parent: C is valid,
+/// and stays.
+#[test]
+fn a_child_orphaned_by_a_sweep_stays_when_a_block_between_its_take_and_the_lock_mines_its_parent() {
+    orphan_after_its_take(
+        |p| vec![p.clone()],
+        |engine, session, id, (c, c_change, _)| {
+            assert!(live_in_history(session, id, c.txid()), "C is dropped");
+            assert!(
+                held(engine, session, id).contains(&c_change),
+                "C's change is not held"
+            );
+        },
+    );
+}
+
+/// The app stopped after key-wallet's sweep of P was stored, before C
+/// went; key-wallet then processes a block of `block(P)` while a load's
+/// orphan drop of C is between its take and the write lock.
+fn orphan_after_its_take(
+    block: impl FnOnce(&Transaction) -> Vec<Transaction>,
+    check: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, (&Transaction, OutPoint, OutPoint)),
+) {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
@@ -3898,9 +3931,11 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_between_its_take_and_the_lock(
         },
     );
     crate::tx_actions::forget_sent(&session.live().unwrap().appdb, id, &[p.txid()]).unwrap();
-    let chain: Vec<_> = (FUNDED_AT..=TIP + 2)
+    let txs = block(&p);
+    let mut chain: Vec<_> = (FUNDED_AT..=TIP + 1)
         .map(|h| (h, vec![unrelated(h as u8)]))
         .collect();
+    chain.push((TIP + 2, txs.clone()));
     headers(&session, &chain);
     engine.block_on(session.unload_wallet(id)).unwrap();
     let pause = Arc::new(crate::coins::TestPause::default());
@@ -3917,7 +3952,7 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_between_its_take_and_the_lock(
     engine.block_on(async move {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
-        let block = super::block_with(vec![unrelated((TIP + 2) as u8)]);
+        let block = super::block_with(txs);
         let wallets = BTreeSet::from([id.0]);
         (wm.process_block_for_wallets(&block, block.block_hash(), TIP + 2, &wallets)).await;
         wm.update_wallet_synced_height(&id.0, TIP + 2);
@@ -3925,9 +3960,7 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_between_its_take_and_the_lock(
     pause.release.notify_one();
     engine.block_on(loading).unwrap().unwrap();
     drops_done(&engine, &session);
-    eventually("C goes", || !live_in_history(&session, id, c.txid()));
-    drops_done(&engine, &session);
-    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the load");
+    check(&engine, &session, id, (&c, c_change, d));
 }
 
 /// #170 case 4: C relayed between key-wallet's sweep of P and the
