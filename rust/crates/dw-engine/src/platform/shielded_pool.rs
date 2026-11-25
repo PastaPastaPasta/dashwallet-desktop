@@ -1110,12 +1110,14 @@ async fn spend_fee(
     }
 }
 
-/// The quote of a send of `credits` to `to`.
+/// The quote of a send of `credits` to `to`: refused first, as the send
+/// is, while the library cannot spend from the key set ([`keyset_closed`]).
 pub(crate) async fn send_quote(
     lib: &impl ShieldedLib,
     to: &str,
     credits: u64,
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
+    keyset_closed(lib)?;
     let version = priced_gate(lib).await?;
     shielded_address(lib.network(), to)?;
     if credits == 0 {
@@ -1166,6 +1168,7 @@ pub(crate) async fn unshield_quote(
     credits: u64,
     to: Option<&str>,
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
+    keyset_closed(lib)?;
     if let Some(to) = to {
         gate(lib).await?;
         core_address(lib.network(), to)?;
@@ -1214,6 +1217,7 @@ pub(crate) async fn unshield_to_platform_quote(
     to: Option<&str>,
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
     refuse_on_mainnet(lib.network())?;
+    keyset_closed(lib)?;
     if let Some(to) = to {
         gate(lib).await?;
         own_platform_address(lib, Some(to)).await?;
@@ -1692,11 +1696,11 @@ pub(super) async fn send_armed(
     }
 }
 
-/// Refuses a new way into the pool while the library cannot spend from the
-/// key set: what goes in could not come out in this build. Asked before
-/// anything else, so nothing is quoted, locked or granted and no receive
-/// address is issued. Finishing a shield already sent (`resume`, Repair's
-/// `ShieldLocks`) is not refused.
+/// Refuses a new way into the pool, and the quote of a spend from it, while
+/// the library cannot spend from the key set: what goes in could not come
+/// out in this build. Asked before anything else, so nothing is quoted,
+/// locked or granted and no receive address is issued. Finishing a shield
+/// already sent (`resume`, Repair's `ShieldLocks`) is not refused.
 pub(crate) fn keyset_closed(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if lib.keyset_spends() {
         Ok(())

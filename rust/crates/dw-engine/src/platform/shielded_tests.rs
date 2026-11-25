@@ -4845,7 +4845,8 @@ fn shield_refused_after_the_signature(end: FundEnd) {
 }
 
 /// A library that cannot spend from the key set: the status says so, active
-/// or not, and a send and an unshield are refused before anything else, so
+/// or not, and a send, an unshield and their quotes (a contact payment's
+/// too) are refused before anything else, so
 /// nothing is quoted, no receive address is issued, the grant is kept and no
 /// key leaves the vault. When it can again, the same send runs.
 #[test]
@@ -4881,6 +4882,18 @@ fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
         assert_eq!(refused, "platform.unavailable");
         assert!(fx.unused(&grant), "the refusal keeps the grant");
     }
+    let quotes = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::send_quote(lib, &payee_text(), NOTE).await),
+            code(pool::unshield_quote(lib, NOTE, None).await),
+            code(pool::unshield_to_platform_quote(lib, NOTE, None).await),
+            (super::shielded_payout::quote(lib, NOTE).await)
+                .unwrap_err()
+                .code(),
+        ]
+    });
+    assert_eq!(quotes, ["platform.unavailable"; 4], "no quote either");
     assert!(lib.spent().is_empty(), "no key left the vault");
     assert_eq!(
         lib.refreshes.load(Ordering::SeqCst),
@@ -4898,6 +4911,9 @@ fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
         pool::status(&*lib).await.unwrap()
     });
     assert!(status.spends_available);
+    run(&fx, &lib, |_, lib| async move {
+        pool::send_quote(&*lib, &payee_text(), NOTE).await.unwrap()
+    });
     let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
     let sent = run(&fx, &lib, move |s, lib| async move {
         pool::send(
@@ -5032,8 +5048,9 @@ fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the
 
 /// Through the real library: while it cannot spend from the key set the
 /// facade issues no address, neither a bound key's (read during a pass)
-/// nor a first bind's, and quotes no shield from the Platform addresses;
-/// when it can again, the same address.
+/// nor a first bind's, and quotes no shield from the Platform addresses
+/// (refused first, where with spends on a later gate refuses it); when it
+/// can again, the same address.
 #[test]
 fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set() {
     use super::topup_tests::fixture;
@@ -5055,14 +5072,21 @@ fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set(
         "platform.unavailable",
         "a first bind's, by either check"
     );
-    let quote = f
-        .engine
-        .block_on(dp.platform_shield_quote(super::WithdrawAmount::All));
+    // A wallet never bound, with the vault locked: with spends on, a later
+    // gate refuses its Platform shield quote with another code.
+    fresh.session.vault.lock();
+    let shield_quote = || {
+        let all = super::WithdrawAmount::All;
+        let quote = fresh.engine.block_on(first_dp.platform_shield_quote(all));
+        quote.unwrap_err().code()
+    };
     assert_eq!(
-        quote.unwrap_err().code(),
+        shield_quote(),
         "platform.unavailable",
         "no shield from Platform"
     );
+    off.store(false, Ordering::SeqCst);
+    assert_ne!(shield_quote(), "platform.unavailable", "a later gate's");
     let status = (f.engine)
         .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
             pool::status(&lib).await

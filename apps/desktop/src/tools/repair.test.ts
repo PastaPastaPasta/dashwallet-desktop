@@ -389,12 +389,14 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     }
 
     const { api, vault } = setup({ encrypted: false });
-    const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => true);
+    let spendsOff = false;
+    const model = new RepairModel(api, new GrantModel(vault.api), WALLET_A, () => spendsOff);
     const stuck: StuckShieldFunding = { step: "shield/0/funding", state: "maybeSent", repair: { mixed: true, inputs: 2, totalDuffs: 110_001_100, feeDuffs: 340 }, blocked: null };
     api.stuckShieldFundings.mockResolvedValue([stuck]);
     await model.refresh();
     model.ask("resolveStuck", model.stuckShields[0]);
     api.stuckShieldFundings.mockResolvedValue([]);
+    spendsOff = true;
     await model.confirm();
     expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedShield("ab".repeat(32), true) });
   });
