@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, useShieldedBind, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, useShieldedBind, useRereadWhenBound, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { ui, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -423,12 +423,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   useShieldedBind(walletId, status, enabled);
   const settled = infoRead.data !== undefined || infoRead.isError;
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
-  // An address read that failed before the key was bound is read again once it is.
-  const bound = status?.account === "bound";
-  const { isError: addressFailed, refetch: rereadAddress } = address;
-  useEffect(() => {
-    if (enabled && bound && addressFailed) void rereadAddress();
-  }, [enabled, bound, addressFailed, rereadAddress]);
+  useRereadWhenBound(status?.account === "bound", enabled, address.isError, address.refetch);
   const firstScan = !!status?.active && !status.established;
   const percent = firstScan ? scanShare(status?.scan) : null;
   const scanning = firstScan && (gate === "address" || gate === "binding");

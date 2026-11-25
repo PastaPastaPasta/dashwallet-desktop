@@ -291,6 +291,19 @@ export function useShieldedSyncInfo(walletId: string, enabled = true) {
   });
 }
 
+/** Reads a failed read once more when the account reads bound, once per bound state: a read with
+ * no data goes back to pending while it refetches, so its error alone would re-read in a loop. */
+export function useRereadWhenBound(bound: boolean, enabled: boolean, failed: boolean, reread: () => unknown) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (!bound) done.current = false;
+    else if (enabled && failed && !done.current) {
+      done.current = true;
+      void reread();
+    }
+  }, [enabled, bound, failed, reread]);
+}
+
 /** An account the full status read may bind: the sync read cannot see a viewing key saved by an
  * earlier session, which binds with no unlock. */
 export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
