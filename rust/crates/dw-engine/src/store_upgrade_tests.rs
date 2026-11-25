@@ -526,9 +526,9 @@ fn the_open_runs_the_store_upgrade_before_any_store_opens() {
         ]
     );
     let net = session.data_dir().to_path_buf();
-    assert!(dw_store_upgrade::latest_snapshot(&net).unwrap().is_some());
     drop(session);
     engine.block_on(engine.shutdown()).unwrap();
+    assert!(dw_store_upgrade::latest_snapshot(&net).unwrap().is_some());
 
     use dw_store_upgrade::copy::WayOut;
     let shape = || StoreUpgradeError::ForkStoreShapeMismatch {

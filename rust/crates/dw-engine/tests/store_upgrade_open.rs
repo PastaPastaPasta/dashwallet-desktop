@@ -102,12 +102,12 @@ fn every_released_fork_file_upgrades_through_the_open() {
             .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
             .unwrap_or_else(|e| panic!("{version}: {e:?}"));
         assert!(!s.wallet_infos().unwrap().is_empty(), "{version}");
-        let snapshot = dw_store_upgrade::latest_snapshot(&f.net)
-            .unwrap()
-            .expect("snapshot");
         drop(s);
         engine.block_on(engine.shutdown()).unwrap();
         drop(engine);
+        let snapshot = dw_store_upgrade::latest_snapshot(&f.net)
+            .unwrap()
+            .expect("snapshot");
 
         let engine = self::engine(&f.root);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -137,6 +137,8 @@ fn every_released_fork_file_upgrades_through_the_open() {
             "{version}: the second start retires the fork history"
         );
         drop(conn);
+        drop(s);
+        engine.block_on(engine.shutdown()).unwrap();
         assert_eq!(
             dw_store_upgrade::latest_snapshot(&f.net)
                 .unwrap()
@@ -145,8 +147,6 @@ fn every_released_fork_file_upgrades_through_the_open() {
             snapshot.dir(),
             "{version}"
         );
-        drop(s);
-        engine.block_on(engine.shutdown()).unwrap();
     }
 }
 

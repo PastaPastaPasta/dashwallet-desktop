@@ -11,8 +11,8 @@ use std::time::SystemTime;
 
 use dw_store_upgrade::copy::{ProvedState, RefusedScreen, restore_foreign, screen_for};
 use dw_store_upgrade::{
-    Adopters, IncompleteCause, PersisterOpened, Precheck, RefusalCause, RestoreInfo, SnapshotState,
-    StoreUpgradeError, prepare_with, reconcile_fork_store,
+    Adopters, IncompleteCause, PendingRestore, PersisterOpened, Precheck, RefusalCause,
+    RestoreInfo, SnapshotState, StoreUpgradeError, prepare_with, reconcile_fork_store,
 };
 use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
 
@@ -215,9 +215,11 @@ pub(crate) fn restore_available(network_dir: &Path) -> Result<bool, EngineError>
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))
 }
 
-/// Ask for the restore of the verified snapshot at the next start. Without
-/// one, `storage_restore` refused (missingBackup); a snapshot that changed
-/// since it was read, refused (mismatchedBackup). Nothing else is written.
+/// Ask for the restore of the verified snapshot at the next start. While a
+/// restore is replacing files, `storage_restore` incomplete: that one can
+/// only be finished, whatever the snapshot reads as. Without a verified
+/// snapshot, refused (missingBackup); a snapshot that changed since it was
+/// read, refused (mismatchedBackup). Nothing else is written.
 pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
     let refused = |cause: RefusalCause, detail: String| {
         EngineError::StoreRestore(Box::new(RestoreFailure {
@@ -228,6 +230,20 @@ pub(crate) fn request_restore(network_dir: &Path) -> Result<(), EngineError> {
             detail,
         }))
     };
+    let replacing = dw_store_upgrade::pending_restore(network_dir)
+        .map_err(|e| EngineError::RetryableIo(format!("read the restore marker: {e}")))?;
+    if replacing == Some(PendingRestore::InProgress) {
+        return Err(map_error(
+            network_dir,
+            StoreUpgradeStage::Restore,
+            StoreUpgradeError::RestoreIncomplete {
+                cause: IncompleteCause::Other,
+                journal_written: true,
+                detail: "the restore has begun replacing files and can only be finished".into(),
+            },
+            false,
+        ));
+    }
     match dw_store_upgrade::snapshot_state(network_dir)
         .map_err(|e| EngineError::RetryableIo(format!("read the upgrade backups: {e}")))?
     {
@@ -354,7 +370,9 @@ fn restore_state(e: &StoreUpgradeError) -> Option<(RestoreState, &'static str, O
 ///   lineage's included;
 /// - a held store as `StorageInUse`, held until a restart when the restore
 ///   step met it;
-/// - a wallet file that isn't a database, or is corrupt, as `Storage`;
+/// - a wallet file that isn't a database, or is corrupt, as `Storage` when
+///   SQLite reports it outside the snapshot step (the snapshot step reports
+///   a damaged store as `SnapshotSourceDamaged`, a refusal);
 /// - a failure of the machine (disk, I/O, the snapshot, the rehearsal's
 ///   I/O) as a retryable io error, never a refusal;
 /// - upstream's own open error by its usual mapping;

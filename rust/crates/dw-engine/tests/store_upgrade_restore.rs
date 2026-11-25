@@ -142,7 +142,7 @@ fn a_requested_restore_runs_at_the_next_open() {
 /// Here the restored fork file holds a rotated contact and the build has no
 /// P9a.
 #[test]
-fn a_refusal_after_a_restore_says_the_files_changed() {
+fn a_refusal_after_a_restore_never_says_nothing_changed() {
     let f = fixture("v0.1.0");
     add_retired_row(&f.wallet());
     assert_eq!(open_in_child(&f.root), "ok");
@@ -231,6 +231,35 @@ fn a_request_while_a_restore_is_replacing_files_is_the_incomplete_screen() {
         Err(EngineError::StoreRestore(r)) => {
             assert_eq!((r.state, r.cause), (RestoreState::Incomplete, "other"));
             assert_eq!(r.folder, f.net);
+        }
+        other => panic!("{other:?}"),
+    }
+    close(engine);
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+}
+
+/// The incomplete screen wins over the snapshot's state: beside a torn
+/// snapshot, a restore replacing files is still the incomplete screen.
+#[test]
+fn a_request_while_a_restore_is_replacing_files_beside_a_torn_snapshot_is_incomplete() {
+    let f = upgraded();
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    std::fs::write(snapshot.dir().join(dw_store_upgrade::STORE_FILES[0]), b"torn").unwrap();
+    std::fs::write(
+        backups(&f).join(dw_store_upgrade::RESTORE_JOURNAL),
+        b"journal",
+    )
+    .unwrap();
+    let before = tree(&f.net);
+    let engine = engine(&f.root);
+    assert!(
+        !engine
+            .block_on(engine.restore_available(&DashNetwork::Regtest))
+            .unwrap()
+    );
+    match engine.block_on(engine.request_restore(&DashNetwork::Regtest)) {
+        Err(EngineError::StoreRestore(r)) => {
+            assert_eq!((r.state, r.cause), (RestoreState::Incomplete, "other"))
         }
         other => panic!("{other:?}"),
     }
