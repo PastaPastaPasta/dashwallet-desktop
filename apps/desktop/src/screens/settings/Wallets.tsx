@@ -228,6 +228,17 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
       onClose(WalletsText.removed(row.name));
     }
   }, [model.step, onClose, row]);
+  if (model.step === "held")
+    return (
+      <Sheet title={WalletsText.removeHeldTitle} width="medium" testId="settings-remove-sheet" focusKey="held" onClose={() => onClose()}>
+        <p className="sheet-warning" role="alert" data-testid="settings-remove-held">
+          {model.held}
+        </p>
+        <DashButton variant="filledBlue" size="large" fill data-testid="settings-remove-held-ok" onClick={() => onClose()}>
+          {WalletsText.removeHeldOk}
+        </DashButton>
+      </Sheet>
+    );
   return (
     <Sheet title={t("settings.wallets.removeTitle")} width="medium" testId="settings-remove-sheet" focusKey={String(model.encrypted)} closable={!model.busy} onClose={() => onClose()}>
       <p className="sheet-warning" role="note">

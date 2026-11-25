@@ -336,6 +336,29 @@ test.describe("Wallets", () => {
     await expect(page.getByTestId(B)).toHaveCount(0);
   });
 
+  for (const [reason, text] of [
+    ["inFlight", "A Shielded payment from this wallet may still be going through, so nothing was removed. Try again once it has confirmed."],
+    [
+      "carriedOver",
+      "Dash Wallet doesn't know whether a Shielded payment this wallet made in an earlier test build went through, so nothing was removed. You can remove this wallet once this version can send from Shielded.",
+    ],
+  ] as const) {
+    test(`a removal refused (${reason}) says why and removes nothing`, async ({ page }) => {
+      await settings(page, "wallets", "two-wallets");
+      await page.evaluate(`window.__dwFixture.world.settings.removeRefusal = ${JSON.stringify(reason)}`);
+      await page.getByTestId(`${B}-remove`).click();
+      await page.getByTestId("settings-remove-passphrase-field").fill(PASS);
+      await page.getByTestId("settings-remove-passphrase-submit").click();
+      await expect(page.getByTestId("settings-remove-sheet")).toContainText("This wallet can't be removed yet");
+      await expect(page.getByTestId("settings-remove-held")).toHaveText(text);
+      await page.getByTestId("settings-remove-held-ok").click();
+      await expect(page.getByTestId("settings-remove-sheet")).toHaveCount(0);
+      await expect(page.getByTestId(B)).toBeVisible();
+      await expect(page.getByTestId("settings-wallets-notice")).toHaveCount(0);
+      expect(await world(page, (w) => w.wallets.length)).toBe(2);
+    });
+  }
+
   test("IOS111_xpubWithQRCode_and_QT114_watchOnlyFromIt", async ({ page }) => {
     await settings(page, "wallets");
     await page.getByTestId(`${A}-xpub`).click();
