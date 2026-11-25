@@ -179,10 +179,11 @@ pub use registration::{
     ShieldedReadiness,
 };
 pub use shielded::{
-    MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
-    ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
-    ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
-    ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
+    HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome,
+    ShieldQuote, ShieldRepairCost, ShieldState, ShieldedAccount, ShieldedActivity,
+    ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress, ShieldedDirection,
+    ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
+    ShieldedStatus, ShieldedSyncInfo, ShieldedSyncWait, StuckShieldFunding, UnrecordedSpend,
     UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
@@ -190,8 +191,8 @@ pub use signers::{
     VaultScanKey,
 };
 pub use startup::{
-    DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility, QuorumSource,
-    StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
+    AddressSync, DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility,
+    QuorumSource, StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;

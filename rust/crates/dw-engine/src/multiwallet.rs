@@ -374,6 +374,15 @@ impl NetworkSession {
                 this.spawn_ensure_background();
                 return Err(e);
             }
+            #[cfg(test)]
+            let pause = this.hub.pause_unload.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);

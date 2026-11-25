@@ -87,6 +87,10 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The coins kept out of every bucket above, and out of spending,
+    /// while the payment they come from may never confirm (Q100 E1,
+    /// `crate::withhold`): shown as pending.
+    pub withheld: u64,
     /// The scan has not reached the wallet's birth block yet: the buckets
     /// hold what the wallet has seen so far (mempool and InstantSend
     /// payments included) and can miss coins in blocks not scanned yet.
@@ -964,15 +968,44 @@ impl NetworkSession {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
         self.hub.detect_truncation(id, core);
+        let synced = core.synced_height();
+        let excluded = self.hub.excluded_share(id, core);
+        let waiting = excluded.waiting();
         let read = WalletState {
             birth_height: core.birth_height(),
-            synced_height: core.synced_height(),
+            synced_height: synced,
             processed_height: core.last_processed_height(),
             balance: core.balance(),
             accounts: core.account_balances(),
+            excluded,
             ..WalletState::default()
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
+        self.hub.release_settled(id, waiting);
+        let released = self.hub.settle_rescan_holds(id, Some(synced));
+        self.forget_released_holds(id, released).await;
+        drop(wm);
+    }
+
+    /// Drops the marks of the `released` holds of wallet `id` that no new
+    /// hold took again: a later open finding a replay record keeps every
+    /// hold whose mark stays (`crate::rescan_hold::load_for_open`). The
+    /// caller holds the manager's lock, so no abandon or drop writes a
+    /// hold's mark between the read of the holds and the delete.
+    pub(crate) async fn forget_released_holds(
+        &self,
+        id: WalletId,
+        released: std::collections::BTreeSet<dashcore::OutPoint>,
+    ) {
+        if released.is_empty() {
+            return;
+        }
+        let held = self.hub.rescan_held(&id);
+        let keys = crate::rescan_hold::hold_keys(released.iter().filter(|o| !held.contains(*o)));
+        let rows = keys.into_iter().map(|k| (k, None)).collect();
+        if let Err(e) = self.write_marks(id, rows).await {
+            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of coins whose rescan is back");
+        }
     }
 
     pub fn network(&self) -> &DashNetwork {
@@ -1183,6 +1216,12 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // A wallet closed by an operation admitted before the gate sealed
+        // let drops wait on it whose own drain the sealed gate refused:
+        // they run now, before the stores close.
+        if let Ok(live) = self.live() {
+            self.drain_deferred_drops(&live.manager).await;
+        }
         // No vault operation is admitted from here, so no unlock can follow:
         // the data key and every grant go now, not with the session's last
         // reference (an in-app network switch keeps the process running).

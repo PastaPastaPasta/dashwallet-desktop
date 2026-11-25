@@ -4,7 +4,7 @@
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { errorMessage } from "../api/backend";
 import { creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformActivity, useShieldedHistory } from "../api/queries";
+import { useBackend, usePlatformActivity, useShieldedHistory, useShieldedStatus } from "../api/queries";
 import { ui } from "../app/ui";
 import { AmountText, Icon } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -12,7 +12,7 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
-import { findSourceRecord, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
+import { findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
 import { useT } from "../i18n";
 
 function Address({ value }: { value: string }) {
@@ -106,7 +106,8 @@ export function SourceDetailSheet({ walletId, txid, network }: { walletId: strin
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
   const read = rowSource({ txid }) === "platform" ? platform : shielded;
-  const found = findSourceRecord(txid, platform.data, shielded.data);
+  const status = useShieldedStatus(walletId);
+  const found = findSourceRecord(txid, platform.data, shielded.data, heldActivities(status.data));
   return (
     <Sheet title={t("activity.sourceDetail.title")} width="medium" testId="source-detail" onClose={() => ui.set({ detail: null })}>
       {found ? (

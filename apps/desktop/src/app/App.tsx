@@ -7,6 +7,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
 import { useBackend, useDashPayShell, useHistoryGapReads, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
+import { useSyncItems } from "../api/syncItems";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
@@ -161,6 +162,7 @@ function WalletChrome({
   const open = (row: TxRow) => ui.set({ detail: row.txid });
 
   const masternodesItem = useMasternodesItem(wallet?.walletId ?? null);
+  const syncItems = useSyncItems(wallet?.walletId ?? null);
   useEffect(() => {
     if (route === "masternodes" && masternodesItem.settled && !masternodesItem.shown) navigate("home");
   }, [route, masternodesItem.settled, masternodesItem.shown]);
@@ -235,6 +237,7 @@ function WalletChrome({
           </div>
           <StatusBar
             sync={sync.data}
+            items={syncItems}
             lock={lock.data}
             unitName={unitName}
             hd={wallet?.hd ?? false}
@@ -397,7 +400,7 @@ function Shell() {
       {shown === "recoveryPhrase" && <RecoveryPhraseSheet walletId={recoveryWallet ?? wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "mnKeys" && wallet && <MasternodeKeysSheet key={wallet.walletId} walletId={wallet.walletId} watchOnly={wallet.watchOnly} role={mnKeysRole} onClose={closeDialog} />}
       {shown === "unlock" && <UnlockSheet onClose={closeDialog} />}
-      {shown === "sync" && <SyncSheet onClose={closeDialog} />}
+      {shown === "sync" && <SyncSheet walletId={wallet?.walletId ?? null} onClose={closeDialog} />}
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {/* In place of the wallet's views, not over them: a locked window holds nothing of the wallet. */}

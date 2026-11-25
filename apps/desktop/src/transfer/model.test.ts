@@ -199,6 +199,9 @@ describe("routes", () => {
     const syncing = { ...POOLS, shielded: { active: true, syncing: true, duffs: null } };
     expect(routeWhy("coreToShielded", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
     expect(routeWhy("shieldedToCore", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);
+    // The vault's lock holding the account is named, for Add and Transfer out alike.
+    const mixingOnly = { ...POOLS, shielded: { active: true, syncing: true, wait: "mixingOnly" as const, duffs: null } };
+    for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, mixingOnly, f), r).toBe(SHIELDED_SYNC_COPY.wait("mixingOnly"));
     expect(routeWhy("shieldedToCore", { ...POOLS, shielded: { active: true, syncing: false, duffs: 0 } }, f)).toBe(SHIELDED_COPY.card.why.empty);
     expect(routeWhy("shieldedToPlatform", inactive, f)).toBe(SHIELDED_COPY.card.inactive);
     expect(routeWhy("shieldedToPlatform", syncing, f)).toBe(SHIELDED_SYNC_COPY.syncing);

@@ -63,6 +63,7 @@
     "allow-pending-platform-funds",
     "allow-resume-platform-fund",
     "allow-shielded-status",
+    "allow-shielded-sync-info",
     "allow-shielded-sync",
     "allow-shielded-receive-address",
     "allow-shield-quote",

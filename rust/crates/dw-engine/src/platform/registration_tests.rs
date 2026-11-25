@@ -3722,9 +3722,11 @@ fn a_prepared_send_keeps_its_coin_through_a_locks_untracking() {
         reads_reserved(&f, coin),
         "the lock's untracking freed the prepared send's coin"
     );
-    // The send's own release frees it.
+    // The send's own release frees it, in the task its drop spawned.
     drop(prepared);
-    assert!(!reads_reserved(&f, coin));
+    eventually("the send's release frees the coin", || {
+        !reads_reserved(&f, coin)
+    });
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known

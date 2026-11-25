@@ -1,7 +1,7 @@
 //! Coin control and fee records (QT-057/058, QT-068..075).
 
 use dw_engine::{
-    CoinInfo, CoinSelectionSummary as EngineSummary, FeePolicy as EngineFeePolicy,
+    CoinInfo, CoinSelectionSummary as EngineSummary, ExclusionReason as EngineExclusion, FeePolicy as EngineFeePolicy,
     FeeSource as EngineFeeSource, FeeTarget as EngineFeeTarget,
 };
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,24 @@ pub struct Utxo {
     pub coinjoin_rounds: Option<u32>,
     /// Spendable now: mature, not locked or reserved, keys available.
     pub spendable: bool,
+    /// Kept out of spending and every balance, and why; `null` for any
+    /// other coin.
+    pub excluded: Option<CoinExclusion>,
 }
+
+/// Why a coin is kept out of spending and every balance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CoinExclusion {
+    /// Its payment, or one it was built on, may never confirm: shown as
+    /// pending until it does.
+    PendingUnproven,
+    /// An abandon or a drop gave it back and the rescan that checks it is
+    /// not back yet. Such a coin is not listed, so no row carries it.
+    RescanHold,
+}
+
+mirror_enum!(EngineExclusion => CoinExclusion { PendingUnproven, RescanHold });
 
 impl From<CoinInfo> for Utxo {
     fn from(c: CoinInfo) -> Self {
@@ -57,6 +74,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            excluded,
         } = c;
         Utxo {
             outpoint: outpoint.into(),
@@ -75,6 +93,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            excluded: excluded.map(Into::into),
         }
     }
 }

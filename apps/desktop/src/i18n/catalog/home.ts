@@ -35,6 +35,14 @@ export const home = {
     locked: "{amount} locked",
     separator: " · ",
   },
+  /** The Shielded row's subtitle while a payment that may still go through holds part of it.
+   * `amount` is the held total with its unit; `count` the payments holding it. */
+  shielded: {
+    held: {
+      one: "{amount} held for a payment",
+      other: "{amount} held for {count} payments",
+    },
+  },
   shortcuts: {
     label: "Shortcuts",
     receive: "Receive",

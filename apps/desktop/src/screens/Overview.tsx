@@ -10,7 +10,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter, type ShieldedHold } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
@@ -21,7 +21,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, shieldedSubtitle, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
@@ -67,7 +67,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
+function BalanceHero({ balances, shielded, shieldedHold, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; shieldedHold: ShieldedHold | null; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const tr = useT();
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
@@ -76,7 +76,7 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
-  const rows = home ? breakdownRows(home.pools, discreet) : [];
+  const rows = home ? breakdownRows(home.pools, discreet, shieldedHold !== null) : [];
   // Without a breakdown, what Core still has arriving or held goes under the hero (not in discreet mode).
   const coreNote = balances && rows.length === 0 && !discreet ? coreSubtitle(balances, fmt, "") : "";
   const digits = home ? heroDigits(fmt(home.total)) : null;
@@ -113,8 +113,8 @@ function BalanceHero({ balances, shielded, platform, network, hero }: { balances
         <div className="hero-breakdown" data-testid="hero-breakdown">
           {POOL_ROWS.filter((row) => rows.includes(row.pool)).map((row, i) => {
             const reading = home.pools[row.pool];
-            // Core names what is still arriving or held; discreet mode keeps that to itself.
-            const subtitle = row.pool === "core" && !discreet ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
+            // Core and Shielded name what is still arriving or held; discreet mode keeps that to itself.
+            const subtitle = discreet ? row.subtitle : row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.pool === "shielded" ? shieldedSubtitle(shieldedHold, fmt, row.subtitle) : row.subtitle;
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
@@ -271,7 +271,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
     <main className="page page-overview" data-testid="page-home">
       <h1 className="sr-only">{tr("home.title")}</h1>
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
+        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} shieldedHold={pools.shieldedHold} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
