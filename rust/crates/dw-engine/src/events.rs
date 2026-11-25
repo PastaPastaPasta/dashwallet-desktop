@@ -362,6 +362,10 @@ pub(crate) struct WalletState {
     /// `ChainTruncated` event of: the event at this height, or one above
     /// it that would lower nothing, is that truncation's, heard late.
     pub detected: Option<u32>,
+    /// What the wallet's drops hold, summed, the held coins of unknown
+    /// value, and whether one awaits what spends it
+    /// (`NetworkSession::refresh_held`).
+    pub held: (u64, u32, bool),
     /// The share of the excluded coins (`crate::withhold`) in `balance`
     /// and `accounts`, read with them from the manager. An event's
     /// snapshot keeps the last one until the manager is read again.
@@ -397,6 +401,7 @@ impl WalletState {
             loading: self.loading,
             fully_mixed: self.fully_mixed,
             detected: self.detected,
+            held: self.held,
             ..read
         };
     }
@@ -432,6 +437,9 @@ impl WalletState {
             coinjoin,
             withheld: self.excluded.pending,
             catching_up: self.catching_up(),
+            held_unfinished: self.held.0,
+            held_unvalued: self.held.1,
+            held_awaiting: self.held.2,
         }
     }
 
@@ -516,6 +524,11 @@ pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + S
 /// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
 pub(crate) type Funded = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
 
+/// A hub set's guard; a poisoned one still holds its last state.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -562,6 +575,10 @@ pub(crate) struct SessionHub {
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Refreshes the held report of every loaded wallet whose drops hold a
+    /// coin: a lock key-wallet heard is noted before a restart forgets it
+    /// (#749, Q81c C1).
+    held_refresh: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Tests: the balance rereads spawned and not yet done.
     #[cfg(test)]
     rereads_running: Arc<std::sync::atomic::AtomicUsize>,
@@ -590,6 +607,20 @@ pub(crate) struct SessionHub {
     /// Payments whose own block a wallet's ChainLock named, by wallet:
     /// their sent marks go at the next history flush.
     final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
+    /// The running shielded pass's tree progress (`checked`, `total`), from
+    /// its latest batch; cleared when the pass ends.
+    shielded_scan: Mutex<Option<(u64, u64)>>,
+    /// The wallets a shielded pass has synced this session: the first one
+    /// establishes the account, which hosts hear even when it found nothing.
+    shielded_synced: Mutex<HashSet<WalletId>>,
+    /// The wallets whose last shielded pass failed, until one succeeds.
+    shielded_failed: Mutex<HashSet<WalletId>>,
+    /// The wallets a status read found ready (a ledger restored from the
+    /// store), before any pass of this session scanned them.
+    shielded_ready: Mutex<HashSet<WalletId>>,
+    /// Each wallet's last Platform-address pass of this session; absent
+    /// (pending) until a pass ran for it.
+    platform_addresses: Mutex<HashMap<WalletId, crate::platform::AddressSync>>,
     /// The children of payments key-wallet's conflict sweep took, which it
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
@@ -597,6 +628,14 @@ pub(crate) struct SessionHub {
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
+    /// The inputs of each verified InstantSend lock heard on the network
+    /// that spends a coin the drops hold, whether or not key-wallet hears
+    /// it: the held report notes the lock on those coins (#749).
+    held_locks: Mutex<HashMap<Txid, BTreeSet<dashcore::OutPoint>>>,
+    /// The lowest height a fork truncated each wallet to since its held
+    /// report last ran (`NetworkSession::refresh_held`): the spend notes
+    /// above it that are not final go.
+    held_forks: Mutex<HashMap<WalletId, u32>>,
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
@@ -677,6 +716,13 @@ pub(crate) struct SessionHub {
     /// an exit right after the sweep.
     #[cfg(test)]
     pub(crate) skip_dead_hook: std::sync::atomic::AtomicBool,
+    /// Tests: key-wallet refuses every drop of a payment that can never
+    /// confirm, as when it settled the root meanwhile.
+    #[cfg(test)]
+    pub(crate) refuse_drops: std::sync::atomic::AtomicBool,
+    /// Tests: how many drops [`Self::refuse_drops`] refused.
+    #[cfg(test)]
+    pub(crate) drops_refused: std::sync::atomic::AtomicUsize,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -788,6 +834,40 @@ impl SessionHub {
         hook.is_some_and(|hook| hook(id))
     }
 
+    /// The running shielded pass's tree progress, once a batch proved the
+    /// pool's size.
+    pub(crate) fn shielded_scan(&self) -> Option<crate::platform::ShieldedScanProgress> {
+        let scan = *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner());
+        scan.filter(|&(_, total)| total > 0)
+            .map(|(checked, total)| crate::platform::ShieldedScanProgress {
+                checked: checked.min(total),
+                total,
+            })
+    }
+
+    /// `wallet`'s Shielded ledger is established this session: a pass
+    /// scanned it, or a status read found it ready.
+    pub(crate) fn shielded_established(&self, wallet: WalletId) -> bool {
+        lock(&self.shielded_synced).contains(&wallet)
+            || lock(&self.shielded_ready).contains(&wallet)
+    }
+
+    /// A status read found `wallet`'s ledger ready.
+    pub(crate) fn note_shielded_ready(&self, wallet: WalletId) {
+        lock(&self.shielded_ready).insert(wallet);
+    }
+
+    /// `wallet`'s last Platform-address pass of this session.
+    pub(crate) fn platform_addresses(&self, wallet: WalletId) -> crate::platform::AddressSync {
+        (lock(&self.platform_addresses).get(&wallet).copied())
+            .unwrap_or(crate::platform::AddressSync::Pending)
+    }
+
+    /// `wallet`'s last shielded pass of this session failed.
+    pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
+        lock(&self.shielded_failed).contains(&wallet)
+    }
+
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
         let _ = self.rates.set(rates);
     }
@@ -870,6 +950,7 @@ impl SessionHub {
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            held_refresh: OnceLock::new(),
             #[cfg(test)]
             rereads_running: Arc::default(),
             lock_rerun: OnceLock::new(),
@@ -880,8 +961,15 @@ impl SessionHub {
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
+            shielded_scan: Mutex::new(None),
+            shielded_synced: Mutex::new(HashSet::new()),
+            shielded_failed: Mutex::new(HashSet::new()),
+            shielded_ready: Mutex::new(HashSet::new()),
+            platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
             dropped_holds: Mutex::new(HashMap::new()),
+            held_locks: Mutex::new(HashMap::new()),
+            held_forks: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
@@ -928,6 +1016,10 @@ impl SessionHub {
             skip_unsigned_check: Default::default(),
             #[cfg(test)]
             skip_dead_hook: Default::default(),
+            #[cfg(test)]
+            refuse_drops: Default::default(),
+            #[cfg(test)]
+            drops_refused: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
@@ -982,6 +1074,68 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Sets what refreshes the held reports of the wallets with holds
+    /// (once).
+    pub(crate) fn attach_held_refresh(&self, run: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.held_refresh.set(run);
+    }
+
+    /// The loaded wallets whose drops hold a coin.
+    pub(crate) fn wallets_with_holds(&self) -> Vec<WalletId> {
+        let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        (holds.iter())
+            .filter(|(_, held)| !held.is_empty())
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// A verified lock was heard on the network: when it spends a coin a
+    /// drop holds, its inputs are kept for the held report, which notes
+    /// it on those coins, though key-wallet may never hear it (#749).
+    fn held_lock_heard(&self, lock: &InstantLock) {
+        let inputs: BTreeSet<dashcore::OutPoint> = lock.inputs.iter().copied().collect();
+        let hit = {
+            let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+            (holds.values()).any(|held| held.iter().any(|o| inputs.contains(o)))
+        };
+        if !hit {
+            return;
+        }
+        (self.held_locks.lock().unwrap_or_else(|p| p.into_inner())).insert(lock.txid, inputs);
+        if let Some(refresh) = self.held_refresh.get() {
+            refresh();
+        }
+    }
+
+    /// The verified locks heard on the network that spend a coin of
+    /// `holds`, each with the coins of `holds` it spends.
+    pub(crate) fn held_locks(
+        &self,
+        holds: &BTreeSet<dashcore::OutPoint>,
+    ) -> HashMap<Txid, BTreeSet<dashcore::OutPoint>> {
+        let locks = self.held_locks.lock().unwrap_or_else(|p| p.into_inner());
+        (locks.iter())
+            .map(|(t, inputs)| {
+                (
+                    *t,
+                    inputs.intersection(holds).copied().collect::<BTreeSet<_>>(),
+                )
+            })
+            .filter(|(_, spent)| !spent.is_empty())
+            .collect()
+    }
+
+    /// A lock was heard: key-wallet adds it to every wallet's locks, so
+    /// each wallet with holds notes it if it may spend a held coin.
+    fn lock_heard(&self) {
+        if self.wallets_with_holds().is_empty() {
+            return;
+        }
+        if let Some(refresh) = self.held_refresh.get() {
+            refresh();
+        }
     }
 
     /// Tests: counts a balance reread as running until the guard drops.
@@ -1214,24 +1368,43 @@ impl SessionHub {
     }
 
     /// The children of swept payments queued for wallet `id`'s drop: each
-    /// set with its winner and the swept payments.
-    pub(crate) fn take_dead_children(
-        &self,
-        id: WalletId,
-    ) -> Vec<(Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
+    /// set with its winner, the swept payments, and their inputs.
+    pub(crate) fn take_dead_children(&self, id: WalletId) -> Vec<DeadSet> {
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *queued)
             .into_iter()
             .partition(|(w, ..)| *w == id);
         *queued = others;
-        (mine.into_iter())
-            .map(|(_, children, winner, swept)| (children, winner, swept))
-            .collect()
+        (mine.into_iter()).map(|(_, set)| set).collect()
     }
 
     /// Keeps the drops' holds an open read, by wallet.
     pub(crate) fn note_dropped_holds(&self, holds: crate::tx_actions::DroppedHolds) {
         (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
+    }
+
+    /// Adds the coins a drop of wallet `id` noted it holds.
+    pub(crate) fn add_dropped_holds(
+        &self,
+        id: WalletId,
+        held: impl IntoIterator<Item = dashcore::OutPoint>,
+    ) {
+        let mut holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        holds.entry(id).or_default().extend(held);
+    }
+
+    /// A fork truncated wallet `id` to `height`: its next held report drops
+    /// the spend notes above it that are not final.
+    pub(crate) fn note_held_fork(&self, id: WalletId, height: u32) {
+        let mut forks = self.held_forks.lock().unwrap_or_else(|p| p.into_inner());
+        let fork = forks.entry(id).or_insert(height);
+        *fork = (*fork).min(height);
+    }
+
+    /// The lowest height a fork truncated wallet `id` to since this was last
+    /// taken.
+    pub(crate) fn take_held_fork(&self, id: WalletId) -> Option<u32> {
+        (self.held_forks.lock().unwrap_or_else(|p| p.into_inner())).remove(&id)
     }
 
     /// The coins wallet `id`'s drops hold for good, as its open read them.
@@ -1413,6 +1586,28 @@ impl SessionHub {
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
+        self.forget_shielded_passes(id);
+    }
+
+    /// Tests' passes fail for want of Platform: those that pin the rules
+    /// of a succeeding pass forget the failures.
+    #[cfg(test)]
+    pub(crate) fn forget_shielded_failures(&self) {
+        (self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .clear();
+    }
+
+    /// A wallet loaded again starts its shielded passes afresh: its first
+    /// pass establishes its account again, and an earlier failure is not
+    /// this load's.
+    fn forget_shielded_passes(&self, id: &WalletId) {
+        lock(&self.shielded_ready).remove(id);
+        lock(&self.platform_addresses).remove(id);
+        lock(&self.shielded_synced).remove(id);
+        lock(&self.shielded_failed).remove(id);
     }
 
     /// Publishes rescan state: `f` changes the running rescan under the
@@ -1475,6 +1670,11 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        // Its notes go with its rows: a wallet restored under the same id
+        // holds nothing of them.
+        (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
+        (self.held_forks.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
+        self.forget_shielded_passes(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -1762,6 +1962,7 @@ impl SessionHub {
             release.wait();
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
+        self.note_held_fork(id, height);
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
@@ -1943,6 +2144,7 @@ impl SessionHub {
                 // the mempool: none (BL-76).
                 if let TransactionContext::InstantSend(lock) = &record.context {
                     self.note_seen(id, [record.txid]);
+                    self.lock_heard();
                     if lock.txid == record.txid {
                         self.fan_out_lock(record.txid, lock, &unloaded);
                     } else {
@@ -1965,6 +2167,7 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
+                self.lock_heard();
                 self.fan_out_lock(*txid, instant_lock, &unloaded);
             }
             WalletEvent::TransactionsSwept {
@@ -2076,16 +2279,37 @@ impl SessionHub {
                         txid: Some(*superseded_by),
                         mined: winner_block.as_ref().map(|b| b.height()),
                     };
+                    let took = (swept.iter())
+                        .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+                        .collect();
                     (self.dead_children.lock().unwrap_or_else(|p| p.into_inner())).push((
                         id,
-                        children.into_iter().collect(),
-                        winner,
-                        txids.iter().copied().collect(),
+                        (
+                            children.into_iter().collect(),
+                            winner,
+                            txids.iter().copied().collect(),
+                            took,
+                        ),
                     ));
                 }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
                     let claims: &[Txid] = if claim { txids } else { &[] };
-                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, claims, &kept) {
+                    let sweep = crate::tx_actions::Sweep {
+                        winner: *superseded_by,
+                        block: winner_block.as_ref().map(|b| (b.height(), b.block_hash())),
+                        claim,
+                        txs: &swept,
+                    };
+                    let forgotten = crate::tx_actions::forget_swept(
+                        &appdb,
+                        id,
+                        txids,
+                        &dead,
+                        claims,
+                        &kept,
+                        Some(&sweep),
+                    );
+                    match forgotten {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
@@ -2252,9 +2476,18 @@ impl SessionHub {
 /// Chooses the spend claims of `wallets` again after `txid`'s lock.
 pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
 
-/// Children of swept payments queued for a drop: their wallet, their
-/// txids, the winner, and the swept payments.
-type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
+/// Children of swept payments queued for a drop, with their wallet.
+type DeadChildren = (WalletId, DeadSet);
+
+/// Children of swept payments to drop: their txids, the winner, the swept
+/// payments, and the coins those spent, read before the history forgot
+/// them.
+pub(crate) type DeadSet = (
+    Vec<Txid>,
+    crate::history::Winner,
+    BTreeSet<Txid>,
+    BTreeSet<dashcore::OutPoint>,
+);
 
 /// The transactions a wallet event names.
 fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
@@ -2293,6 +2526,7 @@ impl EventHandler for SessionHub {
             validated: true,
         } = event
         {
+            self.held_lock_heard(instant_lock);
             let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
             self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
         }
@@ -2361,35 +2595,87 @@ impl EventHandler for SessionHub {
 
 impl PlatformEventHandler for SessionHub {
     /// A Platform-address pass (release 0.1, m4 §2.12): every wallet it
-    /// synced re-reads its balance and activity. A skipped pass (another in
-    /// flight) names no wallet.
+    /// synced re-reads its balance and activity, and a wallet's first
+    /// outcome, or a changed one, re-reads its sync status. A skipped pass
+    /// (another in flight) names no wallet.
     fn on_platform_address_sync_completed(
         &self,
         summary: &platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary,
     ) {
+        use crate::platform::AddressSync;
+        let mut last = lock(&self.platform_addresses);
         for (id, outcome) in &summary.wallet_results {
-            if outcome.is_ok() {
+            let wallet = WalletId(*id);
+            let ok = outcome.is_ok();
+            let now = if ok {
+                AddressSync::Done
+            } else {
+                AddressSync::Failed
+            };
+            let changed = last.insert(wallet, now) != Some(now);
+            if ok {
                 self.pump
-                    .mark_platform(WalletId(*id), [PlatformChange::PlatformAddresses]);
+                    .mark_platform(wallet, [PlatformChange::PlatformAddresses]);
+            }
+            if changed {
+                self.pump.mark_platform(wallet, [PlatformChange::Startup]);
             }
         }
     }
 
     /// A shielded sync pass that found notes or spends of a wallet's account
-    /// (not a cooldown skip) tells its hosts (m4 §2.13).
+    /// (not a cooldown skip) tells its hosts (m4 §2.13), and so does the
+    /// wallet's first pass of the session, which establishes its account
+    /// (`ShieldedStatus::ready`) whatever it found. A cooldown skip ran no
+    /// pass: it is neither a wallet's first nor a recovery.
     fn on_shielded_sync_completed(&self, summary: &ShieldedSyncPassSummary) {
+        *self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let mut synced = self
+            .shielded_synced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut failed = self
+            .shielded_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (id, outcome) in &summary.wallet_results {
-            if let WalletShieldedOutcome::Ok(pass) = outcome
-                && !pass.is_cooldown_skip
-                && (pass
-                    .notes_result
-                    .new_notes_per_account
-                    .values()
-                    .any(|n| *n > 0)
-                    || pass.newly_spent_per_account.values().any(|n| *n > 0))
-            {
-                self.pump
-                    .mark_platform(WalletId(*id), [PlatformChange::Shielded]);
+            let wallet = WalletId(*id);
+            let pass = match outcome {
+                WalletShieldedOutcome::Ok(pass) if pass.is_cooldown_skip => continue,
+                WalletShieldedOutcome::Ok(pass) => pass,
+                WalletShieldedOutcome::Err(_) => {
+                    if failed.insert(wallet) {
+                        self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+                    }
+                    continue;
+                }
+                WalletShieldedOutcome::Skipped => continue,
+            };
+            let recovered = failed.remove(&wallet);
+            let first = synced.insert(wallet);
+            let found = (pass.notes_result.new_notes_per_account.values())
+                .chain(pass.newly_spent_per_account.values())
+                .any(|n| *n > 0);
+            if first || found || recovered {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
+            }
+        }
+    }
+
+    /// The running pass's tree progress, for `ShieldedStatus::scan`. The
+    /// pass's first batch tells the established wallets' hosts a pass runs
+    /// (the others read their status until established).
+    fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
+        let started = (lock(&self.shielded_scan))
+            .replace((leaves_committed, total_target))
+            .is_none();
+        if started {
+            let established: HashSet<WalletId> = (lock(&self.shielded_synced).iter())
+                .chain(lock(&self.shielded_ready).iter())
+                .copied()
+                .collect();
+            for wallet in established {
+                self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
             }
         }
     }
@@ -2653,6 +2939,218 @@ mod tests {
             balance: WalletCoreBalance::new(balance, 0, 0, 0),
             account_balances: BTreeMap::new(),
         }
+    }
+
+    fn shielded_pass(
+        outcomes: impl IntoIterator<Item = (WalletId, WalletShieldedOutcome)>,
+    ) -> ShieldedSyncPassSummary {
+        ShieldedSyncPassSummary {
+            wallet_results: (outcomes.into_iter()).map(|(w, o)| (w.0, o)).collect(),
+            sync_unix_seconds: 1_700_000_000,
+        }
+    }
+
+    fn found_nothing() -> WalletShieldedOutcome {
+        WalletShieldedOutcome::Ok(Default::default())
+    }
+
+    fn shielded_marks(hub: &SessionHub) -> Vec<WalletId> {
+        let marks = hub.pump.platform_marks.lock().unwrap().replace(Vec::new());
+        (marks.unwrap_or_default().into_iter())
+            .filter(|(_, c)| c.contains(&PlatformChange::Shielded))
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    fn startup_marks(hub: &SessionHub) -> Vec<WalletId> {
+        let marks = hub.pump.platform_marks.lock().unwrap().replace(Vec::new());
+        (marks.unwrap_or_default().into_iter())
+            .filter(|(_, c)| c.contains(&PlatformChange::Startup))
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    /// A wallet's Platform addresses are synced once its own pass succeeded
+    /// this session, not after any pass of the network: pending until a
+    /// pass ran for it, failed until one succeeds, and its hosts re-read its
+    /// sync status at each change.
+    #[test]
+    fn a_wallet_platform_addresses_are_synced_by_its_own_pass() {
+        use crate::platform::AddressSync;
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let pass = |outcomes: Vec<(WalletId, bool)>| PlatformAddressSyncSummary {
+            wallet_results: (outcomes.into_iter())
+                .map(|(w, ok)| {
+                    let outcome = match ok {
+                        true => WalletSyncOutcome::Ok(Default::default()),
+                        false => WalletSyncOutcome::Err("unreachable".into()),
+                    };
+                    (w.0, outcome)
+                })
+                .collect(),
+            sync_unix_seconds: 1_700_000_000,
+        };
+        let other = WalletId([8; 32]);
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
+        hub.on_platform_address_sync_completed(&pass(vec![(other, true)]));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
+        assert_eq!(startup_marks(&hub), [other]);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Failed);
+        assert_eq!(startup_marks(&hub), [W]);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
+        assert_eq!(startup_marks(&hub), []);
+        hub.on_platform_address_sync_completed(&pass(vec![(W, true)]));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Done);
+        assert_eq!(startup_marks(&hub), [W]);
+        // A skipped pass (another in flight) names no wallet.
+        hub.on_platform_address_sync_completed(&PlatformAddressSyncSummary::default());
+        assert_eq!(hub.platform_addresses(W), AddressSync::Done);
+        // A wallet loaded again waits for its own pass again.
+        hub.forget_shielded_passes(&W);
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
+    }
+
+    /// A pass's first batch tells the established wallets' hosts a pass
+    /// runs, once per pass; a wallet not established reads its status until
+    /// it is.
+    #[test]
+    fn a_running_pass_tells_the_established_wallets_hosts() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let (ready, fresh) = (WalletId([8; 32]), WalletId([9; 32]));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        hub.note_shielded_ready(ready);
+        assert!(hub.shielded_established(W) && hub.shielded_established(ready));
+        assert!(!hub.shielded_established(fresh));
+        shielded_marks(&hub);
+        hub.on_shielded_tree_progress(10, 100);
+        let mut marked = shielded_marks(&hub);
+        marked.sort();
+        assert_eq!(marked, [W, ready]);
+        hub.on_shielded_tree_progress(50, 100);
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        shielded_marks(&hub);
+        hub.on_shielded_tree_progress(10, 100);
+        assert_eq!(shielded_marks(&hub).len(), 2);
+    }
+
+    /// The wallet's first shielded pass of the session establishes its
+    /// account (`ready`) even when it finds nothing, so hosts hear of it;
+    /// later passes that find nothing stay quiet.
+    #[test]
+    fn a_first_shielded_pass_that_finds_nothing_tells_the_hosts() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W]);
+        for _ in 0..3 {
+            hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        }
+        assert_eq!(shielded_marks(&hub), []);
+        // A skipped wallet (not bound) has had no pass.
+        let other = WalletId([8; 32]);
+        hub.on_shielded_sync_completed(&shielded_pass([(other, WalletShieldedOutcome::Skipped)]));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(other, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [other]);
+    }
+
+    /// A failed pass is the wallet's state until a pass succeeds, before
+    /// the account is established or after; hosts hear each change.
+    #[test]
+    fn a_failed_shielded_pass_holds_until_one_succeeds() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let failed = || WalletShieldedOutcome::Err("unreachable".into());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert!(!hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        // After the account is established: fails, then recovers.
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        assert!(hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert!(!hub.shielded_pass_failed(W));
+        assert_eq!(shielded_marks(&hub), [W]);
+        // A skipped pass changes nothing.
+        hub.on_shielded_sync_completed(&shielded_pass([(W, failed())]));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, WalletShieldedOutcome::Skipped)]));
+        assert!(hub.shielded_pass_failed(W));
+    }
+
+    /// A cooldown skip ran no pass: a wallet bound just before it is still
+    /// told of its real first pass, and a failed one stays failed.
+    #[test]
+    fn a_cooldown_skip_is_neither_a_first_pass_nor_a_recovery() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let skip = || {
+            WalletShieldedOutcome::Ok(platform_wallet::wallet::shielded::ShieldedSyncSummary {
+                is_cooldown_skip: true,
+                ..Default::default()
+            })
+        };
+        hub.on_shielded_sync_completed(&shielded_pass([(W, skip())]));
+        assert_eq!(shielded_marks(&hub), []);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W], "the real first pass");
+        hub.on_shielded_sync_completed(&shielded_pass([(
+            W,
+            WalletShieldedOutcome::Err("x".into()),
+        )]));
+        assert_eq!(shielded_marks(&hub), [W]);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, skip())]));
+        assert!(hub.shielded_pass_failed(W), "a skip is no recovery");
+        assert_eq!(shielded_marks(&hub), []);
+    }
+
+    /// A wallet closed and opened again in the session is told of its
+    /// first pass again, and an earlier failure is forgotten.
+    #[test]
+    fn an_unloaded_wallet_starts_its_shielded_passes_afresh() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        *hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        hub.on_shielded_sync_completed(&shielded_pass([(
+            W,
+            WalletShieldedOutcome::Err("x".into()),
+        )]));
+        assert_eq!(shielded_marks(&hub), [W, W]);
+        hub.unload_wallet(&W);
+        assert!(!hub.shielded_pass_failed(W));
+        hub.admit(W);
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(shielded_marks(&hub), [W], "its first pass again");
+    }
+
+    /// The tree progress reads once a batch proved the pool's size, never
+    /// past it, and clears when the pass ends.
+    #[test]
+    fn the_shielded_scan_progress_lasts_the_pass() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        assert_eq!(hub.shielded_scan(), None);
+        hub.on_shielded_tree_progress(500, 0);
+        assert_eq!(hub.shielded_scan(), None);
+        hub.on_shielded_tree_progress(4_000, 10_000);
+        let scan = hub.shielded_scan().unwrap();
+        assert_eq!((scan.checked, scan.total), (4_000, 10_000));
+        hub.on_shielded_tree_progress(10_200, 10_000);
+        let scan = hub.shielded_scan().unwrap();
+        assert_eq!((scan.checked, scan.total), (10_000, 10_000));
+        hub.on_shielded_sync_completed(&shielded_pass([(W, found_nothing())]));
+        assert_eq!(hub.shielded_scan(), None);
     }
 
     /// A checkpoint advance outside a rescan tells whoever reads the

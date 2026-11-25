@@ -1098,10 +1098,16 @@ input[type="radio"]:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  height: var(--dw-layout-hero-height);
+  height: calc(var(--dw-layout-hero-height) + var(--hero-held-line));
   padding: var(--dw-space-l) var(--dw-layout-page-padding-h) 0;
   background: var(--dw-role-hero);
   color: var(--dw-role-text-on-hero);
+  --hero-held-line: 0px;
+}
+
+/* The line of coins a dropped payment holds: the band grows by it while it shows. */
+.hero-band:has(.hero-held) {
+  --hero-held-line: calc(var(--dw-space-s) + var(--dw-type-footnote-line));
 }
 
 .hero {
@@ -1159,30 +1165,57 @@ input[type="radio"]:disabled {
 
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
-  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
 /* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
    the fiat row and the note of what Core has pending. */
 @media (min-width: 980px) {
   .hero-band:has(.hero[data-breakdown="none"]) {
-    height: var(--dw-layout-hero-height-hidden);
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
   .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
   }
 }
 
-.hero-note {
+.hero-note,
+.hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
+}
+
+.hero-note,
+.hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-held {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs) var(--dw-space-s);
+  align-items: baseline;
+  justify-content: center;
+  margin-top: var(--dw-space-s);
+  text-align: center;
+}
+
+.hero-held-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-on-hero);
+  font: inherit;
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .hero-fiat {
@@ -2512,6 +2545,21 @@ input[type="radio"]:disabled {
 
 .request-form .placeholder-note,
 .receive-card .form-problem {
+  margin: 0;
+}
+
+/* Receive in Shielded without the viewing key: why, and the unlock. Under the address while the
+   first scan runs: its progress, and that a payment is safe to receive now. */
+.shielded-receive-why,
+.shielded-receive-scan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+}
+
+.shielded-receive-why p,
+.shielded-receive-scan p {
   margin: 0;
 }
 

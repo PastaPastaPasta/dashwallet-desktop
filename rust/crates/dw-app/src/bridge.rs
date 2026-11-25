@@ -259,7 +259,8 @@ pub enum PlatformChangeName {
     Startup,
     /// The wallet's Platform-address balances or their activity.
     PlatformAddresses,
-    /// The wallet's shielded account (`shielded_status`, `shielded_history`).
+    /// The wallet's shielded account (`shielded_status`, `shielded_sync_info`,
+    /// `shielded_history`).
     Shielded,
 }
 
@@ -874,6 +875,9 @@ mod tests {
                         coinjoin: u64::MAX,
                         withheld: u64::MAX,
                         catching_up: true,
+                        held_unfinished: u64::MAX,
+                        held_unvalued: u32::MAX,
+                        held_awaiting: true,
                     }),
                 },
                 EngineEvent::HistoryChanged {

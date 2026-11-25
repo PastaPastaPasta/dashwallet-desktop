@@ -16,7 +16,7 @@ import { fundFor, type PlatformFundApi, type PlatformFundFlow } from "../platfor
 import { MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { MOVE_COPY, moveFor, type MoveBlock, type PlatformMoveApi, type PlatformMoveFlow } from "../platform/move";
 import { SHIELDED_COPY, shieldedFor, type ShieldedApi, type ShieldedFlow, type ShieldedKind } from "../shielded/flow";
-import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, type ShieldedWait } from "../shielded/syncing";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -193,10 +193,14 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
+  /** Every coin the Dash wallet holds that isn't locked or reserved, in duffs, incoming and mixed ones too:
+   * Max from it is offered while there is any, since the Core Max says why it can't move them. `null` while
+   * it is not read; `undefined` when the coin list can't be read, and the balance decides. */
+  coreCoins?: number | null;
   mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. */
-  shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
+  shielded: { active: boolean; syncing: boolean; wait?: ShieldedWait | null; duffs: number | null } | null | undefined;
   /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
    * move of everything would take. */
   platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string; mainnet?: MainnetOff } | null | undefined;
@@ -302,7 +306,8 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
-      if (s.syncing || (route === "coreToShielded" && pools.coreSyncing)) return SHIELDED_SYNC_COPY.syncing;
+      if (s.syncing) return SHIELDED_SYNC_COPY.wait(s.wait ?? "syncing");
+      if (route === "coreToShielded" && pools.coreSyncing) return SHIELDED_SYNC_COPY.syncing;
       const f = flows.shielded;
       // The flow is shared: another of its moves is running, or its result waits to be seen.
       if (f.running) return SHIELDED_COPY.card.why.busy;

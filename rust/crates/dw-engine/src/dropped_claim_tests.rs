@@ -1567,6 +1567,7 @@ fn a_stop_after_an_in_session_sweeps_marks_ends_with_the_payment_dropped() {
         &dead,
         &[],
         &[(s, payment.clone(), own)],
+        None,
     )
     .unwrap();
     let session = reopen(&engine, session);

@@ -6,7 +6,7 @@ import { RepairText, resetChainAndResync } from "./repair";
 import { guardWhileLocked, refusedWhileLocked, resetWalletGate } from "../api/lockGate";
 import type { Backend } from "../api/backend";
 
-const wallet = (walletId: string, name: string): WalletSummary => ({ walletId, name, watchOnly: false, hasMnemonic: true, hd: true, birthHeight: 900_000, createdAt: null, balances: null });
+const wallet = (walletId: string, name: string): WalletSummary => ({ walletId, name, watchOnly: false, hasMnemonic: true, legacyIssued: false, hd: true, birthHeight: 900_000, createdAt: null, balances: null });
 
 function fakeApi(fail?: "stop" | "reset") {
   const calls: string[] = [];

@@ -41,6 +41,7 @@ export const summary = (walletId: string, name: string, patch: Partial<WalletSum
   name,
   watchOnly: false,
   hasMnemonic: true,
+  legacyIssued: false,
   hd: true,
   birthHeight: 0,
   createdAt: null,

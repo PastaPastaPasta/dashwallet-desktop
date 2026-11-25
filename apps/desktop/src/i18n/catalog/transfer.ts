@@ -43,6 +43,16 @@ export const transfer = {
    * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
   maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
   maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
+  /** Max from the Dash wallet can move nothing yet: its coins are still arriving (`arriving`, as `maxArriving`'s), and
+   * once they've confirmed they would clear this route's smallest amount and the fee. */
+  maxAllArriving: "Your Dash wallet's coins are still arriving ({arriving}). Max can move them once they've confirmed.",
+  /** As `maxAllArriving`, but even once they've confirmed the coins wouldn't clear this route's smallest amount and the
+   * fee. */
+  maxArrivingTooSmall: "Your Dash wallet's coins are still arriving ({arriving}), but even once they've confirmed, that's less than the smallest amount this transfer can move.",
+  /** Max from the Dash wallet can move nothing, nothing is arriving, and every coin is one Max leaves out. */
+  maxNothing: "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  /** Max from the Dash wallet can move nothing, and nothing is arriving or left out. */
+  maxEmpty: "There's nothing in your Dash wallet to move.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
@@ -240,7 +250,14 @@ export const transfer = {
   shielded: {
     /** While Shielded's account is not established (shielded/syncing.ts). */
     sync: {
-      syncing: "Shielded is still syncing; try again when it finishes.",
+      syncing: "Shielded is still syncing. Try again when it finishes.",
+      /** Instead of `syncing` when the vault's lock (`locked`, `mixingOnly`) or a watch-only wallet holds
+       * the viewing key's first bind. */
+      locked: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.",
+      mixingOnly: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
+      /** Receive's line while the first scan runs; `percent` is formatted. */
+      progress: "Syncing Shielded… {percent}",
       scanning: "Scanning…",
       /** `when` is how long ago, as "5 min ago". */
       lastChecked: "Last checked {when}",
@@ -333,6 +350,12 @@ export const transfer = {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
       loading: "Getting your Shielded address…",
+      /** Under the address while Shielded's first scan runs. */
+      early: "You can receive now. Your Shielded balance shows when the sync finishes.",
+      locked: "Unlock the wallet to show your Shielded address.",
+      mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.",
+      unlock: "Unlock",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
       qr: "QR code of {address}",
       copyAddress: "Copy Shielded address",
     },

@@ -22,7 +22,7 @@ import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { addressSendsOff, MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { heldExitOps, MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
-import { shieldedSyncing } from "../shielded/syncing";
+import { shieldedSyncing, shieldedWait } from "../shielded/syncing";
 import {
   canSwap,
   defaultRoute,
@@ -70,8 +70,9 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
+    coreCoins: coins.isError ? undefined : (coins.data?.filter((c) => !c.userLocked && !c.reserved).reduce((n, c) => n + c.amount, 0) ?? null),
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
-    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
+    shielded: status ? { active: status.active, syncing: shieldedSyncing(status), wait: shieldedWait(status), duffs: shieldedDuffs(status) } : status,
     platform:
       !known(pools.platform)
         ? pools.platform === "loading"
@@ -254,6 +255,12 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const amount = useParsed(text, network);
   const blocked = why !== null || flow.running;
   const probe = balanceOf(ROUTES[route].from, pools);
+  // A Core Max is offered while the Dash wallet holds any coin not locked or reserved: its refusal says why it
+  // moves none.
+  const coins = isCoreRoute(route) && pools.coreCoins !== undefined ? pools.coreCoins : probe;
+  const canMax = !!coins && probe !== null;
+  // With nothing a Core Max could take, the line under the amount says so (beside Max it squeezed the field).
+  const noCoins = why === null && isCoreRoute(route) && coins === 0;
   // The fee line follows the amount once it is read, and the source balance; nothing is quoted while
   // the route can't run.
   useEffect(() => {
@@ -271,12 +278,14 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
       ? null
       : route === "coreToPlatform"
         ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: maxRefused ? { kind: "add", duffs: 0, all: true } : null, pending })
-        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status), maxRefused);
+        : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedWait(status), maxRefused);
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
-  const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
+  // Max's own refusal says why it moved nothing ahead of the typed amount's problem, until the amount is edited.
+  const problem = maxRefused && refusal !== null ? refusal : (amountProblem ?? refusal);
+  const continueWhy = why ?? problem ?? (amount == null ? T.why.amount : null);
   return (
     <form
       className="topup-form"
@@ -322,17 +331,17 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           size="medium"
           data-testid="transfer-max"
           aria-busy={line.maxing}
-          disabled={blocked || !own || !probe || line.maxing}
-          why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : null)}
+          disabled={blocked || !own || !canMax || line.maxing}
+          why={why ?? (probe === null || coins === null ? T.loading : null)}
           title={line.maxing ? T.why.max : undefined}
           whyId={why ? `${id}-why` : undefined}
-          onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
+          onClick={() => probe !== null && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
           {T.max}<span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
         </DashButton>
       </div>
-      <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
-        {amountProblem ?? refusal ?? fee ?? ""}
+      <p className={problem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
+        {problem ?? (noCoins ? T.noCoreBalance : fee) ?? ""}
       </p>
       {route === "coreToPlatform" && mixing && mixing.state !== "idle" && <div className="card-actions"><DashButton variant="plainBlue" data-testid="transfer-pause-mixing" disabled={pause.busy} onClick={() => void pause.run("stop")}>{tr("transfer.pauseMixing")}</DashButton></div>}
       {pause.problem && <p className="form-problem" role="alert">{pause.problem}</p>}
@@ -340,7 +349,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
           {T.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : refusal || amountProblem ? `${id}-fee` : undefined}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : problem ? `${id}-fee` : undefined}>
           {T.continue}
         </DashButton>
       </div>

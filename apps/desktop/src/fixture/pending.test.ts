@@ -77,6 +77,16 @@ describe("fixture pending commands", () => {
     expect(await backend.platformActivity(W)).toBeNull();
   });
 
+  it("reports a first scan as running, a stopped failed pass as not, and a running retry as running", async () => {
+    const s = fixture.world.pending.shielded!;
+    s.ready = false;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true });
+    s.lastPassFailed = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: false, lastPassFailed: true });
+    s.scanning = true;
+    expect(await backend.shieldedSyncInfo(W)).toMatchObject({ established: false, syncing: true, lastPassFailed: true });
+  });
+
   it("quotes a move to Core and refuses a grant that is too small", async () => {
     const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
     expect(quote).toMatchObject({ credits: "40000000000", feeCredits: "2000000", expectedDuffs: 39_998_000, grant: { maxCredits: "40000000000" } });
@@ -512,5 +522,28 @@ describe("fixture Platform address funds on mainnet", () => {
     await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, null)).rejects.toMatchObject(off);
     // The exact retry passes the flag; this fixture's payee is a testnet address, so the recipient check answers next.
     await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, "ps-held")).rejects.toMatchObject({ code: "credits.recipient_invalid" });
+  });
+});
+
+describe("fixture Core Max of coins still arriving", () => {
+  /** A Core Max to `route` of one arriving coin of `amount`: the refusal's data. */
+  async function maxOfArriving(route: "shield" | "fund", amount: number) {
+    clearMocks();
+    installFixture({ scenario: "transfer-max-arriving" }).world.wallets[0].coins[0].amount = amount;
+    const b = new IpcBackend("fixture");
+    const quote = route === "shield" ? b.shieldQuote(W, { kind: "all" }) : b.platformFundQuote(W, { kind: "all" });
+    return quote.then(
+      () => null,
+      (e: { data?: unknown }) => e.data,
+    );
+  }
+
+  it("says Max can move them once they've confirmed only from the route's smallest amount plus the lock fee", async () => {
+    const fee = 1_148;
+    for (const [route, floor] of [["shield", 10_001], ["fund", 56_001]] as const) {
+      for (const [amount, arrivingClears] of [[floor + fee, true], [floor + fee - 1, false]] as const) {
+        expect(await maxOfArriving(route, amount), `${route} ${amount}`).toEqual({ kind: "maxMinimum", min: floor, duffs: 0, leftDuffs: 0, arrivingDuffs: amount, arrivingClears });
+      }
+    }
   });
 });
