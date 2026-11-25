@@ -27,11 +27,12 @@ import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, kno
 import { isSyncing, oneDecimal, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./dashpay/DashPayCard";
-import { buyCredits } from "./dashpay/MyProfile";
+import { identityCardAction } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
 import { ExportStagingBanner } from "./ExportStagingBanner";
 import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
+import { DroppedNoticeBanner } from "./DroppedNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
@@ -233,8 +234,11 @@ function HomeDashPayCard({ walletId, network }: { walletId: string; network: Net
   const b = useBackend();
   const { inputs, retry } = useStatusInputs(walletId, network);
   const card = homeCard(inputs);
-  // DP1-10 D8: "Buy credits" opens My Profile with the top-up sheet.
-  const onAction = (kind: CardActionKind) => (kind === "buyCredits" && inputs.main ? buyCredits(b, walletId, inputs.main) : defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId)));
+  // DP1-10 D8: "Buy credits" (and the voting card's Top up) opens My Profile with the top-up sheet.
+  const onAction = (kind: CardActionKind) => {
+    if (identityCardAction(b, walletId, inputs.main, kind, card)) return;
+    return defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId));
+  };
   return card && <DashPayCard card={card} onAction={onAction} />;
 }
 
@@ -318,6 +322,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <HistoryGapNotice />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
+        <DroppedNoticeBanner walletId={walletId} network={network} />
         <ExportStagingBanner />
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />

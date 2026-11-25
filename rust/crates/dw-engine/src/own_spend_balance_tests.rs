@@ -2513,6 +2513,63 @@ fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
 }
 
+/// How the history lists `txid`: each record's status kind and drop.
+fn listed_as(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Vec<(crate::history::TxStatusKind, Option<crate::history::TxDrop>)> {
+    let query = crate::history::HistoryQuery {
+        filter: crate::history::HistoryFilter::default(),
+        sort: crate::history::HistorySort::NewestFirst,
+        cursor: None,
+        limit: 100,
+    };
+    let page = engine.block_on(session.history_page(id, query)).unwrap();
+    let txid = txid.to_string();
+    (page.records.into_iter())
+        .filter(|r| r.txid == txid)
+        .map(|r| (r.status.kind, r.status.dropped))
+        .collect()
+}
+
+/// A payment a mined rival beat, dropped by the reconcile, lists as a plain
+/// abandoned one: no drop status and no notice, also after a restart.
+#[test]
+fn a_beaten_payments_drop_lists_as_plain_abandoned_with_no_notice() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = reopen(&engine, session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "dropped");
+    let plain = vec![(crate::history::TxStatusKind::Abandoned, None)];
+    assert_eq!(listed_as(&engine, &session, id, p.txid()), plain);
+    let notices = engine.block_on(session.dropped_notices(id)).unwrap();
+    assert!(notices.is_empty(), "no notice: {notices:?}");
+
+    let session = reopen(&engine, session);
+    assert_eq!(
+        listed_as(&engine, &session, id, p.txid()),
+        plain,
+        "after a restart"
+    );
+    let notices = engine.block_on(session.dropped_notices(id)).unwrap();
+    assert!(notices.is_empty(), "no notice after a restart: {notices:?}");
+}
+
 /// #170 case 3 against a resend: a drop of a beaten payment waits for the
 /// wallet's abandon gate, which a resend holds for reading through its
 /// hand-off, and writes no mark until it is released (MG-10 §1.10). The
@@ -3351,8 +3408,10 @@ fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
         });
     reconciled(&engine, &session, id);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
-    let dead = BTreeSet::from([c.txid()]);
-    crate::tx_actions::forget_swept(&session.live().unwrap().appdb, id, &[], &dead, &[]).unwrap();
+    let dead =
+        crate::tx_actions::Dead::from([(c.txid(), crate::history::DropCause::InvalidSource)]);
+    crate::tx_actions::forget_swept(&session.live().unwrap().appdb, id, &[], &dead, &[], &[])
+        .unwrap();
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);

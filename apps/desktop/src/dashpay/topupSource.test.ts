@@ -14,7 +14,7 @@ import { canPay, FROM_PLATFORM_COPY, fromPlatformErrorText, liveOutcome, maxMask
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
-const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false, sendsActive: true });
+const addresses = (movable: string, duffs: number): PlatformAddressBalance => ({ credits: movable, movableCredits: movable, duffs, addresses: [], syncedAt: null, syncing: false, sendsActive: true, sendsOff: null });
 
 const inputs = (patch: Partial<SourceInputs> = {}): SourceInputs => ({
   coreDuffs: 150_000_000,

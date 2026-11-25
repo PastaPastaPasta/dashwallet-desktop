@@ -387,11 +387,19 @@ describe("fixture Add from Dash wallet", () => {
     expect(q).toEqual({ duffs: 50_000_000, feeDuffs: 1_000, totalDuffs: 50_001_000, feeCredits: "56000000", credits: "49944000000", to: platform().receive.address, grant: { maxDuffs: 50_001_000, maxCredits: "0" }, max: null });
   });
 
-  it("refuses a Core Max (`all`) on all four calls: the fixture has none yet", async () => {
+  it("quotes a Core Max (`all`) as core_max.rs does: every final main coin, the fee out of it, and runs only under exactly its grant", async () => {
     const all = { kind: "all" } as const;
-    const id = (await duffsGrant(1)).id;
-    const calls = [() => backend.platformFundQuote(W, all), () => backend.platformFund(W, all, id), () => backend.shieldQuote(W, all), () => backend.shieldFromCore(W, all, id)];
-    for (const call of calls) await expect(call()).rejects.toMatchObject({ code: "invalid_argument" });
+    for (const [quote, run] of [
+      [() => backend.platformFundQuote(W, all), (grant: string) => backend.platformFund(W, all, grant)],
+      [() => backend.shieldQuote(W, all), (grant: string) => backend.shieldFromCore(W, all, grant)],
+    ] as const) {
+      const q = await quote();
+      expect(q.max).not.toBeNull();
+      expect(q.duffs + q.feeDuffs).toBe(q.totalDuffs);
+      expect(q.grant.maxDuffs).toBe(q.totalDuffs);
+      await expect(run((await duffsGrant(q.totalDuffs + 1)).id)).rejects.toMatchObject({ code: expect.stringMatching(/\.coins_changed$/) });
+      await expect(run((await duffsGrant(q.totalDuffs)).id)).resolves.toBeDefined();
+    }
   });
 
   it("refuses an amount below the minimum, more than the Core balance, and a new add while one is waiting", async () => {
@@ -469,3 +477,40 @@ describe("fixture Add from Dash wallet", () => {
   });
 });
 
+
+describe("fixture Platform address funds on mainnet", () => {
+  const passphrase = { kind: "passphrase" as const, passphrase: FIXTURE_PASSPHRASE };
+  const opGrant = (maxCredits: string) => backend.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits }, W, passphrase);
+  const off = { code: "platform.feature_off", data: { kind: "feature", feature: "platform_address_sends" } };
+  const onMainnet = (scenario: Parameters<typeof installFixture>[0]["scenario"]) => {
+    fixture = installFixture({ scenario });
+    fixture.world.launch.network = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
+    backend = new IpcBackend("fixture");
+  };
+
+  it("keeps every new move, send, add and receive address off, and says so on the balance", async () => {
+    onMainnet("funded");
+    expect(await backend.platformAddresses(W)).toMatchObject({ sendsOff: "platform_address_sends", sendsActive: false });
+    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(off);
+    await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, null)).rejects.toMatchObject(off);
+    await expect(backend.platformSend(W, "op-none", "grant-none")).rejects.toMatchObject(off);
+    await expect(backend.platformReceiveAddress(W)).rejects.toMatchObject(off);
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 1_000_000 })).rejects.toMatchObject(off);
+    expect(fixture.world.pending.platform!.activity.every((a) => a.kind !== "moveToCore" && a.kind !== "send")).toBe(true);
+  });
+
+  it("still exits a held move, and falls back once it settles", async () => {
+    onMainnet("platform-move-failed-may-land");
+    const quote = await backend.platformMoveToCoreQuote(W, { kind: "all" });
+    expect(await backend.platformMoveToCore(W, { kind: "all" }, quote.to, quote.exitOf, (await opGrant(quote.grant.maxCredits)).id)).toMatchObject({ state: "done" });
+    await expect(backend.platformMoveToCoreQuote(W, { kind: "all" })).rejects.toMatchObject(off);
+  });
+
+  it("takes only a held send's exact retry past the flag", async () => {
+    onMainnet("platform-send-failed-may-land");
+    await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "2000000000" }, "ps-held")).rejects.toMatchObject(off);
+    await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, null)).rejects.toMatchObject(off);
+    // The exact retry passes the flag; this fixture's payee is a testnet address, so the recipient check answers next.
+    await expect(backend.platformSendQuote(W, PLATFORM_PAYEE, { kind: "credits", credits: "1000000000" }, "ps-held")).rejects.toMatchObject({ code: "credits.recipient_invalid" });
+  });
+});

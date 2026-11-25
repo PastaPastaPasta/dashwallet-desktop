@@ -621,6 +621,7 @@ impl NetworkSession {
                 s.scan_target = s.scan_target.max(target);
                 s.replay_cancelled = Some(s.replay_cancelled.map_or(reached, |h| h.min(reached)));
             });
+            self.hub.mark_drops(wallet);
         };
         let record = match live.replay.get(wallet).await {
             Ok(Some(record)) => record,
@@ -630,6 +631,7 @@ impl NetworkSession {
                 self.hub.update_wallet_state(wallet, |s| {
                     s.replay_cancelled = Some(s.replay_cancelled.map_or(floor, |h| h.min(floor)));
                 });
+                self.hub.mark_drops(wallet);
                 return;
             }
         };
@@ -822,6 +824,7 @@ impl NetworkSession {
             drop(wm);
             for id in state.wallets.keys() {
                 this.refresh_wallet_state(&manager, *id).await;
+                this.hub.mark_drops(*id);
             }
             this.hub.pump.mark_sync();
             Ok(true)
