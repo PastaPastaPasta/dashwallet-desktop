@@ -1,21 +1,17 @@
-// Hand-written, not generated: the store-refusal and StorageInUse shapes dw-app's ts-rs export carries
-// once its `ErrorData` gains `StoreRefused` and `StorageInUse { retryable }` and `EngineCode` gains
-// `storage_refused` (DTO contract v2). They match what ts-rs writes (tag `kind`, camelCase fields). When
-// the regenerated bindings have them, these become re-exports of those.
+// The store-refusal and StorageInUse shapes come from dw-app's ts-rs export (src/api/generated); this
+// module adds the runtime checks a refused open's error goes through before the screen trusts it.
 
-/** A button of a refused open's screen: its catalog key and English label. */
-export type StoreButton = { key: string; label: string; destructive: boolean; defaultFocus: boolean };
+import type { ErrorData } from "./generated/ErrorData";
+import type { StoreButton } from "./generated/StoreButton";
+import type { StoreHint } from "./generated/StoreHint";
+import type { StoreScreen } from "./generated/StoreScreen";
 
-/** The line under the buttons: its catalog key and English text. */
-export type StoreHint = { key: string; text: string };
-
-/** The screen the engine gives for a refused open (`screen_for`), in English, `{folder}` filled in. */
-export type StoreScreen = { titleKey: string; title: string; textKey: string; text: string; buttons: Array<StoreButton>; hint: StoreHint | null };
+export type { StoreButton, StoreHint, StoreScreen };
 
 /** `cause` is the engine's error variant, for tests and logs only: the screen never depends on it. */
-export type StoreRefusedData = { kind: "storeRefused"; screen: StoreScreen; folder: string; cause: string };
+export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
 
-export type StorageInUseData = { kind: "storageInUse"; retryable: boolean };
+export type StorageInUseData = Extract<ErrorData, { kind: "storageInUse" }>;
 
 /** The open's refusals: a store refusal, or StorageInUse with its `retryable`. */
 export type StoreOpenError = { code: "storage_refused"; message: string; data: StoreRefusedData } | { code: "storage_in_use"; message: string; data: StorageInUseData | null };
@@ -44,7 +40,7 @@ export function storeRefusal(e: unknown): StoreRefusedData | null {
 }
 
 /** `storage_in_use`'s `retryable`; `null` for any other error. Without the data (a dw-app before it)
- * the store is held until a restart, as at this pin. */
+ * the store is read as held until a restart. */
 export function storageInUse(e: unknown): { retryable: boolean } | null {
   if (!object(e) || e.code !== "storage_in_use") return null;
   const data = e.data as Partial<StorageInUseData> | null | undefined;
