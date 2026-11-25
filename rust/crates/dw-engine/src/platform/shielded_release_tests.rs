@@ -796,7 +796,7 @@ fn a_failed_nullifier_read_keeps_the_anchors_height() {
 /// A kept height survives a power loss once it is kept: the library's
 /// refusal is durable in its own store, and a refusal whose height was lost
 /// would stay held once the anchor is pruned. A stored value that is not a
-/// height is reported, never taken as one.
+/// height is replaced, never taken as one: it would stop the wallet's pass.
 #[test]
 fn a_kept_anchor_height_survives_a_power_loss() {
     use crate::platform::shielded_release::{presence, record_presence};
@@ -828,8 +828,10 @@ fn a_kept_anchor_height_survives_a_power_loss() {
     let key = format!("shielded_anchor_recorded/{}", hex::encode(st_hash(2)));
     (engine.block_on(s.appdb_op(move |db| db.set_setting(&scope, &key, Some("x"))))).unwrap();
     let s = Arc::clone(&session);
-    let garbled = engine.block_on(async move { record_presence(&s, wallet, st_hash(2), 5).await });
-    assert!(garbled.is_err(), "{garbled:?}");
+    (engine.block_on(async move { record_presence(&s, wallet, st_hash(2), 5).await })).unwrap();
+    let s = Arc::clone(&session);
+    let replaced = engine.block_on(async move { presence(&s, wallet, st_hash(2)).await });
+    assert_eq!(replaced, Some(Some(5)));
 }
 
 /// An anchors read one block behind (the SDK's height tolerance) can be

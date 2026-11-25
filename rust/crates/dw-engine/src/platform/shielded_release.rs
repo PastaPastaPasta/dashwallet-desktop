@@ -298,8 +298,10 @@ pub(crate) async fn presence(
 /// Records that the anchor of `wallet`'s spend `st_hash` was proved recorded
 /// at `height`, keeping the highest, durably against power loss once it
 /// returns `Ok` (the library's refusal is durable in its own store, and a
-/// lost height would hold the spend for good). An error when the stored
-/// value is not a height of at least `height`.
+/// lost height would hold the spend for good). A stored value that is not
+/// a height is replaced: any one proved height orders the release, so the
+/// spend's pass is not stuck on it. An error when what is stored after is
+/// not a height of at least `height`.
 pub(crate) async fn record_presence(
     session: &NetworkSession,
     wallet: WalletId,
@@ -308,9 +310,17 @@ pub(crate) async fn record_presence(
 ) -> Result<(), String> {
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let key = presence_key(st_hash);
-    let stored = (session.appdb_op(move |db| db.raise_setting_durable(&scope, &key, height)))
-        .await
-        .map_err(|e| e.to_string())?;
+    let stored = (session.appdb_op(move |db| {
+        let stored = db.raise_setting_durable(&scope, &key, height)?;
+        if stored.parse::<u64>().is_ok() {
+            return Ok(stored);
+        }
+        let height = height.to_string();
+        db.set_setting_durable(&scope, &key, Some(&height))?;
+        Ok(height)
+    }))
+    .await
+    .map_err(|e| e.to_string())?;
     match stored.parse::<u64>() {
         Ok(kept) if kept >= height => Ok(()),
         _ => Err(format!(
