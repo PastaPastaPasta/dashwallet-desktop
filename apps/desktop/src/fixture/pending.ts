@@ -32,7 +32,7 @@ import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
 import { heldExitOp, isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
 import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
-import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
+import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
@@ -609,11 +609,15 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     if (network !== world.launch.network.kind) {
       const knobs = world.networkSwitch ?? {};
       if (knobs.busy) throw fail("app.network_busy", "closing the network would cut what runs", { kind: "networkBusy", stalled: false, draining: false, ...knobs.busy });
-      if (knobs.closeRefused)
-        throw fail(knobs.closeRefused, "the close was refused", {
-          kind: "networkCloseRefused",
-          reason: knobs.closeRefused === "wallet" ? "walletOpening" : "shieldedSpendUnresolved",
-        });
+      if (knobs.closeRefused) {
+        const refusal = {
+          wallet: ["wallet", "walletOpening"],
+          shielded_spend_unresolved: ["shielded_spend_unresolved", "shieldedSpendUnresolved"],
+          transfer_preparing: ["app.transfer_preparing", "transferPreparing"],
+        } as const;
+        const [code, reason] = refusal[knobs.closeRefused];
+        throw fail(code, "the close was refused", { kind: "networkCloseRefused", reason });
+      }
       if (knobs.fail) {
         // The close happened: what the page knew of this network is gone, so it boots again.
         restarted(world);
@@ -633,6 +637,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,
+  ...REMAINDER_HANDLERS,
   platform_addresses: ({ walletId }: { walletId: string }, { world }: Ctx) => {
     wallet(world, walletId);
     return balance(world, platformOf(world, "platform_addresses"));

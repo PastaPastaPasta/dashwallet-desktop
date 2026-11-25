@@ -233,6 +233,16 @@ fn payment(to: &Address) -> Transaction {
     }
 }
 
+/// A payment of [`PAID`] to the wallet's receive address, InstantSend-locked
+/// and stored: a balance that outlives a restart. Returns its amount.
+pub(crate) fn paid_and_stored(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> u64 {
+    let tx = payment(&receive_address(engine, session, id));
+    mempool(engine, session, id, &tx);
+    instant_lock(engine, session, id, &tx);
+    wait_stored_locked(session, id, tx.txid());
+    PAID
+}
+
 fn block_with(txs: Vec<Transaction>) -> Block {
     let mut block = Block {
         header: dashcore::blockdata::block::Header {
