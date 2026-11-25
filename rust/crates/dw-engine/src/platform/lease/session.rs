@@ -84,7 +84,9 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
 /// grant unused (none given included).
 /// `source`: a `ContactPayFromBalance` payment's (C-funding P15), whose
-/// lease carries that source's key class alone.
+/// lease carries that source's key class alone; `Shielded` for a
+/// `Registration` paid from the Shielded balance (F5), whose lease carries
+/// the shielded spend key beside the identity signer and no funding signer.
 pub(crate) fn issue(
     vault: &Vault,
     wallet: &WalletId,
@@ -213,6 +215,27 @@ pub(crate) fn issue(
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
+            } if flow == FlowKind::Registration && source == Some(PaymentSource::Shielded) => {
+                // A registration paid from the Shielded balance (C-funding
+                // F5): the identity signer, the shielded spend key and the
+                // contact crypto; never a funding signer.
+                if max_duffs > 0 || max_credits == 0 || platform_address {
+                    return Err(LeaseError::Invalid);
+                }
+                out.credits = max_credits;
+                out.crypto = true;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                let spend_key = match &key {
+                    Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                    None => vault.shielded_spend_key(&wallet.0, token),
+                };
+                out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
+            }
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits,
             } => {
                 out.funding = max_duffs;
                 out.credits = max_credits;
@@ -335,6 +358,21 @@ impl NetworkSession {
             .await
     }
 
+    /// A `Registration` lease paid from the Shielded balance: the identity
+    /// signer and the shielded spend key, no funding signer (C-funding F5).
+    pub(crate) async fn begin_shielded_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+    ) -> Result<Lease, LeaseError> {
+        let scope = (
+            wallet,
+            FlowKind::Registration,
+            Some(PaymentSource::Shielded),
+        );
+        self.begin_issuing(scope, grants, None, false).await
+    }
+
     /// [`Self::begin_lease`] for a `ContactPayFromBalance` payment from
     /// `source` (C-funding P15).
     pub(crate) async fn begin_payout_lease(
@@ -389,15 +427,16 @@ impl NetworkSession {
     /// contact payout's lease pays once and is never rebound: `Invalid`
     /// before the grants are redeemed (a host begins another flow).
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
-        self.rebind_lease_scoped(lease, grants, false).await
+        self.rebind_lease_scoped(lease, grants, (false, None)).await
     }
 
-    /// [`Self::rebind_lease`]; `platform_address` as [`issue`] takes it.
+    /// [`Self::rebind_lease`]; `platform_address` and `source` as
+    /// [`issue`] takes them.
     pub(crate) async fn rebind_lease_scoped(
         &self,
         lease: &Lease,
         grants: &[String],
-        platform_address: bool,
+        (platform_address, source): (bool, Option<PaymentSource>),
     ) -> Result<(), LeaseError> {
         if lease.flow == FlowKind::ContactPayFromBalance {
             return Err(LeaseError::Invalid);
@@ -408,7 +447,7 @@ impl NetworkSession {
         lease
             .rebind(
                 move || {
-                    let scope = (flow, None);
+                    let scope = (flow, source);
                     issue(&vault, &wallet, scope, &grants, None, platform_address)
                 },
                 move || epoch_vault.epoch(),

@@ -473,6 +473,11 @@ pub(crate) enum FromShieldedSource {
     /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
     /// by the spend's artifact.
     Unshield,
+    /// The refund of the registration `draft`'s Shielded-funded create
+    /// that executed as Platform's fallback (C-funding F13): written done
+    /// and armed only once its proof is read
+    /// ([`arm_registration_refund`]), `credits` the most it can return.
+    Registration { draft: i64 },
 }
 
 /// Credits on their way from the wallet's shielded notes to one of its
@@ -588,12 +593,34 @@ impl FromShieldedRecord {
         format!("from-shielded-{}", self.activity)
     }
 
+    /// What its row shows: a refund only what a read showed of it.
+    fn shown(&self) -> u64 {
+        match self.source {
+            FromShieldedSource::Unshield => self.credits,
+            FromShieldedSource::Registration { .. } => {
+                (self.credits).saturating_sub(self.unseen.saturating_add(self.unclaimed))
+            }
+        }
+    }
+
+    /// Whether it is a row: armed, and a refund only once a read showed it.
+    fn listed(&self) -> bool {
+        self.armed
+            && match self.source {
+                FromShieldedSource::Unshield => true,
+                FromShieldedSource::Registration { .. } => self.shown() > 0,
+            }
+    }
+
     fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: self.id(),
-            kind: PlatformActivityKind::FromShielded,
+            kind: match self.source {
+                FromShieldedSource::Unshield => PlatformActivityKind::FromShielded,
+                FromShieldedSource::Registration { .. } => PlatformActivityKind::RegistrationRefund,
+            },
             state: self.state,
-            credits: self.credits,
+            credits: self.shown(),
             address: Some(self.to.clone()),
             to: None,
             expected_duffs: None,
@@ -757,6 +784,59 @@ pub(crate) async fn arm_from_shielded(
         store.commit(vec![from_shielded_write(&record)?]).await?;
     }
     Ok(true)
+}
+
+/// The height of the wallet's Platform address activity baseline: no rise
+/// above it has been read as anyone's yet. 0 before the first read.
+pub(crate) async fn activity_height(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<u64, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    Ok(store.baseline().await?.map_or(0, |b| b.height))
+}
+
+/// Writes the refund record of the registration `draft`'s create, the spend
+/// `activity`, once the create is proved executed as Platform's fallback
+/// (C-funding F13): done and armed, at most `cap` credits of `to`'s rise
+/// still to read as its own, from the first read at or above `executed_by`
+/// (the height its nullifiers were proved spent at) back. Only while no
+/// read since `named_at` (the activity's height when the hook named the
+/// create, before it could execute) may have shown the refund: otherwise
+/// that read showed it as `incoming`, and the record claims nothing. One
+/// record per spend; under the move lock, which callers take after the
+/// shielded wallet lock (C-routes §0).
+pub(crate) async fn arm_registration_refund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+    (draft, to, cap): (i64, String, u64),
+    (named_at, executed_by): (u64, u64),
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if store
+        .shielded_record(&hex::encode(activity))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let read = store.baseline().await?.map_or(0, |b| b.height);
+    let unread = read <= named_at;
+    let mut record = FromShieldedRecord::staged(
+        FromShieldedSource::Registration { draft },
+        (activity, st_hash),
+        to,
+        if unread { cap } else { 0 },
+    );
+    record.state = PlatformActivityState::Done;
+    record.armed = true;
+    record.armed_at = now_nanos();
+    record.unseen = record.credits;
+    record.done_height = executed_by.saturating_sub(1);
+    store.commit(vec![from_shielded_write(&record)?]).await
 }
 
 /// The wallet's `FromShielded` records, each pending one settled by its
@@ -2542,7 +2622,7 @@ async fn read(
 }
 
 /// One wallet's moves and activity reads, one at a time.
-fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: LazyLock<Mutex<HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(Mutex::default);
     let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3132,7 +3212,7 @@ pub(crate) async fn activity(
         .chain(
             shielded
                 .iter()
-                .filter(|r| r.armed)
+                .filter(|r| r.listed())
                 .map(FromShieldedRecord::activity),
         )
         .collect();

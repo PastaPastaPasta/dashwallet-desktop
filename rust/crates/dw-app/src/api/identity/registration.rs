@@ -77,10 +77,15 @@ pub enum RegistrationFunding {
         link_id: String,
         request_inviter: bool,
     },
-    ExistingIdentity { identity: String },
+    ExistingIdentity {
+        identity: String,
+    },
     /// Developer builds only. `key` is a `prepareFaucetLock` key id and
     /// `proof` the hex `assetLockProof` the faucet returned for its public key.
-    FaucetAssetLock { key: String, proof: String },
+    FaucetAssetLock {
+        key: String,
+        proof: String,
+    },
     /// From the Shielded balance: `denomination`, in credits, is the quote's
     /// `readiness.denomination` (the quote ignores it).
     Shielded {
@@ -224,6 +229,10 @@ pub struct ShieldedReadiness {
     pub checks: Vec<ShieldedCheckState>,
     /// While `rested` is not ready: when it will be (unix seconds).
     pub ready_at: Option<u64>,
+    /// The shielded pool's note count, proved; `null` while unknown.
+    pub pool_notes: Option<u64>,
+    /// The count Platform requires before a payment may leave the pool.
+    pub pool_required: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -239,6 +248,8 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
             denomination,
             checks,
             ready_at,
+            pool_notes,
+            pool_required,
         } = r;
         ShieldedReadiness {
             denomination,
@@ -249,6 +260,8 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
                 })
                 .collect(),
             ready_at,
+            pool_notes,
+            pool_required,
         }
     }
 }
@@ -413,6 +426,8 @@ pub struct RegistrationStatus {
     /// A row funded from the Platform addresses: like a claim's, its resume
     /// takes the grant `registrationResumeGrant` sizes.
     pub from_platform: bool,
+    /// A row funded from the Shielded balance.
+    pub from_shielded: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -465,6 +480,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             profile_failure,
             invitation,
             from_platform,
+            from_shielded,
             created_at,
             updated_at,
         } = s;
@@ -485,6 +501,7 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             profile_failure,
             invitation: invitation.map(Into::into),
             from_platform,
+            from_shielded,
             created_at,
             updated_at,
         }
@@ -578,6 +595,8 @@ mod tests {
                 ready: false,
             }],
             ready_at: Some(7),
+            pool_notes: Some(12),
+            pool_required: 250,
         });
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -585,6 +604,8 @@ mod tests {
                 "denomination": "3000000000",
                 "checks": [{"check": "noUnsettledSpend", "ready": false}],
                 "readyAt": 7,
+                "poolNotes": 12,
+                "poolRequired": 250,
             })
         );
     }

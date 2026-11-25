@@ -52,6 +52,19 @@ const COIN: u64 = 100_000_000;
 const PLAIN: &str = "alice2";
 const CONTESTED: &str = "alice";
 const NAME_CREDITS: u64 = 50_000_000;
+/// The Platform address a Shielded-funded row's create refunds to.
+const FALLBACK: &str = "fallback-address";
+
+/// The identity a Shielded funding record names.
+fn identity_of(funding: &str) -> String {
+    match super::registration_rows::Funding::decode(funding) {
+        super::registration_rows::Decoded::Known(super::registration_rows::Funding::Shielded {
+            identity: Some(identity),
+            ..
+        }) => identity,
+        _ => panic!("no identity named"),
+    }
+}
 
 struct NullSink;
 impl crate::EventSink for NullSink {
@@ -477,6 +490,15 @@ struct World {
     platform_fund: std::collections::VecDeque<(bool, PlatformFundEnd)>,
     /// Each pass's ask, and the plan it found the row with.
     platform_asks: Vec<super::platform_moves::RegisterAsk>,
+    /// How each funding pass of a Shielded-funded row ends, and with which
+    /// identity it names the row first, if any; an empty script is
+    /// `Unknown`.
+    shielded_fund: std::collections::VecDeque<(
+        Option<String>,
+        Result<super::registration_shielded::ShieldedOutcome, PlatformError>,
+    )>,
+    /// Each Shielded pass's ask.
+    shielded_asks: Vec<super::registration_shielded::ShieldedAsk>,
     /// The session's network reads as mainnet.
     mainnet: bool,
     /// Name lookups fail as DAPI unreachable would.
@@ -1254,6 +1276,51 @@ impl RegistrationLib for Fake {
             }
             end
         })
+    }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        Ok(FALLBACK.to_owned())
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: super::registration_shielded::ShieldedAsk,
+        _lease: Option<&Lease>,
+    ) -> Result<super::registration_shielded::ShieldedOutcome, PlatformError> {
+        let (names, end) = {
+            let mut w = self.w();
+            w.shielded_asks.push(ask.clone());
+            (w.shielded_fund.pop_front()).unwrap_or((
+                None,
+                Ok(super::registration_shielded::ShieldedOutcome::Unknown),
+            ))
+        };
+        if let Some(identity) = names {
+            let funding = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback.clone(),
+                identity: Some(identity),
+            }
+            .encode();
+            let expected = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback,
+                identity: None,
+            }
+            .encode();
+            let marker = dw_appdb::dp_registration_named(&identity_of(&funding));
+            let written = self
+                .appdb
+                .set_registration_funding_durable(
+                    (&self.wallet.to_string(), ask.draft, ask.owner),
+                    (&expected, &funding),
+                    (&marker, "0"),
+                    0,
+                )
+                .unwrap();
+            assert!(written, "the fake names the row as the hook does");
+        }
+        end
     }
 
     async fn request_inviter(

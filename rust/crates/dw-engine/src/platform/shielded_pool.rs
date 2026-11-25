@@ -265,6 +265,20 @@ pub(crate) trait ShieldedLib: Send + Sync {
         to: &PlatformAddress,
         credits: u64,
     ) -> impl Future<Output = Result<(), SpendError>> + Send;
+    /// Shielded → a new identity (C-funding F11): the library's keyset
+    /// create through the dispatch hook, never its seed path, with the
+    /// registration keys of `create.index` signed by `permit`'s identity
+    /// signer. The id the library returns is not evidence (it may build one
+    /// from an unexpected proof): the flow step proves it (F12).
+    fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &ShieldedCreate,
+    ) -> impl Future<Output = Result<(), SpendError>> + Send;
+    /// Platform's shielded note count, proved and at most a few minutes
+    /// old; `None` when it cannot be read in time (C-funding F16: an
+    /// unknown count does not hold a registration back).
+    fn pool_notes(&self) -> impl Future<Output = Option<u64>> + Send;
     /// The wallet's Platform payment account, as an unshield to it reads it.
     fn platform_pool(&self) -> impl Future<Output = Result<PlatformPool, PlatformError>> + Send;
 
@@ -435,6 +449,17 @@ pub(crate) enum Applied {
     /// The apply failed after the lock's credit key signed its transition:
     /// it may have reached Platform and executed.
     Unknown,
+}
+
+/// What a Shielded-funded registration's create spends and makes
+/// (C-funding F11, F13): `denomination` of the version's set, the
+/// registration keys of the identity slot `index`, and `fallback`, the
+/// wallet's own Platform address Platform pays back if it cannot create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShieldedCreate {
+    pub(crate) index: u32,
+    pub(crate) denomination: u64,
+    pub(crate) fallback: PlatformAddress,
 }
 
 /// How a library spend failed.
@@ -667,6 +692,7 @@ pub(crate) async fn registration_facts(
     lib: &impl ShieldedLib,
     facts: &mut ShieldedFacts,
 ) -> Result<(), PlatformError> {
+    facts.pool_notes = lib.pool_notes().await;
     facts.unsettled = !session.leases.journal_ready()
         || !(session.leases.unrecorded_spends(wallet).await)
             .map_err(|detail| PlatformError::Storage { detail })?
@@ -2613,6 +2639,10 @@ impl ShieldedDispatch for EngineDispatch {
             ShieldedDispatchKind::Unshield => Some(unshield_record(&session, &payload)?),
             _ => None,
         };
+        // A Shielded-funded registration's row names the identity its
+        // create makes before the artifact exists (C-funding F11).
+        let created = (super::registration_shielded::accept_create(&session, &payload).await)
+            .map_err(refused)?;
         let artifact = NewShieldedArtifact {
             activity: payload.activity_id,
             origin: ArtifactOrigin::Dispatched,
@@ -2626,7 +2656,8 @@ impl ShieldedDispatch for EngineDispatch {
             }),
             anchor: Some(payload.anchor),
             identity_id: match payload.kind {
-                ShieldedDispatchKind::IdentityTopUp { identity_id } => Some(identity_id),
+                ShieldedDispatchKind::IdentityTopUp { identity_id }
+                | ShieldedDispatchKind::IdentityCreate { identity_id } => Some(identity_id),
                 _ => None,
             },
             selected: selected.into_iter().collect(),
@@ -2664,6 +2695,9 @@ impl ShieldedDispatch for EngineDispatch {
         // A contact payout's dispatch is recorded beside its row before the
         // library may send it (C-funding P6); refused unsent if not.
         (session.confirm_payout_dispatch(wallet, named, payload.st_hash))
+            .await
+            .map_err(refused)?;
+        (super::registration_shielded::confirm_create(&session, wallet, created, payload.st_hash))
             .await
             .map_err(refused)?;
         // Armed here, after the artifact and before the send: the one moment
@@ -3004,6 +3038,63 @@ impl ShieldedLib for PwShielded {
             )
             .await
             .map_err(|e| SpendError::Library(Box::new(e)))
+    }
+
+    /// The one call of the library's pool-funded identity create in the
+    /// engine (keep it the only one: the upstream port changes this body).
+    async fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &ShieldedCreate,
+    ) -> Result<(), SpendError> {
+        use dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
+        let keys = permit.shielded_keys()?;
+        let prover = CachedOrchardProver::new();
+        let signer = permit.identity_signer(&[create.index])?;
+        let public = (signer
+            .derive_public_keys(create.index, &super::keys_policy::registration_specs()))
+        .await
+        .map_err(|_| SpendError::Lease(LeaseError::Vault("registration keys")))?;
+        let public_keys = (public.into_values())
+            .map(|key| {
+                let in_creation = IdentityPublicKeyInCreation::from(&key);
+                (key, in_creation)
+            })
+            .collect();
+        (self.pw.wallet)
+            .shielded_identity_create_from_pool_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                create.index,
+                public_keys,
+                create.denomination,
+                create.fallback,
+                &signer,
+                &prover,
+            )
+            .await
+            .map(drop)
+            .map_err(|e| SpendError::Library(Box::new(e)))
+    }
+
+    async fn pool_notes(&self) -> Option<u64> {
+        let cache = &self.pw.session.platform.pool_notes;
+        let now = crate::events::unix_now();
+        if let Some((notes, at)) = *super::runtime::guard(cache)
+            && now.saturating_sub(at) < POOL_NOTES_FRESH_SECS
+        {
+            return Some(notes);
+        }
+        let sdk = self.manager.sdk_arc();
+        // Its own task: verification can block its thread past any timer.
+        let read = tokio::spawn(async move { notes_count(&sdk).await });
+        let (notes, at) = tokio::time::timeout(NOTES_COUNT_TIMEOUT, read)
+            .await
+            .ok()?
+            .ok()??;
+        *super::runtime::guard(cache) = Some((notes, at));
+        Some(notes)
     }
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
@@ -3828,7 +3919,7 @@ const BIND_PASS_WAIT: Duration = Duration::from_secs(5);
 /// library's call has returned and its outcome is read; `platform.unavailable`
 /// (retry) when a pass in flight
 /// does not end within [`SPEND_PASS_WAIT`].
-async fn hold_passes(
+pub(super) async fn hold_passes(
     session: &NetworkSession,
 ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ShieldedError> {
     let spends = session.platform.shielded_spends.write();
@@ -3894,6 +3985,9 @@ pub(crate) async fn periodic_pass(
     let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
         return false;
     };
+    if let Some(count) = count {
+        *super::runtime::guard(&session.platform.pool_notes) = Some(count);
+    }
     if !runs(&session) || session.enter().await.is_err() {
         return false;
     }
@@ -4067,6 +4161,9 @@ async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
 
 /// How long one transport attempt of the note count's read waits.
 const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How old a proved note count the registration's pool check takes.
+const POOL_NOTES_FRESH_SECS: u64 = 300;
 
 /// How long a periodic pass waits for the note count, its two attempts and
 /// the proof's verification included, before it runs as if the read failed

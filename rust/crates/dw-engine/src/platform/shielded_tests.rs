@@ -172,6 +172,13 @@ fn instant_proof(tx: &dashcore::Transaction) -> AssetLockProof {
     AssetLockProof::Instant(InstantAssetLockProof::new(islock, tx.clone(), 0))
 }
 
+/// The dispatch hook's answer to a create, as a test scripts it.
+pub(super) type CreateHook = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// What a spend handed the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Spent {
@@ -228,6 +235,11 @@ pub(crate) struct FakeShielded {
     applied: Mutex<Vec<OutPoint>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
+    /// Platform's shielded note count; unknown when `None`.
+    pub(super) pool_notes: Mutex<Option<u64>>,
+    /// What an identity create asks of the dispatch hook before it signs
+    /// (`Err`: the hook refused it).
+    pub(super) create_hook: Mutex<Option<CreateHook>>,
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
     hook_reads: Mutex<std::collections::VecDeque<bool>>,
@@ -437,6 +449,8 @@ impl Default for FakeShielded {
             queued: Mutex::default(),
             applied: Mutex::default(),
             unhooked: AtomicBool::new(false),
+            pool_notes: Mutex::new(None),
+            create_hook: Mutex::new(None),
             hook_reads: Mutex::default(),
             held: Mutex::default(),
             after_failure: Mutex::default(),
@@ -870,6 +884,33 @@ impl ShieldedLib for FakeShielded {
             credits,
             &[],
         )
+    }
+
+    async fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &pool::ShieldedCreate,
+    ) -> Result<(), SpendError> {
+        permit.identity_signer(&[create.index])?;
+        let hook = self.create_hook.lock().unwrap().clone();
+        if let Some(hook) = hook
+            && let Err(reason) = hook().await
+        {
+            return Err(SpendError::Library(Box::new(
+                PlatformWalletError::ShieldedDispatchRefused { reason },
+            )));
+        }
+        self.spend(
+            permit.shielded_keys()?,
+            "identity_create",
+            platform_text(create.fallback),
+            create.denomination,
+            &[],
+        )
+    }
+
+    async fn pool_notes(&self) -> Option<u64> {
+        *self.pool_notes.lock().unwrap()
     }
 
     async fn platform_pool(&self) -> Result<pool::PlatformPool, PlatformError> {

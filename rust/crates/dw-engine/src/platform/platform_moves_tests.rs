@@ -3711,3 +3711,119 @@ mod top_up;
 
 #[path = "platform_register_tests.rs"]
 mod register;
+
+// ---- C-funding C4b-2: a Shielded-funded registration's refund ----
+
+impl World {
+    fn height(&self) -> u64 {
+        self.net.height.load(Ordering::SeqCst)
+    }
+
+    fn activity_height(&self) -> u64 {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        (self.f.engine)
+            .block_on(async move { activity_height(&s, id).await })
+            .unwrap()
+    }
+
+    /// The refund record of create `n` to `to`, at most `cap`, the create
+    /// named at activity height `named_at` and proved executed by
+    /// `executed_by`.
+    fn arm_refund(&self, n: u8, to: PlatformAddress, cap: u64, heights: (u64, u64)) {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let to = bech32m(&to, Network::Regtest);
+        (self.f.engine)
+            .block_on(async move {
+                arm_registration_refund(
+                    &s,
+                    id,
+                    ([n; 32], [n.wrapping_add(1); 32]),
+                    (7, to, cap),
+                    heights,
+                )
+                .await
+            })
+            .unwrap();
+    }
+
+    fn refund_rows(&self) -> Vec<PlatformActivity> {
+        (self.activity().into_iter())
+            .filter(|r| r.kind == PlatformActivityKind::RegistrationRefund)
+            .collect()
+    }
+}
+
+/// F13: the refund of a create Platform ran as its fallback, armed after
+/// the proof and before any read showed it, is one `registrationRefund`
+/// row of exactly what the first read showed, no `incoming` row; once read,
+/// the next rise of the address is `incoming`, and nothing is listed
+/// before the read. Arming again changes nothing.
+#[test]
+fn a_registration_refund_is_one_row_of_what_the_read_shows() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.net.fund(a, DASH);
+    let executed_by = w.height();
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    let activity = w.activity();
+    assert_eq!(incoming_total(&activity), 0);
+    let rows: Vec<_> = (activity.iter())
+        .filter(|r| r.kind == PlatformActivityKind::RegistrationRefund)
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].state, rows[0].credits, rows[0].may_land),
+        (PlatformActivityState::Done, DASH, false)
+    );
+    assert_eq!(rows[0].address, Some(bech32m(&a, Network::Regtest)));
+    w.net.fund(a, DASH);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        DASH,
+        "the next rise is incoming"
+    );
+    assert_eq!(w.refund_rows()[0].credits, DASH);
+}
+
+/// F13: a read between the create's execution and the record's arming
+/// showed the refund as `incoming`: the record claims nothing and lists no
+/// row, and a later rise stays `incoming`. Mutant: absorb whatever the
+/// baseline.
+#[test]
+fn a_read_between_execution_and_arming_absorbs_nothing() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.net.fund(a, DASH);
+    let executed_by = w.height();
+    assert_eq!(incoming_total(&w.activity()), DASH);
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    assert!(w.refund_rows().is_empty());
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 2 * DASH);
+    assert!(w.refund_rows().is_empty());
+}
+
+/// F13: an unshield's pending record and a refund record on one address
+/// share one rise in arming order, the unshield's first, no credit counted
+/// twice and none `incoming`.
+#[test]
+fn two_armed_records_absorb_in_arming_order() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.net.fund(a, 2 * DASH);
+    w.arm_refund(9, a, 2 * DASH, (named_at, w.height()));
+    let activity = w.activity();
+    assert_eq!(incoming_total(&activity), 0);
+    let unshield = w.shielded_row(1);
+    let refund = w.refund_rows();
+    assert_eq!(unshield.credits, DASH, "the unshield's first");
+    assert_eq!((refund.len(), refund[0].credits), (1, DASH));
+}

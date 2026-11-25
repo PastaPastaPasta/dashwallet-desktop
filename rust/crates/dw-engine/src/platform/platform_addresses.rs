@@ -83,6 +83,10 @@ pub enum PlatformActivityKind {
     /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
     /// artifact reads executed (`Done`) or not executed (`Failed`).
     FromShielded,
+    /// What Platform returned to this wallet's Platform address
+    /// (`address`) when it could not create the identity a Shielded-funded
+    /// registration paid for (C-funding F13): the payment less a penalty.
+    RegistrationRefund,
 }
 
 /// Where an activity row stands.

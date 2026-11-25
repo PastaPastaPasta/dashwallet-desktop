@@ -94,7 +94,10 @@ impl From<PlatformAddressRow> for engine::PlatformAddressRow {
 /// Platform balance, to its Core address (`to`);
 /// `fromShielded`: an unshield of this wallet to its Platform address
 /// (`address`), pending until Platform executed it (`done`) or did not
-/// (`failed`).
+/// (`failed`); `registrationRefund`: what Platform returned to this
+/// wallet's Platform address (`address`) when it could not create the
+/// identity a username paid from the Shielded balance (the payment less a
+/// penalty).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -106,10 +109,12 @@ pub enum PlatformActivityKind {
     ToIdentity,
     ContactPayment,
     FromShielded,
+    RegistrationRefund,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded,
+    RegistrationRefund
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);

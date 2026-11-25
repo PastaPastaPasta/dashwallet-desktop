@@ -105,6 +105,24 @@ pub fn dp_payout_marker(reference: &str) -> String {
     format!("dp_payout/{reference}")
 }
 
+/// The `local:` key written with a Shielded-funded registration's created
+/// identity (`AppDb::set_registration_funding_durable`): a row naming an
+/// identity without it was not named on this install (a `.dwbackup`
+/// restore), so the journal's silence about it proves nothing. Its value is
+/// the height of the Platform address activity's baseline when it was
+/// written, before the create could execute.
+pub fn dp_registration_named(identity: &str) -> String {
+    format!("dp_registration_named/{identity}")
+}
+
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// Shielded-funded registration's create artifact is in the journal and
+/// before the library may send it: with it, a missing artifact proves
+/// nothing (a lost or older journal), so the row waits (C-funding F12).
+pub fn dp_registration_dispatched(identity: &str) -> String {
+    format!("dp_registration_dispatched/{identity}")
+}
+
 /// The `local:` key the shielded dispatch hook writes, durably, once a
 /// payout's artifact is in the journal and before the library may send
 /// it: with it, a missing artifact proves nothing (a lost or older
