@@ -283,7 +283,9 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
-  const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
+  // Max's own refusal says why it moved nothing ahead of the typed amount's problem, until the amount is edited.
+  const problem = maxRefused && refusal !== null ? refusal : (amountProblem ?? refusal);
+  const continueWhy = why ?? problem ?? (amount == null ? T.why.amount : null);
   return (
     <form
       className="topup-form"
@@ -338,8 +340,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           {T.max}<span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
         </DashButton>
       </div>
-      <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
-        {amountProblem ?? refusal ?? (noCoins ? T.noCoreBalance : fee) ?? ""}
+      <p className={problem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
+        {problem ?? (noCoins ? T.noCoreBalance : fee) ?? ""}
       </p>
       {route === "coreToPlatform" && mixing && mixing.state !== "idle" && <div className="card-actions"><DashButton variant="plainBlue" data-testid="transfer-pause-mixing" disabled={pause.busy} onClick={() => void pause.run("stop")}>{tr("transfer.pauseMixing")}</DashButton></div>}
       {pause.problem && <p className="form-problem" role="alert">{pause.problem}</p>}
@@ -347,7 +349,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
           {T.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : refusal || amountProblem ? `${id}-fee` : undefined}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="transfer-continue" disabled={!ready} why={continueWhy} whyId={why ? `${id}-why` : problem ? `${id}-fee` : undefined}>
           {T.continue}
         </DashButton>
       </div>
