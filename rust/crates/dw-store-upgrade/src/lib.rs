@@ -39,10 +39,15 @@ pub use precheck::{
     Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with, sweep_stale_scratch,
 };
 pub use reconcile::{Outcome, reconcile_fork_store};
-pub use restore::{PendingRestore, RESTORE_JOURNAL, RESTORE_REQUESTED, pending_restore};
+pub use restore::{
+    IncompleteCause, PendingPayment, PendingRestore, RESTORE_JOURNAL, RESTORE_REQUESTED,
+    RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
+    clear_restored_mark_on_first_all_synced, keep_current_files, pending_restore, request_restore,
+    restore, restored_mark, restored_mark_present, run_pending_restore, touched_paths,
+};
 pub use snapshot::{
-    STORE_FILES, SnapshotFile, SnapshotInfo, UPGRADE_BACKUPS_DIR, latest_snapshot,
-    snapshot_present, take_snapshot,
+    STORE_FILES, SnapshotFile, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot,
+    snapshot_present, snapshot_state, take_snapshot,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 

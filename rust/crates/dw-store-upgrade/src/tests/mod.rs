@@ -6,6 +6,7 @@ mod fixtures;
 mod meta;
 mod p9a;
 mod refusals;
+mod restore;
 mod review_fixes;
 
 use std::collections::BTreeMap;
