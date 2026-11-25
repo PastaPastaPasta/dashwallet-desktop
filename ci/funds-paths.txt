@@ -199,10 +199,13 @@ apps/desktop/src/screens/masternodes/ChangeKeysSheet.tsx
 apps/desktop/src/screens/masternodes/KeysSheet.tsx
 apps/desktop/src/screens/masternodes/credential.tsx
 
-# Swift app: every source except the demo ledger and the localization strings, and its package manifest and
-# pins. It is frozen, so any change to it is rare and gets a funds review.
+# Swift app: every source except the demo ledger and the localization strings, its package manifest and
+# pins, and the macOS app shell (not its UI tests). It is frozen, so any change to it is rare and gets a funds
+# review.
 Package.swift
 Package.resolved
+Apps/macOS/project.yml
+Apps/macOS/DashWallet/**
 Sources/**
 !Sources/WalletDemo/**
 !Sources/WalletFeatures/Localization/**
