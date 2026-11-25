@@ -3,6 +3,7 @@
 //! a marker written last. Never under upstream's `backups/auto` (which its
 //! retention prunes), never deleted.
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -460,22 +461,75 @@ fn live_wallet(network_dir: &Path) -> LiveWallet {
     }
 }
 
-/// Read `network_dir`'s `wallet.sqlite` with its log applied and without
-/// touching it or a side file: with no log, `immutable=1`; with a non-empty
-/// `-wal` or `-journal`, a private copy of the file and its log, opened
-/// there. [`open_live`] would make or change `-shm` beside the live file,
-/// and a restore reads snapshots while it owns the live side files. `None`
-/// when that fails.
 fn read_live_wallet<T>(
     network_dir: &Path,
     read: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> Option<T> {
-    let path = network_dir.join(STORE_FILES[0]);
-    if !logged(&path) {
-        return read(&sql::open_immutable(&path).ok()?).ok();
+    read(open_copy(&network_dir.join(STORE_FILES[0])).ok()?.borrow()).ok()
+}
+
+/// A store read by [`open_copy`]; its scratch copy, if any, goes once the
+/// connection has closed.
+struct CopyRead {
+    conn: Connection,
+    _scratch: Option<tempfile::TempDir>,
+}
+
+impl Borrow<Connection> for CopyRead {
+    fn borrow(&self) -> &Connection {
+        &self.conn
     }
-    let copy = crate::precheck::ScratchCopy::of(network_dir).ok()?;
-    read(&Connection::open(copy.wallet()).ok()?).ok()
+}
+
+/// A live store read with its log applied and nothing written beside it:
+/// with no log, `immutable=1`; with a non-empty `-wal` or `-journal`, the
+/// file and its log copied into a private 0700 directory under the data
+/// root (swept as precheck scratch) and opened there. [`open_live`] would
+/// make or change `-shm` beside the live file, whoever owns its side files
+/// then (a restore reads snapshots while it does).
+fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
+    if !logged(path) {
+        return Ok(CopyRead {
+            conn: sql::open_immutable(path)?,
+            _scratch: None,
+        });
+    }
+    let ioerr = |e: io::Error| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            Some(format!("copy {} to read it: {e}", path.display())),
+        )
+    };
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| ioerr(io::Error::from(io::ErrorKind::NotFound)))?;
+    let scratch = tempfile::Builder::new()
+        .prefix(crate::precheck::SCRATCH_PREFIX)
+        .tempdir_in(root)
+        .map_err(ioerr)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(scratch.path(), fs::Permissions::from_mode(0o700)).map_err(ioerr)?;
+    }
+    let name = path.file_name().unwrap_or_default();
+    let copy = scratch.path().join(name);
+    fs::copy(path, &copy).map_err(ioerr)?;
+    for suffix in ["-wal", "-journal"] {
+        let mut side = path.as_os_str().to_owned();
+        side.push(suffix);
+        let side = PathBuf::from(side);
+        if side.exists() {
+            let mut to = copy.as_os_str().to_owned();
+            to.push(suffix);
+            fs::copy(&side, PathBuf::from(to)).map_err(ioerr)?;
+        }
+    }
+    Ok(CopyRead {
+        conn: Connection::open(&copy)?,
+        _scratch: Some(scratch),
+    })
 }
 
 /// Once `wallet.sqlite` is upgraded, a before-upgrade snapshot is its backup
@@ -639,10 +693,10 @@ fn fingerprint(conn: &Connection) -> rusqlite::Result<String> {
 /// The state of a directory's stores: `wallet` is a connection on its
 /// `wallet.sqlite`, the other stores are opened with `open`. The
 /// fingerprint covers all four (an absent store as `-`).
-pub(crate) fn live_state(
+pub(crate) fn live_state<C: Borrow<Connection>>(
     wallet: &Connection,
     dir: &Path,
-    open: impl Fn(&Path) -> rusqlite::Result<Connection>,
+    open: impl Fn(&Path) -> rusqlite::Result<C>,
 ) -> rusqlite::Result<LiveState> {
     let (refinery_max, fork_versions, between) = upgrade_state(wallet)?;
     let wallet_fingerprint = fingerprint(wallet)?;
@@ -653,7 +707,7 @@ pub(crate) fn live_state(
         let digest = if path.exists() {
             let conn = open(&path)?;
             let mut d = Sha256::new();
-            for (table, digest) in sql::table_digests(&conn, &[])? {
+            for (table, digest) in sql::table_digests(conn.borrow(), &[])? {
                 d.update(format!("{table}={digest}\n").as_bytes());
             }
             hex(&d.finalize())
@@ -788,10 +842,11 @@ fn reusable_between(info: &SnapshotInfo, live: &LiveState) -> rusqlite::Result<b
 }
 
 /// Whether `info` is of `network_dir`'s data before the upgrade
-/// ([`reusable`]), read with `immutable=1`. `None` when that can't be read.
+/// ([`reusable`]), each store read by [`open_copy`] with its log applied.
+/// `None` when that can't be read.
 pub(crate) fn of_live(network_dir: &Path, info: &SnapshotInfo) -> Option<bool> {
-    let conn = sql::open_immutable(&network_dir.join(STORE_FILES[0])).ok()?;
-    let live = live_state(&conn, network_dir, sql::open_immutable).ok()?;
+    let wallet = open_copy(&network_dir.join(STORE_FILES[0])).ok()?;
+    let live = live_state(wallet.borrow(), network_dir, open_copy).ok()?;
     reusable(info, &live).ok()
 }
 

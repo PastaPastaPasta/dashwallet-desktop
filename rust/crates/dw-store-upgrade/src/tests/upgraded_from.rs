@@ -320,3 +320,27 @@ fn live_wallet_ids_only_in_the_wal_are_read() {
         "never checkpointed"
     );
 }
+
+/// L3: the backup check fingerprints live rows that are only in the
+/// `-wal`, never checkpoints it and makes no `-shm` beside the live file.
+#[test]
+fn the_backup_check_reads_rows_only_in_the_wal_and_writes_nothing_beside_them() {
+    let (f, s) = failed_open();
+    assert_eq!(crate::snapshot::of_live(&f.net, &s), Some(true));
+    super::review_fixes::hot_wal(&f, BUMP);
+    let wal = f.net.join("wallet.sqlite-wal");
+    let shm = f.net.join("wallet.sqlite-shm");
+    assert!(fs::metadata(&wal).unwrap().len() > 0 && !shm.exists());
+    let before = tree(&f.root);
+    assert_eq!(
+        crate::snapshot::of_live(&f.net, &s),
+        Some(false),
+        "the row in the -wal is read"
+    );
+    assert_eq!(
+        ProvedState::read(&f.net, false).backup,
+        Some(BackupState::Unverified)
+    );
+    assert!(!shm.exists(), "no -shm beside the live file");
+    assert_eq!(tree(&f.root), before, "nothing written, never checkpointed");
+}
