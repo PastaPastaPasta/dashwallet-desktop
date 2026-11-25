@@ -7,7 +7,10 @@
 import type { AppError } from "../api/generated/AppError";
 import type { PendingShield } from "../api/generated/PendingShield";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
+import type { ShieldedAccount } from "../api/generated/ShieldedAccount";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
+import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldedSpendState } from "../api/generated/ShieldedSpendState";
@@ -50,6 +53,14 @@ export interface ShieldedWorld {
   ready: boolean;
   /** A sync pass is running on a ready account. */
   scanning?: boolean;
+  /** Where the viewing key stands; unset: bound. Not bound, nothing scans and no address reads. */
+  account?: ShieldedAccount;
+  /** The running first scan's progress through the pool's tree. */
+  scan?: ShieldedScanProgress;
+  /** The last pass failed. */
+  lastPassFailed?: boolean;
+  /** `shielded_sync_info` fails (the status bar's read of it). */
+  syncInfoFails?: boolean;
   /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
   lastSyncAt?: number;
   /** The notes the balance is made of (credits): a spend is then priced per action, as the engine's
@@ -128,9 +139,12 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 }
 
 function status(s: ShieldedWorld): ShieldedStatus {
-  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
+  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false, account: null, scan: null, lastPassFailed: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, heldSpends: s.held ?? [], held: s.heldCredits ?? "0", unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
+  const account = s.account ?? "bound";
+  const established = s.ready && account === "bound";
+  const syncing = account === "bound" && (s.scanning ?? (!established && !s.lastPassFailed));
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: established, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, heldSpends: s.held ?? [], held: s.heldCredits ?? "0", unrecordedSpends: s.unrecorded, syncedIndex: established ? 4096 : null, lastSyncAt: established ? (s.lastSyncAt ?? NOW - 20) : null, syncing, proverReady: s.proverReady, account, scan: syncing ? (s.scan ?? null) : null, lastPassFailed: !!s.lastPassFailed };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -201,7 +215,8 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const duffs = Math.max(0, totalDuffs - feeDuffs);
   const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
   if (duffs < floor) raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs });
-  const arrivingDuffs = main.filter((u) => !final.includes(u)).reduce((n, u) => n + u.amount, 0);
+  // A coin the engine withholds counts nowhere, not even as arriving.
+  const arrivingDuffs = main.filter((u) => !final.includes(u) && u.excluded === null).reduce((n, u) => n + u.amount, 0);
   return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
 }
 
@@ -398,9 +413,17 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
 
 export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   shielded_status: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, "shielded_status", false)),
+  // The engine's reads with no read of the note store (shielded_pool.rs `sync_info`).
+  shielded_sync_info: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedSyncInfo => {
+    const s = shieldedOf(ctx, walletId, "shielded_sync_info", false);
+    if (s.syncInfoFails) raise("storage", "the fixture's sync read failed");
+    const st = status(s);
+    return { active: st.active, account: st.account, established: st.ready, syncing: st.syncing, scan: st.scan, lastPassFailed: st.lastPassFailed };
+  },
   shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
     const s = shieldedOf(ctx, walletId, "shielded_receive_address");
-    ready(s);
+    // The viewing key's address: it reads once bound, before the first scan ends.
+    if ((s.account ?? "bound") !== "bound") raise(SHIELDED_CODES.notSynced, "the fixture account's viewing key is not bound");
     return { address: s.address, account: 0 };
   },
   shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuoteOf(ctx, walletId, amount),

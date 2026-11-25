@@ -254,6 +254,74 @@ function withDropped(w: World, drops: TxDropInfo[]): World {
   return w;
 }
 
+/** The txid of `withPendingUnproven`'s payment. */
+export const PENDING_UNPROVEN_TXID = "e7".repeat(32);
+/** Its change, which the engine withholds. */
+export const PENDING_UNPROVEN_CHANGE = 74_999_774;
+
+/** Adds to the first wallet an unconfirmed payment the engine withholds the change of: the change is
+ * listed, not spendable and in no balance bucket, and the balances report it as withheld. */
+function withPendingUnproven(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: PENDING_UNPROVEN_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    amount: -25_000_226,
+    fee: 226,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [
+    ...wallet.coins,
+    {
+      ...wallet.coins[0],
+      outpoint: { txid: PENDING_UNPROVEN_TXID, vout: 1 },
+      amount: PENDING_UNPROVEN_CHANGE,
+      confirmations: 0,
+      blockHeight: null,
+      instantLocked: false,
+      chainLocked: false,
+      label: null,
+      isChange: true,
+      reserved: true,
+      spendable: false,
+      excluded: "pendingUnproven",
+    },
+  ];
+  wallet.summary = { ...wallet.summary, balances: { ...(wallet.summary.balances ?? FUNDED_BALANCES), withheld: PENDING_UNPROVEN_CHANGE } };
+  return w;
+}
+
+/** The txid of `withAbandonChecking`'s payment. */
+export const ABANDON_CHECKING_TXID = "e8".repeat(32);
+
+/** Adds to the first wallet a payment the user abandoned, a coin of which the engine's rescan is
+ * still checking before giving it back. */
+function withAbandonChecking(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: ABANDON_CHECKING_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    countsTowardBalance: false,
+    status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  w.send.checkingSpentCoins = [ABANDON_CHECKING_TXID];
+  return w;
+}
+
 function base(theme: ThemeName | null, variant: HistoryVariant = "default", plainWords = false): World {
   const main = wallet(variant, plainWords);
   return {
@@ -775,6 +843,13 @@ const SCENARIOS = {
       { cause: "replaced", state: { kind: "held" } },
       { cause: "invalidClaim", state: { kind: "released" } },
     ]),
+  /** An unconfirmed payment the engine can't yet tell will confirm (Q100 E1): its change is
+   * withheld, out of every balance and of spending, and shown as pending; Abandon is offered with
+   * its hint. */
+  "pending-unproven": (t) => withPendingUnproven(base(t)),
+  /** A payment the user abandoned while the engine's rescan checks a coin it spent (Q100 E2): its
+   * details say so until the check ends. */
+  "abandon-checking": (t) => withAbandonChecking(base(t)),
   /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
    * offered, and refused until the wallet restarts and rescans. */
   "abandon-rescan-first": (t) => {
@@ -1081,11 +1156,59 @@ const SCENARIOS = {
     w.sync = syncing();
     return w;
   },
-  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  /** Shielded is on and its account is not established yet: its actions wait and say why, the
+   * status bar says so with the first scan's progress, and Receive shows the address already. */
   "shielded-syncing": (t) => {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
+    w.pending.shielded!.scan = { checked: 42_000, total: 100_000 };
+    return w;
+  },
+  /** Shielded's first bind needs an unlock: Receive says so and shows no address; the bar is Synced,
+   * Sync progress says "Unlock to sync"; Send, Add and Transfer name the unlock. The vault itself reads
+   * unlocked here: the app shows the lock screen while it is locked, so this shows the engine's
+   * answer alone. */
+  "shielded-locked": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "locked";
+    return w;
+  },
+  /** The same while the wallet is unlocked for mixing only: a full unlock binds it. */
+  "shielded-mixing-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "mixingOnly";
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** A watch-only wallet has no viewing key to bind. */
+  "shielded-watch-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "watchOnly";
+    return w;
+  },
+  /** The wallet's last Platform-address pass failed: the bar says Platform did not finish. */
+  "platform-addresses-failed": (t) => {
+    const w = base(t);
+    w.dashpay.addresses = "failed";
+    return w;
+  },
+  /** Shielded's sync status cannot be read: the bar says so, never Synced. */
+  "shielded-sync-unread": (t) => {
+    const w = base(t);
+    w.pending.shielded!.syncInfoFails = true;
+    return w;
+  },
+  /** Shielded is established and its last pass failed: the bar says it did not finish. */
+  "shielded-pass-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastPassFailed = true;
     return w;
   },
   /** Shielded is not ready and an earlier shield is waiting to be finished. */

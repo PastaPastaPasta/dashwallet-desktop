@@ -957,6 +957,10 @@ pub(crate) struct WalletHistory {
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.
     pub marked: HashMap<Txid, BTreeSet<OutPoint>>,
+    /// The coins abandons and drops gave back that wait for their rescan
+    /// (`crate::rescan_hold`), from their marks at the open and as each
+    /// gives one back; one released goes.
+    pub rescan_holds: BTreeMap<OutPoint, crate::rescan_hold::RescanHold>,
     /// Transactions key-wallet held this session: its records when the
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
