@@ -1,7 +1,9 @@
 //! The re-review of ffbc69cf: a snapshot whose marker was lost after R1's
-//! drop (M-A), snapshots of an upgraded file (M-B) and a fault reading a
-//! snapshot (L-1).
+//! drop (M-A), snapshots of an upgraded file (M-B), a fault reading a
+//! snapshot (L-1) and the wallet file's side files (L-5).
 
+#[cfg(unix)]
+use super::review_fixes_3::assert_file_refused;
 use super::review_fixes_3::{assert_missing, between};
 use super::*;
 use crate::copy::{self, ProvedState};
@@ -184,4 +186,26 @@ fn a_fault_reading_the_snapshot_is_retried_and_a_missing_file_is_unverified() {
 
     fs::remove_file(&app).unwrap();
     assert_missing(&f, MissingSnapshot::Unverified);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_log_or_shared_memory_file_is_refused_before_the_drop() {
+    for suffix in ["-wal", "-shm"] {
+        let f = fixture("v0.1.0");
+        let side = f.net.join(format!("wallet.sqlite{suffix}"));
+        let _ = fs::remove_file(&side);
+        let real = f.root.join(format!("elsewhere{suffix}"));
+        fs::write(&real, b"").unwrap();
+        std::os::unix::fs::symlink(&real, &side).unwrap();
+        assert_file_refused(&f, &format!("wallet.sqlite{suffix} is a symbolic link"));
+    }
+    let f = fixture("v0.1.0");
+    exec(&f.wallet(), "PRAGMA wal_checkpoint(TRUNCATE)");
+    super::review_fixes::hot_wal(&f, "CREATE TABLE dwsu_side (a INTEGER)");
+    let wal = f.net.join("wallet.sqlite-wal");
+    let real = f.root.join("elsewhere-wal");
+    fs::rename(&wal, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &wal).unwrap();
+    assert_file_refused(&f, "wallet.sqlite-wal is a symbolic link");
 }

@@ -18,7 +18,7 @@ use crate::snapshot::{
 #[cfg(unix)]
 use crate::sql::sha256_file;
 
-fn checked(f: &Fixture) -> crate::Result<Precheck> {
+pub(super) fn checked(f: &Fixture) -> crate::Result<Precheck> {
     match precheck_with(&f.net, build())? {
         Precheck::NeedsLockedCheck => precheck_locked_with(&f.net, build()),
         other => Ok(other),
@@ -237,7 +237,7 @@ fn an_unwritable_backup_dir_never_blocks_the_retire() {
 }
 
 #[cfg(unix)]
-fn assert_file_refused(f: &Fixture, needle: &str) {
+pub(super) fn assert_file_refused(f: &Fixture, needle: &str) {
     let before = tree(&f.root);
     let wallet = sha256_file(&f.wallet()).unwrap();
     let found = checked(f).unwrap();

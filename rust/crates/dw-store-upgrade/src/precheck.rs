@@ -189,14 +189,25 @@ fn check_locked(
 
 /// What the rehearsal's copy can't show: upstream's real open refuses a
 /// symlinked `wallet.sqlite` on unix (its `reject_symlink` has a unix body
-/// only) and makes the file owner-only, which fails on another user's file.
-/// Either would fail every start after R1's drop.
+/// only) and makes the file and its `-wal` and `-shm` owner-only, which
+/// fails on another user's file. Either would fail every start after R1's
+/// drop.
 fn refuse_unopenable_file(network_dir: &Path) -> Result<Option<Precheck>> {
-    let meta = fs::symlink_metadata(wallet_path(network_dir))
-        .map_err(StoreUpgradeError::io("stat wallet.sqlite", true))?;
-    Ok(unsupported(&meta).map(|detail| Precheck::Refuse {
-        reason: StoreUpgradeError::WalletFileUnsupported { detail },
-    }))
+    for suffix in ["", "-wal", "-shm"] {
+        let meta = match fs::symlink_metadata(side(network_dir, suffix)) {
+            Ok(meta) => meta,
+            Err(e) if !suffix.is_empty() && e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(StoreUpgradeError::io("stat wallet.sqlite", true)(e)),
+        };
+        if let Some(what) = unsupported(&meta) {
+            return Ok(Some(Precheck::Refuse {
+                reason: StoreUpgradeError::WalletFileUnsupported {
+                    detail: format!("{}{suffix} {what}", STORE_FILES[0]),
+                },
+            }));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(unix)]

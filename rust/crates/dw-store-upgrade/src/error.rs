@@ -110,12 +110,12 @@ pub enum StoreUpgradeError {
         dir: PathBuf,
     },
 
-    /// `wallet.sqlite` is a symbolic link (unix only, as upstream) or is
-    /// owned by another user: the upstream open refuses the first and can't
-    /// make the second owner-only, and the copy the upgrade is rehearsed on
-    /// has neither. Refused before R1's drop. Its screen is the
-    /// unexpected-state refusal. Nothing changed.
-    #[error("wallet.sqlite {detail}")]
+    /// `wallet.sqlite`, its `-wal` or its `-shm` is a symbolic link (unix
+    /// only, as upstream) or is owned by another user: the upstream open
+    /// refuses the first and can't make the second owner-only, and the copy
+    /// the upgrade is rehearsed on has neither. Refused before R1's drop.
+    /// Its screen is the unexpected-state refusal. Nothing changed.
+    #[error("{detail}")]
     WalletFileUnsupported { detail: String },
 
     /// [`crate::PersisterOpened::open`] was asked for a load policy other
