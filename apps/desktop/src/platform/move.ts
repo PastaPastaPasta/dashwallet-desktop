@@ -183,8 +183,24 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
   return detail.trim() === "" ? t("transfer.move.notAccepted") : /[.!?]$/.test(detail) ? detail : `${detail}.`;
 }
 
-/** A move's refusal, by code. `credits` shows a credit figure as Dash. */
-export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
+/** Platform's structure pre-check refused a move, a send or a top-up before signing. Its consensus
+ * error stays in the log. */
+export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | null = null): string {
+  const rules = code === "credits.rules_unsupported";
+  if (earlier === "send") return rules ? t("platform.preflight.rulesUnsupportedRetry") : t("platform.preflight.refusedRetry");
+  if (earlier === "topUp") return rules ? t("platform.preflight.rulesUnsupportedHeldTopUp") : t("platform.preflight.refusedHeldTopUp");
+  return rules ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
+}
+
+/** Whether the earlier item a refused retry or exit named (`id`) may still have gone or go through. The
+ * engine runs the pre-check for a named call only while that item holds, so it counts as held unless
+ * Activity has since shown it failed for good: one that landed after the refusal changed the balance too. */
+export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): boolean =>
+  !!id && !activity?.some((a) => a.id === id && a.state === "failed" && !a.mayLand);
+
+/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
+ * was the exit of; while it still holds, a pre-check refusal says it may still land. */
+export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, exitOf?: string | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
@@ -212,6 +228,9 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
       return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code, stillHeld(activity, exitOf) ? "topUp" : null);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
@@ -270,6 +289,8 @@ export class PlatformMoveFlow extends Model {
   step: MoveStep = "confirm";
   outcome: MoveToCoreOutcome | null = null;
   error: unknown = null;
+  /** The held top-up the last move was the exit of, or `null`. */
+  exitOf: string | null = null;
   running = false;
   readonly grants: GrantModel;
 
@@ -348,6 +369,7 @@ export class PlatformMoveFlow extends Model {
     let ran = false;
     this.running = true;
     this.error = null;
+    this.exitOf = exitOf;
     this.changed();
     try {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
