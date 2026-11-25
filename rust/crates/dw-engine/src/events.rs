@@ -1005,6 +1005,9 @@ impl SessionHub {
     /// A lock was heard: key-wallet adds it to every wallet's locks, so
     /// each wallet with holds notes it if it may spend a held coin.
     fn lock_heard(&self) {
+        if self.wallets_with_holds().is_empty() {
+            return;
+        }
         if let Some(refresh) = self.held_refresh.get() {
             refresh();
         }

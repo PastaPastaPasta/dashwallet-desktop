@@ -360,6 +360,7 @@ pub(crate) fn drop_notes(
         };
         drop.1 = origin.and_then(|o| crate::history::DropOrigin::decode(&o));
         if drop.1.is_none() {
+            tracing::warn!(%wallet, txid = %t, "a drop's winner note doesn't read: its held coins wait");
             unread_origin.insert(t);
         }
     }
