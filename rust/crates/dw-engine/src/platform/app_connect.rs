@@ -682,12 +682,24 @@ async fn earlier_approval(
     Ok(found)
 }
 
-/// An update error that proves the transition never took effect, unlike
-/// a timeout or an unknown broadcast, after which the keys may still land.
+/// An update error that proves nothing was sent. Any other, the library's
+/// flattened broadcast failures included, may follow an accepted update,
+/// so its keys may still land.
 fn refused_unsent(e: &PlatformError) -> bool {
-    !matches!(
+    matches!(
         e,
-        PlatformError::Timeout | PlatformError::Unavailable | PlatformError::BroadcastUnknown { .. }
+        PlatformError::SignerUnavailable
+            | PlatformError::SeedMismatch
+            | PlatformError::InsufficientCredits { .. }
+            | PlatformError::InvalidArgument { .. }
+            | PlatformError::GrantInvalid
+            | PlatformError::GrantExceeded { .. }
+            | PlatformError::NeedsGrant { .. }
+            | PlatformError::Cancelled
+            | PlatformError::LeaseRevoked { .. }
+            | PlatformError::LeaseExpired
+            | PlatformError::WalletNotFound
+            | PlatformError::Identity(_)
     )
 }
 

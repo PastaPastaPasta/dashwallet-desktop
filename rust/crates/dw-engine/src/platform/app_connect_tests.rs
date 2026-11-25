@@ -1231,19 +1231,28 @@ fn a_refused_update_is_not_reported_as_unconfirmed() {
     assert_eq!(f.net.published.lock().unwrap().len(), 1);
 }
 
-/// A timed-out update still reads as not confirmed: its keys may land.
+/// A failed broadcast, which the library reports as an internal error, or
+/// a timeout still reads as not confirmed: its keys may land.
 #[test]
-fn a_timed_out_update_stays_not_confirmed() {
-    let f = Fixture::new();
-    let l = devnet(request());
-    *f.net.refuse_update.lock().unwrap() = Some(PlatformError::Timeout);
-    let grant = f.quoted_grant(&l, &Fixture::choice());
-    assert_eq!(
-        f.approve(&l, &Fixture::choice(), &grant).unwrap_err(),
-        ConnectError::Failed {
-            failure: ConnectFailure::NotConfirmed
-        }
-    );
+fn an_unknown_update_outcome_stays_not_confirmed() {
+    for e in [
+        PlatformError::Timeout,
+        PlatformError::Internal {
+            detail: "Failed to broadcast identity update".into(),
+        },
+    ] {
+        let f = Fixture::new();
+        let l = devnet(request());
+        *f.net.refuse_update.lock().unwrap() = Some(e.clone());
+        let grant = f.quoted_grant(&l, &Fixture::choice());
+        assert_eq!(
+            f.approve(&l, &Fixture::choice(), &grant).unwrap_err(),
+            ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed
+            },
+            "{e:?}"
+        );
+    }
 }
 
 /// An identity with no key that may sign the response is refused before
