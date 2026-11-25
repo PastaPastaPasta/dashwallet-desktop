@@ -505,15 +505,8 @@ impl NetworkSession {
                 (this.hub.history).with_wallet(id, |h| h.load_incomplete = true);
             }
             this.hub.update_wallet_state(id, |s| s.loading = false);
-            // The drops that waited for this open go now, with the evidence
-            // they were found on (#818, S1): after any drop that saw this
-            // open under way has put itself to wait.
-            drop(this.hub.drop_gate.lock().await);
-            for wallet in this.hub.deferred_drop_wallets() {
-                if !live.store.is_unloaded(&wallet.0) {
-                    this.drop_dead(&live.manager, wallet, None).await;
-                }
-            }
+            // The drops that waited for this open go now (#818, S1).
+            this.drain_deferred_drops(&live.manager).await;
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

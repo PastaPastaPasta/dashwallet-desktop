@@ -540,6 +540,10 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Drains the drops that waited for another wallet's open once a wallet
+    /// is unloaded or forgotten (`tx_actions`, #818 S1); unset in hub-only
+    /// tests.
+    drain_drops: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Drops what the history built on a sweep's transactions
     /// (`tx_actions`, #739); unset in hub-only tests.
     swept_dead: OnceLock<Box<SweptDead>>,
@@ -602,6 +606,9 @@ pub(crate) struct SessionHub {
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the reconciles started, to wait for.
+    #[cfg(test)]
+    pub(crate) reconciles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Tests: the claim choices a lock started again, to wait for.
     #[cfg(test)]
     pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -873,6 +880,7 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            drain_drops: OnceLock::new(),
             swept_dead: OnceLock::new(),
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
@@ -892,6 +900,8 @@ impl SessionHub {
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            reconciles: Mutex::new(Vec::new()),
             #[cfg(test)]
             lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -1135,6 +1145,20 @@ impl SessionHub {
     /// Sets what starts a wallet's duplicate-coin reconcile (once).
     pub(crate) fn attach_reconcile(&self, start: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.reconcile.set(start);
+    }
+
+    /// Sets what drains the drops that waited for another wallet's open
+    /// (once).
+    pub(crate) fn attach_drain_drops(&self, start: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.drain_drops.set(start);
+    }
+
+    /// The drops that waited for a wallet the hub no longer holds go: it
+    /// was all that kept them, and no open of it ends to drain them.
+    fn drain_drops(&self) {
+        if let Some(start) = self.drain_drops.get() {
+            start();
+        }
     }
 
     /// Sets what drops the history's transactions built on swept ones
@@ -1482,6 +1506,8 @@ impl SessionHub {
             rescan.wallets.remove(id);
         }
         self.forget_drops(id);
+        drop(unloaded);
+        self.drain_drops();
     }
 
     /// Forgets the drops wallet `id` waits with or keeps to recheck.
@@ -1555,6 +1581,8 @@ impl SessionHub {
             .remove(id);
         self.history.remove_wallet(id);
         self.forget_drops(id);
+        drop(unloaded);
+        self.drain_drops();
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {

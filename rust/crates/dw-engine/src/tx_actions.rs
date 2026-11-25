@@ -2364,6 +2364,41 @@ impl NetworkSession {
         }
     }
 
+    /// The drops that waited for another wallet's open go, with the
+    /// evidence they were found on (#818, S1): after any drop that saw the
+    /// open, or the unload or removal that ended it, under way has put
+    /// itself to wait. Those of unloaded wallets went with them.
+    pub(crate) async fn drain_deferred_drops(&self, manager: &Manager) {
+        drop(self.hub.drop_gate.lock().await);
+        let Ok(live) = self.live() else {
+            return;
+        };
+        for wallet in self.hub.deferred_drop_wallets() {
+            if !live.store.is_unloaded(&wallet.0) {
+                self.drop_dead(manager, wallet, None).await;
+            }
+        }
+    }
+
+    /// Hooks [`Self::drain_deferred_drops`] to the hub's unload and removal
+    /// of a wallet: run on its own task, so it holds none of the caller's
+    /// locks.
+    pub(crate) fn attach_drain_drops(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let rt = self.rt.clone();
+        self.hub.attach_drain_drops(Box::new(move || {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                if let (Ok(_op), Ok(manager)) = (session.try_enter(), session.manager()) {
+                    session.drain_deferred_drops(&manager).await;
+                }
+            });
+        }));
+    }
+
     /// The beaten payments `wallet` kept to recheck, each alone with its
     /// detection's evidence, but none a truncation since its detection or
     /// a header at its block's height that differs from its block voids
