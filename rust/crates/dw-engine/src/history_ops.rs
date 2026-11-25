@@ -25,6 +25,27 @@ use crate::platform::attribution::Payees;
 use crate::session::{Manager, WALLET_DB_FILE};
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// Every spent claim the engine restores goes through this one helper, so
+/// platform-wallet's claim mirror can see each claimed outpoint: a block
+/// that later spends one is then captured as a block spend even though the
+/// wallet holds neither the coin nor its claimant's record.
+pub(crate) fn restore_spent_claims(
+    info: &mut PlatformWalletInfo,
+    claims: &[(OutPoint, Option<Txid>)],
+) -> Vec<OutPoint> {
+    #[cfg(test)]
+    (claims_restored().lock().unwrap()).extend(claims.iter().map(|(o, _)| *o));
+    info.core_wallet.restore_spent_outpoints(claims)
+}
+
+/// Tests: every outpoint [`restore_spent_claims`] restored a claim on.
+#[cfg(test)]
+pub(crate) fn claims_restored() -> &'static std::sync::Mutex<HashSet<OutPoint>> {
+    static RESTORED: std::sync::OnceLock<std::sync::Mutex<HashSet<OutPoint>>> =
+        std::sync::OnceLock::new();
+    RESTORED.get_or_init(Default::default)
+}
+
 /// Every script the wallet's funds accounts own: BIP44 and BIP32 accounts,
 /// DIP9 CoinJoin accounts and DashPay receiving accounts. Watch-only DashPay
 /// contact accounts are not the wallet's.
@@ -876,7 +897,8 @@ impl NetworkSession {
             .map(|(o, t)| (*o, Some(*t)))
             .chain(holds.iter().map(|o| (*o, None)))
             .collect();
-        let held = core.restore_spent_outpoints(&restore);
+        let held = restore_spent_claims(info, &restore);
+        let core = &mut info.core_wallet;
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed
                 .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
@@ -1334,5 +1356,53 @@ mod lock_row_tests {
             assert!(out[&[wallet; 32]].lock_parents.is_empty());
             assert!(out[&[wallet; 32]].locks_unread, "wallet {wallet}");
         }
+    }
+}
+
+#[cfg(test)]
+mod claim_restore_tests {
+    use std::path::{Path, PathBuf};
+
+    fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// No engine code restores spent claims on key-wallet's wallet
+    /// directly: every caller goes through [`super::restore_spent_claims`].
+    #[test]
+    fn only_the_helper_restores_spent_claims() {
+        let call = concat!(".restore_spent", "_outpoints(");
+        let helper = Path::new(file!()).file_name().unwrap();
+        let mut files = Vec::new();
+        sources(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut found = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if !line.contains(call) {
+                    continue;
+                }
+                let in_helper = file.file_name() == Some(helper)
+                    && line.trim()
+                        == concat!("info.core_wallet.restore_spent", "_outpoints(claims)");
+                if !in_helper {
+                    found.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "spent claims restored past the helper: {found:#?}"
+        );
     }
 }

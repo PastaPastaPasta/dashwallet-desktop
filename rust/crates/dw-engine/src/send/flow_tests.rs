@@ -3507,6 +3507,38 @@ fn a_wallet_opened_mid_session_refuses_spends_until_its_history_is_loaded() {
     f.engine.block_on(draft.abandon(p)).unwrap();
 }
 
+/// A wallet opened mid-session restores its unmined payment's claims
+/// through the one helper, so platform-wallet's claim mirror sees them
+/// before the wallet processes a block.
+#[test]
+fn a_wallet_opened_mid_session_restores_its_claims_through_the_helper() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    let outpoint = coin.outpoint;
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    f.pay_from_the_draft(&draft).unwrap();
+    crate::history_ops::claims_restored()
+        .lock()
+        .unwrap()
+        .remove(&outpoint);
+    f.reopen_wallet();
+    assert!(
+        crate::history_ops::claims_restored()
+            .lock()
+            .unwrap()
+            .contains(&outpoint),
+        "the load claims the payment's coin through the helper"
+    );
+}
+
 impl Fixture {
     /// A confirmed coin of exactly a masternode collateral amount, stored
     /// with no transaction record (a height-only row), as legacy rows and
@@ -4547,7 +4579,7 @@ impl Fixture {
             .block_on(session.on_runtime(async move {
                 let wallet = inner.wallet(&id).await?;
                 let mut state = wallet.state_mut().await;
-                state.core_wallet.restore_spent_outpoints(&claims);
+                crate::history_ops::restore_spent_claims(&mut state, &claims);
                 Ok(())
             }))
             .unwrap();
