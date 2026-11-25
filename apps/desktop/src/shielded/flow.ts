@@ -307,6 +307,26 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 /** Whether `e` is the app error `code`. */
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
+/** Why the Shielded store stays closed this session (`shielded.store_closed`): the engine's reasons;
+ * one it does not name reads as `failed`. */
+export type ShieldedClosedReason = "in_use" | "damaged" | "failed" | "no_upgrade_copy";
+
+/** Each reason's text (MG). */
+export const SHIELDED_CLOSED_TEXT = {
+  in_use: "transfer.shielded.closed.inUse",
+  damaged: "transfer.shielded.closed.damaged",
+  failed: "transfer.shielded.closed.failed",
+  no_upgrade_copy: "transfer.shielded.closed.noUpgradeCopy",
+} as const satisfies Record<ShieldedClosedReason, string>;
+
+/** Why `e` says the Shielded store stays closed, or `null` for any other error. */
+export function shieldedClosedReason(e: unknown): ShieldedClosedReason | null {
+  const err = errorLike(e);
+  if (err?.code !== SHIELDED_CODES.storeClosed) return null;
+  const reason = err.data?.reason;
+  return typeof reason === "string" && reason in SHIELDED_CLOSED_TEXT ? (reason as ShieldedClosedReason) : "failed";
+}
+
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
 export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
   const err = errorLike(e);
@@ -332,6 +352,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return t("transfer.shielded.error.coinsLocked");
     case SHIELDED_CODES.unrecordedSpend:
       return SHIELDED_COPY.unrecorded.refused;
+    case SHIELDED_CODES.storeClosed:
+      return t(SHIELDED_CLOSED_TEXT[shieldedClosedReason(e) ?? "failed"]);
     case SHIELDED_CODES.tooManyInputs:
       return t("transfer.shielded.error.tooManyInputs");
     case SHIELDED_CODES.shieldPending:

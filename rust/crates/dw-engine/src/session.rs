@@ -265,6 +265,10 @@ async fn end_failed_open(
     persister: Arc<SqlitePersister>,
     held: impl Send,
 ) {
+    debug_assert!(
+        manager.shielded_coordinator().await.is_none(),
+        "Q86 F1: no shielded store before the session is handed out"
+    );
     let report = manager.shutdown().await;
     if !report.all_clean() {
         tracing::warn!(
@@ -424,6 +428,9 @@ pub struct NetworkSession {
     /// The previous session of this network did not close cleanly (its
     /// marker file was still there at open).
     pub(crate) unclean_previous: bool,
+    /// This open upgraded the wallet data without a before-upgrade copy it
+    /// can restore ([`NetworkSession::upgrade_notice`]).
+    upgrade_notice: Option<dw_store_upgrade::UpgradeNotice>,
     /// dash-qt's load-on-startup wallet list; `None` = load every wallet.
     pub(crate) startup_list: Mutex<Option<std::collections::BTreeSet<WalletId>>>,
     /// The console `walletpassphrase` relock timer (review L1): one per
@@ -523,14 +530,14 @@ impl NetworkSession {
             None => None,
         };
         let persister_config = crate::store_upgrade::persister_config(&data_dir);
-        {
+        let upgrade_notice = {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
                 crate::fsutil::refuse_insecure_root(&dir)?;
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
-            .await??;
-        }
+            .await??
+        };
         create_owned_dir(&data_dir, Path::new(""))?;
         crate::store_upgrade::stores_opening(&data_dir);
         let marker = data_dir.join(crate::tools::SESSION_MARKER);
@@ -545,6 +552,19 @@ impl NetworkSession {
         let dir = data_dir.clone();
         let (appdb, names) = tokio::task::spawn_blocking(move || open_app_db(&dir)).await??;
         let appdb = Arc::new(appdb);
+        // Before the persister holds wallet.sqlite and once app.sqlite,
+        // where its records go, is open: no other writer can touch the
+        // store, and the load reads what was dropped (#739, Q112).
+        {
+            let (dir, db) = (data_dir.clone(), Arc::clone(&appdb));
+            let repaired =
+                tokio::task::spawn_blocking(move || crate::store_repair::repair(&dir, &db)).await;
+            match repaired {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "store repair: stopped"),
+                Err(e) => tracing::warn!(error = %e, "store repair: panicked"),
+            }
+        }
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
             tokio::task::spawn_blocking(move || {
@@ -633,6 +653,7 @@ impl NetworkSession {
             crate::store_upgrade::open_persister(&dir, persister_config)
         })
         .await??;
+        let persister_opened = Arc::new(persister_opened);
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
         // them: with no wallet open, closed ones cannot be reached. Such a
@@ -807,8 +828,14 @@ impl NetworkSession {
             .chain(store.unloaded())
             .chain(listed)
             .collect();
-        let journal = match crate::platform::lease::session::open_journal(&data_dir, known).await {
-            Ok(journal) => journal,
+        let opened_journal = crate::platform::lease::session::open_journal(
+            &data_dir,
+            known,
+            Arc::clone(&persister_opened),
+        )
+        .await;
+        let (journal, shielded_drain) = match opened_journal {
+            Ok(opened) => opened,
             Err(e) => {
                 #[cfg(test)]
                 failed_open_probe::record(
@@ -862,7 +889,7 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
-                _persister_opened: Arc::new(persister_opened),
+                _persister_opened: persister_opened,
                 store,
                 appdb: Arc::clone(&appdb),
                 tap,
@@ -876,6 +903,7 @@ impl NetworkSession {
             withdrawal_nonces: Default::default(),
             opened_at: crate::events::unix_now(),
             unclean_previous,
+            upgrade_notice,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             backups: Default::default(),
@@ -896,6 +924,8 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
             governance,
         });
+        // Before anything can configure upstream's shielded store.
+        let _ = session.platform.shielded_drain.set(shielded_drain);
         session.governance.follow(&session);
         if session.governance.enabled() {
             session.governance.start(&session);
@@ -1083,6 +1113,16 @@ impl NetworkSession {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// What to tell the user about the store upgrade this session's open
+    /// ran, once its persister opened and its wallets loaded: `Some` when it
+    /// upgraded the wallet data without a before-upgrade copy it can restore
+    /// (Q107 107-1). It never blocks anything and is the same for the whole
+    /// session; nothing on disk records that it was shown.
+    pub fn upgrade_notice(&self) -> Option<crate::store_upgrade::copy::Line> {
+        self.upgrade_notice
+            .map(crate::store_upgrade::copy::notice_line)
     }
 
     /// The avatar thumbnail directory (DASHPAY §3.4), or `None` when it could
@@ -1367,15 +1407,10 @@ impl NetworkSession {
                 },
             });
         }
-        // Unload every wallet before dropping the manager. Upstream has a
-        // reference cycle that otherwise leaks each registered wallet — and
-        // with it the persister and its process-wide open-path claim, so the
-        // database could never be reopened in this process:
-        //   PlatformWallet -> SpvBroadcaster -> Arc<SpvRuntime>
-        //     (rs-platform-wallet/src/broadcaster.rs:219-226, manager/wallet_lifecycle.rs:557)
-        //   SpvRuntime -> PlatformEventManager -> BalanceUpdateHandler
-        //     -> Arc<ArcSwap<wallets map>> -> Arc<PlatformWallet>
-        //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
+        // Each wallet the gate lets go is unloaded before the manager drops
+        // (Q86 (c)). Unloaded or kept, none holds the persister once the
+        // manager is shut down cleanly and dropped: the pin's balance handler holds the wallets
+        // map through a `Weak` (P16, wallet/core/balance_handler.rs:44-57).
         // `remove_wallet` writes nothing through the persister
         // (manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75),
         // but with the shielded coordinator configured it purges the
@@ -1388,19 +1423,16 @@ impl NetworkSession {
         // its stored transition and reservations (`remove_from_manager`).
         // It stays in the sealed manager, which runs nothing more (SPV
         // stopped, every loop quiesced sealed and joined, the payment hooks
-        // drained, above), and its persister writes are committed, not
-        // closed: every `store` commits inline (the persister's default
+        // drained, above), and its persister writes are committed before
+        // the persister drops: every `store` commits inline (the persister's default
         // `Immediate` mode, WAL), and a flush here retries any left by a
         // transient failure (a failed flush is logged, not returned). The
         // library wrote the spend's record to the shielded store before its
         // first broadcast (`arm_redrive_before_broadcast`,
         // operations.rs:4445-4515: a failed write sends nothing; its
         // reservations live in memory only, file_store.rs:1126-1132, and end
-        // with the session). The connections stay open until the process
-        // exits, so their last WAL checkpoint does not run; the WAL replays
-        // at the next open, and the rows rehydrate as pending. The cost:
-        // the Arc cycle above keeps the persister's open-path claim, so the
-        // network reopens only in a new process. App quit takes this path
+        // with the session). The rows rehydrate as pending at the next
+        // open, in this process or the next. App quit takes this path
         // (`Engine::shutdown`); an in-app close is refused beforehand
         // (`Engine::close_network`), and from that check to this close no
         // signing shielded call starts, no wallet loads (an import or a
@@ -1409,6 +1441,10 @@ impl NetworkSession {
         // keeps no wallet (`PlatformRuntime::close_preflight`,
         // `wallet_loads`, E1 r2 R2-3, r3 m1).
         if closing == Closing::FailedOpen {
+            debug_assert!(
+                manager.shielded_coordinator().await.is_none(),
+                "Q86 F1: no shielded store before the session is handed out"
+            );
             let loaded = manager.list_wallet_ids_blocking();
             flush_left_loaded(&live.persister, &loaded).await;
             let persister = Arc::downgrade(&live.persister);
@@ -1437,7 +1473,6 @@ impl NetworkSession {
                 }
             }
         }
-        let holds_database = !kept.is_empty();
         for id in kept {
             tracing::info!(
                 wallet_id = %hex::encode(id),
@@ -1463,16 +1498,10 @@ impl NetworkSession {
         drop(live.replay);
         // The close returns once the database is released, so the network
         // reopens in this process (CI 41289102488: `StorageInUse` on a
-        // reopen right after a close). Bounded: a holder that never lets go
-        // keeps the database, and its reopen is refused as before. A kept
-        // wallet holds it until the process exits (DEC-1046: only a quit
-        // keeps one), so nothing is waited for then.
-        if holds_database {
-            tracing::info!(
-                network = %self.network,
-                "the wallet database stays held by the wallets kept for their shielded payments"
-            );
-        } else if !persister_released(&persister).await {
+        // reopen right after a close), a kept wallet's included (Q86 (e)).
+        // Bounded: a holder that never lets go keeps the database, and its
+        // reopen is refused as before.
+        if !persister_released(&persister).await {
             tracing::warn!(
                 network = %self.network,
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
@@ -1481,7 +1510,7 @@ impl NetworkSession {
         // A write the pump or the store's tap left on a blocking thread
         // (first-seen times, an unread count) still holds the app database
         // for as long as it runs; the close waits for those too.
-        if !holds_database && !released(&appdb).await {
+        if !released(&appdb).await {
             tracing::warn!(
                 network = %self.network,
                 "the app database is still held after the close: a reopen in this process is not alone on it, and on Windows its file cannot be replaced until it is released"

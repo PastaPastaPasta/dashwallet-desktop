@@ -332,6 +332,8 @@ describe("fixture backend", () => {
     expect(fixtureOptionsFromUrl("?openRestore=notStarted:fileVanished&restoreAvailable=no&restored=yes")).toMatchObject({ openRestore: "notStarted:fileVanished", restoreAvailable: false, restored: true });
     expect(fixtureOptionsFromUrl("?openRefused=refusedRestore&restoreAvailable=yes")).toMatchObject({ openRefused: "refusedRestore", restoreAvailable: true, restored: undefined });
     expect(() => fixtureOptionsFromUrl("?openRestore=refused:diskFull")).toThrow("unknown openRestore=refused:diskFull");
+    expect(fixtureOptionsFromUrl("?notPrivate=otherOwner")).toMatchObject({ notPrivate: "otherOwner" });
+    expect(() => fixtureOptionsFromUrl("?notPrivate=worldWritable")).toThrow("unknown notPrivate=worldWritable");
   });
 
   it("carries the sentinel the production bundle check looks for", () => {

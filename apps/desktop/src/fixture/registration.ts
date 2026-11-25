@@ -202,6 +202,8 @@ export function restarted(world: World): World {
   for (const dp of [world.dashpay, ...Object.values(world.dashpayOf ?? {})]) dp.runs = [];
   // Mixing is memory too: nothing resumes it (U-06 D5).
   world.coinjoin.mixers = {};
+  // The store upgrade's notice is one start's: the next start is past the between state.
+  world.upgradeNotice = undefined;
   return world;
 }
 

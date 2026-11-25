@@ -1650,27 +1650,11 @@ impl SessionHub {
                 txids,
                 superseded_by,
                 winner_block,
+                released_outpoints,
                 balance,
                 account_balances,
                 ..
             } => {
-                // The winner may pay no address of the wallet, and then no
-                // other event names it: a sweep chunk it beat learns of it
-                // here only.
-                self.note_sweep_news(
-                    id,
-                    crate::coinjoin::SweepNews::Beaten {
-                        txids,
-                        winner: *superseded_by,
-                        at: match winner_block {
-                            Some(b) => crate::coinjoin::BeatenAt::Mined {
-                                height: b.height(),
-                                hash: b.block_hash(),
-                            },
-                            None => crate::coinjoin::BeatenAt::Is,
-                        },
-                    },
-                );
                 // Read before the history forgets them: what is built on
                 // them is checked against their bytes (#739).
                 let swept: Vec<Transaction> = (self.history).read_wallet(&id, |h| {
@@ -1683,6 +1667,49 @@ impl SessionHub {
                 // when the drop below never ran (#739).
                 let dead =
                     crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
+                // The winner may pay no address of the wallet, and then no
+                // other event names it: a sweep chunk it beat learns of it
+                // here only. A winner that funds a swept claim beat nothing:
+                // key-wallet dropped the claim as unsigned and gave back only
+                // what it released (rust-dashcore#1523). A claim's coin it
+                // released names the drop when the history lacks the claim.
+                let mut claims = crate::tx_actions::claim_tree(*superseded_by, &swept);
+                if !claims.is_empty()
+                    || (released_outpoints.iter()).any(|o| o.txid == *superseded_by)
+                {
+                    let read: HashSet<Txid> = swept.iter().map(|tx| tx.txid()).collect();
+                    claims.extend(txids.iter().filter(|t| !read.contains(*t)));
+                    claims = crate::tx_actions::built_on(claims, &swept);
+                }
+                let beaten: Vec<Txid> = (txids.iter())
+                    .filter(|t| !claims.contains(*t))
+                    .copied()
+                    .collect();
+                if !beaten.is_empty() {
+                    self.note_sweep_news(
+                        id,
+                        crate::coinjoin::SweepNews::Beaten {
+                            txids: &beaten,
+                            winner: *superseded_by,
+                            at: match winner_block {
+                                Some(b) => crate::coinjoin::BeatenAt::Mined {
+                                    height: b.height(),
+                                    hash: b.block_hash(),
+                                },
+                                None => crate::coinjoin::BeatenAt::Is,
+                            },
+                        },
+                    );
+                }
+                if !dead.is_empty() {
+                    self.note_sweep_news(
+                        id,
+                        crate::coinjoin::SweepNews::Dropped {
+                            dead: &dead,
+                            released: released_outpoints,
+                        },
+                    );
+                }
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go.
                 self.history.with_wallet(id, |h| {
@@ -1835,6 +1862,7 @@ impl SessionHub {
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
+            WalletEvent::DismissalsChanged { .. } => {}
         }
     }
 }
@@ -1858,7 +1886,9 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
         } => (inserted.iter().chain(updated).chain(matured))
             .map(|r| r.txid)
             .collect(),
-        WalletEvent::SyncHeightAdvanced { .. } => Vec::new(),
+        WalletEvent::SyncHeightAdvanced { .. } | WalletEvent::DismissalsChanged { .. } => {
+            Vec::new()
+        }
         WalletEvent::ChainLockProcessed {
             locked_transactions,
             ..

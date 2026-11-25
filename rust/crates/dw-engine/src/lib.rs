@@ -61,6 +61,7 @@ mod session;
 #[cfg(test)]
 mod startup_list_tests;
 mod store;
+mod store_repair;
 pub mod store_upgrade;
 pub mod sync;
 // Present only with the `test-support` feature, which dwcli's

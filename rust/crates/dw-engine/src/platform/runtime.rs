@@ -18,6 +18,9 @@ use crate::events::SessionHub;
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
+/// The drained notes held in upstream's store, by wallet: `(account, nullifier)`.
+pub(crate) type DrainedHeld = HashMap<[u8; 32], HashSet<(u32, [u8; 32])>>;
+
 /// `dashpay_sync` while a window is visible, and while hidden (§3.2).
 const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
 const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
@@ -147,6 +150,13 @@ pub(crate) struct PlatformRuntime {
     /// takes a hook once and does not say whether one is set.
     pub(crate) shielded_hooked:
         Mutex<std::sync::Weak<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>>,
+    /// This start's drain of the network's shielded store (Q110 110-2),
+    /// set once the session's journal open ran it: upstream's shielded
+    /// store opens only on `Ok`, and stays closed while this is unset.
+    pub(crate) shielded_drain: std::sync::OnceLock<Result<(), super::ShieldedStoreClosed>>,
+    /// The drained notes the engine holds in upstream's store, by wallet:
+    /// `(account, nullifier)` ([`super::shielded_pool::sync_drained_holds`]).
+    pub(crate) drained_held: Mutex<DrainedHeld>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
@@ -154,6 +164,14 @@ pub(crate) struct PlatformRuntime {
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's pause of the next settle of drained spends, between the
+    /// pass lock's read and its write (`shielded_pool::pass`).
+    #[cfg(test)]
+    pub(crate) settle_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// The last evidence wish given to the coordinator
+    /// (`shielded_pool::want_drained_evidence`).
+    #[cfg(test)]
+    pub(crate) evidence_wanted: std::sync::atomic::AtomicBool,
     /// A test's proved note count for the periodic pass's check
     /// (`Some(None)`: the read fails); the network's while `None`.
     #[cfg(test)]
@@ -517,9 +535,15 @@ impl PlatformRuntime {
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
             shielded_hooked: Mutex::new(std::sync::Weak::new()),
+            shielded_drain: std::sync::OnceLock::new(),
+            drained_held: Mutex::default(),
             shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            settle_pause: Mutex::new(None),
+            #[cfg(test)]
+            evidence_wanted: Default::default(),
             #[cfg(test)]
             notes_count: Mutex::new(None),
             #[cfg(test)]

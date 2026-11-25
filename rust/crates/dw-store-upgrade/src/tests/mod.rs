@@ -1,14 +1,25 @@
 //! Tests over copies of the released fixtures (testdata/upgrade/*, never
 //! edited), each in its own 0700 temp directory.
 
+mod copy_table;
 mod crash;
 mod fixtures;
 mod meta;
 mod p9a;
+mod q107;
 mod refusals;
+mod restore;
 mod review_fixes;
 mod review_fixes_2;
+mod review_fixes_3;
+mod review_fixes_4;
+mod startup_order;
+mod support;
+mod upgrade_copy;
+mod upgraded_from;
+mod upstream_shapes;
 mod v3;
+mod v3_dropped;
 
 use std::collections::BTreeMap;
 use std::fs;

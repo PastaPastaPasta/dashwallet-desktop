@@ -246,6 +246,7 @@ const NOT_FACADE: &[&str] = &[
     "banner.rs",
     "banner_tests.rs",
     "bringup.rs",
+    "close_unload_gate_tests.rs",
     "contact_names.rs",
     "contact_payout.rs",
     "contacts_model.rs",
@@ -324,6 +325,7 @@ const NOT_FACADE: &[&str] = &[
     "shielded_import_tests.rs",
     "shielded_payout.rs",
     "shielded_pool.rs",
+    "shielded_store_drain_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
@@ -1199,6 +1201,9 @@ fn error_codes_match_the_contract() {
             ShieldedError::CoinsUnconfirmed { coins: 0 },
             ShieldedError::MoveRunning,
             ShieldedError::CoinsChanged,
+            ShieldedError::StoreClosed {
+                reason: ShieldedStoreClosed::Failed,
+            },
         ],
         ShieldedError::code,
     );

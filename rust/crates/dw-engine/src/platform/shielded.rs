@@ -254,6 +254,57 @@ pub struct UnresolvedSpend {
     pub attempts: u32,
 }
 
+/// Why the shielded store stays closed ([`ShieldedError::StoreClosed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedStoreClosed {
+    /// No copy of the store from this upgrade: neither a verified
+    /// before-upgrade snapshot nor this upgrade's part-upgraded copy.
+    NoUpgradeCopy,
+    /// Another app holds the store.
+    InUse,
+    /// A stored record could not be read: the store is damaged.
+    Damaged,
+    /// The drain could not read or write a store, or the dispatch journal
+    /// did not open, this start.
+    Failed,
+}
+
+impl ShieldedStoreClosed {
+    /// The serialized name, as the error's data carries it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoUpgradeCopy => "no_upgrade_copy",
+            Self::InUse => "in_use",
+            Self::Damaged => "damaged",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for ShieldedStoreClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoUpgradeCopy => "no copy of it from the upgrade",
+            Self::InUse => "in use",
+            Self::Damaged => "damaged",
+            Self::Failed => "the drain did not finish",
+        })
+    }
+}
+
+impl From<&dw_shielded_drain::ShieldedDrainError> for ShieldedStoreClosed {
+    fn from(e: &dw_shielded_drain::ShieldedDrainError) -> Self {
+        use dw_shielded_drain::ShieldedDrainError as E;
+        match e {
+            E::Precondition => Self::NoUpgradeCopy,
+            E::StoreInUse => Self::InUse,
+            E::Corrupt { .. } => Self::Damaged,
+            _ => Self::Failed,
+        }
+    }
+}
+
 /// What a `shielded.not_synced` waits for (DEC-1058 #4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -24,6 +24,8 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "dropped_claim_tests.rs"]
 mod dropped_claim_tests;
+#[path = "g1_islock_tests.rs"]
+mod g1_islock_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]
@@ -37,6 +39,8 @@ mod own_spend_disk_tests;
 mod removed_payment_way_out_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
+#[path = "store_repair_tests.rs"]
+mod store_repair_tests;
 
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -632,7 +636,6 @@ fn a_spend_of_a_coin_not_scanned_yet_never_overstates_the_balance() {
 /// that its owner never signed. When the scan finds the coin, the claim is
 /// dropped with its row and the coin counts, across a restart too.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): needs the unsigned-claim sweep (rust-dashcore#1523) at the pin"]
 fn an_unsigned_spend_of_a_coin_not_scanned_yet_does_not_hide_it() {
     let (_dir, engine, session, id) = engine_wallet();
     let (_, funding, spend) = funding_and_spend(&engine, &session, id);

@@ -1027,6 +1027,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
             json!({"notes": notes, "required": required})
         }
         ShieldedError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
+        ShieldedError::StoreClosed { reason } => json!({"reason": reason.as_str()}),
         ShieldedError::Platform(p) => platform_params(p),
     }
 }
