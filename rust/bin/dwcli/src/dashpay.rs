@@ -3852,7 +3852,7 @@ mod tests {
                 assert_eq!(
                     *spends,
                     json!(dw_engine::platform::SHIELDED_SPENDS_AVAILABLE),
-                    "{line}"
+                    "{args:?}"
                 );
                 *spends = json!(true);
             }
