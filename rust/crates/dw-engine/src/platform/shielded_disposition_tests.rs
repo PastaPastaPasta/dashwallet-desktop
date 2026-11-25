@@ -451,6 +451,16 @@ fn an_unreadable_outcome_is_acked_on_a_pruned_proof_only_while_in_flight() {
     ));
     assert_eq!(settled, Ok(dw_appdb::dispatch::ArtifactSettled::Settled));
     mark(2);
+    let artifacts = engine
+        .block_on(session.leases.shielded_artifacts(wallet))
+        .unwrap();
+    let proved = engine.block_on(registration_shielded::proved_creates(
+        &session,
+        wallet,
+        &artifacts,
+        &[st_hash(2)],
+    ));
+    assert!(proved.is_empty(), "{proved:?}");
     corrupt(2);
     pass(&engine, &session);
     assert!(

@@ -2359,9 +2359,10 @@ fn a_create_signs_nothing_while_a_check_fails() {
 }
 
 /// While the library cannot spend from a lease's key set, a new create is
-/// refused before anything is staged: no intent, nothing signed, the row
-/// unnamed. A named row still settles by evidence: its fallback is
-/// proved, settled and its refund armed.
+/// refused before its readiness is read (a pool below the floor would
+/// answer `PoolSize` there), so before any hold, permit or intent: nothing
+/// signed, the row unnamed. A named row still settles by evidence: its
+/// fallback is proved, settled and its refund armed.
 #[test]
 fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
     let h = Hooked::new();
@@ -2369,6 +2370,7 @@ fn without_keyset_spends_a_new_create_is_refused_and_a_named_one_settles() {
     let lib = paying(None);
     lib.no_keyset
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    *lib.pool_notes.lock().unwrap() = Some(10);
     let ev = Evidence::default();
     let lease = h.registration_lease(2 * DENOMINATION);
     assert_eq!(

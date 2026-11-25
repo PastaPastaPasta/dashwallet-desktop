@@ -4454,6 +4454,36 @@ fn shield_refused_after_the_signature(end: FundEnd) {
     assert!(lib.funded.lock().unwrap().is_empty());
 }
 
+/// While the library cannot spend from a lease's key set no spend starts:
+/// a send and an unshield are refused before anything else, the grant kept
+/// and no key out of the vault.
+#[test]
+fn a_spend_is_refused_without_keyset_spends() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    lib.no_keyset.store(true, Ordering::SeqCst);
+    for unshield in [false, true] {
+        let grant = fx.grant(10 * NOTE);
+        let g = grant.clone();
+        let refused = run(&fx, &lib, move |s, lib| async move {
+            code(if unshield {
+                pool::unshield(&s, wallet, &*lib, NOTE, None, &g, false).await
+            } else {
+                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &g, false).await
+            })
+        });
+        assert_eq!(refused, "platform.unavailable");
+        assert!(fx.unused(&grant), "the refusal keeps the grant");
+    }
+    assert!(lib.spent().is_empty(), "no key left the vault");
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "the refusal quoted nothing"
+    );
+}
+
 /// Without the dispatch hook no spend starts: a send and an unshield are
 /// refused before anything else, so nothing is quoted, no receive address
 /// is issued, the grant is kept and no key leaves the vault.
