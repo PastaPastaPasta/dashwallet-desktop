@@ -3315,6 +3315,12 @@ pub(crate) async fn activity(
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<Vec<PlatformActivity>, CreditsError> {
+    // Every recorded fallback is derived into the pool first, so the read
+    // below covers a refund to one after a reload. Unreadable, the read
+    // goes on without them, as before.
+    if let Err(e) = retire_handed_out(session, wallet).await {
+        tracing::info!("restoring the Platform address records before reading activity: {e}");
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let store = Store::of(session, wallet_id)?;

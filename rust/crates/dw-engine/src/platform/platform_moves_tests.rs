@@ -482,6 +482,8 @@ pub(crate) struct FakeMoves {
     withdrawal_reads: AtomicUsize,
     /// The `MoveNet` calls made so far.
     calls: AtomicUsize,
+    /// The addresses each read asked for, in order.
+    pub(crate) read_sets: Mutex<Vec<BTreeSet<PlatformAddress>>>,
 }
 
 impl FakeMoves {
@@ -514,6 +516,7 @@ impl FakeMoves {
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
+            read_sets: Mutex::default(),
         })
     }
 
@@ -822,6 +825,7 @@ impl MoveNet for FakeMoves {
             self.unverified.store(true, Ordering::SeqCst);
         }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        self.read_sets.lock().unwrap().push(addresses.clone());
         let state = self.state.lock().unwrap();
         let infos = (addresses.into_iter())
             .map(|a| (a, state.get(&a).copied()))
@@ -2162,6 +2166,21 @@ fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
     assert_eq!(w.receive_address(), shown, "never the fallback");
     let next = published_fallback(&w);
     assert_eq!(index_of(&w, next), Some(3));
+}
+
+/// C-funding F13 (bot r4702054059): after a reload that derived only index
+/// 0, the activity read still asks for every recorded fallback, so a
+/// refund there is read as the refund it is. Mutant: activity reads
+/// without deriving them first.
+#[test]
+fn the_activity_read_covers_every_recorded_fallback_after_a_reload() {
+    let w = World::new();
+    let fallback = published_fallback(&w);
+    reload_derived_to(&w, 0);
+    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
+    w.activity();
+    let read = w.net.read_sets.lock().unwrap().last().cloned();
+    assert!(read.unwrap().contains(&parse(&fallback).unwrap()));
 }
 
 /// C-funding F13 (bot r4699213569): a fallback no row names and no create
