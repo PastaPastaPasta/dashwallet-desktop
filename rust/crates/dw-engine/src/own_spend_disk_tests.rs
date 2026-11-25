@@ -1804,6 +1804,18 @@ fn a_beaten_payment_goes_when_a_chainlock_forgets_its_winner_after_the_proof_was
 /// counted or offered, after a restart too.
 #[test]
 fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heights() {
+    coins_spent_at_two_heights_keep_the_payment(false);
+}
+
+/// #818: as above, but the drop is found after A's block alone, and B's
+/// block is processed while it waits: the fallback can't carry a spend
+/// of a block processed since the detection either.
+#[test]
+fn a_beaten_payment_stays_when_a_chainlock_forgets_a_spend_of_a_block_after_its_detection() {
+    coins_spent_at_two_heights_keep_the_payment(true);
+}
+
+fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let payment = send(
@@ -1837,10 +1849,14 @@ fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heigh
 
     let pause = Arc::new(crate::coins::TestPause::default());
     *session.hub.pause_drop_recheck.lock().unwrap() = Some(Arc::clone(&pause));
-    let both = blocks.clone();
+    let first = match later {
+        true => vec![(TIP + 1, blocks[0].clone())],
+        false => vec![(TIP + 1, blocks[0].clone()), (TIP + 2, blocks[1].clone())],
+    };
+    let tip = first.last().unwrap().0;
     super::deliver(&engine, &session, id, move |wm| {
         Box::pin(async move {
-            for (height, txs) in [(TIP + 1, both[0].clone()), (TIP + 2, both[1].clone())] {
+            for (height, txs) in first {
                 let block = super::block_with(txs);
                 (wm.process_block_for_wallets(
                     &block,
@@ -1850,13 +1866,16 @@ fn a_beaten_payment_stays_when_a_chainlock_forgets_its_coins_spends_at_two_heigh
                 ))
                 .await;
             }
-            wm.update_wallet_synced_height(&id.0, TIP + 2);
+            wm.update_wallet_synced_height(&id.0, tip);
         })
     });
     assert!(
         pause.wait_reached(std::time::Duration::from_secs(20)),
         "the blocks' reconcile rechecks the payment"
     );
+    if later {
+        mined(&engine, &session, id, TIP + 2, blocks[1].clone());
+    }
     chain_lock(&engine, &session, id, TIP + 2, hashes[1]);
     let observed = {
         let manager = session.manager().unwrap();

@@ -1365,6 +1365,8 @@ struct DropPlan {
 #[derive(Debug, Clone)]
 pub(crate) struct Recheck {
     truncations: u64,
+    /// key-wallet's last processed block height at the detection.
+    processed: u32,
     block: Option<BlockHash>,
     spent: BTreeMap<OutPoint, u32>,
     /// The rechecks this detection had already.
@@ -1392,11 +1394,12 @@ const RECHECKS: u8 = 3;
 /// after a recheck found other winners.
 const DETECTIONS: u8 = 3;
 
-/// What [`NetworkSession::find_dead`] reads: the truncations, the beaten
-/// payments with their winners and the coins of [`Recheck::spent`], and
-/// the orphans.
+/// What [`NetworkSession::find_dead`] reads: the truncations, key-wallet's
+/// last processed height, the beaten payments with their winners and the
+/// coins of [`Recheck::spent`], and the orphans.
 type FoundDead = (
     u64,
+    u32,
     Vec<(Txid, Winner, BTreeMap<OutPoint, u32>)>,
     Option<Vec<Txid>>,
 );
@@ -1416,8 +1419,9 @@ fn unknown_block(winner: Winner) -> Option<u32> {
 /// The coins of `root` that the detection saw key-wallet hold as spent by
 /// `winner`'s block, if key-wallet holds none of them so any more and
 /// `root` is still out of a block, not abandoned and not
-/// InstantSend-locked, key-wallet processed that block, and the detection
-/// saw no coin of `root` spent by another block (#818, Q89a).
+/// InstantSend-locked, key-wallet processed that block and none since the
+/// detection, and the detection saw no coin of `root` spent by another
+/// block (#818, Q89a).
 /// The caller proves the block final under the wallet's own ChainLock with
 /// no truncation since the detection, and that key-wallet holds no record
 /// of `root`.
@@ -1438,9 +1442,12 @@ fn spend_forgotten_as_final(
     {
         return BTreeMap::new();
     }
-    // A coin of `root` another block spent is evidence this proof can't
-    // carry: no drop, as when nothing beat it (#818).
-    if (coins.iter()).any(|o| detected.spent.get(o).is_some_and(|h| *h != at)) {
+    // A coin of `root` another block spent, seen at the detection or in a
+    // block processed since, is evidence this proof can't carry: no drop,
+    // as when nothing beat it (#818).
+    if core.last_processed_height() != detected.processed
+        || (coins.iter()).any(|o| detected.spent.get(o).is_some_and(|h| *h != at))
+    {
         return BTreeMap::new();
     }
     (coins.into_iter())
@@ -2257,9 +2264,10 @@ impl NetworkSession {
     }
 
     /// [`beaten_unrecorded`] of `wallet` under the manager's read lock,
-    /// each with the coins of its own that its winner's block spent when
-    /// that is a block's spend the wallet does not know ([`unknown_block`]);
-    /// the truncations the hub had applied; and, with `stored`, the
+    /// each with its coins key-wallet holds as spent, at their blocks'
+    /// heights, when its winner is a block's spend the wallet does not know
+    /// ([`unknown_block`]); the truncations the hub had applied and
+    /// key-wallet's last processed height; and, with `stored`, the
     /// [`orphaned_unmined`] ones. `None` while the history is not whole.
     async fn find_dead(
         &self,
@@ -2299,7 +2307,7 @@ impl NetworkSession {
                 })
                 .collect();
             let orphans = stored.map(|(s, exempt)| orphaned_unmined(&h.txs, s, exempt));
-            Some((truncations, beaten, orphans))
+            Some((truncations, core.last_processed_height(), beaten, orphans))
         })
     }
 
@@ -2390,7 +2398,7 @@ impl NetworkSession {
         stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
         work: &mut VecDeque<DeadWork>,
     ) {
-        let Some((truncations, beaten, mut orphans)) =
+        let Some((truncations, processed, beaten, mut orphans)) =
             self.find_dead(manager, wallet, stored).await
         else {
             return;
@@ -2398,7 +2406,7 @@ impl NetworkSession {
         let heights: BTreeSet<u32> = (beaten.iter())
             .filter_map(|(_, w, _)| unknown_block(*w))
             .collect();
-        let mut found = Some((truncations, beaten));
+        let mut found = Some((truncations, processed, beaten));
         let mut headers = HashMap::new();
         if !heights.is_empty() {
             // The header chain's hashes at the heights of the blocks whose
@@ -2408,15 +2416,17 @@ impl NetworkSession {
             // binds none. The orphans are read again too: a parent may be
             // back.
             headers = self.hub.header_hashes(heights).await;
-            found = (self.find_dead(manager, wallet, stored).await).map(|(again, beaten, now)| {
-                if again != truncations {
-                    headers.clear();
-                }
-                orphans = now;
-                (truncations, beaten)
-            });
+            found = (self.find_dead(manager, wallet, stored).await).map(
+                |(again, processed, beaten, now)| {
+                    if again != truncations {
+                        headers.clear();
+                    }
+                    orphans = now;
+                    (truncations, processed, beaten)
+                },
+            );
         }
-        if let Some((truncations, beaten)) = found {
+        if let Some((truncations, processed, beaten)) = found {
             let mut groups: BTreeMap<Winner, (Vec<Txid>, BTreeMap<OutPoint, u32>)> =
                 BTreeMap::new();
             for (t, w, spent) in beaten {
@@ -2428,6 +2438,7 @@ impl NetworkSession {
                 let block = unknown_block(w).and_then(|h| headers.get(&h).copied());
                 let recheck = Recheck {
                     truncations,
+                    processed,
                     block,
                     spent,
                     tries: 0,
