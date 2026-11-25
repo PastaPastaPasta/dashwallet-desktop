@@ -2727,6 +2727,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-store-upgrade"
+version = "0.3.0"
+dependencies = [
+ "dashcore",
+ "dw-fs",
+ "grovedb-bincode",
+ "key-wallet",
+ "platform-wallet",
+ "platform-wallet-storage",
+ "refinery",
+ "rusqlite",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "dw-testutil"
 version = "0.3.0"
 dependencies = [
