@@ -507,6 +507,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     return shieldEnd(s, `drain${(s.activity.length + 1).toString(16).padStart(8, "0")}`, quote.duffs);
   },
   shielded_send_quote: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "shielded_send_quote");
     return sendQuote(ctx, walletId, to, credits);
   },
   shielded_send: ({ walletId, to, credits, memo, grant, confirmUnrecorded }: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
@@ -519,7 +520,10 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "sent", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo });
     return { credits, balance: s.balance, to, ...end };
   },
-  unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
+  unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "unshield_quote");
+    return spendQuote(ctx, walletId, credits, true, "unshield_quote");
+  },
   unshield_to_core: ({ walletId, credits, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
     refuseSpendsOff(ctx, walletId, "unshield_to_core");
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
@@ -531,7 +535,11 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
     return { credits, balance: s.balance, to, ...end };
   },
-  unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform_quote").quote,
+  unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
+    refuseOnMainnet(ctx);
+    refuseSpendsOff(ctx, walletId, "unshield_to_platform_quote");
+    return toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform_quote").quote;
+  },
   unshield_to_platform: ({ walletId, credits, to, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
     refuseOnMainnet(ctx);
     refuseSpendsOff(ctx, walletId, "unshield_to_platform");

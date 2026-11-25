@@ -155,6 +155,11 @@ fn a_drain_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     let refused = drain_with(&fx, &lib, grant.clone());
     assert_eq!(refused.unwrap_err().code(), "platform.unavailable");
     assert!(fx.unused(&grant), "the refusal keeps the grant");
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "nothing was quoted"
+    );
     assert!(
         lib.drained.lock().unwrap().is_empty(),
         "no coin was drained"

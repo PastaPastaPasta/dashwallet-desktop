@@ -325,9 +325,9 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
     /// The library can spend from the pool's key set ([`keyset_spends`]).
-    /// While false every spend from Shielded ([`unhooked`]) and every way
-    /// into it ([`keyset_closed`]: a new shield from Core, CoinJoin or the
-    /// Platform addresses, and the receive address) refuses
+    /// While false every spend from Shielded ([`unhooked`]), its quote and
+    /// every way into it ([`keyset_closed`]: a new shield from Core,
+    /// CoinJoin or the Platform addresses, and the receive address) refuses
     /// `platform.unavailable` first, and the status says so; finishing a
     /// shield already sent, sync and the balance are unaffected.
     fn keyset_spends(&self) -> bool;
@@ -1698,8 +1698,9 @@ pub(super) async fn send_armed(
 
 /// Refuses a new way into the pool, and the quote of a spend from it, while
 /// the library cannot spend from the key set: what goes in could not come
-/// out in this build. Asked before anything else, so nothing is quoted,
-/// locked or granted and no receive address is issued. Finishing a shield
+/// out in this build. Asked before any read, after only the mainnet and
+/// payee refusals that come first, so nothing is quoted, locked or granted
+/// and no receive address is issued. Finishing a shield
 /// already sent (`resume`, Repair's `ShieldLocks`) is not refused.
 pub(crate) fn keyset_closed(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if lib.keyset_spends() {

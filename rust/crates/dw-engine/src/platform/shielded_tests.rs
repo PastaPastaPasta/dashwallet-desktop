@@ -206,7 +206,7 @@ pub(crate) struct FakeShielded {
     version: u32,
     /// What a proved read of the version returns.
     refreshed: u32,
-    refreshes: AtomicU32,
+    pub(crate) refreshes: AtomicU32,
     bound: bool,
     /// What a bind says while not `bound`.
     unbound_as: ShieldedAccount,
@@ -5086,7 +5086,7 @@ fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set(
         "no shield from Platform"
     );
     off.store(false, Ordering::SeqCst);
-    assert_ne!(shield_quote(), "platform.unavailable", "a later gate's");
+    assert_eq!(shield_quote(), "shielded.not_synced", "a later gate's");
     let status = (f.engine)
         .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
             pool::status(&lib).await
