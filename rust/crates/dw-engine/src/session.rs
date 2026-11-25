@@ -87,6 +87,10 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The coins kept out of every bucket above, and out of spending,
+    /// while the payment they come from may never confirm (Q100 E1,
+    /// `crate::withhold`): shown as pending.
+    pub withheld: u64,
     /// The scan has not reached the wallet's birth block yet: the buckets
     /// hold what the wallet has seen so far (mempool and InstantSend
     /// payments included) and can miss coins in blocks not scanned yet.
@@ -906,6 +910,7 @@ impl NetworkSession {
             processed_height: core.last_processed_height(),
             balance: core.balance(),
             accounts: core.account_balances(),
+            excluded: self.hub.excluded_share(id, core),
             ..WalletState::default()
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));

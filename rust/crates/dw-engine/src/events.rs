@@ -19,6 +19,8 @@ use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
+use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformEventHandler;
 use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
@@ -359,6 +361,10 @@ pub(crate) struct WalletState {
     /// `ChainTruncated` event of: the event at this height, or one above
     /// it that would lower nothing, is that truncation's, heard late.
     pub detected: Option<u32>,
+    /// The share of the excluded coins (`crate::withhold`) in `balance`
+    /// and `accounts`, read with them from the manager. An event's
+    /// snapshot keeps the last one until the manager is read again.
+    pub excluded: crate::withhold::Excluded,
 }
 
 impl WalletState {
@@ -404,14 +410,16 @@ impl WalletState {
     /// The balance known so far: confirmed coins the scan found, and the
     /// mempool and InstantSend payments seen while it runs.
     pub fn balances(&self) -> WalletBalances {
-        let b = &self.balance;
+        use crate::withhold::Excluded;
+        let b = Excluded::subtract(&self.balance, Some(&self.excluded.balance));
         // Before the CoinJoin view is computed: the CoinJoin accounts'
         // spendable balance (an upper bound of the fully mixed one).
         let coinjoin = self.fully_mixed.unwrap_or_else(|| {
             self.accounts
                 .iter()
                 .filter(|(t, _)| matches!(t, AccountType::CoinJoin { .. }))
-                .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
+                .map(|(t, b)| Excluded::subtract(b, self.excluded.accounts.get(t)))
+                .map(|b| b.confirmed().saturating_add(b.unconfirmed()))
                 .sum()
         });
         WalletBalances {
@@ -421,6 +429,7 @@ impl WalletState {
             locked: b.locked(),
             total: b.total(),
             coinjoin,
+            withheld: self.excluded.total(),
             catching_up: self.catching_up(),
         }
     }
@@ -1136,14 +1145,28 @@ impl SessionHub {
     }
 
     /// Publishes key-wallet's own balances for wallet `id` (after the engine
-    /// changed its coins) and announces them when they differ.
-    pub(crate) fn publish_core_balance(
+    /// changed its coins), read from `core` under the manager's lock with
+    /// the excluded coins' share, and announces them when they differ.
+    pub(crate) fn publish_core_balance(&self, id: WalletId, core: &ManagedWalletInfo) {
+        let excluded = self.excluded_share(id, core);
+        let (balance, accounts) = (core.balance(), core.account_balances());
+        self.publish_balances(id, &balance, &accounts, Some(excluded));
+    }
+
+    fn publish_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+        excluded: Option<crate::withhold::Excluded>,
     ) {
-        if self.update_balance(id, balance, accounts) {
+        let changed = self.write_balances(id, balance, accounts, excluded);
+        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+            && let Some(reread) = self.balance_reread.get()
+        {
+            reread(id);
+        }
+        if changed {
             self.pump.mark_balances(id);
         }
     }
@@ -1366,14 +1389,20 @@ impl SessionHub {
     /// A snapshot with locked coins was taken while a funding held its
     /// temporary locks (only those set the flag), and may be applied after
     /// they were released: the balances are read again once it is.
+    ///
+    /// The snapshot comes without the excluded coins' share
+    /// (`crate::withhold`): while the wallet may hold some, the balances
+    /// are read again from the manager with it.
     fn update_balance(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
     ) -> bool {
-        let changed = self.write_balances(id, balance, accounts);
-        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+        let changed = self.write_balances(id, balance, accounts, None);
+        if (balance.locked() > 0
+            || accounts.values().any(|b| b.locked() > 0)
+            || self.may_withhold(&id))
             && let Some(reread) = self.balance_reread.get()
         {
             reread(id);
@@ -1381,28 +1410,29 @@ impl SessionHub {
         changed
     }
 
-    /// Applies balances read from the manager, under its lock, unless the
-    /// wallet is unloaded; announces them when they changed.
-    pub(crate) fn apply_balance_read(
-        &self,
-        id: WalletId,
-        balance: &WalletCoreBalance,
-        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
-    ) {
+    /// Applies the balances of `core`, read from the manager under its
+    /// lock, with the excluded coins' share, unless the wallet is
+    /// unloaded; announces them when they changed.
+    pub(crate) fn apply_balance_read(&self, id: WalletId, core: &ManagedWalletInfo) {
         let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         if unloaded.contains(&id) {
             return;
         }
-        if self.write_balances(id, balance, accounts) {
+        let excluded = self.excluded_share(id, core);
+        let (balance, accounts) = (core.balance(), core.account_balances());
+        if self.write_balances(id, &balance, &accounts, Some(excluded)) {
             self.pump.mark_balances(id);
         }
     }
 
+    /// `excluded`: the excluded coins' share read with the balances;
+    /// `None` keeps the last one (an event's snapshot).
     fn write_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,
         accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+        excluded: Option<crate::withhold::Excluded>,
     ) -> bool {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         let state = map.entry(id).or_default();
@@ -1410,6 +1440,9 @@ impl SessionHub {
         state.balance = *balance;
         for (t, b) in accounts {
             state.accounts.insert(*t, *b);
+        }
+        if let Some(excluded) = excluded {
+            state.excluded = excluded;
         }
         before != state.balances()
     }
@@ -1986,6 +2019,13 @@ impl SessionHub {
                     self.pump.mark_history(id, Some(&changed));
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
+                // The lock may prune key-wallet's observed spends of a
+                // withheld payment's coins (`crate::withhold`).
+                if self.may_withhold(&id)
+                    && let Some(reread) = self.balance_reread.get()
+                {
+                    reread(id);
+                }
             }
         }
     }
@@ -2649,10 +2689,20 @@ mod tests {
         });
         hub.pump.take_wallet_marks();
 
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
+        hub.publish_balances(
+            W,
+            &WalletCoreBalance::new(1_000, 0, 0, 0),
+            &BTreeMap::new(),
+            None,
+        );
         assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, 1_000);
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
-        hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
+        hub.publish_balances(
+            W,
+            &WalletCoreBalance::new(1_000, 0, 0, 0),
+            &BTreeMap::new(),
+            None,
+        );
         assert!(
             !hub.pump.take_wallet_marks().0.contains(&W),
             "unchanged: not announced"

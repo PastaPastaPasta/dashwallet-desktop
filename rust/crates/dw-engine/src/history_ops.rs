@@ -692,6 +692,9 @@ impl NetworkSession {
                 self.abandon_on_dead(&live.manager, wallet, &dropped, true)
                     .await;
             }
+            // The excluded coins (`crate::withhold`) read the history: the
+            // balance read before it loaded counts them.
+            self.reread_balances(wallet).await;
         }
         Ok(())
     }
@@ -889,8 +892,7 @@ impl NetworkSession {
             removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
         }
         core.update_balance();
-        self.hub
-            .publish_core_balance(wallet, &core.balance(), &core.account_balances());
+        self.hub.publish_core_balance(wallet, core);
         for utxo in &removed {
             let spenders: Vec<Txid> = (claims.iter())
                 .filter(|(o, _)| *o == utxo.outpoint)
