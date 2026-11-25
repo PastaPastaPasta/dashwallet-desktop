@@ -1014,7 +1014,7 @@ impl NetworkSession {
     }
 
     /// QT-148 "Rebuild Index" equivalent: deletes the SPV chain data and
-    /// keeps wallets, vault and app data. SPV must be stopped, no wallet
+    /// keeps wallets, vault and app data, but for the drops' spend notes. SPV must be stopped, no wallet
     /// mixing or with a session open (`MixingActive`), and no signed
     /// round's inputs held (`InputsHeld`): the reset would hide that
     /// round's transaction from the wallet. Mixing does not start while it
@@ -1046,6 +1046,15 @@ impl NetworkSession {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
             this.record_closed_rewinds().await?;
+            // The drops' spend notes are proven against the header chain
+            // this deletes: none outlives it (#749, Q81b S3).
+            let every: Vec<WalletId> = (wallets.iter().map(|(w, _)| *w))
+                .chain(this.live()?.store.unloaded().into_iter().map(WalletId))
+                .collect();
+            this.appdb_op(move |db| {
+                (every.iter()).try_for_each(|w| crate::tx_actions::forget_spend_notes(db, *w))
+            })
+            .await?;
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),

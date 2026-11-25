@@ -321,6 +321,9 @@ pub struct Balances {
     pub held_unfinished: u64,
     /// The held coins whose value is unknown, not in `heldUnfinished`.
     pub held_unvalued: u32,
+    /// A held coin awaits a transaction that isn't final yet: no way out
+    /// is offered until it is.
+    pub held_awaiting: bool,
 }
 
 impl From<WalletBalances> for Balances {
@@ -335,6 +338,7 @@ impl From<WalletBalances> for Balances {
             catching_up,
             held_unfinished,
             held_unvalued,
+            held_awaiting,
         } = b;
         Balances {
             confirmed,
@@ -346,6 +350,7 @@ impl From<WalletBalances> for Balances {
             catching_up,
             held_unfinished,
             held_unvalued,
+            held_awaiting,
         }
     }
 }

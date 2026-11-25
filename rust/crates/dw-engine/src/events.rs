@@ -359,9 +359,10 @@ pub(crate) struct WalletState {
     /// `ChainTruncated` event of: the event at this height, or one above
     /// it that would lower nothing, is that truncation's, heard late.
     pub detected: Option<u32>,
-    /// What the wallet's drops hold, summed, and the held coins of unknown
-    /// value (`NetworkSession::refresh_held`).
-    pub held: (u64, u32),
+    /// What the wallet's drops hold, summed, the held coins of unknown
+    /// value, and whether one awaits what spends it
+    /// (`NetworkSession::refresh_held`).
+    pub held: (u64, u32, bool),
 }
 
 impl WalletState {
@@ -428,6 +429,7 @@ impl WalletState {
             catching_up: self.catching_up(),
             held_unfinished: self.held.0,
             held_unvalued: self.held.1,
+            held_awaiting: self.held.2,
         }
     }
 
@@ -583,6 +585,10 @@ pub(crate) struct SessionHub {
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
+    /// The lowest height a fork truncated each wallet to since its held
+    /// report last ran (`NetworkSession::refresh_held`): the spend notes
+    /// above it that are not final go.
+    held_forks: Mutex<HashMap<WalletId, u32>>,
     /// Held through each drop of dead transactions
     /// (`NetworkSession::drop_dead`).
     pub(crate) drop_gate: tokio::sync::Mutex<()>,
@@ -853,6 +859,7 @@ impl SessionHub {
             final_sends: Mutex::new(Vec::new()),
             dead_children: Mutex::new(Vec::new()),
             dropped_holds: Mutex::new(HashMap::new()),
+            held_forks: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
@@ -1141,6 +1148,20 @@ impl SessionHub {
         holds.entry(id).or_default().extend(held);
     }
 
+    /// A fork truncated wallet `id` to `height`: its next held report drops
+    /// the spend notes above it that are not final.
+    pub(crate) fn note_held_fork(&self, id: WalletId, height: u32) {
+        let mut forks = self.held_forks.lock().unwrap_or_else(|p| p.into_inner());
+        let fork = forks.entry(id).or_insert(height);
+        *fork = (*fork).min(height);
+    }
+
+    /// The lowest height a fork truncated wallet `id` to since this was last
+    /// taken.
+    pub(crate) fn take_held_fork(&self, id: WalletId) -> Option<u32> {
+        (self.held_forks.lock().unwrap_or_else(|p| p.into_inner())).remove(&id)
+    }
+
     /// The coins wallet `id`'s drops hold for good, as its open read them.
     pub(crate) fn dropped_holds(&self, id: WalletId) -> BTreeSet<dashcore::OutPoint> {
         let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
@@ -1375,6 +1396,7 @@ impl SessionHub {
         // Its notes go with its rows: a wallet restored under the same id
         // holds nothing of them.
         (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
+        (self.held_forks.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -1525,6 +1547,7 @@ impl SessionHub {
             release.wait();
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
+        self.note_held_fork(id, height);
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));

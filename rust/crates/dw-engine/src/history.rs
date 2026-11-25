@@ -639,48 +639,54 @@ pub(crate) fn orphaned_unmined(
         .collect()
 }
 
-/// What the coins the drops hold (`holds`) add up to, as the wallet's
-/// balances report them (#749): the sum of those whose value it knows, and
-/// how many are held whose value it does not. A coin a processed block
-/// (`observed`) or a mined transaction of the history spent is settled, not
-/// held. A coin's value comes from the output that made it when the
-/// history holds that transaction and the wallet owns the output (`owns`),
-/// else from a held payment's record of its own inputs. A coin known
-/// neither way is counted as of unknown value, never guessed, and only
-/// when an input spending it in the history is signed with a key of the
-/// wallet ([`p2pkh_signer`]): a beaten incoming payment, or the other
-/// inputs of a beaten mix, hold coins that are not the wallet's.
-pub(crate) fn held_total(
-    holds: &BTreeSet<OutPoint>,
+/// The parents of the `orphans` ([`orphaned_unmined`]) that are gone: no
+/// stored row and no live entry, the evidence that they never confirm.
+pub(crate) fn gone_parents(
     txs: &HashMap<Txid, TxEntry>,
-    observed: &BTreeMap<OutPoint, u32>,
+    stored: &HashSet<Txid>,
+    orphans: &[Txid],
+) -> BTreeSet<Txid> {
+    let gone = |p: &Txid| !stored.contains(p) && !txs.get(p).is_some_and(|e| !e.is_abandoned());
+    (orphans.iter().filter_map(|t| txs.get(t)))
+        .flat_map(|e| (e.own_inputs.keys()).filter_map(|i| e.tx.input.get(*i as usize)))
+        .map(|i| i.previous_output.txid)
+        .filter(gone)
+        .collect()
+}
+
+/// What the coins the drops still hold (`held`, [`still_held`]) add up to,
+/// as the wallet's balances report them (#749): the sum of those whose
+/// value it knows, and how many are held whose value it does not. A
+/// coin's value comes from the output that made it when the history holds
+/// that transaction and the wallet owns the output (`owns`), else from a
+/// held payment's record of its own inputs. A coin known neither way is
+/// counted as of unknown value, never guessed, and only when an input
+/// spending it in the history is signed with a key of the wallet
+/// ([`p2pkh_signer`]): a beaten incoming payment, or the other inputs of a
+/// beaten mix, hold coins that are not the wallet's.
+pub(crate) fn held_total(
+    held: &BTreeSet<OutPoint>,
+    txs: &HashMap<Txid, TxEntry>,
     owns: impl Fn(&ScriptBuf) -> bool,
 ) -> (u64, u32) {
-    let mut spent = HashSet::new();
     let mut own_inputs: HashMap<OutPoint, u64> = HashMap::new();
     let mut signed_by_own = HashSet::new();
     for e in txs.values() {
-        if e.context.block_info().is_some() {
-            spent.extend(e.tx.input.iter().map(|i| i.previous_output));
-        }
         for i in &e.tx.input {
-            if holds.contains(&i.previous_output)
+            if held.contains(&i.previous_output)
                 && p2pkh_signer(&i.script_sig).is_some_and(|s| owns(&s))
             {
                 signed_by_own.insert(i.previous_output);
             }
         }
         for (index, (value, _)) in &e.own_inputs {
-            if let Some(i) = e.tx.input.get(*index as usize) {
+            if let Some(i) = (e.tx.input.get(*index as usize)).filter(|i| held.contains(&i.previous_output)) {
                 own_inputs.insert(i.previous_output, *value);
             }
         }
     }
     let (mut sum, mut unvalued) = (0u64, 0u32);
-    for o in holds
-        .iter()
-        .filter(|o| !observed.contains_key(*o) && !spent.contains(*o))
-    {
+    for o in held {
         let output = (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
         match (output, own_inputs.get(o)) {
             (Some(out), _) if owns(&out.script_pubkey) => sum = sum.saturating_add(out.value),
@@ -691,6 +697,189 @@ pub(crate) fn held_total(
         }
     }
     (sum, unvalued)
+}
+
+/// Of the coins the drops hold (`holds`), those still held: none a
+/// processed block (`observed`) or a mined transaction of the history
+/// spent, or that `left_out` names (a final spend's note, or an output of
+/// a parent a load found gone).
+pub(crate) fn still_held(
+    holds: &BTreeSet<OutPoint>,
+    txs: &HashMap<Txid, TxEntry>,
+    observed: &BTreeMap<OutPoint, u32>,
+    left_out: impl Fn(&OutPoint) -> bool,
+) -> BTreeSet<OutPoint> {
+    let mined: HashSet<OutPoint> = (txs.values())
+        .filter(|e| e.context.block_info().is_some())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .filter(|o| holds.contains(o))
+        .collect();
+    (holds.iter())
+        .filter(|o| !observed.contains_key(*o) && !mined.contains(*o) && !left_out(o))
+        .copied()
+        .collect()
+}
+
+/// What a drop noted of what beat its transactions (`drop_winner:`), to
+/// judge when the coins it holds are settled ([`held_awaiting`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DropOrigin {
+    /// The transaction that beat the drop's roots, when known.
+    pub winner: Option<Txid>,
+    /// The coins the winner took from them: the inputs of the drop's
+    /// roots, and of the payments a sweep took for it that the history
+    /// held.
+    pub contested: BTreeSet<OutPoint>,
+    /// The parents a load found gone (#170 case 4): an orphan's drop, which
+    /// nothing beat. Their outputs never exist.
+    pub gone: BTreeSet<Txid>,
+}
+
+impl DropOrigin {
+    /// `winner|contested|gone`, each list comma-separated.
+    pub(crate) fn encode(&self) -> String {
+        let join = |i: Vec<String>| i.join(",");
+        format!(
+            "{}|{}|{}",
+            self.winner.map(|w| w.to_string()).unwrap_or_default(),
+            join(self.contested.iter().map(|o| o.to_string()).collect()),
+            join(self.gone.iter().map(|t| t.to_string()).collect()),
+        )
+    }
+
+    /// `None` for a value [`Self::encode`] did not write.
+    pub(crate) fn decode(value: &str) -> Option<Self> {
+        use std::str::FromStr;
+        let mut parts = value.split('|');
+        let (Some(winner), Some(contested), Some(gone), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        fn items(list: &str) -> impl Iterator<Item = &str> {
+            list.split(',').filter(|i| !i.is_empty())
+        }
+        Some(Self {
+            winner: match winner {
+                "" => None,
+                w => Some(Txid::from_str(w).ok()?),
+            },
+            contested: (items(contested).map(OutPoint::from_str))
+                .collect::<Result<_, _>>()
+                .ok()?,
+            gone: (items(gone).map(Txid::from_str))
+                .collect::<Result<_, _>>()
+                .ok()?,
+        })
+    }
+}
+
+/// By dropped transaction, the coins its `drop_holds:` note holds and its
+/// origin, when its `drop_winner:` note reads.
+pub(crate) type HeldDrops = BTreeMap<Txid, (BTreeSet<OutPoint>, Option<DropOrigin>)>;
+
+/// Whether an orphan's drop (#170 case 4: its parent a load found gone)
+/// is settled with no winner to wait for.
+const ORPHAN_DROPS_SETTLE: bool = true;
+
+/// A block's spend of a coin the drops hold or contest (`drop_spent:`),
+/// noted while key-wallet still observed it: it counts once the SPV header
+/// chain proves the block final ([`proven_final`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpendNote {
+    pub height: u32,
+    pub block: dashcore::BlockHash,
+    /// The spending transaction, when the history holds it.
+    pub spender: Option<Txid>,
+}
+
+impl SpendNote {
+    /// `height,block,spender`, the spender empty when unknown.
+    pub(crate) fn encode(&self) -> String {
+        let spender = self.spender.map(|t| t.to_string()).unwrap_or_default();
+        format!("{},{},{spender}", self.height, self.block)
+    }
+
+    /// `None` for a value [`Self::encode`] did not write.
+    pub(crate) fn decode(value: &str) -> Option<Self> {
+        use std::str::FromStr;
+        let mut parts = value.split(',');
+        let (Some(height), Some(block), Some(spender), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        Some(Self {
+            height: height.parse().ok()?,
+            block: dashcore::BlockHash::from_str(block).ok()?,
+            spender: match spender {
+                "" => None,
+                t => Some(Txid::from_str(t).ok()?),
+            },
+        })
+    }
+}
+
+/// Whether a coin the drops still hold (`held`, [`still_held`]) awaits
+/// what spends it (#749, Q81b S2): the way out is offered only when none
+/// does. Judged per coin, from each drop that holds it (`drops`: what each
+/// dropped transaction's note holds, and its origin's note): a coin is
+/// settled when no live transaction of the history or key-wallet record
+/// (`spent_by_record`) spends it, no InstantSend lock of a transaction the
+/// wallet holds no copy of was heard this session (`unknown_lock`), and
+/// every drop holding it is settled. A drop is settled when its winner is
+/// in the history and ChainLocked (at or below `chainlock`); when the
+/// history doesn't hold it, when one of the coins it contested has a final
+/// spend: a processed block's at or below the ChainLock, a ChainLocked
+/// transaction's of the history, or a proven note (`final_spend`). An
+/// orphan's drop, which nothing beat, is settled by the coin's own rules
+/// while [`ORPHAN_DROPS_SETTLE`]. A drop with no origin note awaits.
+pub(crate) fn held_awaiting(
+    held: &BTreeSet<OutPoint>,
+    drops: &HeldDrops,
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+    final_spend: impl Fn(&OutPoint) -> bool,
+    spent_by_record: impl Fn(&OutPoint) -> bool,
+    unknown_lock: bool,
+) -> bool {
+    if held.is_empty() {
+        return false;
+    }
+    if unknown_lock {
+        return true;
+    }
+    let contested: HashSet<OutPoint> = (drops.values())
+        .filter_map(|(_, o)| o.as_ref())
+        .flat_map(|o| o.contested.iter().copied())
+        .collect();
+    let (mut live, mut locked) = (HashSet::new(), HashSet::new());
+    for e in txs.values().filter(|e| !e.is_abandoned()) {
+        for o in e.tx.input.iter().map(|i| i.previous_output) {
+            if held.contains(&o) {
+                live.insert(o);
+            }
+            if contested.contains(&o) && chain_locked(&e.context, chainlock) {
+                locked.insert(o);
+            }
+        }
+    }
+    let settled_drop = |origin: &DropOrigin| match origin {
+        DropOrigin {
+            winner: None, gone, ..
+        } if !gone.is_empty() => ORPHAN_DROPS_SETTLE,
+        _ => match (origin.winner.and_then(|w| txs.get(&w))).filter(|e| !e.is_abandoned()) {
+            Some(winner) => chain_locked(&winner.context, chainlock),
+            None => (origin.contested.iter()).any(|o| locked.contains(o) || final_spend(o)),
+        },
+    };
+    held.iter().any(|coin| {
+        live.contains(coin)
+            || spent_by_record(coin)
+            || (drops.values())
+                .filter(|(holds, _)| holds.contains(coin))
+                .any(|(_, origin)| !origin.as_ref().is_some_and(settled_drop))
+    })
 }
 
 /// The P2PKH script of the key a `[signature, key]` input script pushes.
@@ -3335,13 +3524,13 @@ mod tests {
         let observed = BTreeMap::from([(observed_coin, 12)]);
 
         assert_eq!(
-            held_total(&holds, &txs, &observed, |s| owned.contains(s)),
+            held_total(&still_held(&holds, &txs, &observed, |_| false), &txs, |s| {
+                owned.contains(s)
+            }),
             (700 + 300, 1)
         );
         assert_eq!(
-            held_total(&BTreeSet::from([valued, unknown]), &txs, &observed, |s| {
-                owned.contains(s)
-            }),
+            held_total(&BTreeSet::from([valued, unknown]), &txs, |s| owned.contains(s)),
             (700, 1),
             "one valued and one unvalued"
         );
@@ -3396,7 +3585,7 @@ mod tests {
         let holds = BTreeSet::from([theirs, unsigned, mine, other, recorded]);
 
         assert_eq!(
-            held_total(&holds, &txs, &BTreeMap::new(), |s| owned.contains(s)),
+            held_total(&holds, &txs, |s| owned.contains(s)),
             (100 + 250, 0),
             "an own-input record values a coin whose output isn't owned"
         );

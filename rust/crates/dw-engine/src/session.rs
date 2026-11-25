@@ -102,6 +102,10 @@ pub struct WalletBalances {
     /// The held coins whose value the wallet does not know: no transaction
     /// the history holds made them.
     pub held_unvalued: u32,
+    /// A held coin awaits what spends it: a transaction that uses it, or
+    /// that beat its payment, isn't ChainLocked yet (#749, Q81b S2). A
+    /// remove-and-restore would credit it meanwhile.
+    pub held_awaiting: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the

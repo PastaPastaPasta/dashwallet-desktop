@@ -26,4 +26,9 @@ heldUnfinished: number,
 /**
  * The held coins whose value is unknown, not in `heldUnfinished`.
  */
-heldUnvalued: number, };
+heldUnvalued: number,
+/**
+ * A held coin awaits a transaction that isn't final yet: no way out
+ * is offered until it is.
+ */
+heldAwaiting: boolean, };
