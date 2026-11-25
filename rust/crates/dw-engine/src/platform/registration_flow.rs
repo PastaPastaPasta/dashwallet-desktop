@@ -2897,7 +2897,6 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             Ok(in_call) => in_call,
             Err(step) => return Ok(step),
         };
-        let named = identity.clone();
         let ask = ShieldedAsk {
             draft: row.id,
             owner: self.claim.owner,
@@ -2934,11 +2933,12 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             // an identity of the seed at the row's index is the row's, else
             // the penalty was taken and nothing retries. The one the create
             // named was just proved absent, whatever the library recorded.
-            Ok(ShieldedOutcome::Fallback) => match self.identity_at(index).await? {
-                Some(identity) if Some(&identity) != named.as_ref() => {
-                    self.advance(row, registered(identity)).await
-                }
-                _ => {
+            Ok(ShieldedOutcome::Fallback(named)) => match (self.lib.identities().await?)
+                .into_iter()
+                .find(|(i, id)| *i == index && *id != named)
+            {
+                Some((_, identity)) => self.advance(row, registered(identity)).await,
+                None => {
                     tracing::warn!(draft = row.id, "a Shielded-funded create was refunded");
                     let refunded = RegistrationError::Refunded.code();
                     self.advance(row, unnamed(Some((refunded, false)))).await

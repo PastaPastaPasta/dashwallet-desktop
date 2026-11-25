@@ -123,6 +123,24 @@ pub fn dp_registration_dispatched(identity: &str) -> String {
     format!("dp_registration_dispatched/{identity}")
 }
 
+/// The `local:` key holding the highest height of a proved read that saw
+/// the anchor of a Shielded-funded registration's create, by the hex of its
+/// transition hash, still recorded: only an absence read above it proves
+/// the anchor pruned (C-funding F12). By transition, not identity: a create
+/// signed again over the same notes names the same identity.
+pub fn dp_registration_anchor_seen(st_hash: &str) -> String {
+    format!("dp_registration_anchor_seen/{st_hash}")
+}
+
+/// The `local:` key the engine writes, durably and before it settles the
+/// journal, once it proves what a Shielded-funded registration's create,
+/// by the hex of its transition hash, did although the library left it
+/// unresolved: `executed` or `pruned` (never executes). The journal keeps
+/// the library's strings; this is the engine's own proof (C-funding F12).
+pub fn dp_registration_proved(st_hash: &str) -> String {
+    format!("dp_registration_proved/{st_hash}")
+}
+
 /// The `local:` key the shielded dispatch hook writes, durably, once a
 /// payout's artifact is in the journal and before the library may send
 /// it: with it, a missing artifact proves nothing (a lost or older

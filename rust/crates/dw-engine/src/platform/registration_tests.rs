@@ -499,6 +499,9 @@ struct World {
     )>,
     /// Each Shielded pass's ask.
     shielded_asks: Vec<super::registration_shielded::ShieldedAsk>,
+    /// A naming pass also records the identity it named at the row's
+    /// index, as the library does on an `Ok` whatever Platform proved.
+    shielded_records_named: bool,
     /// The session's network reads as mainnet.
     mainnet: bool,
     /// Name lookups fail as DAPI unreachable would.
@@ -1319,6 +1322,10 @@ impl RegistrationLib for Fake {
                 )
                 .unwrap();
             assert!(written, "the fake names the row as the hook does");
+            let mut w = self.w();
+            if w.shielded_records_named {
+                w.identities.push((ask.index, identity_of(&funding)));
+            }
         }
         end
     }

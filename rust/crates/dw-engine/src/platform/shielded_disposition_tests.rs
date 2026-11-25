@@ -13,6 +13,7 @@ use platform_wallet::wallet::shielded::{
     ShieldedDispatch,
 };
 
+use super::super::registration_shielded;
 use super::*;
 
 /// Where the crashing child process keeps its data root.
@@ -431,4 +432,75 @@ fn cancelled_first_send_holds_notes_and_reads_checking() {
         Ok(vec![(st_hash(1), nullifiers(1))])
     );
     refused(engine.block_on(session.unload_wallet(wallet)));
+}
+
+/// C4b-2: an outcome the library leaves unresolved (a cancelled create)
+/// that the engine proved, by its own marker, keeps the engine's
+/// settlement: one proved executed is acknowledged once the journal reads
+/// its notes spent, and one proved never to execute whose acknowledgement
+/// failed is acknowledged on the next pass. A journal status without the
+/// marker proves nothing.
+#[test]
+fn a_proved_outcome_outlives_the_library_unresolved_listing() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
+    resolve(&engine, &session, wallet, 1, cancelled.clone());
+    resolve(&engine, &session, wallet, 2, cancelled);
+    pass(&engine, &session);
+    let library_like = engine.block_on(session.leases.settle_shielded_artifact(
+        wallet,
+        st_hash(2),
+        ArtifactStatus::NotExecuted,
+        Some(("not_executed", Some("pruned"))),
+        false,
+    ));
+    assert_eq!(
+        library_like,
+        Ok(dw_appdb::dispatch::ArtifactSettled::Settled)
+    );
+    pass(&engine, &session);
+    assert_eq!(
+        listing(&engine, &session, wallet).map(|l| l.len()),
+        Ok(2),
+        "a journal status alone proves nothing: the engine's proof is its own marker"
+    );
+
+    let prove = |n: u8, status, acked| {
+        let proved = engine.block_on(registration_shielded::settle_proved(
+            &session,
+            wallet,
+            st_hash(n),
+            status,
+            acked,
+        ));
+        assert!(proved, "spend {n} proved");
+    };
+    prove(1, ArtifactStatus::Executed, false);
+    prove(2, ArtifactStatus::NotExecuted, true);
+    let cancelled = stored("unresolved", Some("cancelled"));
+
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::Executed, cancelled.clone(), false)
+    );
+    assert_eq!(
+        settlement(&engine, &session, wallet, 2),
+        (ArtifactStatus::NotExecuted, cancelled.clone(), true)
+    );
+    assert_eq!(
+        listing(&engine, &session, wallet),
+        Ok(vec![(st_hash(1), nullifiers(1))])
+    );
+
+    spent_seen(&session, wallet, &nullifiers(1));
+    pass(&engine, &session);
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::Executed, cancelled, true)
+    );
+    assert_eq!(listing(&engine, &session, wallet), Ok(Vec::new()));
 }

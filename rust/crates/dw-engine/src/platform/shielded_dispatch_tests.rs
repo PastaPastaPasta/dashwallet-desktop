@@ -1859,6 +1859,7 @@ struct Evidence {
     spent: std::sync::Mutex<Option<u64>>,
     unspent_at: std::sync::Mutex<u64>,
     pruned: std::sync::Mutex<Option<u64>>,
+    recorded_at: std::sync::Mutex<u64>,
     identity: std::sync::Mutex<(bool, u64)>,
     reads: std::sync::Mutex<Vec<&'static str>>,
 }
@@ -1882,7 +1883,7 @@ impl super::super::registration_shielded::CreateEvidence for Evidence {
         self.reads.lock().unwrap().push("anchor");
         Ok(match *self.pruned.lock().unwrap() {
             Some(at) => (false, at),
-            None => (true, 0),
+            None => (true, *self.recorded_at.lock().unwrap()),
         })
     }
 
@@ -2063,8 +2064,14 @@ fn an_executed_create_absent_above_its_spend_is_the_fallback() {
         "the spend first, then the identity at or above it"
     );
     *ev.identity.lock().unwrap() = (false, 100);
-    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Fallback);
-    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Fallback);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
     let refunds = h.refunds();
     assert_eq!(refunds.len(), 1, "one record per create");
     let r = &refunds[0];
@@ -2089,7 +2096,10 @@ fn a_read_since_the_create_was_named_claims_nothing() {
     let ev = Evidence::default();
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
-    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Fallback);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
     let refunds = h.refunds();
     assert_eq!(
         (refunds.len(), refunds[0].credits, refunds[0].unseen),
@@ -2118,7 +2128,7 @@ fn lock_order_shielded_register() {
             index: 0,
             denomination: DENOMINATION,
             fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
-            identity: Some(id),
+            identity: Some(id.clone()),
         };
         s.rt.clone().spawn(async move {
             let ev = Evidence::default();
@@ -2142,7 +2152,7 @@ fn lock_order_shielded_register() {
             .block_on(async { tokio::time::timeout(Duration::from_secs(60), pass).await });
     assert_eq!(
         outcome.unwrap().unwrap().unwrap(),
-        ShieldedOutcome::Fallback
+        ShieldedOutcome::Fallback(id)
     );
 }
 
@@ -2346,8 +2356,24 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     let ev = Evidence::default();
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
-    assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Fallback);
+    assert_eq!(
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone())
+    );
     assert_eq!(h.refunds().len(), 1);
+    let artifact = h.artifact(4).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Executed, false),
+        "settled for the consume step to acknowledge once its notes read spent"
+    );
+    let st_hash = hex::encode(artifact.st_hash.unwrap());
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&st_hash))
+            .as_deref(),
+        Some("executed"),
+        "the engine's proof, beside the library's strings"
+    );
     *ev.identity.lock().unwrap() = (true, 101);
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
 }
@@ -2357,8 +2383,9 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
 /// read is below the height its anchor read pruned at (a node behind).
 /// Read at or above it, it never executed and never can: its artifact
 /// settles `not_executed` (pruned), the library's hold on its notes is
-/// acknowledged, and it reads unsent. A pass after a crash between the two
-/// repeats the acknowledgement. Mutant: drop the height check.
+/// acknowledged, and it reads unsent. The prune counts only from a read
+/// above the highest that saw the anchor recorded, so a node behind it
+/// proves nothing. Mutant: drop either height check.
 #[test]
 fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
     let h = Hooked::new();
@@ -2371,10 +2398,25 @@ fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
     let lib = super::FakeShielded::default();
     lib.held.lock().unwrap().insert(st_hash);
     let ev = Evidence::default();
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "never read recorded: no height the prune must be above"
+    );
+    *ev.pruned.lock().unwrap() = None;
+    *ev.recorded_at.lock().unwrap() = 120;
     assert_eq!(
         h.evidence_with(draft, &id, &ev, &lib),
         ShieldedOutcome::Unknown,
         "anchor recorded"
+    );
+    *ev.pruned.lock().unwrap() = Some(110);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "a node behind the read that saw it recorded"
     );
     *ev.pruned.lock().unwrap() = Some(200);
     *ev.unspent_at.lock().unwrap() = 150;
@@ -2400,10 +2442,14 @@ fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
         "the prune first, then the nullifiers at or above it"
     );
     let artifact = h.artifact(5).unwrap();
-    assert_eq!(artifact.status, ArtifactStatus::NotExecuted);
     assert_eq!(
-        artifact.disposition,
-        Some(("not_executed".into(), Some("pruned".into())))
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::NotExecuted, true)
+    );
+    assert_eq!(
+        h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)))
+            .as_deref(),
+        Some("pruned")
     );
     assert_eq!(lib.acks.lock().unwrap()[..], [st_hash]);
     assert!(lib.held.lock().unwrap().is_empty(), "its notes are free");
@@ -2411,8 +2457,63 @@ fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
         h.evidence_with(draft, &id, &ev, &lib),
         ShieldedOutcome::Unsent
     );
-    assert_eq!(lib.acks.lock().unwrap().len(), 2, "acknowledged again");
+    assert_eq!(lib.acks.lock().unwrap().len(), 1, "settled: not read again");
     assert!(h.refunds().is_empty());
+}
+
+/// F12: the same notes signed again name the same identity. The create
+/// that may still execute answers, not the earlier one that never did, and
+/// its anchor's prune counts only above a read that saw its own anchor
+/// recorded: the earlier create's height proves nothing of it.
+#[test]
+fn a_create_signed_again_over_the_same_notes_answers_for_its_identity() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create(5);
+    let _ = h.dispatched_create(6);
+    let identity = super::super::registration_flow::parse_identity(&id).unwrap();
+    h.rewrite(5, "status = 'not_executed'");
+    h.rewrite(
+        6,
+        &format!(
+            "status = 'unresolved', disposition_kind = 'unresolved', \
+             disposition_reason = 'cancelled', identity_id = X'{}'",
+            hex::encode(identity.to_buffer())
+        ),
+    );
+    let (earlier, st_hash) = (
+        h.artifact(5).unwrap().st_hash.unwrap(),
+        h.artifact(6).unwrap().st_hash.unwrap(),
+    );
+    let scope = dw_appdb::local_scope(&h.f.wallet.to_string());
+    let key = dw_appdb::dp_registration_anchor_seen(&hex::encode(earlier));
+    (h.f.engine)
+        .block_on(
+            (h.f.session).appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("100"))),
+        )
+        .unwrap();
+    let lib = super::FakeShielded::default();
+    lib.held.lock().unwrap().insert(st_hash);
+    let ev = Evidence::default();
+    *ev.pruned.lock().unwrap() = Some(200);
+    *ev.unspent_at.lock().unwrap() = 200;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "the later create's anchor never read recorded"
+    );
+    *ev.pruned.lock().unwrap() = None;
+    *ev.recorded_at.lock().unwrap() = 150;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown
+    );
+    *ev.pruned.lock().unwrap() = Some(200);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unsent
+    );
+    assert_eq!(h.artifact(6).unwrap().status, ArtifactStatus::NotExecuted);
+    assert_eq!(lib.acks.lock().unwrap()[..], [st_hash]);
 }
 
 /// F12: a create the hook named and then refused (its artifact could not
@@ -2421,13 +2522,23 @@ fn an_unresolved_create_whose_anchor_is_pruned_and_nothing_spent_is_unsent() {
 #[test]
 fn a_create_refused_after_its_naming_is_unsent_not_signed_again() {
     let h = Hooked::new();
-    assert_eq!(h.dispatch(h.staged(9, &[9])), Ok(()));
     let draft = h.shielded_row();
     let (bytes, id) = create_bytes(10, &[10], (DENOMINATION, own_platform()), None);
-    let payload = ShieldedDispatchPayload {
-        activity_id: [9; 32],
-        ..h.staged_create(10, &[10], bytes, id)
+    let payload = h.staged_create(10, &[10], bytes, id);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let earlier = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: payload.activity_id,
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some([0x33; 32]),
+        kind: Some(ArtifactKind::Transfer),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x93; 32]],
+        published: vec![[0x93; 32], [0xee; 32]],
     };
+    let wrote = (h.f.engine)
+        .block_on(async move { s.leases.record_shielded_artifact(wallet, earlier).await });
+    assert_eq!(wrote, Ok(true));
     let lib = paying(Some(hook_of(&h, payload)));
     let ev = Evidence::default();
     let lease = h.registration_lease(2 * DENOMINATION);

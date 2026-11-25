@@ -406,7 +406,7 @@ fn a_fallback_adopts_the_index_identity_or_fails_refunded() {
     let lib = f.fake();
     let draft = f.insert(shielded_row(Some(created())));
     lib.w().identities.push((0, created()));
-    script(&lib, [(None, Ok(ShieldedOutcome::Fallback))]);
+    script(&lib, [(None, Ok(ShieldedOutcome::Fallback(created())))]);
     f.drive(&lib, draft, None, false);
     let row = f.row(draft);
     assert_eq!(
@@ -418,9 +418,31 @@ fn a_fallback_adopts_the_index_identity_or_fails_refunded() {
     let draft = f.insert(shielded_row(Some(created())));
     let found = flow::b58(&dpp::prelude::Identifier::from([0x62u8; 32]));
     lib.w().identities = vec![(0, found.clone())];
-    script(&lib, [(None, Ok(ShieldedOutcome::Fallback))]);
+    script(&lib, [(None, Ok(ShieldedOutcome::Fallback(created())))]);
     f.drive(&lib, draft, None, false);
     assert_eq!(f.row(draft).identity, Some(found));
+}
+
+/// F12, F13: Platform's fallback on the pass that created: the library
+/// recorded the identity the create named at the row's index although it
+/// was proved absent, so it is not adopted and the row fails refunded.
+#[test]
+fn a_fresh_fallback_never_adopts_the_identity_the_create_named() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().shielded = ready();
+    lib.w().shielded_records_named = true;
+    let draft = f.insert(shielded_row(None));
+    script(
+        &lib,
+        [(Some(created()), Ok(ShieldedOutcome::Fallback(created())))],
+    );
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable, row.identity.as_deref()),
+        (Some("registration.refunded"), false, None)
+    );
 }
 
 /// F12: a named create that never reached the journal clears its name and

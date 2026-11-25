@@ -4957,12 +4957,21 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
     bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
     adopts an identity of the seed at the row's index other than the one the create named, else fails the row
-    `registration.refunded` (not retryable); an unresolved one whose anchor is proved pruned from the pool's
-    recorded anchors at height p (they are kept 1,000 blocks) and none of whose published nullifiers is spent by a
-    proved read at or above p never executed and never can: its artifact is settled `not_executed` (disposition
-    `pruned`), the library's outcome acknowledged so its notes are free, the name cleared and the row failed,
-    retryable; anything else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an
-    absence read below h, a failed read) is `waiting: payment_unknown`.
+    `registration.refunded` (not retryable); an unresolved one so proved is settled `executed`. An unresolved one
+    whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
+    the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
+    no proof), and none of whose published nullifiers is spent by a proved read at or above p never executed and
+    never can: its artifact is settled `not_executed`, the library's outcome acknowledged so its notes are free, the
+    name cleared and the row failed, retryable. Before either settlement the engine writes its proof durably beside
+    the journal (`dp_registration_proved`, per transition; the journal keeps the library's strings), and its reading
+    of the library's outcomes keeps a settlement so proved over the library's later `unresolved` listing and
+    acknowledges it: `not_executed` at once (a failed acknowledgement is repeated), `executed` once the journal reads
+    its notes spent; a journal status without the proof keeps the library's reading. A create signed again over the
+    same notes names the same identity: of its artifacts, one not settled `not_executed` answers first. Anything
+    else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an absence read below h, a
+    failed read) is `waiting: payment_unknown`, and so stays a row whose anchor is never read recorded after the
+    failure, or a pool so quiet that it keeps the anchor; a bundle of two or more notes has no padding, so a partly
+    spent read decides nothing.
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);

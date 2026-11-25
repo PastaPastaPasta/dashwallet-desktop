@@ -156,6 +156,7 @@ use super::registration::{RegistrationWait, ShieldedFacts, funding_cap, grant_ca
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
+use super::registration_shielded;
 use super::requests::{leased, write_permit};
 use super::shield_drain::DrainCoin;
 use super::shielded::{
@@ -3720,18 +3721,20 @@ pub(crate) async fn consume_dispositions(
                 st_hash,
                 held_nullifiers,
                 ..
-            })) if !held_nullifiers.is_empty() && durable(&held_nullifiers) => {
+            })) if !held_nullifiers.is_empty() => {
+                let proved =
+                    registration_shielded::proved_creates(session, wallet, &artifacts, &[st_hash])
+                        .await
+                        .get(&st_hash)
+                        .copied();
+                if !(durable(&held_nullifiers) || proved == Some(ArtifactStatus::NotExecuted)) {
+                    tracing::warn!(wallet_id = %wallet, transition = %hex::encode(st_hash), "a shielded spend outcome could not be read; its notes are not read spent");
+                    return;
+                }
                 let unknown = ArtifactStatus::Unresolved { unrecorded: false };
-                if !settle_then_ack(
-                    session,
-                    coordinator,
-                    subwallet,
-                    st_hash,
-                    unknown,
-                    None,
-                    true,
-                )
-                .await
+                let status = proved.unwrap_or(unknown);
+                if !settle_then_ack(session, coordinator, subwallet, st_hash, status, None, true)
+                    .await
                 {
                     return;
                 }
@@ -3742,7 +3745,29 @@ pub(crate) async fn consume_dispositions(
                 return;
             }
         };
+        let listed: Vec<[u8; 32]> = (records.iter())
+            .filter(|d| matches!(d.disposition, ShieldedSpendDisposition::Unresolved(_)))
+            .map(|d| d.st_hash)
+            .collect();
+        let proved =
+            registration_shielded::proved_creates(session, wallet, &artifacts, &listed).await;
         for d in records {
+            let stored = Some((d.disposition.kind_str(), d.disposition.reason_str()));
+            let unresolved = matches!(d.disposition, ShieldedSpendDisposition::Unresolved(_));
+            if let Some(&status) = (proved.get(&d.st_hash)).filter(|_| unresolved) {
+                let ack = status == ArtifactStatus::NotExecuted || durable(&d.held_nullifiers);
+                settle_then_ack(
+                    session,
+                    coordinator,
+                    d.subwallet,
+                    d.st_hash,
+                    status,
+                    stored,
+                    ack,
+                )
+                .await;
+                continue;
+            }
             let (status, ack) = match d.disposition {
                 ShieldedSpendDisposition::NotExecuted(_) => (ArtifactStatus::NotExecuted, true),
                 ShieldedSpendDisposition::Executed => {
@@ -3765,7 +3790,6 @@ pub(crate) async fn consume_dispositions(
                     (ArtifactStatus::Unresolved { unrecorded: false }, false)
                 }
             };
-            let stored = Some((d.disposition.kind_str(), d.disposition.reason_str()));
             settle_then_ack(
                 session,
                 coordinator,
