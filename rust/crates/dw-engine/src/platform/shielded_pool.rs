@@ -779,6 +779,13 @@ pub(crate) async fn registration_facts(
     lib: &impl ShieldedLib,
     facts: &mut ShieldedFacts,
 ) -> Result<(), PlatformError> {
+    // A registration's quote and start (and its funding step) refuse first
+    // while the library cannot spend from the key set, as every other spend
+    // from Shielded does (`keyset_closed`): before any read, and so before
+    // the start takes a fallback.
+    if !lib.keyset_spends() {
+        return Err(PlatformError::Unavailable);
+    }
     facts.pool_notes = lib.pool_notes().await;
     facts.unsettled = !session.leases.journal_ready()
         || !(session.leases.unrecorded_spends(wallet).await)

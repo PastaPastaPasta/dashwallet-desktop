@@ -3343,6 +3343,27 @@ fn facts(fx: &Fixture, lib: &Arc<FakeShielded>) -> ShieldedFacts {
     })
 }
 
+/// A registration's quote and start read their facts here: while the
+/// library cannot spend from the key set they refuse `platform.unavailable`
+/// before any read, so before the start takes a fallback. Mutant: no check.
+#[test]
+fn registration_facts_refuse_first_while_spends_are_off() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    *lib.pool_notes.lock().unwrap() = Some(300);
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let (refused, read) = run(&fx, &lib, move |s, lib| async move {
+        let mut facts = ShieldedFacts::default();
+        let refused = pool::registration_facts(&s, wallet, &*lib, &mut facts).await;
+        (refused.unwrap_err().code(), facts.pool_notes)
+    });
+    assert_eq!(refused, "platform.unavailable");
+    assert_eq!(read, None, "nothing read");
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    assert_eq!(facts(&fx, &lib).pool_notes, Some(300));
+}
+
 fn rested(facts: &ShieldedFacts, now: u64) -> (bool, Option<u64>) {
     let r = shielded_readiness(version(LATEST), facts, Some(NOTE), now);
     let rested = r.checks.iter().find(|c| c.check == ShieldedCheck::Rested);
