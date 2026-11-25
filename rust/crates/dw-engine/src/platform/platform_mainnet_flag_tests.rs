@@ -46,6 +46,7 @@ fn held(id: &str, kind: MoveKind, input: (&str, u32, u64, u64), to: &str) -> Mov
         group: None,
         unattributed: false,
         version: Some(PlatformVersion::latest().protocol_version),
+        rule: HOLD_RULE,
     }
 }
 
