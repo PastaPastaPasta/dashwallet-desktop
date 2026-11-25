@@ -1,5 +1,59 @@
 # Signing a release candidate
 
+## The signer's checklist
+
+Only the release signer can do these four things, because each one needs their keys or admin rights on their
+account. Do (a) to (c) before the cut on 11-27; (d) is the cut itself. The rest of this file explains each step.
+
+- [ ] **a. Pin the public signing identities (one pull request to `main`).** These values are public, and nobody
+  else fills them in. On the Mac with the keys:
+
+  ```sh
+  cd ~/src/dashwallet-desktop && git fetch origin && git checkout -b release/signing-identities origin/main
+  gpg --list-secret-keys --keyid-format long --with-subkey-fingerprints   # the 40-hex primary fingerprint
+  security find-identity -v -p codesigning     # the 10-character team ID, in parentheses after the name
+  ykman piv certificates export 9c - | openssl x509 -noout -fingerprint -sha256 |
+    sed 's/.*=//; s/://g' | tr 'A-F' 'a-f' | sed 's/^/sha256:/'          # slot 9a if ykman piv info says so
+  export PGP_FPR=<40 hex> TEAM_ID=<10 chars> WIN_LEAF=<sha256:64 hex>
+  jq --arg f "$PGP_FPR" --arg t "$TEAM_ID" --arg w "$WIN_LEAF" \
+    '.pgp_fingerprint = $f | .apple_team_id = $t | .windows_leaf_sha256 = $w' \
+    docs/release/signing-identities.json > ids.json && mv ids.json docs/release/signing-identities.json
+  gpg --armor --export "$PGP_FPR" > docs/release/release-key.asc
+  gpg --show-keys --with-fingerprint docs/release/release-key.asc   # the same primary fingerprint
+  git add docs/release/signing-identities.json docs/release/release-key.asc
+  git commit -m "release: pin the release signing identities" && git push -u origin HEAD
+  gh pr create --base main --title "release: pin the release signing identities" --body "Public signing identities for 1.0."
+  ```
+
+  The jq checks in [Public identity values](#public-identity-values-the-signer-fills-in) each print `true`.
+- [ ] **b. Create the detached-signatures repository** `PastaPastaPasta/dashwallet-detached-sigs`. It must be public,
+  because `release-publish-signed.yml` fetches it anonymously, and it needs a `main` branch:
+
+  ```sh
+  gh repo create PastaPastaPasta/dashwallet-detached-sigs --public --add-readme \
+    --description "Detached release signatures for Dash Wallet Desktop"
+  gh repo edit PastaPastaPasta/dashwallet-detached-sigs --enable-issues=false --enable-wiki=false --enable-projects=false
+  ```
+
+  Or on github.com: **+ ▸ New repository**, name `dashwallet-detached-sigs`, **Public**, tick **Add a README**,
+  **Create repository**; then **Settings ▸ General ▸ Features**, untick Issues, Wikis and Projects.
+- [ ] **c. Opt candidates in to signing** before the tag is pushed:
+  `gh variable set DW_SIGN_RC --body 1 --repo PastaPastaPasta/dashwallet-desktop`. Or on github.com:
+  **dashwallet-desktop ▸ Settings ▸ Secrets and variables ▸ Actions ▸ Variables ▸ New repository variable**, name
+  `DW_SIGN_RC`, value `1`. `gh variable list --repo PastaPastaPasta/dashwallet-desktop` then shows
+  `DW_SIGN_RC  1`.
+- [ ] **d. The signing session** on the Mac with the YubiKey, after the version bump and (a) are on `main`:
+  [one-time setup](#2-one-time-setup-on-the-signers-mac) (once), then
+  [cut the tag](#3-cut-the-candidate-one-tag-push-builds-everything),
+  [sign](#4-sign-each-artifact-on-the-mac), [store the signatures](#5-store-the-detached-signatures) and
+  [publish](#6-publish-verify-attach-attest-release-publish-signedyml). If it can't finish, use the
+  [keyless fallback](#fallback-publish-the-waiting-candidate-keyless).
+
+Optional, in the same Settings visit (not needed for the candidate): the `release` environment
+(**Settings ▸ Environments ▸ release**) still holds the old `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets and has no required reviewer. Delete both secrets (neither workflow reads
+them) and add yourself under **Required reviewers**.
+
 The release signer signs a release candidate `vX.Y.Z-rc.N` on their own Mac, the same way as a stable release
 ([`SIGNING.md`](SIGNING.md), the Dash Core detached-signatures model). CI builds and attests the unsigned files. The
 signer signs them locally with Dash Core's Apple Developer ID, the Windows code-signing certificate on their
@@ -58,12 +112,11 @@ lands by pull request before the tag.
       `docs/release/signing-identities.json` and `docs/release/release-key.asc` hold placeholders today, and
       `release-attach.sh` refuses to publish until they hold the real public values. Optionally,
       `docs/release/windows-ca.pem` holds the Windows CA root and intermediates.
-- [ ] **Release notes.** `docs/release/1.0.0-notes.md` says candidates are unsigned ("Release candidates are not
-      notarized on macOS and not code-signed on Windows", and its release-owner header). For a signed candidate,
-      switch Known limitations, Files (add `SHA256SUMS.asc`), Install and Verify to the signed wording (the
-      "Final tag" comments in that file) in the same notes pull request, but carry over nothing about `latest.json`
-      or in-app updates: a candidate has no feed. `release-publish.sh` uses that file as the body of every
-      `v1.0.0-rc.N`.
+- [ ] **Release notes.** `docs/release/1.0.0-notes.md` in the signed wording (`SHA256SUMS.asc` in Files, no
+      Gatekeeper or SmartScreen bypass steps, Verify against `release-publish-signed.yml`) and with nothing about
+      `latest.json` or in-app updates for a candidate. It lands with the version bump (#872). If a candidate is
+      published keyless instead, put back the "Keyless candidate" comments in that file first.
+      `release-publish.sh` uses it as the body of every `v1.0.0-rc.N`.
 
 Once, in GitHub (the signer, with admin rights on the repository):
 
