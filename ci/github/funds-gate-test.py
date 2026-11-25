@@ -79,6 +79,7 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/screens/tools/Psbt.tsx",
             "apps/desktop/src/masternodes/keys.ts",
             "apps/desktop/src/payments/hold.ts",
+            "apps/desktop/src/screens/ShieldedSheet.tsx",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 

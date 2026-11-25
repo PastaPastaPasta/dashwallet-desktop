@@ -154,6 +154,7 @@ apps/desktop/src/tools/coins*
 apps/desktop/src/tools/signVerify*
 apps/desktop/src/tools/grant*
 apps/desktop/src/tools/console*
+apps/desktop/src/tools/repair*
 
 # Renderer screens that send, receive, sign or move money, and the sheets that confirm it.
 apps/desktop/src/screens/pay/**
@@ -161,6 +162,10 @@ apps/desktop/src/screens/Receive.tsx
 apps/desktop/src/screens/TransferSheet.tsx
 apps/desktop/src/screens/PlatformFundSheet.tsx
 apps/desktop/src/screens/UnfinishedTransfersCard.tsx
+apps/desktop/src/screens/ShieldedSheet.tsx
+apps/desktop/src/screens/PlatformMoveSheet.tsx
+apps/desktop/src/screens/dashpay/Registration.tsx
+apps/desktop/src/screens/tools/Repair.tsx
 apps/desktop/src/screens/dashpay/TopUpSheet.tsx
 apps/desktop/src/screens/dashpay/WithdrawSheet.tsx
 apps/desktop/src/screens/coinjoin/MoveMixedSheet.tsx
