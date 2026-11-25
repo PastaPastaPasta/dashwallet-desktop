@@ -2866,10 +2866,7 @@ fn the_open_network_carries_the_store_upgrade_notice() {
     assert_eq!(Demo::new().open()["notice"], Value::Null);
     let demo = Demo::launched(|_, dir| {
         let root = dir.join("data");
-        let mut b = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-        b.create(&root).unwrap();
+        dw_testutil::private_dir(&root);
         dw_store_upgrade::test_support::between_state(
             &root.join("regtest"),
             dw_store_upgrade::test_support::BeforeSnapshot::Unverified,

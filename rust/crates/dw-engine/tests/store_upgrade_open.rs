@@ -172,12 +172,7 @@ fn an_open_without_a_snapshot_to_restore_carries_its_notice() {
     ] {
         let tmp = dw_testutil::private_tempdir();
         let root = tmp.path().join("data");
-        {
-            let mut b = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-            b.create(&root).unwrap();
-        }
+        dw_testutil::private_dir(&root);
         between_state(
             &root.join("regtest"),
             before,

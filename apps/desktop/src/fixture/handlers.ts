@@ -16,6 +16,8 @@
 // (`World.cut`), not derived from the leases.
 
 import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } from "../api/generated/commands";
+import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import type { OpenedNetwork } from "../api/generated/OpenedNetwork";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
@@ -748,6 +750,11 @@ const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, c
 export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
 
 /** The window's network with its `restored` (DTO contract v3). */
+/** `open_network`'s answer for `world` on `network`: its lock and the store upgrade's notice. */
+export function openedNetwork(world: World, network: NetworkInfo): OpenedNetwork {
+  return { network, lock: world.lock, notice: world.upgradeNotice ?? null };
+}
+
 function restoredNetwork(world: World): RestoredNetworkInfo {
   return { ...world.launch.network, restored: world.restored === true };
 }
@@ -807,7 +814,7 @@ export const HANDLERS: Handlers = {
       if (retryable) world.storageHeld = undefined;
       throw storageInUseError(retryable);
     }
-    return { network: restoredNetwork(world), lock: world.lock, notice: world.upgradeNotice ?? null };
+    return openedNetwork(world, restoredNetwork(world));
   },
   active_network: (_, { world }) => restoredNetwork(world),
 

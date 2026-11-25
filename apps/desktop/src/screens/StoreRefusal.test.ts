@@ -63,6 +63,11 @@ const FOLDER = "/home/user/.local/share/dashwallet/testnet";
 const THEMES = ["light", "dark"] as const;
 const S = en.app.storageInUse;
 const ENGLISH = flatten(en);
+const COPY_RS = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+/** copy.rs's `pub fn name`, through its closing brace. */
+const fnBody = (name: string) => new RegExp(`pub fn ${name}\\([\\s\\S]*?\\n}\\n`).exec(COPY_RS)![0];
+/** copy.rs's `const name: &str`, its escaped newlines read as newlines. */
+const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(COPY_RS)?.[1]?.replace(/\\n/g, "\n");
 
 afterEach(() => ui.set({ theme: null, prefs: DEFAULT_PREFS }));
 
@@ -154,19 +159,17 @@ describe("the store refusal screen", () => {
   });
 
   it("keeps the fixture's copy dw-store-upgrade's, verbatim", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
     const pattern = (key: string) => new RegExp(`(?:line|button)\\(\\s*"${key.replace(/\./g, "\\.")}",\\s*"((?:[^"\\\\]|\\\\.)*)",?\\s*\\)`, "g");
     for (const [key, english] of Object.entries(STORE_COPY)) {
-      const found = [...rust.matchAll(pattern(key))].map((m) => m[1]);
+      const found = [...COPY_RS.matchAll(pattern(key))].map((m) => m[1]);
       expect(found, key).toEqual([english]);
     }
-    expect(rust).toContain('button("settings.about.links.issues", "Report a problem")');
-    expect(rust).not.toContain("storeUpgrade.cantOpen.");
+    expect(COPY_RS).toContain('button("settings.about.links.issues", "Report a problem")');
+    expect(COPY_RS).not.toContain("storeUpgrade.cantOpen.");
   });
 
   it("has every refusal line and button copy.rs names in its catalog, verbatim", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
-    const named = new Map([...rust.matchAll(/(?:line|button)\(\s*"(storeUpgrade\.refused\.[\w.]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map((m) => [m[1], m[2]]));
+    const named = new Map([...COPY_RS.matchAll(/(?:line|button)\(\s*"(storeUpgrade\.refused\.[\w.]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map((m) => [m[1], m[2]]));
     const catalog = [...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.refused."));
     expect(named.size).toBeGreaterThan(20);
     expect(catalog.sort()).toEqual([...named.keys()].sort());
@@ -174,23 +177,20 @@ describe("the store refusal screen", () => {
   });
 
   it("marks the keys copy.rs lists as pending MG as pending in its catalog", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
     const catalog = readFileSync(resolve(import.meta.dirname, "../i18n/catalog/storeUpgrade.ts"), "utf8");
-    const pending = [.../pub const PENDING_MG: &\[&str\] = &\[([^\]]*)\]/.exec(rust)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const pending = [.../pub const PENDING_MG: &\[&str\] = &\[([^\]]*)\]/.exec(COPY_RS)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
     const marked = [...catalog.matchAll(/\/\/ Pending MG: [^\n]*\n\s*(\w+):/g)].map((m) => m[1]);
     expect(pending.map((k) => k.split(".").pop()).sort()).toEqual(marked.sort());
     for (const key of pending) expect(ENGLISH.has(key), key).toBe(true);
   });
 
   it("has the engine's restore copy in its catalog verbatim, the keys copy.rs names included", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
-    const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(rust)?.[1]?.replace(/\\n/g, "\n");
     const R = en.storeUpgrade.restore;
     expect([R.confirm.title, R.confirm.text, R.refused.title, R.refused.text, R.incomplete.title, R.incomplete.text, R.noSpace.title, R.noSpace.text, R.notStarted.title, R.notStarted.text]).toEqual(
       ["CONFIRM_TITLE", "CONFIRM_TEXT", "RESTORE_REFUSED_TITLE", "RESTORE_REFUSED_TEXT", "INCOMPLETE_TITLE", "INCOMPLETE_TEXT", "NO_SPACE_TITLE", "NO_SPACE_TEXT", "NOT_STARTED_TITLE", "NOT_STARTED_TEXT"].map(constant),
     );
     for (const key of ["title", "text", "keep", "keepMeaning", "quit"] as const) expect(R.foreign[key]).toBe(STORE_COPY[`storeUpgrade.restore.foreign.${key}`]);
-    expect(rust).not.toContain("keepCurrent");
+    expect(COPY_RS).not.toContain("keepCurrent");
     expect([...ENGLISH.keys()].filter((k) => k.includes("keepCurrent"))).toEqual([]);
   });
 
@@ -303,19 +303,16 @@ describe("the store refusal screen", () => {
 });
 
 describe("the retry screen", () => {
-  const COPY_RS = () => readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
   const renderRetry = (problem: string | null = null) => renderToStaticMarkup(createElement(StoreRetryView, { problem, onAction: noop }));
 
   it("has the engine's retry copy in its catalog verbatim, with its buttons in copy.rs's order", () => {
-    const rust = COPY_RS();
-    const constant = (name: string) => new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`).exec(rust)?.[1];
     expect([en.storeUpgrade.retry.noSpace.title, en.storeUpgrade.retry.noSpace.text]).toEqual(["RETRY_NO_SPACE_TITLE", "RETRY_NO_SPACE_TEXT"].map(constant));
-    const retry = /pub fn retry_copy_for[\s\S]*?\n}\n/.exec(rust)![0];
+    const retry = fnBody("retry_copy_for");
     expect(retry).toContain('("storeUpgrade.retry.noSpace.title", RETRY_NO_SPACE_TITLE)');
     expect(retry).toContain('("storeUpgrade.retry.noSpace.text", RETRY_NO_SPACE_TEXT)');
     expect(retry).toContain("vec![REPORT, QUIT]");
     expect(retry).toContain("hint: Some((ISSUES_HINT.key, ISSUES_HINT.text))");
-    const key = (name: string) => new RegExp(`const ${name}: Button = button\\("([^"]+)"`).exec(rust)?.[1];
+    const key = (name: string) => new RegExp(`const ${name}: Button = button\\("([^"]+)"`).exec(COPY_RS)?.[1];
     expect(RETRY_BUTTONS).toEqual([key("REPORT"), key("QUIT")]);
     for (const k of RETRY_BUTTONS) expect(buttonAction(k), k).not.toBeNull();
     expect([...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.retry.")).sort()).toEqual(["storeUpgrade.retry.noSpace.text", "storeUpgrade.retry.noSpace.title"]);
@@ -574,9 +571,7 @@ describe("the restore screens", () => {
   });
 
   it("offers the buttons copy.rs gives each state, in its order: OK alone where nothing changed", () => {
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
-    const body = (fn: string) => new RegExp(`pub fn ${fn}\\([\\s\\S]*?\\n}\\n`).exec(rust)![0];
-    const buttonsOf = (fn: string) => [...body(fn).matchAll(/\bbutton\("storeUpgrade\.restore\.(\w+)\.(\w+)"/g)].map((m) => `${m[1]}.${m[2]}`);
+    const buttonsOf = (fn: string) => [...fnBody(fn).matchAll(/\bbutton\("storeUpgrade\.restore\.(\w+)\.(\w+)"/g)].map((m) => `${m[1]}.${m[2]}`);
     expect(buttonsOf("restore_refused")).toEqual(RESTORE_BUTTONS.refused.map((k) => `refused.${k}`));
     expect(buttonsOf("restore_no_space")).toEqual(RESTORE_BUTTONS.noSpace.map((k) => `noSpace.${k}`));
     expect(buttonsOf("restore_not_started")).toEqual(RESTORE_BUTTONS.notStarted.map((k) => `notStarted.${k}`));
@@ -648,8 +643,7 @@ describe("the foreign lineage's screen", () => {
     const keys = RESTORE_BUTTONS.foreign.map((k) => restoreButtonKey("foreign", k));
     expect(keys).toEqual(["storeUpgrade.restore.foreign.keep", "settings.about.links.issues", "storeUpgrade.restore.foreign.quit"]);
     expect(keys.map(buttonAction)).toEqual(["keep", "report", "quit"]);
-    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
-    const screen = rust.slice(rust.indexOf("pub mod restore_foreign"));
+    const screen = COPY_RS.slice(COPY_RS.indexOf("pub mod restore_foreign"));
     expect(screen).toContain('buttons: vec![\n                b(KEEP),\n                button("settings.about.links.issues", "Report a problem"),\n                b(QUIT),\n            ]');
     expect(en.storeUpgrade.restore.foreign.quit).toBe("Quit");
   });
@@ -837,7 +831,6 @@ describe("the restored banner", () => {
 });
 
 describe("the upgrade notice", () => {
-  const COPY_RS = () => readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
   function renderNotice(notice: StoreLine | null | undefined) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     if (notice !== undefined) client.setQueryData(keys.upgradeNotice, notice);
@@ -845,7 +838,7 @@ describe("the upgrade notice", () => {
   }
 
   it("has notice_line's keys and English in its catalog verbatim, and the fixture sends them", () => {
-    const body = /pub fn notice_line[\s\S]*?\n}\n/.exec(COPY_RS())![0];
+    const body = fnBody("notice_line");
     const lines = [...body.matchAll(/line\(\s*"([^"]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map(([, key, text]) => [key, text]);
     expect(lines.map(([key]) => key)).toEqual(["storeUpgrade.notice.snapshotDamaged", "storeUpgrade.notice.snapshotOther"]);
     for (const [key, text] of lines) expect(ENGLISH.get(key), key).toBe(text);
