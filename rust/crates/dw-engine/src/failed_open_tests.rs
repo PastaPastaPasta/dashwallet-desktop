@@ -250,8 +250,12 @@ pub(crate) fn assert_kept_and_reopened(
 ) -> Arc<NetworkSession> {
     assert_eq!(
         failed_open_probe::ended(data_dir),
-        [true],
-        "the failed open ended with its wallet loaded"
+        [(true, true)],
+        "the failed open ended with its wallet loaded and released its wallet database"
+    );
+    assert!(
+        !crate::session::held_after_failed_open(data_dir),
+        "no failed open still holds the wallet database"
     );
     let kept = stored_rows(data_dir, wallet);
     assert_eq!(
