@@ -133,9 +133,10 @@ const MAX_ALL_ARRIVING = "Your Dash wallet's coins are still arriving (0.0020000
 const MAX_ARRIVING_TOO_SMALL = "Your Dash wallet's coins are still arriving (0.00005000 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.";
 const MAX_NOTHING = "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.";
 const MAX_EMPTY = "There's nothing in your Dash wallet to move.";
+const NO_CORE_BALANCE = "Nothing in your Dash wallet to move yet.";
 
-/** No coin in the Dash wallet: Max is disabled with no line of why, nothing is quoted and the fee line
- * keeps its hint, no refusal. */
+/** No coin a Max could take in the Dash wallet: Max is disabled, the line under the amount (not beside
+ * Max, where it squeezed the field) says there is nothing to move, nothing is quoted, no refusal. */
 async function maxNone(page: Page, route: "coreToShielded" | "coreToPlatform") {
   await openTransfer(page, route);
   await expect(page.getByTestId("transfer-max")).toBeDisabled();
@@ -143,7 +144,7 @@ async function maxNone(page: Page, route: "coreToShielded" | "coreToPlatform") {
   await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
   await expect(page.getByTestId("transfer-amount")).toBeEnabled();
   await expect(page.getByTestId("transfer-fee")).toHaveClass(/field-hint/);
-  await expect(page.getByTestId("transfer-fee")).not.toContainText(/nothing|Too small|0\.00000000/);
+  await expect(page.getByTestId("transfer-fee")).toHaveText(NO_CORE_BALANCE);
   expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(0);
 }
 

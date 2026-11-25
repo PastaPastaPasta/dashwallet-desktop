@@ -184,6 +184,7 @@ const STATES: Record<string, State> = {
   "shielded-max-mixed-only": { scenario: "transfer-max-mixed-only", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
   "shielded-max-nothing": { scenario: "transfer-max-nothing", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
   "shielded-max-empty": { scenario: "transfer-max-tiny", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
+  "shielded-max-none": { scenario: "transfer-max-none", routeHeader: true, go: async (page) => { await openTransfer(page, "coreToShielded"); await expect(page.getByTestId("transfer-max")).toBeDisabled(); } },
   "shielded-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-refused": { scenario: "transfer-shielded-refused", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },
@@ -214,6 +215,7 @@ const STATES: Record<string, State> = {
   "fund-max-mixed-only": { scenario: "transfer-max-mixed-only", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
   "fund-max-nothing": { scenario: "transfer-max-nothing", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
   "fund-max-empty": { scenario: "transfer-max-tiny", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
+  "fund-max-none": { scenario: "transfer-max-none", routeHeader: true, go: async (page) => { await openTransfer(page, "coreToPlatform"); await expect(page.getByTestId("transfer-max")).toBeDisabled(); } },
   "fund-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToPlatform") },
   "fund-not-applied": { scenario: "transfer-fund-not-applied", routeHeader: true, go: (page) => run(page, "coreToPlatform") },
   "fund-earlier-lock": {

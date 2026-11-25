@@ -259,6 +259,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   // moves none.
   const coins = isCoreRoute(route) && pools.coreCoins !== undefined ? pools.coreCoins : probe;
   const canMax = !!coins && probe !== null;
+  // With nothing a Core Max could take, the line under the amount says so (beside Max it squeezed the field).
+  const noCoins = why === null && isCoreRoute(route) && coins === 0;
   // The fee line follows the amount once it is read, and the source balance; nothing is quoted while
   // the route can't run.
   useEffect(() => {
@@ -337,7 +339,7 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         </DashButton>
       </div>
       <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
-        {amountProblem ?? refusal ?? fee ?? ""}
+        {amountProblem ?? refusal ?? (noCoins ? T.noCoreBalance : fee) ?? ""}
       </p>
       {route === "coreToPlatform" && mixing && mixing.state !== "idle" && <div className="card-actions"><DashButton variant="plainBlue" data-testid="transfer-pause-mixing" disabled={pause.busy} onClick={() => void pause.run("stop")}>{tr("transfer.pauseMixing")}</DashButton></div>}
       {pause.problem && <p className="form-problem" role="alert">{pause.problem}</p>}

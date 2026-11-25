@@ -89,6 +89,7 @@ export const transfer = {
   },
   platformEmpty: "Nothing on your Platform addresses to move yet.",
   platformInactive: "Platform addresses are not active on this network yet.",
+  noCoreBalance: "Nothing in your Dash wallet to move yet.",
   loading: "Reading your balances…",
   /** `what` is a route's name (`routeNames`). */
   running: "Running: {what}.",
