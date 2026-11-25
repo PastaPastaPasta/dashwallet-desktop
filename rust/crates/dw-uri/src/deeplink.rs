@@ -41,7 +41,7 @@ pub enum DeepLink {
     /// It contains a bearer private key: never log it.
     Invitation(String),
     /// Nothing the wallet handles (also `dashwallet:` links with invalid
-    /// parameters).
+    /// parameters, and invitation applinks over plain `http`).
     Unknown,
 }
 
@@ -144,8 +144,10 @@ pub fn classify_link(input: &str) -> DeepLink {
     if let Some(user) = DashPayUserLink::parse(trimmed) {
         return DeepLink::DashPayUser(user);
     }
-    if let Some(invite) = normalize_invitation(trimmed) {
-        return DeepLink::Invitation(invite);
+    match invitation_transport(trimmed) {
+        Some(Transport::Invitation(invite)) => return DeepLink::Invitation(invite),
+        Some(Transport::Malformed) => return DeepLink::Unknown,
+        None => {}
     }
     if parts.scheme == "http" || parts.scheme == "https" {
         return ext::parse_payment_string(trimmed).map_or(DeepLink::Unknown, DeepLink::Payment);
@@ -471,37 +473,60 @@ const ONELINK_PAYLOAD_KEYS: [&str; 4] = ["af_dp", "deep_link_value", "link", "af
 
 /// `DWInvitationLinkNormalizer.normalize`: the canonical invitation URI for
 /// `dashpay://invite?…`, `https://invitations.dashpay.io/applink?…`, or an
-/// AppsFlyer OneLink wrapping either. `None` when it is not one of those.
-/// Only the transport is recognized; the payload is validated by the SDK.
+/// AppsFlyer OneLink wrapping either. `None` when it is not one of those,
+/// and for an applink over plain `http`, which the SDK refuses (never
+/// upgraded). Only the transport is recognized; the payload is validated by
+/// the SDK.
 pub fn normalize_invitation(input: &str) -> Option<String> {
+    match invitation_transport(input)? {
+        Transport::Invitation(uri) => Some(uri),
+        Transport::Malformed => None,
+    }
+}
+
+enum Transport {
+    Invitation(String),
+    Malformed,
+}
+
+fn invitation_transport(input: &str) -> Option<Transport> {
     let trimmed = input.trim();
     let parts = split_url(trimmed)?;
     let host = parts.host.unwrap_or_default().to_ascii_lowercase();
-    match parts.scheme.as_str() {
-        "dashpay" => (host == "invite").then(|| trimmed.to_owned()),
-        "https" | "http" => {
-            if host == "invitations.dashpay.io" {
-                let path = parts.path.strip_suffix('/').unwrap_or(parts.path);
-                return (path == "/applink").then(|| trimmed.to_owned());
-            }
-            let is_onelink = ONELINK_HOST_SUFFIXES
-                .iter()
-                .any(|s| host == *s || host.ends_with(&format!(".{s}")));
-            if !is_onelink {
-                return None;
-            }
-            let items = query_items(parts.query?);
-            ONELINK_PAYLOAD_KEYS.iter().find_map(|key| {
-                let value = items.iter().find(|(k, _)| k == key)?.1.as_deref()?;
-                if value.is_empty() {
-                    None
-                } else {
-                    normalize_invitation(value)
-                }
-            })
+    let secure = match parts.scheme.as_str() {
+        "dashpay" => {
+            return (host == "invite").then(|| Transport::Invitation(trimmed.to_owned()));
         }
-        _ => None,
+        "https" => true,
+        "http" => false,
+        _ => return None,
+    };
+    if host == "invitations.dashpay.io" {
+        let path = parts.path.strip_suffix('/').unwrap_or(parts.path);
+        if path != "/applink" {
+            return None;
+        }
+        return Some(if secure {
+            Transport::Invitation(trimmed.to_owned())
+        } else {
+            Transport::Malformed
+        });
     }
+    let is_onelink = ONELINK_HOST_SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    if !is_onelink {
+        return None;
+    }
+    let items = query_items(parts.query?);
+    ONELINK_PAYLOAD_KEYS.iter().find_map(|key| {
+        let value = items.iter().find(|(k, _)| k == key)?.1.as_deref()?;
+        if value.is_empty() {
+            None
+        } else {
+            invitation_transport(value)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -561,6 +586,19 @@ mod tests {
         assert!(
             normalize_invitation("https://evil.example/abc?af_dp=dashpay%3A%2F%2Finvite").is_none()
         );
+    }
+
+    #[test]
+    fn plain_http_applinks_are_malformed() {
+        let wrapped = "https://dashpay.onelink.me/abc?af_dp=http%3A%2F%2Finvitations.dashpay.io%2Fapplink%3Fdu%3Da%26pk%3Ds";
+        for link in [
+            "http://invitations.dashpay.io/applink?du=a&assetlocktx=00&pk=s",
+            "HTTP://Invitations.DashPay.io/applink/?du=a&pk=s",
+            wrapped,
+        ] {
+            assert_eq!(normalize_invitation(link), None, "{link}");
+            assert_eq!(classify_link(link), DeepLink::Unknown, "{link}");
+        }
     }
 
     #[test]
