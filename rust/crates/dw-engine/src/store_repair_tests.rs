@@ -11,7 +11,7 @@ use crate::store_repair::{Stop, arm, repair};
 /// The wallet holds coin A, mined; a peer's claim on A paying [`CHANGE`]
 /// back is relayed with `script` as its input script, and key-wallet
 /// records it, A spent. Returns A's funding and the claim.
-fn claim_on_a_held_coin(
+pub(super) fn claim_on_a_held_coin(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
@@ -23,7 +23,7 @@ fn claim_on_a_held_coin(
 }
 
 /// [`claim_on_a_held_coin`] with the claim as `edit` leaves it.
-fn edited_claim_on_a_held_coin(
+pub(super) fn edited_claim_on_a_held_coin(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
@@ -42,7 +42,7 @@ fn edited_claim_on_a_held_coin(
 }
 
 /// Whether the store holds a row of `txid` for `id`.
-fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
+pub(super) fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
     let conn = rusqlite::Connection::open_with_flags(
         dir.join(WALLET_DB_FILE),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -57,7 +57,12 @@ fn stored(dir: &std::path::Path, id: WalletId, txid: Txid) -> bool {
 }
 
 /// Whether `txid` is out of the history or abandoned in it.
-fn dropped(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) -> bool {
+pub(super) fn dropped(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> bool {
     rows(engine, session, id)
         .iter()
         .all(|r| r.0 != txid.to_string() || r.1 == TxStatusKind::Abandoned)
@@ -77,12 +82,12 @@ fn records(
 }
 
 /// The app's settings value of `key` in `scope`.
-fn setting(session: &Arc<NetworkSession>, scope: &str, key: &str) -> Option<String> {
+pub(super) fn setting(session: &Arc<NetworkSession>, scope: &str, key: &str) -> Option<String> {
     (session.live().unwrap().appdb).setting(scope, key).unwrap()
 }
 
 /// Closes the network; returns its directory.
-fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
+pub(super) fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
     let dir = session.data_dir().to_path_buf();
     *session.close_load_wait.lock().unwrap() = Some(LOAD_WAIT);
     drop(session);
@@ -95,13 +100,13 @@ fn close(engine: &Engine, session: Arc<NetworkSession>) -> std::path::PathBuf {
 }
 
 /// Runs the repair on the closed network `dir` with its own app database.
-fn repair_closed(dir: &std::path::Path) -> crate::store_repair::Outcome {
+pub(super) fn repair_closed(dir: &std::path::Path) -> crate::store_repair::Outcome {
     let appdb = dw_appdb::AppDb::open(&dir.join(dw_appdb::APP_DB_FILE)).unwrap();
     repair(dir, &appdb).unwrap()
 }
 
 /// SQL on the closed network `dir`'s store.
-fn on_store(dir: &std::path::Path, sql: &str, params: impl rusqlite::Params) {
+pub(super) fn on_store(dir: &std::path::Path, sql: &str, params: impl rusqlite::Params) {
     let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
     conn.execute(sql, params).unwrap();
 }
