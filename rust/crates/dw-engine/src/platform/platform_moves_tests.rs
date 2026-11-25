@@ -2139,6 +2139,22 @@ fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
     assert_eq!(index_of(&w, next), Some(3));
 }
 
+/// Known limit (#894): each fallback takes two payment indices with no
+/// payment, the one it skips and its own, kept on this install. Eleven
+/// starts accepted and then dropped unpaid put the next fallback at 21 and
+/// Receive at 22, past a seed restore's gap of 20 with nothing funded
+/// below, so a restore finds neither until the gap is raised. A start
+/// refused before its row takes none
+/// (`registration_tests::shielded::a_start_refused_in_progress_takes_no_fallback`).
+#[test]
+fn unpaid_fallbacks_widen_the_gap_two_indices_each() {
+    let w = World::new();
+    let taken: Vec<Option<u32>> = (0..11).map(|_| index_of(&w, new_fallback(&w))).collect();
+    let expected: Vec<Option<u32>> = (0..11).map(|n| Some(2 * n + 1)).collect();
+    assert_eq!(taken, expected);
+    assert_eq!(w.receive_address().index, 22);
+}
+
 /// Q3: a P2SH Platform address of this network is a recipient, as a
 /// P2PKH one is.
 #[test]

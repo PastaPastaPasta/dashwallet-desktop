@@ -321,6 +321,33 @@ fn a_ready_start_writes_the_row_with_its_own_fallback() {
     );
 }
 
+/// F13: a start refused because another registration's payment is still
+/// open takes no fallback, so a refused start widens no gap of the
+/// Platform payment account.
+#[test]
+fn a_start_refused_in_progress_takes_no_fallback() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().shielded = ready();
+    let open = f.insert(shielded_row(Some(created())));
+    let quote = (f.engine.block_on(registration::quote(&*lib, &shielded(0)))).unwrap();
+    let denomination = quote.readiness.unwrap().denomination.unwrap();
+    let g = f.grant(0, quote.grant.max_credits, f.credential());
+    let start = (f.engine).block_on(registration::start(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        shielded(denomination),
+        g,
+    ));
+    assert!(
+        matches!(&start, Err(RegistrationError::InProgress { draft }) if *draft == open.to_string()),
+        "{start:?}"
+    );
+    assert_eq!(f.rows().len(), 1);
+    assert_eq!(lib.w().fallbacks_taken, 0);
+}
+
 /// Mainnet: off (flag `shielded_registration`) until a payment that stays
 /// unknown has a way out (C-funding C3). The quote and the start are
 /// refused before any name is looked up (DAPI is down), the grant redeemed,
