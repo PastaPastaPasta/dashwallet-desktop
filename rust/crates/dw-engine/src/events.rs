@@ -1310,9 +1310,9 @@ impl SessionHub {
     /// Applies a wallet event's balance snapshot. Returns whether the
     /// visible balances changed.
     ///
-    /// A snapshot with locked coins was taken while a funding held its
-    /// temporary locks (only those set the flag), and may be applied after
-    /// they were released: the balances are read again once it is.
+    /// A snapshot with locked coins may have been taken while a funding
+    /// held its temporary locks, and applied after they were released: the
+    /// balances are read again once it is.
     fn update_balance(
         &self,
         id: WalletId,
