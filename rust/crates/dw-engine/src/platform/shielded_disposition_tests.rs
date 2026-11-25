@@ -1936,12 +1936,13 @@ fn damage_artifact_read(path: &Path, wallet: WalletId, activity: [u8; 32], on: b
 }
 
 /// #931, the pass: one whose keep of the imported spends' history rows
-/// cannot read the artifacts is held back before the library's pass, so
-/// no release or scan in it frees an imported spend's notes with no row
-/// to read its outcome by or to hold them from a new spend. Once the
-/// artifacts read, the pass runs.
+/// cannot read the artifacts is held back before the library's pass while
+/// the library holds a record or a reserved note of a spend with no row,
+/// so no release or scan in it frees notes with no row to read the spend's
+/// outcome by or to hold them from a new spend. A spend whose row was kept
+/// keeps it, so with every held spend's row kept the pass runs.
 #[test]
-fn a_pass_is_held_while_the_imported_spends_rows_cannot_be_kept() {
+fn a_pass_is_held_while_a_held_spends_row_cannot_be_kept() {
     let dir = dw_testutil::private_tempdir();
     let engine = engine_at(dir.path());
     let (session, wallet, spend) = launch_with_import(&engine);
@@ -1949,17 +1950,39 @@ fn a_pass_is_held_while_the_imported_spends_rows_cannot_be_kept() {
         .data_dir()
         .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
     let runs = || (session.platform.passes_run).load(std::sync::atomic::Ordering::SeqCst);
-    let guarded = || {
+    let reserved = [0x5b; 32];
+    let pass_with = |rowless: Option<bool>| {
         let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-        engine.block_on(async move { pool::guarded_pass(&s, &m, true).await })
+        let again = PendingRedrive {
+            activity_id: AGAIN,
+            st_bytes: spends().remove(1).st_bytes,
+            ..spend.clone()
+        };
+        let before = runs();
+        let ran = engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            {
+                let id = subwallet(wallet);
+                let mut store = coordinator.store().write().await;
+                store.clear_redrive(id, &AGAIN).unwrap();
+                store.clear_pending(id, &reserved).unwrap();
+                match rowless {
+                    Some(true) => store.arm_redrive(id, again).unwrap(),
+                    Some(false) => {
+                        assert!(store.mark_pending(id, &reserved).unwrap());
+                        (store.set_pending_spend(id, &reserved, again.anchor, AGAIN, None)).unwrap();
+                    }
+                    None => {}
+                }
+            }
+            pool::guarded_pass(&s, &m, true).await
+        });
+        (ran, runs() - before)
     };
-    let before = runs();
     damage_artifact_read(&journal, wallet, spend.activity_id, true);
-    let held = (guarded(), runs() - before);
-    damage_artifact_read(&journal, wallet, spend.activity_id, false);
     assert_eq!(
-        (held, (guarded(), runs() - before)),
-        ((false, 0), (true, 1))
+        [pass_with(Some(true)), pass_with(Some(false)), pass_with(None)],
+        [(false, 0), (false, 0), (true, 1)]
     );
 }
 
