@@ -111,6 +111,10 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/screens/settings/CoinJoin.tsx",
             "apps/desktop/src/screens/coinjoin/CoinJoinCard.tsx",
             "apps/desktop/src/screens/coinjoin/CoinJoinPage.tsx",
+            "Sources/WalletFeatures/Home/HomeViewModel.swift",
+            "Package.swift",
+            "Package.resolved",
+            "Sources/PlatformServicesMac/MacBiometricKeyStore.swift",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -132,6 +136,8 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/screens/Overview.tsx",
             "apps/desktop/src/screens/masternodes/VoteSheet.tsx",
             "apps/desktop/src/format/amountish/x.ts",
+            "Sources/WalletDemo/DemoLedger.swift",
+            "Sources/WalletFeatures/Localization/L10n+CoinJoin.swift",
         ]:
             self.assertFalse(gate.is_funds(f, RULES), f)
 

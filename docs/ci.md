@@ -256,7 +256,8 @@ funds-reviewer verdict and an Opus code review, both approving. The funds paths 
 CSV export, avatars, banners and governance voting; the file has the full list), so a
 new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, CoinJoin and units crates, the
 CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
-(Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
+(Tauri commands and capabilities), every Swift app source except `Sources/WalletDemo` and
+`Sources/WalletFeatures/Localization` (with `Package.swift` and `Package.resolved`), the renderer's amount and send logic and the
 screen view-models that build money requests, the dependency pins, and the gate itself. Check a branch with
 `git diff --no-renames --name-only -z origin/main... | ci/github/funds-gate.py match -z`.
 
