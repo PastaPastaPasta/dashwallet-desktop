@@ -14,7 +14,6 @@ use crate::copy::{
 use crate::error::StoreUpgradeError;
 use crate::precheck::{Precheck, precheck_locked_with, precheck_with};
 use crate::restore::{IncompleteCause, RefusalCause};
-use crate::snapshot::MissingSnapshot;
 
 const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 
@@ -55,10 +54,6 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
         HistoryMismatch => (
             "historyMismatch",
             "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
-        ),
-        SnapshotMissing => (
-            "snapshotMissing",
-            "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
         ),
         ContactsTable => (
             "contactsTable",
@@ -127,7 +122,6 @@ fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
             [Restore, Unverified, Support, SupportMigrated].into()
         }
         TooNew => [Newer].into(),
-        SnapshotMissing => [Unverified, SupportMigrated].into(),
         ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
         RefusedCause::SelfCheck => [WayOut::SelfCheck, WayOut::SelfCheckNotMigrated].into(),
     }
@@ -166,7 +160,6 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let s = RefusedScreen::new(cause, state);
             let w = s.way_out;
             let at = format!("{cause:?} {state:?} -> {w:?}");
-            let part_done = cause == RefusedCause::SnapshotMissing;
             assert!(allowed(cause).contains(&w), "{at}");
             reached.insert((cause, w));
 
@@ -179,13 +172,11 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                     "{at}"
                 ),
                 WayOut::Unverified => assert_eq!(
-                    (part_done || state.migrated == Some(true), state.backup),
-                    (true, Some(BackupState::Unverified)),
+                    (state.migrated, state.backup),
+                    (Some(true), Some(BackupState::Unverified)),
                     "{at}"
                 ),
-                WayOut::SupportMigrated => {
-                    assert!(part_done || state.migrated == Some(true), "{at}")
-                }
+                WayOut::SupportMigrated => assert_eq!(state.migrated, Some(true), "{at}"),
                 WayOut::Support => assert_ne!(state.migrated, Some(true), "{at}"),
                 WayOut::SelfCheck => {
                     assert_eq!(cause, RefusedCause::SelfCheck, "{at}");
@@ -211,11 +202,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let (way_key, way_text) = way_out(w);
             assert_eq!(s.title.key, "storeUpgrade.refused.title");
             assert_eq!(s.intro.key, "storeUpgrade.refused.intro");
-            let shown_unchanged = match cause {
-                RefusedCause::SnapshotMissing => Some(false),
-                _ => state.unchanged,
-            };
-            let (unchanged_key, unchanged_text) = match shown_unchanged {
+            let (unchanged_key, unchanged_text) = match state.unchanged {
                 Some(true) => ("unchanged", UNCHANGED),
                 Some(false) => ("changedByUpgrade", CHANGED),
                 None => ("keep", KEEP),
@@ -326,13 +313,6 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
             Some(ContactsTable),
         ),
         (E::P9aBroken { detail: "x".into() }, Some(SelfCheck)),
-        (
-            E::UpgradeSnapshotMissing {
-                state: MissingSnapshot::Absent,
-                dir: PathBuf::from("x"),
-            },
-            Some(SnapshotMissing),
-        ),
         (
             E::WalletFileUnsupported { detail: "x".into() },
             Some(Unexpected),
@@ -563,22 +543,6 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
         result.err().expect("refused without the probe")
     });
-    let f = fixture("v0.1.0");
-    let snapshot = crate::prepare_with(&f.net, build(), now())
-        .unwrap()
-        .snapshot
-        .unwrap();
-    assert!(matches!(
-        crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
-        crate::reconcile::Outcome::Pending { .. }
-    ));
-    fs::remove_dir_all(snapshot.dir()).unwrap();
-    let s = shows_unchanged(&f, SnapshotMissing, |f| {
-        crate::prepare_with(&f.net, build(), later(60)).unwrap_err()
-    });
-    assert_eq!(s.way_out, WayOut::SupportMigrated, "part-upgraded");
-    assert_eq!(s.unchanged.key, "storeUpgrade.refused.changedByUpgrade");
-    seen.insert(SnapshotMissing);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
 }
 
@@ -799,10 +763,6 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             detail: String::new(),
         },
         E::RestoreAfterOpen,
-        E::UpgradeSnapshotMissing {
-            state: MissingSnapshot::Mismatch,
-            dir: PathBuf::from("x"),
-        },
         E::WalletFileUnsupported { detail: "x".into() },
         E::UpgradeCopyUnwritable { detail: "x".into() },
         E::InjectedFault("x"),
@@ -834,7 +794,6 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::RestoreNoSpace { .. } => "RestoreNoSpace",
         E::RestoreIncomplete { .. } => "RestoreIncomplete",
         E::RestoreAfterOpen => "RestoreAfterOpen",
-        E::UpgradeSnapshotMissing { .. } => "UpgradeSnapshotMissing",
         E::WalletFileUnsupported { .. } => "WalletFileUnsupported",
         E::UpgradeCopyUnwritable { .. } => "UpgradeCopyUnwritable",
         E::InjectedFault(_) => "InjectedFault",
@@ -846,7 +805,7 @@ fn every_refusal_variant_has_a_screen() {
     let all = every_variant();
     let names: BTreeSet<&str> = all.iter().map(variant).collect();
     assert_eq!(names.len(), all.len(), "each variant listed once");
-    assert_eq!(names.len(), 26, "every variant in `variant` is listed");
+    assert_eq!(names.len(), 25, "every variant in `variant` is listed");
     let mut refusals = 0;
     let mut unexpected = BTreeSet::new();
     for e in &all {
@@ -871,22 +830,11 @@ fn every_refusal_variant_has_a_screen() {
             );
         }
     }
-    assert_eq!(refusals, 11);
+    assert_eq!(refusals, 10);
     assert_eq!(
         unexpected,
         ["UpgradeCopyUnwritable", "WalletFileUnsupported"].into()
     );
-    let missing = all
-        .iter()
-        .find(|e| variant(e) == "UpgradeSnapshotMissing")
-        .unwrap();
-    for state in states() {
-        let s = screen_for(missing, state).unwrap();
-        assert_eq!(
-            s.unchanged.key, "storeUpgrade.refused.changedByUpgrade",
-            "an earlier start dropped a column: {state:?}"
-        );
-    }
     for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
         let e = all.iter().find(|e| variant(e) == name).unwrap();
         assert!(restore_screen_for(e).is_some(), "{name}");

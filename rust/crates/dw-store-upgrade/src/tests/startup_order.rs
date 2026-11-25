@@ -67,7 +67,8 @@ fn reconcile_straight_after_prepare_proceeds() {
     assert_eq!(
         reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
         Outcome::Pending {
-            versions: [1, 2, 3].into_iter().collect()
+            versions: [1, 2, 3].into_iter().collect(),
+            notice: None,
         }
     );
     assert!(!column_present(&f), "R1's drop ran");

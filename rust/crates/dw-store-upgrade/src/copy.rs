@@ -19,8 +19,9 @@
 use std::path::Path;
 
 use crate::error::StoreUpgradeError;
+use crate::reconcile::UpgradeNotice;
 use crate::restore::IncompleteCause;
-use crate::snapshot::{MissingSnapshot, STORE_FILES, SnapshotState, UPGRADE_BACKUPS_DIR};
+use crate::snapshot::{STORE_FILES, SnapshotState, UPGRADE_BACKUPS_DIR};
 
 /// One button: its catalog key and label.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,10 +102,6 @@ pub enum RefusedCause {
     TooNew,
     /// [`StoreUpgradeError::SchemaHistoryMismatch`].
     HistoryMismatch,
-    /// [`StoreUpgradeError::UpgradeSnapshotMissing`]: part-upgraded, so
-    /// migrated whatever the state says, and with no snapshot to restore.
-    /// Detail pending MG.
-    SnapshotMissing,
     /// [`StoreUpgradeError::RetiredPoolWithoutAdopter`].
     ContactsTable,
     /// [`StoreUpgradeError::P9aBroken`]: this build's own check failed. It
@@ -117,14 +114,13 @@ pub enum RefusedCause {
 }
 
 impl RefusedCause {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::ForkUnsupported,
         Self::ShapeMismatch,
         Self::RehearsalFailed,
         Self::DevBuild,
         Self::TooNew,
         Self::HistoryMismatch,
-        Self::SnapshotMissing,
         Self::ContactsTable,
         Self::SelfCheck,
         Self::Unexpected,
@@ -148,7 +144,6 @@ impl RefusedCause {
             E::PreHistoryFork => Self::DevBuild,
             E::SchemaTooNew { .. } => Self::TooNew,
             E::SchemaHistoryMismatch { .. } => Self::HistoryMismatch,
-            E::UpgradeSnapshotMissing { .. } => Self::SnapshotMissing,
             E::RetiredPoolWithoutAdopter { .. } => Self::ContactsTable,
             E::P9aBroken { .. } => Self::SelfCheck,
             E::StoreHeld { .. }
@@ -197,10 +192,6 @@ impl RefusedCause {
             Self::HistoryMismatch => line(
                 "storeUpgrade.refused.detail.historyMismatch",
                 "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
-            ),
-            Self::SnapshotMissing => line(
-                "storeUpgrade.refused.detail.snapshotMissing",
-                "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
             ),
             Self::ContactsTable => line(
                 "storeUpgrade.refused.detail.contactsTable",
@@ -385,10 +376,6 @@ impl WayOut {
                 Some(true) => Self::SupportMigrated,
                 None => Self::Support,
             },
-            C::SnapshotMissing => match state.backup {
-                Some(BackupState::Unverified) => Self::Unverified,
-                _ => Self::SupportMigrated,
-            },
             C::ContactsTable if state.migrated == Some(false) => Self::Previous,
             C::ContactsTable
             | C::ShapeMismatch
@@ -473,14 +460,6 @@ pub struct RefusedScreen {
 
 impl RefusedScreen {
     pub fn new(cause: RefusedCause, state: ProvedState) -> Self {
-        let state = match cause {
-            RefusedCause::SnapshotMissing => ProvedState {
-                migrated: Some(true),
-                unchanged: Some(false),
-                ..state
-            },
-            _ => state,
-        };
         let way_out = WayOut::for_cause(cause, state);
         Self {
             cause,
@@ -525,32 +504,28 @@ impl RefusedScreen {
 /// ([`RefusedCause::of`]), its way out chosen by `state`. The caller proves
 /// `state`, normally with [`ProvedState::read`].
 pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedScreen> {
-    let cause = RefusedCause::of(e)?;
-    let state = match e {
-        StoreUpgradeError::UpgradeSnapshotMissing { state: missing, .. } => {
-            snapshot_missing_state(*missing)
-        }
-        _ => state,
-    };
-    Some(RefusedScreen::new(cause, state))
+    Some(RefusedScreen::new(RefusedCause::of(e)?, state))
 }
 
-/// A part-done upgrade is migrated and changed, and its backup is what the
-/// error found: a snapshot of other data is no backup of this wallet.
-fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
-    ProvedState {
-        migrated: Some(true),
-        unchanged: Some(false),
-        backup: Some(match missing {
-            MissingSnapshot::Unverified => BackupState::Unverified,
-            MissingSnapshot::Absent | MissingSnapshot::Mismatch => BackupState::None,
-        }),
+/// The notice the engine shows once, after the wallet opened and loaded,
+/// for the start that upgraded it without a before-upgrade copy it can
+/// restore ([`crate::Outcome::notice`]). It blocks nothing, and dismissing
+/// it changes nothing on disk.
+pub fn notice_line(notice: UpgradeNotice) -> Line {
+    match notice {
+        UpgradeNotice::SnapshotDamaged => line(
+            "storeUpgrade.notice.snapshotDamaged",
+            "Dash Wallet upgraded your wallet data. The copy it saved from before the upgrade doesn't check out, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        ),
+        UpgradeNotice::SnapshotOther => line(
+            "storeUpgrade.notice.snapshotOther",
+            "Dash Wallet upgraded your wallet data. The copy in upgrade-backups from before the upgrade doesn't match this wallet, so Dash Wallet won't offer to restore it. Your wallet opened as usual. Don't delete anything in upgrade-backups: support may need it.",
+        ),
     }
 }
 
 /// Catalog keys whose text is a best guess until MG writes the final.
 pub const PENDING_MG: &[&str] = &[
-    "storeUpgrade.refused.detail.snapshotMissing",
     "storeUpgrade.refused.changedByUpgrade",
     "storeUpgrade.refused.keep",
 ];

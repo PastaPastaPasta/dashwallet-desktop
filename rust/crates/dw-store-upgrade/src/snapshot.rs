@@ -31,8 +31,8 @@ pub const UPGRADE_BACKUPS_DIR: &str = "upgrade-backups";
 /// SQLite's side files of a store.
 pub(crate) const SIDE_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 pub(crate) const BEFORE_PREFIX: &str = "before-upgrade";
-/// A copy taken mid-upgrade under [`AbsentSnapshotPolicy::ProceedUnrestorable`]:
-/// never listed as a backup, never restored.
+/// A copy of an upgraded store taken when no before-upgrade snapshot is
+/// kept ([`MissingSnapshot`]): never listed as a backup, never restored.
 pub(crate) const UNRESTORABLE_PREFIX: &str = "part-upgraded";
 pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
 /// Written into a before-upgrade snapshot that verifies but is not of this
@@ -62,6 +62,7 @@ pub struct SnapshotInfo {
     files: Vec<SnapshotFile>,
     absent: Vec<String>,
     manifest_sha256: String,
+    missing: Option<MissingSnapshot>,
 }
 
 impl SnapshotInfo {
@@ -91,6 +92,11 @@ impl SnapshotInfo {
         self.refinery_max
     }
 
+    /// For the `part-upgraded` copy [`take_snapshot`] returns for an upgraded
+    /// store: why no before-upgrade snapshot was kept. Not in the marker.
+    pub fn missing(&self) -> Option<MissingSnapshot> {
+        self.missing
+    }
     /// sha256 of the marker file: names this exact snapshot.
     pub fn manifest_sha256(&self) -> &str {
         &self.manifest_sha256
@@ -139,6 +145,7 @@ fn parse_marker(dir: &Path, text: &str) -> std::result::Result<SnapshotInfo, Str
         files: Vec::new(),
         absent: Vec::new(),
         manifest_sha256: hex(&Sha256::digest(text.as_bytes())),
+        missing: None,
     };
     let mut format = None;
     for line in lines {
@@ -547,7 +554,8 @@ fn released(info: &SnapshotInfo) -> rusqlite::Result<bool> {
 }
 
 /// Why an upgraded store (R1's drop committed, or upstream migrated) has no
-/// snapshot to keep (M1).
+/// before-upgrade snapshot to keep. The start goes on all the same, with a
+/// `part-upgraded` copy (Q107 107-1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingSnapshot {
     /// No before-upgrade directory at all.
@@ -555,34 +563,9 @@ pub enum MissingSnapshot {
     /// Before-upgrade directories exist (one without its marker counts), and
     /// none verifies.
     Unverified,
-    /// Verified ones exist, and none is of this wallet before the upgrade.
+    /// Verified ones exist, and none is of this wallet before the upgrade:
+    /// each is marked [`NOT_THIS_WALLET`].
     Mismatch,
-}
-
-/// What an upgraded store does when no before-upgrade snapshot exists at
-/// all. `Unverified` and `Mismatch` are refused under either, and neither
-/// ever takes a `before-upgrade` snapshot of an upgraded file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbsentSnapshotPolicy {
-    /// [`StoreUpgradeError::UpgradeSnapshotMissing`].
-    Refuse,
-    /// Finish the upgrade with a `part-upgraded-<UTC>/` copy that is never
-    /// offered as a backup.
-    ProceedUnrestorable,
-}
-
-/// M1 (b), pending the PO and funds ruling on (a). `Refuse` also covers a
-/// store upstream has migrated and not yet retired: one whose snapshot is
-/// lost between the start that migrated it and the next is refused on every
-/// start, though upstream opens it.
-pub const ABSENT_SNAPSHOT_POLICY: AbsentSnapshotPolicy = AbsentSnapshotPolicy::Refuse;
-
-fn absent_snapshot_policy() -> AbsentSnapshotPolicy {
-    #[cfg(test)]
-    if let Some(p) = ABSENT_POLICY_FOR_TEST.with(|p| p.get()) {
-        return p;
-    }
-    ABSENT_SNAPSHOT_POLICY
 }
 
 #[cfg(test)]
@@ -590,8 +573,26 @@ thread_local! {
     /// Fails every check of this snapshot directory with this I/O error.
     pub(crate) static SNAPSHOT_READ_FOR_TEST: std::cell::RefCell<Option<(PathBuf, io::ErrorKind)>> =
         const { std::cell::RefCell::new(None) };
-    pub(crate) static ABSENT_POLICY_FOR_TEST: std::cell::Cell<Option<AbsentSnapshotPolicy>> =
-        const { std::cell::Cell::new(None) };
+}
+
+/// Retire a verified before-upgrade snapshot that is not of this wallet:
+/// [`NOT_THIS_WALLET`] written atomically into its directory, which is never
+/// deleted. Never while a restore journal exists: the restore owns
+/// `upgrade-backups/` until it is done.
+fn mark_not_this_wallet(network_dir: &Path, dir: &Path, now: SystemTime) -> Result<()> {
+    if fs::symlink_metadata(backups_dir(network_dir).join(crate::restore::RESTORE_JOURNAL)).is_ok()
+    {
+        return Err(StoreUpgradeError::RestorePending {
+            dir: network_dir.to_path_buf(),
+        });
+    }
+    let text = format!(
+        "dw-store-upgrade not this wallet\nformat 1\nretired {}\n",
+        fsx::utc_stamp(now)
+    );
+    tracing::warn!(dir = %dir.display(), "store upgrade: snapshot is not of this wallet; retired");
+    fsx::write_durable(&dir.join(NOT_THIS_WALLET), text.as_bytes())
+        .map_err(|e| failed(format!("mark {}: {e}", dir.display())))
 }
 
 fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
@@ -605,20 +606,23 @@ fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
 /// through read-only connections that never checkpoint.
 ///
 /// Once the store is upgraded (R1's drop committed, or refinery past V018)
-/// no `before-upgrade` snapshot is taken: only a verified one from before
-/// the upgrade is kept, and with none at all
-/// [`AbsentSnapshotPolicy::ProceedUnrestorable`] keeps or takes a
-/// `part-upgraded` copy. A directory without its marker is then the true
-/// snapshot with its marker lost (the start that took it checked the marker
-/// before the drop) and counts as `Unverified`; it is never deleted. Only
-/// before a new snapshot of a store that is not upgraded is a directory an
-/// interrupted run left without its marker discarded and redone.
+/// no `before-upgrade` snapshot is taken and no snapshot reason refuses the
+/// start (Q107 107-1): a verified one from before the upgrade is kept, and
+/// with none ([`MissingSnapshot`]) a verified `part-upgraded` copy is kept
+/// or one is taken, never offered for restore. A directory without its
+/// marker is then the true snapshot with its marker lost (the start that
+/// took it checked the marker before the drop) and counts as `Unverified`;
+/// it is never deleted. A verified one of other data is marked
+/// [`NOT_THIS_WALLET`]. Only before a new snapshot of a store that is not
+/// upgraded is a directory an interrupted run left without its marker
+/// discarded and redone.
 ///
 /// A fault reading a `before-upgrade` directory never hides an older one
 /// that is this upgrade's. With none, it is retried once the store is
 /// upgraded (that directory may be the true snapshot) and passed over
 /// before.
 pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo> {
+    let mut missing = None;
     crate::token::refuse_if_held(network_dir)?;
     let wallet = network_dir.join(STORE_FILES[0]);
     let live = if wallet.exists() {
@@ -640,14 +644,20 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     };
     let mut prefix = BEFORE_PREFIX;
     if let Some(live) = &live {
-        let mut missing = MissingSnapshot::Absent;
+        let mut state = MissingSnapshot::Absent;
         let mut fault = None;
+        let mut others = Vec::new();
         for dir in list(BEFORE_PREFIX)?.iter().rev() {
             match inspect(dir, live) {
                 Ok(Found::Reusable(info)) => return Ok(info),
-                Ok(Found::Other) => missing = MissingSnapshot::Mismatch,
-                Ok(Found::Defective) if missing == MissingSnapshot::Absent => {
-                    missing = MissingSnapshot::Unverified;
+                Ok(Found::Other { marked }) => {
+                    state = MissingSnapshot::Mismatch;
+                    if !marked {
+                        others.push(dir.clone());
+                    }
+                }
+                Ok(Found::Defective) if state == MissingSnapshot::Absent => {
+                    state = MissingSnapshot::Unverified;
                 }
                 Ok(Found::Defective) => {}
                 Err(e) => {
@@ -659,21 +669,21 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
             if let Some(e) = fault {
                 return Err(e);
             }
-            if missing != MissingSnapshot::Absent
-                || absent_snapshot_policy() == AbsentSnapshotPolicy::Refuse
-            {
-                return Err(StoreUpgradeError::UpgradeSnapshotMissing {
-                    state: missing,
-                    dir: backups_dir(network_dir),
-                });
+            for dir in &others {
+                mark_not_this_wallet(network_dir, dir, now)?;
             }
             for dir in list(UNRESTORABLE_PREFIX)?.iter().rev() {
-                if let Ok(Found::Reusable(info)) = inspect(dir, live) {
+                if let Ok(Found::Reusable(mut info)) = inspect(dir, live) {
+                    info.missing = Some(state);
                     return Ok(info);
                 }
             }
-            tracing::warn!("store upgrade: upgraded store without a snapshot; continuing");
+            tracing::warn!(
+                ?state,
+                "store upgrade: upgraded store without a snapshot to keep"
+            );
             prefix = UNRESTORABLE_PREFIX;
+            missing = Some(state);
         }
     }
     for dir in list(prefix)? {
@@ -734,6 +744,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
         files,
         absent,
         manifest_sha256: String::new(),
+        missing,
     };
     let text = render_marker(&info);
     info.manifest_sha256 = hex(&Sha256::digest(text.as_bytes()));
@@ -749,8 +760,9 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
 enum Found {
     /// Verified, and this upgrade's ([`reusable`]).
     Reusable(SnapshotInfo),
-    /// Verified, and of other data or not a file a released build opens.
-    Other,
+    /// Verified, and of other data or not a file a released build opens;
+    /// or already marked [`NOT_THIS_WALLET`].
+    Other { marked: bool },
     /// No marker, or it fails verification.
     Defective,
 }
@@ -759,6 +771,9 @@ enum Found {
 /// [`StoreUpgradeError::Io`] or [`StoreUpgradeError::Sqlite`]: it says
 /// nothing about the copy.
 fn inspect(dir: &Path, live: &LiveState) -> Result<Found> {
+    if fs::symlink_metadata(dir.join(NOT_THIS_WALLET)).is_ok() {
+        return Ok(Found::Other { marked: true });
+    }
     let info = match check_snapshot(dir, true) {
         Ok(info) => info,
         Err(SnapshotFault::Defect(_)) => return Ok(Found::Defective),
@@ -771,7 +786,7 @@ fn inspect(dir: &Path, live: &LiveState) -> Result<Found> {
     Ok(if reused {
         Found::Reusable(info)
     } else {
-        Found::Other
+        Found::Other { marked: false }
     })
 }
 

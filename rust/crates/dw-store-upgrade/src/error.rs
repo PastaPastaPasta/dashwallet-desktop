@@ -106,18 +106,6 @@ pub enum StoreUpgradeError {
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
 
-    /// An upgraded store (R1's drop committed, or upstream migrated and the
-    /// fork history not yet retired) and no before-upgrade snapshot this
-    /// upgrade can keep: none at all, none that verifies, or none of this
-    /// wallet from before the upgrade
-    /// (`storeUpgrade.refused.detail.snapshotMissing`). The file stays as
-    /// the earlier start left it; nothing more is written.
-    #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
-    UpgradeSnapshotMissing {
-        state: crate::snapshot::MissingSnapshot,
-        dir: PathBuf,
-    },
-
     /// `wallet.sqlite`, its `-wal` or its `-shm` is a symbolic link (unix
     /// only, as upstream) or is owned by another user: the upstream open
     /// refuses the first and can't make the second owner-only, and the copy
@@ -194,7 +182,6 @@ impl StoreUpgradeError {
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
-            | Self::UpgradeSnapshotMissing { .. }
             | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
             | Self::RestoreRefused { .. }
@@ -225,7 +212,6 @@ impl StoreUpgradeError {
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
-                | Self::UpgradeSnapshotMissing { .. }
                 | Self::WalletFileUnsupported { .. }
         )
     }

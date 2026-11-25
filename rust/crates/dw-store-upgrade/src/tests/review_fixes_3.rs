@@ -1,5 +1,5 @@
 //! The re-review of 2f0bdd20: a part-done upgrade with no snapshot to keep
-//! (M1), machine faults inside a migration or load (M2, L8), a snapshot of
+//! (M1, since Q107 107-1 never refused), machine faults inside a migration or load (M2, L8), a snapshot of
 //! the dropped-column file (L3), the backup dir checked only when upstream
 //! will migrate (L4), and files the rehearsal's copy can't show (L5).
 
@@ -8,12 +8,12 @@ use platform_wallet_storage::{Synchronous, WalletStorageError};
 
 use super::review_fixes::column_present;
 use super::*;
-use crate::copy::{self, BackupState, ProvedState, RefusedCause, WayOut};
+use crate::copy::{self, ProvedState, RefusedCause};
 use crate::error::StoreUpgradeError;
 use crate::precheck::{LOAD_FOR_TEST, Precheck, precheck_locked_with, precheck_with};
-use crate::reconcile::{Outcome, reconcile_fork_store};
+use crate::reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
 use crate::snapshot::{
-    ABSENT_POLICY_FOR_TEST, AbsentSnapshotPolicy, MissingSnapshot, SnapshotInfo,
+    MissingSnapshot, NOT_THIS_WALLET, SnapshotInfo, UPGRADE_BACKUPS_DIR, snapshot_present,
 };
 #[cfg(unix)]
 use crate::sql::sha256_file;
@@ -40,76 +40,97 @@ pub(super) fn between() -> (Fixture, SnapshotInfo) {
     (f, snapshot)
 }
 
-pub(super) fn assert_missing(f: &Fixture, want: MissingSnapshot) {
-    let before = tree(&f.root);
-    let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
+/// The `before-upgrade-*` directory names under `upgrade-backups/`.
+pub(super) fn before_upgrade_dirs(f: &Fixture) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(f.net.join(UPGRADE_BACKUPS_DIR))
+        .map(|it| {
+            it.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("before-upgrade-"))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// An upgraded store with no before-upgrade snapshot to keep goes on (Q107
+/// 107-1): a `part-upgraded` copy, no new before-upgrade snapshot, the
+/// notice for `want`, and the upstream open.
+pub(super) fn assert_goes_on(f: &Fixture, want: MissingSnapshot) -> SnapshotInfo {
+    let befores = before_upgrade_dirs(f);
+    let part = crate::prepare_with(&f.net, build(), later(60))
+        .unwrap()
+        .snapshot
+        .unwrap();
     assert!(
-        matches!(&err, StoreUpgradeError::UpgradeSnapshotMissing { state, .. } if *state == want),
-        "{err:?}"
+        part.dir()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("part-upgraded-"),
+        "{want:?}"
     );
-    assert!(err.file_unchanged() && err.is_refusal());
-    let claimed = ProvedState {
-        migrated: Some(false),
-        backup: Some(BackupState::Verified),
-        unchanged: Some(true),
+    assert_eq!(part.missing(), Some(want));
+    assert_eq!(before_upgrade_dirs(f), befores, "{want:?}: no new snapshot");
+    let outcome = reconcile_fork_store(&config(&f.net), &part, build()).unwrap();
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+    let notice = match want {
+        MissingSnapshot::Absent => None,
+        MissingSnapshot::Unverified => Some(UpgradeNotice::SnapshotDamaged),
+        MissingSnapshot::Mismatch => Some(UpgradeNotice::SnapshotOther),
     };
-    let screen = copy::screen_for(&err, claimed).unwrap();
-    assert_eq!(screen.cause, RefusedCause::SnapshotMissing);
-    assert_eq!(
-        screen.unchanged.key,
-        "storeUpgrade.refused.changedByUpgrade"
-    );
-    let way_out = match want {
-        MissingSnapshot::Unverified => WayOut::Unverified,
-        MissingSnapshot::Absent | MissingSnapshot::Mismatch => WayOut::SupportMigrated,
-    };
-    assert_eq!(screen.way_out, way_out, "{want:?}");
-    assert_eq!(copy::restore_screen_for(&err), None);
-    assert_eq!(tree(&f.root), before, "{want:?}: nothing written");
+    assert_eq!(outcome.notice(), notice, "{want:?}");
+    assert!(!snapshot_present(&f.net).unwrap(), "{want:?}");
+    drop(open_and_load(&f.net));
+    part
 }
 
 #[test]
-fn a_part_done_upgrade_with_no_snapshot_at_all_is_refused_as_absent() {
+fn a_part_done_upgrade_with_no_snapshot_at_all_goes_on_as_absent() {
     let (f, s) = between();
     fs::remove_dir_all(s.dir()).unwrap();
-    assert_missing(&f, MissingSnapshot::Absent);
+    assert_goes_on(&f, MissingSnapshot::Absent);
 }
 
 #[test]
-fn a_part_done_upgrade_whose_snapshot_fails_verification_is_refused_as_unverified() {
+fn a_part_done_upgrade_whose_snapshot_fails_verification_goes_on_as_unverified() {
     let (f, s) = between();
     let app = s.dir().join("app.sqlite");
     let mut bytes = fs::read(&app).unwrap();
     bytes[100] ^= 1;
     fs::write(&app, bytes).unwrap();
-    assert_missing(&f, MissingSnapshot::Unverified);
+    assert_goes_on(&f, MissingSnapshot::Unverified);
+    assert!(!s.dir().join(NOT_THIS_WALLET).exists());
 }
 
 #[test]
-fn a_part_done_upgrade_whose_snapshot_is_of_other_data_is_refused_as_mismatch() {
-    let (f, _) = between();
+fn a_part_done_upgrade_whose_snapshot_is_of_other_data_goes_on_as_mismatch() {
+    let (f, s) = between();
     exec(
         &f.wallet(),
         "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)",
     );
-    assert_missing(&f, MissingSnapshot::Mismatch);
+    assert_goes_on(&f, MissingSnapshot::Mismatch);
+    assert!(s.dir().join(NOT_THIS_WALLET).is_file(), "retired");
+    assert!(s.dir().join("wallet.sqlite").is_file(), "never deleted");
 }
 
 #[test]
 fn a_snapshot_of_the_dropped_column_file_is_never_kept_as_the_backup() {
     let (f, s) = between();
     fs::remove_dir_all(s.dir()).unwrap();
-    ABSENT_POLICY_FOR_TEST.with(|p| p.set(Some(AbsentSnapshotPolicy::ProceedUnrestorable)));
-    let made = crate::prepare_with(&f.net, build(), later(60));
-    ABSENT_POLICY_FOR_TEST.with(|p| p.set(None));
-    let dropped = made.unwrap().snapshot.unwrap();
+    let dropped = crate::prepare_with(&f.net, build(), later(30))
+        .unwrap()
+        .snapshot
+        .unwrap();
     let posing = f
         .net
-        .join(crate::snapshot::UPGRADE_BACKUPS_DIR)
+        .join(UPGRADE_BACKUPS_DIR)
         .join("before-upgrade-20991231T000000Z");
     fs::rename(dropped.dir(), &posing).unwrap();
     assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
-    assert_missing(&f, MissingSnapshot::Mismatch);
+    assert_goes_on(&f, MissingSnapshot::Mismatch);
+    assert!(posing.join(NOT_THIS_WALLET).is_file());
 }
 
 #[test]

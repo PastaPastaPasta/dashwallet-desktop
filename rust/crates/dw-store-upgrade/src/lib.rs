@@ -51,7 +51,7 @@ pub use error::{Result, StoreUpgradeError};
 pub use precheck::{
     Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with, sweep_stale_scratch,
 };
-pub use reconcile::{Outcome, reconcile_fork_store};
+pub use reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
 pub use restore::{
     IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT, RESTORE_JOURNAL,
     RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
@@ -60,9 +60,9 @@ pub use restore::{
     touched_paths,
 };
 pub use snapshot::{
-    ABSENT_SNAPSHOT_POLICY, AbsentSnapshotPolicy, MissingSnapshot, NOT_THIS_WALLET, STORE_FILES,
-    SnapshotFile, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot,
-    snapshot_present, snapshot_state, take_snapshot, upgrade_copy_present,
+    MissingSnapshot, NOT_THIS_WALLET, STORE_FILES, SnapshotFile, SnapshotInfo, SnapshotState,
+    UPGRADE_BACKUPS_DIR, latest_snapshot, snapshot_present, snapshot_state, take_snapshot,
+    upgrade_copy_present,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 
