@@ -199,35 +199,13 @@ apps/desktop/src/screens/masternodes/ChangeKeysSheet.tsx
 apps/desktop/src/screens/masternodes/KeysSheet.tsx
 apps/desktop/src/screens/masternodes/credential.tsx
 
-# Swift app: the engine bridge, amounts, send, PSBT, coin control, mixed-coin sweep, vault, spending cap
-# and signing.
-Sources/DashKit/Amount.swift
-Sources/DashKit/EngineModels.swift
-Sources/DashKit/EngineClient.swift
-Sources/DashKit/EngineClient+M2.swift
-Sources/DashKit/EngineClient+M3CoinJoin.swift
-Sources/WalletRuntime/M2/EngineToolAdapters.swift
-Sources/WalletRuntime/M2/QuickUnlockService.swift
-Sources/WalletRuntime/Services/ToolServices.swift
-Sources/WalletRuntime/Services/TransactionSender.swift
-Sources/WalletRuntime/Services/VaultService.swift
-Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
-Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
-Sources/WalletFeatures/Security/SecurityViewModel.swift
-Sources/WalletFeatures/Onboarding/OnboardingViewModel.swift
-Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift
-Sources/WalletFeatures/Wallets/WalletWiper.swift
-Sources/WalletRuntime/M3/CoinJoinAdapters.swift
-Sources/CrossUI/ToolScreens.swift
-Sources/MacUI/SignVerify/**
-Sources/WalletFeatures/Common/AmountFormatter.swift
-Sources/WalletFeatures/Common/InputValidation.swift
-Sources/WalletFeatures/SignVerify/SignVerifyViewModel.swift
-Sources/CrossUI/SendScreen.swift
-Sources/CrossUI/CoinSelectionScreen.swift
-Sources/CrossUI/PSBTScreen.swift
-Sources/MacUI/Send/**
-Sources/MacUI/PSBT/**
-Sources/MacUI/CoinControl/**
-Sources/WalletFeatures/Send/**
-Sources/WalletFeatures/PSBT/**
+# Swift app: every source except the demo ledger and the localization strings, its package manifest and
+# pins, and the macOS app shell (not its UI tests). It is frozen, so any change to it is rare and gets a funds
+# review.
+Package.swift
+Package.resolved
+Apps/macOS/project.yml
+Apps/macOS/DashWallet/**
+Sources/**
+!Sources/WalletDemo/**
+!Sources/WalletFeatures/Localization/**
