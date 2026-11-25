@@ -6,6 +6,7 @@
 
 import type { AppError } from "../api/generated/AppError";
 import type { ErrorData } from "../api/generated/ErrorData";
+import type { StoreOpenError, StoreRefusedData } from "../api/storeOpen";
 
 export type ErrorClass = ErrorData["kind"] | "none";
 
@@ -117,3 +118,50 @@ export function sampleError(cls: ErrorClass): AppError {
   const { code, data } = SAMPLES[cls];
   return { code, message: `fixture: ${code} (${cls})`, data };
 }
+
+/** dw-store-upgrade's copy (copy.rs), verbatim: what `screen_for` gives today. */
+export const STORE_COPY = {
+  cantOpenTitle: "Dash Wallet can't open this wallet data",
+  cantOpenText:
+    "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed, and the wallet data saved before the upgrade is still in the upgrade-backups folder inside {folder}. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+  cantOpenTextWithoutBackup:
+    "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+};
+
+const cantOpenScreen = (folder: string, cause: string, text: "text" | "textWithoutBackup", copy: string): StoreRefusedData => ({
+  kind: "storeRefused",
+  cause,
+  folder,
+  screen: {
+    titleKey: "storeUpgrade.cantOpen.title",
+    title: STORE_COPY.cantOpenTitle,
+    textKey: `storeUpgrade.cantOpen.${text}`,
+    text: copy.replaceAll("{folder}", folder),
+    buttons: [{ key: "storeUpgrade.cantOpen.quit", label: "Quit", destructive: false, defaultFocus: false }],
+    hint: null,
+  },
+});
+
+/** `screen_for`'s screens, each with the variant that gives it: `cantOpen` with a verified backup, and
+ * without one. */
+export const STORE_SCREENS = {
+  cantOpen: (folder: string) => cantOpenScreen(folder, "RetiredPoolWithoutAdopter", "text", STORE_COPY.cantOpenText),
+  cantOpenWithoutBackup: (folder: string) => cantOpenScreen(folder, "P9aBroken", "textWithoutBackup", STORE_COPY.cantOpenTextWithoutBackup),
+};
+
+export type StoreScreenName = keyof typeof STORE_SCREENS;
+export const STORE_SCREEN_NAMES = Object.keys(STORE_SCREENS) as StoreScreenName[];
+
+/** `storage_refused` as `open_network` rejects with it. */
+export const storeRefusedError = (data: StoreRefusedData): StoreOpenError => ({
+  code: "storage_refused",
+  message: `fixture: the wallet data in ${data.folder} was refused (${data.cause})`,
+  data,
+});
+
+/** `storage_in_use` as `open_network` rejects with it. */
+export const storageInUseError = (retryable: boolean, message = "fixture: the wallet data is still held by the session before"): StoreOpenError => ({
+  code: "storage_in_use",
+  message,
+  data: { kind: "storageInUse", retryable },
+});

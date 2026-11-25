@@ -404,6 +404,10 @@ export interface Backend {
   installUpdate(version: string): Promise<UpdateStatus>;
   /** Quits through the normal exit path and starts the installed update. */
   restartToUpdate(): Promise<null>;
+  /** Quits through the normal exit path (`quit_app`), from a screen shown instead of the wallet. */
+  quitApp(): Promise<null>;
+  /** Quits through the normal exit path and starts again (`restart_app`): the open runs anew. */
+  restartApp(): Promise<null>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.

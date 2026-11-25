@@ -62,3 +62,14 @@ export async function orUnavailable<T>(call: Promise<T>): Promise<T> {
   if (got === null) throw new Error(t("app.unavailableInBuild"));
   return got;
 }
+
+/** `call`'s answer, `null` included; against a dw-app without the command, the same error as
+ * `orUnavailable`. For a command whose success is `null` (quit, restart). */
+export async function absentAsUnavailable<T>(call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (e) {
+    if (commandAbsent(e)) throw new Error(t("app.unavailableInBuild"));
+    throw e;
+  }
+}
