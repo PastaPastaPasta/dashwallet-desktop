@@ -287,6 +287,23 @@ pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
     ))
 }
 
+/// Whether this directory holds a copy of `store` from its upgrade: a
+/// verified before-upgrade snapshot, or a completed `part-upgraded` copy
+/// whose files verify and include `store`. A part-upgraded copy is never a
+/// backup, but it still proves the store's rows were copied before a step
+/// that rewrites them (Q110 110-1).
+pub fn upgrade_copy_present(network_dir: &Path, store: &str) -> io::Result<bool> {
+    if snapshot_present(network_dir)? {
+        return Ok(true);
+    }
+    Ok(dirs_named(network_dir, UNRESTORABLE_PREFIX)?
+        .iter()
+        .rev()
+        .filter(|dir| dir.join(MARKER).exists())
+        .filter_map(|dir| read_snapshot(dir, true).ok())
+        .any(|info| info.files.iter().any(|f| f.name == store)))
+}
+
 /// The newest completed snapshot, its files checked against their sha256.
 pub fn latest_snapshot(network_dir: &Path) -> Result<Option<SnapshotInfo>> {
     let dirs =
