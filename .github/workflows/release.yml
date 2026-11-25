@@ -44,6 +44,11 @@
 # and PGP SHA256SUMS.asc are all signed locally by the release signer and re-attached via
 # ci/github/release-attach.sh / .github/workflows/release-publish-signed.yml.
 #
+# A release candidate opts in to the same detached signing when the repository variable DW_SIGN_RC=1
+# is set before its tag is pushed (decide: signed_rc, docs/release/RC-SIGNING.md): the run packs the
+# unsigned signing inputs, attests them and waits for release-publish-signed.yml, which publishes the
+# candidate as a prerelease with signed macOS and Windows bundles and SHA256SUMS.asc, and no updater feed.
+#
 # Permissions: the workflow has `contents: read`. Only the `publish` job has write permissions
 # (contents, id-token, attestations). It runs only when a read-only `decide` job says so (a push to
 # main, or a release tag vX.Y.Z[-rc.N], in this repository, on a commit that is an ancestor of a
@@ -145,6 +150,7 @@ jobs:
       publish: ${{ steps.kind.outputs.publish }}
       stable_tag: ${{ steps.kind.outputs.stable_tag }}
       signed_stable: ${{ steps.kind.outputs.signed_stable }}
+      detached: ${{ steps.kind.outputs.detached }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -155,6 +161,7 @@ jobs:
           DECIDE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
+          DW_SIGN_RC: ${{ vars.DW_SIGN_RC }}
         run: ci/github/release-decide.sh
 
   macos:
@@ -216,14 +223,14 @@ jobs:
           echo "APP=$app" >> "$GITHUB_ENV"
           lipo -archs "$app/Contents/MacOS/dash-wallet"
           codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier"
-      - name: Pack unsigned .app archive for local detached signing (stable tags)
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+      - name: Pack unsigned .app archive for local detached signing (stable tags, opted-in candidates)
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         run: |
           mkdir -p "$RUNNER_TEMP/unsigned-macos"
           python3 ci/github/macos-detached-sig.py pack-app "$APP" \
             "$RUNNER_TEMP/unsigned-macos/dash-wallet-$VERSION-macos-unsigned.tar.gz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         with:
           name: unsigned-macos-v${{ env.VERSION }}
           path: ${{ runner.temp }}/unsigned-macos/
@@ -526,7 +533,7 @@ jobs:
           path: ${{ runner.temp }}/release
           merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         with:
           name: unsigned-macos-v${{ env.VERSION }}
           path: ${{ runner.temp }}/unsigned-macos
@@ -540,8 +547,8 @@ jobs:
           sha256sum "${files[@]}" > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
-      - name: Record unsigned.SHA256SUMS (stable tags, includes macos-unsigned.tar.gz)
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+      - name: Record unsigned.SHA256SUMS (stable tags, opted-in candidates; includes macos-unsigned.tar.gz)
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         run: |
           cp "$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
           (cd "$RUNNER_TEMP/unsigned-macos" && sha256sum "dash-wallet-$VERSION-macos-unsigned.tar.gz") >> "$RUNNER_TEMP/unsigned-macos/unsigned.SHA256SUMS"
@@ -553,7 +560,7 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         with:
           name: unsigned-signing-inputs-v${{ env.VERSION }}
           path: ${{ runner.temp }}/unsigned-macos/
@@ -585,7 +592,7 @@ jobs:
           name: release-v${{ env.VERSION }}
           path: ${{ runner.temp }}/release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         with:
           name: unsigned-signing-inputs-v${{ env.VERSION }}
           path: ${{ runner.temp }}/unsigned-macos
@@ -593,15 +600,15 @@ jobs:
       # wait for detached signatures unless repository variable DW_ALLOW_UNSIGNED_STABLE=1 is
       # explicitly set (and DW_SIGNING_REQUIRED=1 is not set). That signed-vs-unsigned decision is
       # computed once in `decide` as `signed_stable`, so an unsigned override also omits the updater
-      # endpoint from every platform build. Keyless candidates (-rc.N) and main pushes have
-      # signed_stable=false and publish directly as before.
-      - name: Check whether this stable tag waits for detached signatures
-        if: ${{ needs.decide.outputs.signed_stable == 'true' }}
+      # endpoint from every platform build. A candidate (-rc.N) waits too when DW_SIGN_RC=1 opted it in
+      # (signed_rc); both set `detached`. Keyless candidates and main pushes publish directly as before.
+      - name: Check whether this tag waits for detached signatures
+        if: ${{ needs.decide.outputs.detached == 'true' }}
         run: |
           mkdir -p "$RUNNER_TEMP/unsigned-attest"
           cp "$RUNNER_TEMP/release"/* "$RUNNER_TEMP/unsigned-macos"/* "$RUNNER_TEMP/unsigned-attest/"
           echo "WAIT_FOR_SIGS=1" >> "$GITHUB_ENV"
-          echo "::notice::Stable tag v$VERSION holds unsigned binaries until detached signatures are attached (fail closed). Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md), or set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned override."
+          echo "::notice::Tag v$VERSION holds unsigned binaries until detached signatures are attached (fail closed). Sign locally and run release-publish-signed.yml (docs/release/SIGNING.md; a candidate: RC-SIGNING.md, whose fallback section publishes it keyless instead), or set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned stable override."
       - name: Attest unsigned build inputs (for local verification before signing)
         if: ${{ env.WAIT_FOR_SIGS == '1' }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -615,6 +622,7 @@ jobs:
           DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
           DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
+          DW_SIGN_RC: ${{ vars.DW_SIGN_RC }}
         run: |
           rc=0
           ci/github/release-publish.sh prepare || rc=$?
@@ -631,5 +639,6 @@ jobs:
           DW_ALLOW_UNSIGNED_STABLE: ${{ vars.DW_ALLOW_UNSIGNED_STABLE }}
           DW_SIGNING_REQUIRED: ${{ vars.DW_SIGNING_REQUIRED }}
           DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
+          DW_SIGN_RC: ${{ vars.DW_SIGN_RC }}
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish
