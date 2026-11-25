@@ -9,7 +9,8 @@ import { checkArea, PSEUDO } from "./pseudo";
 // link that was not opened.
 
 /** Amounts and counts. */
-const DATA = [/^[+−-]?[\p{Nd}.,٫٬\s]+( (t?DASH|mDASH|μDASH|duffs))?$/u];
+// Amounts, and the Shielded address Receive shows while the first scan runs.
+const DATA = [/^[+−-]?[\p{Nd}.,٫٬\s]+( (t?DASH|mDASH|μDASH|duffs))?$/u, /^t?dash1[a-z0-9]{15,}$/];
 
 const command = (page: Page, c: object) => page.evaluate((c) => window.__dwFixture!.shellCommand(c as never), c);
 
@@ -47,7 +48,8 @@ export const STATES: Record<string, State> = {
     go: async (p) => {
       await p.getByTestId("sidebar-receive").click();
       await p.getByTestId("shielded-receive-open").click();
-      await expect(p.getByTestId("shielded-receive-why")).toBeVisible();
+      await expect(p.getByTestId("shielded-receive-progress")).toBeVisible();
+      await expect(p.getByTestId("shielded-receive-address")).toBeVisible();
     },
   },
   "transfer-syncing": {
@@ -140,8 +142,8 @@ test("Shielded's syncing text follows a language change with no reload", async (
   await open(page, "shielded-syncing-pending", "light", "en");
   await page.getByTestId("sidebar-receive").click();
   await page.getByTestId("shielded-receive-open").click();
-  const why = page.getByTestId("shielded-receive-why");
-  await expect(why).toHaveText("Shielded is still syncing; try again when it finishes.");
+  const why = page.getByTestId("shielded-receive-progress");
+  await expect(why).toHaveText("Syncing Shielded…");
   await page.evaluate(() => window.__dwFixture!.setLanguage("en-XA"));
   await expect(why).toHaveText(/^⟦.+⟧$/);
   expect(errors).toEqual([]);
