@@ -579,6 +579,12 @@ pub(crate) struct SessionHub {
     /// began to wait: dropped when an open ends, or at the wallet's next
     /// drop (#818, S1).
     deferred_drops: Mutex<Vec<(WalletId, u64, crate::tx_actions::DeadWork)>>,
+    /// The beaten payments whose rechecks ran out while only the proof of
+    /// their winner's block was missing, by wallet and root: rechecked with
+    /// their detection's evidence at the wallet's next drop, which an
+    /// applied ChainLock reaching the block starts (#818, Q99). This
+    /// session's only.
+    carried_drops: Mutex<BTreeMap<(WalletId, Txid), CarriedDrop>>,
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
@@ -865,6 +871,7 @@ impl SessionHub {
             final_sends: Mutex::new(Vec::new()),
             dead_children: Mutex::new(Vec::new()),
             deferred_drops: Mutex::new(Vec::new()),
+            carried_drops: Mutex::new(BTreeMap::new()),
             dropped_holds: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
@@ -1104,7 +1111,7 @@ impl SessionHub {
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
     /// running: events during a run start the next one.
-    fn schedule_reconcile(&self, id: WalletId) {
+    pub(crate) fn schedule_reconcile(&self, id: WalletId) {
         let Some(start) = self.reconcile.get() else {
             return;
         };
@@ -1178,6 +1185,44 @@ impl SessionHub {
     pub(crate) fn deferred_drop_wallets(&self) -> BTreeSet<WalletId> {
         let deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         deferred.iter().map(|(w, ..)| *w).collect()
+    }
+
+    /// Keeps `roots` of wallet `id`, beaten payments whose rechecks ran out
+    /// while only their proof was missing, with `drop`; a root kept already
+    /// is kept once, with the later detection.
+    pub(crate) fn carry_drops(&self, id: WalletId, roots: &[Txid], drop: CarriedDrop) {
+        let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        for t in roots {
+            carried.insert((id, *t), drop.clone());
+        }
+    }
+
+    /// The beaten payments of wallet `id` kept to recheck, by root.
+    pub(crate) fn take_carried_drops(&self, id: WalletId) -> Vec<(Txid, CarriedDrop)> {
+        let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *carried)
+            .into_iter()
+            .partition(|((w, _), _)| *w == id);
+        *carried = others;
+        mine.into_iter().map(|((_, t), d)| (t, d)).collect()
+    }
+
+    /// The roots wallet `id` keeps to recheck.
+    pub(crate) fn carried_drop_roots(&self, id: WalletId) -> BTreeSet<Txid> {
+        let carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        (carried.keys())
+            .filter(|(w, _)| *w == id)
+            .map(|(_, t)| *t)
+            .collect()
+    }
+
+    /// Whether wallet `id`'s ChainLock applied at `height` reaches the block
+    /// of a payment it keeps to recheck, above what that recheck read.
+    fn carried_due(&self, id: WalletId, height: u32) -> bool {
+        let carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        (carried.iter()).any(|((w, _), (.., at, seen))| {
+            *w == id && *at <= height && seen.is_none_or(|s| height > s)
+        })
     }
 
     /// Keeps the drops' holds an open read, by wallet.
@@ -1360,6 +1405,17 @@ impl SessionHub {
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
+        self.forget_drops(id);
+    }
+
+    /// Forgets the drops wallet `id` waits with or keeps to recheck.
+    fn forget_drops(&self, id: &WalletId) {
+        (self
+            .deferred_drops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .retain(|(w, ..)| w != id);
+        (self.carried_drops.lock().unwrap_or_else(|p| p.into_inner())).retain(|(w, _), _| w != id);
     }
 
     /// Publishes rescan state: `f` changes the running rescan under the
@@ -1422,11 +1478,7 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
-        (self
-            .deferred_drops
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()))
-        .retain(|(w, ..)| w != id);
+        self.forget_drops(id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -2031,6 +2083,9 @@ impl SessionHub {
                 ..
             } => {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
+                if self.carried_due(id, chain_lock.block_height) {
+                    self.schedule_reconcile(id);
+                }
                 let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
                     // key-wallet promotes by height; only a record whose own
                     // block the lock names is final for its sent mark. This
@@ -2066,6 +2121,16 @@ impl SessionHub {
         }
     }
 }
+
+/// A beaten payment kept to recheck: its winner, its detection's evidence,
+/// the winner's block height, and the wallet's applied ChainLock its last
+/// recheck read.
+pub(crate) type CarriedDrop = (
+    crate::history::Winner,
+    crate::tx_actions::Recheck,
+    u32,
+    Option<u32>,
+);
 
 /// Children of swept payments queued for a drop: their wallet, their
 /// txids, the winner, and the swept payments.

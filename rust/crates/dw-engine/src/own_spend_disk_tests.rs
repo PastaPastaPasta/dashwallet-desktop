@@ -1772,6 +1772,126 @@ fn a_beaten_payment_stays_when_a_fork_takes_its_winner_while_its_drop_waits() {
 }
 
 impl Beaten {
+    /// Key-wallet notes a ChainLock at `height` and does not apply it, as
+    /// dash-spv does until its first sync completes.
+    fn note_chain_lock(&self, height: u32) {
+        super::deliver(&self.engine, &self.session, self.id, move |wm| {
+            Box::pin(async move {
+                use platform_wallet::key_wallet_manager::WalletInterface;
+                wm.note_chain_lock_height(height);
+            })
+        });
+    }
+
+    /// The block's ChainLock is noted while the drop of the other payment
+    /// waits, and key-wallet forgets the spend of A; every recheck then
+    /// finds the block unproven, the wallet applying no ChainLock, and the
+    /// drop keeps the other payment to recheck.
+    fn kept_to_recheck(&self, block: &[Transaction]) -> OutPoint {
+        header_chain(&self.session, &[(TIP + 1, block_hash(block))]);
+        let pause = self.mine_and_hold(block);
+        self.note_chain_lock(TIP + 1);
+        let a = OutPoint::new(self.paid.txid(), 0);
+        assert!(
+            !self.observed().contains(&a),
+            "the noted ChainLock forgot the spend of A"
+        );
+        pause.release.notify_one();
+        self.settle();
+        assert_eq!(
+            self.session.hub.carried_drop_roots(self.id),
+            BTreeSet::from([self.other.txid()]),
+            "the other payment is kept to recheck"
+        );
+        self.assert_kept(&self.session, "while the block is unproven");
+        a
+    }
+}
+
+/// #818, Q99 T1: a beaten payment kept to recheck goes when the wallet
+/// applies its block's ChainLock, with no block since: the other payment,
+/// its child and `back` go on the forgotten spend, A is claimed for good
+/// and nothing is rewound, also after a restart.
+#[test]
+fn a_beaten_payment_kept_to_recheck_goes_when_its_blocks_chainlock_is_applied() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    let a = t.kept_to_recheck(&block);
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&block));
+    eventually("the other payment goes", || {
+        abandoned(&t.engine, &t.session, t.id, t.other.txid())
+    });
+    t.settle();
+    assert!(
+        t.session.hub.carried_drop_roots(t.id).is_empty(),
+        "nothing is kept once it went"
+    );
+    t.assert_spend_kept_final(a);
+}
+
+/// #818, Q99 T2: while the other payment is kept to recheck, a fork the
+/// hub hears takes the block away before any ChainLock applies, and the
+/// new chain's block spends no coin of it. The kept payment is void:
+/// nothing goes, also after the new block's ChainLock and a restart.
+#[test]
+fn a_beaten_payment_kept_to_recheck_stays_after_a_fork_below_its_block() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    t.truncate(TIP);
+    let fork = [foreign()];
+    header_chain(&t.session, &[(TIP + 1, block_hash(&fork))]);
+    mined(&t.engine, &t.session, t.id, TIP + 1, fork.to_vec());
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&fork));
+    eventually("the kept payment is void", || {
+        t.session.hub.carried_drop_roots(t.id).is_empty()
+    });
+    t.settle();
+    t.assert_kept(&t.session, "after the fork");
+    let session = reopen(&t.engine, Arc::clone(&t.session));
+    t.assert_kept(&session, "a restart");
+}
+
+/// #818, Q99 T3: while the other payment is kept to recheck, the wallet
+/// applies a ChainLock at the block's height on a chain whose header
+/// there is another block. Nothing goes, and the kept payment is void.
+#[test]
+fn a_beaten_payment_kept_to_recheck_stays_when_a_chainlock_names_another_block() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    let other = block_hash(&[foreign()]);
+    header_chain(&t.session, &[(TIP + 1, other)]);
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, other);
+    eventually("the kept payment is void", || {
+        t.session.hub.carried_drop_roots(t.id).is_empty()
+    });
+    t.settle();
+    t.assert_kept(&t.session, "after the ChainLock");
+    let session = reopen(&t.engine, Arc::clone(&t.session));
+    t.assert_kept(&session, "a restart");
+}
+
+/// #818, Q99 T4: a payment kept to recheck is this session's only: after
+/// a restart nothing is kept, and the block's ChainLock applied then drops
+/// nothing on evidence from before it.
+#[test]
+fn a_beaten_payment_kept_to_recheck_is_not_kept_across_a_restart() {
+    let mut t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    t.session = reopen(&t.engine, Arc::clone(&t.session));
+    assert!(
+        t.session.hub.carried_drop_roots(t.id).is_empty(),
+        "nothing is kept after a restart"
+    );
+    header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&block));
+    t.settle();
+    t.assert_kept(&t.session, "after the ChainLock");
+}
+
+impl Beaten {
     /// The other payment, its child and `back` went on the forgotten spend
     /// of `a`: claimed for good, not held as unknown, nothing rewound, also
     /// after a restart.
