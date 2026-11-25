@@ -165,9 +165,9 @@ export function creditsDash(credits: bigint): string {
   const frac = String(credits % CREDITS_PER_DASH).padStart(11, "0").replace(/0+$/, "");
   return frac ? `${credits / CREDITS_PER_DASH}.${frac}` : String(credits / CREDITS_PER_DASH);
 }
-/** The funding limit the quote writes to Platform: its keys' budgets together. */
 const planOf = (quote: ConnectQuote | null) => (quote?.grant.kind === "appConnect" ? quote.grant.plan : null);
 
+/** The funding limit the quote writes to Platform: its keys' budgets together. */
 export const quotedLimit = (quote: ConnectQuote) => creditsDash(quote.budgets.reduce((sum, b) => sum + BigInt(b), 0n));
 
 /** Only a CRITICAL key can sign a token transition, and only one bound to a whole contract or a
