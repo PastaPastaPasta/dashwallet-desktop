@@ -34,7 +34,8 @@ pub(crate) fn restore_spent_claims(
     claims: &[(OutPoint, Option<Txid>)],
 ) -> Vec<OutPoint> {
     #[cfg(test)]
-    (claims_restored().lock().unwrap()).extend(claims.iter().map(|(o, _)| *o));
+    (claims_restored().lock().unwrap_or_else(|p| p.into_inner()))
+        .extend(claims.iter().map(|(o, _)| *o));
     info.core_wallet.restore_spent_outpoints(claims)
 }
 
@@ -1378,28 +1379,33 @@ mod claim_restore_tests {
     /// directly: every caller goes through [`super::restore_spent_claims`].
     #[test]
     fn only_the_helper_restores_spent_claims() {
-        let call = concat!(".restore_spent", "_outpoints(");
-        let helper = Path::new(file!()).file_name().unwrap();
+        let call = concat!("restore_spent", "_outpoints(");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helper = root.join("src").join("history_ops.rs");
         let mut files = Vec::new();
-        sources(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut files,
-        );
-        let mut found = Vec::new();
+        for dir in ["src", "tests", "examples"] {
+            if root.join(dir).is_dir() {
+                sources(&root.join(dir), &mut files);
+            }
+        }
+        let (mut found, mut exempt) = (Vec::new(), 0);
         for file in &files {
             let text = std::fs::read_to_string(file).unwrap();
             for (n, line) in text.lines().enumerate() {
                 if !line.contains(call) {
                     continue;
                 }
-                let in_helper = file.file_name() == Some(helper)
+                if *file == helper
                     && line.trim()
-                        == concat!("info.core_wallet.restore_spent", "_outpoints(claims)");
-                if !in_helper {
+                        == concat!("info.core_wallet.restore_spent", "_outpoints(claims)")
+                {
+                    exempt += 1;
+                } else {
                     found.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
                 }
             }
         }
+        assert_eq!(exempt, 1, "the helper's own call");
         assert!(
             found.is_empty(),
             "spent claims restored past the helper: {found:#?}"

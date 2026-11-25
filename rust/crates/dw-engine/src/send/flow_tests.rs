@@ -3514,7 +3514,7 @@ fn a_wallet_opened_mid_session_refuses_spends_until_its_history_is_loaded() {
 fn a_wallet_opened_mid_session_restores_its_claims_through_the_helper() {
     use platform_wallet::changeset::CoreChangeSet;
     let f = fixture(false);
-    let coin = f.late_coin(7, COIN, 150);
+    let coin = f.late_coin(0x3e, COIN, 150);
     let outpoint = coin.outpoint;
     f.put_coin(coin.clone());
     f.store_core(CoreChangeSet {
