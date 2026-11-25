@@ -46,6 +46,7 @@ import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
 import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote } from "./registration";
+import { connectHandlers, connectRoute, takeConnect } from "./connect";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -262,7 +263,7 @@ function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurpo
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   const sensitive = purposes.some(
-    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp",
+    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp" || p.kind === "appConnect",
   );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");
@@ -760,6 +761,7 @@ export const HANDLERS: Handlers = {
   ...topUpHandlers(TOP_UP_DEPS),
   // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
+  ...connectHandlers({ wallet, dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesHandlers(),
   ...updatesHandlers(),
@@ -998,9 +1000,9 @@ export const HANDLERS: Handlers = {
   // The shell (U-01): links are queued already routed (FixtureHandle.deliverLinks).
   take_links: ({ network }, { world }) => {
     if (network !== world.launch.network.dirName) throw fail("invalid_argument", `not the window's network: ${network}`);
-    return world.links.splice(0).map((route) => intake(world.stash, route, hasWallet(world)));
+    return world.links.splice(0).map((route) => takeConnect(world, intake(world.stash, route, hasWallet(world))));
   },
-  route_link: ({ text }, { world }) => intake(world.stash, routeLink(text), hasWallet(world)),
+  route_link: ({ text }, { world }) => takeConnect(world, connectRoute(text) ?? intake(world.stash, routeLink(text), hasWallet(world))),
   // The link stash (DP5-01): its entries without their text.
   stashed_links: (_, { world }) => world.stash.map((s) => s.info),
   open_stashed_link: ({ linkId }, { world }) => {

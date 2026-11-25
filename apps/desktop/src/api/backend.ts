@@ -60,6 +60,10 @@ import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
 import type { StashedLinkInfo } from "./generated/StashedLinkInfo";
 import type { InvitationStatus } from "./generated/InvitationStatus";
+import type { ConnectChoice } from "./generated/ConnectChoice";
+import type { ConnectDone } from "./generated/ConnectDone";
+import type { ConnectQuote } from "./generated/ConnectQuote";
+import type { ConnectSheet } from "./generated/ConnectSheet";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -556,6 +560,15 @@ export interface Backend {
   /** DP5-02: an invitation's status by its stash id; Join's paste stashes one (DP5-03 D14). */
   invitationStatus(linkId: string): Promise<InvitationStatus>;
   stashInvitation(link: string): Promise<string>;
+  /** "Sign in to an app" (App Connect): every call names the request by its inbox id; the request
+   * and its return link stay in dw-app, which opens the return link itself. */
+  appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet>;
+  appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote>;
+  appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone>;
+  appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone>;
+  appConnectDeny(linkId: string): Promise<null>;
+  appConnectReturn(linkId: string): Promise<null>;
+  appConnectDismiss(linkId: string): Promise<null>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.

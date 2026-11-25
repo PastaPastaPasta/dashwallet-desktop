@@ -153,6 +153,8 @@ pub(crate) struct PlatformRuntime {
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
+    /// App Connect responses sealed and not yet published.
+    pub(crate) app_connect: super::app_connect::PendingSends,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
@@ -579,6 +581,7 @@ impl PlatformRuntime {
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
             shielded_checked_at: AtomicU64::new(0),
+            app_connect: Default::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             #[cfg(test)]

@@ -819,4 +819,95 @@ export const dashpay = {
     dismiss: "Dismiss invitation",
     retry: "Try again",
   },
+  /** "Sign in to an app" (App Connect): the sheet a `dashpay://connect` request opens. `label` is
+   * the app's own name for itself, never verified; `host` is where the app's return link goes. */
+  connect: {
+    title: "Sign in to an app",
+    loading: "Checking this request with Platform…",
+    app: {
+      claim: "“{label}” (name given by the app, not verified)",
+      id: "App ID",
+      copyId: "Copy App ID",
+    },
+    returnsTo: "Returns you to {host}",
+    signInAs: "Sign in as",
+    asks: "The app asks for:",
+    grant: {
+      contract: "A key for the app's contract",
+      docType: "A key for “{type}” documents",
+      profile: "A key that can edit your DashPay profile",
+      encryption: "An encryption key for the app",
+      /** `count` is how many contracts the group has now. */
+      group: "A key for the app's contracts ({count}). The app's owner can add contracts to this group later, and this key will work for those too.",
+      groupAdmins: "A key for the app's contracts ({count}). The app's owner and admins can add contracts to this group later, and this key will work for those too.",
+    },
+    /** The group row's details: who controls the group and what is in it now. */
+    group: {
+      owner: "Owner",
+      admins: "Admins",
+      contracts: "Contracts",
+      documentTypes: "Document types",
+      tokens: "Tokens",
+      none: "None",
+    },
+    /** Under a CRITICAL binding that can reach tokens: a group, or a contract with tokens or one an
+     * update could add tokens to. Only CRITICAL keys can sign token transitions. */
+    critical: "This key has critical access: it can do anything these contracts let your identity do, including sending the app's tokens your identity holds. The funding limit doesn't cap tokens.",
+    /** Under a CRITICAL binding that can't reach tokens: a read-only contract without tokens, or one document type. */
+    criticalNoTokens: "This key has critical access: within what it covers, it can do anything your identity can.",
+    cannot: "It can't spend Dash from this wallet, withdraw credits, transfer credits to anyone or change your other keys. It can spend your identity's credits up to the funding limit.",
+    limit: "Funding limit (Dash)",
+    limitHint: "The most this app can spend from your identity's credits.",
+    /** `max` is the most the wallet lets an approval set, in Dash. */
+    limitInvalid: "Enter an amount of Dash more than 0 and at most {max}, like 0.5.",
+    expiry: "Access ends",
+    expiryValue: "In {days} days",
+    fee: "Adding these keys costs about {amount} in credits.",
+    approve: "Approve",
+    deny: "Deny",
+    close: "Close",
+    step: {
+      keys: "Adding keys to your identity…",
+      confirm: "Waiting for Platform…",
+      send: "Sending to the app…",
+    },
+    done: "You're signed in to “{label}”.",
+    denied: "You declined this sign-in request. Nothing was added to your identity.",
+    /** Declined after an approval of this request stopped before its response was sent. */
+    deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+    return: "Return to {host}",
+    retrySend: "Retry sending",
+    sendFailed: "The keys were added to your identity, but the app hasn't received them yet. Retry sending, or return to the app and start again.",
+    planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
+    err: {
+      network: "This request is for {requested}, but this wallet uses {current}.",
+      mainnetOff: "This version can sign in to apps on test networks only.",
+      unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
+      invalid: "This sign-in request can't be read. Ask the app for a new one.",
+      newer: "This link needs a newer version of Dash Wallet.",
+      stale: "This sign-in request has expired. Ask the app for a new one.",
+      protocol: "This network doesn't support app sign-in yet.",
+      noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",
+      hint: "This sign-in is for an identity that isn't in this wallet.",
+      owner: "Dash Wallet refused this request: the app asked for keys covering contracts it doesn't own.",
+      credits: "Your identity needs {amount} more in credits to add these keys. Top it up, then try again.",
+      answered: "You've already answered this request. Ask the app for a new one.",
+      check: "Couldn't check this request with Platform. Try again.",
+      failed: "Sign-in didn't finish: {detail}",
+      returnFailed: "Dash Wallet couldn't open {host}. Switch back to the app yourself.",
+    },
+    /** After `err.failed`, only where the wallet read the identity back: never after `notConfirmed`. */
+    failed: {
+      added: "The keys were added to your identity.",
+    },
+    /** `err.failed`'s `detail`, by where the approval stopped. */
+    failure: {
+      keyConflict: "a key for this app is already on your identity, with different limits.",
+      notConfirmed: "Dash Platform didn't confirm the new keys in time. They may still be added; if you try again, Dash Wallet checks your identity first.",
+      noResponseKey: "your identity has no key that can sign the answer to the app.",
+      nothingToSend: "Dash Wallet had nothing to send back to the app. Start again from the app; that adds new keys to your identity, for a small fee in credits.",
+      scopeChanged: "the app changed its contracts or keys on Dash Platform after your keys were added.",
+      unknown: "something went wrong on the way.",
+    },
+  },
 } as const satisfies Tree;

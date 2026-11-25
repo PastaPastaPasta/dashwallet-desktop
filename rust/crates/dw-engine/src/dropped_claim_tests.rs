@@ -136,6 +136,28 @@ fn a_payment_on_a_dropped_claims_change_goes_with_it_in_the_session() {
     assert_payment_dropped(&engine, &session, id, &payment);
 }
 
+/// A drop of what is built on a swept claim stops dash-spv's rebroadcast
+/// of the payment before its mark, as an Abandon does.
+#[test]
+fn a_payment_dropped_on_a_swept_claim_stops_its_rebroadcast_before_its_mark() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (funding, claim, payment) = payment_on_a_claims_change(&engine, &session, id);
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &claim);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+
+    super::own_spend_disk_tests::eventually("the payment is dropped", || {
+        rows(&engine, &session, id)
+            .iter()
+            .all(|r| r.0 != payment.txid().to_string() || r.1 == TxStatusKind::Abandoned)
+    });
+    let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
+    assert!(
+        stopped.contains(&(payment.txid(), false)),
+        "not stopped before its mark: {stopped:?}"
+    );
+}
+
 /// A mined payment from the claim's change stays when the store drops the
 /// claim.
 #[test]

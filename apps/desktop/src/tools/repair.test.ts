@@ -208,7 +208,7 @@ describe("Repair (QT-117, QT-148, IOS-034, IOS-113)", () => {
     expect(api.dropUnconfirmed).toHaveBeenCalledExactlyOnceWith(WALLET_A);
     expect(RepairText.dropped(1)).toBe("1 transaction was removed; a rescan was scheduled.");
     expect(RepairText.dropUnconfirmedQuestion).toBe(
-      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
+      "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm.",
     );
   });
 
@@ -280,7 +280,13 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await model.resolveStuck(reg("r1", "fundingUnknown"));
     expect(model.state).toEqual({ kind: "failed", text: "The funding is still being sent. Try again later." });
     expect(vault.calls.revoked).toEqual(["grant-1"]);
-    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The funding's coins were already spent by transaction cd.");
+    expect(stuckFundingText({ kind: "spendUnsettled", txid: "ab" }, true)).toBe(
+      "Transaction ab, which this transfer depends on, isn't final on the network yet. Try again once it is.",
+    );
+    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The coins for this transfer have already been spent, so there's nothing to send back. If its payment (transaction cd) went through, finish the transfer from Tools ▸ Repair ▸ Finish transfers.");
+    expect(stuckFundingText({ kind: "lockAbandoned", txid: "cd" }, true)).toBe(
+      "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
+    );
   });
 
   it("IOS113_C9: Resolve asks first; Cancel sends nothing, OK sends", async () => {

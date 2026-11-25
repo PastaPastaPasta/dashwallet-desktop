@@ -99,6 +99,13 @@ export interface SendWorld {
   /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
    * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
   settledChildHidden: string[];
+  /** Payments that fund an unfinished Platform transfer, credit top-up or username registration,
+   * or that one depends on, whose asset lock was built while the detail was open: Abandon is
+   * offered, and refused (the engine's `platformFunding`). */
+  platformFunding: string[];
+  /** As `platformFunding`, with the lock already built when the detail opens: the detail doesn't
+   * offer Abandon, and an Abandon is refused. */
+  platformFundingHidden: string[];
   /** Payments whose Abandon is refused because a saved transaction of an open wallet doesn't read
    * (the engine's `recordUnreadable`): offered, then refused. Remove Unconfirmed is refused too while
    * any is listed. */
@@ -129,6 +136,8 @@ export const newSendWorld = (): SendWorld => ({
   rescanFirst: [],
   settledChild: [],
   settledChildHidden: [],
+  platformFunding: [],
+  platformFundingHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
   checkingSpentCoins: [],
@@ -872,7 +881,9 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
+        canAbandon:
+          (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid) && !world.send.platformFundingHidden.includes(txid)) ||
+          world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
@@ -888,6 +899,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
+      if (ctx.world.send.platformFunding.includes(txid) || ctx.world.send.platformFundingHidden.includes(txid)) throw refused("platformFunding");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));

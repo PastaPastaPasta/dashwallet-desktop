@@ -168,13 +168,18 @@ expect "routed invitation"
 open_link "dashwallet://scanqr"
 expect "received $source dashwallet"
 expect "routed scanQr"
+# An App Connect sign-in request (F24): routed to its sheet by link id, never with its text.
+CONNECT_R=AgPfC_HerGbuN861rY69hsYlvTr86ch45cUruykqqMZpLZwt86HkjsCsihrV0xDcs6M1oSZT921FTWzp4TaiFUxzCkRhc2ggRm9yZ2UCMgICVl0Y8ypVxY3H5lh-cDQ8B56Dj0FohI1Ap2rUOC2C1GcAAAAF0h26AAAAAaTHOvh4AxCmmxtPZmaBRT3sNzRmelqyBggAAAGhKEJcAA
+open_link "dashpay://connect?v=2&n=t&r=$CONNECT_R&cb=https%3A%2F%2Fapp.example%2Fconnect"
+expect "received $source dashpay" 3
+expect "routed appConnect"
 # A link the wallet reads but refuses (the address is not a regtest one) is still routed.
 open_link "dash:XwnLY9Tf7Zsef8gMGL2fhWA9ZmMjt4KPwg"
 expect "routed rejected payment invalidAddress"
 
 kill -0 "$app_pid" 2>/dev/null || fail "the app is no longer running"
 # DP5-01 D14: no link text in the trace or the app's log.
-for secret in "$ADDRESS" "$IDENTITY" cDeepLinksPlantedKey; do
+for secret in "$ADDRESS" "$IDENTITY" cDeepLinksPlantedKey "$CONNECT_R" app.example; do
   ! grep -qF -- "$secret" "$trace" "$out/app.log" || fail "a log carries $secret"
 done
 echo "deep-links: PASS ($os)"

@@ -265,6 +265,13 @@ export class IpcBackend implements Backend {
   dismissStashedLink = cmd.dismissStashedLink;
   invitationStatus = cmd.invitationStatus;
   stashInvitation = cmd.stashInvitation;
+  appConnectSheet = cmd.appConnectSheet;
+  appConnectQuote = cmd.appConnectQuote;
+  appConnectApprove = cmd.appConnectApprove;
+  appConnectRetrySend = cmd.appConnectRetrySend;
+  appConnectDeny = cmd.appConnectDeny;
+  appConnectReturn = cmd.appConnectReturn;
+  appConnectDismiss = cmd.appConnectDismiss;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();

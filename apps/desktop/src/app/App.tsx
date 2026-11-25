@@ -28,6 +28,7 @@ import { CoinJoinPage } from "../screens/coinjoin/CoinJoinPage";
 import { MasternodesPage } from "../screens/masternodes/MasternodesPage";
 import { GovernanceStatusItem } from "../screens/masternodes/StatusItem";
 import { ContactsPage, PayPage, Placeholder } from "../screens/Routes";
+import { AppConnectSheet } from "../screens/dashpay/AppConnectSheet";
 import { JoinDashPayPage } from "../screens/dashpay/JoinDashPay";
 import { MyProfilePage } from "../screens/dashpay/MyProfile";
 import { NotificationsPage, NotificationsPopover } from "../screens/notifications/Notifications";
@@ -63,6 +64,10 @@ import { navigate, ui, useUi } from "./ui";
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null, mnKeysRole: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
 const closeForgot = () => ui.set({ forgotPassphrase: false });
+const closeConnect = () => {
+  const [next = null, ...rest] = ui.get().appConnectQueue;
+  ui.set({ appConnect: next, appConnectQueue: rest });
+};
 
 export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
@@ -366,14 +371,18 @@ function Shell() {
 
   const sheet = !!(detail && wallet);
   const layered = useLayeredSheet();
+  // A sign-in request waits while locked, during onboarding and behind the notice; it opens once
+  // a wallet is open.
+  const connect = useUi((s) => s.appConnect);
+  const connectWallet = connect && wallet && !locked && !onboarding && !notice ? wallet : null;
   const savedLinks = useSavedLinksOffer(backend, {
     hasWallet: !!wallet,
     locked,
-    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null,
+    covered: onboarding || wiping || forgot || sheet || layered || dialog !== null || connectWallet !== null,
   });
   const pictures = usePictureScopeValue(wallet?.walletId);
   // A dialog asked for while locked, onboarding, or behind a sheet is dropped, not kept for later.
-  const shown = notice || locked || onboarding || sheet || layered ? null : dialog;
+  const shown = notice || locked || onboarding || sheet || layered || connectWallet ? null : dialog;
   useEffect(() => {
     if (dialog !== shown) closeDialog();
   }, [dialog, shown]);
@@ -389,10 +398,20 @@ function Shell() {
           walletsLoading={walletsLoading}
           walletsError={walletsError}
           sheet={sheet}
-          inert={notice || onboarding || forgot || sheet || layered || shown !== null}
+          inert={notice || onboarding || forgot || sheet || layered || shown !== null || connectWallet !== null}
           layerInert={notice || onboarding}
           canLock={canLock}
           onLock={lockNow}
+        />
+      )}
+      {connect && connectWallet && (
+        <AppConnectSheet
+          key={`${connectWallet.walletId}-${connect.linkId}`}
+          walletId={connectWallet.walletId}
+          linkId={connect.linkId}
+          returnsTo={connect.returnsTo}
+          network={network.dirName}
+          onClose={closeConnect}
         />
       )}
       {shown === "openUri" && <OpenUriSheet network={network.dirName} />}

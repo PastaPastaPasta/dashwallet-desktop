@@ -5,6 +5,9 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+pub(crate) mod app_connect;
+mod app_connect_net;
+mod app_connect_plan;
 pub(crate) mod attribution;
 mod avatar;
 mod avatar_cache;
@@ -125,6 +128,11 @@ mod users;
 mod users_tests;
 pub(crate) mod withdrawal;
 
+pub use app_connect::{
+    ConnectBinding, ConnectChoice, ConnectDocumentType, ConnectDone, ConnectFailure, ConnectGroup,
+    ConnectIdentity, ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms,
+    ConnectToken,
+};
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
@@ -140,8 +148,8 @@ pub use credits::{
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
-    AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ContactError, CreditsError, IdentityError, InvitationError,
+    NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,

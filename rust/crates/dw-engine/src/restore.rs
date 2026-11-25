@@ -509,12 +509,16 @@ impl NetworkSession {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
         self.hub.attach_reconcile(Box::new(move |id| {
-            let weak = weak.clone();
-            rt.spawn(async move {
-                if let Some(session) = weak.upgrade() {
+            let session = weak.clone();
+            let _started = rt.spawn(async move {
+                if let Some(session) = session.upgrade() {
                     session.reconcile_duplicate_coins(id).await;
                 }
             });
+            #[cfg(test)]
+            if let Some(session) = weak.upgrade() {
+                (session.hub.reconciles.lock().unwrap()).push(_started);
+            }
         }));
     }
 }
