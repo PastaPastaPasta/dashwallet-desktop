@@ -1669,20 +1669,25 @@ impl LeaseTable {
         let Some(backend) = self.journal.get() else {
             return;
         };
-        match backend.note_spent_nullifiers(&wallet.0, nullifiers) {
-            Ok(cleared) => {
-                for activity in cleared {
-                    tracing::info!(
-                        wallet_id = %wallet,
-                        activity = %hex::encode(activity),
-                        "a marked shielded spend's notes are all spent"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
-            }
-        }
+        log_spent_noted(wallet, backend.note_spent_nullifiers(&wallet.0, nullifiers));
+    }
+
+    /// [`Self::note_spent_nullifiers`] on the blocking pool, for an async
+    /// caller.
+    pub(crate) async fn note_spent_nullifiers_off_thread(
+        &self,
+        wallet: WalletId,
+        nullifiers: Vec<[u8; 32]>,
+    ) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        let noted = (self.rt)
+            .spawn_blocking(move || backend.note_spent_nullifiers(&wallet.0, &nullifiers))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        log_spent_noted(wallet, noted);
     }
 
     /// The open journal's `synchronous` pragma (2 = FULL), which the
@@ -2206,5 +2211,24 @@ impl NetworkSession {
                 }
                 e => e.into(),
             })
+    }
+}
+
+/// Logs what [`LeaseTable::note_spent_nullifiers`] did: each marker cleared,
+/// or the failure.
+fn log_spent_noted(wallet: WalletId, noted: Result<Vec<[u8; 32]>, String>) {
+    match noted {
+        Ok(cleared) => {
+            for activity in cleared {
+                tracing::info!(
+                    wallet_id = %wallet,
+                    activity = %hex::encode(activity),
+                    "a marked shielded spend's notes are all spent"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
+        }
     }
 }

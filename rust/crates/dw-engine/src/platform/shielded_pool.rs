@@ -3647,6 +3647,61 @@ pub(crate) async fn settle_outcomes(
     }
 }
 
+/// Flags spent each nullifier of `wallet`'s marked spends (DEC-1057) whose
+/// note the library's store reads spent, in any of the wallet's bound
+/// accounts, and clears each marker all of whose are; at each pass's end.
+/// The store reads a note spent only on a proved scan, a spend's proved
+/// result, or a restore of what those persisted, the evidence the
+/// persister's tap feeds. This covers a spent note whose changeset the tap
+/// did not turn into a flag: the persister refused it, the tap's journal
+/// write failed, or the note was restored spent (a restore queues no
+/// changeset). A nullifier the store reads unspent, or does not hold, stays
+/// as it is.
+pub(crate) async fn note_store_spent_marks(
+    leases: &super::lease::LeaseTable,
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: WalletId,
+) {
+    let markers = match leases.unrecorded_spends(wallet).await {
+        Ok(markers) => markers,
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers could not be read");
+            return;
+        }
+    };
+    let marked: BTreeSet<[u8; 32]> = (markers.iter())
+        .flat_map(|m| m.nullifiers.iter())
+        .filter(|(_, spent)| !spent)
+        .map(|(nullifier, _)| *nullifier)
+        .collect();
+    if marked.is_empty() {
+        return;
+    }
+    let mut subwallets: BTreeSet<SubwalletId> = (coordinator.registered_subwallets().await)
+        .into_iter()
+        .filter(|s| s.wallet_id == wallet.0)
+        .collect();
+    subwallets.insert(SubwalletId::new(wallet.0, SHIELDED_ACCOUNT));
+    let spent: Vec<[u8; 32]> = {
+        let store = coordinator.store().read().await;
+        (subwallets.into_iter())
+            .filter_map(|s| match store.get_all_notes(s) {
+                Ok(notes) => Some(notes),
+                Err(e) => {
+                    tracing::warn!(wallet_id = %wallet, error = %e, "the shielded notes could not be read");
+                    None
+                }
+            })
+            .flatten()
+            .filter(|note| note.is_spent && marked.contains(&note.nullifier))
+            .map(|note| note.nullifier)
+            .collect()
+    };
+    if !spent.is_empty() {
+        leases.note_spent_nullifiers_off_thread(wallet, spent).await;
+    }
+}
+
 /// Whether the library holds a record or a reserved note of `activity`.
 fn holds_activity<S: ShieldedStore>(
     store: &S,
@@ -4047,6 +4102,7 @@ async fn pass(
     }
     for wallet in pass_wallets(manager, &coordinator).await {
         settle_outcomes(session, &coordinator, WalletId(wallet)).await;
+        note_store_spent_marks(&session.leases, &coordinator, WalletId(wallet)).await;
         // A contact payout settles on its artifact's status (C-funding P7).
         session.settle_shielded_payouts(WalletId(wallet)).await;
     }
