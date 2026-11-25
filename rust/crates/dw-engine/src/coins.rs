@@ -417,8 +417,12 @@ impl CoinFence {
         *self.checked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(free));
     }
 
-    fn set_temp_locks(&self, locks: TempUtxoLocks) {
-        *self.temp_locks.lock().unwrap_or_else(|p| p.into_inner()) = Some(locks);
+    fn add_temp_locks(&self, locks: TempUtxoLocks) {
+        let mut slot = self.temp_locks.lock().unwrap_or_else(|p| p.into_inner());
+        match slot.as_mut() {
+            Some(held) => held.outpoints.extend(locks.outpoints),
+            None => *slot = Some(locks),
+        }
     }
 }
 
@@ -996,7 +1000,7 @@ impl NetworkSession {
                 .collect()
         };
         if !locked.is_empty() {
-            fence.set_temp_locks(TempUtxoLocks {
+            fence.add_temp_locks(TempUtxoLocks {
                 wm,
                 hub: Arc::clone(&self.hub),
                 wallet_id: fence.wallet.0,
@@ -1605,7 +1609,7 @@ mod tests {
         let other = f.credit(3, DENOMINATION);
         let (s, w) = (Arc::clone(&f.session), f.wallet);
         let inner = Arc::clone(&s);
-        let (kept_locked, other_locked) = f
+        let (other_held, kept_locked, other_locked) = f
             .engine
             .block_on(s.on_runtime(async move {
                 {
@@ -1613,16 +1617,20 @@ mod tests {
                     let mut state = wallet.state_mut().await;
                     assert!(state.core_wallet.lock_outpoint(kept));
                 }
-                drop(funding_fence(&inner, w).await);
+                let fence = funding_fence(&inner, w).await;
+                let other_held = locked(&inner, w, other).await;
+                drop(fence);
                 wallet_event(&inner, w).await;
                 let wallet = inner.wallet(&w).await.unwrap();
                 let state = wallet.state().await;
                 Ok((
+                    other_held,
                     state.core_wallet.is_outpoint_locked(&kept),
                     state.core_wallet.is_outpoint_locked(&other),
                 ))
             }))
             .unwrap();
+        assert_eq!(other_held, Some(true));
         assert!(kept_locked);
         assert!(!other_locked);
     }
