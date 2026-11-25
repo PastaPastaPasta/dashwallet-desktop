@@ -358,15 +358,27 @@ fn h1_refuses_when_selected_differs_from_redrive() {
     // The library stored nothing for activity 2.
     let refused = h.dispatch(h.payload(2, &[1, 2])).unwrap_err();
     assert!(refused.contains("stored no spend"), "{refused}");
-    // The stored transition is another one.
+    // The stored transition is another one: other bytes, with the same
+    // anchor and nullifiers, so only the stored hash tells them apart.
     let mut other = h.payload(1, &[1, 2]);
-    other.st_bytes = h.st_bytes(9);
-    other.st_hash = h.st_hash(9);
-    assert!(h.dispatch(other).is_err());
+    other.st_bytes = signed_spend(
+        9,
+        &ShieldedDispatchKind::Transfer,
+        [0xa0; 32],
+        &published(&[1, 2]),
+    );
+    other.st_hash = Sha256::digest(&other.st_bytes).into();
+    assert_ne!(other.st_hash, h.st_hash(1));
+    let refused = h.dispatch(other).unwrap_err();
+    assert!(
+        refused.contains("not the one the library stored"),
+        "{refused}"
+    );
     // The hash is not that of the bytes.
     let mut forged = h.payload(1, &[1, 2]);
     forged.st_hash = h.st_hash(9);
-    assert!(h.dispatch(forged).is_err());
+    let refused = h.dispatch(forged).unwrap_err();
+    assert!(refused.contains("not that of its bytes"), "{refused}");
     // Another account than the engine's.
     let mut account = h.payload(1, &[1, 2]);
     account.account_index = SHIELDED_ACCOUNT + 1;

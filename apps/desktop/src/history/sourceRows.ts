@@ -121,14 +121,16 @@ export function platformRow(a: PlatformActivity): TxRow {
 /** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
  * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
  * a payment out unless the engine says it is a self-transfer; the rest are received or paid. A
- * spend whose notes are held (`held`, the status's `heldSpends`) or that Platform refused while its
- * funds stay held (`refusal: held`) may still go through: unconfirmed, with its amount, never
- * "Not accepted". */
+ * spend that Platform refused while its funds stay held (`refusal: held`), or with no refusal whose
+ * notes are held (`held`, the status's `heldSpends`), may still go through: unconfirmed, with its
+ * amount, never "Not accepted". A released refusal reads as released whatever `held` says. */
 export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): TxRow {
   const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
-  const mayLand = a.status !== "confirmed" && (a.refusal === "held" || !!held?.has(a.id));
+  // The engine's refusal reads the library's holds with the journal, and a release is final: it
+  // outranks the status's `heldSpends`, which may be from an earlier read.
+  const mayLand = a.status !== "confirmed" && (a.refusal ? a.refusal === "held" : !!held?.has(a.id));
   const kind = a.status === "confirmed" ? "confirmed" : a.status === "failed" && !mayLand ? "notAccepted" : "unconfirmed";
   return {
     ...base(`shielded:${a.kind}:${a.id}${mayLand ? MAY_LAND : ""}`, statusOf(kind), a.createdAt, a.direction === "out" ? -amount : amount),

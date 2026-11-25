@@ -245,6 +245,12 @@ describe("shielded activity rows", () => {
     expect(isMayLandRow(shieldedRow(shield("h", { ...sent, status: "confirmed" }), held))).toBe(false);
     expect(shieldedRow(shield("x", { ...sent, status: "failed" }), held).status.kind).toBe("notAccepted");
     expect(heldActivities(null).size).toBe(0);
+    // The engine's refusal outranks the status's list, which may be older: a release is final, and a
+    // held refusal stays held whatever the list says.
+    const released = shieldedRow(shield("h", { ...sent, status: "failed", refusal: "released" }), held);
+    expect([released.txid, released.status.kind, isMayLandRow(released)]).toEqual(["shielded:sent:h", "notAccepted", false]);
+    const stillHeld = shieldedRow(shield("y", { ...sent, status: "pending", refusal: "held" }), held);
+    expect([stillHeld.status.kind, isMayLandRow(stillHeld)]).toEqual(["unconfirmed", true]);
     // Its details find the record and keep the state.
     const found = findSourceRecord("shielded:sent:h:mayland", [], [shield("h", { ...sent, status: "unknown" })], held);
     expect(found?.row.txid).toBe("shielded:sent:h:mayland");

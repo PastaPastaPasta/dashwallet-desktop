@@ -809,9 +809,10 @@ mirror_enum!(engine::ShieldedActivityStatus => ShieldedActivityStatus {
     Pending, Confirmed, Failed, Unknown
 });
 
-/// What became of a spend Platform refused at its broadcast: `held` while
-/// it may still go through (its row reads pending), `released` once proved
-/// it never can (its row reads failed).
+/// Whether a spend's outcome is held open: `held` while the wallet cannot
+/// rule out that it executes (a refusal at its broadcast, or an outcome not
+/// recorded or not readable yet; its row reads pending), `released` once a
+/// refusal is proved never to go through (its row reads failed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ShieldedRefusal {
@@ -844,7 +845,7 @@ pub struct ShieldedActivity {
     #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<crate::dto::history::TxCounterparty>,
-    /// Set on a spend Platform refused at its broadcast.
+    /// Set on a spend whose outcome is held open, or a refusal released.
     #[ts(optional)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ShieldedRefusal>,

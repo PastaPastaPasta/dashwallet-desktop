@@ -504,9 +504,11 @@ pub struct ShieldedActivity {
     /// contact payout's row, else by the destination address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<Counterparty>,
-    /// A spend Platform refused at its broadcast (#444): held while it may
-    /// still go through (status pending), released once proved it never
-    /// can (status failed).
+    /// A spend whose outcome the wallet holds open (#444): held while it
+    /// cannot rule out that the spend executes (a refusal at its broadcast,
+    /// a sent spend whose outcome the journal does not hold yet, or one it
+    /// cannot read; status pending), released once a refusal is proved
+    /// never to go through (status failed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<ShieldedRefusal>,
 }
@@ -515,7 +517,8 @@ pub struct ShieldedActivity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShieldedRefusal {
-    /// It may still go through: its notes stay held, and nothing invites
+    /// The wallet cannot rule out that it executes (not necessarily a
+    /// refusal Platform answered): its notes stay held, and nothing invites
     /// sending it again.
     Held,
     /// Proved never to go through: the wallet stops holding its notes,

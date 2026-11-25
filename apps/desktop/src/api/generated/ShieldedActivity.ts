@@ -15,6 +15,6 @@ export type ShieldedActivity = { id: string, kind: ShieldedActivityKind, directi
  */
 contact?: TxCounterparty,
 /**
- * Set on a spend Platform refused at its broadcast.
+ * Set on a spend whose outcome is held open, or a refusal released.
  */
 refusal?: ShieldedRefusal, };

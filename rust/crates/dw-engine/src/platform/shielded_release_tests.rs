@@ -33,6 +33,8 @@ struct Platform {
     unverified: bool,
     /// How many of the next nullifier reads fail.
     fail_nullifier_reads: usize,
+    /// The nullifiers each failed read asked for.
+    failed_reads: Vec<Vec<[u8; 32]>>,
 }
 
 #[derive(Default)]
@@ -75,6 +77,9 @@ impl ReleaseNet for Script {
         let mut p = self.platform.lock().unwrap();
         let failing = p.fail_nullifier_reads > 0;
         p.fail_nullifier_reads = p.fail_nullifier_reads.saturating_sub(1);
+        if failing {
+            p.failed_reads.push(nullifiers.clone());
+        }
         // Platform refuses a longer query outright.
         let answered = !failing && nullifiers.len() <= NULLIFIER_READ_LIMIT;
         let read = (p.nullifiers_height.filter(|_| answered)).map(|height| Proved {
@@ -983,11 +988,26 @@ fn a_failed_batch_holds_only_its_own_spends() {
     f.platform().fail_nullifier_reads = 1;
     f.pass();
     assert_eq!(f.reads_taken(), (1, 2), "both batches read");
-    let released =
-        |n: u8| settlement(&f.engine, &f.session, f.wallet, n).0 == ArtifactStatus::NotExecuted;
-    assert!(
-        released(1) != released(3),
-        "one batch released, the other held"
+    let failed = f.platform().failed_reads.concat();
+    let (unread, read) = if failed.contains(&nullifiers(1)[0]) {
+        (1, 3)
+    } else {
+        assert!(
+            failed.contains(&big.nullifiers[0]),
+            "the failed read was a spend's batch"
+        );
+        (3, 1)
+    };
+    let status = |n: u8| settlement(&f.engine, &f.session, f.wallet, n).0;
+    assert_eq!(
+        status(unread),
+        ArtifactStatus::Unresolved { unrecorded: false },
+        "the failed batch's spend stays held"
+    );
+    assert_eq!(
+        status(read),
+        ArtifactStatus::NotExecuted,
+        "the other batch's spend is released"
     );
 }
 

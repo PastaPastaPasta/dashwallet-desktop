@@ -706,11 +706,13 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   selected is a note of the account (the nullifier of a padding action is not one) and they are exactly the notes the
   library reserved for it, and only after the spend's artifact is written to `dispatch.sqlite` (schema 11,
   `synchronous=FULL`): the wallet, the history row, Platform's hash of the transition, its kind, its anchor, the
-  nullifiers of the notes it takes and of every action it publishes. Before anything of the spend is written, one
-  proved read of Platform's anchors tree must find the spend's anchor recorded; a read that fails, or does not find
-  it, refuses the spend. When that read is SPV-verified (or the trusted-only toggle is on), its height is kept in
-  `app.sqlite` (by wallet and Platform's hash of the transition, the highest kept) as the height the anchor was proved
-  recorded at, which "Refused first sends" below orders by. Anything else is refused and nothing is sent.
+  nullifiers of the notes it takes and of every action it publishes. Before the engine writes anything of the spend
+  (the library's unsent stored spend already exists), one proved read of Platform's anchors tree must find the
+  spend's anchor recorded; a read that fails, or does not find it, refuses the spend and the engine writes nothing.
+  When a read that finds it is SPV-verified (or the trusted-only toggle is on), its height is kept in `app.sqlite`
+  (by wallet and Platform's hash of the transition, the highest kept) as the height the anchor was proved recorded at,
+  which "Refused first sends" below orders by; an unverified one lets the spend go without keeping a height. Anything
+  else is refused and nothing is sent.
 - **Before a pass re-sends** a spend stored under the hook, the engine allows it only when the journal holds that
   artifact (same wallet, history row and hash, written by the engine before the first broadcast, neither settled nor
   archived), the wallet holds its background lease and the session is open. A spend imported from a 0.1 journal, one
@@ -758,19 +760,22 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   records it `Unresolved(Cancelled)` and holds its notes, since the spend may still execute. At each pass the engine
   settles such a spend only on proved evidence, ordered by chain height and never by a clock:
   - *not executed* (its artifact `not_executed`, the library's disposition kept, then acknowledged, so its notes no
-    other spend has spent are spendable again): its anchor proved absent from the anchors tree at a height above the
-    one it was proved recorded at (kept by the dispatch hook's read, or by a later pass's verified read that found it
-    still recorded), each nullifier it publishes proved unspent at or above that read's height, and each note it holds
-    known unspent to the library and not flagged spent in the journal. Or some but not all of its nullifiers proved
-    spent (a transition inserts all of them at once, so it never can execute), once each held note read spent is
-    spent in the library and durably in the journal. The anchors read must also be at least 45 minutes of block time
-    after the refusal (an extra hold only);
+    other spend has spent are spendable again), on either of two proofs:
+    - absence: its anchor proved absent from the anchors tree at a height above the one it was proved recorded at
+      (kept by the dispatch hook's read, or by a later pass's verified read that found it still recorded), each
+      nullifier it publishes proved unspent at or above that read's height, and each note it holds known unspent to
+      the library and not flagged spent in the journal. The anchors read's block time must also be more than 45
+      minutes after the refusal (an extra hold only);
+    - a mixed result: some but not all of its nullifiers proved spent in one complete, verified read (a transition
+      inserts all of them at once, so it never can execute), once each held note read spent is spent in the library
+      and durably in the journal. This needs no anchors read and no recorded height;
   - *executed* (its artifact `executed`, acknowledged once its notes read spent in the journal): every nullifier it
     publishes proved spent. Only when one of them is a padding action's, which no other spend can publish, does it
     prove this transition executed: then its payout reads sent and its unshield's move done; without one (another
     device may have spent the same notes) both stay as they were before it settled;
-  - otherwise it stays held: a spend with no height its anchor was proved recorded at (one sent by an earlier build),
-    an absence at or below that height, a read that fails, is incomplete, or whose proof used quorum keys that are not
+  - otherwise it stays held: on the absence proof, a spend with no height its anchor was proved recorded at (one
+    sent by an earlier build, or after an unverified hook read) and an absence at or below that height; on either, a
+    read that fails, is incomplete, or whose proof used quorum keys that are not
     SPV-verified (unless the trusted-only toggle is on), and any contradiction. Nothing transient or ambiguous frees a
     note. A failed nullifier read holds only the spends it covered. A release raises the Shielded change.
 
