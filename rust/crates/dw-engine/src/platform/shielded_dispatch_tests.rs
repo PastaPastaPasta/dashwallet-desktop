@@ -2231,7 +2231,8 @@ fn hook_of(h: &Hooked, payload: ShieldedDispatchPayload) -> super::CreateHook {
 }
 
 /// F11, F12: the create runs through the hook, which names the row before
-/// the library signs; a proved identity then registers it. The library got
+/// the library signs; a proved identity then registers it and settles its
+/// artifact executed with the engine's proof. The library got
 /// the keyset create of the row's slot at the denomination, refunding to
 /// the row's fallback, never the seed path (the fake has none).
 #[test]
@@ -2250,6 +2251,17 @@ fn a_create_through_the_hook_registers_its_proved_identity() {
         Ok(ShieldedOutcome::Registered(name.clone()))
     );
     assert_eq!(h.row_funding(draft), shielded_funding(Some(name)));
+    let artifact = h.artifact(7).unwrap();
+    assert_eq!(
+        (
+            artifact.status,
+            h.setting(dw_appdb::dp_registration_proved(&hex::encode(
+                artifact.st_hash.unwrap()
+            ))),
+        ),
+        (ArtifactStatus::Executed, Some("executed".into())),
+        "proved executed, so an unresolved outcome of it is acknowledged later"
+    );
     let spent = lib.spent.lock().unwrap().clone();
     assert_eq!(spent.len(), 1);
     assert_eq!(
@@ -2342,9 +2354,11 @@ fn a_create_signs_nothing_while_a_check_fails() {
 
 /// F12: the library resolves every failure of a create after its dispatch
 /// `unresolved` (`Cancelled`, operations.rs `settle_failed_spend`), a paid
-/// fallback included: every published nullifier proved spent, padding
-/// included, attributes the spend to this create, so an unresolved create
-/// settles as an executed one does.
+/// fallback included: every published nullifier proved spent while the
+/// library still holds the notes for it attributes the spend to this
+/// create, so an unresolved create settles as an executed one does. A
+/// bundle of two or more notes has no padding, so once the hold is gone
+/// another spend of the same notes could read the same: it waits.
 #[test]
 fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     let h = Hooked::new();
@@ -2356,8 +2370,21 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     let ev = Evidence::default();
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
+    let lib = super::FakeShielded::default();
     assert_eq!(
-        h.evidence(draft, &id, &ev),
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "its notes no longer held: another spend of them may be what reads spent"
+    );
+    assert!(h.refunds().is_empty());
+    assert_eq!(
+        h.artifact(4).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    let st_hash = h.artifact(4).unwrap().st_hash.unwrap();
+    lib.held.lock().unwrap().insert(st_hash);
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
         ShieldedOutcome::Fallback(id.clone())
     );
     assert_eq!(h.refunds().len(), 1);
@@ -2471,35 +2498,33 @@ fn a_create_signed_again_over_the_same_notes_answers_for_its_identity() {
     let (draft, id) = h.dispatched_create(5);
     let _ = h.dispatched_create(6);
     let identity = super::super::registration_flow::parse_identity(&id).unwrap();
+    let unresolved =
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'";
+    h.rewrite(5, unresolved);
+    let lib = super::FakeShielded::default();
+    let ev = Evidence::default();
+    *ev.recorded_at.lock().unwrap() = 100;
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "the earlier create's anchor read recorded at 100"
+    );
     h.rewrite(5, "status = 'not_executed'");
     h.rewrite(
         6,
         &format!(
-            "status = 'unresolved', disposition_kind = 'unresolved', \
-             disposition_reason = 'cancelled', identity_id = X'{}'",
+            "{unresolved}, identity_id = X'{}'",
             hex::encode(identity.to_buffer())
         ),
     );
-    let (earlier, st_hash) = (
-        h.artifact(5).unwrap().st_hash.unwrap(),
-        h.artifact(6).unwrap().st_hash.unwrap(),
-    );
-    let scope = dw_appdb::local_scope(&h.f.wallet.to_string());
-    let key = dw_appdb::dp_registration_anchor_seen(&hex::encode(earlier));
-    (h.f.engine)
-        .block_on(
-            (h.f.session).appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("100"))),
-        )
-        .unwrap();
-    let lib = super::FakeShielded::default();
+    let st_hash = h.artifact(6).unwrap().st_hash.unwrap();
     lib.held.lock().unwrap().insert(st_hash);
-    let ev = Evidence::default();
     *ev.pruned.lock().unwrap() = Some(200);
     *ev.unspent_at.lock().unwrap() = 200;
     assert_eq!(
         h.evidence_with(draft, &id, &ev, &lib),
         ShieldedOutcome::Unknown,
-        "the later create's anchor never read recorded"
+        "the later create's anchor never read recorded; the earlier one's height is not its"
     );
     *ev.pruned.lock().unwrap() = None;
     *ev.recorded_at.lock().unwrap() = 150;

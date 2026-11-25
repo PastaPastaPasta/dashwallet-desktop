@@ -442,6 +442,11 @@ pub(crate) async fn fund(
     }
     let name = b58(&Identifier::new(identity));
     if let Ok((true, _)) = net.identity(Identifier::new(identity)).await {
+        if let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await
+            && let Some(artifact) = create_artifact(&artifacts, &Identifier::new(identity))
+        {
+            proved_executed(session, wallet, artifact).await;
+        }
         return Ok(ShieldedOutcome::Registered(name));
     }
     // A create the hook named and then refused is not signed again at once.
@@ -475,9 +480,6 @@ async fn evidence(
     let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await else {
         return Ok(ShieldedOutcome::Unknown);
     };
-    let ours = |a: &&ShieldedArtifact| {
-        a.kind == Some(ArtifactKind::IdentityCreate) && a.identity_id == Some(id.to_buffer())
-    };
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let keys = (
         dw_appdb::dp_registration_named(identity),
@@ -486,11 +488,7 @@ async fn evidence(
     let markers = session
         .appdb_op(move |db| Ok((db.setting(&scope, &keys.0)?, db.setting(&scope, &keys.1)?)))
         .await;
-    // The same notes signed again name the same identity: one that may
-    // still execute answers before any that never did.
-    let held = |a: &&ShieldedArtifact| ours(a) && a.status != ArtifactStatus::NotExecuted;
-    let Some(artifact) = (artifacts.iter().find(held)).or_else(|| artifacts.iter().find(ours))
-    else {
+    let Some(artifact) = create_artifact(&artifacts, &id) else {
         return Ok(match markers {
             Ok((Some(_), None)) => ShieldedOutcome::Cleared,
             // Named on another install (a restore): only the identity says.
@@ -505,7 +503,6 @@ async fn evidence(
         Ok((Some(at), _)) => at.parse().unwrap_or(0),
         _ => 0,
     };
-    let unresolved = artifact.status == ArtifactStatus::Unresolved { unrecorded: false };
     let outcome = by_artifact(
         session,
         wallet,
@@ -515,16 +512,50 @@ async fn evidence(
         (artifact, named_at),
     )
     .await?;
-    if unresolved
-        && matches!(
-            outcome,
-            ShieldedOutcome::Registered(_) | ShieldedOutcome::Fallback(_)
-        )
-        && let Some(st_hash) = artifact.st_hash
-    {
-        settle_proved(session, wallet, st_hash, ArtifactStatus::Executed, false).await;
+    if matches!(
+        outcome,
+        ShieldedOutcome::Registered(_) | ShieldedOutcome::Fallback(_)
+    ) {
+        proved_executed(session, wallet, artifact).await;
     }
     Ok(outcome)
+}
+
+/// Whether the library still holds `artifact`'s notes for its unresolved
+/// outcome. A read failure holds nothing.
+async fn holds(lib: &impl ShieldedLib, artifact: &ShieldedArtifact) -> bool {
+    match (lib.held_spends().await, artifact.st_hash) {
+        (Ok(held), Some(st_hash)) => held.contains(&st_hash),
+        _ => false,
+    }
+}
+
+/// The artifact of the create naming identity `id`. The same notes signed
+/// again (a bundle of two or more, which has no padding) name the same
+/// identity: one that may still execute answers before any that never did.
+fn create_artifact<'a>(
+    artifacts: &'a [ShieldedArtifact],
+    id: &Identifier,
+) -> Option<&'a ShieldedArtifact> {
+    let ours = |a: &&ShieldedArtifact| {
+        a.kind == Some(ArtifactKind::IdentityCreate) && a.identity_id == Some(id.to_buffer())
+    };
+    let held = |a: &&ShieldedArtifact| ours(a) && a.status != ArtifactStatus::NotExecuted;
+    (artifacts.iter().find(held)).or_else(|| artifacts.iter().find(ours))
+}
+
+/// Records the proof that `artifact`'s create executed while the journal
+/// still has it in flight or unresolved ([`settle_proved`]), so the
+/// library's hold on its notes is acknowledged once they read spent
+/// whatever the library resolves.
+async fn proved_executed(session: &NetworkSession, wallet: WalletId, artifact: &ShieldedArtifact) {
+    let in_flight = matches!(
+        artifact.status,
+        ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    if let (true, Some(st_hash)) = (in_flight, artifact.st_hash) {
+        settle_proved(session, wallet, st_hash, ArtifactStatus::Executed, false).await;
+    }
 }
 
 /// [`evidence`] from the create's artifact.
@@ -547,6 +578,14 @@ async fn by_artifact(
         _ => return Ok(present().await),
     };
     let executed_by = match net.nullifiers(&artifact.published).await {
+        // A bundle of two or more notes has no padding: its nullifiers
+        // spent are this create's only while the library held its notes
+        // throughout, which a hold read after the spent read shows (a hold
+        // once lifted never returns). Another install's spend of the same
+        // notes is not told apart.
+        Ok(NullifierRead::Spent(_)) if unresolved && !holds(lib, artifact).await => {
+            return Ok(present().await);
+        }
         Ok(NullifierRead::Spent(at)) => at,
         Ok(NullifierRead::Unspent(_)) if unresolved => {
             return Ok(match present().await {
@@ -589,8 +628,10 @@ const PROVED: [(ArtifactStatus, &str); 2] = [
 
 /// Writes the engine's proof that create `st_hash` settles as `status`
 /// durably, then settles its artifact so in the journal (`acked` when its
-/// notes may go at once). The journal keeps the library's strings: the
-/// proof is the marker. `false` when either write failed.
+/// notes may go at once). The proof is the marker: the journal's
+/// disposition columns hold only the library's strings, empty until the
+/// next read of its outcomes writes them back. `false` when either write
+/// failed.
 pub(crate) async fn settle_proved(
     session: &NetworkSession,
     wallet: WalletId,
@@ -620,11 +661,12 @@ pub(crate) async fn settle_proved(
     written
 }
 
-/// Of transitions `listed`, those whose artifact's journal status the
-/// engine proved ([`settle_proved`]): the library's later `unresolved`
-/// listing of one does not undo it ([`pool::consume_dispositions`]). One
-/// settled so by the library alone is not among them. A read failure
-/// proves none.
+/// Of transitions `listed`, those the engine proved ([`settle_proved`]),
+/// by the status proved: the library's later `unresolved` listing of one
+/// does not undo it ([`pool::consume_dispositions`]). The marker counts
+/// while the journal has the artifact in flight or unresolved (a crash
+/// before its settlement) or settled as proved; a journal status alone,
+/// the library's own, proves nothing. A read failure proves none.
 pub(crate) async fn proved_creates(
     session: &NetworkSession,
     wallet: WalletId,
@@ -632,7 +674,15 @@ pub(crate) async fn proved_creates(
     listed: &[[u8; 32]],
 ) -> HashMap<[u8; 32], ArtifactStatus> {
     let settled: Vec<([u8; 32], ArtifactStatus)> = (artifacts.iter())
-        .filter(|a| PROVED.iter().any(|(s, _)| *s == a.status))
+        .filter(|a| {
+            matches!(
+                a.status,
+                ArtifactStatus::Registered
+                    | ArtifactStatus::Unresolved { unrecorded: false }
+                    | ArtifactStatus::Executed
+                    | ArtifactStatus::NotExecuted
+            )
+        })
         .filter_map(|a| Some((a.st_hash?, a.status)))
         .filter(|(st_hash, _)| listed.contains(st_hash))
         .collect();
@@ -646,8 +696,12 @@ pub(crate) async fn proved_creates(
             for (st_hash, status) in settled {
                 let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
                 let value = db.setting(&scope, &key)?;
-                if PROVED.contains(&(status, value.as_deref().unwrap_or_default())) {
-                    proved.insert(st_hash, status);
+                let marked = PROVED.iter().find(|(_, v)| Some(*v) == value.as_deref());
+                let in_flight = !PROVED.iter().any(|(s, _)| *s == status);
+                if let Some(&(proved_as, _)) = marked
+                    && (in_flight || proved_as == status)
+                {
+                    proved.insert(st_hash, proved_as);
                 }
             }
             Ok(proved)

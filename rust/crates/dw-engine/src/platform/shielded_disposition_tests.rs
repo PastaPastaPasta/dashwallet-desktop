@@ -438,8 +438,9 @@ fn cancelled_first_send_holds_notes_and_reads_checking() {
 /// that the engine proved, by its own marker, keeps the engine's
 /// settlement: one proved executed is acknowledged once the journal reads
 /// its notes spent, and one proved never to execute whose acknowledgement
-/// failed is acknowledged on the next pass. A journal status without the
-/// marker proves nothing.
+/// failed is acknowledged on the next pass, as is one whose marker was
+/// written and whose journal settlement was not. A journal status without
+/// the marker proves nothing.
 #[test]
 fn a_proved_outcome_outlives_the_library_unresolved_listing() {
     let dir = dw_testutil::private_tempdir();
@@ -478,7 +479,13 @@ fn a_proved_outcome_outlives_the_library_unresolved_listing() {
         ));
         assert!(proved, "spend {n} proved");
     };
-    prove(1, ArtifactStatus::Executed, false);
+    // Spend 1: the proof written, then a crash before the journal settled.
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash(1)));
+    (engine.block_on(
+        session.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("executed"))),
+    ))
+    .unwrap();
     prove(2, ArtifactStatus::NotExecuted, true);
     let cancelled = stored("unresolved", Some("cancelled"));
 

@@ -518,9 +518,9 @@ test("R5 Finish transfers on the page; R8 a stopped funded registration says the
   await expect(card(page)).toHaveAttribute("data-state", "join");
   await toJoin(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "stopped");
-  // D27: a new name is offered; leaving step 1 shows the stopped row again.
+  // D27: a new name is offered, privacy first (C-funding F16); leaving shows the stopped row again.
   await page.getByTestId("registration-another").click();
-  await expect(page.getByTestId("registration-name")).toBeVisible();
+  await expect(page.getByTestId("registration-pay-with")).toBeVisible();
   await page.getByTestId("registration-cancel").click();
   await expect(screen(page)).toHaveAttribute("data-kind", "stopped");
   await page.getByTestId("registration-repair").click();
@@ -546,6 +546,7 @@ test("C-funding F10: a create from the Platform balance that fails in a block sa
   expect(after[1]).toBe(before[1]);
   expect(await calls(page, "start_registration")).toBe(1);
   await page.getByTestId("registration-another").click();
+  await payFromDashWallet(page);
   await expect(page.getByTestId("registration-name")).toBeVisible();
   expect(errors).toEqual([]);
 });

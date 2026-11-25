@@ -135,8 +135,9 @@ pub fn dp_registration_anchor_seen(st_hash: &str) -> String {
 /// The `local:` key the engine writes, durably and before it settles the
 /// journal, once it proves what a Shielded-funded registration's create,
 /// by the hex of its transition hash, did although the library left it
-/// unresolved: `executed` or `pruned` (never executes). The journal keeps
-/// the library's strings; this is the engine's own proof (C-funding F12).
+/// unresolved: `executed` or `pruned` (never executes). This is the
+/// engine's own proof; the journal's disposition columns hold only the
+/// library's strings (C-funding F12).
 pub fn dp_registration_proved(st_hash: &str) -> String {
     format!("dp_registration_proved/{st_hash}")
 }
