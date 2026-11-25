@@ -483,6 +483,29 @@ pub struct SharedSession {
     /// The recovery read lists `mn_shared_resend_abandon`: the latest abandon
     /// spend's saved bytes again, charged exactly this, its grant cap.
     pub resend_abandon_charge: Option<u64>,
+    /// The recorded transactions Activity can abandon now: the spend back,
+    /// or this wallet's own transaction spending a reserved coin.
+    pub activity_abandon_txids: Vec<String>,
+    /// The recorded transactions Activity can send again now: the spend
+    /// back, when the session holds no bytes of its own to replay.
+    pub activity_resend_txids: Vec<String>,
+}
+
+/// The txids of Activity's Abandon and Send again in the engine's recovery
+/// actions, each once, in the engine's order.
+fn activity_txids(actions: &[engine::RecoveryAction]) -> (Vec<String>, Vec<String>) {
+    let (mut abandon, mut resend) = (Vec::new(), Vec::new());
+    for a in actions {
+        let (list, txid) = match a {
+            engine::RecoveryAction::AbandonWalletTx { txid } => (&mut abandon, txid),
+            engine::RecoveryAction::ResendWalletTx { txid } => (&mut resend, txid),
+            _ => continue,
+        };
+        if !list.contains(txid) {
+            list.push(txid.clone());
+        }
+    }
+    (abandon, resend)
 }
 
 impl From<engine::SharedSession> for SharedSession {
@@ -525,6 +548,7 @@ impl From<engine::SharedSession> for SharedSession {
             engine::RecoveryAction::ResendAbandon { charge } => Some(*charge),
             _ => None,
         });
+        let (activity_abandon_txids, activity_resend_txids) = activity_txids(&recovery.actions);
         let handoff_code = recovery
             .handoff_error
             .filter(|e| e.tx == engine::HandoffTx::Abandon)
@@ -567,6 +591,8 @@ impl From<engine::SharedSession> for SharedSession {
             overdue: recovery.overdue,
             abandon_spend,
             resend_abandon_charge,
+            activity_abandon_txids,
+            activity_resend_txids,
         }
     }
 }
@@ -728,5 +754,24 @@ impl From<engine::SharedImport> for SharedImport {
                 stored,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_txids_keep_each_action_once_in_order() {
+        let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+        let actions = [
+            engine::RecoveryAction::AbandonWalletTx { txid: b.clone() },
+            engine::RecoveryAction::ResendAbandon { charge: 193 },
+            engine::RecoveryAction::AbandonWalletTx { txid: a.clone() },
+            engine::RecoveryAction::ResendWalletTx { txid: a.clone() },
+            engine::RecoveryAction::AbandonWalletTx { txid: b.clone() },
+        ];
+        assert_eq!(activity_txids(&actions), (vec![b, a.clone()], vec![a]));
+        assert_eq!(activity_txids(&[]), (vec![], vec![]));
     }
 }

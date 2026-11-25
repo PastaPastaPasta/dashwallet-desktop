@@ -7,7 +7,9 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, type StatusInputs } from "./status";
+import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
+import { t } from "../i18n";
+import { INSTANT_COPY, VOTE_COPY, type InstantInputs } from "./instantOffer";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -43,6 +45,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: null,
+  fromPlatform: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -195,6 +198,25 @@ describe("IOS-065 / AND-024 Home card: one per banner state", () => {
       });
   });
 
+  it("#685: a held Platform payment offers Continue and Move to Dash wallet", () => {
+    const held = row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true });
+    expect(homeCard(inputs(REGISTERING, { registration: held }))).toMatchObject({
+      state: "creatingHeld",
+      tone: "problem",
+      step: { n: 1 },
+      lines: [heldWithBoth()],
+      action: { kind: "continue", label: "Continue" },
+      secondary: { kind: "moveToCore", label: "Move to Dash wallet" },
+    });
+    // The line beside both names both; the plain wait line names neither (MG).
+    expect(heldWithBoth()).toContain("Continue");
+    expect(heldWithBoth()).toContain("Move to Dash wallet");
+    expect(WAITS.paymentHeld).not.toContain("Continue");
+    expect(WAITS.paymentHeld).not.toContain("Move to Dash wallet");
+    // Unknown is still a running wait, with no way out offered.
+    expect(homeCard(inputs(REGISTERING, { registration: row({ waiting: "paymentUnknown", running: true, fromPlatform: true }) }))).toMatchObject({ state: "creating", secondary: null });
+  });
+
   it("S15 / AND-069–070: a contested username's vote, its end or a notice, and the temporary name", () => {
     const contest = (endsAt: number | null): DashPayStatus => ({ kind: "contestPending", identity: "A", label: "alice", endsAt });
     expect(homeCard(inputs(contest(1_900_000_000), { main: identity("alice007") }))).toMatchObject({
@@ -261,6 +283,18 @@ describe("D4 steps and D5 failure copy", () => {
     expect(failureText(failure("platform.insufficient_credits", { needed: "5", available: "1" }), amount)).toBe("The identity's credits do not cover the username.");
     expect(failureText(failure("platform.grant_exceeded"), amount)).toBe("The cost went above what you approved.");
     expect(failureText(failure("name.taken"), amount)).toBe("It stopped with name.taken.");
+    // C-funding F10: a paid failure from the Platform balance; another source's has no copy yet.
+    expect(failureText(failure("registration.refunded", { retryable: false }), amount, false, true)).toBe(
+      "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    );
+    expect(failureText(failure("registration.refunded", { retryable: false }), amount)).toBe("It stopped with registration.refunded.");
+    // A run stopped by a changed Platform plan has its own line, not the code or Confirm's.
+    const changed = failureText(failure("registration.quote_changed", { retryable: false }), amount, false, true);
+    expect(changed).toBe(
+      "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
+    );
+    expect(changed).not.toBe(t("dashpay.registration.startError.quoteChanged"));
+    expect(changed).not.toContain("registration.quote_changed");
     // DP5-03 (Opus r1 L1): a claim's refusals, on the Join page's failed row too.
     expect(failureText(failure("invitation.already_has_identity"), amount)).toBe(CLAIM_REFUSAL.hasIdentity);
     expect(failureText(failure("invitation.claimed"), amount)).toBe(`${CLAIM_REFUSAL.claimed.title}. ${CLAIM_REFUSAL.claimed.text}`);
@@ -315,5 +349,70 @@ describe("AND-071 / IOS-134 voting info and IOS-129 FAQ", () => {
     const text = JSON.stringify([VOTING_INFO, FAQ]);
     expect(text).not.toMatch(/passphrase/i);
     expect(new Set(FAQ.items.map((i) => i.question)).size).toBe(FAQ.items.length);
+  });
+});
+
+describe("the voting card's instant username (D4 reversed)", () => {
+  const CONTEST: DashPayStatus = { kind: "contestPending", identity: "A", label: "alice", endsAt: 1_900_000_000 };
+  const named = (mainName: string | null, balance: string | null = "5000000000") =>
+    ({ identity: "A", mainName, names: mainName ? [mainName] : [], namesUpdating: false, namesCheck: null, balance }) as IdentitySummary;
+  const on: InstantInputs = { offered: true, nameCredits: "2000000000", asked: null };
+  const base = [COPY.voting.deciding, "Results on day 1900000000."];
+
+  it("no temporary name: the hint and Create instant username, voting info beside it", () => {
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: on }))).toMatchObject({
+      state: "voting",
+      lines: [...base, VOTE_COPY.instantHint("alice")],
+      action: { kind: "instantName", label: "Create instant username" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("credits short of a name: the short line and Top up", () => {
+    expect(homeCard(inputs(CONTEST, { main: named(null, "100"), instant: on }))).toMatchObject({
+      lines: [...base, "Not enough credits for an instant username."],
+      action: { kind: "buyCredits", label: "Top up" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("hidden where registration is not offered, and while the names are unread or a temporary name is held", () => {
+    const quiet = { action: { kind: "votingInfo" }, secondary: null };
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: { ...on, offered: false } }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: named(null) }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: identity(null, true), instant: on }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: named("alice007"), instant: on }))).toMatchObject({ ...quiet, lines: [...base, "Until then you are @alice007."] });
+  });
+
+  it("the registration's temporary name: success once read, its failure with Try again, nothing until a read says", () => {
+    const asked = (outcome: "owned" | "failed" | null): InstantInputs => ({ ...on, asked: { label: "alice2", outcome } });
+    expect(homeCard(inputs(CONTEST, { main: named("alice2"), instant: asked("owned") }))).toMatchObject({
+      lines: [...base, INSTANT_COPY.success("alice2", "alice")],
+      action: { kind: "votingInfo" },
+    });
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: asked("failed") }))).toMatchObject({
+      tone: "problem",
+      lines: [...base, INSTANT_COPY.failure("alice2")],
+      action: { kind: "instantRetry", label: "Try again" },
+      secondary: { kind: "votingInfo" },
+      retryLabel: "alice2",
+    });
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: asked(null) }))).toMatchObject({ lines: base, action: { kind: "votingInfo" }, secondary: null });
+    // Failed with credits short of the name: Top up, as for a new one, not Try again.
+    expect(homeCard(inputs(CONTEST, { main: named(null, "100"), instant: asked("failed") }))).toMatchObject({
+      tone: "problem",
+      lines: [...base, INSTANT_COPY.failure("alice2"), "Not enough credits for an instant username."],
+      action: { kind: "buyCredits", label: "Top up" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("while the registrations are not read: neither Create nor Try again", () => {
+    const quiet = { lines: base, action: { kind: "votingInfo" }, secondary: null };
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: { ...on, asked: undefined } }))).toMatchObject(quiet);
+  });
+
+  it("the Join page shows the same card", () => {
+    expect(joinModel(inputs(CONTEST, { main: named(null), instant: on }), null, null)).toMatchObject({ kind: "card", card: { action: { kind: "instantName" } } });
   });
 });

@@ -1271,6 +1271,30 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            point: fault::MN_OP_ABANDON,
+            setup: |db| {
+                let row = MasternodeOpRow {
+                    fee_inputs: format!("[\"{TXID}:0\"]"),
+                    ..update_op("op", true)
+                };
+                let locks = [(TXID.to_owned(), 0)];
+                db.insert_masternode_op_with_barrier_durable(W, &row, &locks, 1, Some(&[9]))
+                    .unwrap();
+            },
+            write: |db| {
+                let inputs = [(TXID.to_owned(), 0)];
+                db.release_abandoned_masternode_op_durable(W, "op", &inputs, 2)
+                    .map(drop)
+            },
+            written: |db| {
+                let cleared = db.masternode_op(W, "op").unwrap().unwrap().fee_inputs == "[]";
+                let unlocked = !db.locks(W).unwrap().iter().any(|r| r.is_locked());
+                assert_eq!(cleared, unlocked, "together");
+                assert_eq!(db.payout_barriers().unwrap().len(), 1, "the barrier stays");
+                cleared
+            },
+        },
+        Case {
             point: fault::MN_BARRIER_BACKFILL,
             // The backfill writes a barrier only for a signed row it finds.
             setup: |db| {

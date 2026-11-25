@@ -496,7 +496,7 @@ background; we use the hero blue instead of iOS's photo background `image_bg`).
 │          ┌ Available  Spendable now      30.19698287 Ð │ Pending  Awaiting conf.   0.20 Ð ┐ │
 │          └──────────────────────── breakdown strip (white 12 %) ──────────────────────────┘ │
 │                    ┌────────── shortcut card (white, r20, straddles the edge) ──────────┐    │
-└────────────────────│   (↓)Receive     (↑)Send     [⌗]Scan QR     (⟳)Back up              │────┘
+└────────────────────│   (↓)Receive     (↑)Send     (⇅)Transfer    (⟳)Back up              │────┘
                      └─────────────────────────────────────────────────────────────────────┘
           [backup reminder SystemMessage, if any]     [CoinJoin card, when enabled §4.21]
           History                                         Syncing 47.0%   Filter ⚲
@@ -520,8 +520,8 @@ background; we use the hero blue instead of iOS's photo background `image_bg`).
   rendered. Click on the hero amount toggles (iOS tap-to-hide); one-time hint "Click to hide balance"
   (`caption1` white 50 %, iOS "Tap to hide balance" adapted). Right-click hero: "Hide balance",
   "Display unit ▸" (QT-020), "Copy balance".
-- **Shortcut card** (C6): the VM's 4 slots (`ShortcutBarViewModel`); icons from `shortcut-bar-*`;
-  right-click a slot → "Replace with ▸ …" (iOS long-press customise).
+- **Shortcut card** (C6): the VM's 4 slots (`ShortcutBarViewModel`: Receive, Send, Transfer, Back up); icons from `shortcut-bar-*`;
+  right-click a slot → "Replace with ▸ …" (iOS long-press customise). Payment QR scanning lives in Pay ▸ To an address; contact QR scanning lives in Add Contact ▸ Scan.
 - **History**: `HistoryHeader` + `TransactionGroupCard`s (C8) from the VM's recent list grouped by day
   ("Today", "Yesterday", "October 4, 2026" + weekday). Overview shows the last N (dash-qt recent count) and a
   "See all transactions" plainBlue button under the last card → Transactions page. Click a row →

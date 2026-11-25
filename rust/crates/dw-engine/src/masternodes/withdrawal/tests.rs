@@ -3287,6 +3287,59 @@ async fn a_conflicted_or_a_confirmed_and_covered_operation_clears_its_barrier() 
     }
 }
 
+/// MG-10 §1.10: a payout change abandoned in Activity may still be mined,
+/// so its barrier holds an owner-key withdrawal, read as
+/// `payout_change_abandoned` while every pending barrier is one; it clears
+/// once the change is `conflicted` (one of its coins spent in a block).
+#[tokio::test]
+async fn an_abandoned_payout_change_holds_withdrawals_until_it_is_conflicted() {
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let f = fx();
+    *f.scene.tip.lock().unwrap() = Some(TIP);
+    f.barrier(&PRO_TX, "abandoned", moved.as_bytes(), 1_000);
+    let ops = |op: &str, state| f.scene.ops.lock().unwrap().insert(op.into(), state);
+    ops("abandoned", ProTxOperationState::Abandoned);
+    let reason = || async { look(&f.scene, &*f.plat, &PRO_TX).await.unwrap().reason };
+    assert_eq!(reason().await, Some(CheckingReason::PayoutChangeAbandoned));
+    let e = f.withdraw(Owner, AMOUNT).await.unwrap_err();
+    assert!(
+        matches!(
+            e,
+            WithdrawalError::DestinationChecking {
+                reason: CheckingReason::PayoutChangeAbandoned
+            }
+        ),
+        "{e:?}"
+    );
+    assert_eq!(f.barriers(), 1);
+
+    f.barrier(&PRO_TX, "sent", moved.as_bytes(), 1_001);
+    ops("sent", ProTxOperationState::Sent);
+    assert_eq!(reason().await, Some(CheckingReason::PayoutChangePending));
+    ops("sent", ProTxOperationState::Conflicted);
+    ops("abandoned", ProTxOperationState::Conflicted);
+    assert_eq!(reason().await, None);
+    assert_eq!(f.barriers(), 0);
+    assert_eq!(f.signatures(), 0);
+}
+
+/// An abandoned change may still be mined after a newer one, so it is
+/// pending like any other: Drive's window paying the newer change's script
+/// is no evidence for it while the abandoned one stands, and the quote reads
+/// `payout_change_pending`, not `payout_change_abandoned`.
+#[tokio::test]
+async fn an_older_abandoned_change_holds_a_newer_ones_platform_evidence() {
+    let f = fx();
+    let s2 = CoreScript::new_p2pkh([0x22; 20]);
+    f.barrier(&PRO_TX, "abandoned", s2.as_bytes(), 1_000);
+    f.barrier(&PRO_TX, "newer", payout_script().as_bytes(), 1_001);
+    (f.scene.ops.lock().unwrap()).insert("abandoned".into(), ProTxOperationState::Abandoned);
+    let reason = look(&f.scene, &*f.plat, &PRO_TX).await.unwrap().reason;
+    assert_eq!(reason, Some(CheckingReason::PayoutChangePending));
+    assert_eq!(f.barriers(), 2);
+    assert_eq!(f.signatures(), 0);
+}
+
 /// Fix round 2 m4 (r1 Opus m1): an A→B→A payout change. B1 moves the
 /// payout from S1 to S2, B2 back to S1, neither operation readable. While
 /// B1 is pending, Drive's window still paying S1 is no evidence for B2 (its
@@ -3437,11 +3490,12 @@ fn key_with(k: IdentityPublicKey, data: &[u8]) -> IdentityPublicKey {
 // The fault sweep (MG-13 §3, DEC-998).
 
 /// The dw-appdb points no withdrawal step writes: MG-04's barrier write and
-/// discard (commit 3) and the open's backfill (commit 2) have their own
-/// sweeps there.
-const NOT_IN_A_WITHDRAWAL: [&str; 3] = [
+/// discard (commit 3), an abandoned operation's release of its coins (MG-10 D49) and the
+/// open's backfill (commit 2) have their own sweeps there.
+const NOT_IN_A_WITHDRAWAL: [&str; 4] = [
     dw_appdb::fault::MN_BARRIER_WRITE,
     dw_appdb::fault::MN_BARRIER_DISCARD,
+    dw_appdb::fault::MN_OP_ABANDON,
     dw_appdb::fault::MN_BARRIER_BACKFILL,
 ];
 

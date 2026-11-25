@@ -18,4 +18,9 @@ to: string | null, state: PlatformActivityState,
 /**
  * Done: the fee taken.
  */
-feeCredits: string | null, };
+feeCredits: string | null,
+/**
+ * `false` when its group settled with no evidence of which member
+ * went through; absent otherwise.
+ */
+winnerKnown?: boolean, };

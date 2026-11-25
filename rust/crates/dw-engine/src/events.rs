@@ -14,8 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::SyncProgress;
-use dashcore::Txid;
+use dash_spv::sync::{SyncEvent, SyncProgress};
+use dashcore::ephemerealdata::instant_lock::InstantLock;
+use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
 use key_wallet::wallet::balance::WalletCoreBalance;
@@ -498,6 +499,14 @@ pub(crate) type HeaderSource = Arc<
         + Sync,
 >;
 
+/// What drops the history's transactions built on a sweep's: the wallet
+/// and what the sweep dropped that can never confirm (`tx_actions`, #739).
+pub(crate) type SweptDead = dyn Fn(WalletId, crate::tx_actions::Dead) + Send + Sync;
+
+/// What checks the history's pending spends of new transactions' outputs
+/// for unsigned claims: the wallet and the new txids (`tx_actions`, #739).
+pub(crate) type Funded = dyn Fn(WalletId, BTreeSet<Txid>) + Send + Sync;
+
 /// In-memory state of one session, updated from SPV and wallet callbacks.
 pub(crate) struct SessionHub {
     pub network: DashNetwork,
@@ -531,12 +540,26 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Drops what the history built on a sweep's transactions
+    /// (`tx_actions`, #739); unset in hub-only tests.
+    swept_dead: OnceLock<Box<SweptDead>>,
+    /// Drops the history's pending spends a new transaction shows its
+    /// coin's owner never signed (`tx_actions`, #739); unset in hub-only
+    /// tests.
+    funded: OnceLock<Box<Funded>>,
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Chooses the spend claims of the wallets again that learned of an
+    /// InstantSend lock no event of theirs named, and stores the lock for
+    /// them ([`Self::fan_out_lock`]); unset in hub-only tests.
+    lock_rerun: OnceLock<Box<LockRerun>>,
+    /// The InstantSend locks a wallet learned of without an event of its
+    /// own whose store failed, run again at the next lock heard.
+    unstored_locks: Mutex<HashMap<(WalletId, Txid), InstantLock>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -555,9 +578,22 @@ pub(crate) struct SessionHub {
     /// Payments whose own block a wallet's ChainLock named, by wallet:
     /// their sent marks go at the next history flush.
     final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
+    /// The children of payments key-wallet's conflict sweep took, which it
+    /// holds no record of, by wallet, each set with its winner and the
+    /// swept payments: dropped at the next reconcile (#170 case 4).
+    dead_children: Mutex<Vec<DeadChildren>>,
+    /// The coins each wallet's drops hold for good, as its open read them
+    /// (`tx_actions::finish_marked_abandons`): claimed at its load.
+    dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
+    /// Held through each drop of dead transactions
+    /// (`NetworkSession::drop_dead`).
+    pub(crate) drop_gate: tokio::sync::Mutex<()>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the claim choices a lock started again, to wait for.
+    #[cfg(test)]
+    pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// The session's replay records, told of each fork truncation.
     replay: OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
     /// Tests: holds the next first-seen write before it runs.
@@ -584,6 +620,13 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load fails to list the stored records.
     #[cfg(test)]
     pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
+    /// Tests: SPV's progress reports leave the sync reading as the test
+    /// set it.
+    #[cfg(test)]
+    pub(crate) pin_progress: std::sync::atomic::AtomicBool,
+    /// Tests: the next history load's read of the dropped records fails.
+    #[cfg(test)]
+    pub(crate) fail_dropped_read: std::sync::atomic::AtomicBool,
     /// Tests: the next history load's first stored record read goes wrong.
     #[cfg(test)]
     pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
@@ -593,9 +636,31 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next read of a masternode's operations once it has
+    /// judged their states, before it returns them.
+    #[cfg(test)]
+    pub(crate) pause_ops_read: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next Activity Resend once it has checked the
+    /// transaction, before its hand-off.
+    #[cfg(test)]
+    pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: takes the bytes Activity Resend hands off, in place of the
+    /// network.
+    #[cfg(test)]
+    pub(crate) resend_wire: Mutex<Option<Arc<Mutex<Vec<Txid>>>>>,
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: how many sweep events' drops of what is built on them ran.
+    #[cfg(test)]
+    pub(crate) dead_hooks_done: std::sync::atomic::AtomicUsize,
+    /// Tests: new transactions don't start the check for unsigned claims.
+    #[cfg(test)]
+    pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
+    /// Tests: a sweep doesn't start the drop of what is built on it, as at
+    /// an exit right after the sweep.
+    #[cfg(test)]
+    pub(crate) skip_dead_hook: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon returns after its sweep, without its rescan.
     #[cfg(test)]
     pub(crate) quit_before_rescan: std::sync::atomic::AtomicBool,
@@ -677,12 +742,19 @@ pub(crate) struct AbandonBatch<'a> {
 
 impl Drop for AbandonBatch<'_> {
     fn drop(&mut self) {
-        let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
-        if let Some(n) = batches.get_mut(&self.wallet) {
-            *n -= 1;
-            if *n == 0 {
+        let done = {
+            let mut batches = (self.hub.abandon_batches.lock()).unwrap_or_else(|p| p.into_inner());
+            let done = (batches.get_mut(&self.wallet)).is_some_and(|n| {
+                *n -= 1;
+                *n == 0
+            });
+            if done {
                 batches.remove(&self.wallet);
             }
+            done
+        };
+        if done {
+            self.hub.mark_drops(self.wallet);
         }
     }
 }
@@ -774,16 +846,25 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            swept_dead: OnceLock::new(),
+            funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            lock_rerun: OnceLock::new(),
+            unstored_locks: Mutex::new(HashMap::new()),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
+            dead_children: Mutex::new(Vec::new()),
+            dropped_holds: Mutex::new(HashMap::new()),
+            drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
@@ -798,7 +879,17 @@ impl SessionHub {
             #[cfg(test)]
             pause_history: Mutex::new(None),
             #[cfg(test)]
+            pause_ops_read: Mutex::new(None),
+            #[cfg(test)]
+            pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            resend_wire: Mutex::new(None),
+            #[cfg(test)]
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            pin_progress: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_dropped_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             record_read_fault: Mutex::new(None),
             #[cfg(test)]
@@ -807,6 +898,12 @@ impl SessionHub {
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
             quit_before_sweep: Default::default(),
+            #[cfg(test)]
+            dead_hooks_done: Default::default(),
+            #[cfg(test)]
+            skip_unsigned_check: Default::default(),
+            #[cfg(test)]
+            skip_dead_hook: Default::default(),
             #[cfg(test)]
             quit_before_rescan: Default::default(),
             #[cfg(test)]
@@ -859,6 +956,52 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Sets what chooses the spend claims again after a lock (once).
+    pub(crate) fn attach_lock_rerun(&self, run: Box<LockRerun>) {
+        let _ = self.lock_rerun.set(run);
+    }
+
+    /// Tests: the claim choices a lock started again so far.
+    #[cfg(test)]
+    pub(crate) fn take_lock_reruns(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        std::mem::take(&mut *self.lock_reruns.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    fn unstored_locks(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, Txid), InstantLock>> {
+        self.unstored_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Keeps `lock` of `txid` for `wallet` until its store takes it.
+    pub(crate) fn note_unstored_lock(&self, wallet: WalletId, txid: Txid, lock: InstantLock) {
+        self.unstored_locks().insert((wallet, txid), lock);
+    }
+
+    /// The locks whose store failed so far, taken to be written again.
+    pub(crate) fn take_unstored_locks(&self) -> HashMap<(WalletId, Txid), InstantLock> {
+        std::mem::take(&mut *self.unstored_locks())
+    }
+
+    /// A verified InstantSend lock of `txid`: each loaded wallet but those
+    /// `unloaded` whose history holds it out of a block without a lock
+    /// shows it locked, and its spend claims are chosen again as at its
+    /// load. key-wallet tells only the wallets holding the transaction's
+    /// record or coins, and no wallet when it pays none of them (#828).
+    /// The locks whose store failed before are written again.
+    fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
+        let wallets = self.history.note_instant_lock(&txid, unloaded);
+        if wallets.is_empty() && self.unstored_locks().is_empty() {
+            return;
+        }
+        for id in &wallets {
+            self.pump.mark_history(*id, Some(&[txid]));
+        }
+        if let Some(rerun) = self.lock_rerun.get() {
+            rerun(txid, lock.clone(), wallets);
+        }
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -958,6 +1101,44 @@ impl SessionHub {
         let _ = self.reconcile.set(start);
     }
 
+    /// Sets what drops the history's transactions built on swept ones
+    /// (once).
+    pub(crate) fn attach_swept_dead(&self, start: Box<SweptDead>) {
+        let _ = self.swept_dead.set(start);
+    }
+
+    /// Sets what checks the history's pending spends of a new
+    /// transaction's outputs (once).
+    pub(crate) fn attach_funded(&self, start: Box<Funded>) {
+        let _ = self.funded.set(start);
+    }
+
+    /// Starts the check for unsigned claims on what `funded` pays, when a
+    /// pending, unabandoned transaction of the history spends an output of
+    /// one: most new transactions fund none, and start no task.
+    fn check_funded(&self, id: WalletId, funded: BTreeSet<Txid>) {
+        #[cfg(test)]
+        if self
+            .skip_unsigned_check
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let Some(start) = self.funded.get() else {
+            return;
+        };
+        let spent = self.history.read_wallet(&id, |h| {
+            h.txs.values().any(|e| {
+                !e.is_abandoned()
+                    && e.context.block_info().is_none()
+                    && (e.tx.input.iter()).any(|i| funded.contains(&i.previous_output.txid))
+            })
+        });
+        if spent {
+            start(id, funded);
+        }
+    }
+
     /// Starts wallet `id`'s reconcile unless one is started and not yet
     /// running: events during a run start the next one.
     fn schedule_reconcile(&self, id: WalletId) {
@@ -978,6 +1159,33 @@ impl SessionHub {
     fn header_tip_dropped(&self, tip: u32) -> bool {
         let mut last = self.header_tip.lock().unwrap_or_else(|p| p.into_inner());
         last.replace(tip).is_some_and(|last| tip < last)
+    }
+
+    /// The children of swept payments queued for wallet `id`'s drop: each
+    /// set with its winner and the swept payments.
+    pub(crate) fn take_dead_children(
+        &self,
+        id: WalletId,
+    ) -> Vec<(Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
+        let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others) = std::mem::take(&mut *queued)
+            .into_iter()
+            .partition(|(w, ..)| *w == id);
+        *queued = others;
+        (mine.into_iter())
+            .map(|(_, children, winner, swept)| (children, winner, swept))
+            .collect()
+    }
+
+    /// Keeps the drops' holds an open read, by wallet.
+    pub(crate) fn note_dropped_holds(&self, holds: crate::tx_actions::DroppedHolds) {
+        (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
+    }
+
+    /// The coins wallet `id`'s drops hold for good, as its open read them.
+    pub(crate) fn dropped_holds(&self, id: WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        holds.get(&id).cloned().unwrap_or_default()
     }
 
     /// A reconcile of wallet `id` begins: later events start another.
@@ -1284,6 +1492,26 @@ impl SessionHub {
         }
     }
 
+    /// Whether wallet `id`'s checkpoint is below its scan target: a rescan
+    /// or replay is bringing its coins back.
+    fn scanning(&self, id: &WalletId) -> bool {
+        (self.wallets.read().unwrap_or_else(|p| p.into_inner()))
+            .get(id)
+            .is_some_and(|s| s.synced_height < s.scan_target)
+    }
+
+    /// Re-reads wallet `id`'s dropped rows, whose state follows the scan
+    /// ([`crate::history::scan_facts`]): when it ends, is cancelled, or an
+    /// abandon batch is done.
+    pub(crate) fn mark_drops(&self, id: WalletId) {
+        let txids: Vec<Txid> = self
+            .history
+            .read_wallet(&id, |h| h.drops.keys().copied().collect());
+        if !txids.is_empty() {
+            self.pump.mark_history(id, Some(&txids));
+        }
+    }
+
     /// Advances the wallet's scan heights. Returns whether the wallet
     /// started or stopped catching up.
     fn update_heights(&self, id: WalletId, synced: Option<u32>, processed: Option<u32>) -> bool {
@@ -1513,6 +1741,7 @@ impl SessionHub {
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
+                self.check_funded(id, BTreeSet::from([record.txid]));
                 // An event queued before an Abandon this session took its
                 // transaction carries the balance from before the sweep:
                 // read the manager's instead. One queued while the entry
@@ -1533,12 +1762,14 @@ impl SessionHub {
                 }
                 // First seen through its InstantSend lock: evidence. In
                 // the mempool: none (BL-76).
-                if matches!(record.context, TransactionContext::InstantSend(_)) {
+                if let TransactionContext::InstantSend(lock) = &record.context {
                     self.note_seen(id, [record.txid]);
+                    self.fan_out_lock(record.txid, lock, &unloaded);
                 }
             }
             WalletEvent::TransactionInstantLocked {
                 txid,
+                instant_lock,
                 balance,
                 account_balances,
                 ..
@@ -1550,6 +1781,7 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
+                self.fan_out_lock(*txid, instant_lock, &unloaded);
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -1576,16 +1808,100 @@ impl SessionHub {
                         },
                     },
                 );
+                // Read before the history forgets them: what is built on
+                // them is checked against their bytes (#739).
+                let (swept, own): (Vec<Transaction>, Vec<_>) =
+                    (self.history).read_wallet(&id, |h| {
+                        (txids.iter())
+                            .filter_map(|t| {
+                                h.txs.get(t).map(|e| {
+                                    let locked = crate::history::instant_locked(e);
+                                    (e.tx.clone(), (e.own_inputs.clone(), locked))
+                                })
+                            })
+                            .unzip()
+                    });
+                // What can never confirm is recorded as dropped with the
+                // marks' removal, so a load drops what is built on it even
+                // when the drop below never ran (#739).
+                let dead =
+                    crate::tx_actions::swept_claims(id, *superseded_by, &swept).unwrap_or_default();
+                // What is built on a never-valid claim stays listed, as
+                // dropped: its abandoned mark lists it again at a load, as
+                // the other drops of what is built on a claim do (#766).
+                let kept: Vec<(Txid, Transaction, crate::tx_actions::OwnInputs)> = (swept.iter())
+                    .zip(own)
+                    .filter(|(tx, (_, locked))| {
+                        !locked
+                            && dead.get(&tx.txid())
+                                == Some(&crate::history::DropCause::InvalidSource)
+                    })
+                    .map(|(tx, (own, _))| (tx.txid(), tx.clone(), own))
+                    .collect();
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too, and their sent marks go.
-                self.history.with_wallet(id, |h| {
+                // the history drops them too, and their sent marks go. Their
+                // children it holds no record of can never confirm either:
+                // the next reconcile drops them, with this winner.
+                let (children, claim) = self.history.with_wallet(id, |h| {
+                    // A sweep whose winner funds a swept transaction is the
+                    // claim rule's (#739): what is built on the claim is
+                    // its to judge. So is one whose swept transaction the
+                    // history does not hold.
+                    let claim = (txids.iter()).any(|t| {
+                        h.txs.get(t).is_none_or(|e| {
+                            (e.tx.input.iter()).any(|i| i.previous_output.txid == *superseded_by)
+                        })
+                    });
+                    if claim
+                        && (txids.iter()).all(|t| {
+                            h.txs.get(t).is_none_or(|e| {
+                                !(e.tx.input.iter())
+                                    .any(|i| i.previous_output.txid == *superseded_by)
+                            })
+                        })
+                    {
+                        let unheld: Vec<&Txid> =
+                            (txids.iter()).filter(|t| !h.txs.contains_key(*t)).collect();
+                        tracing::debug!(wallet = %id, ?unheld, winner = %superseded_by,
+                            "a sweep is taken as a claim only because the history lacks a swept transaction");
+                    }
+                    let children = match claim {
+                        true => BTreeSet::new(),
+                        false => crate::history::unmined_children(&h.txs, txids),
+                    };
                     for t in txids {
-                        h.forget(t);
+                        match (kept.iter()).any(|(k, ..)| k == t) {
+                            true => {
+                                if let Some(e) = h.txs.get_mut(t) {
+                                    e.abandoned = true;
+                                }
+                                let info = crate::history::DropInfo::new(
+                                    crate::history::DropCause::InvalidSource,
+                                );
+                                h.drops.insert(*t, info);
+                            }
+                            false => h.forget(t),
+                        }
                         h.swept.insert(*t);
                     }
+                    (children, claim)
                 });
+                let queued = !children.is_empty();
+                if queued {
+                    let winner = crate::history::Winner {
+                        txid: Some(*superseded_by),
+                        mined: winner_block.as_ref().map(|b| b.height()),
+                    };
+                    (self.dead_children.lock().unwrap_or_else(|p| p.into_inner())).push((
+                        id,
+                        children.into_iter().collect(),
+                        winner,
+                        txids.iter().copied().collect(),
+                    ));
+                }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    match crate::tx_actions::forget_sent(&appdb, id, txids) {
+                    let claims: &[Txid] = if claim { txids } else { &[] };
+                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, claims, &kept) {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
@@ -1595,6 +1911,24 @@ impl SessionHub {
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);
+                }
+                if queued {
+                    self.schedule_reconcile(id);
+                }
+                // A swept transaction can never confirm, nor can what the
+                // history alone holds built on its outputs (a payment
+                // key-wallet has no record of after a restart, #739).
+                #[cfg(test)]
+                let skip = self
+                    .skip_dead_hook
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let skip = false;
+                if !dead.is_empty()
+                    && !skip
+                    && let Some(start) = self.swept_dead.get()
+                {
+                    start(id, dead);
                 }
             }
             WalletEvent::ChainTruncated {
@@ -1658,10 +1992,17 @@ impl SessionHub {
                 // record's block was evidence already.
                 self.note_seen(id, inserted.iter().chain(updated).map(|r| r.txid));
                 self.schedule_reconcile(id);
+                if !inserted.is_empty() {
+                    self.check_funded(id, inserted.iter().map(|r| r.txid).collect());
+                }
             }
             WalletEvent::SyncHeightAdvanced { height, .. } => {
+                let scanning = self.scanning(&id);
                 if self.update_heights(id, Some(*height), Some(*height)) {
                     self.pump.mark_balances(id);
+                }
+                if scanning && !self.scanning(&id) {
+                    self.mark_drops(id);
                 }
                 if let Some(rescan) = self.rescan().as_mut() {
                     rescan.note_height(&id, *height);
@@ -1714,6 +2055,13 @@ impl SessionHub {
     }
 }
 
+/// Chooses the spend claims of `wallets` again after `txid`'s lock.
+pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
+
+/// Children of swept payments queued for a drop: their wallet, their
+/// txids, the winner, and the swept payments.
+type DeadChildren = (WalletId, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>);
+
 /// The transactions a wallet event names.
 fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
     match event {
@@ -1742,7 +2090,25 @@ fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
 }
 
 impl EventHandler for SessionHub {
+    /// A verified InstantSend lock, which the mempool manager hands the
+    /// wallet as well: a payment to no loaded wallet's address raises no
+    /// wallet event (#828).
+    fn on_sync_event(&self, event: &SyncEvent) {
+        if let SyncEvent::InstantLockReceived {
+            instant_lock,
+            validated: true,
+        } = event
+        {
+            let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+            self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
+        }
+    }
+
     fn on_progress(&self, progress: &SyncProgress) {
+        #[cfg(test)]
+        if self.pin_progress.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
             (

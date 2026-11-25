@@ -44,7 +44,7 @@ use self::shielded::{
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
 };
-use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
+use self::unfinished::{LockFinish, LockKind, RecoverQuote, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::api::social::PaymentSourceName;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
@@ -171,8 +171,9 @@ commands! {
         Ok(quote.into())
     }
 
-    /// An invitation claim row's resume grant: no duffs, and the credits
-    /// of the steps it has left, from the row (DP5-03 D20).
+    /// An invitation claim row's or a Platform-funded row's resume grant:
+    /// no duffs, and the credits of the steps it has left, from the row
+    /// (DP5-03 D20).
     #[facade("DashPay::registration_resume_grant")]
     fn registration_resume_grant(state, wallet_id: String, draft: String) -> GrantRequest {
         let dashpay = state.dashpay(&wallet_id).await?;
@@ -1004,5 +1005,34 @@ commands! {
     ) -> LockFinish {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
+    }
+
+    /// What a recover of the partly used transfer to Shielded at
+    /// `txid`:`vout` would move, read from Platform's proved state now.
+    #[facade("DashPay::recover_transfer_quote")]
+    fn recover_transfer_quote(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+    ) -> RecoverQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer_quote(txid, vout).await?.into())
+    }
+
+    /// Recovers what is left on the partly used transfer to Shielded at
+    /// `txid`:`vout` to the wallet's own Platform address under `grant`,
+    /// whose credits cap is the quote's `credits`; only a proved apply
+    /// finishes it.
+    #[facade("DashPay::recover_transfer")]
+    fn recover_transfer(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer(txid, vout, grant).await?.into())
     }
 }

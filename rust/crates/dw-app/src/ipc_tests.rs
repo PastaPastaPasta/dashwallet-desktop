@@ -2559,8 +2559,8 @@ fn nothing_changed(demo: &Demo, wallet: &Value, draft: &Value, grant: &Value) {
 }
 
 /// Row 74 r1: the engine's own refusals of the close (a wallet still
-/// opening, a shielded spend not resolved) refuse the switch, named, and
-/// change nothing.
+/// opening, a shielded spend not resolved, a transfer waiting on its
+/// wallet's start-up) refuse the switch, named, and change nothing.
 #[test]
 fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
     use dw_engine::test_support::{CloseFence, hold_close_fence};
@@ -2573,6 +2573,11 @@ fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
             CloseFence::ShieldedSpend,
             "shielded_spend_unresolved",
             "shieldedSpendUnresolved",
+        ),
+        (
+            CloseFence::Preparing,
+            "app.transfer_preparing",
+            "transferPreparing",
         ),
     ] {
         let grant = platform_grant(&demo, &wallet);
@@ -2855,4 +2860,41 @@ fn every_broadcast_command_counts_while_it_runs() {
             0
         );
     }
+}
+
+/// The Platform addresses' mainnet flag crosses as its own feature: on
+/// mainnet the balance says `sendsOff: "platform_address_sends"` (and
+/// `sendsActive: false`), and a move's or a send's quote is
+/// `platform.feature_off` with that feature, not `platform_addresses`'s
+/// protocol refusal; regtest has neither.
+#[test]
+fn platform_address_sends_are_off_on_mainnet_as_their_own_feature() {
+    let off = json!({ "kind": "feature", "feature": "platform_address_sends" });
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert_eq!(balance["sendsActive"], false, "{balance}");
+    assert_eq!(balance["sendsOff"], "platform_address_sends", "{balance}");
+    let all = json!({ "kind": "all" });
+    let e = demo.err(
+        "platform_move_to_core_quote",
+        json!({ "walletId": wallet, "amount": all }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+    let e = demo.err(
+        "platform_send_quote",
+        json!({ "walletId": wallet, "to": "checked after the flag", "amount": all, "retryOf": null }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert!(balance["sendsOff"].is_null(), "{balance}");
 }

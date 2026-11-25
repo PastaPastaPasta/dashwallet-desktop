@@ -113,10 +113,7 @@ test.describe("Home", () => {
     await page.getByTestId("shortcut-send").click();
     await expect(page.getByTestId("pay-address-form")).toBeVisible();
     await page.getByTestId("sidebar-home").click();
-    // Scan QR: no camera on the desktop, so the address field takes a pasted code.
-    await page.getByTestId("shortcut-scan").click();
-    await expect(page.getByTestId("pay-address")).toBeFocused();
-    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("shortcut-card").locator(".shortcut-item")).toHaveText(["Receive", "Send", "Transfer", "Back up"]);
     const backup = page.getByTestId("shortcut-backup");
     await expect(backup).toHaveAttribute("aria-disabled", "true");
     await expect(backup).toHaveAttribute("title", /not available yet/);
@@ -822,7 +819,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
@@ -836,7 +833,7 @@ test.describe("Activity", () => {
     await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
     expect(errors).toEqual([]);
   });
@@ -897,7 +894,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

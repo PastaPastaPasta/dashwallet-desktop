@@ -1082,6 +1082,7 @@ impl Ledger {
             Standing::Cancelled(_) => false,
             _ => {
                 self.committed(row)
+                    || super::registration_flow::platform_committed(row)
                     || (is_core_balance(row)
                         && (row.asset_lock_outpoint.is_some()
                             || row.identity.is_some()

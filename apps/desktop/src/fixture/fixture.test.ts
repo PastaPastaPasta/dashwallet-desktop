@@ -218,8 +218,8 @@ describe("fixture backend", () => {
     await expect(quote("dashpaydesktopquote2", { kind: "invitation", linkId: "1".padStart(32, "0"), requestInviter: true })).rejects.toMatchObject({
       code: "invitation.expired",
     });
-    // C-funding F5: from the Platform balance the identity receives the name's credits, the first
-    // address keeps three fees, and the start is refused until its flow step lands.
+    // C-funding F5: from the Platform balance the identity receives the name's credits and the first
+    // address keeps three fees; the start takes only those numbers, under a grant it can redeem.
     const fromPlatform = await quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" });
     expect(fromPlatform).toMatchObject({
       lockDuffs: 0,
@@ -232,10 +232,16 @@ describe("fixture backend", () => {
     const { fundingCredits, feeReserveCredits } = fromPlatform.platform!;
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
-    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    ).rejects.toMatchObject({ code: "platform.grant_invalid" });
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // The label's rules come first, as the engine's: the quote and the start refuse it alike.
+    const doubled = { kind: "platformAddresses", fundingCredits, feeReserveCredits } as const;
+    await expect(quote("foo--bar", doubled)).rejects.toMatchObject({ code: "name.invalid" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "foo--bar", temporaryLabel: null, funding: doubled, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "name.invalid" });
     // A move that may still execute holds the addresses: refused, naming it.
     clearMocks();
     backend({ scenario: "platform-send-held" });
@@ -250,6 +256,9 @@ describe("fixture backend", () => {
       code: "platform.feature_off",
       data: { feature: "platform_registration" },
     });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {

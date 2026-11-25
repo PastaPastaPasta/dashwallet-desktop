@@ -795,6 +795,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::NoOwnerKey,
             MasternodesError::UpdatePending { operation: hash() },
             MasternodesError::UpdateSuperseded { operation: hash() },
+            MasternodesError::UpdateAbandonedPending { operation: hash() },
             MasternodesError::SharedSessionNotFound,
             MasternodesError::SharedStage { stage: hash() },
             MasternodesError::SharedMessage {

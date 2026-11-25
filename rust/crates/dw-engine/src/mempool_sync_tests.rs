@@ -23,6 +23,8 @@ use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 mod crash_send_tests;
 #[path = "dismissed_spend_disk_tests.rs"]
 mod dismissed_spend_disk_tests;
+#[path = "dropped_claim_tests.rs"]
+mod dropped_claim_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]
@@ -226,6 +228,16 @@ fn payment(to: &Address) -> Transaction {
         }],
         special_transaction_payload: None,
     }
+}
+
+/// A payment of [`PAID`] to the wallet's receive address, InstantSend-locked
+/// and stored: a balance that outlives a restart. Returns its amount.
+pub(crate) fn paid_and_stored(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> u64 {
+    let tx = payment(&receive_address(engine, session, id));
+    mempool(engine, session, id, &tx);
+    instant_lock(engine, session, id, &tx);
+    wait_stored_locked(session, id, tx.txid());
+    PAID
 }
 
 fn block_with(txs: Vec<Transaction>) -> Block {

@@ -290,6 +290,10 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn settled_locks(&self) -> impl Future<Output = HashSet<Txid>> + Send;
     /// Records the shield lock `txid` settled by a proved apply.
     fn settle(&self, txid: Txid) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// The shield locks Platform proved partly used (a shield refused after
+    /// a penalty, `unfinished_shields`): no longer pending shields; only a
+    /// recover moves what is left (`unfinished_remainder`).
+    fn partly_used(&self) -> impl Future<Output = HashSet<OutPoint>> + Send;
     /// Platform's proved answer whether the lock at `outpoint` is spent
     /// ([`super::unfinished_locks::proved_spent`]).
     fn spent(
@@ -517,7 +521,7 @@ pub(super) fn platform_shield_fee(version: &PlatformVersion) -> Result<u64, Shie
     compute_minimum_shielded_fee(MIN_ACTIONS, version).map_err(internal)
 }
 
-fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
+pub(crate) fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
     if protocol_version < SHIELDED_ACTIVATION_VERSION {
         return Err(ShieldedError::NotActive {
             protocol_version,
@@ -1039,7 +1043,7 @@ pub(crate) async fn send_quote(
     let version = priced_gate(lib).await?;
     shielded_address(lib.network(), to)?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     let fee = spend_fee(lib, version, credits, ShieldedFeeKind::Base).await?;
     Ok(spend_quote(credits, fee, None))
@@ -1068,7 +1072,10 @@ pub(super) async fn unshield_plan(
     let version = priced_gate(lib).await?;
     let rules = Rules::at(version)?;
     if credits < rules.min {
-        return Err(ShieldedError::BelowMinimum { min: rules.min });
+        return Err(ShieldedError::BelowMinimum {
+            min: rules.min,
+            max: None,
+        });
     }
     if credits > rules.max {
         return Err(invalid("the amount is above Platform's largest withdrawal").into());
@@ -1099,7 +1106,7 @@ async fn unshield_to_platform_plan(
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
     let version = priced_gate(lib).await?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     if credits > i64::MAX as u64 {
         return Err(invalid("the amount is above Platform's largest unshield").into());
@@ -1746,13 +1753,16 @@ pub(super) struct OpenShield {
 /// `Consumed` mark does not survive SPV seeing the lock transaction again
 /// in a later session (the row comes back `Broadcast`, then proved), so a
 /// proved apply is also recorded in the dispatch journal (`top_up_settled`,
-/// as `topup.rs` records its own).
+/// as `topup.rs` records its own). A lock Platform proved partly used is
+/// not one ([`ShieldedLib::partly_used`]): a shield of it fails every time.
 pub(super) async fn open_shields(lib: &impl ShieldedLib) -> Result<Vec<OpenShield>, ShieldedError> {
     let ours = lib.own_locks().ok_or(PlatformError::Unavailable)?;
     let settled = lib.settled_locks().await;
     let unknown = lib.unknown_locks().await;
+    let partly_used = lib.partly_used().await;
     Ok((lib.shield_locks().await.into_iter())
         .filter(|l| !settled.contains(&l.outpoint.txid))
+        .filter(|l| !partly_used.contains(&l.outpoint))
         .filter_map(|lock| {
             let consumption_unknown = match lock.status {
                 LockStatus::Consumed => return None,
@@ -1814,7 +1824,7 @@ async fn shield_plan(
     let pool_fee = shield_pool_fee(version)?;
     let min = pool_fee / CREDITS_PER_DUFF + 1;
     if duffs < min {
-        return Err(ShieldedError::BelowMinimum { min });
+        return Err(ShieldedError::BelowMinimum { min, max: None });
     }
     no_open_shield(lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -2080,6 +2090,9 @@ pub(super) async fn open_for_funding(
     lib: &impl ShieldedLib,
 ) -> Result<(), ShieldedError> {
     gate(lib).await?;
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         let refusal = held(lib, wait);
         if wait == RegistrationWait::Startup {
@@ -2120,7 +2133,7 @@ pub(super) async fn finish_lock(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
             Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,
@@ -2182,6 +2195,9 @@ pub(super) async fn apply(
                 "a shield's apply may have executed, unproved; its lock stays pending"
             );
             lib.mark_unknown(outpoint.txid).await;
+            // A shield refused after a penalty leaves the lock partly used:
+            // only a recover moves what is left (#402).
+            super::unfinished_shields::read_unproved(session, wallet, lib, outpoint).await;
             ShieldState::ConsumptionUnknown
         }
         // Refused before the lock's key signed a transition: nothing
@@ -3054,6 +3070,14 @@ impl ShieldedLib for PwShielded {
         {
             tracing::warn!(%txid, error = %e, "could not record a shield of unknown consumption");
         }
+    }
+
+    async fn partly_used(&self) -> HashSet<OutPoint> {
+        let (session, wallet) = (&self.pw.session, self.pw.wallet_id);
+        let kind = super::unfinished_locks::LockKindId::Shielded;
+        (super::unfinished_locks::remaining_of(session, wallet, kind).await)
+            .into_keys()
+            .collect()
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {

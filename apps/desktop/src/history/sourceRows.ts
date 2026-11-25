@@ -9,6 +9,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import { creditsToDuffs } from "../api/pending";
+import { t } from "../i18n";
 
 export type RowSource = "platform" | "shielded";
 
@@ -25,6 +26,8 @@ export const SourceRowText = {
   fromCore: "Moved from Dash wallet",
   /** An unshield to this wallet's own Platform address, seen from the address (C-routes D-C1). */
   fromShielded: "From Shielded",
+  /** The value left on a transfer to Shielded that Platform refused, recovered to the Platform balance. */
+  recovered: "Recovered from an unfinished transfer",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   /** A move, send or top-up that failed by height but may still execute: not "Not accepted". */
@@ -41,12 +44,30 @@ export const SourceRowText = {
 
 const REPLACED = ":replaced";
 const MAY_LAND = ":mayland";
+const SETTLED_UNKNOWN = ":unknown";
 
 /** A Platform move the engine replaced with a retry: it carries no amount and is never a loss. */
 export const isReplacedRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(REPLACED);
 
 /** A failed Platform move or send that may still execute: shown as unconfirmed, never as a problem. */
 export const isMayLandRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(MAY_LAND);
+
+/** A row of a group that settled with no evidence of which member went through: only the newest
+ * (done) carries the group's debit, so Activity never counts it twice. */
+export const isSettledUnknownRow = (row: Pick<TxRow, "txid">): boolean => row.txid.endsWith(SETTLED_UNKNOWN);
+
+const SETTLED_KEYS = {
+  transfer: { title: "transfer.status.settledUnknown.title", text: "transfer.status.settledUnknown.text" },
+  pay: { title: "pay.status.settledUnknown.title", text: "pay.status.settledUnknown.text" },
+  topUp: { title: "dashpay.topUp.status.settledUnknown.title", text: "dashpay.topUp.status.settledUnknown.text" },
+} as const;
+
+/** A settled-unknown row's title and text, by its kind: a payment, a top-up, else a move. */
+export function settledUnknownText(row: Pick<TxRow, "txid">): { title: string; text: string } {
+  const kind = row.txid.split(":")[1];
+  const keys = kind === "send" || kind === "contactPayment" ? SETTLED_KEYS.pay : kind === "toIdentity" ? SETTLED_KEYS.topUp : SETTLED_KEYS.transfer;
+  return { title: t(keys.title), text: t(keys.text) };
+}
 
 /** The source of a synthetic row; `null` for a Core transaction. */
 export function rowSource(row: Pick<TxRow, "txid">): RowSource | null {
@@ -76,17 +97,18 @@ const base = (txid: string, status: TxRow["status"], timestamp: number | null, a
  * problem row, unless it may still execute (`mayLand`): that one is unconfirmed, with its amount. */
 export function platformRow(a: PlatformActivity): TxRow {
   const move = a.kind === "moveToCore";
-  const replaced = a.state === "replaced";
-  // What a fund or an unshield adds to the Platform addresses reads as a receipt there.
-  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded";
+  const unknown = a.winnerKnown === false;
+  const replaced = a.state === "replaced" && !unknown;
+  // What a fund, an unshield or a recover adds to the Platform addresses reads as a receipt there.
+  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded" || a.kind === "recovered";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
-  const amount = replaced ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
+  const amount = replaced || (unknown && a.state !== "done") ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const topUp = a.kind === "toIdentity";
   const paid = a.kind === "outgoing" || a.kind === "send" || a.kind === "contactPayment" || topUp;
-  const mayLand = a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment" || topUp);
-  const kind = a.state === "done" || replaced ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
+  const mayLand = !unknown && a.state === "failed" && a.mayLand && (move || a.kind === "send" || a.kind === "contactPayment" || topUp);
+  const kind = a.state === "done" || replaced || unknown ? "confirmed" : a.state === "pending" || mayLand ? "unconfirmed" : "notAccepted";
   return {
-    ...base(`platform:${a.kind}:${a.id}${replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
+    ...base(`platform:${a.kind}:${a.id}${unknown ? SETTLED_UNKNOWN : replaced ? REPLACED : mayLand ? MAY_LAND : ""}`, statusOf(kind), a.at, paid && amount !== 0 ? -amount : amount),
     txType: move ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: move ? "platform" : received ? "received" : "sent",
     address: move || a.kind === "send" || a.kind === "contactPayment" ? a.to : a.address,
@@ -117,7 +139,7 @@ export type SourceRecord =
 
 /** A row's txid without its state suffix: a move that is replaced or may still land while its
  * details are open is still the same record. */
-const recordKey = (txid: string) => txid.replace(/:(replaced|mayland)$/, "");
+const recordKey = (txid: string) => txid.replace(/:(replaced|mayland|unknown)$/, "");
 
 /** The activity record a synthetic row was made from, by its txid; `null` for a Core txid or a
  * record no longer in the read. */
@@ -138,7 +160,7 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
   if (rowSource(row) === "platform")
-    return kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "recovered" ? SourceRowText.recovered : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

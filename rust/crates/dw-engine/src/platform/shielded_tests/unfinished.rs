@@ -90,6 +90,7 @@ fn a_restored_shield_lock_is_listed_and_finished_on_its_outpoint() {
             duffs: restored.amount,
             origin: LockOrigin::Restored,
             state: UnfinishedState::Checking,
+            remaining_credits: None,
         }]
     );
 
@@ -348,6 +349,7 @@ fn a_restored_library_row_lists_with_its_credit_script() {
             duffs: 1_000_000,
             origin: LockOrigin::Restored,
             state: UnfinishedState::Checking,
+            remaining_credits: None,
         }]
     );
     let scripts = fx.engine.block_on(async {
@@ -464,7 +466,9 @@ impl Rig for ShieldRig {
             match mark {
                 Mark::Settled => lib.settle(txid).await.unwrap(),
                 Mark::Unknown => lib.mark_unknown(txid).await,
-                Mark::Used => unreachable!("no record by txid of a proved use"),
+                Mark::Used | Mark::Remaining => {
+                    unreachable!("no record by txid of a proved read")
+                }
             }
         });
     }
@@ -539,9 +543,80 @@ impl Rig for ShieldRig {
         true
     }
 
+    fn recovers_remaining(&self) -> bool {
+        true
+    }
+
     fn prove_spent(&self, outpoint: OutPoint, read: SpentRead) {
         self.lib.spent_reads.lock().unwrap().insert(outpoint, read);
     }
+}
+
+/// #402: a shield refused after a penalty, its apply failed after the
+/// lock key signed, is read again from Platform's proved state. Partly used
+/// with at least Platform's fee for moving the rest, it lists Recoverable
+/// with what is left; below that fee, too small; never Checking, and never
+/// applied as a shield again. A failure Platform does not prove partly used
+/// stays Checking. A partly used lock is no longer a pending shield (whose
+/// Check again would shield it again).
+#[test]
+fn a_shield_refused_after_a_penalty_lists_what_is_left() {
+    let rig = ShieldRig::new();
+    let floor = {
+        let rules = dpp::version::PlatformVersion::latest();
+        crate::platform::platform_fund::fee_credits(rules)
+    };
+    let tx = |n| conformance::transaction(n, 1, 1_000_000, &rig.script);
+    let row = |n| {
+        let row = conformance::tracked(
+            &tx(n),
+            0,
+            AssetLockFundingType::AssetLockShieldedAddressTopUp,
+            AssetLockStatus::ChainLocked,
+            true,
+        );
+        rig.track(vec![row.clone()]);
+        row.out_point
+    };
+    let (left, small, plain) = (row(0xC1), row(0xC2), row(0xC3));
+    rig.prove_spent(
+        left,
+        SpentRead::Remaining {
+            credits: 600_000_000,
+        },
+    );
+    rig.prove_spent(small, SpentRead::Remaining { credits: floor - 1 });
+    for at in [left, small, plain] {
+        rig.next(End::SignedThenFailed);
+        assert_eq!(rig.finish(at).0.unwrap(), LockFinish::Checking);
+    }
+    let listed = rig.list().unwrap();
+    let of = |at: OutPoint| {
+        let l = (listed.iter())
+            .find(|l| l.txid == at.txid.to_string())
+            .unwrap();
+        (l.state, l.remaining_credits)
+    };
+    assert_eq!(of(left), (UnfinishedState::Recoverable, Some(600_000_000)));
+    assert_eq!(of(small), (UnfinishedState::TooSmall, Some(floor - 1)));
+    assert_eq!(of(plain), (UnfinishedState::Checking, None));
+    let open = run(&rig.fx, &rig.lib, |_, lib| async move {
+        crate::platform::shielded_pool::open_shields(&*lib).await
+    })
+    .unwrap();
+    let open: Vec<_> = open.iter().map(|o| o.lock.outpoint).collect();
+    assert_eq!(open, [plain], "a partly used lock is no pending shield");
+
+    let applies = rig.applies();
+    for at in [left, small] {
+        let (again, asked) = rig.finish(at);
+        let refused = LockFinish::NotApplied {
+            error: locks::PARTLY_USED.into(),
+        };
+        assert_eq!(again.unwrap(), refused);
+        assert!(!asked, "refused before the lease");
+    }
+    assert_eq!(rig.applies(), applies, "never applied as a shield again");
 }
 
 /// Type 5 holds the contract every kind does (`unfinished_conformance`).
@@ -791,7 +866,7 @@ fn a_lock_below_the_fee_is_too_small_and_keeps_the_grant() {
     assert_eq!(
         refused,
         LockFinish::NotApplied {
-            error: ShieldedError::BelowMinimum { min }.code().into()
+            error: ShieldedError::BelowMinimum { min, max: None }.code().into()
         }
     );
     assert!(!begun.load(Ordering::SeqCst), "the grant is not redeemed");

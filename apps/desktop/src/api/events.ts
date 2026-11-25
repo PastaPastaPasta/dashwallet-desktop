@@ -58,11 +58,14 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
       // masternode overview lists collateral-shaped coins, which Show Masternodes' Auto counts.
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId)];
+      // A dropped payment's coins coming back, or the scan that brings them stopping, moves what
+      // its details and notice say; the engine sends no history change for it.
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId), keys.droppedNotices(event.walletId), keys.txDetailAll(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
         keys.txDetailAll(event.walletId),
+        keys.droppedNotices(event.walletId),
         keys.receiveAll(event.walletId),
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),

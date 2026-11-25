@@ -27,4 +27,9 @@ estimated: boolean,
 /**
  * A `contactPayment`'s contact; absent for every other row.
  */
-contact?: TxCounterparty, };
+contact?: TxCounterparty,
+/**
+ * `false` on every row of a group whose proof does not say which
+ * member went through (the newest `done` included); absent otherwise.
+ */
+winnerKnown?: boolean, };

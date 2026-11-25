@@ -28,6 +28,7 @@ import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance"
 import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
+import type { RecoverQuote } from "./generated/RecoverQuote";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
 import type { ShieldedAddress } from "./generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
@@ -74,6 +75,7 @@ import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
 import type { TxNoticeRow } from "./generated/TxNoticeRow";
+import type { DroppedNoticeRow } from "./generated/DroppedNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -286,6 +288,10 @@ export interface Backend {
   unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers | null>;
   /** Finishes the unfinished transfer of `kind` at `txid`:`vout` under a `platformOp` grant. */
   finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish>;
+  /** What a recover of the partly used transfer to Shielded at `txid`:`vout` would move, read from Platform now. */
+  recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote>;
+  /** Recovers what is left on it to the wallet's own Platform address, under a grant of exactly the quote's credits. */
+  recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish>;
   /** Shielded → Shielded; `credits` is a decimal string. */
   shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
   /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);
@@ -335,6 +341,10 @@ export interface Backend {
   exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
   /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
   txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
+  /** The notices of payments Dash Wallet dropped because the Dash they used came from a transaction
+   * that was never valid: once their coins are back, until dismissed. */
+  droppedNotices(walletId: string): Promise<DroppedNoticeRow[]>;
+  dismissDroppedNotices(walletId: string, txids: string[]): Promise<null>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
@@ -563,7 +573,7 @@ export interface Backend {
   /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
   historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
-  /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
+  /** Abandons the unconfirmed transactions that aren't InstantSend-locked (`null`: every wallet) and
    * schedules a rescan; returns how many. */
   dropUnconfirmed(walletId: string | null): Promise<number>;
   registrations(walletId: string): Promise<RegistrationStatus[]>;

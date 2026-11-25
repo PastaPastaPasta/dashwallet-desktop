@@ -204,6 +204,7 @@ mod tests {
                 instant_locked: false,
                 chain_locked: false,
                 matures_in: None,
+                dropped: None,
             },
             timestamp: v["timestamp"].as_u64(),
             block_height: None,
