@@ -2701,14 +2701,16 @@ impl NetworkSession {
             let held_again: Vec<Txid> = links.iter().copied().filter(|t| held(t)).collect();
             let moved = processed != Some(core.last_processed_height());
             if truncations != since || moved || !held_again.is_empty() {
-                tracing::warn!(%wallet, ?roots, ?held_again, moved, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
-                // Only a block since the take: the drop that block's
-                // reconcile runs decides them again, with the stamp they
-                // were queued with.
-                if truncations == since && held_again.is_empty() {
+                // Only a block since the take: the children wait until the
+                // hub has heard key-wallet's height, and with it any fork
+                // before it; the next drop then decides them again.
+                let requeued = truncations == since && held_again.is_empty();
+                tracing::warn!(%wallet, ?roots, ?held_again, moved, requeued, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
+                if requeued {
+                    let at = (since, core.last_processed_height());
                     let found = (winner, links.clone());
                     self.hub
-                        .requeue_dead_children(wallet, since, roots.to_vec(), found);
+                        .requeue_dead_children(wallet, at, roots.to_vec(), found);
                 }
                 return Ok(BTreeSet::new());
             }
