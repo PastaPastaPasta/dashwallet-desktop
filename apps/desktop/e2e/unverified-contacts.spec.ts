@@ -4,10 +4,11 @@ import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { PAYEE } from "./wallet";
 
 // H-09: contacts whose data is not verified yet, on the fixture backend. A payment to one waits
-// in prepare ("Checking contact…") and is refused when the data can't be checked or doesn't
-// match; Accept and Send Contact Request warn and stay on; the row keeps "Unverified".
+// in prepare ("Checking contact…"); while the contacts are still being re-checked it gives way to
+// a notice with Try again, and when the data doesn't match it is refused; Accept and Send Contact
+// Request warn and stay on; the row keeps "Unverified".
 
-const UNCHECKED = "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.";
+const UPDATING = "Dash Wallet is still checking your contacts' payment details after the restart, so nothing was sent. You can pay this contact once it has finished.";
 const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 const ACCEPT = "Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.";
 const SEND = "Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.";
@@ -40,7 +41,7 @@ async function openContacts(page: Page) {
 const row = (page: Page, name: string) => page.getByTestId("contact-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) });
 
 for (const theme of THEMES) {
-  test(`H-09 a contact payment waits on "Checking contact…", then is refused: the contact's details can't be checked yet (${theme})`, async ({ page }) => {
+  test(`H-09 a contact payment waits on "Checking contact…", then the form says the contacts are still updating, with Try again (${theme})`, async ({ page }) => {
     const errors = await open(page, "dashpay-contact-unchecked", theme, "&hold=draft_prepare");
     await reviewErin(page);
     await page.getByTestId("pay-confirm-send").click();
@@ -48,13 +49,46 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("pay-confirm-send")).toBeDisabled();
     expect(await seriousAxeViolations(page)).toEqual([]);
     await page.evaluate(() => window.__dwFixture!.release("draft_prepare"));
-    const result = page.getByTestId("pay-result");
-    await expect(result).toContainText("Payment not sent");
-    await expect(result).toContainText(UNCHECKED);
+    const notice = page.getByTestId("pay-banner").and(page.locator('[data-kind="updating"]'));
+    await expect(notice).toHaveAttribute("role", "status");
+    await expect(notice.getByTestId("pay-banner-text")).toHaveText(UPDATING);
+    await expect(notice.getByTestId("pay-banner-retry")).toHaveText("Try again");
+    // A notice, not an error: no result sheet, no alert, the payment still on the form.
+    await expect(page.getByTestId("pay-confirm")).toHaveCount(0);
+    await expect(page.getByTestId("pay-result")).toHaveCount(0);
+    await expect(page.getByRole("alert").filter({ hasText: UPDATING })).toHaveCount(0);
+    await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+    await expect(page.getByTestId("pay-amount")).toHaveValue("0.01");
+    // Focus goes to Try again, so the notice is read.
+    await expect(notice.getByTestId("pay-banner-retry")).toBeFocused();
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
   });
 }
+
+test("H-09 Try again estimates again and reopens the review; Send checks again and still sends nothing to an unchecked contact", async ({ page }) => {
+  const errors = await open(page, "dashpay-contact-unchecked");
+  await reviewErin(page);
+  await page.getByTestId("pay-confirm-send").click();
+  const notice = page.getByTestId("pay-banner").and(page.locator('[data-kind="updating"]'));
+  await expect(notice).toBeVisible();
+  const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+  // Once the form's own re-estimate after the sheet closed is in.
+  await expect(notice.getByTestId("pay-banner-retry")).toBeEnabled();
+  const estimates = (await calls()).filter((c) => c === "draft_estimate").length;
+  await notice.getByTestId("pay-banner-retry").click();
+  await expect(page.getByTestId("pay-confirm")).toBeVisible();
+  await expect(notice).toHaveCount(0);
+  expect((await calls()).filter((c) => c === "draft_estimate").length).toBeGreaterThan(estimates);
+  await page.getByTestId("pay-confirm-passphrase").fill("demo");
+  await page.getByTestId("pay-confirm-send").click();
+  await expect(notice.getByTestId("pay-banner-text")).toHaveText(UPDATING);
+  await expect(page.getByTestId("pay-result")).toHaveCount(0);
+  const after = await calls();
+  expect(after.filter((c) => c === "draft_prepare")).toHaveLength(2);
+  expect(after).not.toContain("draft_broadcast");
+  expect(errors).toEqual([]);
+});
 
 test("H-09 a contact payment whose data doesn't match is refused in plain words", async ({ page }) => {
   await open(page, "dashpay-contact-mismatch");
@@ -136,4 +170,21 @@ test("H-09 Tools ▸ Information says what the trusted-only setting means for co
   await open(page, "dashpay-info-trusted-only");
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
   await expect(page.getByTestId("information-dashpay")).toContainText("Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.");
+});
+
+test("H-09 the notice outlives the page: a form shown again after the refusal still says it", async ({ page }) => {
+  const errors = await open(page, "dashpay-contact-unchecked", "light", "&hold=draft_prepare");
+  await reviewErin(page);
+  await page.getByTestId("pay-confirm-send").click();
+  await expect(page.getByTestId("pay-confirm-send")).toHaveText("Checking contact…");
+  await navigate(page, "home");
+  await page.evaluate(() => window.__dwFixture!.release("draft_prepare"));
+  await navigate(page, "pay");
+  await page.getByTestId("pay-tabs-contact").click();
+  await page.getByTestId("pay-picker-row").filter({ has: page.locator(".contact-row-name", { hasText: "Erin" }) }).click();
+  const notice = page.getByTestId("pay-banner").and(page.locator('[data-kind="updating"]'));
+  await expect(notice.getByTestId("pay-banner-text")).toHaveText(UPDATING);
+  await expect(page.getByTestId("pay-result")).toHaveCount(0);
+  expect(await page.evaluate(() => window.__dwFixture!.calls)).not.toContain("draft_broadcast");
+  expect(errors).toEqual([]);
 });
