@@ -71,9 +71,11 @@ rust/crates/dw-engine/src/platform/**
 !rust/crates/dw-engine/src/platform/users*
 !rust/crates/dw-engine/src/platform/contest_watch*
 
-# Engine: masternode collateral, ProTx, payouts, credit withdrawals, shared masternodes; proposal collateral.
+# Engine: masternode collateral, ProTx, payouts, credit withdrawals, shared masternodes; proposal collateral
+# and the proposal fee transaction (prepare, sign, save, broadcast, rebroadcast).
 rust/crates/dw-engine/src/masternodes/**
 rust/crates/dw-engine/src/governance/collateral*
+rust/crates/dw-engine/src/governance/proposals*
 
 # The console: sendtoaddress, walletpassphrase and the other RPC-style wallet commands.
 rust/crates/dw-console/**
@@ -94,6 +96,7 @@ rust/crates/dw-app/src/api/coinjoin.rs
 rust/crates/dw-app/src/api/wallets.rs
 rust/crates/dw-app/src/api/units.rs
 rust/crates/dw-app/src/api/masternodes.rs
+rust/crates/dw-app/src/api/governance.rs
 rust/crates/dw-app/src/api/identity.rs
 rust/crates/dw-app/src/api/identity/**
 rust/crates/dw-app/src/api/social/payments.rs
@@ -122,9 +125,23 @@ apps/desktop/src/api/pending*
 apps/desktop/src/shielded/**
 apps/desktop/src/transfer/**
 apps/desktop/src/recovery/**
+apps/desktop/src/dashpay/topup*
+apps/desktop/src/dashpay/withdraw*
+apps/desktop/src/coinjoin/move*
+apps/desktop/src/masternodes/registration*
+apps/desktop/src/masternodes/shared*
 
-# Swift app: amounts, send and PSBT.
+# Swift app: amounts, send, PSBT, coin control and signing.
 Sources/DashKit/Amount.swift
+Sources/WalletRuntime/Services/ToolServices.swift
+Sources/WalletFeatures/Common/AmountFormatter.swift
+Sources/WalletFeatures/Common/InputValidation.swift
+Sources/WalletFeatures/SignVerify/SignVerifyViewModel.swift
 Sources/CrossUI/SendScreen.swift
+Sources/CrossUI/CoinSelectionScreen.swift
+Sources/CrossUI/PSBTScreen.swift
+Sources/MacUI/Send/**
+Sources/MacUI/PSBT/**
+Sources/MacUI/CoinControl/**
 Sources/WalletFeatures/Send/**
 Sources/WalletFeatures/PSBT/**

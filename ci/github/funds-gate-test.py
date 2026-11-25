@@ -47,6 +47,11 @@ class Paths(unittest.TestCase):
             "ci/funds-paths.txt",
             "ci/github/funds-gate.py",
             ".github/workflows/funds-gate.yml",
+            "rust/crates/dw-engine/src/governance/proposals.rs",
+            "apps/desktop/src/dashpay/withdraw.ts",
+            "apps/desktop/src/coinjoin/move.ts",
+            "Sources/MacUI/PSBT/PSBTView.swift",
+            "Sources/CrossUI/CoinSelectionScreen.swift",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
