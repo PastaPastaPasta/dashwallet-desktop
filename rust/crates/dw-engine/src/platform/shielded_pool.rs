@@ -2378,10 +2378,9 @@ pub(crate) async fn resume(
         state,
     };
     if !pending.status.has_proof()
-        && lib
-            .wait_proof(pending.outpoint, RESUME_PROOF_WAIT)
+        && !session
+            .proved_unless_closed(lib.wait_proof(pending.outpoint, RESUME_PROOF_WAIT))
             .await
-            .is_err()
     {
         return Ok(outcome(ShieldState::ProofWaiting));
     }

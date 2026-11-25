@@ -337,6 +337,9 @@ pub(crate) struct FakeShielded {
     queued: Mutex<std::collections::VecDeque<Result<Applied, PlatformError>>>,
     /// The outpoint of every apply, in order.
     applied: Mutex<Vec<OutPoint>>,
+    /// The next proof wait holds here, as the library's does until its
+    /// proof or its bound.
+    proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
     /// The library cannot spend from a lease's key set.
@@ -573,6 +576,7 @@ impl Default for FakeShielded {
             applies: Mutex::new(None),
             queued: Mutex::default(),
             applied: Mutex::default(),
+            proof_hold: Mutex::default(),
             unhooked: AtomicBool::new(false),
             no_keyset: AtomicBool::new(false),
             on_sync: Mutex::default(),
@@ -1364,6 +1368,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
+        crate::coins::pause_at(&self.proof_hold).await;
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
@@ -2472,6 +2477,42 @@ fn resume_refuses_an_unknown_lock_and_waits_for_a_proof() {
     assert_eq!(unknown, "invalid_argument");
     assert_eq!(waiting.state, super::shielded::ShieldState::ProofWaiting);
     assert!(fx.unused(&grant));
+}
+
+/// #879: a close that starts while "Check again" waits for a shield lock's
+/// proof does not wait for it: the press is "waiting for proof", with
+/// nothing applied.
+#[test]
+fn a_close_ends_a_shield_resumes_proof_wait_as_waiting_for_proof() {
+    let fx = Fixture::new(0);
+    let wallet = fx.wallet;
+    let grant = shield_grant(&fx, 1);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![lock(1, LockStatus::Broadcast)],
+        ..FakeShielded::default()
+    });
+    let hold = Arc::new(crate::coins::TestPause::default());
+    *lib.proof_hold.lock().unwrap() = Some(Arc::clone(&hold));
+    let txid = lock(1, LockStatus::Broadcast).outpoint.txid.to_string();
+    let (s, run) = (Arc::clone(&fx.s), Arc::clone(&lib));
+    let press = fx.s.rt.spawn(async move {
+        let _op = s.enter().await.map_err(PlatformError::from)?;
+        pool::resume(&s, wallet, &*run, &txid, &grant).await
+    });
+    assert!(hold.wait_reached(Duration::from_secs(30)), "the proof wait");
+    let s = Arc::clone(&fx.s);
+    let closing = fx.s.rt.spawn(async move { s.close().await });
+    let resumed = fx
+        .engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await });
+    hold.release.notify_one();
+    let resumed = resumed.expect("the close ended the proof wait").unwrap();
+    fx.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    assert_eq!(resumed.unwrap().state, ShieldState::ProofWaiting);
+    assert!(lib.applied.lock().unwrap().is_empty(), "no apply");
 }
 
 /// E0-04 Q15, ruling (c): a spend whose broadcast the library could not
