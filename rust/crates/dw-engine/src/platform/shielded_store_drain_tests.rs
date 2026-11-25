@@ -20,6 +20,7 @@ use platform_wallet::wallet::shielded::{
     ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedStore, SubwalletId,
 };
 
+use super::super::close_unload_gate_tests::stored_rows;
 use super::super::errors::{ShieldedError, ShieldedStoreClosed};
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::options;
@@ -916,5 +917,105 @@ fn a_drain_between_a_pass_and_its_settle_releases_nothing() {
     assert_eq!(o.release_row(1), Some((None, true)));
     assert_eq!(o.holds(), vec![]);
     drop(c);
+    o.close();
+}
+
+/// The user's removal of the main wallet, with a wipe grant: its result,
+/// and the grant.
+fn remove_main(o: &Opened) -> (Result<(), crate::EngineError>, String) {
+    let grant = (o.session.vault)
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&main_wallet().0),
+            dw_vault::Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let removed = o
+        .engine
+        .block_on(o.session.remove_wallet(main_wallet(), grant.clone()));
+    (removed, grant)
+}
+
+/// Q86 Q-PURGE C2 after the drain: a fork build's stored spend of the main
+/// wallet (its `shielded_pending_spends` row, which the drain keeps) and
+/// the unresolved disposition the drain moved into the journal. The user's
+/// removal is refused, with upstream's store not opened and once it is,
+/// and changes nothing: the raw row, the drained hold, the seed and the
+/// grant all stay, across a restart too.
+#[test]
+fn a_drained_fork_spend_and_its_stored_row_refuse_the_removal() {
+    let root = Root::new(&[
+        unresolved(1, &[1]),
+        ForkRow::Pending {
+            activity: 1,
+            nullifiers: vec![nf(1)],
+            st_bytes: b"fork-era spend".to_vec(),
+            unsent: false,
+        },
+    ]);
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Ok(())));
+    assert!(!root.fork_rows_live(), "the drain retired the fork rows");
+    let raw = stored_rows(&root.net(), main_wallet());
+    assert_eq!(raw.len(), 1, "the drain keeps a sent record");
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    for open_store in [false, true] {
+        if open_store {
+            o.bound();
+        }
+        let (removed, grant) = remove_main(&o);
+        assert!(
+            matches!(
+                removed,
+                Err(crate::EngineError::ShieldedSpendHeld(
+                    crate::ShieldedHold::InFlight
+                ))
+            ),
+            "open_store={open_store}: {removed:?}"
+        );
+        assert!(o.session.require_wallet(&main_wallet()).is_ok());
+        assert!(o.session.vault.has_wallet_secret(&main_wallet().0));
+        assert!(
+            (o.session.vault)
+                .check_grant(&grant, dw_vault::GrantKind::Wipe, Some(&main_wallet().0))
+                .is_ok(),
+            "the grant is not redeemed"
+        );
+        assert_eq!(stored_rows(&root.net(), main_wallet()), raw, "the raw row");
+        assert_eq!(o.holds(), vec![(0, nf(1))], "the drained hold");
+    }
+    o.close();
+    assert_eq!(stored_rows(&root.net(), main_wallet()), raw);
+    let o = root.open();
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    let (removed, _) = remove_main(&o);
+    assert!(
+        matches!(removed, Err(crate::EngineError::ShieldedSpendHeld(_))),
+        "{removed:?}"
+    );
+    o.close();
+}
+
+/// What the removal does with a drained hold alone (the fork's unresolved
+/// disposition, no stored record left): `holds_unresolved` does not read
+/// the journal's drained holds, so the removal goes through, and the hold
+/// stays in the journal for the wallet's id, where the dispatch hook
+/// refuses any spend of its note ([`dispatch_refuses_a_spend_of_a_drained_note`])
+/// and a later bind of the same wallet holds it again.
+#[test]
+fn a_drained_hold_alone_leaves_the_removal_and_stays_in_the_journal() {
+    let root = Root::new(&[unresolved(1, &[1])]);
+    let o = root.open();
+    assert_eq!(o.verdict(), Some(Ok(())));
+    assert!(stored_rows(&root.net(), main_wallet()).is_empty());
+    assert_eq!(o.holds(), vec![(0, nf(1))]);
+    let (removed, _) = remove_main(&o);
+    removed.unwrap();
+    assert!(o.session.require_wallet(&main_wallet()).is_err(), "removed");
+    assert_eq!(o.holds(), vec![(0, nf(1))], "the drained hold stays");
+    o.close();
+    let o = root.open();
+    assert_eq!(o.holds(), vec![(0, nf(1))], "and at the next start");
     o.close();
 }

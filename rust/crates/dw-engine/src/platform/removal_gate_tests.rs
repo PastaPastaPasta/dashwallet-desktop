@@ -144,11 +144,11 @@ fn a_stored_redrive_refuses_the_removal_and_the_raw_row_survives() {
     let data_dir = session.data_dir().to_path_buf();
     store_redrive(&engine, &session, wallet);
     assert_eq!(stored_rows(&data_dir, wallet), redrive_row());
-    let leased = (0..100).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        session.leases.background(&wallet).is_some()
-    });
-    assert!(leased, "a background lease to keep");
+    engine.block_on(session.ensure_background());
+    assert!(
+        session.leases.background(&wallet).is_some(),
+        "a background lease to keep"
+    );
 
     removal_refused(
         &engine,
@@ -341,9 +341,11 @@ fn fork_era(path: &Path, wallet: WalletId, unreadable: bool) {
 
 /// A fork-era pending spend (its `shielded_pending_spends` row) with the
 /// mark its disposition gets at the first open (`import_fork_holds`): a
-/// DEC-1057 marker, or a fork-held mark when the row does not read. The
-/// removal is refused (carried over) with the shielded store open, and the
-/// raw row, the mark and the fork's rows all survive.
+/// DEC-1057 marker, or a fork-held mark when the row does not read. Left
+/// undrained (no copy from an upgrade), upstream's store stays closed this
+/// session. The removal is refused (carried over), and the raw row, the
+/// mark and the fork's rows all survive. The drained case, upstream's store
+/// open: `store_drain_tests::a_drained_fork_spend_and_its_stored_row_refuse_the_removal`.
 #[test]
 fn a_fork_era_pending_spend_and_its_mark_refuse_the_removal_and_survive() {
     for unreadable in [false, true] {
@@ -360,7 +362,11 @@ fn a_fork_era_pending_spend_and_its_mark_refuse_the_removal_and_survive() {
         let marked = markers(&engine, &session, wallet);
         assert_eq!(marked, if unreadable { vec![] } else { vec![[1; 32]] });
         assert!(engine.block_on(session.leases.marks_unrecorded(wallet)));
-        assert!(bind(&engine, &session, wallet), "the store opens");
+        assert!(
+            pool::drain_verdict(&session).is_err(),
+            "undrained (no upgrade copy): upstream's store stays closed"
+        );
+        assert!(!opened(&engine, &session));
         assert_eq!(stored_rows(&data_dir, wallet), redrive_row());
 
         removal_refused(
