@@ -170,6 +170,11 @@ apps/desktop/src/tools/repair*
 # Renderer screens that send, receive, sign or move money, and the sheets that confirm it.
 apps/desktop/src/screens/pay/**
 apps/desktop/src/screens/Receive.tsx
+apps/desktop/src/screens/Onboarding.tsx
+apps/desktop/src/screens/settings/Security.tsx
+apps/desktop/src/screens/settings/CoinJoin.tsx
+apps/desktop/src/screens/coinjoin/CoinJoinCard.tsx
+apps/desktop/src/screens/coinjoin/CoinJoinPage.tsx
 apps/desktop/src/screens/TransferSheet.tsx
 apps/desktop/src/screens/PlatformFundSheet.tsx
 apps/desktop/src/screens/UnfinishedTransfersCard.tsx
@@ -207,6 +212,7 @@ Sources/WalletRuntime/Services/TransactionSender.swift
 Sources/WalletRuntime/Services/VaultService.swift
 Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
 Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
+Sources/WalletRuntime/M3/CoinJoinAdapters.swift
 Sources/CrossUI/ToolScreens.swift
 Sources/MacUI/SignVerify/**
 Sources/WalletFeatures/Common/AmountFormatter.swift

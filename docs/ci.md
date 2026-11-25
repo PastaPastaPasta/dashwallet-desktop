@@ -260,9 +260,10 @@ screen view-models that build money requests, the dependency pins, and the gate 
 
 A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
 inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
-count). The record must sit on a line of its own, outside a `>` quote or a code block, so quoting a verdict
-never casts one. Post records with `funds-gate.py record`: it puts the record on the comment's first line and
-refuses a note that contains one. Hand-written records inside lists or HTML blocks may not be read.
+count). An approve must sit on a line of its own, starting at the first column, outside a `>` quote or a code
+block, so quoting a verdict never casts one; a block also counts when indented up to three spaces. Post
+records with `funds-gate.py record`: it puts the record on the comment's first line and refuses a note that
+contains one. A hand-written record in or after a list or an HTML block may not be read.
 
     <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
     <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
@@ -279,19 +280,19 @@ is never a reviewer. Rules:
 - If the API truncates the file list, the gate treats the pull request as funds.
 
 `funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review, edited: a base
-change alters the file list), on a pull
-request comment that adds, edits or deletes a record, and on a dispatch (`gh workflow run funds-gate.yml -f
-pr=<N>`). For a pull request into `main` it posts the commit status **Funds review gate** on the head:
-pending while it checks, then success or failure; an error leaves it pending. A pull request into another
-branch gets no status, because a status belongs to the commit and a stacked pull request at the same commit
-must not turn it green. The gate also refuses if the head or base moves while it reads the file list. It runs the
-gate from the pull request's base branch (comment runs: the default branch), never from the pull
-request, and checks out no pull request code. The status is advisory until `main`'s branch protection
-requires the context `Funds review gate` (not the job name, whose run passes on a refusal). The PO's
-drain script runs the same `funds-gate.py check --sha <head>` from origin/main before every merge and
-refuses on anything but a pass. That fresh check is the authoritative one: a change to `ci/funds-paths.txt` on
-main does not re-run the status on open pull requests, but the drain reads the new list. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
-pattern in `ci/funds-paths.txt` still matches a tracked file.
+change alters the file list), on a pull request comment that adds, edits or deletes a record, and on a
+dispatch (`gh workflow run funds-gate.yml -f pr=<N>`). For a pull request into `main` it posts the commit
+status **Funds review gate** on the head: pending while it checks, then success or failure; an error leaves it
+pending. A pull request into another branch gets no status, because a status belongs to the commit and a
+stacked pull request at the same commit must not turn it green. If the head or base moves while it reads the
+file list, it reads again, up to three times. It runs the gate from the pull request's base branch (comment
+runs: the default branch), never from the pull request, and checks out no pull request code. The status is
+advisory until `main`'s branch protection requires the context `Funds review gate` (not the job name, whose
+run passes on a refusal). The PO's drain script runs the same `funds-gate.py check --sha <head>` from
+origin/main before every merge and refuses on anything but a pass. That fresh check is the authoritative one:
+a change to `ci/funds-paths.txt` on main does not re-run the status on open pull requests, but the drain reads
+the new list. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every pattern in
+`ci/funds-paths.txt` still matches a tracked file.
 
 ## UI tests (U-07)
 

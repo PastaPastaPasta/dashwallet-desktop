@@ -96,6 +96,12 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/settings/security.ts",
             "Sources/DashKit/EngineClient+M3CoinJoin.swift",
             "Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift",
+            "Sources/WalletRuntime/M3/CoinJoinAdapters.swift",
+            "apps/desktop/src/screens/Onboarding.tsx",
+            "apps/desktop/src/screens/settings/Security.tsx",
+            "apps/desktop/src/screens/settings/CoinJoin.tsx",
+            "apps/desktop/src/screens/coinjoin/CoinJoinCard.tsx",
+            "apps/desktop/src/screens/coinjoin/CoinJoinPage.tsx",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -208,6 +214,15 @@ class Gate(unittest.TestCase):
         later = comment("Blocking.\r\n" + record("funds", verdict="block") + "\r\n---\r\nfooter", at="2026-11-25T06:00:00Z", cid=2)
         self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
 
+    def test_record_in_a_list_item_fence_does_not_count(self):
+        later = comment("- ```\n  " + record("funds") + "\n  ```", at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(record("funds", verdict="block") + "\n" + record("review"), cid=1), later])[0])
+
+    def test_indented_block_counts_but_indented_approve_does_not(self):
+        later = comment("Blocking:\n\n " + record("funds", verdict="block"), at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
+        self.assertFalse(self.run_gate([comment(" " + record("funds") + "\n" + record("review"))])[0])
+
     def test_inline_record_does_not_count(self):
         self.assertFalse(self.run_gate([comment("see " + record("funds") + "\n" + record("review"))])[0])
 
@@ -224,13 +239,18 @@ class Check(unittest.TestCase):
     def tearDown(self):
         gate.fetch_pr, gate.fetch, gate.post_status, gate.gh = self.saved
 
-    def check(self, base_ref="main", comments=(), fetch_error=None, sha=None):
+    def check(self, base_ref="main", comments=(), fetch_error=None, sha=None, moves=0):
         info = {"head": {"sha": HEAD}, "base": {"sha": OLD, "ref": base_ref, "repo": {"default_branch": "main"}}}
         gate.fetch_pr = lambda repo, pr: info
+
+        left = [moves]
 
         def fetch(repo, pr, info):
             if fetch_error:
                 raise RuntimeError(fetch_error)
+            if left[0]:
+                left[0] -= 1
+                raise gate.Moved("base moved")
             return [FUNDS_FILE], True, list(comments)
 
         gate.fetch = fetch
@@ -253,6 +273,14 @@ class Check(unittest.TestCase):
         self.assertEqual(self.check(base_ref="feature", comments=[comment(BOTH)]), 0)
         self.assertEqual(self.posted, [])
 
+    def test_base_moving_is_read_again(self):
+        self.assertEqual(self.check(comments=[comment(BOTH)], moves=2), 0)
+        self.assertEqual(self.posted, ["pending", "pending", "pending", "success"])
+
+    def test_base_moving_three_times_leaves_pending(self):
+        self.assertEqual(self.check(comments=[comment(BOTH)], moves=3), 2)
+        self.assertEqual(self.posted, ["pending"] * 3)
+
     def test_sha_mismatch_posts_no_status(self):
         self.assertEqual(self.check(sha=OLD), 1)
         self.assertEqual(self.posted, [])
@@ -270,7 +298,10 @@ class Check(unittest.TestCase):
     def test_head_moving_mid_check_is_an_error(self):
         moves = iter([{"head": {"sha": OLD}, "base": {"sha": OLD}}])
         gate.gh = lambda *a, **k: "[[]]" if "--paginate" in a else gate.json.dumps(next(moves))
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(gate.Moved):
+            gate.fetch("o/r", 1, {"head": {"sha": HEAD}, "base": {"sha": OLD}, "changed_files": 0})
+        gate.gh = lambda *a, **k: "[[]]" if "--paginate" in a else gate.json.dumps({"head": {"sha": HEAD}, "base": {"sha": HEAD}})
+        with self.assertRaises(gate.Moved):
             gate.fetch("o/r", 1, {"head": {"sha": HEAD}, "base": {"sha": OLD}, "changed_files": 0})
 
 

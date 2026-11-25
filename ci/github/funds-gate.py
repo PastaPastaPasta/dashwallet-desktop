@@ -32,7 +32,7 @@ KINDS = ("funds", "review")
 LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
-RECORD = re.compile(r" {0,3}<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
+RECORD = re.compile(r"( {0,3})<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
 FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -98,7 +98,10 @@ def parse_records(comments):
             m = RECORD.fullmatch(line)
             if not m:
                 continue
-            fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
+            fields = dict(kv.split("=", 1) for kv in m.group(2).split() if "=" in kv)
+            # An indented record counts only as a block: a stray block can only refuse.
+            if m.group(1) and fields.get("verdict") != "block":
+                continue
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")
             records.append(fields)
@@ -178,6 +181,10 @@ def gh_pages(path):
     return [item for page in json.loads(out) for item in page]
 
 
+class Moved(RuntimeError):
+    pass
+
+
 def fetch_pr(repo, pr):
     return json.loads(gh(f"repos/{repo}/pulls/{pr}"))
 
@@ -194,7 +201,7 @@ def fetch(repo, pr, info):
     after = fetch_pr(repo, pr)
     for side in ("head", "base"):
         if after[side]["sha"] != info[side]["sha"]:
-            raise RuntimeError(f"#{pr} {side} moved from {info[side]['sha']} to {after[side]['sha']} during the check; run it again")
+            raise Moved(f"#{pr} {side} moved from {info[side]['sha']} to {after[side]['sha']} during the check; run it again")
     return files, complete, comments
 
 
@@ -222,19 +229,26 @@ def cmd_match(args):
 def cmd_check(args):
     rules = load_patterns(args.paths)
     try:
-        info = fetch_pr(args.repo, args.pr)
-        head = info["head"]["sha"]
-        if args.sha and args.sha != head:
-            print(f"REFUSED #{args.pr}: head is {head}, expected {args.sha}.")
-            return 1
-        # The status is keyed by commit, not pull request: only a pull request into the default branch
-        # writes it, so a stacked pull request at the same commit cannot turn it green.
-        if args.status and info["base"]["ref"] != info["base"]["repo"]["default_branch"]:
-            print(f"#{args.pr} targets {info['base']['ref']}, not the default branch: no status posted.")
-            args.status = False
-        if args.status:
-            post_status(args.repo, head, "pending", "Checking funds paths and review records")
-        files, complete, comments = fetch(args.repo, args.pr, info)
+        for attempt in range(3):
+            info = fetch_pr(args.repo, args.pr)
+            head = info["head"]["sha"]
+            if args.sha and args.sha != head:
+                print(f"REFUSED #{args.pr}: head is {head}, expected {args.sha}.")
+                return 1
+            # The status is keyed by commit, not pull request: only a pull request into the default branch
+            # writes it, so a stacked pull request at the same commit cannot turn it green.
+            post = args.status and info["base"]["ref"] == info["base"]["repo"]["default_branch"]
+            if args.status and not post:
+                print(f"#{args.pr} targets {info['base']['ref']}, not the default branch: no status posted.")
+            if post:
+                post_status(args.repo, head, "pending", "Checking funds paths and review records")
+            try:
+                files, complete, comments = fetch(args.repo, args.pr, info)
+                break
+            except Moved as e:
+                if attempt == 2:
+                    raise
+                print(f"funds gate: {e}; reading it again", file=sys.stderr)
     except (RuntimeError, json.JSONDecodeError, KeyError) as e:
         print(f"funds gate: {e}", file=sys.stderr)
         return 2
@@ -242,7 +256,7 @@ def cmd_check(args):
     print(f"Funds review gate, #{args.pr} at {head}:")
     print("\n".join(lines))
     print("PASS" if passed else "REFUSED")
-    if args.status:
+    if post:
         if not funds:
             summary = "No funds paths changed"
         elif passed:
