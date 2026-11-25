@@ -855,6 +855,80 @@ fn cancel_restore_before_the_journal_only() {
     }
 }
 
+#[test]
+fn a_request_while_a_restore_is_replacing_files_is_refused() {
+    let u = upgraded();
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let mid = tree(&u.net);
+    let err = request_restore(&u.net, &u.snapshot).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                journal_written: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        copy::restore_screen_for(&err).unwrap().title_key,
+        "storeUpgrade.restore.incomplete.title"
+    );
+    assert_eq!(tree_diff(&mid, &tree(&u.net)), Vec::<String>::new());
+    u.run(later(60)).unwrap().unwrap();
+    u.request();
+}
+
+#[test]
+fn an_uncheckable_mark_counts_as_set() {
+    let present = crate::restore::restored_mark_present;
+    let u = upgraded();
+    assert!(!present(&u.net));
+    let bare = tempfile::tempdir().unwrap();
+    assert!(!present(bare.path()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(bare.path().join(UPGRADE_BACKUPS_DIR), b"not a folder").unwrap();
+        assert!(present(bare.path()));
+
+        let root = u.root();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let blocked = fs::symlink_metadata(root.join(RESTORED_MARK))
+            .is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound);
+        let shown = present(&u.net);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        if blocked {
+            assert!(shown);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn clearing_an_uncheckable_mark_is_an_error() {
+    let u = upgraded();
+    u.request();
+    u.run(now()).unwrap().unwrap();
+    crate::token::reset_opened_for_test();
+    let (store, opened) = super::open_and_load(&u.net);
+    let aside = u.net.join("upgrade-backups.aside");
+    fs::rename(u.root(), &aside).unwrap();
+    fs::write(u.root(), b"not a folder").unwrap();
+    crate::restore::clear_restored_mark_on_first_all_synced(&opened).unwrap_err();
+    fs::remove_file(u.root()).unwrap();
+    fs::rename(&aside, u.root()).unwrap();
+    assert!(crate::restore::restored_mark_present(&u.net));
+    assert!(crate::restore::clear_restored_mark_on_first_all_synced(&opened).unwrap());
+    assert!(!crate::restore::clear_restored_mark_on_first_all_synced(&opened).unwrap());
+    drop(store);
+    crate::token::reset_opened_for_test();
+}
+
 /// A crash mid-copy leaves its dirs, a partial copy and a mark it created;
 /// the next start removes exactly those.
 #[test]
@@ -1279,6 +1353,10 @@ fn restore_incomplete_copy_renders_for_each_cause() {
         };
         let screen = copy::restore_screen_for(&err).unwrap();
         assert_eq!(screen.title_key, "storeUpgrade.restore.notStarted.title");
+        assert_eq!(screen.hint.unwrap().0, "settings.about.links.issuesHint");
+        let shown = screen.render(FOLDER);
+        assert!(shown.contains(&format!("can read and write {FOLDER} and")));
+        assert!(shown.contains("[Restart][Cancel restore][Report a problem][Quit]"));
         assert!(err.file_unchanged());
     }
     assert_eq!(
@@ -1326,11 +1404,17 @@ fn no_screen_says_funds_are_held_on_the_network() {
 fn placeholders_are_only_the_keys_mg_has_not_written() {
     let mut keys: Vec<&str> = copy::all_screens()
         .iter()
-        .filter(|s| s.title.starts_with(copy::PLACEHOLDER))
+        .filter(|s| {
+            [s.title, s.text]
+                .into_iter()
+                .chain(s.buttons.iter().map(|b| b.label))
+                .chain(s.hint.map(|h| h.1))
+                .any(|t| t.contains(copy::PLACEHOLDER.trim_end()))
+        })
         .map(|s| s.title_key)
         .collect();
     keys.sort();
-    assert_eq!(keys, ["storeUpgrade.restore.notStarted.title"]);
+    assert_eq!(keys, Vec::<&str>::new());
 }
 
 #[test]

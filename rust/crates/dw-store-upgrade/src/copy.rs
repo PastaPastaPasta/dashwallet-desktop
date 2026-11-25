@@ -655,9 +655,8 @@ const INCOMPLETE_TEXT: &str = "Dash Wallet stopped partway through putting back 
 const NO_SPACE_TITLE: &str = "Not enough disk space to restore";
 const NO_SPACE_TEXT: &str = "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.";
 
-const NOT_STARTED_TITLE: &str =
-    "[MG placeholder] Dash Wallet couldn't start restoring your wallet data";
-const NOT_STARTED_TEXT: &str = "[MG placeholder] Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed. Restart Dash Wallet to try again.";
+const NOT_STARTED_TITLE: &str = "Dash Wallet couldn't start restoring your wallet data";
+const NOT_STARTED_TEXT: &str = "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.";
 
 /// `storeUpgrade.restore.confirm.*` (MG FINAL with R3 (1) and (ii)): every
 /// path to a restore goes through it.
@@ -719,15 +718,21 @@ pub fn restore_no_space() -> ScreenCopy {
 
 /// `storeUpgrade.restore.notStarted.*`: a fault before the journal other
 /// than disk space; nothing changed and the request is kept (design §7).
+/// MG's final (mg-r3-v2-notstarted-and-support.md, sha256 0b7e55bd…924b).
 pub fn restore_not_started(_cause: IncompleteCause) -> ScreenCopy {
-    screen(
-        ("storeUpgrade.restore.notStarted.title", NOT_STARTED_TITLE),
-        ("storeUpgrade.restore.notStarted.text", NOT_STARTED_TEXT),
-        vec![
-            button("storeUpgrade.restore.notStarted.restart", "Restart"),
-            button("storeUpgrade.restore.notStarted.quit", "Quit"),
-        ],
-    )
+    ScreenCopy {
+        hint: Some((ISSUES_HINT.key, ISSUES_HINT.text)),
+        ..screen(
+            ("storeUpgrade.restore.notStarted.title", NOT_STARTED_TITLE),
+            ("storeUpgrade.restore.notStarted.text", NOT_STARTED_TEXT),
+            vec![
+                button("storeUpgrade.restore.notStarted.restart", "Restart"),
+                button("storeUpgrade.restore.notStarted.cancel", "Cancel restore"),
+                button("storeUpgrade.restore.notStarted.report", "Report a problem"),
+                button("storeUpgrade.restore.notStarted.quit", "Quit"),
+            ],
+        )
+    }
 }
 
 /// The restore flow's screen for an error from this crate, if it has one.

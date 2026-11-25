@@ -221,8 +221,17 @@ fn file_name_of(path: &Path) -> String {
 
 /// Record the user's "Restart and restore": the marker names `snapshot`'s
 /// directory and manifest sha256. Writes nothing else; the restore runs at
-/// the next start.
+/// the next start. Refused while a restore is replacing files: that one can
+/// only be finished, and finishing it would drop a new request unread.
 pub fn request_restore(network_dir: &Path, snapshot: &SnapshotInfo) -> Result<()> {
+    if pending_restore(network_dir)
+        .map_err(StoreUpgradeError::io("read the restore marker", true))?
+        == Some(PendingRestore::InProgress)
+    {
+        return Err(incomplete_other(
+            "the restore has begun replacing files and can only be finished".into(),
+        ));
+    }
     let root = root(network_dir);
     let invalid = || StoreUpgradeError::SnapshotInvalid {
         dir: snapshot.dir().to_path_buf(),
@@ -1226,9 +1235,13 @@ fn remove_record(root: &Path) -> io::Result<()> {
     fsx::remove_durable(&root.join(RESTORE_ATTEMPT))
 }
 
-/// Whether the money gate's mark is set.
+/// Whether the money gate's mark is set. A mark that can't be checked
+/// counts as set, so the gate stays closed (Q102 102-3).
 pub fn restored_mark_present(network_dir: &Path) -> bool {
-    exists(&root(network_dir).join(RESTORED_MARK))
+    match fs::symlink_metadata(root(network_dir).join(RESTORED_MARK)) {
+        Ok(_) => true,
+        Err(e) => e.kind() != io::ErrorKind::NotFound,
+    }
 }
 
 /// The money gate's mark and the before set's pending payments, if set. An
@@ -1273,12 +1286,14 @@ pub fn restored_mark(network_dir: &Path) -> Result<Option<RestoredMark>> {
 /// written by a complete history load, every source is Synced (Core,
 /// Platform, Shielded; off counts as satisfied), and one `drop_dead` pass
 /// has completed after that. All-Synced alone is not enough. Returns whether
-/// a mark was removed. The token proves this process opened the restored
-/// store.
+/// a mark was removed; a mark that can't be checked is an error, never "no
+/// mark". The token proves this process opened the restored store.
 pub fn clear_restored_mark_on_first_all_synced(opened: &PersisterOpened) -> Result<bool> {
     let mark = root(opened.network_dir()).join(RESTORED_MARK);
-    if !exists(&mark) {
-        return Ok(false);
+    match fs::symlink_metadata(&mark) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(StoreUpgradeError::io("check the restored mark", true)(e)),
     }
     fsx::remove_durable(&mark).map_err(StoreUpgradeError::io("clear the restored mark", true))?;
     Ok(true)
@@ -1787,7 +1802,7 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
             "the before-upgrade backup changed since the restore began".into(),
         ));
     }
-    if !restored_mark_present(network_dir) {
+    if !exists(&root.join(RESTORED_MARK)) {
         write_mark_for(network_dir, &snapshot, now, None)
             .map_err(|e| incomplete(&e, "write the restored mark"))?;
     }
