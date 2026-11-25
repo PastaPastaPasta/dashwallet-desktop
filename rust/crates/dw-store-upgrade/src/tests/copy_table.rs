@@ -322,6 +322,13 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
             Some(Unexpected),
         ),
         (
+            E::SnapshotSourceDamaged {
+                store: "x".into(),
+                detail: "x".into(),
+            },
+            Some(Unexpected),
+        ),
+        (
             E::RestoreRefused {
                 cause: RefusalCause::MissingBackup,
             },
@@ -728,6 +735,10 @@ fn every_variant() -> Vec<StoreUpgradeError> {
             detail: "x".into(),
         },
         E::SnapshotFailed { detail: "x".into() },
+        E::SnapshotSourceDamaged {
+            store: "x".into(),
+            detail: "x".into(),
+        },
         E::RestorePending {
             dir: PathBuf::from("x"),
         },
@@ -784,6 +795,7 @@ fn variant(e: &StoreUpgradeError) -> &'static str {
         E::SchemaHistoryMismatch { .. } => "SchemaHistoryMismatch",
         E::SnapshotInvalid { .. } => "SnapshotInvalid",
         E::SnapshotFailed { .. } => "SnapshotFailed",
+        E::SnapshotSourceDamaged { .. } => "SnapshotSourceDamaged",
         E::RestorePending { .. } => "RestorePending",
         E::StoreHeld { .. } => "StoreHeld",
         E::NonStrictOpen { .. } => "NonStrictOpen",
@@ -807,7 +819,7 @@ fn every_refusal_variant_has_a_screen() {
     let all = every_variant();
     let names: BTreeSet<&str> = all.iter().map(variant).collect();
     assert_eq!(names.len(), all.len(), "each variant listed once");
-    assert_eq!(names.len(), 25, "every variant in `variant` is listed");
+    assert_eq!(names.len(), 26, "every variant in `variant` is listed");
     let mut refusals = 0;
     let mut unexpected = BTreeSet::new();
     for e in &all {
@@ -832,10 +844,15 @@ fn every_refusal_variant_has_a_screen() {
             );
         }
     }
-    assert_eq!(refusals, 10);
+    assert_eq!(refusals, 11);
     assert_eq!(
         unexpected,
-        ["UpgradeCopyUnwritable", "WalletFileUnsupported"].into()
+        [
+            "SnapshotSourceDamaged",
+            "UpgradeCopyUnwritable",
+            "WalletFileUnsupported"
+        ]
+        .into()
     );
     for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
         let e = all.iter().find(|e| variant(e) == name).unwrap();

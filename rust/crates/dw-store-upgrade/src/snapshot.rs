@@ -970,6 +970,10 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
                     path: network_dir.to_path_buf(),
                 }
             }
+            _ if damaged(&e) => StoreUpgradeError::SnapshotSourceDamaged {
+                store: damaged_store(network_dir),
+                detail: e.to_string(),
+            },
             _ => failed(format!("read the live stores: {e}")),
         };
         let conn = open_live(&wallet).map_err(read)?;
@@ -1043,12 +1047,18 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
         fault("snapshot.after_file")?;
     }
     if files.iter().any(|f| f.name == STORE_FILES[0]) {
-        let conn = sql::open_immutable(&dir.join(STORE_FILES[0]))
-            .map_err(|e| failed(format!("reopen copy: {e}")))?;
-        snapshot_state = Some(
-            live_state(&conn, &dir, sql::open_immutable)
-                .map_err(|e| failed(format!("read copy: {e}")))?,
-        );
+        let copy = |e: rusqlite::Error| {
+            if damaged(&e) {
+                StoreUpgradeError::SnapshotSourceDamaged {
+                    store: damaged_store(&dir),
+                    detail: format!("its copy: {e}"),
+                }
+            } else {
+                failed(format!("read copy: {e}"))
+            }
+        };
+        let conn = sql::open_immutable(&dir.join(STORE_FILES[0])).map_err(copy)?;
+        snapshot_state = Some(live_state(&conn, &dir, sql::open_immutable).map_err(copy)?);
     }
     let state = snapshot_state.unwrap_or(LiveState {
         refinery_max: 0,
@@ -1162,6 +1172,30 @@ fn inspect(dir: &Path, live: &LiveState) -> Result<Found> {
     })
 }
 
+/// SQLite read the store as corrupt or as not a database.
+fn damaged(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+    )
+}
+
+/// The first store in `dir` SQLite can't read whole, for
+/// [`StoreUpgradeError::SnapshotSourceDamaged`].
+fn damaged_store(dir: &Path) -> String {
+    STORE_FILES
+        .iter()
+        .find(|name| {
+            let path = dir.join(name);
+            path.exists()
+                && !open_source(&path, std::time::Duration::ZERO)
+                    .and_then(|c| sql::integrity_ok(&c))
+                    .unwrap_or(false)
+        })
+        .unwrap_or(&STORE_FILES[0])
+        .to_string()
+}
+
 /// Busy or locked backup steps tolerated before the source counts as held.
 const BUSY_STEPS: u32 = 100;
 
@@ -1171,13 +1205,24 @@ const BUSY_STEPS: u32 = 100;
 pub(crate) fn copy_store(src_path: &Path, dest: &Path) -> Result<()> {
     let name = src_path.file_name().unwrap_or_default().to_string_lossy();
     let fail = |e: &dyn std::fmt::Display| failed(format!("copy {name}: {e}"));
-    let src = open_source(src_path, std::time::Duration::ZERO).map_err(|e| fail(&e))?;
+    let source_damaged = |detail: String| StoreUpgradeError::SnapshotSourceDamaged {
+        store: name.to_string(),
+        detail,
+    };
+    let read = |e: rusqlite::Error| {
+        if damaged(&e) {
+            source_damaged(e.to_string())
+        } else {
+            fail(&e)
+        }
+    };
+    let src = open_source(src_path, std::time::Duration::ZERO).map_err(read)?;
     let mut dst = Connection::open(dest).map_err(|e| fail(&e))?;
     {
-        let backup = rusqlite::backup::Backup::new(&src, &mut dst).map_err(|e| fail(&e))?;
+        let backup = rusqlite::backup::Backup::new(&src, &mut dst).map_err(read)?;
         let mut busy = 0;
         loop {
-            match backup.step(-1).map_err(|e| fail(&e))? {
+            match backup.step(-1).map_err(read)? {
                 rusqlite::backup::StepResult::Done => break,
                 rusqlite::backup::StepResult::More => continue,
                 rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
@@ -1200,8 +1245,8 @@ pub(crate) fn copy_store(src_path: &Path, dest: &Path) -> Result<()> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(fail(&format!("copy journal mode is {mode}")));
     }
-    if !sql::integrity_ok(&dst).map_err(|e| fail(&e))? {
-        return Err(fail(&"integrity_check of the copy failed"));
+    if !sql::integrity_ok(&dst).map_err(read)? {
+        return Err(source_damaged("integrity_check of the copy failed".into()));
     }
     dst.close().map_err(|(_, e)| fail(&e))?;
     #[cfg(unix)]

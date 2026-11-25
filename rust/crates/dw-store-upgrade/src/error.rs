@@ -66,6 +66,13 @@ pub enum StoreUpgradeError {
     #[error("upgrade snapshot failed: {detail}")]
     SnapshotFailed { detail: String },
 
+    /// A store the snapshot copies is damaged: SQLite reads it as corrupt
+    /// (`SQLITE_CORRUPT`) or not a database (`SQLITE_NOTADB`), or the
+    /// integrity check of its copy fails. A retry would fail the same way:
+    /// its screen is the unexpected-state refusal. File unchanged.
+    #[error("{store} is damaged: {detail}")]
+    SnapshotSourceDamaged { store: String, detail: String },
+
     /// A restore is requested or part-done in {dir}: no store may open
     /// there until the next start runs it.
     #[error("a restore is pending in {dir}")]
@@ -182,6 +189,7 @@ impl StoreUpgradeError {
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
+            | Self::SnapshotSourceDamaged { .. }
             | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
             | Self::RestoreRefused { .. }
@@ -212,6 +220,7 @@ impl StoreUpgradeError {
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
+                | Self::SnapshotSourceDamaged { .. }
                 | Self::WalletFileUnsupported { .. }
         )
     }
