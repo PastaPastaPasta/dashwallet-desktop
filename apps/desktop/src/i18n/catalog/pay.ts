@@ -330,6 +330,13 @@ export const pay = {
       shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
     },
   },
+  /** As `transfer.status`, for a payment from the Platform addresses. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+    },
+  },
   platform: {
     title: "Pay from Platform",
     intro: "This is a Dash Platform address. It is paid from your Platform balance.",

@@ -35,6 +35,11 @@ pub struct PlatformAddressBalance {
     /// The network has address funds transitions: below protocol version 11
     /// a top-up or send from these addresses is refused.
     pub sends_active: bool,
+    /// `"platform_address_sends"`: this build keeps sends and moves from
+    /// these addresses off on this network (mainnet), whatever its
+    /// protocol version (`platform.feature_off` with that feature), and
+    /// `sendsActive` is `false`. `null` elsewhere.
+    pub sends_off: Option<String>,
 }
 
 impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
@@ -47,6 +52,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             synced_at,
             syncing,
             sends_active,
+            sends_off,
         } = b;
         PlatformAddressBalance {
             credits,
@@ -56,6 +62,7 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             synced_at,
             syncing,
             sends_active,
+            sends_off,
         }
     }
 }
@@ -161,6 +168,11 @@ pub struct PlatformActivity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub contact: Option<crate::dto::history::TxCounterparty>,
+    /// `false` on every row of a group whose proof does not say which
+    /// member went through (the newest `done` included); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -178,6 +190,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             may_land,
             estimated,
             contact,
+            unattributed,
         } = a;
         PlatformActivity {
             id,
@@ -192,6 +205,7 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             may_land,
             estimated,
             contact: contact.map(Into::into),
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -302,6 +316,11 @@ pub struct MoveToCoreOutcome {
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub fee_credits: Option<u64>,
+    /// `false` when its group settled with no evidence of which member
+    /// went through; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
@@ -313,6 +332,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             to,
             state,
             fee_credits,
+            unattributed,
         } = o;
         MoveToCoreOutcome {
             id,
@@ -321,6 +341,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             to,
             state: state.into(),
             fee_credits,
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -438,6 +459,11 @@ pub struct PlatformSendOutcome {
     pub fee_credits: Option<u64>,
     /// Done: `credits` counts the fee estimate.
     pub estimated: bool,
+    /// `false` when its group settled with no evidence of which member
+    /// went through; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
@@ -452,6 +478,7 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
             may_land,
             fee_credits,
             estimated,
+            unattributed,
         } = o;
         PlatformSendOutcome {
             id,
@@ -463,6 +490,7 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
             may_land,
             fee_credits,
             estimated,
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -605,5 +633,70 @@ impl From<engine::PendingPlatformFund> for PendingPlatformFund {
             consumption_unknown,
             state: state.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(unattributed: bool) -> serde_json::Value {
+        serde_json::to_value(PlatformActivity::from(engine::PlatformActivity {
+            id: "move-1-0".into(),
+            kind: engine::PlatformActivityKind::MoveToCore,
+            state: engine::PlatformActivityState::Replaced,
+            credits: 1,
+            address: None,
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: 1,
+            may_land: false,
+            estimated: false,
+            contact: None,
+            unattributed,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_row_whose_group_names_no_winner_crosses_winner_known_false() {
+        assert_eq!(row(true)["winnerKnown"], serde_json::json!(false));
+        assert!(row(false).get("winnerKnown").is_none());
+    }
+
+    #[test]
+    fn an_outcome_whose_group_names_no_winner_crosses_winner_known_false() {
+        let moved = |unattributed| {
+            serde_json::to_value(MoveToCoreOutcome::from(engine::MoveToCoreOutcome {
+                id: "move-1-0".into(),
+                credits: 1,
+                expected_duffs: None,
+                to: None,
+                state: engine::PlatformActivityState::Done,
+                fee_credits: None,
+                unattributed,
+            }))
+            .unwrap()
+        };
+        let sent = |unattributed| {
+            serde_json::to_value(PlatformSendOutcome::from(engine::PlatformSendOutcome {
+                id: "move-1-0".into(),
+                credits: 1,
+                amount_credits: 1,
+                fee_from_amount: false,
+                to: None,
+                state: engine::PlatformActivityState::Done,
+                may_land: false,
+                fee_credits: None,
+                estimated: false,
+                unattributed,
+            }))
+            .unwrap()
+        };
+        assert_eq!(moved(true)["winnerKnown"], serde_json::json!(false));
+        assert_eq!(sent(true)["winnerKnown"], serde_json::json!(false));
+        assert!(moved(false).get("winnerKnown").is_none());
+        assert!(sent(false).get("winnerKnown").is_none());
     }
 }

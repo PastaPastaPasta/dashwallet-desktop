@@ -593,6 +593,11 @@ impl World {
         Self::of(Fixture::new(balance), balance)
     }
 
+    /// [`Self::new`] with the session on `network`.
+    pub(crate) fn on(network: crate::DashNetwork, balance: u64) -> Self {
+        Self::of(Fixture::on(network, balance), balance)
+    }
+
     fn of(f: Fixture, balance: u64) -> Self {
         let script = CoreScript::new_p2pkh([7; 20]);
         let to = address(f.s.vault.network(), &script);

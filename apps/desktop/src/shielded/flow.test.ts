@@ -36,7 +36,7 @@ function setup(lock = { encrypted: false }) {
     ),
     unshieldToCore: vi.fn(async (_w: string, c: string, to: string | null, grant: string, _confirm: boolean) => (calls.push(`out ${c} ${to} ${grant}`), SPEND)),
     unshieldToPlatform: vi.fn(async (_w: string, c: string, to: string | null, grant: string, confirm: boolean) => (calls.push(`toPlatform ${c} ${to} ${grant} ${confirm}`), SPEND)),
-    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false, sendsActive: true })),
+    platformAddressesSync: vi.fn(async (_w: string) => (calls.push("platformSync"), { credits: "0", movableCredits: "0", duffs: 0, addresses: [], syncedAt: null, syncing: false, sendsActive: true, sendsOff: null })),
   };
   const flow = new ShieldedFlow(api, WALLET_A);
   return { flow, api, vault, calls, answer: (o: ShieldedSpendOutcome) => answer!(o) };
@@ -45,6 +45,37 @@ function setup(lock = { encrypted: false }) {
 afterEach(() => resetShielded());
 
 describe("the shielded flow", () => {
+  it("says it is preparing once a shield's call has been pending for a second, and only for a shield", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { flow, api, answer } = setup();
+      let shielded: ((o: ShieldOutcome) => void) | null = null;
+      api.shieldFromCore.mockImplementation(() => new Promise<ShieldOutcome>((resolve) => (shielded = resolve)));
+      flow.begin("add");
+      flow.next({ kind: "add", duffs: 100_000 });
+      const going = flow.run({ maxDuffs: 101_000, maxCredits: "0" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(flow.step).toBe("running");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(flow.preparing.shown).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(flow.preparing.shown).toBe(true);
+      shielded!(APPLIED);
+      await going;
+      expect([flow.step, flow.preparing.shown]).toEqual(["done", false]);
+
+      flow.begin("send");
+      flow.next({ kind: "send", credits: "10000000000", to: TO, memo: null });
+      const sending = flow.run(GRANT);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect([flow.step, flow.preparing.shown]).toEqual(["running", false]);
+      answer(SPEND);
+      await sending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("adds to Shielded under a duffs grant and reads again", async () => {
     const { flow, vault, calls } = setup();
     const settled = vi.fn();

@@ -284,3 +284,25 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+// DP1-09 D4 reversed: the Join page's voting card offers the instant username too, on mainnet as
+// on testnet (registration from the Dash wallet is live on both); the offer says the network's
+// vote length.
+test("the Join page's voting card offers Create instant username, on mainnet too", async ({ page }) => {
+  for (const network of ["", "&network=mainnet"]) {
+    await page.goto(fixtureUrl("dashpay-contest-no-temporary", "light", network));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+    const card = page.getByTestId("page-joinDashPay").getByTestId("dashpay-card");
+    await expect(card.getByTestId("dashpay-card-action")).toHaveText("Create instant username");
+  }
+  // The wizard's offer on mainnet says two weeks.
+  await page.goto(fixtureUrl("dashpay-no-identity", "light", "&network=mainnet"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+  await page.getByTestId("join-create").click();
+  await page.getByTestId("registration-name-field").fill("alice");
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await expect(page.getByTestId("instant-offer")).toContainText("will be voted on for 2 weeks.");
+});

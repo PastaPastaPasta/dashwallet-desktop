@@ -2565,9 +2565,9 @@ fn a_run_waits_for_the_sync_with_its_lease() {
 /// (dw-tdash B2): the first ends `PartialNoIdentity`; the next, once
 /// `rerun` lets it, proves the seed has no identity.
 #[derive(Default)]
-struct PartialBringUp {
-    calls: AtomicU32,
-    rerun: Arc<tokio::sync::Notify>,
+pub(super) struct PartialBringUp {
+    pub(super) calls: AtomicU32,
+    pub(super) rerun: Arc<tokio::sync::Notify>,
 }
 
 impl MockPlatform for PartialBringUp {

@@ -413,6 +413,9 @@ pub(crate) async fn top_up<L: TopUpLib>(
     duffs: u64,
     grant: &str,
 ) -> Result<TopUpOutcome, CreditsError> {
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             // Nothing else runs it again before the next start.
