@@ -4074,7 +4074,8 @@ pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 /// - the number of calls: the note sync's chunks (the pool's size), at
 ///   most 3 broadcasts per stored spend, and per wallet holding a refused
 ///   first send, one anchors read and one nullifier read per batch of
-///   whole spends, at most 100 nullifiers each (`shielded_release`).
+///   whole spends, at most 100 nullifiers each unless one spend alone has
+///   more (`shielded_release`).
 ///
 /// The worst case is therefore a pass's call count times about 160 s; on
 /// a reachable network a pass takes seconds (testnet, 6,430 notes: about 1

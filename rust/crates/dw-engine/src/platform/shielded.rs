@@ -513,7 +513,8 @@ pub struct ShieldedActivity {
     pub refusal: Option<ShieldedRefusal>,
 }
 
-/// What became of a spend Platform refused at its broadcast.
+/// Whether a spend's outcome is held open (`Held`: the wallet cannot rule
+/// out that it executes) or a refusal was released (`Released`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShieldedRefusal {

@@ -121,7 +121,7 @@ export function platformRow(a: PlatformActivity): TxRow {
 /** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
  * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
  * a payment out unless the engine says it is a self-transfer; the rest are received or paid. A
- * spend that Platform refused while its funds stay held (`refusal: held`), or with no refusal whose
+ * spend the engine holds open (`refusal: held`: refused, or its outcome not known yet), or with no refusal whose
  * notes are held (`held`, the status's `heldSpends`), may still go through: unconfirmed, with its
  * amount, never "Not accepted". A released refusal reads as released whatever `held` says. */
 export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): TxRow {

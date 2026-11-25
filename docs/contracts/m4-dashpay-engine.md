@@ -774,7 +774,7 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
     prove this transition executed: then its payout reads sent and its unshield's move done; without one (another
     device may have spent the same notes) both stay as they were before it settled;
   - otherwise it stays held: on the absence proof, a spend with no height its anchor was proved recorded at (one
-    sent by an earlier build, or after an unverified hook read) and an absence at or below that height; on either, a
+    sent by an earlier build, or after an unverified hook read), or an absence at or below that height; on either, a
     read that fails, is incomplete, or whose proof used quorum keys that are not
     SPV-verified (unless the trusted-only toggle is on), and any contradiction. Nothing transient or ambiguous frees a
     note. A failed nullifier read holds only the spends it covered. A release raises the Shielded change.
