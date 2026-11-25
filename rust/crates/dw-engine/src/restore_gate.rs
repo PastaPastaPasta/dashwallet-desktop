@@ -56,6 +56,10 @@ pub(crate) struct RestoreGate {
     /// Tests: the wallets and seeds each drop-dead pass ran with.
     #[cfg(test)]
     pub(crate) pass_runs: Mutex<Vec<(WalletId, BTreeSet<Txid>)>>,
+    /// Tests: this many clears fail as the crate's clear does on an
+    /// unreadable mark.
+    #[cfg(test)]
+    pub(crate) clear_fails: std::sync::atomic::AtomicU32,
 }
 
 impl RestoreGate {
@@ -517,8 +521,22 @@ impl NetworkSession {
                 .map_err(|e| EngineError::Internal(format!("restore: build marks: {e}")))?
                 .map_err(|e| EngineError::Storage(format!("restore: build marks: {e}")))?;
             }
-            dw_store_upgrade::clear_restored_mark_on_first_all_synced(&live._persister_opened)
-                .map_err(|e| EngineError::Storage(e.to_string()))?;
+            #[cfg(test)]
+            let fault = (self.hub.restore.clear_fails)
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+            #[cfg(not(test))]
+            let fault = false;
+            let cleared = match fault {
+                true => Err(EngineError::Storage(
+                    "restore: the mark did not read".into(),
+                )),
+                false => dw_store_upgrade::clear_restored_mark_on_first_all_synced(
+                    &live._persister_opened,
+                )
+                .map_err(|e| EngineError::Storage(e.to_string())),
+            };
+            cleared?;
         }
         self.leases.request_resume(None);
         self.hub.pump.mark_sync();

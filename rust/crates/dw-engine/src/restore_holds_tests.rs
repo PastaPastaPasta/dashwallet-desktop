@@ -770,3 +770,53 @@ fn a_late_wallet_whose_build_fails_holds_its_pending_payments() {
     assert!(!crate::restore_gate::build_pending(&appdb, id).unwrap());
     assert_change_held(&engine, &session, id, &p, "built at the next load");
 }
+
+/// H4: a clear that errs (the crate's answer to a mark it can't read)
+/// leaves the mark set and the gate closed; the next all-Synced and pass
+/// clear it.
+#[test]
+fn a_failed_clear_keeps_the_gate_closed_and_retries_after_a_pass() {
+    let (_dir, engine, session, id, _paid, _p) = held_payment();
+    let dead = Txid::from_byte_array([0x25; 32]);
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), &format!("dropped:{dead}"), Some(""))
+        .unwrap();
+    let session = reopen(&engine, session);
+    let restore = &session.hub.restore;
+    restore
+        .clear_fails
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let first = Arc::new(crate::coins::TestPause::default());
+    *restore.pause_pass.lock().unwrap() = Some(Arc::clone(&first));
+    all_synced(&session);
+    assert!(first.wait_reached(std::time::Duration::from_secs(20)));
+    let second = Arc::new(crate::coins::TestPause::default());
+    *restore.pause_pass.lock().unwrap() = Some(Arc::clone(&second));
+    first.release.notify_one();
+    assert!(
+        second.wait_reached(std::time::Duration::from_secs(20)),
+        "no retry after the failed clear"
+    );
+    assert_eq!(
+        restore
+            .clear_fails
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(
+        session.restored() && mark_present(&session),
+        "the failed clear opened the gate"
+    );
+    assert!(matches!(
+        session.refuse_while_restored(),
+        Err(EngineError::Restored)
+    ));
+    second.release.notify_one();
+    eventually("the retry clears", || !session.restored());
+    assert!(!mark_present(&session));
+    assert_eq!(
+        restore.pass_runs.lock().unwrap().len(),
+        2,
+        "the retry ran its own pass"
+    );
+}
