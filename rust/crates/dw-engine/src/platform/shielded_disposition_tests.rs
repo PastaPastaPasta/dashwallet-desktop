@@ -1912,6 +1912,57 @@ fn a_spend_of_a_released_imports_notes_waits_for_its_settlement() {
     );
 }
 
+/// Makes the dispatch journal's read of `wallet`'s artifacts fail (`on`):
+/// a selected note of imported spend `activity` whose nullifier is not 32
+/// bytes, written past the table's checks; or removes it.
+fn damage_artifact_read(path: &Path, wallet: WalletId, activity: [u8; 32], on: bool) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    if on {
+        db.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        db.execute(
+            "INSERT INTO shielded_artifact_note (wallet, activity, nullifier) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&wallet.0[..], &activity[..], &[7u8; 31][..]],
+        )
+        .unwrap();
+    } else {
+        db.execute(
+            "DELETE FROM shielded_artifact_note WHERE length(nullifier) <> 32",
+            [],
+        )
+        .unwrap();
+    }
+}
+
+/// #931, the pass: one whose keep of the imported spends' history rows
+/// cannot read the artifacts is held back before the library's pass, so
+/// no release or scan in it frees an imported spend's notes with no row
+/// to read its outcome by or to hold them from a new spend. Once the
+/// artifacts read, the pass runs.
+#[test]
+fn a_pass_is_held_while_the_imported_spends_rows_cannot_be_kept() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet, spend) = launch_with_import(&engine);
+    let journal = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    let runs = || (session.platform.passes_run).load(std::sync::atomic::Ordering::SeqCst);
+    let guarded = || {
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        engine.block_on(async move { pool::guarded_pass(&s, &m, true).await })
+    };
+    let before = runs();
+    damage_artifact_read(&journal, wallet, spend.activity_id, true);
+    let held = (guarded(), runs() - before);
+    damage_artifact_read(&journal, wallet, spend.activity_id, false);
+    assert_eq!(
+        (held, (guarded(), runs() - before)),
+        ((false, 0), (true, 1))
+    );
+}
+
 /// #931: the wait ends with the mark. An imported spend's pending row
 /// with nothing of it held refuses a spend of its notes, as does its
 /// unknown row; once a pass writes the mark, the same spend is accepted.
