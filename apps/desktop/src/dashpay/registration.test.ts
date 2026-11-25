@@ -204,7 +204,7 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     const m = screenModel(idle, I);
     expect(m).toMatchObject({ kind: "paused", busy: false });
     expect(m.lines).toEqual([REG_COPY.progress.message("alice"), waitLine(idle)]);
-    expect(waitLine(idle)).toMatch(/Continue checks it again/);
+    expect(waitLine(idle)).toMatch(/Choose Continue to check it again/);
     expect(m.actions).toEqual([{ kind: "continue", label: "Continue" }]);
     expect(isRunning(idle)).toBe(false);
     const running = { ...idle, running: true };
@@ -270,6 +270,14 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     // Another failure keeps its label.
     const failed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("platform.timeout", { retryable: false }) }), I);
     expect(failed.actions.map((a) => `${a.kind}:${a.label}`)).toEqual(["another:Choose another username"]);
+  });
+
+  it("C-funding F12: a Shielded payment whose coins were spent with no identity claims no refund and offers a new registration", () => {
+    const consumed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromShielded: true, failure: failure("registration.payment_consumed", { retryable: false }) }), I);
+    expect([consumed.kind, consumed.title, ...consumed.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "another:Start a new registration"]);
+    expect(consumed.lines).toEqual([t("dashpay.failure.consumedShielded")]);
+    expect(consumed.lines[0]).toMatch(/another device using this recovery phrase spent them/);
+    expect(consumed.lines.join(" ")).not.toContain("registration.payment_consumed");
   });
 
   it("F22: a Platform run stopped by a changed plan says so in its own words and goes back to Confirm", () => {

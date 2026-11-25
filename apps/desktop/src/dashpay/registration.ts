@@ -364,7 +364,8 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     if (row.fromPlatform && f.code === "registration.quote_changed")
       return base("failed", REG_COPY.failed.title, [why], [act("reconfirm", REG_COPY.failed.reviewCost)], { step: null });
     // The attempt's keys failed, not the name: the same name may be chosen again.
-    const another = (row.fromPlatform || row.fromShielded) && f.code === "registration.refunded" ? REG_COPY.failed.startNew : REG_COPY.failed.another;
+    const paid = f.code === "registration.refunded" || f.code === "registration.payment_consumed";
+    const another = (row.fromPlatform || row.fromShielded) && paid ? REG_COPY.failed.startNew : REG_COPY.failed.another;
     return base("failed", REG_COPY.failed.title, [why], [act("another", another)], { step: null });
   }
 

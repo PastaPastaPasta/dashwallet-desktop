@@ -274,6 +274,8 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
     case "registration.refunded":
       if (fromShielded) return t("dashpay.failure.refundedShielded");
       return fromPlatform ? t("dashpay.failure.refundedPlatform") : t("dashpay.failure.stoppedWith", { code: failure.code });
+    case "registration.payment_consumed":
+      return t("dashpay.failure.consumedShielded");
     case "registration.shielded_not_ready":
       return t("dashpay.failure.shieldedNotReady");
     case "shielded.spend_refused":

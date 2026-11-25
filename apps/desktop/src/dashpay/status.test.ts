@@ -291,6 +291,8 @@ describe("D4 steps and D5 failure copy", () => {
       "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
     );
     expect(failureText(failure("registration.refunded", { retryable: false }), amount)).toBe("It stopped with registration.refunded.");
+    // F12: a Shielded payment's coins spent with no identity: no refund is claimed.
+    expect(failureText(failure("registration.payment_consumed", { retryable: false }), amount, false, false, true)).toBe(t("dashpay.failure.consumedShielded"));
     // A run stopped by a changed Platform plan has its own line, not the code or Confirm's.
     const changed = failureText(failure("registration.quote_changed", { retryable: false }), amount, false, true);
     expect(changed).toBe(

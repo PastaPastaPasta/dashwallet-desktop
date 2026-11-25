@@ -326,9 +326,10 @@ export interface PlatformRegisterPlan {
  * before anything is signed (platform_register.rs `new_plan`). */
 export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure" | "replanRefused";
 
-/** What a Shielded-funded identity create comes to (C-funding F12): proved, unknown (waits), or
- * executed without the identity (`registration.refunded`). */
-export type ShieldedCreateOutcome = "registered" | "unknown" | "refunded";
+/** What a Shielded-funded identity create comes to (C-funding F12): proved, unknown (waits),
+ * executed without the identity (`registration.refunded`), or its notes spent with no identity
+ * (`registration.payment_consumed`). */
+export type ShieldedCreateOutcome = "registered" | "unknown" | "refunded" | "consumed";
 
 const short = (needed: bigint, available: bigint) =>
   fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
@@ -889,7 +890,8 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
     }
     case "shieldedCreate": {
       // registration_shielded.rs: the denomination leaves the pool once the create is named; the
-      // change returns to the balance. Unknown waits; executed without the identity is refunded.
+      // change returns to the balance. Unknown waits; executed without the identity is refunded; its
+      // notes spent with no identity (two or more notes) is consumed, with no refund claimed.
       const outcome = dp.shieldedCreates?.shift() ?? "registered";
       const s = world.pending.shielded;
       // A named create's check spends nothing again.
@@ -902,8 +904,9 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
         Object.assign(row, { waiting: "paymentUnknown", fundsCommitted: true });
         break;
       }
-      if (outcome === "refunded") {
-        const failure: RegistrationFailure = { phase: row.phase, code: "registration.refunded", retryable: false, needed: null, available: null };
+      if (outcome === "refunded" || outcome === "consumed") {
+        const code = outcome === "refunded" ? "registration.refunded" : "registration.payment_consumed";
+        const failure: RegistrationFailure = { phase: row.phase, code, retryable: false, needed: null, available: null };
         Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
         end(ctx, walletId, dp, row, d);
         settleStatus(dp);

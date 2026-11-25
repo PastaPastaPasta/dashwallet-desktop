@@ -92,8 +92,18 @@ export async function privacyTip(page: Page, world: Record<string, unknown>, kin
  * failed screen: its create fails in a block (C-funding F10), or its plan changed (F22). */
 export async function platformRunFails(page: Page, label: string, outcome: "paidFailure" | "replanRefused") {
   await page.evaluate((o) => (window.__dwFixture!.world.dashpay.platformCreates = [o]), outcome);
+  await runFails(page, label, "platform");
+}
+
+/** A run paid from the Shielded balance whose create comes to `outcome` (C-funding F12). */
+export async function shieldedRunFails(page: Page, label: string, outcome: "refunded" | "consumed") {
+  await page.evaluate((o) => (window.__dwFixture!.world.dashpay.shieldedCreates = [o]), outcome);
+  await runFails(page, label, "shielded");
+}
+
+async function runFails(page: Page, label: string, source: "shielded" | "platform") {
   await page.getByTestId("join-create").click();
-  await payFrom(page, "platform");
+  await payFrom(page, source);
   await page.getByTestId("registration-name-field").fill(label);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();

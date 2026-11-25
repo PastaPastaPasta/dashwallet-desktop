@@ -4,7 +4,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { checkUsername } from "../src/fixture/registration";
 import { seriousAxeViolations } from "./axe";
-import { payFrom, payFromDashWallet, platformRunFails, setShielded } from "./dashpay";
+import { payFrom, payFromDashWallet, platformRunFails, setShielded, shieldedRunFails } from "./dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-09: the username registration wizard on the fixture backend, by parity ID: IOS-066 (choose
@@ -284,6 +284,16 @@ test("C-funding F5, F20: a username paid from the Shielded balance confirms its 
     while (window.__dwFixture!.advanceRegistration(d));
   }, draft);
   await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "done");
+  expect(errors).toEqual([]);
+});
+
+test("C-funding F12: a Shielded payment whose funds were spent with no username claims no refund and offers a new registration", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await toJoin(page);
+  await shieldedRunFails(page, LABEL, "consumed");
+  await expect(page.getByTestId("registration-lines")).toContainText("Check your Platform balance before you start a new registration.");
+  await expect(page.getByTestId("registration-lines")).not.toContainText("registration.payment_consumed");
+  await expect(page.getByTestId("registration-another")).toHaveText("Start a new registration");
   expect(errors).toEqual([]);
 });
 

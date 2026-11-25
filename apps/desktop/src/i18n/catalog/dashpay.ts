@@ -96,7 +96,7 @@ export const dashpay = {
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
     paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
     /** Shown beside Continue, which checks again. */
-    paymentUnknownShieldedIdle: "The payment from your Shielded balance hasn't been checked since the app reopened. Continue checks it again.",
+    paymentUnknownShieldedIdle: "Dash Wallet hasn't checked the payment from your Shielded balance since it reopened. Choose Continue to check it again. This doesn't spend anything.",
     paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
     paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
@@ -120,6 +120,11 @@ export const dashpay = {
      * the payment, less a penalty, to this wallet's Platform balance. */
     refundedShielded:
       "Dash Platform couldn't register the username. It kept part of the payment as a penalty and sent the rest to your Platform balance.",
+    /** A registration from the Shielded balance whose coins read spent with no identity made
+     * (C-funding F12): another device with the same recovery phrase may have spent them, so the
+     * line claims no refund. */
+    consumedShielded:
+      "Dash Wallet couldn't register the username. The Shielded funds chosen to pay for it have been spent, but no username was registered. Either this payment spent them, and Dash Platform kept a penalty and sent the rest to your Platform balance, or another device using this recovery phrase spent them. Check your Platform balance before you start a new registration.",
     /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
     shieldedNotReady: "Your Shielded balance can't pay for the username right now, so nothing was spent. Try again in a moment.",
     /** A Shielded payment that was refused before it was sent. */
