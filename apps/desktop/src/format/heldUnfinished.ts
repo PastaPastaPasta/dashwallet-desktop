@@ -14,21 +14,35 @@ export function heldLine(core: Balances, fmt: (duffs: number) => string): string
   return "";
 }
 
-/** The way out for the wallet `walletId` among the open `wallets`: a watch-only wallet is added
- * again from its key, any other restored from its phrase; the single-wallet text only when exactly
- * one is open (an empty list is a failed read, not a lone wallet). */
-export function heldWayOutText(walletId: string, wallets: readonly { walletId: string; name: string; watchOnly: boolean }[]): string {
+/** The engine's facts about a wallet that choose its way out. */
+type WayOutWallet = { walletId: string; name: string; watchOnly: boolean; hasMnemonic: boolean; legacyIssued: boolean };
+
+/** What to do for the wallet `walletId` among the open `wallets`, chosen from the engine's facts
+ * about it: a signing wallet with no recovery phrase, or one with legacy address ranges a phrase
+ * doesn't restore, is kept (no phrase wins when both apply); a watch-only wallet is added again from
+ * its key; any other is restored from its phrase. The single-wallet texts only when exactly one is
+ * open (an empty list is a failed read, not a lone wallet). `null` when `walletId` isn't listed. */
+export function heldWayOutText(walletId: string, wallets: readonly WayOutWallet[]): string | null {
   const own = wallets.find((w) => w.walletId === walletId);
+  if (!own) return null;
   const place = {
-    wallet: own?.name ?? walletId,
+    wallet: own.name,
     settings: t("routes.settings"),
     walletTab: t("settings.wallets.title"),
     addWallet: t("settings.wallets.addWallet"),
     addWatchOnly: t("settings.wallets.addWatchOnly"),
     optionsTitle: t("onboarding.options.title"),
     scanFrom: t("onboarding.options.scanFrom"),
+    coreCompat: t("onboarding.options.coreCompat"),
+    welcomeTitle: t("onboarding.welcome.title"),
+    welcomeRestore: t("onboarding.welcome.restore"),
+    lockUnspent: t("tools.coins.lockUnspent"),
+    tools: t("routes.tools"),
+    coinSelection: t("tools.tabs.coinSelection"),
   };
   const single = wallets.length === 1;
-  if (own?.watchOnly) return t(single ? "home.heldUnfinished.wayOutWatchOnlySingle" : "home.heldUnfinished.wayOutWatchOnly", place);
+  if (own.watchOnly) return t(single ? "home.heldUnfinished.wayOutWatchOnlySingle" : "home.heldUnfinished.wayOutWatchOnly", place);
+  if (!own.hasMnemonic) return t("home.heldUnfinished.keepNoPhrase", place);
+  if (own.legacyIssued) return t("home.heldUnfinished.keepLegacy", place);
   return t(single ? "home.heldUnfinished.wayOutSingle" : "home.heldUnfinished.wayOut", place);
 }

@@ -2,19 +2,24 @@ import { expect, test, type Page } from "@playwright/test";
 import { artifactPath, fixtureUrl, THEMES } from "./helpers";
 
 /** Coins a dropped payment holds, set on the fixture's first wallet: `valued` duffs summed, and
- * `unvalued` coins of unknown value. */
-async function hold(page: Page, valued: number, unvalued: number, watchOnly = false) {
+ * `unvalued` coins of unknown value; `kind` patches the engine's facts about that wallet. */
+async function hold(page: Page, valued: number, unvalued: number, kind: { watchOnly?: boolean; hasMnemonic?: boolean; legacyIssued?: boolean } = {}) {
   await expect(page.getByTestId("hero-amount")).toBeVisible();
   await page.evaluate(
-    ([valued, unvalued, watchOnly]) => {
+    ([valued, unvalued, kind]) => {
       const f = window.__dwFixture!;
       const w = f.world.wallets[0]!;
-      w.summary.watchOnly = watchOnly;
+      Object.assign(w.summary, kind);
       w.summary.balances = { ...w.summary.balances!, heldUnfinished: valued, heldUnvalued: unvalued };
       f.emit({ kind: "eventsOverflowed" });
     },
-    [valued, unvalued, watchOnly] as const,
+    [valued, unvalued, kind] as const,
   );
+}
+
+async function openWayOut(page: Page) {
+  await page.getByTestId("hero-held-way-out").click();
+  return page.getByTestId("held-way-out-text");
 }
 
 const STATES = [
@@ -41,24 +46,25 @@ for (const theme of THEMES) {
     });
   }
 
-  test(`the held line stays in discreet mode, its amount masked (${theme})`, async ({ page }) => {
+  test(`the held line stays in discreet mode, its amount masked (${theme})`, async ({ page }, info) => {
     await page.goto(fixtureUrl("funded", theme));
     await hold(page, 150_000_000, 0);
     await page.getByTestId("hero-amount").click();
     await expect(page.getByTestId("hero-held-text")).toBeVisible();
     await expect(page.getByTestId("hero-held-text")).not.toContainText("1.50");
     await expect(page.getByTestId("hero-held-way-out")).toBeVisible();
+    await page.getByTestId("hero-band").screenshot({ path: artifactPath(info, `${theme}-home-held-discreet.png`) });
   });
 
-  test(`What can I do? opens the way out for a lone phrase wallet (${theme})`, async ({ page }, info) => {
+  test(`What can I do? restores a lone phrase wallet from the welcome screen (${theme})`, async ({ page }, info) => {
     await page.goto(fixtureUrl("funded", theme));
     await hold(page, 150_000_000, 0);
-    await page.getByTestId("hero-held-way-out").click();
-    const text = page.getByTestId("held-way-out-text");
-    await expect(text).toContainText("Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Main, and restore it with Add wallet… and its phrase.");
-    await expect(text).toContainText("On Restore options, under Scan the blockchain from, choose The beginning.");
-    await expect(text).toContainText("Until then, coins Main has already spent can show as unspent, so don't send anything from it until syncing finishes");
-    await expect(text).toContainText("Spending it conflicts with that payment, and only one of the two goes through. You can remove the extra wallet afterwards.");
+    const text = await openWayOut(page);
+    await expect(text).toContainText("its BIP39 passphrase if the wallet was created with one. That isn't the passphrase you unlock Dash Wallet with");
+    await expect(text).toContainText("Removing Main also unlocks any coins you locked with Lock unspent in Tools ▸ Coin Selection");
+    await expect(text).toContainText("Otherwise Dash Wallet shows Welcome to Dash Wallet once Main is removed: choose Restore from recovery phrase and enter its phrase.");
+    await expect(text).toContainText("under Scan the blockchain from, choose The beginning.");
+    await expect(text).not.toContainText("extra wallet");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-single.png`) });
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("held-way-out")).toHaveCount(0);
@@ -66,21 +72,46 @@ for (const theme of THEMES) {
 
   test(`What can I do? names the watch-only way out (${theme})`, async ({ page }, info) => {
     await page.goto(fixtureUrl("funded", theme));
-    await hold(page, 0, 1, true);
-    await page.getByTestId("hero-held-way-out").click();
-    const text = page.getByTestId("held-way-out-text");
+    await hold(page, 0, 1, { watchOnly: true, hasMnemonic: false });
+    const text = await openWayOut(page);
     await expect(text).toContainText("you'll remove Main and add it again as a watch-only wallet.");
     await expect(text).toContainText("Then, in Settings ▸ Wallet: add another wallet (a new one is fine), remove Main, and add it again with Add watch-only wallet… and that key.");
     await expect(text).toContainText("so don't create a payment from it until syncing finishes");
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-watch-only-single.png`) });
   });
 
-  test(`What can I do? with two wallets open gives the several-wallets way out (${theme})`, async ({ page }) => {
+  test(`What can I do? with two wallets open gives the several-wallets way out (${theme})`, async ({ page }, info) => {
     await page.goto(fixtureUrl("two-wallets", theme));
     await hold(page, 150_000_000, 0);
-    await page.getByTestId("hero-held-way-out").click();
-    const text = page.getByTestId("held-way-out-text");
-    await expect(text).toContainText("Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase.");
+    const text = await openWayOut(page);
+    await expect(text).toContainText("Then, in Settings ▸ Wallet, remove Main (if it asks you to open another wallet first, do that), and restore it with Add wallet… and its phrase.");
     await expect(text).not.toContainText("add another wallet");
+    await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-several.png`) });
+  });
+
+  test(`What can I do? with two wallets open gives the several-wallets watch-only way out (${theme})`, async ({ page }, info) => {
+    await page.goto(fixtureUrl("two-wallets", theme));
+    await hold(page, 0, 1, { watchOnly: true, hasMnemonic: false });
+    const text = await openWayOut(page);
+    await expect(text).toContainText("Then, in Settings ▸ Wallet, remove Main and add it again with Add watch-only wallet… and that key.");
+    await expect(text).not.toContainText("add another wallet");
+    await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-way-out-watch-only-several.png`) });
+  });
+
+  test(`What can I do? keeps a wallet added from a seed without a phrase (${theme})`, async ({ page }, info) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await hold(page, 150_000_000, 0, { hasMnemonic: false });
+    const text = await openWayOut(page);
+    await expect(text).toContainText("Keep Main: don't remove it to get them back. It was added from a seed without a recovery phrase");
+    await expect(text).not.toContainText("remove Main and");
+    await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-keep-no-phrase.png`) });
+  });
+
+  test(`What can I do? keeps a wallet.dat import with legacy address ranges (${theme})`, async ({ page }, info) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await hold(page, 150_000_000, 0, { legacyIssued: true });
+    const text = await openWayOut(page);
+    await expect(text).toContainText("Keep Main: don't remove it to get them back. It was added from a Dash Core wallet.dat that uses older addresses");
+    await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-keep-legacy.png`) });
   });
 }

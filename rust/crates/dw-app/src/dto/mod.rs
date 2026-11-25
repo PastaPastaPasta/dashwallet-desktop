@@ -359,6 +359,9 @@ pub struct WalletSummary {
     pub watch_only: bool,
     /// The vault holds the wallet's recovery phrase.
     pub has_mnemonic: bool,
+    /// Imported from a Dash Core wallet.dat with legacy issued address
+    /// ranges, which a recovery phrase doesn't restore.
+    pub legacy_issued: bool,
     pub hd: bool,
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
@@ -375,6 +378,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
@@ -385,6 +389,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
