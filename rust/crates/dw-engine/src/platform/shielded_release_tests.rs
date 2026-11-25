@@ -894,7 +894,9 @@ fn an_unreconciled_dispatched_spend_never_reads_failed() {
 
 /// Q80 S1: a release changes the wallet's Shielded balance and history, so
 /// it raises the Shielded change for the next notification; a pass that
-/// releases nothing raises none.
+/// releases nothing raises none. (The first pass is not counted: its
+/// offline scan fails, and a wallet's first failed pass raises the change
+/// itself.)
 #[test]
 fn a_release_raises_the_shielded_change() {
     let f = Fixture::new(Platform {
@@ -910,7 +912,10 @@ fn a_release_raises_the_shielded_change() {
         m.iter()
             .any(|(w, c)| *w == f.wallet && c.contains(&crate::events::PlatformChange::Shielded))
     };
+    f.pass();
+    f.assert_held();
     *marks.lock().unwrap() = Some(Vec::new());
+    f.forget_backoff();
     f.pass();
     f.assert_held();
     assert!(
