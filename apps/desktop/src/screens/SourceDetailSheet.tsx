@@ -12,7 +12,7 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
-import { findSourceRecord, isMayLandRow, isReplacedRow, rowSource, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
+import { findSourceRecord, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
 import { useT } from "../i18n";
 
 function Address({ value }: { value: string }) {
@@ -27,14 +27,17 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
   const unit = display.name;
   const { row } = found;
   const replaced = isReplacedRow(row);
+  const unknown = isSettledUnknownRow(row);
   const shown = shownAmount(row.amount, row.txType);
   const date = rowDate(row);
-  const status = replaced
-    ? SourceRowText.replaced
-    : isMayLandRow(row)
-      ? SourceRowText.mayLand
-      : t(row.status.kind === "confirmed" ? "activity.sourceDetail.status.confirmed" : row.status.kind === "notAccepted" ? "activity.sourceDetail.status.notAccepted" : "activity.sourceDetail.status.pending");
-  const problem = !replaced && !isMayLandRow(row) && isProblem(row.status);
+  const status = unknown
+    ? settledUnknownText(row).text
+    : replaced
+      ? SourceRowText.replaced
+      : isMayLandRow(row)
+        ? SourceRowText.mayLand
+        : t(row.status.kind === "confirmed" ? "activity.sourceDetail.status.confirmed" : row.status.kind === "notAccepted" ? "activity.sourceDetail.status.notAccepted" : "activity.sourceDetail.status.pending");
+  const problem = !replaced && !unknown && !isMayLandRow(row) && isProblem(row.status);
   const fee = found.record.feeCredits;
   const refusal = found.source === "shielded" ? found.record.refusal : undefined;
   const refusalText =
@@ -48,11 +51,11 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
   return (
     <>
       <div className="tx-detail-summary" data-testid="source-detail-summary">
-        <Icon id={problem ? "txDetailError" : row.amount < 0 ? "txDetailSent" : "txDetailReceived"} size={50} />
+        <Icon id={problem ? "txDetailError" : row.amount < 0 || row.category === "sent" ? "txDetailSent" : "txDetailReceived"} size={50} />
         <h3 className="tx-detail-title" data-testid="source-detail-title">
           {sourceRowTitle(row)}
         </h3>
-        {!replaced && <AmountText className="tx-detail-amount" testId="source-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />}
+        {!replaced && !(unknown && row.amount === 0) && <AmountText className="tx-detail-amount" testId="source-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />}
         <div className="tx-detail-status">
           {date && (
             <span className="tx-detail-date" data-testid="source-detail-when">

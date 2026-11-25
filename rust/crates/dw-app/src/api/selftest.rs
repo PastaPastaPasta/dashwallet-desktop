@@ -173,6 +173,7 @@ fn bench_rows(rows: u32) -> HistoryRows {
                         instant_locked: true,
                         chain_locked: true,
                         matures_in: None,
+                        dropped: None,
                     },
                     timestamp: Some(1_790_000_000 - u64::from(i) * 600),
                     block_height: Some(100_000 - i),

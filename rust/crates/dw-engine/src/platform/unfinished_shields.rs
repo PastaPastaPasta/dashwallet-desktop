@@ -132,12 +132,19 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         let duffs = fee / CREDITS_PER_DUFF + 1;
         Some(Minimum {
             duffs,
-            code: ShieldedError::BelowMinimum { min: duffs }.code(),
+            code: ShieldedError::BelowMinimum {
+                min: duffs,
+                max: None,
+            }
+            .code(),
         })
     }
 
     fn caught_up(&self) -> bool {
-        self.lib.funding_hold().is_none()
+        let hold = self.lib.funding_hold();
+        (self.session.platform)
+            .ask_on_startup_hold(self.wallet, hold)
+            .is_none()
     }
 
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>> {

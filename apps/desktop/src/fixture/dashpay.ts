@@ -26,6 +26,7 @@ import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
 import type { IdentitiesWorld } from "./identities";
+import type { PlatformCreateOutcome, PlatformRegisterPlan } from "./registration";
 import type { CreditsWorld } from "./topup";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -62,6 +63,14 @@ export interface DashPayWorld {
   runs: string[];
   /** DP5-03: the code the request to a claim's inviter is refused with for good; absent: sent. */
   requestRefusal?: string;
+  /** DP1-09 D4 reversed: the next registration's temporary name is refused (registration_flow.rs
+   * logs the failure and goes on to the contest). */
+  temporaryRefused?: boolean;
+  /** C-funding F3: each Platform-funded row's stored funding and plan, by draft. */
+  platformPlans?: Record<string, PlatformRegisterPlan>;
+  /** C-funding F10: what each next identity create from the Platform balance comes to, first
+   * first; once empty, `registered`. */
+  platformCreates?: PlatformCreateOutcome[];
   /** DP1-10: top-up locks, stuck fundings, the own contest's read; none until a handler or a
    * scenario sets it (topup.ts `creditsOf`). */
   credits?: CreditsWorld;
@@ -427,6 +436,31 @@ export function noIdentity(): DashPayWorld {
     scans: [],
     assetLocks: 0,
     runs: [],
+  };
+}
+
+/** "alice"'s finished registration of the contested "alice" that asked for the temporary `temp`
+ * beside it (DP1-09 D4 reversed); it last changed an hour before FIXTURE_NOW. */
+export function contestedRow(temp: string): RegistrationStatus {
+  return {
+    draft: "reg-1",
+    phase: "done",
+    label: "alice",
+    temporaryLabel: temp,
+    identity: IDENTITY.alice,
+    txid: "f0".repeat(32),
+    waiting: null,
+    holdsKey: false,
+    running: false,
+    fundsCommitted: true,
+    contestEndsAt: null,
+    failure: null,
+    nameFailure: null,
+    profileFailure: null,
+    invitation: null,
+    fromPlatform: false,
+    createdAt: at(0, 2),
+    updatedAt: at(0, 1),
   };
 }
 

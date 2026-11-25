@@ -20,7 +20,7 @@ import { useAvatarUploadAvailable, useContactPictures, useContest, useCostTable,
 import { useStatusInputs } from "../../dashpay/queries";
 import { myQr } from "../../contacts/add";
 import { useMyUserLink } from "../../contacts/queries";
-import type { CardActionKind, StatusInputs } from "../../dashpay/status";
+import type { CardActionKind, CardModel, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
 import { withdrawFor } from "../../dashpay/withdraw";
 import { wizardFor } from "../../dashpay/wizard";
@@ -36,14 +36,37 @@ import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
 import { FROM_PLATFORM_COPY } from "../../dashpay/topupSource";
+import { INSTANT_COPY, VOTE_COPY } from "../../dashpay/instantOffer";
 import { ShareSheet } from "./ShareSheet";
 import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawSheet";
 
 /** Opens DP1-09's credits path for `identity` on the Join page; `instant` refuses a contested
- * label (D13). */
-export function chooseName(b: Backend, walletId: string, identity: string, instant: boolean) {
-  wizardFor(b, walletId).begin({ kind: "credits", identity, instant });
+ * label (D13). `label` prefills the field (Try again with a temporary name that failed). */
+export function chooseName(b: Backend, walletId: string, identity: string, instant: boolean, label = "") {
+  const wiz = wizardFor(b, walletId);
+  wiz.begin({ kind: "credits", identity, instant });
+  if (label !== "") wiz.setLabel(label);
   navigate("joinDashPay");
+}
+
+/** The card's actions on the main identity: Buy credits or Top up (D8), D13's instant username,
+ * or Try again with the temporary name the registration could not register (D4 reversed).
+ * `false` for another action. */
+export function identityCardAction(b: Backend, walletId: string, main: IdentitySummary | undefined, kind: CardActionKind, card: Pick<CardModel, "retryLabel"> | null): boolean {
+  if (!main) return false;
+  switch (kind) {
+    case "buyCredits":
+      buyCredits(b, walletId, main);
+      return true;
+    case "instantName":
+      chooseName(b, walletId, main.identity, true);
+      return true;
+    case "instantRetry":
+      chooseName(b, walletId, main.identity, true, card?.retryLabel ?? "");
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Home's "Buy credits" (S19, S20): My Profile, with the top-up sheet open unless a pending or
@@ -254,7 +277,9 @@ function RequestCard({ walletId, main, contest, inputs }: { walletId: string; ma
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   const read = useContest(walletId, main.identity, contest.label);
-  const m = requestModel(contest.label, contest.endsAt, read.data, read.isError, main, inputs.date);
+  const m = requestModel(contest.label, contest.endsAt, read.data, read.isError, main, inputs.date, inputs.instant);
+  const failed = m.failed;
+  const topUp = useModel(topUpFor(b, walletId));
   return (
     <section className="card-l1 profile-request" data-testid="profile-request" data-state={m.state} aria-labelledby={`${id}-title`}>
       <h2 className="card-title" id={`${id}-title`}>
@@ -290,6 +315,16 @@ function RequestCard({ walletId, main, contest, inputs }: { walletId: string; ma
             </DashButton>
             <span className="field-hint">{PROFILE_COPY.request.instantLine}</span>
           </>
+        )}
+        {m.short && (
+          <DashButton variant="tintedBlue" size="small" data-testid="profile-instant-top-up" onClick={() => topUp.begin(main.identity)}>
+            {VOTE_COPY.topUp}
+          </DashButton>
+        )}
+        {failed !== null && (
+          <DashButton variant="tintedBlue" size="small" data-testid="profile-instant-retry" onClick={() => chooseName(b, walletId, main.identity, true, failed)}>
+            {INSTANT_COPY.retry}
+          </DashButton>
         )}
         <DashButton variant="plainBlue" size="small" data-testid="profile-voting-info" onClick={() => setVotingInfo(true)}>
           {PROFILE_COPY.request.votingLink}
@@ -388,7 +423,7 @@ export function MyProfilePage({ walletId, network }: { walletId: string; network
   const page = pageModel(inputs);
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return chooseName(b, walletId, inputs.main.identity, false);
-    if (kind === "buyCredits" && inputs.main) return buyCredits(b, walletId, inputs.main);
+    if (identityCardAction(b, walletId, inputs.main, kind, page.kind === "card" ? page.card : null)) return;
     return defaultCardAction(kind, retry, () => moveToDashWallet(b, walletId));
   };
   return (

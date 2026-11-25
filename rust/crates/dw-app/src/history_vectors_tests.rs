@@ -404,6 +404,7 @@ fn records() -> Vec<TxRecord> {
                     instant_locked: s.kind == TxStatusKind::Unconfirmed && s.n % 2 == 0,
                     chain_locked: confirmations > 0,
                     matures_in: (s.kind == TxStatusKind::Immature).then_some(61),
+                    dropped: None,
                 },
                 timestamp: s.ts,
                 block_height: (confirmations > 0).then(|| 1_352_000 - confirmations + 1),

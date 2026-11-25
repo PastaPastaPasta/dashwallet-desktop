@@ -28,6 +28,8 @@ export const receive = {
     warning: "Most Dash wallets and exchanges cannot pay this address.",
     loading: "Loading Platform address",
     loadFailed: "Could not load the Platform address: {error}",
+    /** On mainnet, in place of the address, its QR code and Copy. */
+    mainnetOff: "This version can receive to a Platform address on test networks only. To receive Dash, use your Dash wallet address.",
   },
   shielded: {
     title: "Your Shielded address",

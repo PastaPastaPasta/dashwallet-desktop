@@ -415,10 +415,11 @@ impl NetworkSession {
             {
                 let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
-                tokio::task::spawn_blocking(move || {
+                let holds = tokio::task::spawn_blocking(move || {
                     crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &[id])
                 })
                 .await??;
+                this.hub.note_dropped_holds(holds);
             }
             let stored = this.stored_spends(id).await?;
             this.hub.admit(id);
@@ -498,6 +499,11 @@ impl NetworkSession {
             // build): a coin read holds back a collateral-sized coin whose
             // transaction the history doesn't know.
             let history = this.load_history_for(vec![id]).await;
+            // A history that did not load is not whole: no drop reads it as
+            // such once the open is over.
+            if history.is_err() {
+                (this.hub.history).with_wallet(id, |h| h.load_incomplete = true);
+            }
             this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;

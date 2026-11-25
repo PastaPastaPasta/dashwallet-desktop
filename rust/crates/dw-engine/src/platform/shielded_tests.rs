@@ -2073,7 +2073,7 @@ fn a_shield_quote_refuses_while_a_lock_pends_or_core_falls_short() {
 
     assert_eq!(
         quote(FakeShielded::default(), min - 1).unwrap_err(),
-        ShieldedError::BelowMinimum { min }
+        ShieldedError::BelowMinimum { min, max: None }
     );
     let pending = FakeShielded {
         locks: vec![

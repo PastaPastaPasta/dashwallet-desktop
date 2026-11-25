@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, findSourceRecord, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, sourceRowTitle } from "./sourceRows";
+import { filterExtra, findSourceRecord, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, sourceRowTitle } from "./sourceRows";
 import { creditsToDuffs } from "../api/pending";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
@@ -121,6 +121,45 @@ describe("platform activity rows", () => {
     expect(row).toMatchObject({ amount: 0, status: { kind: "confirmed" } });
     expect([isReplacedRow(row), isReplacedRow(platformRow(act("d", { kind: "moveToCore" })))]).toEqual([true, false]);
     expect(rowSource(row)).toBe("platform");
+  });
+});
+
+describe("a group that settled with no named winner", () => {
+  const unknown = (id: string, over: Partial<PlatformActivity>) => platformRow(act(id, { address: null, winnerKnown: false, ...over }));
+  const MOVE = "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.";
+  const PAY = "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.";
+  const TOP_UP = "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.";
+
+  it("titles every row of each kind as settled with another, with the kind's text", () => {
+    const rows = [
+      unknown("m", { kind: "moveToCore", state: "done" }),
+      unknown("s", { kind: "send", state: "replaced", to: "tdash1kpayee" }),
+      unknown("c", { kind: "contactPayment", state: "replaced", to: "tdash1kpayee" }),
+      unknown("t", { kind: "toIdentity", state: "done" }),
+      unknown("x", { kind: "moveToCore", state: "failed", mayLand: true }),
+    ];
+    expect(rows.map(sourceRowTitle)).toEqual(Array(5).fill("Settled with another payment or move"));
+    expect(rows.map((r) => settledUnknownText(r).text)).toEqual([MOVE, PAY, PAY, TOP_UP, MOVE]);
+    expect(rows.map((r) => [isSettledUnknownRow(r), isReplacedRow(r), isMayLandRow(r), r.status.kind])).toEqual(Array(5).fill([true, false, false, "confirmed"]));
+  });
+
+  it("puts the group's debit on its newest (done) row only", () => {
+    const newest = unknown("m", { kind: "moveToCore", state: "done", credits: "30000000000" });
+    const older = unknown("s", { kind: "send", state: "replaced", credits: "25000000000", to: "tdash1kpayee" });
+    const exit = unknown("x", { kind: "moveToCore", state: "failed", credits: "20000000000" });
+    expect([newest.amount, older.amount, exit.amount]).toEqual([30_000_000, 0, 0]);
+    const topUp = unknown("t", { kind: "toIdentity", state: "done", credits: "20000000000" });
+    expect(topUp.amount).toBe(-20_000_000);
+  });
+
+  it("keeps a group with a named winner as it was", () => {
+    const replaced = platformRow(act("r", { kind: "moveToCore", state: "replaced", address: null }));
+    expect([isSettledUnknownRow(replaced), isReplacedRow(replaced), sourceRowTitle(replaced)]).toEqual([false, true, "Moved to Dash wallet"]);
+  });
+
+  it("finds a settled row's record", () => {
+    const record = act("m", { kind: "moveToCore", winnerKnown: false });
+    expect(findSourceRecord(platformRow(record).txid, [record], [])?.record).toBe(record);
   });
 });
 
