@@ -1891,7 +1891,22 @@ impl SessionHub {
                 }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
                     let claims: &[Txid] = if claim { txids } else { &[] };
-                    match crate::tx_actions::forget_swept(&appdb, id, txids, &dead, claims, &kept) {
+                    let sweep = crate::tx_actions::Sweep {
+                        winner: *superseded_by,
+                        block: winner_block.as_ref().map(|b| (b.height(), b.block_hash())),
+                        claim,
+                        txs: &swept,
+                    };
+                    let forgotten = crate::tx_actions::forget_swept(
+                        &appdb,
+                        id,
+                        txids,
+                        &dead,
+                        claims,
+                        &kept,
+                        Some(&sweep),
+                    );
+                    match forgotten {
                         Ok(()) => self.history.drop_claims(&id, txids.iter().copied()),
                         Err(e) => {
                             tracing::warn!(wallet = %id, error = %e, "could not drop the marks of swept payments")
