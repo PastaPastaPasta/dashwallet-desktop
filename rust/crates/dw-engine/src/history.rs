@@ -1212,8 +1212,11 @@ pub(crate) fn dead_for_good(
 
 /// What [`held_awaiting`] reads beside the drops and the history.
 pub(crate) struct HeldEvidence<'a> {
-    /// The wallet's ChainLock height.
-    pub chainlock: Option<u32>,
+    /// The header chain proves a transaction's block final
+    /// ([`proven_final`]): a stored context or a height alone never does,
+    /// since a record of a block a fork replaced comes back after a
+    /// restart.
+    pub chain_final: &'a dyn Fn(&TxEntry) -> bool,
     /// A coin has a final spend: a processed block's at or below the
     /// ChainLock, or a proven note.
     pub final_spend: &'a dyn Fn(&OutPoint) -> bool,
@@ -1235,10 +1238,10 @@ pub(crate) struct HeldEvidence<'a> {
 /// settled when no live transaction of the history or key-wallet record
 /// spends it, no InstantSend lock of a transaction the wallet holds no
 /// copy of may spend it, and every drop holding it is settled. A drop is
-/// settled when its winner is in the history and ChainLocked (at or below
-/// the ChainLock); when the history doesn't hold it, or it is unknown,
+/// settled when its winner is in the history and its block proven final
+/// (`chain_final`); when the history doesn't hold it, or it is unknown,
 /// when one of the coins it contested has a final spend: the evidence's,
-/// or a ChainLocked transaction's of the history. An orphan's drop, which
+/// or one of a transaction of the history in a block proven final. An orphan's drop, which
 /// nothing beat, is settled once each parent a load found gone is dead
 /// for good (Q81c §2). A drop with no origin note awaits.
 pub(crate) fn held_awaiting(
@@ -1247,7 +1250,6 @@ pub(crate) fn held_awaiting(
     txs: &HashMap<Txid, TxEntry>,
     evidence: &HeldEvidence<'_>,
 ) -> bool {
-    let chainlock = evidence.chainlock;
     let contested: HashSet<OutPoint> = (drops.values())
         .filter_map(|(_, o)| o.as_ref())
         .flat_map(|o| o.contested.iter().copied())
@@ -1258,7 +1260,7 @@ pub(crate) fn held_awaiting(
             if held.contains(&o) {
                 live.insert(o);
             }
-            if contested.contains(&o) && chain_locked(&e.context, chainlock) {
+            if contested.contains(&o) && (evidence.chain_final)(e) {
                 locked.insert(o);
             }
         }
@@ -1268,7 +1270,7 @@ pub(crate) fn held_awaiting(
             winner: None, gone, ..
         } if !gone.is_empty() => gone.iter().all(evidence.dead_for_good),
         _ => match (origin.winner.and_then(|w| txs.get(&w))).filter(|e| !e.is_abandoned()) {
-            Some(winner) => chain_locked(&winner.context, chainlock),
+            Some(winner) => (evidence.chain_final)(winner),
             None => {
                 (origin.contested.iter()).any(|o| locked.contains(o) || (evidence.final_spend)(o))
             }
@@ -4397,10 +4399,78 @@ mod tests {
         );
     }
 
-    /// [`HeldEvidence`] of nothing, under `chainlock`.
+    /// #907: a drop's winner W, or a ChainLocked transaction spending a
+    /// coin it contested, settles the drop only once the header chain
+    /// proves its block final: W stored in block B at 10, under a ChainLock
+    /// of 11, while the header chain holds B' at 10, is no proof; W in B'
+    /// is.
+    #[test]
+    fn held_awaiting_does_not_settle_on_a_winner_whose_block_the_header_chain_replaced() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (a, b) = (OutPoint::new(t(1), 0), OutPoint::new(t(1), 1));
+        let (replaced, kept, lock) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+            BlockHash::from_byte_array([3; 32]),
+        );
+        let headers = HashMap::from([(10, kept), (11, lock)]);
+        let chain_final = |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| {
+                proven_final((b.height(), b.block_hash()), Some((11, lock)), &headers)
+            })
+        };
+        let evidence = HeldEvidence {
+            chain_final: &chain_final,
+            ..no_evidence(None)
+        };
+        let in_hash = |hash: BlockHash| TransactionContext::InBlock(BlockInfo::new(10, hash, 0));
+        let w = |hash| {
+            entry(
+                tx(vec![input(t(1), 0)], vec![out(20, &hash_addr(3))]),
+                in_hash(hash),
+            )
+        };
+        let held = BTreeSet::from([b]);
+        for (name, winner_in_history) in [
+            ("the winner", true),
+            ("a spender of a contested coin", false),
+        ] {
+            for (hash, awaits) in [(replaced, true), (kept, false)] {
+                let w = w(hash);
+                let w_id = w.tx.txid();
+                let txs = HashMap::from([(w_id, w)]);
+                let winner = match winner_in_history {
+                    true => w_id,
+                    false => t(9),
+                };
+                let drops = HeldDrops::from([(
+                    t(5),
+                    (
+                        held.clone(),
+                        Some(DropOrigin {
+                            winner: Some(winner),
+                            contested: BTreeSet::from([a, b]),
+                            gone: BTreeSet::new(),
+                        }),
+                    ),
+                )]);
+                assert_eq!(
+                    held_awaiting(&held, &drops, &txs, &evidence),
+                    awaits,
+                    "{name} in {hash}"
+                );
+            }
+        }
+    }
+
+    /// [`HeldEvidence`] of nothing, under `chainlock`, whose header chain
+    /// proves every block at or below it.
     fn no_evidence(chainlock: Option<u32>) -> HeldEvidence<'static> {
+        let final_under = move |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| chainlock.is_some_and(|cl| b.height() <= cl))
+        };
         HeldEvidence {
-            chainlock,
+            chain_final: Box::leak(Box::new(final_under)),
             final_spend: &|_| false,
             spent_by_record: &|_| false,
             unknown_lock: &|_| false,

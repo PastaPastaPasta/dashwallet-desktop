@@ -3116,8 +3116,11 @@ impl NetworkSession {
                     false => locked.insert(coin, after),
                 };
             }
+            let chain_final = |e: &crate::history::TxEntry| {
+                (e.context.block_info()).is_some_and(|b| proven((b.height(), b.block_hash())))
+            };
             let evidence = crate::history::HeldEvidence {
-                chainlock: chainlock_height,
+                chain_final: &chain_final,
                 final_spend: &final_spend,
                 spent_by_record: &|o| by_record.contains(o),
                 unknown_lock: &|o| {
