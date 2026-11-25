@@ -3050,9 +3050,10 @@ fn a_create_resent_by_a_pass_records_its_dispatch_first() {
 
 /// Each family the engine sends is accepted when its signed bytes decode
 /// to the anchor and the nullifiers the library hands the hook: a transfer,
-/// a withdrawal (a contact payout's family too), an identity top-up and an
-/// identity creation from the pool. (An unshield's acceptance is
-/// `unshield_hook_arms_its_record_after_the_artifact`.)
+/// a withdrawal (a contact payout's family too) and an identity top-up. (An
+/// unshield's acceptance is `unshield_hook_arms_its_record_after_the_artifact`,
+/// an identity create's `a_create_is_named_in_its_row_before_its_artifact`:
+/// the hook accepts only the create the engine started.)
 #[test]
 fn each_family_whose_bytes_match_is_accepted() {
     let h = Hooked::new();
@@ -3061,9 +3062,6 @@ fn each_family_whose_bytes_match_is_accepted() {
         ShieldedDispatchKind::Withdraw,
         ShieldedDispatchKind::IdentityTopUp {
             identity_id: [0x41; 32],
-        },
-        ShieldedDispatchKind::IdentityCreate {
-            identity_id: [0x42; 32],
         },
     ];
     for (i, kind) in kinds.into_iter().enumerate() {

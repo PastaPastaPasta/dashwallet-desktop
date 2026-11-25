@@ -45,7 +45,7 @@ use dpp::state_transition::shielded_transfer_transition::accessors::ShieldedTran
 use dpp::state_transition::shielded_withdrawal_transition::accessors::ShieldedWithdrawalTransitionAccessorsV0;
 use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::accessors::IdentityCreateFromShieldedPoolTransitionAccessorsV0;
 use dpp::state_transition::unshield_transition::accessors::UnshieldTransitionAccessorsV0;
-use dw_appdb::dispatch::{ArtifactOrigin, ArtifactStatus, ShieldedArtifact};
+use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, ArtifactStatus, ShieldedArtifact};
 use platform_wallet::wallet::shielded::{
     NetworkShieldedCoordinator, ShieldedDispatchKind, ShieldedDispatchPayload,
     ShieldedSpendDisposition, ShieldedStore, SubwalletId, UnresolvedReason,
@@ -253,7 +253,13 @@ async fn held(
         let (Some(artifact), None) = (of_spend.next(), of_spend.next()) else {
             continue;
         };
-        if artifact.activity != d.activity_id || !standing(artifact) {
+        // A Shielded-funded identity create is settled by its registration's
+        // own evidence (`registration_shielded`), never here: its unpadded
+        // spend read executed would read as Platform's fallback there.
+        if artifact.activity != d.activity_id
+            || !standing(artifact)
+            || artifact.kind == Some(ArtifactKind::IdentityCreate)
+        {
             continue;
         }
         found.push(Held {
@@ -748,7 +754,8 @@ fn listing_fails(_: &NetworkSession) -> bool {
 /// library holds its notes or the hook's artifact is not reconciled yet,
 /// released once settled `not_executed` and no longer held, confirmed once
 /// settled `executed` on proof of this transition ([`proves_execution`]),
-/// unknown when its notes were spent by what may be another spend. While either source cannot be read (the library's
+/// unknown when its notes were spent by what may be another spend (settled
+/// `executed` unproved, or acknowledged while unresolved). While either source cannot be read (the library's
 /// outcomes, or the journal, not ready included) every failed row reads
 /// held: it may be a refused spend that can still execute, or one that did.
 /// Other rows stay as they are.
@@ -824,6 +831,11 @@ pub(crate) async fn mark_refused(
                 Some(ShieldedRefusal::Released),
             ),
             _ if library_holds => (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held)),
+            // Acknowledged while unresolved: its notes read spent, by this
+            // spend or another of the same notes (a consumed create).
+            Some(a) if a.acked && matches!(a.status, ArtifactStatus::Unresolved { .. }) => {
+                (ShieldedActivityStatus::Unknown, None)
+            }
             Some(a)
                 if unreconciled(a) && (refused || row.status == ShieldedActivityStatus::Failed) =>
             {

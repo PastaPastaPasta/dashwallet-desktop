@@ -758,8 +758,9 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   before any hook was set) or with an unclassified one waits, as does every outcome while the journal is unavailable.
   So Close Wallet and a switch stay refused (DEC-1046, below) only while an outcome is not acknowledged.
 - **Refused first sends (#444).** Platform refusing a spend at its first broadcast proves nothing: the library
-  records it `Unresolved(Cancelled)` and holds its notes, since the spend may still execute. At each pass the engine
-  settles such a spend only on proved evidence, ordered by chain height and never by a clock:
+  records it `Unresolved(Cancelled)` and holds its notes, since the spend may still execute. A Shielded-funded
+  identity create is not settled here: its registration's own evidence settles it (§7 item 111). At each pass the
+  engine settles such a spend only on proved evidence, ordered by chain height and never by a clock:
   - *not executed* (its artifact `not_executed`, the library's disposition kept, then acknowledged, so its notes no
     other spend has spent are spendable again), on either of two proofs:
     - absence: its anchor proved absent from the anchors tree at a height above the one it was proved recorded at
@@ -783,8 +784,8 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
 
   Its history row reads `pending` with the refusal `held` ("may still go through") from the refusal on, `failed` with
   `released` once settled not executed and acknowledged, `confirmed` once settled executed with a padding nullifier
-  (proof of this transition), and `unknown` once settled executed without one (its notes were spent, perhaps by
-  another device's spend). While the library's
+  (proof of this transition), and `unknown` once settled executed without one, or acknowledged while unresolved (a
+  consumed create): its notes were spent, perhaps by another device's spend. While the library's
   outcomes or the journal cannot be read, and while a dispatched spend's artifact is not reconciled, a `failed` row
   reads `pending` and `held`: it is never shown failed while it may still execute.
 - **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
@@ -5151,7 +5152,8 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an absence read below h, a
     failed read) is `waiting: payment_unknown`, and so stays a row whose anchor is never read recorded after the
     failure, or a pool so quiet that it keeps the anchor; a bundle of two or more notes has no padding, so a partly
-    spent read decides nothing.
+    spent read decides nothing. The release of refused first sends (§2.13) leaves a create to this evidence: its
+    unpadded spend read executed there would read here as Platform's fallback.
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a
     `RegistrationRefund` record of the denomination at the fallback address (`FromShielded` source `registration`);
