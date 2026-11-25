@@ -49,7 +49,7 @@ def glob_regex(glob):
             out, i = out + "[^/]", i + 1
         else:
             out, i = out + re.escape(glob[i]), i + 1
-    return re.compile(out + r"\Z")
+    return re.compile(out + r"\Z", re.S)
 
 
 def load_patterns(path=PATHS_FILE):
@@ -227,7 +227,8 @@ def post_status(repo, sha, state, summary):
 
 def cmd_match(args):
     rules = load_patterns(args.paths)
-    names = sys.stdin.read().split("\0") if args.z else sys.stdin.read().splitlines()
+    text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    names = text.split("\0") if args.z else text.splitlines()
     for f in names:
         f = f if args.z else f.strip()
         if f and is_funds(f, rules):

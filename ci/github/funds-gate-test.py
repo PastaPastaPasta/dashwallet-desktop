@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests of ci/github/funds-gate.py and ci/funds-paths.txt. Run: python3 ci/github/funds-gate-test.py"""
 
+import contextlib
 import importlib.util
+import io
 import subprocess
 import sys
 import unittest
@@ -112,6 +114,10 @@ class Paths(unittest.TestCase):
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
+    def test_names_with_a_newline_are_funds(self):
+        for f in ["rust/crates/dw-engine/src/x\ny.rs", "rust/crates/dw-engine/src/sub\ndir/y.rs", "apps/desktop/src/shielded/a\nb.ts", "rust/crates/dw-appdb/src/a\nb.rs"]:
+            self.assertTrue(gate.is_funds(f, RULES), repr(f))
+
     def test_not_funds_paths(self):
         for f in [
             "docs/ci.md",
@@ -138,17 +144,16 @@ class Paths(unittest.TestCase):
 
 class Match(unittest.TestCase):
     def test_nul_separated_names_keep_unusual_characters(self):
-        import io, contextlib
-        names = "rust/crates/dw-engine/src/caf\u00e9.rs\0docs/ci.md\0rust/crates/dw-engine/src/a b.rs\0"
+        names = "rust/crates/dw-engine/src/caf\u00e9.rs\0docs/ci.md\0rust/crates/dw-engine/src/a b.rs\0 rust/x.rs\0apps/desktop/src/shielded/a\nb.ts\0"
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             saved = sys.stdin
-            sys.stdin = io.StringIO(names)
+            sys.stdin = io.TextIOWrapper(io.BytesIO(names.encode()))
             try:
                 gate.main(["match", "-z"])
             finally:
                 sys.stdin = saved
-        self.assertEqual(out.getvalue().splitlines(), ["rust/crates/dw-engine/src/caf\u00e9.rs", "rust/crates/dw-engine/src/a b.rs"])
+        self.assertEqual(out.getvalue().split("\n"), ["rust/crates/dw-engine/src/caf\u00e9.rs", "rust/crates/dw-engine/src/a b.rs", "apps/desktop/src/shielded/a", "b.ts", ""])
 
 
 class Gate(unittest.TestCase):
