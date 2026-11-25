@@ -1,5 +1,5 @@
-//! MG's final refusal copy (`storeUpgrade.refused.*`, the damaged-store
-//! keys still placeholders): every cause × every
+//! MG's final refusal copy (`storeUpgrade.refused.*`, with the
+//! damaged-store keys): every cause × every
 //! proved state gives an allowed way out with its text assembled exactly,
 //! "previous" only for a file proved not migrated (MG (A), (E)), and every
 //! cause, made by the engine on a real fixture, leaves the data root
@@ -64,7 +64,10 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
             "selfCheck",
             "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
         ),
-        Damaged => ("damaged", "[MG placeholder] part of it can't be read."),
+        Damaged => (
+            "damaged",
+            "it can't be read as wallet data, so it may be damaged.",
+        ),
         Unexpected => ("unexpected", "it's in a state this version doesn't expect."),
     }
 }
@@ -110,7 +113,7 @@ fn way_out(w: WayOut) -> (&'static str, String) {
         ),
         WayOut::Damaged => (
             "damaged",
-            "[MG placeholder] You can set this wallet up again from its recovery phrase. Dash Wallet keeps the data it can't read as it is, in case support needs it. Or choose Report a problem.".into(),
+            "To set up a wallet again from its recovery phrase, choose Set up from recovery phrase. Dash Wallet starts with a new data folder and leaves {folder} as it is, without deleting anything. Setting up again rebuilds the wallet from the network, so anything saved only in this wallet data, such as labels and notes, isn't brought across. If you don't have the recovery phrase, choose Report a problem.".into(),
         ),
     }
 }
@@ -239,7 +242,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             if w == WayOut::Damaged {
                 want.push((
                     "storeUpgrade.refused.recover",
-                    "[MG placeholder] Set up from recovery phrase",
+                    "Set up from recovery phrase",
                 ));
             }
             if reports {
@@ -1157,10 +1160,10 @@ fn a_damaged_store_offers_recovery_and_report_never_the_earlier_version() {
     }
 }
 
-/// The damaged screen's three strings are the only refusal copy still
-/// waiting for MG.
+/// No refusal screen carries placeholder copy: MG's final text is in for
+/// every key, the damaged-store keys included.
 #[test]
-fn only_the_damaged_screen_carries_placeholder_copy() {
+fn no_refusal_screen_carries_placeholder_copy() {
     let mut keys = BTreeSet::new();
     for cause in RefusedCause::ALL {
         for state in states() {
@@ -1181,13 +1184,5 @@ fn only_the_damaged_screen_carries_placeholder_copy() {
             }
         }
     }
-    assert_eq!(
-        keys,
-        [
-            "storeUpgrade.refused.detail.damaged",
-            "storeUpgrade.refused.recover",
-            "storeUpgrade.refused.wayOut.damaged",
-        ]
-        .into()
-    );
+    assert_eq!(keys, BTreeSet::<&str>::new());
 }

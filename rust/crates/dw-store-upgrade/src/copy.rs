@@ -8,8 +8,8 @@
 //! [`PENDING_MG`] or start with [`PLACEHOLDER`].
 //!
 //! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
-//! family, sha256 8c2c34db…0da2, and the damaged-store keys after it, still
-//! [`PLACEHOLDER`] copy) is title + "{intro}: {detail} {unchanged}
+//! family, sha256 8c2c34db…0da2, with its Q107 C1 damaged-store keys,
+//! sha256 6b1c75d2…8f99) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version. "{unchanged}" says Dash Wallet changed
@@ -85,7 +85,7 @@ const REPORT: Button = button("storeUpgrade.refused.report", "Report a problem")
 const RESTORE: Button = button("storeUpgrade.refused.restore", "Restore earlier data");
 const RECOVER: Button = button(
     "storeUpgrade.refused.recover",
-    "[MG placeholder] Set up from recovery phrase",
+    "Set up from recovery phrase",
 );
 
 /// The screen "Restore earlier data" opens: the R3 confirm, the only way to
@@ -213,7 +213,7 @@ impl RefusedCause {
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.detail.damaged",
-                "[MG placeholder] part of it can't be read.",
+                "it can't be read as wallet data, so it may be damaged.",
             ),
             Self::Unexpected => line(
                 "storeUpgrade.refused.detail.unexpected",
@@ -456,7 +456,7 @@ impl WayOut {
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.wayOut.damaged",
-                "[MG placeholder] You can set this wallet up again from its recovery phrase. Dash Wallet keeps the data it can't read as it is, in case support needs it. Or choose Report a problem.",
+                "To set up a wallet again from its recovery phrase, choose Set up from recovery phrase. Dash Wallet starts with a new data folder and leaves {folder} as it is, without deleting anything. Setting up again rebuilds the wallet from the network, so anything saved only in this wallet data, such as labels and notes, isn't brought across. If you don't have the recovery phrase, choose Report a problem.",
             ),
         }
     }
