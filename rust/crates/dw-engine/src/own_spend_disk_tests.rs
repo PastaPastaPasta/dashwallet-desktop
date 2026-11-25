@@ -1798,11 +1798,12 @@ impl Beaten {
         );
         pause.release.notify_one();
         self.settle();
-        assert_eq!(
-            self.session.hub.carried_drop_roots(self.id),
-            BTreeSet::from([self.other.txid()]),
-            "the other payment is kept to recheck"
-        );
+        // A drop a reconcile started meanwhile holds the kept payment while
+        // it rechecks it, and keeps it again after.
+        let kept = BTreeSet::from([self.other.txid()]);
+        eventually("the other payment is kept to recheck", || {
+            self.session.hub.carried_drop_roots(self.id) == kept
+        });
         self.assert_kept(&self.session, "while the block is unproven");
         a
     }
