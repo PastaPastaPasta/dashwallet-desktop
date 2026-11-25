@@ -505,6 +505,11 @@ impl NetworkSession {
                 (this.hub.history).with_wallet(id, |h| h.load_incomplete = true);
             }
             this.hub.update_wallet_state(id, |s| s.loading = false);
+            // The drops that waited for this open go now, with the evidence
+            // they were found on (#818, S1).
+            for wallet in this.hub.deferred_drop_wallets() {
+                this.drop_dead(&live.manager, wallet, None).await;
+            }
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

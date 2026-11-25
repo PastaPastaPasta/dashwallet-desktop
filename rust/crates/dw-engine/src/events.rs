@@ -574,6 +574,10 @@ pub(crate) struct SessionHub {
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
     dead_children: Mutex<Vec<DeadChildren>>,
+    /// The drops that waited for another wallet's open, by wallet, each
+    /// with its detection's evidence: dropped when an open ends, or at the
+    /// wallet's next drop (#818, S1).
+    deferred_drops: Mutex<Vec<(WalletId, crate::tx_actions::DeadWork)>>,
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
@@ -859,6 +863,7 @@ impl SessionHub {
             header_tip: Mutex::new(None),
             final_sends: Mutex::new(Vec::new()),
             dead_children: Mutex::new(Vec::new()),
+            deferred_drops: Mutex::new(Vec::new()),
             dropped_holds: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
@@ -1134,6 +1139,40 @@ impl SessionHub {
             .collect()
     }
 
+    /// Keeps `work`, drops of wallet `id` that wait for another wallet's
+    /// open; one already waiting is kept once.
+    pub(crate) fn defer_drops(
+        &self,
+        id: WalletId,
+        work: impl IntoIterator<Item = crate::tx_actions::DeadWork>,
+    ) {
+        let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        for w in work {
+            if !deferred
+                .iter()
+                .any(|(d, waiting)| *d == id && *waiting == w)
+            {
+                deferred.push((id, w));
+            }
+        }
+    }
+
+    /// The drops of wallet `id` that waited for another wallet's open.
+    pub(crate) fn take_deferred_drops(&self, id: WalletId) -> Vec<crate::tx_actions::DeadWork> {
+        let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others) = std::mem::take(&mut *deferred)
+            .into_iter()
+            .partition(|(w, _)| *w == id);
+        *deferred = others;
+        mine.into_iter().map(|(_, w)| w).collect()
+    }
+
+    /// The wallets with drops that wait for another wallet's open.
+    pub(crate) fn deferred_drop_wallets(&self) -> BTreeSet<WalletId> {
+        let deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        deferred.iter().map(|(w, _)| *w).collect()
+    }
+
     /// Keeps the drops' holds an open read, by wallet.
     pub(crate) fn note_dropped_holds(&self, holds: crate::tx_actions::DroppedHolds) {
         (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).extend(holds);
@@ -1376,6 +1415,11 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        (self
+            .deferred_drops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .retain(|(w, _)| w != id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {

@@ -1353,7 +1353,7 @@ struct DropPlan {
 /// the winner is a block's spend the wallet does not know
 /// ([`unknown_block`]), the header chain's hash at that block's height and
 /// the coins of the roots key-wallet held as spent there.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Recheck {
     truncations: u64,
     block: Option<BlockHash>,
@@ -1362,19 +1362,22 @@ pub(crate) struct Recheck {
     tries: u8,
 }
 
-/// What a recheck leaves for [`NetworkSession::drop_dead`]: some roots had
-/// another winner, so the drop finds them again; and the roots kept on the
-/// detection's evidence that could not go yet, to recheck with it.
+/// What a drop leaves for [`NetworkSession::drop_dead`]: some roots had
+/// another winner, so the drop finds them again; the roots kept on the
+/// detection's evidence that could not go yet, to recheck with it; and
+/// whether another wallet's history was not whole, so the drop waits for
+/// it ([`SessionHub::defer_drops`](crate::events::SessionHub::defer_drops)).
 #[derive(Debug, Default)]
 pub(crate) struct Rechecked {
     regrouped: bool,
     retry: Vec<Txid>,
+    deferred: bool,
 }
 
 /// A drop [`NetworkSession::drop_dead`] has queued: its roots, their
 /// winner, the transactions swept with them, and its detection's evidence
 /// when it rechecks them.
-type DeadWork = (Vec<Txid>, Winner, BTreeSet<Txid>, Option<Recheck>);
+pub(crate) type DeadWork = (Vec<Txid>, Winner, BTreeSet<Txid>, Option<Recheck>);
 
 /// How often a detection's roots are rechecked with its evidence.
 const RECHECKS: u8 = 3;
@@ -2275,6 +2278,7 @@ impl NetworkSession {
         let _gate = self.hub.drop_gate.lock().await;
         let mut work: VecDeque<_> = (self.hub.take_dead_children(wallet).into_iter())
             .map(|(roots, winner, swept)| (roots, winner, swept, None))
+            .chain(self.hub.take_deferred_drops(wallet))
             .collect();
         let mut stored = stored;
         for _ in 0..=DETECTIONS {
@@ -2288,10 +2292,17 @@ impl NetworkSession {
                     wallet,
                     (&roots, winner),
                     &links,
-                    recheck.as_ref().map(|r| (r, &mut out)),
+                    (recheck.as_ref(), &mut out),
                 );
                 if let Err(e) = dropped.await {
                     tracing::warn!(%wallet, error = %e, "could not drop transactions that can never confirm")
+                }
+                // Another wallet's history is not whole: this drop and the
+                // rest wait, with their evidence, for its open to end.
+                if out.deferred {
+                    work.push_front((roots, winner, links, recheck));
+                    self.hub.defer_drops(wallet, work);
+                    return;
                 }
                 again |= out.regrouped;
                 match recheck.filter(|_| !out.retry.is_empty()) {
@@ -2389,15 +2400,16 @@ impl NetworkSession {
     /// (Q89 R1); `out` says so. A root `winner` beat by a block's spend
     /// that key-wallet no longer holds keeps `winner` when that block is
     /// proven final ([`spend_forgotten_as_final`]), and its drop plans with
-    /// that spend (Q89a C3); when only the proof is missing, or another
-    /// wallet's history is not whole, it goes to `out` to recheck.
+    /// that spend (Q89a C3); when only the proof is missing it goes to
+    /// `out` to recheck. While another wallet's history is not whole,
+    /// nothing goes and `out` says the drop waits.
     async fn drop_dead_unmined(
         &self,
         manager: &Manager,
         wallet: WalletId,
         (roots, winner): (&[Txid], Winner),
         links: &BTreeSet<Txid>,
-        mut recheck: Option<(&Recheck, &mut Rechecked)>,
+        (recheck, out): (Option<&Recheck>, &mut Rechecked),
     ) -> Result<BTreeSet<Txid>, EngineError> {
         #[cfg(test)]
         let pause = (recheck.is_some())
@@ -2410,8 +2422,8 @@ impl NetworkSession {
         }
         // The detection's block proven final, read apart from the lock: a
         // truncation below the ChainLock it reads is refused.
-        let proven = match (&recheck, unknown_block(winner)) {
-            (Some((r, _)), Some(at)) => match r.block {
+        let proven = match (recheck, unknown_block(winner)) {
+            (Some(r), Some(at)) => match r.block {
                 Some(block) => (self.block_proven_final(manager, wallet, (at, block))).await,
                 None => None,
             },
@@ -2437,9 +2449,7 @@ impl NetworkSession {
             .filter(|id| **id != wallet.0)
             .any(|id| self.history_unread(WalletId(*id)));
         if other_unread {
-            if let Some((_, out)) = recheck.as_mut() {
-                out.retry = roots.to_vec();
-            }
+            out.deferred = true;
             return Ok(BTreeSet::new());
         }
         let settled = {
@@ -2466,7 +2476,7 @@ impl NetworkSession {
             let mut forgotten = BTreeMap::new();
             let (roots, winner) = match recheck {
                 None => (roots, winner),
-                Some((r, out)) => {
+                Some(r) => {
                     let core = &info.core_wallet;
                     let recorded = |t: &Txid| {
                         (core.accounts.all_accounts().into_iter()).any(|a| a.has_transaction(t))

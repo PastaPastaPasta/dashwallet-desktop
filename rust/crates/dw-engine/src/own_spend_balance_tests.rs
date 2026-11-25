@@ -12,9 +12,10 @@ use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
-    fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
-    start_offline_spv, store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
+    COIN, COINS, FUNDED_AT, TIP, abandon, another_wallet_opening, assert_holds, change_of, coins,
+    eventually, foreign, fresh_address, funding, own_scripts, rival, second_wallet, send,
+    sent_marks, spendable, start_offline_spv, store_raw, synced, utxo, wait_stored,
+    wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -2759,6 +2760,40 @@ fn a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out() {
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
+}
+
+/// #170 case 4, S1: key-wallet sweeps P while another wallet is part-way
+/// through its open, so the drop of C waits for that open. C goes when the
+/// open ends, with no other reconcile, and D stays out, also after a
+/// restart.
+#[test]
+fn a_child_of_a_payment_swept_while_another_wallet_opens_goes_when_the_open_ends() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert!(
+        live_in_history(&session, id, c.txid()),
+        "C waits for the other wallet's open"
+    );
+    assert!(session.hub.deferred_drop_wallets().contains(&id));
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "the open ended");
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }
 
 /// #170 case 4: the app stops after key-wallet's sweep of P is stored and

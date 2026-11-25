@@ -1669,6 +1669,38 @@ fn a_beaten_payment_goes_when_a_chainlock_forgets_its_winner_before_the_drop() {
     t.assert_spend_kept_final(a);
 }
 
+/// #818, S1: another wallet is part-way through its open when the block
+/// whose spend of A the wallet does not know beats the other payment is
+/// reconciled, so the drop waits for that open; the block's ChainLock
+/// comes meanwhile and key-wallet forgets the spend as final. The drop
+/// goes when the open ends, with the spend it was found on: A is claimed
+/// for good, not freed, and nothing is rewound, also after a restart.
+#[test]
+fn a_beaten_payment_goes_when_another_wallets_open_ends_after_a_chainlock_forgot_its_winner() {
+    let t = beaten_payment_with_a_child();
+    let (pause, opening) = another_wallet_opening(&t.engine, &t.session);
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
+    mined(&t.engine, &t.session, t.id, TIP + 1, block.to_vec());
+    eventually("the drop waits for the other wallet's open", || {
+        t.session.hub.deferred_drop_wallets().contains(&t.id)
+    });
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&block));
+    let a = OutPoint::new(t.paid.txid(), 0);
+    assert!(
+        !t.observed().contains(&a),
+        "the ChainLock forgot the spend of A"
+    );
+    t.assert_kept(&t.session, "while the other wallet opens");
+    pause.release.notify_one();
+    t.engine.block_on(opening).unwrap().unwrap();
+    assert!(
+        t.session.hub.deferred_drop_wallets().is_empty(),
+        "no drop waits once the open ended"
+    );
+    t.assert_spend_kept_final(a);
+}
+
 impl Beaten {
     /// The other payment, its child and `back` went on the forgotten spend
     /// of `a`: claimed for good, not held as unknown, nothing rewound, also
@@ -6231,6 +6263,33 @@ fn a_header_chain_behind_a_payments_block_keeps_its_mark() {
 }
 
 /// A second wallet of the session, born at [`BIRTH`].
+/// Opens another wallet of the session and holds its open part-way, as a
+/// slow history load does: its history is not whole meanwhile. Returns
+/// the pause to release and the open to wait for.
+pub(super) fn another_wallet_opening(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+) -> (
+    Arc<crate::coins::TestPause>,
+    tokio::task::JoinHandle<Result<(), crate::EngineError>>,
+) {
+    let other = second_wallet(engine, session);
+    engine.block_on(session.unload_wallet(other)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let opening = {
+        let session = Arc::clone(session);
+        session
+            .rt
+            .clone()
+            .spawn(async move { session.load_wallet(other).await })
+    };
+    eventually("the other wallet's open is held", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    (pause, opening)
+}
+
 pub(super) fn second_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
     engine
         .block_on(
