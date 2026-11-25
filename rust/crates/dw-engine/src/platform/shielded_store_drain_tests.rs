@@ -535,7 +535,12 @@ fn an_unreadable_holds_table_keeps_the_account_unbound() {
         .unwrap();
     let s = Arc::clone(&o.session);
     let bound = (o.engine).block_on(async move {
-        on_pool(&s, main_wallet(), |_, lib| async move { Ok(lib.bind().await?) }).await
+        on_pool(
+            &s,
+            main_wallet(),
+            |_, lib| async move { Ok(lib.bind().await?) },
+        )
+        .await
     });
     assert!(bound.is_err(), "{bound:?}");
     journal
