@@ -170,6 +170,7 @@ impl Fixture {
             hung: AtomicBool::new(false),
             stored,
             w: world,
+            proof_hold: Mutex::default(),
         });
         fake.sync_rows();
         fake
@@ -476,6 +477,9 @@ struct Fake {
     /// The locks are the wallet's own, in its store, not `World::locks`.
     stored: bool,
     w: Arc<Mutex<World>>,
+    /// The next proof wait holds here, as the library's does until its
+    /// proof or its bound.
+    proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl Fake {
@@ -838,6 +842,7 @@ impl TopUpLib for Fake {
     }
 
     async fn wait_proof(&self, outpoint: OutPoint, _: Duration) -> Result<(), FundError> {
+        crate::coins::pause_at(&self.proof_hold).await;
         if !self.w().proof_arrives {
             return Err(FundError::IsTimeout);
         }
@@ -1098,6 +1103,46 @@ fn an_islock_timeout_leaves_the_top_up_pending_until_resumed() {
     let again = f.resume(&lib, &out.txid).unwrap();
     assert_eq!(again.state, already_applied(balance));
     assert_eq!(lib.counts(), (1, 1));
+}
+
+/// #879: a close that starts while "Check again" waits for the lock's
+/// proof does not wait for it: the press is "waiting for proof", nothing is
+/// applied, and the lock is not taken.
+#[test]
+fn a_close_ends_a_top_up_resumes_proof_wait_as_waiting_for_proof() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::IsTimeout);
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(out.state, TopUpState::ProofWaiting);
+    let hold = Arc::new(crate::coins::TestPause::default());
+    *lib.proof_hold.lock().unwrap() = Some(Arc::clone(&hold));
+    let grant = f.grant(1_000);
+    let (s, wallet, run, txid) = (
+        Arc::clone(&f.session),
+        f.wallet,
+        Arc::clone(&lib),
+        out.txid.clone(),
+    );
+    let press = f.session.rt.spawn(async move {
+        let _op = s.enter().await.map_err(PlatformError::from)?;
+        topup::resume(&s, wallet, &*run, &txid, &grant).await
+    });
+    assert!(hold.wait_reached(Duration::from_secs(30)), "the proof wait");
+    let s = Arc::clone(&f.session);
+    let closing = f.session.rt.spawn(async move { s.close().await });
+    let resumed = f
+        .engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await });
+    hold.release.notify_one();
+    let resumed = resumed.expect("the close ended the proof wait").unwrap();
+    f.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    assert_eq!(resumed.unwrap().state, TopUpState::ProofWaiting);
+    assert_eq!(lib.counts(), (1, 0), "one funding, no apply");
+    assert!(lib.w().consumed.is_empty(), "the lock is not taken");
 }
 
 /// A failed apply keeps the proved lock: it is listed, blocks a new
