@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Q110's combined test builds a real between-state store with the store
+# upgrade's own code.
+dw-store-upgrade = { workspace = true, features = ["test-support"] }
 # Upstream's store, opened on a drained file (its tree bound, its records).
 platform-wallet = { workspace = true }
 platform-wallet-storage = { workspace = true }

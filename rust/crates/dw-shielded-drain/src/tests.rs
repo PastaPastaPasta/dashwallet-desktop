@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen, ShieldedDrainState};
-use dw_store_upgrade::{Adopters, PersisterOpened, take_snapshot};
+use dw_store_upgrade::test_support::{BeforeSnapshot, between_state_with};
+use dw_store_upgrade::{Adopters, PersisterOpened, take_snapshot, upgrade_copy_present};
 use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
@@ -828,66 +829,83 @@ fn the_drain_refuses_without_the_snapshot_and_changes_nothing() {
     assert_eq!(d.sha256s(), before);
 }
 
-/// Turns the snapshot just taken into a `part-upgraded` copy, the copy a
-/// part-done upgrade takes without a verified before-upgrade snapshot
-/// (Q107 107-1), and returns its directory.
-fn as_part_upgraded(info: &dw_store_upgrade::SnapshotInfo) -> PathBuf {
-    let dir = info.dir();
-    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
-    let rest = name
-        .strip_prefix("before-upgrade")
-        .expect("a before-upgrade snapshot");
-    let to = dir.with_file_name(format!("part-upgraded{rest}"));
-    std::fs::rename(dir, &to).unwrap();
-    to
+/// A real between-state store from the store upgrade: its fork fixture,
+/// with this crate's fork shielded store (one executed disposition holding
+/// note 1) in place before the first snapshot, R1's drop, and `before`
+/// applied to the before-upgrade snapshot. With `again`, one more start's
+/// prepare and reconcile ran, keeping a copy. No persister is open yet.
+fn between(before: BeforeSnapshot, again: bool) -> Dir {
+    let tmp = tempfile::Builder::new().prefix("dwsd-").tempdir().unwrap();
+    let root = tmp.path().join("data");
+    let net = root.join("regtest");
+    private_dir(&root);
+    between_state_with(&net, before, again, SystemTime::now(), |dir| {
+        for name in ["", "-wal", "-shm", "-journal"] {
+            let path = dir.join(format!("{SHIELDED_STORE_FILE}{name}"));
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        let conn = Connection::open(dir.join(SHIELDED_STORE_FILE)).unwrap();
+        conn.execute_batch(FORK_PENDING).unwrap();
+        conn.execute_batch(FORK_DISPOSITIONS).unwrap();
+        disposition(&conn, 1, "executed", None, &[1], false);
+        Ok(())
+    })
+    .unwrap();
+    Dir {
+        _tmp: tmp,
+        root,
+        net,
+        persister: None,
+    }
 }
 
-/// Q110 110-1: a part-done upgrade without a verified before-upgrade
-/// snapshot drains on its part-upgraded copy when the copy holds the store,
-/// and refuses, changing nothing, when it doesn't or doesn't verify.
+/// Q110 110-1, over the store upgrade's real between state: the drain
+/// runs on the part-upgraded copy a part-done upgrade takes when it has no
+/// verified before-upgrade snapshot (absent, damaged or another wallet's),
+/// runs on a verified before-upgrade snapshot, and refuses, changing
+/// nothing, with neither. Each runs after the real upstream open.
 #[test]
-fn the_drain_proceeds_on_a_part_upgraded_copy_that_holds_the_store() {
-    let mut d = Dir::new();
-    let s = d.fork_store(Some(FORK_DISPOSITIONS));
-    disposition(&s, 1, "executed", None, &[1], false);
-    drop(s);
-    drop(d.journal());
-    let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
-    as_part_upgraded(&info);
-    assert!(!dw_store_upgrade::snapshot_present(&d.net).unwrap());
-    d.open_persister();
-    assert!(matches!(d.drain(None).unwrap(), DrainOutcome::Drained(_)));
-    assert_eq!(
-        d.journal().shielded_drained_holds(&W).unwrap(),
-        vec![(0, n(1))]
-    );
-
-    for case in ["without the store", "unverified"] {
-        let mut d = Dir::new();
-        if case == "without the store" {
-            drop(d.journal());
-            let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
-            as_part_upgraded(&info);
-            let s = d.fork_store(Some(FORK_DISPOSITIONS));
-            disposition(&s, 1, "executed", None, &[1], false);
-        } else {
-            let s = d.fork_store(Some(FORK_DISPOSITIONS));
-            disposition(&s, 1, "executed", None, &[1], false);
-            drop(s);
-            drop(d.journal());
-            let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
-            let copy = as_part_upgraded(&info);
-            std::fs::write(copy.join(SHIELDED_STORE_FILE), b"not the store").unwrap();
-        }
-        d.open_persister();
-        let before = d.sha256s();
-        assert_eq!(
-            d.drain(None),
-            Err(ShieldedDrainError::Precondition),
-            "{case}"
+fn the_drain_runs_on_this_upgrades_copy_and_refuses_without_one() {
+    for before in [
+        BeforeSnapshot::Absent,
+        BeforeSnapshot::Unverified,
+        BeforeSnapshot::Mismatch,
+    ] {
+        let mut d = between(before, true);
+        assert!(
+            !dw_store_upgrade::snapshot_present(&d.net).unwrap(),
+            "{before:?}: no verified before-upgrade snapshot"
         );
-        assert_eq!(d.sha256s(), before, "{case}");
+        d.open_persister();
+        assert!(
+            matches!(d.drain(None), Ok(DrainOutcome::Drained(_))),
+            "{before:?}: drained on the part-upgraded copy"
+        );
+        assert_eq!(
+            d.journal().shielded_drained_holds(&W).unwrap(),
+            vec![(0, n(1))],
+            "{before:?}"
+        );
     }
+
+    for again in [false, true] {
+        let mut d = between(BeforeSnapshot::Present, again);
+        assert!(dw_store_upgrade::snapshot_present(&d.net).unwrap());
+        d.open_persister();
+        assert!(
+            matches!(d.drain(None), Ok(DrainOutcome::Drained(_))),
+            "a verified before-upgrade snapshot, again = {again}"
+        );
+    }
+
+    let mut d = between(BeforeSnapshot::Absent, false);
+    assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
+    d.open_persister();
+    let before = d.sha256s();
+    assert_eq!(d.drain(None), Err(ShieldedDrainError::Precondition));
+    assert_eq!(d.sha256s(), before, "neither copy: nothing changed");
 }
 
 /// Step 0: while a store holds the owner lock the drain refuses.
