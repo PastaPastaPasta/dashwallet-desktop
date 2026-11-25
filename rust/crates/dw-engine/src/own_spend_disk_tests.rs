@@ -5883,7 +5883,12 @@ fn a_lock_arriving_after_the_funding_block_leaves_the_coin_spent() {
         "the lock claims A"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
-    wait_stored_row(&session, id, a, Some(true), "A is stored spent");
+    store_settled(&engine, &session, id);
+    assert_eq!(
+        stored_row(&session, id, a).map(|r| r.0),
+        Some(true),
+        "A is stored spent"
+    );
 
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
@@ -6562,7 +6567,12 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         held(&engine, &session, id).contains(&c),
         "nothing claims C again"
     );
-    wait_stored_row(&session, id, c, Some(false), "C is stored unspent");
+    store_settled(&engine, &session, id);
+    assert_eq!(
+        stored_row(&session, id, c).map(|r| r.0),
+        Some(false),
+        "C is stored unspent"
+    );
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
     assert!(
@@ -6605,28 +6615,35 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
 
     instant_lock(&engine, &session, id, &payment);
     lock_reruns_done(&engine, &session);
-    let gone = |session: &Arc<NetworkSession>, state: &str| {
+    // Right after the lock the store may not have applied its events yet
+    // (`wait_stored_row`); after a restart it has.
+    let gone = |session: &Arc<NetworkSession>, state: &str, settle: bool| {
         assert_holds(&engine, session, id, &want, state);
         assert!(
             !spendable_for(&engine, session, id, change, COIN / 10),
             "{state}: P2's change is not offered"
         );
-        wait_stored_row(
-            session,
-            id,
-            change,
-            None,
-            &format!("{state}: P2's change is not stored"),
-        );
         assert!(
             session.hub.history.get(&id, &p2.txid()).is_none(),
             "{state}: the history drops P2"
         );
-        eventually(&format!("{state}: the store drops P2"), || {
-            !stored_record(session, id, p2.txid())
-        });
+        if settle {
+            wait_stored_row(session, id, change, None, state);
+            eventually(&format!("{state}: P2's record leaves the store"), || {
+                !stored_record(session, id, p2.txid())
+            });
+        }
+        assert_eq!(
+            stored_row(session, id, change),
+            None,
+            "{state}: P2's change is not stored"
+        );
+        assert!(
+            !stored_record(session, id, p2.txid()),
+            "{state}: the store drops P2"
+        );
     };
-    gone(&session, "the lock");
+    gone(&session, "the lock", true);
     assert!(
         !abandoned(&engine, &session, id, payment.txid()),
         "the lock outranks the abandon"
@@ -6634,7 +6651,7 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 
     let session = reopen(&engine, session);
-    gone(&session, "a restart");
+    gone(&session, "a restart", false);
     mined(&engine, &session, id, TIP, vec![paid]);
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert!(
