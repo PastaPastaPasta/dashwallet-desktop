@@ -305,9 +305,8 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
     /// Whether spends run through the library's key set entry points with
-    /// the key set a lease releases: off until a funds review of the key
-    /// set path at the shipped head, and off on mainnet until a mainnet
-    /// funds ruling. While false every spend is
+    /// the key set a lease releases: off on mainnet until their funds
+    /// review, on elsewhere. While false every spend is
     /// `platform.unavailable` before anything else ([`unhooked`]).
     fn keyset_spends(&self) -> bool;
     /// The account's spends whose notes the library holds with no record to
@@ -3210,7 +3209,7 @@ impl ShieldedLib for PwShielded {
         {
             return on;
         }
-        false
+        self.network() != Network::Mainnet
     }
 
     async fn rest_clock(&self) -> Result<RestClock, PlatformError> {

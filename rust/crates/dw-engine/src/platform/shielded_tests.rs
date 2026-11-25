@@ -3964,14 +3964,14 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
     assert_eq!(address.account, 0);
 }
 
-/// Shielded spends stay off until their funds review, on every network:
-/// through the real library a send and an unshield to Core are
+/// Shielded spends stay off on mainnet until their funds review: through
+/// the real library a send and an unshield to Core are
 /// `platform.unavailable` before the grant is redeemed, and the refusal is
 /// the library's key set switch (forced on, the same calls get past it to
-/// later gates). On mainnet an unshield to a Platform address keeps its own
-/// refusal, before it.
+/// later gates). On testnet the same calls are not refused for it. An
+/// unshield to a Platform address keeps its own mainnet refusal, before it.
 #[test]
-fn shielded_spends_are_off_until_their_funds_review() {
+fn shielded_spends_are_off_on_mainnet_until_their_funds_review() {
     use super::journal_tests::{ABANDON_12, Recorder, engine};
     use super::topup_tests::options;
     const CREDITS: u64 = 1_000_000;
@@ -3994,7 +3994,7 @@ fn shielded_spends_are_off_until_their_funds_review() {
                 Ok(lib.keyset_spends())
             }))
             .unwrap();
-        assert!(!switch, "{network:?}");
+        assert_eq!(switch, network != DashNetwork::Mainnet, "{network:?}");
         let dp = s.dashpay(wallet);
         let to = (engine.block_on(dp.shielded_receive_address()))
             .unwrap()
@@ -4028,20 +4028,22 @@ fn shielded_spends_are_off_until_their_funds_review() {
             )
         };
         let (sent, unshielded, kept) = refusals(None);
-        assert_eq!(
-            (sent, unshielded, kept),
-            ("platform.unavailable", "platform.unavailable", true),
-            "{network:?}"
-        );
         if network == DashNetwork::Mainnet {
+            assert_eq!(
+                (sent, unshielded, kept),
+                ("platform.unavailable", "platform.unavailable", true)
+            );
             let to_platform =
                 engine.block_on(dp.unshield_to_platform(CREDITS, None, "g".into(), false));
             assert_eq!(to_platform.unwrap_err().code(), "platform.feature_off");
+            let (sent, unshielded, kept) = refusals(Some(true));
+            assert_ne!(sent, "platform.unavailable", "forced on");
+            assert_ne!(unshielded, "platform.unavailable", "forced on");
+            assert!(kept, "refused before the grant");
+        } else {
+            assert_ne!(sent, "platform.unavailable", "{network:?}");
+            assert_ne!(unshielded, "platform.unavailable", "{network:?}");
         }
-        let (sent, unshielded, kept) = refusals(Some(true));
-        assert_ne!(sent, "platform.unavailable", "{network:?} forced on");
-        assert_ne!(unshielded, "platform.unavailable", "{network:?} forced on");
-        assert!(kept, "{network:?}: refused before the grant");
     }
 }
 
