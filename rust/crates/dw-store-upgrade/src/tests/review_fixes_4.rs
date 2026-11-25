@@ -1,9 +1,10 @@
 //! The re-review of ffbc69cf: a snapshot whose marker was lost after R1's
-//! drop (M-A) and snapshots of an upgraded file (M-B).
+//! drop (M-A), snapshots of an upgraded file (M-B) and a fault reading a
+//! snapshot (L-1).
 
 use super::review_fixes_3::{assert_missing, between};
 use super::*;
-use crate::copy;
+use crate::copy::{self, ProvedState};
 use crate::error::StoreUpgradeError;
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::{
@@ -153,4 +154,34 @@ fn a_part_upgraded_copy_renamed_after_the_migration_is_never_kept() {
         );
         assert_eq!(tree(&f.root), before, "{policy:?}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fault_reading_the_snapshot_is_retried_and_a_missing_file_is_unverified() {
+    let (f, s) = between();
+    let before = tree(&f.root);
+    let app = s.dir().join("app.sqlite");
+    let kept = f.root.join("app.sqlite.kept");
+    fs::rename(&app, &kept).unwrap();
+    std::os::unix::fs::symlink(&app, &app).unwrap();
+    let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::Io {
+                unchanged: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_refusal());
+    assert_eq!(copy::screen_for(&err, ProvedState::default()), None);
+    fs::remove_file(&app).unwrap();
+    fs::rename(&kept, &app).unwrap();
+    assert_eq!(tree(&f.root), before, "nothing written");
+
+    fs::remove_file(&app).unwrap();
+    assert_missing(&f, MissingSnapshot::Unverified);
 }

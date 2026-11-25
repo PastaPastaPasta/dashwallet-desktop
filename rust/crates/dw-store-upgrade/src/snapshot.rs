@@ -195,27 +195,58 @@ pub(crate) fn read_snapshot(
     dir: &Path,
     verify_hashes: bool,
 ) -> std::result::Result<SnapshotInfo, String> {
-    let text = fs::read_to_string(dir.join(MARKER)).map_err(|e| format!("read marker: {e}"))?;
-    let info = parse_marker(dir, &text)?;
+    check_snapshot(dir, verify_hashes).map_err(|f| match f {
+        SnapshotFault::Io(e) => e.to_string(),
+        SnapshotFault::Defect(detail) => detail,
+    })
+}
+
+/// Why a snapshot directory doesn't check out.
+enum SnapshotFault {
+    /// Reading it failed (`EIO`, `EMFILE`, `EACCES`): retried, never taken
+    /// for a defect of the copy.
+    Io(io::Error),
+    /// A marker or file is missing or is not what the marker says.
+    Defect(String),
+}
+
+fn snapshot_fault(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> SnapshotFault {
+    move |e| match e.kind() {
+        io::ErrorKind::NotFound
+        | io::ErrorKind::InvalidData
+        | io::ErrorKind::IsADirectory
+        | io::ErrorKind::NotADirectory => SnapshotFault::Defect(format!("{what}: {e}")),
+        kind => SnapshotFault::Io(io::Error::new(kind, format!("{what}: {e}"))),
+    }
+}
+
+fn check_snapshot(
+    dir: &Path,
+    verify_hashes: bool,
+) -> std::result::Result<SnapshotInfo, SnapshotFault> {
+    let text = fs::read_to_string(dir.join(MARKER)).map_err(snapshot_fault("read marker"))?;
+    let info = parse_marker(dir, &text).map_err(SnapshotFault::Defect)?;
     for f in &info.files {
         let path = dir.join(&f.name);
-        let len = fs::metadata(&path)
-            .map_err(|e| format!("{}: {e}", f.name))?
-            .len();
+        let len = fs::metadata(&path).map_err(snapshot_fault(&f.name))?.len();
         if len != f.bytes {
-            return Err(format!(
+            return Err(SnapshotFault::Defect(format!(
                 "{} is {len} bytes, marker says {}",
                 f.name, f.bytes
-            ));
+            )));
         }
-        if verify_hashes && sha256_file(&path).map_err(|e| format!("{}: {e}", f.name))? != f.sha256
-        {
-            return Err(format!("{} does not match its sha256", f.name));
+        if verify_hashes && sha256_file(&path).map_err(snapshot_fault(&f.name))? != f.sha256 {
+            return Err(SnapshotFault::Defect(format!(
+                "{} does not match its sha256",
+                f.name
+            )));
         }
     }
     for a in &info.absent {
         if dir.join(a).exists() {
-            return Err(format!("{a} is present but the marker says absent"));
+            return Err(SnapshotFault::Defect(format!(
+                "{a} is present but the marker says absent"
+            )));
         }
     }
     Ok(info)
@@ -658,9 +689,16 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
 }
 
 /// A snapshot directory's marker with every file verified, `None` when it
-/// has no marker or fails verification.
+/// has no marker or fails verification. A fault reading it is a retryable
+/// [`StoreUpgradeError::Io`].
 fn verified(dir: &Path) -> Result<Option<SnapshotInfo>> {
-    Ok(read_snapshot(dir, true).ok())
+    match check_snapshot(dir, true) {
+        Ok(info) => Ok(Some(info)),
+        Err(SnapshotFault::Defect(_)) => Ok(None),
+        Err(SnapshotFault::Io(e)) => {
+            Err(StoreUpgradeError::io("verify an upgrade snapshot", true)(e))
+        }
+    }
 }
 
 /// Busy or locked backup steps tolerated before the source counts as held.
