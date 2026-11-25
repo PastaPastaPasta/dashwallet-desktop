@@ -279,7 +279,13 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     await model.resolveStuck(reg("r1", "fundingUnknown"));
     expect(model.state).toEqual({ kind: "failed", text: "The funding is still being sent. Try again later." });
     expect(vault.calls.revoked).toEqual(["grant-1"]);
-    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The funding's coins were already spent by transaction cd.");
+    expect(stuckFundingText({ kind: "spendUnsettled", txid: "ab" }, true)).toBe(
+      "Transaction ab, which this transfer depends on, isn't final on the network yet. Try again once it is.",
+    );
+    expect(stuckFundingText({ kind: "lockInputsSpent", txid: "cd" }, false)).toBe("The coins for this transfer have already been spent, so there's nothing to send back. If its payment (transaction cd) went through, finish the transfer from Tools ▸ Repair ▸ Finish transfers.");
+    expect(stuckFundingText({ kind: "lockAbandoned", txid: "cd" }, true)).toBe(
+      "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
+    );
   });
 
   it("IOS113_C9: Resolve asks first; Cancel sends nothing, OK sends", async () => {

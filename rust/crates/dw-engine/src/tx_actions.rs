@@ -1781,7 +1781,7 @@ impl NetworkSession {
     }
 
     /// Stops dash-spv's rebroadcast timer from sending `txid` again.
-    async fn stop_rebroadcast(&self, manager: &Manager, _wallet: WalletId, txid: Txid) {
+    pub(crate) async fn stop_rebroadcast(&self, manager: &Manager, _wallet: WalletId, txid: Txid) {
         manager.spv().stop_rebroadcast(&txid).await;
         #[cfg(test)]
         {
@@ -1927,9 +1927,24 @@ impl NetworkSession {
         wallet: WalletId,
         root: Txid,
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        self.abandon_inner_funding(manager, wallet, root, &BTreeSet::new())
+            .await
+    }
+
+    /// [`Self::abandon_inner`] that may abandon the funding of the tracked
+    /// locks `own`: Repair's own stuck-funding locks
+    /// (`platform/lease/repair.rs`), never an Activity Abandon. A planned
+    /// transaction funding any other pending lock is still refused.
+    pub(crate) async fn abandon_inner_funding(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        root: Txid,
+        own: &BTreeSet<Txid>,
+    ) -> Result<BTreeSet<Txid>, EngineError> {
         let mut recorded = None;
         let result = self
-            .abandon_unrewound(manager, wallet, root, None, &mut recorded)
+            .abandon_unrewound(manager, wallet, root, None, own, &mut recorded)
             .await;
         let abandoned = result.as_ref().ok().cloned().unwrap_or_default();
         #[cfg(test)]
@@ -1955,13 +1970,16 @@ impl NetworkSession {
     /// [`Self::abandon_inner`] up to the rescan: the rewind is recorded,
     /// not made, and `recorded` lowered to the checkpoint it starts from,
     /// failure or not. Returns the abandoned txids. `dead_drop`: when the
-    /// abandon drops transactions that can never confirm (#739).
+    /// abandon drops transactions that can never confirm (#739). `own`:
+    /// tracked locks whose funding it may abandon
+    /// ([`Self::abandon_inner_funding`]).
     async fn abandon_unrewound(
         &self,
         manager: &Manager,
         wallet: WalletId,
         root: Txid,
         dead_drop: Option<&DeadDrop>,
+        own: &BTreeSet<Txid>,
         recorded: &mut Option<u32>,
     ) -> Result<BTreeSet<Txid>, EngineError> {
         #[cfg(test)]
@@ -1994,8 +2012,10 @@ impl NetworkSession {
                 let infos = wm.get_all_wallet_infos().iter();
                 self.settled_all(infos.map(|(id, i)| (id, &i.core_wallet)))
             };
-            let locks: Vec<platform_wallet::TrackedAssetLock> =
-                (loaded_locks(&wm).into_iter()).cloned().collect();
+            let locks: Vec<platform_wallet::TrackedAssetLock> = (loaded_locks(&wm).into_iter())
+                .filter(|l| !own.contains(&l.out_point.txid))
+                .cloned()
+                .collect();
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
@@ -2029,6 +2049,13 @@ impl NetworkSession {
                 &info.core_wallet,
                 &settled,
             )?;
+            // Repair's abandon of its own locks takes nothing else: no
+            // descendant, and no dead parent.
+            if !own.is_empty() && (!links.is_empty() || planned.iter().any(|t| !own.contains(t))) {
+                return Err(EngineError::TxActionRefused(
+                    TxActionRefusal::PlatformFunding,
+                ));
+            }
             // A drop's are dead: the network refuses a resume's send of one.
             if dead_drop.is_none() && funds_a_pending_lock(&locks, |t| planned.contains(t)) {
                 return Err(EngineError::TxActionRefused(
@@ -3138,7 +3165,7 @@ impl NetworkSession {
                         continue;
                     }
                     match this
-                        .abandon_unrewound(&manager, id, txid, None, &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, None, &BTreeSet::new(), &mut lowest)
                         .await
                     {
                         Ok(set) => done.extend(set),
@@ -3174,7 +3201,7 @@ impl NetworkSession {
                     .collect();
                 for txid in damaged.into_iter().filter(|_| failed.is_none()) {
                     match this
-                        .abandon_unrewound(&manager, id, txid, None, &mut lowest)
+                        .abandon_unrewound(&manager, id, txid, None, &BTreeSet::new(), &mut lowest)
                         .await
                     {
                         Ok(set) => {
@@ -3399,7 +3426,16 @@ impl NetworkSession {
             if done.contains(&root) {
                 continue;
             }
-            match (self.abandon_unrewound(manager, wallet, root, Some(&drop), &mut lowest)).await {
+            match (self.abandon_unrewound(
+                manager,
+                wallet,
+                root,
+                Some(&drop),
+                &BTreeSet::new(),
+                &mut lowest,
+            ))
+            .await
+            {
                 Ok(set) => done.extend(set),
                 Err(e) => {
                     tracing::warn!(%wallet, txid = %root, error = %e, "kept a transaction that can never confirm or is built on one")

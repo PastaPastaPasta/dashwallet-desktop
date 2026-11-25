@@ -534,6 +534,12 @@ pub enum StuckFundingRefusalName {
     LockInputsSpent {
         txid: String,
     },
+    /// Repair abandoned this asset lock, which the wallet recorded as a
+    /// payment that never settled: its coins come back after the rescan,
+    /// then Resolve again.
+    LockAbandoned {
+        txid: String,
+    },
     /// The self-spend spends no input of this signed asset lock.
     MissesSignedLock {
         txid: String,
@@ -561,6 +567,7 @@ impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefus
             R::JournalUnavailable => Self::JournalUnavailable,
             R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
             R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
+            R::LockAbandoned(t) => Self::LockAbandoned { txid: txid(t) },
             R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },
             R::UnattributedLock(t) => Self::UnattributedLock { txid: txid(t) },
             R::NoKnownLock => Self::NoKnownLock,

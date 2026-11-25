@@ -926,10 +926,11 @@ pub enum StuckFundingRefusal {
     #[error("the dispatch journal is unavailable")]
     JournalUnavailable,
     /// A transaction spending coins of the funding accounts is not
-    /// ChainLocked yet (an earlier self-spend, a payment, the lost lock
-    /// itself): a lock that conflicts only with it could still confirm
-    /// over a self-spend of the other coins. Wait for its ChainLock, or
-    /// abandon it.
+    /// ChainLocked yet (an earlier self-spend or a payment): a lock that
+    /// conflicts only with it could still confirm over a self-spend of the
+    /// other coins. Wait for its ChainLock, or abandon it in Activity. The
+    /// step's own lock, while only in the mempool, is not this refusal on
+    /// Resolve: Resolve abandons it itself (`LockAbandoned`).
     #[error("transaction {0} spends the wallet's coins and is not ChainLocked yet")]
     SpendUnsettled(Txid),
     /// A lock a call of the step signed, or a tracked `Built` or
@@ -938,6 +939,12 @@ pub enum StuckFundingRefusal {
     /// the signed lock's row may be gone).
     #[error("asset lock {0}: every coin it spends is already spent")]
     LockInputsSpent(Txid),
+    /// The step's own lock, which the wallet recorded as a payment that is
+    /// not ChainLocked, was abandoned by Repair (its rebroadcast stopped):
+    /// the coins it spent come back after the rescan every abandon runs
+    /// (`crate::rescan_hold`). Resolve again then.
+    #[error("asset lock {0} was abandoned: its coins come back after the rescan")]
+    LockAbandoned(Txid),
     /// The self-spend to record spends no input of a lock a call of the step
     /// signed, so it would show nothing about that lock (review P2b r3).
     #[error("the self-spend spends no input of signed asset lock {0}")]
@@ -975,6 +982,7 @@ impl StuckFundingRefusal {
             Self::JournalUnavailable => "journal_unavailable",
             Self::SpendUnsettled(_) => "spend_unsettled",
             Self::LockInputsSpent(_) => "lock_inputs_spent",
+            Self::LockAbandoned(_) => "lock_abandoned",
             Self::MissesSignedLock(_) => "misses_signed_lock",
             Self::UnattributedLock(_) => "unattributed_lock",
             Self::NoKnownLock => "no_known_lock",
@@ -990,6 +998,7 @@ impl StuckFundingRefusal {
             Self::RowsUnknown
                 | Self::CallRunning
                 | Self::SpendUnsettled(_)
+                | Self::LockAbandoned(_)
                 | Self::JournalUnavailable
         )
     }

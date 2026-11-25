@@ -59,7 +59,7 @@
 //! owning an input, in ascending wallet id, held through its send. Every
 //! other holder takes one and waits for no other, so no cycle forms.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -871,20 +871,26 @@ pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
     funding_accounts(accounts).any(locked) || accounts.coinjoin_accounts.values().any(locked)
 }
 
-/// A transaction of the funding accounts (BIP44, BIP32, DashPay receiving)
-/// that spends one of the wallet's coins and is not ChainLocked yet, if
-/// any. Repair's self-spend waits for none (`platform/lease/repair.rs`):
+/// The transactions of the funding accounts (BIP44, BIP32, DashPay
+/// receiving) that spend one of the wallet's coins and are not ChainLocked
+/// yet. Repair's self-spend waits for none (`platform/lease/repair.rs`):
 /// a coin such a transaction spends is no coin of the self-spend, so a lost
 /// asset lock that conflicts only with it is not beaten by the self-spend.
-pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
-    let accounts = &info.accounts;
-    let pending = |a: &ManagedCoreFundsAccount| {
-        a.transactions()
-            .values()
-            .find(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
-            .map(|r| r.txid)
-    };
-    funding_accounts(accounts).find_map(pending)
+/// Each is mapped to whether it is only in the mempool: neither mined nor
+/// InstantSend-locked, so an abandon may take it.
+pub(crate) fn unsettled_spends(info: &ManagedWalletInfo) -> BTreeMap<Txid, bool> {
+    use key_wallet::transaction_checking::TransactionContext;
+    let mut out = BTreeMap::new();
+    for r in (funding_accounts(&info.accounts))
+        .flat_map(|a| a.transactions().values())
+        .filter(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
+    {
+        let mempool = matches!(r.context, TransactionContext::Mempool);
+        (out.entry(r.txid))
+            .and_modify(|m: &mut bool| *m &= mempool)
+            .or_insert(mempool);
+    }
+    out
 }
 
 /// The coins of exactly a masternode collateral amount whose funding
