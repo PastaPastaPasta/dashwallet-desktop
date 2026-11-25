@@ -102,6 +102,8 @@ class Paths(unittest.TestCase):
             "Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift",
             "apps/desktop/src/onboarding/lock.ts",
             "rust/crates/dw-appdb/src/proposals.rs",
+            "apps/desktop/src/api/backend.ts",
+            "Sources/WalletFeatures/Wallets/WalletWiper.swift",
             "apps/desktop/src/screens/Onboarding.tsx",
             "apps/desktop/src/screens/settings/Security.tsx",
             "apps/desktop/src/screens/settings/CoinJoin.tsx",
@@ -132,6 +134,21 @@ class Paths(unittest.TestCase):
         for include, rx in RULES:
             if include:
                 self.assertTrue(any(rx.match(f) for f in tracked), f"no tracked file matches {rx.pattern}")
+
+
+class Match(unittest.TestCase):
+    def test_nul_separated_names_keep_unusual_characters(self):
+        import io, contextlib
+        names = "rust/crates/dw-engine/src/caf\u00e9.rs\0docs/ci.md\0rust/crates/dw-engine/src/a b.rs\0"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            saved = sys.stdin
+            sys.stdin = io.StringIO(names)
+            try:
+                gate.main(["match", "-z"])
+            finally:
+                sys.stdin = saved
+        self.assertEqual(out.getvalue().splitlines(), ["rust/crates/dw-engine/src/caf\u00e9.rs", "rust/crates/dw-engine/src/a b.rs"])
 
 
 class Gate(unittest.TestCase):
@@ -292,8 +309,8 @@ class Check(unittest.TestCase):
             return [FUNDS_FILE], True, list(comments)
 
         gate.fetch = fetch
-        text = gate.PATHS_FILE.read_text()
-        gate.gh = lambda *a, **k: policy if policy is not None else text
+        text, script = gate.PATHS_FILE.read_text(), Path(gate.__file__).read_text()
+        gate.gh = lambda *a, **k: (script if "funds-gate.py" in a[-1] else policy if policy is not None else text)
         args = gate.argparse.Namespace(repo="o/r", pr=1, sha=sha, status=True, paths=gate.PATHS_FILE)
         return gate.cmd_check(args)
 
@@ -339,12 +356,31 @@ class Check(unittest.TestCase):
 
         text = gate.PATHS_FILE.read_text()
         asked = []
-        gate.gh = lambda *a, **k: asked.append(a[-1]) or ("rust/**\n" if "d" * 40 in a[-1] else text)
+        script = (Path(gate.__file__)).read_text()
+        gate.gh = lambda *a, **k: asked.append(a[-1]) or ("rust/**\n" if "d" * 40 in a[-1] else script if "funds-gate.py" in a[-1] else text)
         gate.fetch = fetch
         args = gate.argparse.Namespace(repo="o/r", pr=1, sha=None, status=True, paths=gate.PATHS_FILE)
         self.assertEqual(gate.cmd_check(args), 0)
         self.assertEqual(len(classified), 1)
         self.assertTrue(any(classified[0] in q for q in asked), (classified, asked))
+
+    def test_gate_script_change_during_retry_leaves_pending(self):
+        text = gate.PATHS_FILE.read_text()
+        self.check(comments=[comment(BOTH)], moves=0)
+        self.posted.clear()
+        gate.gh = lambda *a, **k: "print('looser')\n" if "funds-gate.py" in a[-1] else text
+        left = [1]
+
+        def fetch(repo, pr, info):
+            if left[0]:
+                left[0] -= 1
+                raise gate.Moved("base moved")
+            return [FUNDS_FILE], True, [comment(BOTH)]
+
+        gate.fetch = fetch
+        args = gate.argparse.Namespace(repo="o/r", pr=1, sha=None, status=True, paths=gate.PATHS_FILE)
+        self.assertEqual(gate.cmd_check(args), 2)
+        self.assertEqual(self.posted, ["pending"])
 
     def test_sha_mismatch_posts_no_status(self):
         self.assertEqual(self.check(sha=OLD), 1)

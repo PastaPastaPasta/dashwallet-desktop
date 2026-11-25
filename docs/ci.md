@@ -256,7 +256,7 @@ new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, Coi
 CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
 (Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
 screen view-models that build money requests, the dependency pins, and the gate itself. Check a branch with
-`git diff --no-renames --name-only origin/main... | ci/github/funds-gate.py match`.
+`git diff --no-renames --name-only -z origin/main... | ci/github/funds-gate.py match -z`.
 
 A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
 inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
