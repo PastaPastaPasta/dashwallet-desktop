@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DispatchJournal, JournalOpen, ShieldedDrainState};
 use dw_store_upgrade::test_support::{BeforeSnapshot, between_state_with};
-use dw_store_upgrade::{Adopters, PersisterOpened, take_snapshot, upgrade_copy_present};
+use dw_store_upgrade::{Adopters, PersisterOpened, upgrade_copy_present};
 use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
@@ -132,9 +132,35 @@ impl Dir {
         }
     }
 
-    /// The pre-upgrade snapshot, then this start's persister open.
+    /// This upgrade's between state around the stores built so far: the
+    /// store upgrade's fork fixture, with this directory's shielded store in
+    /// place before its verified before-upgrade snapshot and this
+    /// directory's journal after it, then this start's persister open.
     fn snapshot_and_open(&mut self) {
-        take_snapshot(&self.net, SystemTime::now()).unwrap();
+        let net = self.root.join("regtest");
+        let moved = |from: &Path, to: &Path, file: &str| -> std::io::Result<()> {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let name = format!("{file}{suffix}");
+                if to.join(&name).exists() {
+                    std::fs::remove_file(to.join(&name))?;
+                }
+                if from.join(&name).exists() {
+                    std::fs::rename(from.join(&name), to.join(&name))?;
+                }
+            }
+            Ok(())
+        };
+        between_state_with(
+            &net,
+            BeforeSnapshot::Present,
+            false,
+            SystemTime::now(),
+            |dir| moved(&self.net, dir, SHIELDED_STORE_FILE),
+        )
+        .unwrap();
+        moved(&self.net, &net, DISPATCH_DB_FILE).unwrap();
+        assert!(dw_store_upgrade::snapshot_present(&net).unwrap());
+        self.net = net;
         self.open_persister();
     }
 
@@ -903,6 +929,7 @@ fn the_drain_runs_on_this_upgrades_copy_and_refuses_without_one() {
     let mut d = between(BeforeSnapshot::Absent, false);
     assert!(!upgrade_copy_present(&d.net, SHIELDED_STORE_FILE).unwrap());
     d.open_persister();
+    drop(d.journal());
     let before = d.sha256s();
     assert_eq!(d.drain(None), Err(ShieldedDrainError::Precondition));
     assert_eq!(d.sha256s(), before, "neither copy: nothing changed");
