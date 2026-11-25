@@ -11,7 +11,7 @@ use rusqlite::OptionalExtension;
 
 use super::own_spend_disk_tests::{eventually, foreign, send, spendable, start_spv};
 use super::store_repair_tests::{
-    claim_on_a_held_coin, close, dropped, on_store, repair_closed, setting, stored,
+    block_spend, claim_on_a_held_coin, close, dropped, on_store, repair_closed, setting, stored,
 };
 use super::*;
 use crate::send::CoinSource;
@@ -288,13 +288,8 @@ fn a_non_push_only_claim_the_fork_dropped_is_held_again_until_abandoned() {
 fn an_output_a_block_spent_since_comes_back_spent() {
     for pin in PINS {
         let (_dir, _engine, id, _, claim, network) = non_push_only_claim_the_fork_dropped(pin);
-        let change = encode_outpoint(&OutPoint::new(claim.txid(), 1));
-        on_store(
-            &network,
-            "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![id.0.as_slice(), change, BIRTH - 10, [7u8; 32], [9u8; 32]],
-        );
+        let change = OutPoint::new(claim.txid(), 1);
+        block_spend(&network, id, &change, [9u8; 32]);
         let outcome = repair_closed(&network);
         assert_eq!(
             outcome.restored.get(&id),
@@ -303,58 +298,67 @@ fn an_output_a_block_spent_since_comes_back_spent() {
         );
         assert!(stored(&network, id, claim.txid()), "{pin:?}: put back");
         assert_eq!(
-            coin_spent(&network, id, &change).0,
+            coin_spent(&network, id, &encode_outpoint(&change)).0,
             1,
             "{pin:?}: its change comes back spent"
         );
     }
 }
 
-/// L4 with a block's spend of the claim's coin A (V025): spent by another
-/// transaction, A isn't held again and the claim's outputs stay out; spent
-/// by the claim itself, A is held.
+/// L4 with a block's spend of the claim's coin A by another transaction
+/// (V025), marked as the persister marks it: A isn't held again and stays
+/// spent by that transaction, and the claim's outputs stay out.
 #[test]
-fn a_coin_a_block_spent_is_held_again_only_for_its_spender() {
+fn a_coin_a_block_spent_since_is_not_held_again() {
     for pin in PINS {
-        for by_claim in [false, true] {
-            let (_dir, _engine, id, funding, claim, network) =
-                non_push_only_claim_the_fork_dropped(pin);
-            let a = encode_outpoint(&OutPoint::new(funding.txid(), 0));
-            let spender = match by_claim {
-                true => claim.txid().to_byte_array(),
-                false => [9u8; 32],
-            };
-            on_store(
-                &network,
-                "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![id.0.as_slice(), a, BIRTH - 10, [7u8; 32], spender],
-            );
-            repair_closed(&network);
-            assert!(
-                stored(&network, id, claim.txid()),
-                "{pin:?} {by_claim}: put back"
-            );
-            assert_eq!(
-                coin_spent(&network, id, &a).0,
-                i64::from(by_claim),
-                "{pin:?} {by_claim}: A is held only for its spender"
-            );
-            let change = encode_outpoint(&OutPoint::new(claim.txid(), 1));
-            let conn = rusqlite::Connection::open(network.join(WALLET_DB_FILE)).unwrap();
-            let outputs: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
-                    rusqlite::params![id.0.as_slice(), change],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(
-                outputs,
-                i64::from(by_claim),
-                "{pin:?} {by_claim}: its change comes back only when A is held"
-            );
-        }
+        let (_dir, _engine, id, funding, claim, network) =
+            non_push_only_claim_the_fork_dropped(pin);
+        let a = OutPoint::new(funding.txid(), 0);
+        block_spend(&network, id, &a, [9u8; 32]);
+        repair_closed(&network);
+        assert!(stored(&network, id, claim.txid()), "{pin:?}: put back");
+        assert_eq!(
+            coin_spent(&network, id, &encode_outpoint(&a)),
+            (1, Some(hex::encode_upper([9u8; 32]))),
+            "{pin:?}: A stays spent by the block's spender"
+        );
+        let conn = rusqlite::Connection::open(network.join(WALLET_DB_FILE)).unwrap();
+        let outputs: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+                rusqlite::params![
+                    id.0.as_slice(),
+                    encode_outpoint(&OutPoint::new(claim.txid(), 1))
+                ],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(outputs, 0, "{pin:?}: its change stays out");
+    }
+}
+
+/// L1 with a block's spend (V025): a push-only unsigned claim the fork
+/// dropped, whose change a block spent since, is mined; it is put back as
+/// settled, not left dropped (L2).
+#[test]
+fn a_push_only_claim_whose_output_a_block_spent_is_put_back() {
+    for pin in PINS {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+        let network = close(&engine, session);
+        fork_drop(&network, id, &claim, pin);
+        block_spend(&network, id, &OutPoint::new(claim.txid(), 1), [9u8; 32]);
+        let outcome = repair_closed(&network);
+        assert_eq!(
+            outcome.restored.get(&id),
+            Some(&vec![claim.txid()]),
+            "{pin:?}"
+        );
+        let appdb = dw_appdb::AppDb::open(&network.join(dw_appdb::APP_DB_FILE)).unwrap();
+        let raw = (appdb.setting(&id.to_string(), &format!("store_restored:{}", claim.txid())))
+            .unwrap()
+            .expect("recorded");
+        assert!(raw.contains("of its tree is settled"), "{pin:?}: {raw}");
     }
 }
 

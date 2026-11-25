@@ -78,8 +78,9 @@ const BLOCK_SPENDS: &str = "core_block_spends";
 /// The tables of [`COLUMNS`] a later migration adds, with its version.
 const ADDED: &[(&str, i64)] = &[(INPUT_INDEX, 21), (BLOCK_SPENDS, 25)];
 
-/// The most rows (transactions and InstantSend locks, every wallet) the
-/// walk for a settled descendant reads; a larger file repairs nothing.
+/// The most rows (transactions, InstantSend locks, coins held spent by a
+/// named transaction and blocks' spends, every wallet) the walk for a
+/// settled descendant reads; a larger file repairs nothing.
 pub(crate) const MAX_WALK_ROWS: usize = 250_000;
 
 /// A wallet's record of a claim this repair dropped from the store.
@@ -642,7 +643,8 @@ fn read_graph(
         }
     }
     drop(q);
-    // Only a mined or InstantSend-locked transaction wins a sweep.
+    // Only a mined or InstantSend-locked transaction wins a sweep, and
+    // since V025 the persister also names a block's spender here.
     let mut stmt = tx
         .prepare("SELECT DISTINCT spent_in_txid FROM core_utxos WHERE spent_in_txid IS NOT NULL")?;
     let mut q = stmt.query([])?;
@@ -670,7 +672,6 @@ fn read_graph(
             return incomplete("a block's spend");
         };
         graph.settled.extend([spender, outpoint.txid]);
-        (graph.children.entry(outpoint.txid).or_default()).push(spender);
     }
     Ok(Some(graph))
 }
@@ -747,8 +748,8 @@ fn input_cause(
 /// The first transaction of `root`'s tree (it and all that descends from
 /// it in any wallet of the file) that is settled, or the root itself when
 /// the tree can't be fully read: an output of it held spent by a sweep's
-/// winner, by a transaction the file has no record of, or under a key that
-/// doesn't decode (S2).
+/// winner or a block's spender, by a transaction the file has no record
+/// of, or under a key that doesn't decode (S2).
 fn settled_in_tree(
     tx: &rusqlite::Transaction<'_>,
     graph: &Graph,

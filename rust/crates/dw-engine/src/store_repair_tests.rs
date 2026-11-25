@@ -768,33 +768,122 @@ fn a_block_spend_is_keyed_as_its_coin() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert_eq!(
-        rows,
-        vec![(
-            crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0)),
-            spend.txid().as_byte_array().to_vec(),
-        )]
+    let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
+    let spender = spend.txid().as_byte_array().to_vec();
+    assert_eq!(rows, vec![(a.clone(), spender.clone())]);
+    let (spent, spent_in): (i64, Option<Vec<u8>>) = conn
+        .query_row(
+            "SELECT spent, spent_in_txid FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![id.0.as_slice(), a],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(spent, 1, "the coin is marked spent with its block's spend");
+    assert!(
+        spent_in.as_ref().is_none_or(|t| *t == spender),
+        "{spent_in:?}"
     );
 }
 
-/// S2 from a block's spend (V025): an output of the claim a block spent
-/// makes the claim mined, so it is kept, whatever the coin row says.
+/// A block's spend of `outpoint` by `spender`, written as the persister
+/// writes it (platform-wallet-storage `apply_block_spends`): its row, and
+/// the coin, when held unspent, marked spent by the spender.
+pub(super) fn block_spend(
+    dir: &std::path::Path,
+    id: WalletId,
+    outpoint: &OutPoint,
+    spender: [u8; 32],
+) {
+    let op = crate::store_repair::encode_outpoint(outpoint);
+    on_store(
+        dir,
+        "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id.0.as_slice(), op, BIRTH - 10, [7u8; 32], spender],
+    );
+    on_store(
+        dir,
+        "UPDATE core_utxos SET spent = 1, spent_in_txid = ?3 \
+         WHERE wallet_id = ?1 AND outpoint = ?2 AND spent = 0",
+        rusqlite::params![id.0.as_slice(), op, spender],
+    );
+}
+
+/// S2 from a block's spend (V025): the claim's change, held spent by the
+/// wallet's pending payment Z, is spent in a block by another transaction
+/// (the persister's mark finds it spent already). The block makes the
+/// claim mined, so it is kept, though all the walk finds below it is Z,
+/// pending.
 #[test]
 fn a_claim_whose_output_a_block_spent_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let change = OutPoint::new(claim.txid(), 1);
+    let z = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &z);
+    eventually("Z is stored", || stored(session.data_dir(), id, z.txid()));
+    let dir = close(&engine, session);
+    let mark = || {
+        rusqlite::Connection::open(dir.join(WALLET_DB_FILE))
+            .unwrap()
+            .query_row(
+                "SELECT spent, spent_in_txid IS NULL FROM core_utxos \
+                 WHERE wallet_id = ?1 AND outpoint = ?2",
+                rusqlite::params![
+                    id.0.as_slice(),
+                    crate::store_repair::encode_outpoint(&change)
+                ],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .unwrap()
+    };
+    assert_eq!(mark(), (1, true), "Z holds the change");
+    block_spend(&dir, id, &change, [9u8; 32]);
+    assert_eq!(mark(), (1, true), "the block's mark finds it spent");
+    let outcome = repair_closed(&dir);
+    assert_eq!(outcome.schema, Some(26));
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// S6 from a block's spend: the claim's coin A, held spent by it, is
+/// spent in a block by the claim itself (the store has yet to record the
+/// claim mined). The claim is kept.
+#[test]
+fn a_claim_a_block_spent_its_coin_for_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    block_spend(
+        &dir,
+        id,
+        &OutPoint::new(funding.txid(), 0),
+        claim.txid().to_byte_array(),
+    );
+    let outcome = repair_closed(&dir);
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
+}
+
+/// S2: a block's spend whose key doesn't decode means the walk can't
+/// complete, so every claim is kept.
+#[test]
+fn a_block_spend_that_doesnt_read_keeps_the_claim() {
     let (_dir, engine, session, id) = engine_wallet();
     let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     on_store(
         &dir,
         "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![
-            id.0.as_slice(),
-            crate::store_repair::encode_outpoint(&OutPoint::new(claim.txid(), 1)),
-            BIRTH - 10,
-            [7u8; 32],
-            [9u8; 32]
-        ],
+         VALUES (?1, x'00', ?2, ?3, ?4)",
+        rusqlite::params![id.0.as_slice(), BIRTH - 10, [7u8; 32], [9u8; 32]],
     );
     let outcome = repair_closed(&dir);
     assert_eq!(outcome.schema, Some(26));
@@ -856,12 +945,7 @@ fn a_coin_a_block_spent_is_not_given_back_by_the_drop() {
     let (session, funding, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
     let dir = close(&engine, session);
     let a = crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0));
-    on_store(
-        &dir,
-        "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id.0.as_slice(), a, BIRTH - 10, [7u8; 32], [9u8; 32]],
-    );
+    block_spend(&dir, id, &OutPoint::new(funding.txid(), 0), [9u8; 32]);
     let outcome = repair_closed(&dir);
     assert_eq!(
         outcome.dropped.get(&id),
