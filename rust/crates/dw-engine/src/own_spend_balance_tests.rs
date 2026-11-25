@@ -2551,6 +2551,35 @@ fn a_restored_payment_a_mined_rival_paying_elsewhere_beat_drops_its_change() {
     a_restored_payment_beaten_by_a_mined_rival_drops_its_change(false);
 }
 
+/// #170 case 3: the drop of a beaten payment stops dash-spv's rebroadcast
+/// of it before its mark, as an Abandon does.
+#[test]
+fn a_drop_of_a_beaten_payment_stops_its_rebroadcast_before_its_mark() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
+    let stopped = session.hub.stopped_rebroadcasts.lock().unwrap().clone();
+    assert!(
+        stopped.contains(&(p.txid(), false)),
+        "not stopped before its mark: {stopped:?}"
+    );
+}
+
 /// #170 case 3 against a resend: a drop of a beaten payment waits for the
 /// wallet's abandon gate, which a resend holds for reading through its
 /// hand-off, and writes no mark until it is released (MG-10 §1.10). The

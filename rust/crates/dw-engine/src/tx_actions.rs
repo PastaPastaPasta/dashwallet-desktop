@@ -2159,6 +2159,10 @@ impl NetworkSession {
                 ]
             })
             .collect();
+        // Before the marks, as an Abandon stops what it abandons.
+        for t in &plan.dead {
+            self.stop_rebroadcast(manager, wallet, *t).await;
+        }
         self.write_abandoned_marks(wallet, marks).await?;
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");
