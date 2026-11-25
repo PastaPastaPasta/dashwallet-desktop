@@ -32,6 +32,7 @@ pub mod governance;
 mod held_writes;
 pub mod history;
 mod history_ops;
+mod input_authorization;
 mod keys;
 #[cfg(test)]
 mod kill9;

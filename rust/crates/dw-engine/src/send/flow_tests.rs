@@ -4060,7 +4060,7 @@ impl Fixture {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
-            key_wallet::test_utils::sign_owned_inputs(&device, info, tx, fundings).await
+            crate::input_authorization::sign_owned_inputs(&device, info, tx, fundings).await
         })
     }
 
