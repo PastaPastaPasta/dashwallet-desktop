@@ -1959,10 +1959,12 @@ impl DispatchJournal {
     }
 
     /// Settles `wallet`'s shielded artifacts of transition `st_hash`
-    /// (schema 11, archived ones aside) from the library's disposition of
-    /// it, in one transaction: `status` (`Executed`, `NotExecuted` or
-    /// `Unresolved`), the disposition's stored strings (`None` for one the
-    /// library could not read) and `acked`, which is only ever raised. A
+    /// (schema 11, archived ones aside) from the outcome the library
+    /// reports of it, in one transaction: `status` (`Executed`, `NotExecuted`
+    /// or `Unresolved`), the outcome's stored strings (`None` when the
+    /// outcome does not say why, or for a disposition the library could not
+    /// read) and `acked`, which is only ever raised (by a fork-era
+    /// acknowledgement; the engine passes `false`). A
     /// registered or unresolved artifact takes any of them; a settled one
     /// only its own status again (a replay), and anything else is refused.
     /// Nothing is written while one is unclassified.
