@@ -10,6 +10,7 @@
 
 use super::app_connect::ConnectFailure;
 use super::contacts::Eligibility;
+use super::credits::CoreMaxShort;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
@@ -646,9 +647,9 @@ impl AvatarError {
 pub enum CreditsError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
-    /// Below `CostTable.top_up_min_duffs`.
+    /// Below `CostTable.top_up_min_duffs`; `max` is a Core Max's figures.
     #[error("below the minimum of {min} duffs")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding accounts hold back (a user's lock, the dust
     /// protection, a send's reservation) would be selected: the pinned
     /// asset-lock builder cannot exclude it (as `registration.coins_locked`).
@@ -799,9 +800,9 @@ pub enum ShieldedError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
     /// The amount does not clear Platform's fee: at least `min` (duffs for a
-    /// shield, credits for a spend).
+    /// shield, credits for a spend); `max` is a Core Max's figures.
     #[error("below the minimum of {min}")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding account holds back would be selected (as
     /// `credits.coins_locked`).
     #[error("a locked coin of the funding accounts blocks the asset lock")]

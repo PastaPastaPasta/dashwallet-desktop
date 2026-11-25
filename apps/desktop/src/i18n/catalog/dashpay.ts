@@ -47,6 +47,35 @@ export const dashpay = {
     continue: "Continue",
     moveToCore: "Move to Dash wallet",
   },
+  /** The instant username beside a contested request (iOS `CreateInstantUsernameSheet`). Quoted
+   * names are bare labels. */
+  instant: {
+    title: "Create an instant username",
+    /** `duration` is how long the vote runs ("2 weeks"). */
+    offer: "Your requested username will be voted on for {duration}. For immediate contacts and payments, you can create a similar instant username.",
+    offerMore: "If your request is approved, it becomes your main username and the instant one stays yours too, with your contacts and history kept. If not, keep using the instant one without interruption.",
+    create: "Create instant username",
+    decline: "No, thanks",
+    explainer: "While “{username}” is out for a vote it does not belong to you yet and other users cannot find you by it. This username works right away and stays yours whatever the vote decides.",
+    contested: "This username would also need a vote. Add a digit from 2 to 9, or use 20 characters or more.",
+    same: "Your instant username must be different from the contested one",
+    /** `username` is "@" and the name. */
+    confirm: "You chose {username} as an instant username. It can't be changed once it's registered.",
+    success: "In the meantime you are reachable at “{instant}”, which is yours to keep. If the vote awards you “{requested}”, you will be reachable at both usernames.",
+    failure: "The instant username “{username}” could not be registered, so you have no username to use while the vote runs.",
+    retry: "Try again",
+    weeks: { one: "{count} week", other: "{count} weeks" },
+    /** A network without a known vote length: the existing voting copy's wording. */
+    aboutTwoWeeks: "about two weeks",
+  },
+  /** The own vote's card and details. Quoted names are bare labels. */
+  vote: {
+    instantHint: "While “{requested}” is out for a vote, you can create an instant username to use now.",
+    instantAction: "Create instant username",
+    instantShort: "Not enough credits for an instant username.",
+    topUp: "Top up",
+    wonMain: "“{username}” is now your main username. Your instant username “{instant}” stays yours too.",
+  },
   /** A registration's three steps. `step` is the step's number out of three ("1/3"); `text` is the step. */
   step: {
     shown: "({step}) {text}",
@@ -80,6 +109,14 @@ export const dashpay = {
     grantExceeded: "The cost went above what you approved.",
     insufficientCredits: "The identity's credits do not cover the username.",
     unavailable: "The Dash network did not answer.",
+    /** A paid failure of a registration from the Platform balance (C-funding F10): the engine
+     * reports no amount, so the line names none. */
+    refundedPlatform:
+      "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
+     * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
+    quoteChanged:
+      "No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again.",
     stoppedWith: "It stopped with {code}.",
   },
   /** An invitation claim's refusals. */
@@ -204,6 +241,7 @@ export const dashpay = {
       /** `amount` is the least the source must hold, with its unit. */
       short: "Not enough here. You need at least {amount}.",
       notOffered: "Not available on this network yet.",
+      movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
       /** `time` is a clock time, HH:MM. */
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
@@ -240,6 +278,9 @@ export const dashpay = {
       shortfall: "You need at least {amount} to create this username.",
       /** `credits` is a number of credits. */
       fromCredits: "Paid from your identity's credits: up to {credits} credits",
+      /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
+       * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
+      fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",
@@ -257,7 +298,7 @@ export const dashpay = {
     },
     recovery:
       "Your funds are safe. The payment is locked for this registration, and Dash Wallet finishes it once the network confirms it. If it does not finish, Tools ▸ Repair can finish the transfer.",
-    failed: { title: "Registration failed", another: "Choose another username" },
+    failed: { title: "Registration failed", another: "Choose another username", startNew: "Start a new registration", reviewCost: "Review the cost" },
     stopped: { title: "Registration stopped" },
     done: {
       title: "Welcome to DashPay, {username}",
@@ -315,6 +356,7 @@ export const dashpay = {
       contestOpen: "The network is already voting on this username, and it can no longer be joined.",
       unreachable: "Could not reach the Dash network. Try again.",
       unlock: "Unlock the wallet and try again.",
+      quoteChanged: "The cost changed. Review it and confirm again. Nothing was paid.",
     },
   },
   /** Finish transfers' report. Each value but `kind` and `kinds` is a count. */
@@ -550,6 +592,13 @@ export const dashpay = {
     /** Why a "Pay with" source cannot pay, where it differs from the other sheets' reasons. */
     source: {
       shieldedNotOffered: "Paying from Shielded isn't available here yet.",
+    },
+    /** As `transfer.status`, for a top-up from the Platform addresses. */
+    status: {
+      settledUnknown: {
+        title: "Settled with another payment or move",
+        text: "This top-up and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your identity's balance before topping up again.",
+      },
     },
     /** A top-up from the Platform addresses. `identity` is the username or "your identity"; `amount`,
      * `total` and `fee` are amounts; `address` is the address the fee is taken from. */

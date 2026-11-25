@@ -67,6 +67,7 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { EvonodeCredits } from "./EvonodeCredits";
@@ -1107,6 +1108,21 @@ export function exportHistoryCsv(walletId: string, filter: HistoryFilterRequest,
  */
 export function txNotices(walletId: string, txids: Array<string>): Promise<Array<TxNoticeRow>> {
   return invoke<Array<TxNoticeRow>>("tx_notices", { walletId, txids });
+}
+
+/**
+ * The notices of payments Dash Wallet dropped because what they spent
+ * came from a transaction that was never valid, not yet dismissed.
+ */
+export function droppedNotices(walletId: string): Promise<Array<DroppedNoticeRow>> {
+  return invoke<Array<DroppedNoticeRow>>("dropped_notices", { walletId });
+}
+
+/**
+ * Dismisses the notices of the dropped payments `txids` for good.
+ */
+export function dismissDroppedNotices(walletId: string, txids: Array<string>): Promise<null> {
+  return invoke<null>("dismiss_dropped_notices", { walletId, txids });
 }
 
 /**
@@ -3541,6 +3557,8 @@ export type CommandArgs = {
   drop_unconfirmed: { walletId: string | null };
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
+  dropped_notices: { walletId: string };
+  dismiss_dropped_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
   open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
@@ -3927,6 +3945,8 @@ export type CommandResults = {
   drop_unconfirmed: number;
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
+  dropped_notices: Array<DroppedNoticeRow>;
+  dismiss_dropped_notices: null;
   is_coinjoin_internal: boolean;
   open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
@@ -4315,6 +4335,8 @@ export const COMMANDS: Record<CommandName, string> = {
   drop_unconfirmed: "history",
   export_history_csv: "history",
   tx_notices: "history",
+  dropped_notices: "history",
+  dismiss_dropped_notices: "history",
   is_coinjoin_internal: "history",
   open_tx_in_explorer: "history",
   backup_wallet: "backup",

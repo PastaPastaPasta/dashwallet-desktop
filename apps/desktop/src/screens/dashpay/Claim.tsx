@@ -192,7 +192,7 @@ export function ClaimConfirmStep({ wiz, walletId, inputs }: { wiz: RegistrationW
         <DashButton variant="tintedGray" data-testid="registration-back" disabled={wiz.running !== null} onClick={() => wiz.back()}>
           {REG_COPY.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" data-testid="registration-pay" disabled={disabled} onClick={() => quote.data && void wiz.confirm(quote.data.grant)}>
+        <DashButton variant="filledBlue" data-testid="registration-pay" disabled={disabled} onClick={() => quote.data && void wiz.confirm(quote.data)}>
           {wiz.running !== null && <span className="spinner" aria-hidden="true" />}
           {CLAIM_COPY.confirm.claim}
         </DashButton>

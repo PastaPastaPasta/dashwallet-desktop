@@ -259,6 +259,7 @@ async fn check<L: TopUpLib>(
     if duffs < table.top_up_min_duffs {
         return Err(CreditsError::BelowMinimum {
             min: table.top_up_min_duffs,
+            max: None,
         });
     }
     if let Some((lock, _)) = (open_locks(session, wallet, lib).await?.into_iter())
@@ -413,6 +414,9 @@ pub(crate) async fn top_up<L: TopUpLib>(
     duffs: u64,
     grant: &str,
 ) -> Result<TopUpOutcome, CreditsError> {
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             // Nothing else runs it again before the next start.

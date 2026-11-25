@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
-import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
+import { CARDS, CHIP_TEXT, CHIPS, platformRunFails } from "./dashpay";
 import { openConnect, quoted } from "./connect";
 import type { ConnectOutcome } from "../src/fixture/connect";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
@@ -414,10 +414,97 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
   "join-waiting": { scenario: "dashpay-waiting-for-sync", ready: "join-waiting" },
   "join-watch-only": { scenario: "dashpay-watch-only", ready: "join-watch-only" },
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
+  // DP1-09 D4 reversed: the voting card's instant username.
+  "join-voting-instant": { scenario: "dashpay-contest-no-temporary", ready: "dashpay-card-secondary" },
+  "join-voting-instant-short": { scenario: "dashpay-contest-instant-short", ready: "dashpay-card-secondary" },
+  "join-voting-instant-ok": { scenario: "dashpay-instant-ok", ready: "dashpay-card" },
+  "join-voting-instant-failed": { scenario: "dashpay-instant-failed", ready: "dashpay-card-secondary" },
 };
+
+/** Step 1 for the contested "alice", then its instant offer (DP1-09 D4 reversed). */
+async function instantOffered(page: Page) {
+  await page.getByTestId("join-create").click();
+  await page.getByTestId("registration-name-field").fill("alice");
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("instant-offer").waitFor();
+}
+
+/** The instant form, its suggestion checked. */
+async function instantForm(page: Page) {
+  await instantOffered(page);
+  await page.getByTestId("instant-offer-create").click();
+  await expect(page.getByTestId("registration-instant-check")).toHaveText("Username available");
+}
 
 // DP1-09: the registration wizard's two steps and a registration's screens on the Join page.
 const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Promise<unknown> }> = {
+  // D4 reversed: the instant username's offer, its form with each check, and Confirm with it.
+  "instant-offer": { scenario: "dashpay-no-identity", reach: instantOffered },
+  "instant-form": { scenario: "dashpay-no-identity", reach: instantForm },
+  "instant-form-contested": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await instantForm(page);
+      await page.getByTestId("registration-instant-field").fill("alicia");
+      await expect(page.getByTestId("registration-instant-check")).toHaveAttribute("data-kind", "contested");
+    },
+  },
+  "instant-form-rules": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await instantForm(page);
+      await page.getByTestId("registration-instant-field").fill("a-");
+      await expect(page.getByTestId("registration-instant-check")).toHaveAttribute("data-kind", "rules");
+    },
+  },
+  "instant-form-taken": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await instantForm(page);
+      await page.getByTestId("registration-instant-field").fill("alice3");
+      await expect(page.getByTestId("registration-instant-check")).toHaveText("Username taken");
+    },
+  },
+  "confirm-instant": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await instantForm(page);
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
+  "voting-instant": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await instantForm(page);
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-accept").check();
+      await page.getByTestId("registration-pay").click();
+      await authorize(page);
+      await page.evaluate(() => {
+        const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+        while (window.__dwFixture!.advanceRegistration(d));
+      });
+      await expect(page.getByTestId("registration-lines")).toContainText("In the meantime you are reachable");
+    },
+  },
+  "voting-instant-failed": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.evaluate(() => (window.__dwFixture!.world.dashpay.temporaryRefused = true));
+      await instantForm(page);
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-accept").check();
+      await page.getByTestId("registration-pay").click();
+      await authorize(page);
+      await page.evaluate(() => {
+        const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+        while (window.__dwFixture!.advanceRegistration(d));
+      });
+      await page.getByTestId("registration-instantRetry").waitFor();
+    },
+  },
   // C-funding F19: "Pay another way".
   "pay-with": {
     scenario: "dashpay-no-identity",
@@ -425,6 +512,14 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await page.getByTestId("join-pay-another").click();
       await expect(page.getByTestId("pay-with-shielded-reason")).toBeVisible();
       await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+    },
+  },
+  // A Platform move that may still execute holds the balance: the Platform row's reason.
+  "pay-with-move-pending": {
+    scenario: "platform-send-held",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Another Platform transfer is still being confirmed. Try again when it is done.");
     },
   },
   // Dash wallet short of the cost: its reason; Continue off.
@@ -454,12 +549,27 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await page.getByTestId("registration-fee").waitFor();
     },
   },
+  // C-funding F9: Confirm paid from the Platform balance.
+  "confirm-platform": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("pay-with-platform").getByRole("radio").check();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
   progress: { scenario: "dashpay-registering", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=progress]").waitFor() },
   paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
   held: { scenario: "dashpay-registering-held", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=held]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
+  refunded: { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "paidFailure") },
+  "quote-changed": { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "replanRefused") },
   // PRODUCT #4: the welcome, after a new username's run to its end.
   welcome: {
     scenario: "dashpay-no-identity",
@@ -783,6 +893,11 @@ const PROFILE: Record<string, { scenario: string; ready: string }> = {
   "contest-won": { scenario: "dashpay-contest-won", ready: "profile-tally" },
   "contest-lost": { scenario: "dashpay-contest-lost", ready: "profile-tally" },
   "contest-locked": { scenario: "dashpay-contest-locked", ready: "profile-tally" },
+  // DP1-09 D4 reversed: the request's instant states and the won card with the instant name kept.
+  "contest-instant-short": { scenario: "dashpay-contest-instant-short", ready: "profile-instant-top-up" },
+  "contest-instant-failed": { scenario: "dashpay-instant-failed", ready: "profile-instant-retry" },
+  "contest-instant-ok": { scenario: "dashpay-instant-ok", ready: "profile-tally" },
+  "contest-won-instant": { scenario: "dashpay-instant-won", ready: "profile-tally" },
 };
 
 for (const theme of THEMES) {

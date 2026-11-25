@@ -4,6 +4,7 @@
 //! signing, and the lock pending and resumed on its own outpoint.
 
 use super::super::core_max::CoreCoins;
+use super::super::credits::CoreMaxShort;
 use super::super::shield_drain::DrainCoin;
 use super::*;
 
@@ -205,6 +206,33 @@ fn core_max_fund_refuses_before_signing() {
     assert_eq!(code(out), "credits.move_running");
     unused(&fx, &g);
     drop(sweep);
+    nothing_stored(&fx, &lib);
+}
+
+/// A lock below the fund's floor is refused before signing, with what Max
+/// would move and what the other accounts hold.
+#[test]
+fn core_max_fund_refuses_below_the_floor() {
+    let fx = Fixture::new(0);
+    let floor = fee() / 1_000 + 1;
+    let fee = crate::fees::asset_lock_fee_bound(1);
+    let read = CoreCoins {
+        coins: vec![bip44(0, floor + fee - 1)],
+        left_duffs: 3_000,
+        arriving_duffs: 0,
+    };
+    let lib = maxer(&fx, read);
+    let below = CreditsError::BelowMinimum {
+        min: floor,
+        max: Some(CoreMaxShort {
+            duffs: floor - 1,
+            left_duffs: 3_000,
+        }),
+    };
+    assert_eq!(max_quote(&fx, &lib).unwrap_err(), below);
+    let (out, g) = max_fund(&fx, &lib, floor + fee - 1);
+    assert_eq!(out.unwrap_err(), below);
+    unused(&fx, &g);
     nothing_stored(&fx, &lib);
 }
 

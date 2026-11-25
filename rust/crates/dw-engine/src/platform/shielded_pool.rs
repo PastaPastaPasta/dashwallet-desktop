@@ -1039,7 +1039,7 @@ pub(crate) async fn send_quote(
     let version = priced_gate(lib).await?;
     shielded_address(lib.network(), to)?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     let fee = spend_fee(lib, version, credits, ShieldedFeeKind::Base).await?;
     Ok(spend_quote(credits, fee, None))
@@ -1068,7 +1068,10 @@ pub(super) async fn unshield_plan(
     let version = priced_gate(lib).await?;
     let rules = Rules::at(version)?;
     if credits < rules.min {
-        return Err(ShieldedError::BelowMinimum { min: rules.min });
+        return Err(ShieldedError::BelowMinimum {
+            min: rules.min,
+            max: None,
+        });
     }
     if credits > rules.max {
         return Err(invalid("the amount is above Platform's largest withdrawal").into());
@@ -1099,7 +1102,7 @@ async fn unshield_to_platform_plan(
 ) -> Result<ShieldedSpendQuote, ShieldedError> {
     let version = priced_gate(lib).await?;
     if credits == 0 {
-        return Err(ShieldedError::BelowMinimum { min: 1 });
+        return Err(ShieldedError::BelowMinimum { min: 1, max: None });
     }
     if credits > i64::MAX as u64 {
         return Err(invalid("the amount is above Platform's largest unshield").into());
@@ -1814,7 +1817,7 @@ async fn shield_plan(
     let pool_fee = shield_pool_fee(version)?;
     let min = pool_fee / CREDITS_PER_DUFF + 1;
     if duffs < min {
-        return Err(ShieldedError::BelowMinimum { min });
+        return Err(ShieldedError::BelowMinimum { min, max: None });
     }
     no_open_shield(lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -2080,6 +2083,9 @@ pub(super) async fn open_for_funding(
     lib: &impl ShieldedLib,
 ) -> Result<(), ShieldedError> {
     gate(lib).await?;
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         let refusal = held(lib, wait);
         if wait == RegistrationWait::Startup {
@@ -2120,7 +2126,7 @@ pub(super) async fn finish_lock(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => ShieldedError::CoinsLocked,
             Err(FundError::CoinsChanged) => ShieldedError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => ShieldedError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => ShieldedError::TooManyInputs {
                 inputs: max + 1,

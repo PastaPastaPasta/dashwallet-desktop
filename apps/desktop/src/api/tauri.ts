@@ -94,6 +94,8 @@ export class IpcBackend implements Backend {
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
+  droppedNotices = cmd.droppedNotices;
+  dismissDroppedNotices = cmd.dismissDroppedNotices;
   // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
   // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
   networkChoice = () => orAbsent(cmd.getNetworkChoice());

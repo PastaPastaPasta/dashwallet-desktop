@@ -9,7 +9,7 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onMoveSettled } from "./move";
-import { canRetry, heldSend, PlatformSendFlow, recipientText, resetPlatformSends, retryAmount, retryAsks, SEND_COPY, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm } from "./send";
+import { canRetry, heldSend, PlatformSendFlow, recipientText, resetPlatformSends, retryAmount, retryAsks, SEND_COPY, sendAmount, sendCanRetry, sendErrorText, sendFor, sendOutcomeCopy, sendRefusalText, sendWent, settledBy, staleConfirm } from "./send";
 
 const TO = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 const QUOTE: PlatformSendQuote = {
@@ -244,6 +244,26 @@ describe("Pay from Platform", () => {
       expect(got).toMatchObject({ amount: { kind: "all" }, quote: { retryOf: "ps-9" } });
     });
 
+    it("on mainnet a held Max send's retry from the form asks Max after the flag refuses its credits", async () => {
+      const { flow, api } = setup();
+      const held = row("ps-9", { credits: "40000000000" });
+      const off = () => appError("platform.feature_off", { kind: "feature", feature: "platform_address_sends" });
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      api.platformSendQuote.mockResolvedValueOnce({ ...QUOTE, operation: "op-6", retryOf: "ps-9", feeFromAmount: true });
+      const got = await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held));
+      expect(api.platformSendQuote.mock.calls.map((c) => [c[2], c[3]])).toEqual([[{ kind: "credits", credits: "40000000000" }, "ps-9"], [{ kind: "all" }, "ps-9"]]);
+      expect(got).toMatchObject({ amount: { kind: "all" }, quote: { retryOf: "ps-9" } });
+
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      api.platformSendQuote.mockRejectedValueOnce(off());
+      expect(await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held))).toBeNull();
+      expect([api.platformSendQuote.mock.calls.length, flow.step]).toEqual([4, "refused"]);
+
+      api.platformSendQuote.mockRejectedValueOnce(appError("platform.feature_off", { kind: "feature", feature: "platform_addresses" }));
+      expect(await flow.quoteRetry({ id: "ps-9", to: TO }, retryAsks(held))).toBeNull();
+      expect(api.platformSendQuote.mock.calls.length).toBe(5);
+    });
+
     it("a refusal other than invalid_argument stops the form's retry at the first ask", async () => {
       const { flow, api } = setup();
       api.platformSendQuote.mockRejectedValueOnce(appError("credits.move_pending", { kind: "artifact", artifact: "ps-9" }));
@@ -311,6 +331,17 @@ describe("Pay from Platform", () => {
       expect(settledBy(unsettled, [row("ps-2", { state: "done", mayLand: false })])).toBeNull();
       expect(settledBy({ id: "ps-1", mayLand: false }, [row("ps-1", { state: "done", mayLand: false })])).toBeNull();
       expect(settledBy(null, [row("ps-1", { state: "done", mayLand: false })])).toBeNull();
+    });
+
+    it("never says a payment went through when its group names no winner", () => {
+      const credits = (c: string) => `${c} credits`;
+      const copy = { title: "Settled with another payment or move", text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid." };
+      expect(settledBy(unsettled, [row("ps-1", { state: "done", mayLand: false, winnerKnown: false })])).toBe("unknown");
+      expect(settledBy(unsettled, [row("ps-1", { state: "replaced", mayLand: false, winnerKnown: false })])).toBe("unknown");
+      expect(sendOutcomeCopy({ ...OUTCOME, winnerKnown: false }, credits, null, false)).toEqual(copy);
+      expect(sendOutcomeCopy(FAILED, credits, "unknown", false)).toEqual(copy);
+      expect(sendOutcomeCopy(OUTCOME, credits, null, false).title).toBe(SEND_COPY.done.title);
+      expect([sendWent(OUTCOME, null), sendWent({ ...OUTCOME, winnerKnown: false }, null), sendWent(FAILED, "went"), sendWent(FAILED, "unknown"), sendWent(FAILED, null)]).toEqual([true, false, true, false, false]);
     });
 
     it("picks the send that may still go through for the form's retry, never a move or a settled send", () => {

@@ -332,6 +332,14 @@ pub enum ErrorData {
     /// `psbt.grant_exceeded` (the grant's cap), `coinjoin.insufficient_funds`
     /// (the mixing minimum): a limit in duffs.
     Limit { duffs: u64 },
+    /// `credits.below_minimum` and `shielded.below_minimum` of a Core Max:
+    /// the floor, what Max would move (the figure held against it) and the
+    /// spendable coins of the wallet's other accounts, all in duffs.
+    MaxMinimum {
+        min: u64,
+        duffs: u64,
+        left_duffs: u64,
+    },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },
     /// `send.grant_exceeded`: the payment's outflow against the grant's cap, in duffs.

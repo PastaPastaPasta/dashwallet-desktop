@@ -188,9 +188,16 @@ impl From<ShieldedError> for AppError {
                     available,
                 }),
             ),
-            S::BelowMinimum { min } => (
+            S::BelowMinimum { min, max } => (
                 ShieldedCode::BelowMinimum,
-                Some(ErrorData::Number { value: min }),
+                Some(match max {
+                    Some(m) => ErrorData::MaxMinimum {
+                        min,
+                        duffs: m.duffs,
+                        left_duffs: m.left_duffs,
+                    },
+                    None => ErrorData::Number { value: min },
+                }),
             ),
             S::CoinsLocked => (ShieldedCode::CoinsLocked, None),
             S::ShieldPending { txid } => {
@@ -580,9 +587,16 @@ impl From<CreditsError> for AppError {
                     available,
                 }),
             ),
-            C::BelowMinimum { min } => (
+            C::BelowMinimum { min, max } => (
                 CreditsCode::BelowMinimum,
-                Some(ErrorData::Limit { duffs: min }),
+                Some(match max {
+                    Some(m) => ErrorData::MaxMinimum {
+                        min,
+                        duffs: m.duffs,
+                        left_duffs: m.left_duffs,
+                    },
+                    None => ErrorData::Limit { duffs: min },
+                }),
             ),
             C::CoinsLocked => (CreditsCode::CoinsLocked, None),
             C::TopUpPending { txid } => (CreditsCode::TopUpPending, Some(ErrorData::Txid { txid })),
@@ -787,7 +801,7 @@ mod tests {
                 needed: 2,
                 available: 1,
             },
-            CreditsError::BelowMinimum { min: 5 },
+            CreditsError::BelowMinimum { min: 5, max: None },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending { txid: s() },
             CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
@@ -832,7 +846,7 @@ mod tests {
                 needed: 2,
                 available: 1,
             },
-            ShieldedError::BelowMinimum { min: 5 },
+            ShieldedError::BelowMinimum { min: 5, max: None },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
             ShieldedError::PoolTooSmall {
@@ -982,6 +996,46 @@ mod tests {
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({ "kind": "shieldedNotReady", "reason": "rested", "readyAt": 10_800 })
         );
+        let short = Some(dw_engine::platform::CoreMaxShort {
+            duffs: 1_200,
+            left_duffs: 40_000,
+        });
+        let max = serde_json::json!({
+            "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000
+        });
+        let below = [
+            (
+                AppError::from(CreditsError::BelowMinimum {
+                    min: 30_000,
+                    max: short,
+                }),
+                max.clone(),
+            ),
+            (
+                AppError::from(ShieldedError::BelowMinimum {
+                    min: 30_000,
+                    max: short,
+                }),
+                max,
+            ),
+            (
+                AppError::from(CreditsError::BelowMinimum {
+                    min: 30_000,
+                    max: None,
+                }),
+                serde_json::json!({ "kind": "limit", "duffs": 30_000 }),
+            ),
+            (
+                AppError::from(ShieldedError::BelowMinimum {
+                    min: 30_000,
+                    max: None,
+                }),
+                serde_json::json!({ "kind": "number", "value": 30_000 }),
+            ),
+        ];
+        for (e, data) in below {
+            assert_eq!(serde_json::to_value(&e).unwrap()["data"], data);
+        }
     }
 
     /// dw-engine writes the `data` of the errors in the accept contract vector by hand
