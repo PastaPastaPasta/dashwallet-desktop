@@ -26,6 +26,7 @@ import { t } from "../i18n";
 import { CoinSelectionModel } from "../tools/coins";
 import { notSelectable, outpointKey } from "./pay/model";
 import { abandonHint, actionOffer, actionProblem, Actions } from "./TxDetailSheet";
+import { payWithCoinsOffered } from "./tools/CoinSelection";
 
 const PENDING_UNPROVEN =
   "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.";
@@ -143,7 +144,8 @@ describe("the abandon confirm of a payment from before a restore (H2)", () => {
 
 describe("the RESTORED money gate", () => {
   /** The sheet's actions with the extras read, and RESTORED as `useRestored` answered (`undefined`: not yet). */
-  const actions = (x: TxDetailExtrasInfo, restored: boolean | undefined) => {
+  /** `null`: the network answered without `restored`, which the cache holds as `null` (not known). */
+  const actions = (x: TxDetailExtrasInfo, restored: boolean | null | undefined) => {
     const client = new QueryClient();
     client.setQueryData(keys.txDetailExtras(W, P), x);
     if (restored !== undefined) client.setQueryData(keys.restored, restored);
@@ -209,6 +211,22 @@ describe("the RESTORED money gate", () => {
       setRestoreFinishing(false);
     }
     expect(actions(x, false)).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("keeps Abandon and Resend disabled, with no gate line, when the network answered without restored", async () => {
+    installFixture({ scenario: "restore-holds" });
+    const x = await cmd.txDetailExtras(W, P);
+    const html = actions(x, null);
+    expect(html).toMatch(/<button[^>]*data-testid="tx-abandon"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-abandon"/);
+    expect(html).toMatch(/<button[^>]*data-testid="tx-resend"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-resend"/);
+    expect(html).not.toContain("tx-restored-gate");
+    expect(actions(x, false)).not.toMatch(/<button[^>]*disabled=""/);
+  });
+
+  it("offers Pay with these coins only once RESTORED is known to be clear", () => {
+    expect(payWithCoinsOffered(false)).toBe(true);
+    expect(payWithCoinsOffered(true)).toBe(false);
+    expect(payWithCoinsOffered(undefined)).toBe(false);
   });
 
   it("offers nothing for an action the engine says doesn't apply", () => {

@@ -333,6 +333,20 @@ describe("the panel's actions", () => {
     for (const file of ["screens/TxDetailSheet.tsx", "screens/tools/CoinSelection.tsx"]) expect(readFileSync(resolve(src, file), "utf8"), file).toContain("useRestoredGate()");
   });
 
+  it("a restored not known (never read, or answered without it) offers no panel action and keeps the gate unknown", () => {
+    for (const restored of [undefined, null]) {
+      const c = client();
+      if (restored === null) c.setQueryData(keys.restored, null);
+      else c.removeQueries({ queryKey: keys.restored });
+      expect(gate(c), String(restored)).toBe("<i>undefined</i>");
+      const html = panelOn(c);
+      expect(html, String(restored)).not.toContain("<button");
+    }
+    const known = client();
+    expect(gate(known)).toBe("<i>true</i>");
+    expect(panelOn(known)).toContain('data-testid="restored-retry"');
+  });
+
   it("any other failure is said in place and the gate reads RESTORED again", async () => {
     const { api } = fake({ finishWithoutPlatform: () => Promise.reject(new Error("This build of Dash Wallet can't do that yet.")) });
     const c = client();

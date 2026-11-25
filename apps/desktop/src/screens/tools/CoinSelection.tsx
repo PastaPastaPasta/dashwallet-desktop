@@ -56,6 +56,9 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
   });
 }
 
+/** "Pay with these coins" only once RESTORED is known to be clear: set or not known keeps it disabled. */
+export const payWithCoinsOffered = (walletRestored: boolean | undefined) => walletRestored === false;
+
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const t = useT();
   const utxos = useUtxos(walletId, true);
@@ -183,7 +186,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </p>
       )}
       <div className="tool-actions">
-        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={walletRestored !== false || model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
+        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={!payWithCoinsOffered(walletRestored) || model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
           {t("tools.coins.payWithCoins")}
         </DashButton>
       </div>
