@@ -235,19 +235,7 @@ pub(crate) async fn confirm_create(
     let Some(identity) = named else {
         return Ok(());
     };
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let key = dw_appdb::dp_registration_dispatched(&b58(&Identifier::new(identity)));
-    #[cfg(test)]
-    let failing = guard(&session.platform.registration_faults).dispatch_record;
-    #[cfg(not(test))]
-    let failing = false;
-    let written = match failing {
-        true => Err("injected".to_owned()),
-        false => (session.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1"))))
-            .await
-            .map_err(|e| e.to_string()),
-    };
-    let Err(e) = written else {
+    let Err(e) = record_dispatch(session, wallet, identity).await else {
         return Ok(());
     };
     let settled = (session.leases)
@@ -259,6 +247,27 @@ pub(crate) async fn confirm_create(
     Err(format!(
         "the registration's create dispatch was not recorded: {e}"
     ))
+}
+
+/// Records, durably, that the create naming `identity` may leave
+/// ([`dw_appdb::dp_registration_dispatched`]): by the hook's dispatch
+/// ([`confirm_create`]) and again before a pass re-sends it, so a stop
+/// between the artifact and the dispatch's record leaves no send without
+/// it.
+pub(crate) async fn record_dispatch(
+    session: &NetworkSession,
+    wallet: WalletId,
+    identity: [u8; 32],
+) -> Result<(), String> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_dispatched(&b58(&Identifier::new(identity)));
+    #[cfg(test)]
+    if guard(&session.platform.registration_faults).dispatch_record {
+        return Err("injected".to_owned());
+    }
+    (session.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1"))))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// A proved read of a create's published nullifiers.
@@ -370,6 +379,10 @@ pub(crate) async fn fund(
         return Err(PlatformError::SignerUnavailable);
     };
     pool::unhooked(lib).await.map_err(platform_error)?;
+    // No pass runs from here until the call's outcome is read (`pool::arm`):
+    // the notes and the rest clock read below are the ones the create
+    // selects from.
+    let hold = pool::hold_passes(session).await.map_err(platform_error)?;
     let mut facts = ShieldedFacts {
         platform_enabled: session.platform.enabled(),
         ..ShieldedFacts::default()
@@ -395,8 +408,6 @@ pub(crate) async fn fund(
         identity: None,
     }
     .encode();
-    // No pass runs from here until the call's outcome is read (`pool::arm`).
-    let hold = pool::hold_passes(session).await.map_err(platform_error)?;
     let permit = write_permit(lease, "identity_create", ask.denomination)?;
     let slot = IntentSlot::set(
         session,
@@ -443,12 +454,16 @@ pub(crate) async fn fund(
     let id = Identifier::new(identity);
     let name = b58(&id);
     if let Ok((true, _)) = net.identity(id).await {
-        if let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await
-            && let Some(artifact) = create_artifact(&artifacts, &id)
-        {
-            proved_executed(session, wallet, artifact).await;
+        let proved = match session.leases.shielded_artifacts(wallet).await {
+            Ok(artifacts) => match create_artifact(&artifacts, &id) {
+                Some(artifact) => proved_executed(session, wallet, artifact).await,
+                None => true,
+            },
+            Err(_) => false,
+        };
+        if proved {
+            return Ok(ShieldedOutcome::Registered(name));
         }
-        return Ok(ShieldedOutcome::Registered(name));
     }
     // A create the hook named and then refused is not signed again at once.
     match evidence(session, wallet, (lib, net), &ask, &name).await? {
@@ -513,11 +528,12 @@ async fn evidence(
         (artifact, named_at),
     )
     .await?;
-    if matches!(
+    let executed = matches!(
         outcome,
         ShieldedOutcome::Registered(_) | ShieldedOutcome::Fallback(_)
-    ) {
-        proved_executed(session, wallet, artifact).await;
+    );
+    if executed && !proved_executed(session, wallet, artifact).await {
+        return Ok(ShieldedOutcome::Unknown);
     }
     Ok(outcome)
 }
@@ -525,15 +541,6 @@ async fn evidence(
 /// Whether `artifact` published only its own notes' nullifiers: no padding.
 fn unpadded(artifact: &ShieldedArtifact) -> bool {
     (artifact.published.iter()).all(|n| artifact.selected.iter().any(|(s, _)| s == n))
-}
-
-/// Whether the library still lists `artifact`'s unresolved outcome
-/// unacknowledged, which holds its notes. A read failure holds nothing.
-async fn holds(lib: &impl ShieldedLib, artifact: &ShieldedArtifact) -> bool {
-    match (lib.held_spends().await, artifact.st_hash) {
-        (Ok(held), Some(st_hash)) => held.contains(&st_hash),
-        _ => false,
-    }
 }
 
 /// The artifact of the create naming identity `id`. The same notes signed
@@ -550,17 +557,29 @@ fn create_artifact<'a>(
     (artifacts.iter().find(held)).or_else(|| artifacts.iter().find(ours))
 }
 
-/// Records the proof that `artifact`'s create executed while the journal
-/// still has it in flight or unresolved ([`settle_proved`]), so the
-/// library's hold on its notes is acknowledged once they read spent
-/// whatever the library resolves.
-async fn proved_executed(session: &NetworkSession, wallet: WalletId, artifact: &ShieldedArtifact) {
-    let in_flight = matches!(
-        artifact.status,
-        ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
-    );
-    if let (true, Some(st_hash)) = (in_flight, artifact.st_hash) {
-        settle_proved(session, wallet, st_hash, ArtifactStatus::Executed, false).await;
+/// Records the proof that `artifact`'s create executed ([`settle_proved`])
+/// while its outcome is not acknowledged: in flight, unresolved, or settled
+/// executed with no proof (a success the library resolves unattributable),
+/// so the library's hold on its notes is acknowledged once they read spent
+/// whatever the library resolves. `false` when the proof is not written:
+/// the row then waits on evidence.
+async fn proved_executed(
+    session: &NetworkSession,
+    wallet: WalletId,
+    artifact: &ShieldedArtifact,
+) -> bool {
+    let unacked = !artifact.acked
+        && matches!(
+            artifact.status,
+            ArtifactStatus::Registered
+                | ArtifactStatus::Unresolved { unrecorded: false }
+                | ArtifactStatus::Executed
+        );
+    match (unacked, artifact.st_hash) {
+        (true, Some(st_hash)) => {
+            settle_proved(session, wallet, st_hash, ArtifactStatus::Executed, false).await
+        }
+        _ => true,
     }
 }
 
@@ -585,14 +604,10 @@ async fn by_artifact(
     };
     let executed_by = match net.nullifiers(&artifact.published).await {
         // A bundle's padding is spent by this create alone. A bundle of two
-        // or more notes has none: its nullifiers spent are this create's
-        // only while the library held its notes throughout, which a hold
-        // read after the spent read shows (a hold once lifted never
-        // returns). Another install's spend of the same notes is not told
-        // apart.
-        Ok(NullifierRead::Spent(_))
-            if unresolved && unpadded(artifact) && !holds(lib, artifact).await =>
-        {
+        // or more notes has none: its nullifiers spent may be another
+        // spend's of the same notes (another install of the seed), so they
+        // prove nothing of this create; only its identity does.
+        Ok(NullifierRead::Spent(_)) if unresolved && unpadded(artifact) => {
             return Ok(present().await);
         }
         Ok(NullifierRead::Spent(at)) => at,
@@ -653,6 +668,11 @@ pub(crate) async fn settle_proved(
     };
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+    #[cfg(test)]
+    if guard(&session.platform.registration_faults).proof_write {
+        tracing::warn!("a Shielded-funded create's proof was not written (injected)");
+        return false;
+    }
     let marked = session
         .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(value)))
         .await;
@@ -791,4 +811,6 @@ async fn released(
 pub(crate) struct RegistrationFaults {
     /// The dispatch record after the artifact fails to write.
     pub(crate) dispatch_record: bool,
+    /// The engine's proof of a create fails to write.
+    pub(crate) proof_write: bool,
 }

@@ -237,6 +237,8 @@ pub(crate) struct FakeShielded {
     unhooked: AtomicBool,
     /// The library cannot spend from a lease's key set.
     pub(super) no_keyset: AtomicBool,
+    /// What the next `sync_now` does before it returns (a pass's writes).
+    pub(super) on_sync: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Platform's shielded note count; unknown when `None`.
     pub(super) pool_notes: Mutex<Option<u64>>,
     /// What an identity create asks of the dispatch hook before it signs
@@ -464,6 +466,7 @@ impl Default for FakeShielded {
             applied: Mutex::default(),
             unhooked: AtomicBool::new(false),
             no_keyset: AtomicBool::new(false),
+            on_sync: Mutex::default(),
             pool_notes: Mutex::new(None),
             create_hook: Mutex::new(None),
             hook_reads: Mutex::default(),
@@ -843,6 +846,9 @@ impl ShieldedLib for FakeShielded {
 
     async fn sync_now(&self) -> bool {
         self.syncs.fetch_add(1, Ordering::SeqCst);
+        if let Some(on_sync) = self.on_sync.lock().unwrap().take() {
+            on_sync();
+        }
         if let Some(found) = self.scan_finds.lock().unwrap().take() {
             self.unresolved.lock().unwrap().clear();
             for row in self.rows.lock().unwrap().iter_mut() {

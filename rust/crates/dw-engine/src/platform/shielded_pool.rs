@@ -2833,6 +2833,14 @@ impl ShieldedDispatch for EngineDispatch {
         if !accepted {
             return Err(refused("the spend's artifact does not allow a send"));
         }
+        // A registration's create is recorded dispatched before it leaves,
+        // also when a stop cut off its record in `dispatch`.
+        if let (Some(ArtifactKind::IdentityCreate), Some(identity)) =
+            (artifact.kind, artifact.identity_id)
+        {
+            (super::registration_shielded::record_dispatch(&session, wallet, identity).await)
+                .map_err(|e| refused(format!("the create's dispatch was not recorded: {e}")))?;
+        }
         // An unshield's record, written before its artifact, is armed before
         // it leaves, also when a stop cut off its arming in `dispatch`.
         if artifact.kind == Some(ArtifactKind::Unshield) {

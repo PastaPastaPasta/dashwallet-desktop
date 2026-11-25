@@ -163,15 +163,25 @@ impl Hooked {
     /// Rewrites the journal row of spend `n` in place, as a later writer
     /// of its state would leave it: `set` is the SQL after `SET`.
     fn rewrite(&self, n: u8, set: &str) {
+        self.rewriter(n, set)();
+    }
+
+    /// [`Self::rewrite`], to run later (from a library's pass).
+    fn rewriter(&self, n: u8, set: &str) -> impl FnOnce() + Send + 'static {
         let path = (self.f.session.data_dir()).join(dw_appdb::dispatch::DISPATCH_DB_FILE);
-        let changed = rusqlite::Connection::open(path)
-            .unwrap()
-            .execute(
-                &format!("UPDATE shielded_artifact SET {set} WHERE wallet = ?1 AND activity = ?2"),
-                rusqlite::params![&self.f.wallet.0[..], &[n; 32][..]],
-            )
-            .unwrap();
-        assert_eq!(changed, 1, "one artifact row");
+        let (wallet, set) = (self.f.wallet.0, set.to_owned());
+        move || {
+            let changed = rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(
+                    &format!(
+                        "UPDATE shielded_artifact SET {set} WHERE wallet = ?1 AND activity = ?2"
+                    ),
+                    rusqlite::params![&wallet[..], &[n; 32][..]],
+                )
+                .unwrap();
+            assert_eq!(changed, 1, "one artifact row");
+        }
     }
 
     /// The wallet's background lease, created while the vault is unlocked.
@@ -2445,12 +2455,13 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
 }
 
-/// F12: a create of two or more notes publishes no padding, so once the
-/// library no longer holds its notes another spend of the same notes reads
-/// the same as this create executing: the row waits, nothing refunded.
-/// Held, read after the spent read, the spend is this create's.
+/// F12 (as #860's R4): a create of two or more notes publishes no padding,
+/// so its nullifiers read spent may be another spend's of the same notes
+/// (another install of the seed): held or not, they prove nothing of this
+/// create, the row waits and nothing is refunded. Only its identity
+/// settles it. Mutant: count the spend while the library holds the notes.
 #[test]
-fn an_unpadded_create_spent_counts_only_while_its_notes_are_held() {
+fn an_unpadded_create_spent_never_claims_the_fallback() {
     let h = Hooked::new();
     let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
     h.rewrite(
@@ -2463,22 +2474,26 @@ fn an_unpadded_create_spent_counts_only_while_its_notes_are_held() {
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
     let lib = super::FakeShielded::default();
+    for held in [false, true] {
+        if held {
+            lib.held.lock().unwrap().insert(artifact.st_hash.unwrap());
+        }
+        assert_eq!(
+            h.evidence_with(draft, &id, &ev, &lib),
+            ShieldedOutcome::Unknown,
+            "held: {held}"
+        );
+        assert!(h.refunds().is_empty());
+        assert_eq!(
+            h.artifact(12).unwrap().status,
+            ArtifactStatus::Unresolved { unrecorded: false }
+        );
+    }
+    *ev.identity.lock().unwrap() = (true, 101);
     assert_eq!(
         h.evidence_with(draft, &id, &ev, &lib),
-        ShieldedOutcome::Unknown,
-        "its notes no longer held: another spend of them may be what reads spent"
+        ShieldedOutcome::Registered(id)
     );
-    assert!(h.refunds().is_empty());
-    assert_eq!(
-        h.artifact(12).unwrap().status,
-        ArtifactStatus::Unresolved { unrecorded: false }
-    );
-    lib.held.lock().unwrap().insert(artifact.st_hash.unwrap());
-    assert_eq!(
-        h.evidence_with(draft, &id, &ev, &lib),
-        ShieldedOutcome::Fallback(id)
-    );
-    assert_eq!(h.refunds().len(), 1);
     assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
 }
 
@@ -2649,4 +2664,154 @@ fn a_create_refused_after_its_naming_is_unsent_not_signed_again() {
         Ok(ShieldedOutcome::Unsent)
     );
     assert!(lib.spent.lock().unwrap().is_empty());
+}
+
+/// F12: a create that succeeds is resolved unattributable by the library
+/// (its success marks the notes spent with no action read), which the pass
+/// `sync_now` runs settles `executed` with no proof before the identity is
+/// read. The proved identity still records the engine's proof, so the
+/// outcome is acknowledged once its notes read spent (the wallet then
+/// closes). A proof that cannot be written leaves the row on evidence, not
+/// registered; the next pass records it. Mutants: prove only in-flight
+/// artifacts; register without the proof.
+#[test]
+fn a_create_settled_executed_before_its_proof_is_still_proved() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(7, &[7], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(7, &[7], bytes, id);
+    let lib = paying(Some(hook_of(&h, payload)));
+    *lib.on_sync.lock().unwrap() = Some(Box::new(h.rewriter(
+        7,
+        "status = 'executed', disposition_kind = 'unresolved', disposition_reason = 'unattributable'",
+    )));
+    let ev = Evidence::default();
+    *ev.identity.lock().unwrap() = (true, 3);
+    (h.f.session.platform.registration_faults.lock().unwrap()).proof_write = true;
+    let lease = h.registration_lease(2 * DENOMINATION);
+    assert_eq!(
+        h.create(draft, &lib, &ev, &lease),
+        Ok(ShieldedOutcome::Unknown),
+        "no proof written, so not registered"
+    );
+    let st_hash = h.artifact(7).unwrap().st_hash.unwrap();
+    let proved = || h.setting(dw_appdb::dp_registration_proved(&hex::encode(st_hash)));
+    assert_eq!(proved(), None);
+    assert_eq!(h.artifact(7).unwrap().status, ArtifactStatus::Executed);
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).proof_write = false;
+    *ev.spent.lock().unwrap() = Some(3);
+    let name = super::super::registration_flow::b58(&dpp::prelude::Identifier::new(id));
+    assert_eq!(
+        h.evidence(draft, &name, &ev),
+        ShieldedOutcome::Registered(name.clone())
+    );
+    assert_eq!(proved().as_deref(), Some("executed"));
+    let artifact = h.artifact(7).unwrap();
+    assert_eq!(
+        (artifact.status, artifact.acked),
+        (ArtifactStatus::Executed, false)
+    );
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let counted = (h.f.engine).block_on(async move {
+        super::super::registration_shielded::proved_creates(&s, wallet, &[artifact], &[st_hash])
+            .await
+    });
+    assert_eq!(
+        counted.get(&st_hash),
+        Some(&ArtifactStatus::Executed),
+        "the next read of the outcomes acknowledges it once its notes read spent"
+    );
+}
+
+/// F17: a pass in flight when a create starts may find a note; the create
+/// reads its notes and their rest only once no pass runs, so a note just
+/// found makes it wait instead of paying from that note. Mutant: hold the
+/// passes after the readiness read.
+#[test]
+fn a_create_reads_its_notes_only_once_no_pass_runs() {
+    let h = Hooked::new();
+    let draft = h.shielded_row();
+    let (bytes, id) = create_bytes(9, &[9], (DENOMINATION, own_platform()), None);
+    let payload = h.staged_create(9, &[9], bytes, id);
+    let lib = Arc::new(paying(Some(hook_of(&h, payload))));
+    let lease = h.registration_lease(2 * DENOMINATION);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let pass = h.f.engine.block_on(s.platform.shielded_spends.read());
+    let create = {
+        let (s, lib) = (Arc::clone(&s), Arc::clone(&lib));
+        let ask = ShieldedAsk {
+            draft,
+            owner: 0,
+            index: 0,
+            denomination: DENOMINATION,
+            fallback: own_platform().to_bech32m_string(dashcore::Network::Testnet),
+            identity: None,
+        };
+        s.rt.clone().spawn(async move {
+            let ev = Evidence::default();
+            let version = dpp::version::PlatformVersion::latest();
+            super::super::registration_shielded::fund(
+                &s,
+                wallet,
+                (&*lib, &ev, version),
+                ask,
+                Some(&lease),
+            )
+            .await
+        })
+    };
+    wait_until(
+        || pool::wallet_lock(&s, wallet).try_lock().is_err(),
+        "the create holds the shielded lock",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    // The pass finds a larger note, just now.
+    *lib.notes_now.lock().unwrap() =
+        Some(vec![note(1, 2 * DENOMINATION), note(2, 3 * DENOMINATION)]);
+    drop(pass);
+    let outcome =
+        h.f.engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), create).await });
+    let outcome = outcome.unwrap().unwrap().unwrap();
+    assert!(
+        matches!(
+            outcome,
+            ShieldedOutcome::NotReady(crate::platform::ShieldedCheck::Rested, Some(_))
+        ),
+        "{outcome:?}"
+    );
+    assert!(lib.spent.lock().unwrap().is_empty(), "nothing signed");
+    assert_eq!(h.row_funding(draft), shielded_funding(None));
+}
+
+/// F11: a stop between a create's artifact and its dispatch record leaves
+/// the library's stored create, which a pass may re-send: the re-send is
+/// admitted only once the dispatch is recorded, so a send never goes out
+/// without it; one whose record cannot be written is refused. Mutant:
+/// admit a create without its record.
+#[test]
+fn a_create_resent_by_a_pass_records_its_dispatch_first() {
+    let h = Hooked::new();
+    h.lease();
+    let (_, name) = h.dispatched_create(11);
+    let st_hash = h.artifact(11).unwrap().st_hash.unwrap();
+    let key = dw_appdb::dp_registration_dispatched(&name);
+    let unrecord = || {
+        let (scope, key) = (dw_appdb::local_scope(&h.f.wallet.to_string()), key.clone());
+        (h.f.engine)
+            .block_on((h.f.session).appdb_op(move |db| db.set_setting_durable(&scope, &key, None)))
+            .unwrap();
+    };
+    unrecord();
+    assert_eq!(h.setting(key.clone()), None, "stopped before the record");
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = true;
+    let refused = h.admit(SHIELDED_ACCOUNT, 11, st_hash).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    assert_eq!(h.setting(key.clone()), None);
+
+    (h.f.session.platform.registration_faults.lock().unwrap()).dispatch_record = false;
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 11, st_hash), Ok(()));
+    assert!(h.setting(key).is_some());
 }

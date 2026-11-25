@@ -395,6 +395,31 @@ fn an_unknown_create_waits_and_refuses_the_discard() {
     assert_eq!(f.row(draft).identity, Some(id));
 }
 
+/// F12: a named row the app reopened on has no run: it reads
+/// `payment_unknown`, not running. A resume with no grant runs evidence
+/// alone (the name handed back, no lease) and a now-proved identity
+/// registers it.
+#[test]
+fn a_reopened_named_row_is_checked_again_by_a_resume_without_a_grant() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let id = created();
+    let draft = f.insert(shielded_row(Some(id.clone())));
+    let status = f.status(&lib, draft);
+    assert_eq!(
+        (status.waiting, status.running),
+        (Some(RegistrationWait::PaymentUnknown), false)
+    );
+    script(&lib, [(None, Ok(ShieldedOutcome::Registered(id.clone())))]);
+    super::resume(&f, &lib, draft, None);
+    eventually("the evidence registers the row", || {
+        f.row(draft).identity.as_deref() == Some(id.as_str())
+    });
+    let asks = lib.w().shielded_asks.clone();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].identity, Some(id), "evidence, not a create");
+}
+
 /// F12, F13: Platform's fallback: an identity of the seed at the row's
 /// index is the row's, but never the one the create named, which was just
 /// proved absent however the library recorded it; else
