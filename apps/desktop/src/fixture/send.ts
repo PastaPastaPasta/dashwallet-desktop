@@ -173,6 +173,7 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: confirmations > 0,
+    excluded: null,
     ...extra,
   });
   return [
@@ -863,6 +864,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         canAbandon: (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid)) || world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
+        withheldOutputs: wallet(world, walletId).coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven").map((u) => u.outpoint),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
       return extras;
@@ -876,6 +878,16 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
+      // A payment whose coin the engine withholds: its pending coin goes. The coins it spent come
+      // back only once the engine's rescan finds them unspent, which the fixture doesn't run.
+      const withheld = w.coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven");
+      if (withheld.length > 0) {
+        w.coins = w.coins.filter((u) => !withheld.includes(u));
+        const b = w.summary.balances;
+        if (b) w.summary.balances = { ...b, withheld: b.withheld - withheld.reduce((n, u) => n + u.amount, 0) };
+        changed(ctx, w, [txid]);
+        return null;
+      }
       const mine = ctx.world.send.sent[txid];
       if (mine) {
         w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];

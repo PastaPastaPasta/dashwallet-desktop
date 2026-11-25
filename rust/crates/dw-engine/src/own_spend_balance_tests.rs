@@ -116,9 +116,13 @@ fn assert_counted_once(
         "{state}: {b:?}"
     );
     assert_eq!(
-        b.total,
+        b.total + b.withheld,
         kept + change,
         "{state}: kept {kept}, change {change}: {b:?}"
+    );
+    assert!(
+        b.withheld == 0 || b.withheld == change,
+        "{state}: only the change may be withheld: {b:?}"
     );
     assert_eq!(b.immature + b.locked, 0, "{state}: {b:?}");
     assert!(
@@ -126,6 +130,19 @@ fn assert_counted_once(
         "{state}: the coins kept are confirmed: {b:?}"
     );
     b
+}
+
+/// An unmined own payment key-wallet holds no record of (after a restart)
+/// may never confirm: its change is pending, withheld and in no bucket,
+/// beside what `counted` holds once it is mined.
+pub(super) fn assert_change_pending(b: &WalletBalances, counted: u64, state: &str) {
+    assert!(b.withheld > 0, "{state}: the change is pending: {b:?}");
+    assert_eq!(b.total + b.withheld, counted, "{state}: {b:?}");
+}
+
+/// The payment mined or seen again: its change counts, nothing pending.
+pub(super) fn assert_change_counted(b: &WalletBalances, counted: u64, state: &str) {
+    assert_eq!((b.total, b.withheld), (counted, 0), "{state}: {b:?}");
 }
 
 /// #88: before any block, the coins a payment spent are counted in neither
@@ -232,10 +249,10 @@ fn an_own_payment_stored_unmined_counts_each_coin_once_after_a_restart() {
 
     let session = reopen(&engine, session);
     let restarted = assert_counted_once(&engine, &session, id, &before, &tx, "after a restart");
-    assert_eq!(restarted.total, own.total);
+    assert_change_pending(&restarted, own.total, "after a restart");
     mempool(&engine, &session, id, &tx);
     let echoed = assert_counted_once(&engine, &session, id, &before, &tx, "echo after a restart");
-    assert_eq!(echoed.total, own.total);
+    assert_change_counted(&echoed, own.total, "echo after a restart");
 }
 
 /// #88: the wallet pays from coins it was just paid, before the block
@@ -252,7 +269,7 @@ fn a_coin_spent_unmined_is_not_credited_again_by_its_funding_block_after_a_resta
 
     let session = reopen(&engine, session);
     let restarted = assert_counted_once(&engine, &session, id, &before, &tx, "after a restart");
-    assert_eq!(restarted.total, own.total);
+    assert_change_pending(&restarted, own.total, "after a restart");
 
     mined(&engine, &session, id, TIP, vec![paid]);
     let scanned = assert_counted_once(
@@ -263,11 +280,15 @@ fn a_coin_spent_unmined_is_not_credited_again_by_its_funding_block_after_a_resta
         &tx,
         "the funding block scanned after a restart",
     );
-    assert_eq!(scanned.total, own.total);
+    assert_change_pending(
+        &scanned,
+        own.total,
+        "the funding block scanned after a restart",
+    );
 
     mined(&engine, &session, id, TIP + 1, vec![tx.clone()]);
     let b = assert_counted_once(&engine, &session, id, &before, &tx, "mined");
-    assert_eq!(b.total, own.total);
+    assert_change_counted(&b, own.total, "mined");
 }
 
 /// The same within one process: the funding block is scanned after the
@@ -468,7 +489,7 @@ fn a_wallet_opened_later_claims_its_spent_coins_before_its_history_loads() {
     pause.release.notify_one();
     engine.block_on(load).unwrap().unwrap();
     let b = assert_counted_once(&engine, &session, id, &before, &tx, "opened later");
-    assert_eq!(b.total, own.total);
+    assert_change_pending(&b, own.total, "opened later");
 }
 
 /// Two payments in a chain, the second spending the first's change, both
@@ -507,26 +528,20 @@ fn chained_own_payments_count_each_coin_once_after_a_restart() {
         .collect();
     let sent = assert_holds(&engine, &session, id, &want, "both broadcast");
 
+    assert_change_counted(&sent, sent.total, "both broadcast");
+
     let session = reopen(&engine, session);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "after a restart").total,
-        sent.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "after a restart");
+    assert_change_pending(&b, sent.total, "after a restart");
     mined(&engine, &session, id, TIP, vec![paid]);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "funding scanned").total,
-        sent.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "funding scanned");
+    assert_change_pending(&b, sent.total, "funding scanned");
     mined(&engine, &session, id, TIP + 1, vec![first]);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "first mined").total,
-        sent.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "first mined");
+    assert_change_pending(&b, sent.total, "first mined");
     mined(&engine, &session, id, TIP + 2, vec![second]);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "second mined").total,
-        sent.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "second mined");
+    assert_change_counted(&b, sent.total, "second mined");
 }
 
 /// A rescan after a restart replays the funding block while the stored
@@ -549,7 +564,7 @@ fn a_rescan_after_a_restart_does_not_credit_again_a_coin_spent_unmined() {
         .unwrap();
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     let replayed = assert_counted_once(&engine, &session, id, &before, &tx, "funding replayed");
-    assert_eq!(replayed.total, own.total);
+    assert_change_pending(&replayed, own.total, "funding replayed");
 }
 
 /// The funding block scanned in a later process stores the coins the
@@ -570,20 +585,18 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
         .collect();
     assert_eq!(want.len(), COINS - 1);
     let scanned = assert_holds(&engine, &session, id, &want, "funding scanned");
+    let counted = scanned.total + scanned.withheld;
+    assert_change_pending(&scanned, counted, "funding scanned");
 
     let session = reopen(&engine, session);
     let restarted = assert_holds(&engine, &session, id, &want, "a second restart");
-    assert_eq!(restarted.total, scanned.total);
+    assert_change_pending(&restarted, counted, "a second restart");
     mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "mined").total,
-        scanned.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "mined");
+    assert_change_counted(&b, counted, "mined");
     let session = reopen(&engine, session);
-    assert_eq!(
-        assert_holds(&engine, &session, id, &want, "a third restart").total,
-        scanned.total
-    );
+    let b = assert_holds(&engine, &session, id, &want, "a third restart");
+    assert_change_counted(&b, counted, "a third restart");
 }
 
 /// The store holds the coin X a pending payment this app sent spends as
@@ -618,10 +631,10 @@ fn a_store_holding_a_claimed_coin_unspent_loads_it_once() {
 
     let session = reopen(&engine, session);
     let loaded = assert_counted_once(&engine, &session, id, &before, &tx, "loaded");
-    assert_eq!(loaded.total, own.total);
+    assert_change_pending(&loaded, own.total, "loaded");
     let session = reopen(&engine, session);
     let again = assert_counted_once(&engine, &session, id, &before, &tx, "another restart");
-    assert_eq!(again.total, own.total);
+    assert_change_pending(&again, own.total, "another restart");
 
     abandon(&engine, &session, id, tx.txid());
     assert_eq!(synced(&engine, &session, id), FUNDED_AT - 1);
@@ -675,11 +688,11 @@ fn a_wallet_opened_later_drops_a_spent_coin_credited_before_its_claims() {
     pause.release.notify_one();
     engine.block_on(load).unwrap().unwrap();
     let b = assert_counted_once(&engine, &session, id, &before, &tx, "opened later");
-    assert_eq!(b.total, own.total);
+    assert_change_pending(&b, own.total, "opened later");
 
     let session = reopen(&engine, session);
     let b = assert_counted_once(&engine, &session, id, &before, &tx, "after a restart");
-    assert_eq!(b.total, own.total);
+    assert_change_pending(&b, own.total, "after a restart");
 }
 
 /// Abandoning the stored payment after its funding block was scanned in a
@@ -810,7 +823,11 @@ fn a_payment_relayed_after_a_restart_keeps_its_claims_across_the_next() {
         &tx,
         "the funding block scanned a restart after the relay",
     );
-    assert_eq!(b.total, own.total);
+    assert_change_pending(
+        &b,
+        own.total,
+        "the funding block scanned a restart after the relay",
+    );
 }
 
 /// Abandoning a restored payment abandons its restored child, which spent

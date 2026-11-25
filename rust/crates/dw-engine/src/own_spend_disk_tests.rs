@@ -418,7 +418,7 @@ pub(super) fn assert_holds(
     assert_eq!(&got, want, "{state}: {held:?}");
     let b = balances(session, id);
     assert_eq!(
-        b.total,
+        b.total + b.withheld,
         held.iter().map(|(_, v)| v).sum::<u64>(),
         "{state}: {b:?}"
     );
