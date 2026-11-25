@@ -73,17 +73,19 @@ def is_funds(path, rules):
 
 
 def record_lines(body):
-    """Lines outside fenced code blocks (CommonMark: an unclosed fence runs to the end)."""
+    """(in_code, line) for each line; a fence follows CommonMark, an unclosed one runs to the end."""
     fence = None
     for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         m = FENCE.fullmatch(line)
         if fence:
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
                 fence = None
+            yield True, line
         elif m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
             fence = m.group(1)
+            yield True, line
         else:
-            yield line
+            yield False, line
 
 
 def parse_records(comments):
@@ -94,13 +96,14 @@ def parse_records(comments):
         user = c.get("user") or {}
         if c.get("author_association") not in TRUSTED or user.get("type") == "Bot":
             continue
-        for line in record_lines(c.get("body") or ""):
+        for in_code, line in record_lines(c.get("body") or ""):
             m = RECORD.fullmatch(line)
             if not m:
                 continue
             fields = dict(kv.split("=", 1) for kv in m.group(2).split() if "=" in kv)
-            # An indented record counts only as a block: a stray block can only refuse.
-            if m.group(1) and fields.get("verdict") != "block":
+            # A block counts wherever it stands, so a stray one can only refuse; an approve counts only at
+            # the first column outside code.
+            if fields.get("verdict") != "block" and (m.group(1) or in_code):
                 continue
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")

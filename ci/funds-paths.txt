@@ -5,7 +5,7 @@
 # Syntax: one glob per line, relative to the repository root. `*` matches within one path segment,
 # `**` matches across segments, `?` matches one character. A line starting with `!` takes matching
 # files back out. The last line that matches a file decides. `#` starts a comment line.
-# Check a change locally: git diff --name-only origin/main... | ci/github/funds-gate.py match
+# Check a change locally: git diff --no-renames --name-only origin/main... | ci/github/funds-gate.py match
 
 # The gate itself.
 ci/funds-paths.txt

@@ -223,6 +223,14 @@ class Gate(unittest.TestCase):
         self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
         self.assertFalse(self.run_gate([comment(" " + record("funds") + "\n" + record("review"))])[0])
 
+    def test_block_after_a_list_item_fence_counts(self):
+        later = comment("- ```\n  example\n  ```\n\n" + record("funds", verdict="block"), at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
+
+    def test_block_in_code_still_counts(self):
+        later = comment("```\n" + record("funds", verdict="block") + "\n```", at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
+
     def test_inline_record_does_not_count(self):
         self.assertFalse(self.run_gate([comment("see " + record("funds") + "\n" + record("review"))])[0])
 
