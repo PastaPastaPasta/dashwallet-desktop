@@ -154,7 +154,9 @@ fn a_drain_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     let grant = spend_grant(&fx, total(&coins()));
     let refused = drain_with(&fx, &lib, grant.clone());
     assert_eq!(refused.unwrap_err().code(), "platform.unavailable");
-    assert!(fx.unused(&grant), "the refusal keeps the grant");
+    (fx.s.vault)
+        .grant_purpose(&grant, dw_vault::GrantKind::Spend, Some(&fx.wallet.0))
+        .expect("the refusal keeps the grant");
     assert_eq!(
         lib.refreshes.load(Ordering::SeqCst),
         0,
