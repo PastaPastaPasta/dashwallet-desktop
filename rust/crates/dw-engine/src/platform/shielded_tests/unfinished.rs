@@ -1139,20 +1139,18 @@ fn finish_transfers_reports_a_kind_it_could_not_read() {
     assert!(lib.applied.lock().unwrap().is_empty());
 }
 
-/// The library's refusal to record Platform's "already consumed" is the
-/// one smoke02 logged: the session's real persister attests no
-/// `WALLET_RESTORE`.
+/// The session's real persister attests the atomic tracked-lock writes the
+/// library's reconciliation needs, so the library records Platform's
+/// "already consumed" itself. Only a backend without them refuses, with the
+/// error smoke02 logged that the tests below fake. It still attests no
+/// `WALLET_RESTORE`, which reconciliation no longer asks for.
 #[test]
-fn the_real_persister_cannot_record_a_consumed_report() {
+fn the_real_persister_can_record_a_consumed_report() {
     use platform_wallet::changeset::{PersistenceCapabilities, PlatformWalletPersistence};
     let fx = Fixture::new(0);
     let capabilities = fx.s.live().unwrap().store.persistence_capabilities();
+    assert!(capabilities.contains(PersistenceCapabilities::ASSET_LOCK_RECONCILIATION));
     assert!(!capabilities.contains(PersistenceCapabilities::WALLET_RESTORE));
-    assert_eq!(
-        conformance::unrecorded_consumed(&fx.s).to_string(),
-        "Failed to persist state: asset-lock reconciliation requires persistence \
-         capabilities [\"wallet_restore\"] (missing mask 0x80)"
-    );
 }
 
 /// F2: a restored lock, `RecoveredFromChain` with its proof, that Platform

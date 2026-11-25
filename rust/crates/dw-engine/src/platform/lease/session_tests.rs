@@ -3462,9 +3462,11 @@ impl key_wallet::ExtendedPubKeySigner for RemovingSigner {
 
 /// Review P2b r6 R6-01 (Sol's probe `review_r6_teardown_publication_boundary`):
 /// a lock signed while its wallet left the manager never reaches the
-/// engine's tap. The pinned library now refuses it before tracking or
-/// sending it (`WalletRemovedBeforeSend`); earlier pins tracked it into an
-/// empty changeset and still called their broadcaster. Either way the
+/// engine's tap. The pinned library still calls its broadcaster, keeps the
+/// lock's row and reservation when the rejection can't be cleaned up, and
+/// reports the outcome unknown (`TransactionBroadcastUnconfirmed`), which
+/// the engine reads as `BroadcastUnknown`, never a refusal; the fork pin
+/// refused it before sending (`WalletRemovedBeforeSend`). Either way the
 /// boundary every lock passes is the funding signer, which recorded the
 /// call's `funding_release` row before the vault signed anything. So the
 /// step reads `MaybeSent`, never `NotSent`: no producer of a lock, present
@@ -3505,13 +3507,14 @@ fn mode_b_a_lock_signed_for_a_wallet_that_left_leaves_its_step_maybe_sent() {
             }
         }))
         .unwrap();
-    assert!(
-        matches!(
-            &result,
-            Err(platform_wallet::PlatformWalletError::WalletRemovedBeforeSend(_))
-        ),
-        "the pinned library refuses the lock of a wallet that left: {result:?}"
-    );
+    let unconfirmed = match result {
+        Err(e @ platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_)) => e,
+        other => panic!("the pinned library reports a wallet that left unconfirmed: {other:?}"),
+    };
+    assert!(matches!(
+        PlatformError::from(unconfirmed),
+        PlatformError::BroadcastUnknown { .. }
+    ));
     assert!(permit.signatures().released() > 0);
     assert!(
         s.leases.signed_lock_txids(f.wallet, STEP).is_empty(),

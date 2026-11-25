@@ -1140,8 +1140,8 @@ fn every_shipped_dashpay_contract_passes_the_guard() {
     }
     assert_eq!(
         dashpay.into_iter().collect::<Vec<_>>(),
-        [1, 2],
-        "both versions seen"
+        [1, 2, 3],
+        "every version seen"
     );
 }
 

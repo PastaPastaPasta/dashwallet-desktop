@@ -371,6 +371,7 @@ impl NetworkSession {
         {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
+                crate::fsutil::refuse_insecure_root(&dir)?;
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
             .await??;
