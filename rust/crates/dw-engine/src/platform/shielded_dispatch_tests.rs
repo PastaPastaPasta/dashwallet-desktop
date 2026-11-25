@@ -1122,17 +1122,13 @@ fn a_pass_is_held_while_the_hook_is_not_set_and_the_next_open_sets_it() {
 }
 
 /// The library refuses a key set that is not the account's before it
-/// selects, builds, stores or asks the hook anything, on both spends, and
-/// the facade reads that as a refusal with nothing sent.
-#[test]
-#[ignore = "P13c: this platform-wallet has no key set spend entry point, so the engine refuses every spend before it releases a key"]
-fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
-    panic!("needs the P13c key set spend entry points");
-}
-
-#[cfg(any())]
+/// selects, builds, stores or asks the hook anything, on a send and an
+/// unshield to Core or to a Platform address, and the engine reads that as
+/// a refusal with nothing sent.
 #[test]
 fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
+    use platform_wallet::PlatformWalletError;
+    use platform_wallet::wallet::shielded::{CachedOrchardProver, OrchardKeySet};
     let h = Hooked::new();
     h.hold_notes(&[1, 2]);
     // Another wallet's key set (the payee's fixed test seed).
@@ -1150,7 +1146,7 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
                 &coordinator,
                 &other,
                 SHIELDED_ACCOUNT,
-                &payee().to_raw_bytes(),
+                &super::payee().to_raw_bytes(),
                 NOTE / 2,
                 [0; 36],
                 &prover,
@@ -1169,26 +1165,33 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
             )
             .await
             .unwrap_err();
+        let unshield = pw
+            .shielded_unshield_to_with_keyset(
+                &coordinator,
+                &other,
+                SHIELDED_ACCOUNT,
+                &super::platform_text(dpp::address_funds::PlatformAddress::P2pkh([0x51; 20])),
+                NOTE / 2,
+                &prover,
+            )
+            .await
+            .unwrap_err();
         // Nothing reserved, stored or resolved.
         let store = coordinator.store().read().await;
         let id = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
         assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert!(store.pending_redrives(id).unwrap().is_empty());
         assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
-        drop(store);
         assert!(
-            (coordinator.pending_spend_redrives(wallet.0).await)
-                .unwrap()
-                .is_empty()
+            (store.get_activity(id, 0, 10).unwrap()).is_empty(),
+            "no history row"
         );
-        assert!(
-            (coordinator.spend_dispositions(wallet.0).await)
-                .unwrap()
-                .is_empty()
-        );
-        [transfer, withdraw]
+        [transfer, withdraw, unshield]
     });
-    let journal = h.f.session.leases.journal.get().unwrap();
-    assert_eq!(journal.shielded_artifacts(&h.f.wallet.0), Ok(Vec::new()));
+    let artifacts = (h.f.engine)
+        .block_on(h.f.session.leases.shielded_artifacts(h.f.wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
     for refused in refusals {
         assert!(
             matches!(

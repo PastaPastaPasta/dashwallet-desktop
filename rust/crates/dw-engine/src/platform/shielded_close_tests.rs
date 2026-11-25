@@ -1081,9 +1081,8 @@ fn quit_with_a_marked_spend_child() {
 /// amount below the withdrawal minimum, show the confirmed calls got past
 /// it); a shield is not gated.
 #[test]
-#[ignore = "P13c: with no key set spend entry point every spend is platform.unavailable before the DEC-1057 confirmation (a_marked_spend_after_a_relaunch_holds_the_close_and_every_spend_is_unavailable)"]
 fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
-    marked_spend_after_a_relaunch(|confirmed| {
+    marked_spend_after_a_relaunch(true, |confirmed| {
         if confirmed {
             // The quotes' own refusals.
             ("shielded.not_synced", "shielded.below_minimum")
@@ -1093,16 +1092,18 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
     });
 }
 
-/// [`a_marked_spend_needs_a_confirmation_after_a_relaunch`] at this platform
-/// pin: the status names the marker and Close Wallet is refused; a send and
-/// an unshield are `platform.unavailable` (P13c), confirmed or not; a shield
-/// is not gated.
+/// [`a_marked_spend_needs_a_confirmation_after_a_relaunch`] while key set
+/// spends are off: the status names the marker and Close Wallet is refused;
+/// a send and an unshield are `platform.unavailable`, confirmed or not; a
+/// shield is not gated.
 #[test]
 fn a_marked_spend_after_a_relaunch_holds_the_close_and_every_spend_is_unavailable() {
-    marked_spend_after_a_relaunch(|_| ("platform.unavailable", "platform.unavailable"));
+    marked_spend_after_a_relaunch(false, |_| ("platform.unavailable", "platform.unavailable"));
 }
 
-fn marked_spend_after_a_relaunch(want: impl Fn(bool) -> (&'static str, &'static str)) {
+/// The relaunch after [`quit_with_a_marked_spend_child`], with key set
+/// spends `on`, and what a send and an unshield answer, confirmed or not.
+fn marked_spend_after_a_relaunch(on: bool, want: impl Fn(bool) -> (&'static str, &'static str)) {
     let dir = dw_testutil::private_tempdir();
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -1121,6 +1122,7 @@ fn marked_spend_after_a_relaunch(want: impl Fn(bool) -> (&'static str, &'static 
     );
     let engine = engine_at(dir.path());
     let session = open(&engine);
+    pool::force_keyset_spends(&session, on);
     let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
         .parse()
         .unwrap();
