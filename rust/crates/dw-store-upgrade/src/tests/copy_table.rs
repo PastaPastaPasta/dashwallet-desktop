@@ -63,6 +63,7 @@ fn detail(cause: RefusedCause) -> (&'static str, &'static str) {
             "selfCheck",
             "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
         ),
+        Damaged => ("damaged", "[MG placeholder] part of it can't be read."),
         Unexpected => ("unexpected", "it's in a state this version doesn't expect."),
     }
 }
@@ -106,6 +107,10 @@ fn way_out(w: WayOut) -> (&'static str, String) {
             "selfCheck",
             "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.".into(),
         ),
+        WayOut::Damaged => (
+            "damaged",
+            "[MG placeholder] You can set this wallet up again from its recovery phrase. Dash Wallet keeps the data it can't read as it is, in case support needs it. Or choose Report a problem.".into(),
+        ),
     }
 }
 
@@ -124,6 +129,7 @@ fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
         TooNew => [Newer].into(),
         ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
         RefusedCause::SelfCheck => [WayOut::SelfCheck, WayOut::SelfCheckNotMigrated].into(),
+        RefusedCause::Damaged => [WayOut::Damaged].into(),
     }
 }
 
@@ -187,6 +193,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                     (RefusedCause::SelfCheck, Some(false)),
                     "{at}"
                 ),
+                WayOut::Damaged => assert_eq!(cause, RefusedCause::Damaged, "{at}"),
             }
             if allowed(cause).contains(&WayOut::Previous) && state.migrated == Some(false) {
                 assert_eq!(w, WayOut::Previous, "{at}: the earlier version opens it");
@@ -227,6 +234,12 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let mut want = Vec::new();
             if w == WayOut::Restore {
                 want.push(("storeUpgrade.refused.restore", "Restore earlier data"));
+            }
+            if w == WayOut::Damaged {
+                want.push((
+                    "storeUpgrade.refused.recover",
+                    "[MG placeholder] Set up from recovery phrase",
+                ));
             }
             if reports {
                 want.push(("storeUpgrade.refused.report", "Report a problem"));
@@ -326,7 +339,7 @@ fn errors_map_to_their_causes_and_retryable_ones_get_no_screen() {
                 store: "x".into(),
                 detail: "x".into(),
             },
-            Some(Unexpected),
+            Some(Damaged),
         ),
         (
             E::RestoreRefused {
@@ -550,6 +563,13 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::token::PROBE_FOR_OPEN.with(|p| *p.borrow_mut() = None);
         result.err().expect("refused without the probe")
     });
+    let f = fixture("v0.1.0");
+    damage_header(&f, "dispatch.sqlite");
+    let s = shows_unchanged(&f, Damaged, |f| {
+        crate::prepare_with(&f.net, build(), now()).unwrap_err()
+    });
+    assert_eq!(s.unchanged.key, "storeUpgrade.refused.unchanged");
+    seen.insert(Damaged);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
 }
 
@@ -847,12 +867,15 @@ fn every_refusal_variant_has_a_screen() {
     assert_eq!(refusals, 11);
     assert_eq!(
         unexpected,
-        [
-            "SnapshotSourceDamaged",
-            "UpgradeCopyUnwritable",
-            "WalletFileUnsupported"
-        ]
-        .into()
+        ["UpgradeCopyUnwritable", "WalletFileUnsupported"].into()
+    );
+    let damaged = all
+        .iter()
+        .find(|e| variant(e) == "SnapshotSourceDamaged")
+        .unwrap();
+    assert_eq!(
+        screen_for(damaged, ProvedState::default()).map(|s| (s.cause, s.way_out)),
+        Some((RefusedCause::Damaged, WayOut::Damaged))
     );
     for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
         let e = all.iter().find(|e| variant(e) == name).unwrap();
@@ -1056,4 +1079,112 @@ fn disk_in_decode() -> platform_wallet_storage::WalletStorageError {
             std::io::ErrorKind::StorageFull,
         )),
     }
+}
+
+/// Overwrites `name`'s header so SQLite reads it as no database.
+pub(super) fn damage_header(f: &Fixture, name: &str) {
+    let path = f.net.join(name);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[..100].fill(0x5a);
+    std::fs::write(&path, bytes).unwrap();
+}
+
+/// The damaged-store screen, whatever the proved state: Set up from
+/// recovery phrase, Report a problem and Quit, never the earlier version
+/// or a restore, and the recovery button on no other screen.
+pub(super) fn assert_damaged_screen(e: &StoreUpgradeError, state: ProvedState) {
+    let s = screen_for(e, state).unwrap_or_else(|| panic!("no screen for {e:?}"));
+    let at = format!("{e:?} {state:?}");
+    assert_eq!(
+        (s.cause, s.way_out),
+        (RefusedCause::Damaged, WayOut::Damaged),
+        "{at}"
+    );
+    assert_eq!(
+        s.buttons.iter().map(|b| b.key).collect::<Vec<_>>(),
+        [
+            "storeUpgrade.refused.recover",
+            "storeUpgrade.refused.report",
+            "storeUpgrade.refused.quit"
+        ],
+        "{at}"
+    );
+    assert_eq!(
+        s.hint.map(|h| h.key),
+        Some("settings.about.links.issuesHint")
+    );
+    let text = s.text(FOLDER);
+    assert!(!text.contains(L9), "{at}");
+    assert!(
+        !text.contains("version of Dash Wallet you used before"),
+        "{at}"
+    );
+    assert!(!text.contains("Restore earlier data"), "{at}");
+    assert!(text.contains("recovery phrase"), "{at}");
+}
+
+#[test]
+fn a_damaged_store_offers_recovery_and_report_never_the_earlier_version() {
+    let e = StoreUpgradeError::SnapshotSourceDamaged {
+        store: "dispatch.sqlite".into(),
+        detail: "x".into(),
+    };
+    assert!(e.file_unchanged() && e.is_refusal());
+    for state in states() {
+        assert_damaged_screen(&e, state);
+    }
+    for cause in RefusedCause::ALL {
+        for state in states() {
+            let s = RefusedScreen::new(cause, state);
+            let recovers = s
+                .buttons
+                .iter()
+                .any(|b| b.key == "storeUpgrade.refused.recover");
+            assert_eq!(
+                recovers,
+                cause == RefusedCause::Damaged,
+                "{cause:?} {state:?}"
+            );
+            assert_eq!(
+                s.way_out == WayOut::Damaged,
+                cause == RefusedCause::Damaged,
+                "{cause:?} {state:?}"
+            );
+        }
+    }
+}
+
+/// The damaged screen's three strings are the only refusal copy still
+/// waiting for MG.
+#[test]
+fn only_the_damaged_screen_carries_placeholder_copy() {
+    let mut keys = BTreeSet::new();
+    for cause in RefusedCause::ALL {
+        for state in states() {
+            let s = RefusedScreen::new(cause, state);
+            for (key, text) in [s.title, s.intro, s.detail, s.unchanged, s.way_out_line]
+                .into_iter()
+                .map(|l| (l.key, l.text))
+                .chain(s.buttons.iter().map(|b| (b.key, b.label)))
+            {
+                if text.starts_with(crate::copy::PLACEHOLDER) {
+                    keys.insert(key);
+                }
+                assert_eq!(
+                    text.contains(crate::copy::PLACEHOLDER.trim_end()),
+                    text.starts_with(crate::copy::PLACEHOLDER),
+                    "{key}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        keys,
+        [
+            "storeUpgrade.refused.detail.damaged",
+            "storeUpgrade.refused.recover",
+            "storeUpgrade.refused.wayOut.damaged",
+        ]
+        .into()
+    );
 }
