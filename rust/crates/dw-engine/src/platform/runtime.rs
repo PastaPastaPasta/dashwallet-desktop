@@ -18,6 +18,9 @@ use crate::events::SessionHub;
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, PlatformChange, WalletId};
 
+/// The drained notes held in upstream's store, by wallet: `(account, nullifier)`.
+pub(crate) type DrainedHeld = HashMap<[u8; 32], HashSet<(u32, [u8; 32])>>;
+
 /// `dashpay_sync` while a window is visible, and while hidden (§3.2).
 const DASHPAY_VISIBLE: Duration = Duration::from_secs(15);
 const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
@@ -153,7 +156,7 @@ pub(crate) struct PlatformRuntime {
     pub(crate) shielded_drain: std::sync::OnceLock<Result<(), super::ShieldedStoreClosed>>,
     /// The drained notes the engine holds in upstream's store, by wallet:
     /// `(account, nullifier)` ([`super::shielded_pool::sync_drained_holds`]).
-    pub(crate) drained_held: Mutex<HashMap<[u8; 32], HashSet<(u32, [u8; 32])>>>,
+    pub(crate) drained_held: Mutex<DrainedHeld>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
