@@ -1378,13 +1378,16 @@ pub(crate) struct Recheck {
 /// detection's evidence that could not go yet, to recheck with it, and the
 /// wallet's applied ChainLock that recheck's proof read; and whether another
 /// wallet's history was not whole, so the drop waits for it
-/// ([`SessionHub::defer_drops`](crate::events::SessionHub::defer_drops)).
+/// ([`SessionHub::defer_drops`](crate::events::SessionHub::defer_drops));
+/// and whether only key-wallet's processed height moving put off a swept
+/// payment's children.
 #[derive(Debug, Default)]
 pub(crate) struct Rechecked {
     regrouped: bool,
     retry: Vec<Txid>,
     applied: Option<u32>,
     deferred: bool,
+    put_off: bool,
 }
 
 /// A drop [`NetworkSession::drop_dead`] has queued: its roots, their
@@ -2393,6 +2396,16 @@ impl NetworkSession {
             .chain(waited.map(|(_, w)| w))
             .chain(carried)
             .collect();
+        // The chain key-wallet's processed height stood on at the take: a
+        // swept payment's children a move of that height put off go back
+        // to the queue only while it still holds that block (#891).
+        let children_taken = work
+            .iter()
+            .any(|(_, _, links, r)| r.is_none() && !links.is_empty());
+        let anchor = match processed.filter(|_| children_taken) {
+            Some(p) => self.hub.header_hash(p).await,
+            None => None,
+        };
         let mut stored = stored;
         for _ in 0..=DETECTIONS {
             self.queue_dead(manager, wallet, stored.take(), &mut work)
@@ -2409,6 +2422,22 @@ impl NetworkSession {
                 );
                 if let Err(e) = dropped.await {
                     tracing::warn!(%wallet, error = %e, "could not drop transactions that can never confirm")
+                }
+                // Blocks on top of that block leave the winner where it was:
+                // the next drop decides the children again. A fork below
+                // it, or a header not read, leaves them to the next sweep
+                // or orphan pass.
+                if out.put_off {
+                    let now = match processed {
+                        Some(p) if anchor.is_some() => self.hub.header_hash(p).await,
+                        _ => None,
+                    };
+                    if now.is_some() && now == anchor {
+                        let found = (winner, links.clone());
+                        (self.hub).requeue_dead_children(wallet, truncations, roots.clone(), found);
+                    } else {
+                        tracing::warn!(%wallet, ?roots, ?anchor, ?now, "a swept payment's children are not dropped: the chain they were taken on may have changed");
+                    }
                 }
                 // Another wallet's history is not whole: this drop and the
                 // rest wait, with their evidence, for its open to end.
@@ -2701,17 +2730,10 @@ impl NetworkSession {
             let held_again: Vec<Txid> = links.iter().copied().filter(|t| held(t)).collect();
             let moved = processed != Some(core.last_processed_height());
             if truncations != since || moved || !held_again.is_empty() {
-                // Only a block since the take: the children wait until the
-                // hub has heard key-wallet's height, and with it any fork
-                // before it; the next drop then decides them again.
-                let requeued = truncations == since && held_again.is_empty();
-                tracing::warn!(%wallet, ?roots, ?held_again, moved, requeued, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
-                if requeued {
-                    let at = (since, core.last_processed_height());
-                    let found = (winner, links.clone());
-                    self.hub
-                        .requeue_dead_children(wallet, at, roots.to_vec(), found);
-                }
+                // Only key-wallet's height moved: the drop decides once
+                // it has read the chain again (`NetworkSession::drop_dead`).
+                out.put_off = truncations == since && held_again.is_empty();
+                tracing::warn!(%wallet, ?roots, ?held_again, moved, put_off = out.put_off, "a swept payment's children are not dropped: a fork, block or lock since their take may have made them valid");
                 return Ok(BTreeSet::new());
             }
         }

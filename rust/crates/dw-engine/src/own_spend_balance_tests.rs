@@ -3343,6 +3343,18 @@ fn unrelated(n: u8) -> Transaction {
     )
 }
 
+/// Answers the session's header lookups with the blocks of `chain`, by
+/// height: a height it does not name has no header.
+fn headers(session: &NetworkSession, chain: &[(u32, Vec<Transaction>)]) {
+    let chain: std::collections::HashMap<u32, dashcore::BlockHash> = (chain.iter())
+        .map(|(h, txs)| (*h, super::block_with(txs.clone()).block_hash()))
+        .collect();
+    session.hub.attach_headers(Arc::new(move |height| {
+        let hash = chain.get(&height).copied();
+        Box::pin(async move { hash })
+    }));
+}
+
 /// #891: key-wallet sweeps P, and its drop takes C; before the drop takes
 /// the write lock, `change` happens to the chain or to P. C may be valid
 /// then: it stays, and so does its change.
@@ -3361,6 +3373,7 @@ fn swept_child_after_its_take_then(
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    headers(&session, &[(TIP + 1, vec![foreign()])]);
     reconciles_done(&engine, &session);
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
     let pause = Arc::new(crate::coins::TestPause::default());
@@ -3437,7 +3450,9 @@ fn a_swept_payments_child_stays_when_a_fork_after_its_take_leaves_the_payment_un
 /// #891: after the drop took C, key-wallet processes a fork the hub has
 /// not heard of, whose new chain passes the hub's height, while P waits
 /// unmined in its mempool. The hub counts no fork and holds no P, but
-/// key-wallet's processed height moved: C stays.
+/// key-wallet's processed height moved, and the header chain holds
+/// another block at the height C was taken at: C stays, for good, also
+/// once the hub hears the fork.
 #[test]
 fn a_swept_payments_child_stays_when_a_fork_the_hub_has_not_heard_passes_its_height() {
     let lagging: Arc<std::sync::Mutex<Vec<platform_wallet::events::WalletEvent>>> = Arc::default();
@@ -3468,10 +3483,17 @@ fn a_swept_payments_child_stays_when_a_fork_the_hub_has_not_heard_passes_its_hei
                     .unwrap()
                     .extend(std::iter::from_fn(|| rx.try_recv().ok()));
             });
+            headers(
+                session,
+                &[
+                    (TIP + 1, vec![unrelated(9)]),
+                    (TIP + 2, vec![unrelated(10)]),
+                ],
+            );
             assert_eq!(session.hub.truncations(), heard, "the hub heard no fork");
         };
-    // A drop before the hub hears the fork leaves C queued; once the hub
-    // hears it, in order, C's queued drop is void.
+    // Neither a drop before the hub hears the fork nor one after it takes
+    // C again.
     swept_child_after_its_take_then(change, |engine, session, id, kept| {
         use dash_spv::EventHandler;
         reconciled(engine, session, id);
@@ -3534,14 +3556,16 @@ fn a_swept_payments_child_goes_when_nothing_changes_after_its_take() {
     eventually("C goes", || !live_in_history(&session, id, c.txid()));
 }
 
-/// #891: a block without P lands after the drop took C. Key-wallet's
-/// processed height moved, so that drop leaves C; the drop the block's
-/// reconcile runs takes C again and drops it.
+/// #891: a block without P lands after the drop took C, on top of the
+/// block it was taken at. Key-wallet's processed height moved, so that
+/// drop puts C off; the header chain still holds that block, so C goes
+/// back to the queue, and the drop the block's reconcile runs drops it.
 #[test]
 fn a_swept_payments_child_goes_when_a_block_after_its_take_leaves_the_payment_unmined() {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    headers(&session, &[(TIP + 1, vec![foreign()])]);
     reconciles_done(&engine, &session);
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
     let pause = Arc::new(crate::coins::TestPause::default());
@@ -3551,6 +3575,10 @@ fn a_swept_payments_child_goes_when_a_block_after_its_take_leaves_the_payment_un
         pause.reached.load(std::sync::atomic::Ordering::SeqCst)
     });
     let heard = session.hub.truncations();
+    headers(
+        &session,
+        &[(TIP + 1, vec![foreign()]), (TIP + 2, vec![unrelated(11)])],
+    );
     mined(&engine, &session, id, TIP + 2, vec![unrelated(11)]);
     assert_eq!(session.hub.truncations(), heard, "no fork is counted");
     pause.release.notify_one();

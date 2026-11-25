@@ -1338,32 +1338,29 @@ impl SessionHub {
 
     /// The children of swept payments queued for wallet `id`'s drop: each
     /// set with the truncations applied when it was queued, its winner and
-    /// the swept payments. A set queued again waits until the hub has heard
-    /// the height that voided its drop (#891): by then it has applied any
-    /// fork key-wallet processed before that height.
+    /// the swept payments.
     pub(crate) fn take_dead_children(
         &self,
         id: WalletId,
     ) -> Vec<(u64, Vec<Txid>, crate::history::Winner, BTreeSet<Txid>)> {
-        let heard = self.wallet_state(&id).map_or(0, |s| s.processed_height);
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *queued)
             .into_iter()
-            .partition(|(w, .., after)| *w == id && *after <= heard);
+            .partition(|(w, ..)| *w == id);
         *queued = others;
         (mine.into_iter())
-            .map(|(_, t, children, winner, swept, _)| (t, children, winner, swept))
+            .map(|(_, t, children, winner, swept)| (t, children, winner, swept))
             .collect()
     }
 
-    /// Queues again the children of a swept payment whose drop only
-    /// key-wallet's processed height voided, with their truncation stamp
-    /// (#891): the first drop after the hub hears `height` takes them, and
-    /// a fork counted meanwhile still voids them. None outlives an unload.
+    /// Queues again the children of a swept payment whose drop blocks on
+    /// top of the chain it was taken on put off, with their truncation
+    /// stamp (#891): the next drop takes them, and a fork counted meanwhile
+    /// voids them. None outlives an unload.
     pub(crate) fn requeue_dead_children(
         &self,
         id: WalletId,
-        (truncations, height): (u64, u32),
+        truncations: u64,
         children: Vec<Txid>,
         (winner, swept): (crate::history::Winner, BTreeSet<Txid>),
     ) {
@@ -1372,7 +1369,7 @@ impl SessionHub {
             return;
         }
         let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
-        queued.push((id, truncations, children, winner, swept, height));
+        queued.push((id, truncations, children, winner, swept));
     }
 
     /// Keeps `work`, drops of wallet `id` that wait for another wallet's
@@ -2364,7 +2361,6 @@ impl SessionHub {
                         children.into_iter().collect(),
                         winner,
                         txids.iter().copied().collect(),
-                        0,
                     ));
                 }
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
@@ -2550,16 +2546,14 @@ pub(crate) type CarriedDrop = (
 pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
 
 /// Children of swept payments queued for a drop: their wallet, the
-/// truncations applied when they were queued, their txids, the winner, the
-/// swept payments, and the processed height the hub must have heard before
-/// a drop takes them.
+/// truncations applied when they were queued, their txids, the winner, and
+/// the swept payments.
 type DeadChildren = (
     WalletId,
     u64,
     Vec<Txid>,
     crate::history::Winner,
     BTreeSet<Txid>,
-    u32,
 );
 
 /// The transactions a wallet event names.
