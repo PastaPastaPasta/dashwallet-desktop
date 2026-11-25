@@ -25,38 +25,38 @@ publish = false
 # `shielded`: the Orchard pool (halo2, orchard, the commitment tree), on since
 # 0.1 ships shielded funds (RELEASE-PLAN §1; cost in docs/research/shielded-cost.md).
 # It turns on `dash-sdk/shielded` and `dpp/shielded-client` too.
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", features = ["bls", "eddsa", "shielded"] }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", features = ["bls", "eddsa", "shielded"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03),
 # `shielded` = the persister's shielded tables.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", default-features = false, features = ["sqlite", "secrets", "shielded"] }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", default-features = false, features = ["sqlite", "secrets", "shielded"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
 # but its manifest does not enable the feature (the platform workspace gets it by
 # feature unification).
-dpp = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", features = ["ed25519-dalek"] }
-dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+dpp = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", features = ["ed25519-dalek"] }
+dash-context-provider = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c" }
 # Drive's document cost estimator (`drive::drive::document::cost`, the one
 # wasm-sdk exposes), for the credits cost table (DP1-06). `verify` is the
 # feature dash-sdk already builds it with.
-drive = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", default-features = false, features = ["verify"] }
+drive = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", default-features = false, features = ["verify"] }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it;
 # `dashpay-contract`: the DashPay contract that a broadcast contactRequest's
 # proof is verified against (DP2-02).
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca", features = ["dpns-contract", "dashpay-contract"] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c", features = ["dpns-contract", "dashpay-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
-platform-encryption = { git = "https://github.com/dashpay/platform", rev = "9d9e6dbcbb64896de3e20ce940e6e7cfbc39c7ca" }
+platform-encryption = { git = "https://github.com/dashpay/platform", rev = "3ab0f0f54c48a5c5fb4c9f58bc2fe06e1364212c" }
 
 # ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
 # dashpay/rust-dashcore: the revision the platform pin above names.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
-key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
-key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
-dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
-dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548" }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+key-wallet = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+key-wallet-manager = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+dash-spv = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
+dashcore-rpc = { git = "https://github.com/dashpay/rust-dashcore", rev = "4b057d301867334c8d12393575350e1dc138fa34" }
 # ---- dashpay/base-sdk: EXACTLY the version that rust-dashcore pins ----
 dash-pkc = { version = "0.3.0-beta", default-features = false }
 
@@ -73,6 +73,7 @@ dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
 dw-protx = { path = "crates/dw-protx" }
 dw-psbt = { path = "crates/dw-psbt" }
+dw-shielded-drain = { path = "crates/dw-shielded-drain" }
 dw-store-upgrade = { path = "crates/dw-store-upgrade" }
 dw-testutil = { path = "crates/dw-testutil" }
 dw-units = { path = "crates/dw-units" }

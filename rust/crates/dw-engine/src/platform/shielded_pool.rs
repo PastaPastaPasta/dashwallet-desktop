@@ -15,11 +15,13 @@
 //! - **The gate.** Every call but the status reads the network's protocol
 //!   version (the SDK's, refreshed by one proved read only while it is
 //!   below [`SHIELDED_ACTIVATION_VERSION`]) and refuses below it.
-//! - **Spends.** At this platform pin the library has no key set entry
-//!   point (P13c), so every spend is `platform.unavailable` before anything
-//!   else ([`unhooked`]); the rest of this item is the spend once it has
-//!   one. A shielded send (`shielded_transfer_to_with_keyset`) and
-//!   an unshield (`shielded_withdraw_to_with_keyset`, Core fee rate 1) run
+//! - **Spends.** While the library's key set spends are off
+//!   ([`ShieldedLib::keyset_spends`]) every spend is `platform.unavailable`
+//!   before anything else ([`unhooked`]); the rest of this item is the
+//!   spend once they are on. A shielded send
+//!   (`shielded_transfer_to_with_keyset`), an unshield to Core
+//!   (`shielded_withdraw_to_with_keyset`, Core fee rate 1) and an unshield
+//!   to a Platform address (`shielded_unshield_to_with_keyset`) run
 //!   one at a time per wallet under the wallet's shielded lock, charged
 //!   their quote (credits plus Platform's fee for the notes they take) from
 //!   the lease's Credits budget; the key set's release counts as the
@@ -115,7 +117,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
@@ -135,7 +137,9 @@ use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundin
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
-use platform_wallet::manager::shielded_sync::WalletShieldedOutcome;
+use platform_wallet::manager::shielded_sync::{
+    HostHeightlessSpend, ShieldedPassEvidence, WalletShieldedOutcome,
+};
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
 use platform_wallet::wallet::shielded::store::StalePendingSpend;
@@ -150,7 +154,7 @@ use sha2::{Digest, Sha256};
 
 use super::core_max::{self, CoreCoins, MaxPlan};
 use super::credits::FundAmount;
-use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
+use super::errors::{PlatformError, ShieldedError, ShieldedStoreClosed, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
 use super::payments::PaymentSource;
@@ -180,10 +184,6 @@ pub(super) const MEMO_BYTES: usize = 36;
 /// spend to two), which the library's selection and fee assume.
 pub(crate) const MIN_ACTIONS: usize = 2;
 /// The Core fee rate an unshield asks for, Platform's minimum.
-#[allow(
-    dead_code,
-    reason = "no key set spend entry point at this platform pin (P13c)"
-)]
 const CORE_FEE_PER_BYTE: u32 =
     dpp::state_transition::identity_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
 /// How long `resume_shield` waits for a lock's proof.
@@ -306,8 +306,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
-    /// Whether the library spends from the key set a lease releases. At
-    /// this platform pin it does not: its public spends take the seed.
+    /// Whether spends run through the library's key set entry points with
+    /// the key set a lease releases: off until a funds review of the key
+    /// set path at the shipped head, and off on mainnet until a mainnet
+    /// funds ruling. While false every spend is
+    /// `platform.unavailable` before anything else ([`unhooked`]).
     fn keyset_spends(&self) -> bool;
     /// The account's spends whose notes the library holds with no record to
     /// re-send and no proof of either outcome, each by its activity id.
@@ -1189,9 +1192,15 @@ pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
         // Retryable: the next sync moves the tree onto a recorded anchor
         // (operations.rs:2736, "wait for the next shielded sync").
         PlatformWalletError::ShieldedNoRecordedAnchor(_) => ShieldedError::not_synced(Wait::Tree),
-        // Refused before anything was sent: by the dispatch hook, or with no
-        // key set entry point to spend through ([`no_keyset_spend`]).
+        // Refused by the dispatch hook before anything was sent.
         PlatformWalletError::ShieldedDispatchRefused { .. } => ShieldedError::SpendRefused,
+        // Refused before anything is read: the key set the seed derives is
+        // not the bound account's, so the store and the vault disagree,
+        // which no user action causes.
+        PlatformWalletError::ShieldedKeysetMismatch { account } => {
+            tracing::error!(account, "the spend's key set is not the bound account's");
+            ShieldedError::SpendRefused
+        }
         PlatformWalletError::ShieldedBroadcastFailed(ref text) => match pool_notes(text) {
             Some((notes, required)) => ShieldedError::PoolTooSmall { notes, required },
             None => PlatformError::from(e).into(),
@@ -2332,6 +2341,18 @@ pub(crate) struct PwShielded {
 }
 
 impl PwShielded {
+    /// [`sync_drained_holds`] for this wallet, once its account is bound:
+    /// every read of its notes binds first, so a held note is held before
+    /// any is read. A sync that fails fails the bind, so nothing reads or
+    /// spends the account until its holds are in place.
+    async fn hold_drained(&self) -> Result<(), PlatformError> {
+        let wallets = [self.pw.wallet_id.0];
+        (sync_drained_holds(&self.pw.session, &self.coordinator, &wallets).await).map_err(|e| {
+            tracing::warn!(wallet_id = %self.pw.wallet_id, error = %e, "the account stays unbound");
+            PlatformError::Unavailable
+        })
+    }
+
     /// Runs `f` on the session's `app.sqlite` off the async threads.
     async fn on_appdb<T: Send + 'static>(
         &self,
@@ -2394,6 +2415,7 @@ pub(crate) async fn coordinator(
     manager: &Manager,
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<Arc<NetworkShieldedCoordinator>, PlatformError> {
+    drain_verdict(session).map_err(|_| PlatformError::Unavailable)?;
     if let Some(coordinator) = manager.shielded_coordinator().await {
         if !hooked(session, &coordinator) {
             // Not under a pass, as the configuration below.
@@ -2447,10 +2469,228 @@ pub(crate) async fn coordinator(
     // Still under the pass lock: no pass starts between the store's open
     // and the hook.
     set_dispatch(session, &coordinator)?;
+    want_drained_evidence(session, &coordinator).await;
     for wallet in manager.list_wallet_ids_blocking() {
+        keep_import_rows(session, &coordinator, WalletId(wallet)).await;
         settle_outcomes(session, &coordinator, WalletId(wallet)).await;
     }
     Ok(coordinator)
+}
+
+/// Whether upstream's shielded store may open this session (Q110 110-2):
+/// only once this start's drain left no fork rows in it. Before the
+/// session's journal open ran the drain, and after it refused, the store
+/// stays closed.
+pub(crate) fn drain_verdict(session: &NetworkSession) -> Result<(), ShieldedStoreClosed> {
+    match session.platform.shielded_drain.get() {
+        Some(verdict) => *verdict,
+        None => Err(ShieldedStoreClosed::Failed),
+    }
+}
+
+/// The reservation the engine holds a drained note under in upstream's
+/// store: no spend attempt of the library takes it (its ids count up from
+/// 1).
+pub(crate) const ENGINE_HOLD: u64 = u64::MAX;
+
+/// Holds each note of `wallets` that a drained fork disposition holds
+/// (DRAIN rev 4, "The hold rule after the switch") as a reservation of
+/// upstream's store, so no spend selects it and the spendable balance
+/// leaves it out, and lifts the engine's hold of each the journal no longer
+/// holds (its note read spent). A note upstream already holds keeps that
+/// hold. A wallet whose holds cannot be read keeps the engine's holds as
+/// they are, and the sync answers the first failure; a wallet with no
+/// holds takes no lock. Safe beside a spend: a hold never takes a note a
+/// spend reserved, and a lift frees only a note the journal reads spent.
+pub(crate) async fn sync_drained_holds(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    wallets: &[[u8; 32]],
+) -> Result<(), String> {
+    let mut failed = None;
+    for &wallet in wallets {
+        let want: HashSet<(u32, [u8; 32])> = match session
+            .leases
+            .shielded_drained_holds(WalletId(wallet))
+            .await
+        {
+            Ok(holds) => holds.into_iter().collect(),
+            Err(e) => {
+                failed = Some(format!("the drained shielded holds were not read: {e}"));
+                continue;
+            }
+        };
+        let unheld = |session: &NetworkSession| {
+            (session.platform.drained_held.lock())
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&wallet)
+                .is_none_or(HashSet::is_empty)
+        };
+        if want.is_empty() && unheld(session) {
+            continue;
+        }
+        let mut store = coordinator.store().write().await;
+        let mut held =
+            (session.platform.drained_held.lock()).unwrap_or_else(PoisonError::into_inner);
+        let held = held.entry(wallet).or_default();
+        let lifted: Vec<(u32, [u8; 32])> = held.difference(&want).copied().collect();
+        for (account, nullifier) in lifted {
+            let subwallet = SubwalletId::new(wallet, account);
+            match store.clear_pending_reserved_by(subwallet, &nullifier, ENGINE_HOLD) {
+                Ok(_) => {
+                    held.remove(&(account, nullifier));
+                }
+                Err(e) => tracing::warn!(
+                    wallet_id = %WalletId(wallet),
+                    error = %e,
+                    "a drained shielded hold was not lifted"
+                ),
+            }
+        }
+        for &(account, nullifier) in &want {
+            let subwallet = SubwalletId::new(wallet, account);
+            match store.mark_pending_by(subwallet, &nullifier, ENGINE_HOLD) {
+                Ok(true) => {
+                    held.insert((account, nullifier));
+                }
+                Ok(false) => {}
+                Err(e) => failed = Some(format!("a drained shielded note was not held: {e}")),
+            }
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
+/// The drained spends a completed pass may prove can never execute (Q110
+/// 110-3): the journal's unresolved and unreadable drained spends with one
+/// anchor, which no note of theirs it reads spent flags. Only the drain
+/// writes them, before upstream's store first opens, so none is a spend of
+/// this build (E2). An unreadable journal offers none.
+pub(crate) async fn drained_release_candidates(
+    session: &NetworkSession,
+) -> Vec<dw_appdb::dispatch::DrainedReleaseCandidate> {
+    match session.leases.shielded_drained_release_candidates().await {
+        Ok(candidates) => (candidates.into_iter())
+            .filter(|c| !c.flagged && c.anchor.is_some())
+            .collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "the drained shielded spends were not read");
+            Vec::new()
+        }
+    }
+}
+
+/// Asks every pass for its anchor evidence while a drained spend may be
+/// released, and stops asking once none may (Q110 110-3, E4): at the
+/// store's open, and before each pass ([`prepare_drained_pass`]). An
+/// unreadable journal keeps it asked: evidence costs one query per pass,
+/// and without it every drained spend stays held.
+async fn want_drained_evidence(session: &NetworkSession, coordinator: &NetworkShieldedCoordinator) {
+    let wanted = match session.leases.shielded_drained_release_candidates().await {
+        Ok(candidates) => candidates.iter().any(|c| !c.flagged && c.anchor.is_some()),
+        Err(_) => true,
+    };
+    coordinator.set_pass_evidence_wanted(wanted);
+    #[cfg(test)]
+    (session.platform.evidence_wanted).store(wanted, Ordering::SeqCst);
+}
+
+/// Before a pass: asks it for its evidence ([`want_drained_evidence`]),
+/// and feeds it the drained spends whose anchor no completed pass recorded
+/// a height for (Q110 110-3, E2, P17b H1), each spend whole, by the
+/// account that held its notes. The pass bounds their anchors from the
+/// store's own notes and tree, and judges only what it was fed.
+async fn prepare_drained_pass(session: &NetworkSession, coordinator: &NetworkShieldedCoordinator) {
+    want_drained_evidence(session, coordinator).await;
+    let spends = drained_release_candidates(session)
+        .await
+        .into_iter()
+        .filter(|c| c.recorded_at.is_none())
+        .filter_map(|c| {
+            Some(HostHeightlessSpend {
+                subwallet: SubwalletId::new(c.wallet, c.account),
+                anchor: c.anchor?,
+                nullifiers: c.nullifiers,
+            })
+        })
+        .collect();
+    coordinator.set_host_heightless_spends(spends);
+}
+
+/// Releases each drained spend the completed pass behind `evidence` proves
+/// can never execute (Q110 110-3), then lifts its holds. The caller holds
+/// `shielded_passes` to write, so the reading below is taken under that
+/// pass or none, and the library judges it (E3):
+/// - an anchor the pass's set still records keeps its height, durably,
+///   the first one kept standing (E1), and the spend stays held;
+/// - with a kept height, `proves_spend_cannot_execute` judges it; without
+///   one, `proves_heightless_spend_cannot_execute`, on what this pass was
+///   fed;
+/// - a proven spend is released in the journal, which first checks it
+///   flags none of its notes, and only then are its holds lifted.
+///
+/// Every nullifier must read `Unspent`: an unknown one holds.
+async fn release_drained_spends(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    evidence: &ShieldedPassEvidence,
+) -> Result<(), String> {
+    let (pass, _, _) = evidence.heights();
+    if coordinator.last_completed_pass() != Some(pass) {
+        return Ok(());
+    }
+    let candidates = drained_release_candidates(session).await;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let nullifiers: Vec<[u8; 32]> = (candidates.iter())
+        .flat_map(|c| c.nullifiers.iter().copied())
+        .collect();
+    let reading = coordinator.read_held_nullifiers(&nullifiers).await;
+    let mut released = BTreeSet::new();
+    let mut failed = None;
+    for c in &candidates {
+        let Some(anchor) = c.anchor else { continue };
+        let wallet = WalletId(c.wallet);
+        if let Some(height) = evidence.anchor_recorded_at(&anchor) {
+            if c.recorded_at.is_none()
+                && let Err(e) = (session.leases)
+                    .record_drained_anchor_height(wallet, c.st_hash, height)
+                    .await
+            {
+                failed = Some(e);
+            }
+            continue;
+        }
+        let proven = match c.recorded_at {
+            Some(height) => {
+                evidence.proves_spend_cannot_execute(&reading, &anchor, height, &c.nullifiers)
+            }
+            None => {
+                evidence.proves_heightless_spend_cannot_execute(&reading, &anchor, &c.nullifiers)
+            }
+        };
+        if !proven {
+            continue;
+        }
+        match (session.leases)
+            .release_drained_spend(wallet, c.st_hash, pass.get())
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(wallet_id = %wallet, pass = pass.get(),
+                    "a drained shielded spend was proven never to execute; its notes are free");
+                released.insert(c.wallet);
+            }
+            Ok(false) => {}
+            Err(e) => failed = Some(e),
+        }
+    }
+    if !released.is_empty() {
+        let wallets: Vec<[u8; 32]> = released.into_iter().collect();
+        sync_drained_holds(session, coordinator, &wallets).await?;
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Whether the engine set its dispatch hook on `coordinator`: the library
@@ -2520,6 +2760,7 @@ fn refused(reason: impl Into<String>) -> DispatchRefused {
 pub(crate) struct HookFence {
     closing: AtomicBool,
     draining: AtomicUsize,
+    drains: AtomicU64,
 }
 
 impl HookFence {
@@ -2535,6 +2776,11 @@ impl HookFence {
         } else {
             None
         }
+    }
+
+    /// How many drains of the shielded passes have begun.
+    pub(crate) fn drains(&self) -> u64 {
+        self.drains.load(Ordering::SeqCst)
     }
 }
 
@@ -2662,6 +2908,17 @@ impl ShieldedDispatch for EngineDispatch {
         if !selected.iter().all(|n| notes.contains(n)) {
             return Err(refused("the spend takes a note the account does not hold"));
         }
+        // A note a drained fork disposition holds may still be spent by the
+        // fork's transition: never selected, whatever the store's holds say.
+        let drained = (session.leases)
+            .shielded_drained_holds(WalletId(payload.wallet_id))
+            .await
+            .map_err(|e| refused(format!("the drained holds could not be read: {e}")))?;
+        if (drained.iter()).any(|(a, n)| *a == payload.account_index && selected.contains(n)) {
+            return Err(refused(
+                "the spend takes a note a drained fork disposition holds",
+            ));
+        }
         let stored =
             stored.ok_or_else(|| refused("the library stored no spend for the activity"))?;
         let reserved: BTreeSet<[u8; 32]> = stored.nullifiers.iter().copied().collect();
@@ -2763,8 +3020,9 @@ impl ShieldedDispatch for EngineDispatch {
     /// settled nor archived; the wallet holds its background lease; the
     /// session is open; a contact payout's dispatch is recorded beside its
     /// row, as `dispatch` records it before the first send; an unshield's
-    /// pending `FromShielded` record is armed. An artifact or a record that
-    /// is missing or cannot be read is refused.
+    /// pending `FromShielded` record is armed; its history row, when there
+    /// is one, does not read confirmed. An artifact or a record that is
+    /// missing, or a row that cannot be read, is refused.
     async fn admit(
         &self,
         wallet_id: [u8; 32],
@@ -2772,8 +3030,8 @@ impl ShieldedDispatch for EngineDispatch {
         activity_id: [u8; 32],
         st_hash: [u8; 32],
     ) -> Result<(), DispatchRefused> {
-        let (session, _) = self.open()?;
-        Self::account(wallet_id, account_index)?;
+        let (session, coordinator) = self.open()?;
+        let subwallet = Self::account(wallet_id, account_index)?;
         if (self.refused.lock())
             .unwrap_or_else(PoisonError::into_inner)
             .contains(&st_hash)
@@ -2797,6 +3055,21 @@ impl ShieldedDispatch for EngineDispatch {
             );
         if !accepted {
             return Err(refused("the spend's artifact does not allow a send"));
+        }
+        // A confirmed row is done, also before a pass reads it into the
+        // journal (its mark-spent failed and its record is kept).
+        let row = (coordinator.store().read().await)
+            .get_activity_by_entry_id(subwallet, &activity_id)
+            .map_err(|e| refused(format!("the spend's history row could not be read: {e}")))?;
+        if row.is_some_and(|e| e.status == Status::Confirmed) {
+            return Err(refused("the spend's history row reads confirmed"));
+        }
+        // A drained fork disposition's transition is held, never re-sent
+        // (DRAIN rev 4, "admit after the drain").
+        let drained = (session.leases.shielded_drain_names(wallet, st_hash).await)
+            .map_err(|e| refused(format!("the drained holds could not be read: {e}")))?;
+        if drained {
+            return Err(refused("a drained fork disposition names the spend"));
         }
         (session.payout_dispatch_recorded(wallet, st_hash).await).map_err(refused)?;
         // An unshield's record, written before its artifact, is armed before
@@ -2876,6 +3149,7 @@ where
         session
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
+        drain_verdict(&session).map_err(|reason| ShieldedError::StoreClosed { reason })?;
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
     })
@@ -2883,14 +3157,11 @@ where
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
 
-/// The library's refusal of a shielded spend at this platform pin, never
-/// reached: [`unhooked`] refuses every spend first. The library spends from
-/// a key set only through its crate-internal paths, and its public spends
-/// take the seed, which the vault never hands out.
-fn no_keyset_spend() -> SpendError {
-    SpendError::Library(Box::new(PlatformWalletError::ShieldedDispatchRefused {
-        reason: "this platform-wallet has no key set spend entry point".into(),
-    }))
+/// Tests: makes [`PwShielded::keyset_spends`] answer `on` in `session`,
+/// whatever this build answers.
+#[cfg(test)]
+pub(crate) fn force_keyset_spends(session: &NetworkSession, on: bool) {
+    *(session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner) = Some(on);
 }
 
 /// The activities whose notes the library holds for a spend it keeps no
@@ -2932,6 +3203,7 @@ impl ShieldedLib for PwShielded {
         let wallet = &self.pw.wallet;
         let accounts = [SHIELDED_ACCOUNT];
         if wallet.is_shielded_bound().await {
+            self.hold_drained().await?;
             return Ok(true);
         }
         // A bind adds the wallet to the coordinator's passes: never while
@@ -2944,6 +3216,7 @@ impl ShieldedLib for PwShielded {
             return Ok(false);
         };
         if (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await? {
+            self.hold_drained().await?;
             return Ok(true);
         }
         // First bind: the vault's viewing key, persisted before it is bound
@@ -2976,7 +3249,11 @@ impl ShieldedLib for PwShielded {
         .await
         .map_err(store_error)?
         .map_err(store_error)?;
-        Ok((wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await?)
+        let bound = (wallet.bind_shielded_from_persisted(&accounts, &self.coordinator)).await?;
+        if bound {
+            self.hold_drained().await?;
+        }
+        Ok(bound)
     }
 
     async fn address(&self) -> Option<[u8; 43]> {
@@ -3042,23 +3319,50 @@ impl ShieldedLib for PwShielded {
         CachedOrchardProver::new().is_ready()
     }
 
+    /// The account's key set is derived in the vault from the wallet's seed
+    /// for this one call (`OrchardKeySet::from_seed`), lent to the library,
+    /// and dropped when the call returns; so for every spend.
     async fn transfer(
         &self,
-        _permit: &CallPermit,
-        _to: &OrchardAddress,
-        _credits: u64,
-        _memo: [u8; MEMO_BYTES],
+        permit: &CallPermit,
+        to: &OrchardAddress,
+        credits: u64,
+        memo: [u8; MEMO_BYTES],
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_transfer_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_raw_bytes(),
+                credits,
+                memo,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn withdraw(
         &self,
-        _permit: &CallPermit,
-        _to: &Address,
-        _credits: u64,
+        permit: &CallPermit,
+        to: &Address,
+        credits: u64,
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_withdraw_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_string(),
+                credits,
+                CORE_FEE_PER_BYTE,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
@@ -3071,11 +3375,22 @@ impl ShieldedLib for PwShielded {
 
     async fn unshield(
         &self,
-        _permit: &CallPermit,
-        _to: &PlatformAddress,
-        _credits: u64,
+        permit: &CallPermit,
+        to: &PlatformAddress,
+        credits: u64,
     ) -> Result<(), SpendError> {
-        Err(no_keyset_spend())
+        let keys = permit.shielded_keys()?;
+        (self.pw.wallet)
+            .shielded_unshield_to_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                &to.to_bech32m_string(self.network()),
+                credits,
+                &CachedOrchardProver::new(),
+            )
+            .await
+            .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
@@ -3152,6 +3467,12 @@ impl ShieldedLib for PwShielded {
     }
 
     fn keyset_spends(&self) -> bool {
+        #[cfg(test)]
+        if let Some(on) =
+            *(self.pw.session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner)
+        {
+            return on;
+        }
         false
     }
 
@@ -3579,18 +3900,8 @@ async fn pass_wallets(
 }
 
 /// Reads the outcomes the library reports for `wallet`'s spends into the
-/// dispatch journal by transition hash. The library keeps no outcome of its
-/// own: it reports one on the spend's history row, which the engine reads
-/// for each artifact still open (registered, or unresolved and recorded):
-/// - `Confirmed` (the scan found its notes spent): settled `executed`;
-/// - `Failed` (refused before delivery, the hook's refusal included, or
-///   released by the prune once its anchor is proven pruned, so it can never
-///   execute), with no record or reserved note of it left: settled
-///   `not_executed`;
-/// - `Pending`, no row, or a row that cannot be read: it waits.
-///
-/// Nothing while the journal is not open, or while the artifacts cannot be
-/// read.
+/// dispatch journal by transition hash ([`spend_outcome`]). Nothing while
+/// the journal is not open, or while the artifacts cannot be read.
 pub(crate) async fn settle_outcomes(
     session: &NetworkSession,
     coordinator: &NetworkShieldedCoordinator,
@@ -3611,23 +3922,16 @@ pub(crate) async fn settle_outcomes(
         let Some(st_hash) = artifact.st_hash else {
             continue;
         };
-        let (row, held) = {
+        let outcome = if imported(&artifact) {
+            let mut store = coordinator.store().write().await;
+            spend_outcome(&mut *store, subwallet, &artifact)
+        } else {
             let store = coordinator.store().read().await;
-            (
-                store.get_activity_by_entry_id(subwallet, &artifact.activity),
-                holds_activity(&*store, subwallet, &artifact.activity),
-            )
+            read_outcome(&*store, subwallet, &artifact)
         };
-        let (status, disposition) = match row {
-            Ok(Some(entry)) if entry.status == Status::Confirmed => {
-                (ArtifactStatus::Executed, Some(("executed", None)))
-            }
-            // The row does not say which way the spend failed. Not while the
-            // library still holds a record or a note of it.
-            Ok(Some(entry)) if entry.status == Status::Failed && matches!(held, Ok(false)) => {
-                (ArtifactStatus::NotExecuted, None)
-            }
-            Ok(_) => continue,
+        let (status, disposition) = match outcome {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => continue,
             Err(e) => {
                 tracing::warn!(wallet_id = %wallet, error = %e, "a shielded spend's history row could not be read");
                 continue;
@@ -3647,6 +3951,342 @@ pub(crate) async fn settle_outcomes(
     }
 }
 
+/// A spend's settlement in the journal: its status and disposition strings.
+pub(super) type SpendOutcome = (ArtifactStatus, Option<(&'static str, Option<&'static str>)>);
+
+/// The library's outcome of the spend of open `artifact`, as its history
+/// row reports it (upstream keeps no disposition of its own):
+/// - `Confirmed` (the scan found its notes spent): `executed`;
+/// - `Failed` (refused before delivery, the hook's refusal included, or
+///   released by the prune once its anchor is proven pruned, so it can never
+///   execute), with no record or reserved note of it left: `not_executed`;
+/// - `Pending`, `Unknown`, no row, or a row that cannot be read: `None`, it
+///   waits.
+///
+/// A spend the 0.1 build stored reports on the pending row
+/// [`keep_import_row`] saved, which the release fails as any other. The
+/// scan's drop of its record on its notes' spends confirms no row, so once
+/// the library holds nothing of it that row is read here, the first time
+/// only: confirmed (no height: none is known) when the store reads every
+/// note it took spent, or else `Unknown`: its notes are free, and a later
+/// payment that spends them proves nothing of this one. An `Unknown` row
+/// settles the artifact [`FREED_UNKNOWN`], again at each pass until the
+/// journal holds it, and the artifact reads nothing after
+/// ([`freed_unknown`]), a restart's returning record included. Once failed
+/// it stays failed, whatever its notes read later.
+pub(super) fn spend_outcome<S: ShieldedStore>(
+    store: &mut S,
+    subwallet: SubwalletId,
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+) -> Result<Option<SpendOutcome>, S::Error> {
+    if freed_unknown(artifact) {
+        return Ok(None);
+    }
+    let held = holds_activity(&*store, subwallet, &artifact.activity);
+    let row = match store.get_activity_by_entry_id(subwallet, &artifact.activity)? {
+        Some(entry)
+            if imported(artifact)
+                && entry.status == Status::Pending
+                && matches!(held, Ok(false)) =>
+        {
+            let status = if all_spent(&*store, subwallet, &entry.spent_nullifiers)? {
+                Status::Confirmed
+            } else {
+                Status::Unknown
+            };
+            let read = ShieldedActivityEntry { status, ..entry };
+            store.save_activity(subwallet, &read)?;
+            Some(read)
+        }
+        row => row,
+    };
+    if imported(artifact) && row.as_ref().is_some_and(|e| e.status == Status::Unknown) {
+        return Ok(Some(FREED_UNKNOWN));
+    }
+    Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// The journal's settlement of an imported spend whose notes came free with
+/// nothing proving its outcome ([`spend_outcome`]): still unresolved, under
+/// the library's `Unattributable` disposition strings. It stays open and is
+/// never settled after: never read executed or not executed, nor re-sent.
+const FREED_UNKNOWN: SpendOutcome = (
+    ArtifactStatus::Unresolved { unrecorded: false },
+    Some(("unresolved", Some("unattributable"))),
+);
+
+/// Whether open imported `artifact` carries a disposition: [`FREED_UNKNOWN`],
+/// or an unresolved one the 0.1 build wrote (its record dropped with no
+/// proof of the outcome). Its outcome is unknown for good.
+fn freed_unknown(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
+    imported(artifact) && artifact.disposition.is_some()
+}
+
+/// [`spend_outcome`] of a spend the engine dispatched, which reads its row
+/// and writes nothing.
+fn read_outcome<S: ShieldedStore>(
+    store: &S,
+    subwallet: SubwalletId,
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+) -> Result<Option<SpendOutcome>, S::Error> {
+    let held = holds_activity(store, subwallet, &artifact.activity);
+    let row = store.get_activity_by_entry_id(subwallet, &artifact.activity)?;
+    Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// The outcome a spend's history `row` reports, `held` whether the library
+/// still holds a record or a note of it.
+fn outcome_of<E>(
+    row: Option<&ShieldedActivityEntry>,
+    held: &Result<bool, E>,
+) -> Option<SpendOutcome> {
+    match row {
+        Some(entry) if entry.status == Status::Confirmed => {
+            Some((ArtifactStatus::Executed, Some(("executed", None))))
+        }
+        // The row does not say which way the spend failed. Not while the
+        // library still holds a record or a note of it.
+        Some(entry) if entry.status == Status::Failed && matches!(held, Ok(false)) => {
+            Some((ArtifactStatus::NotExecuted, None))
+        }
+        _ => None,
+    }
+}
+
+/// Whether the store holds every note of `nullifiers`, at least one, spent.
+fn all_spent<S: ShieldedStore>(
+    store: &S,
+    subwallet: SubwalletId,
+    nullifiers: &[[u8; 32]],
+) -> Result<bool, S::Error> {
+    let spent: HashSet<[u8; 32]> = (store.get_all_notes(subwallet)?.into_iter())
+        .filter(|note| note.is_spent)
+        .map(|note| note.nullifier)
+        .collect();
+    Ok(!nullifiers.is_empty() && nullifiers.iter().all(|n| spent.contains(n)))
+}
+
+/// Whether `artifact` is an open spend the 0.1 build stored with its
+/// transition, which the engine never re-sends.
+fn imported(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
+    artifact.origin == ArtifactOrigin::ImportedRedrive && open_artifact(artifact)
+}
+
+/// The history rows of `wallet`'s imported spends, at the store's open and
+/// before each pass's library pass, so a release or a scan in the pass
+/// finds them: [`keep_import_row`] for each open artifact, and
+/// [`keep_settled_import_row`] for each settled one, for those the store
+/// has no row of. Nothing while the journal is not open, or while the
+/// artifacts cannot be read.
+pub(crate) async fn keep_import_rows(
+    session: &NetworkSession,
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: WalletId,
+) {
+    if !session.leases.journal_ready() {
+        return;
+    }
+    let artifacts = match session.leases.shielded_artifacts(wallet).await {
+        Ok(artifacts) => artifacts,
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded artifacts could not be read");
+            return;
+        }
+    };
+    let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
+    let rowless: Vec<_> = {
+        let store = coordinator.store().read().await;
+        (artifacts.iter())
+            .filter(|a| imported(a) || settled_import_status(a).is_some())
+            .filter(|a| {
+                !matches!(
+                    store.get_activity_by_entry_id(subwallet, &a.activity),
+                    Ok(Some(_))
+                )
+            })
+            .collect()
+    };
+    if rowless.is_empty() {
+        return;
+    }
+    let mut store = coordinator.store().write().await;
+    for artifact in rowless {
+        let kept = if imported(artifact) {
+            keep_import_row(&mut *store, subwallet, artifact)
+        } else {
+            keep_settled_import_row(&mut *store, subwallet, artifact)
+        };
+        if let Err(e) = kept {
+            tracing::warn!(
+                wallet_id = %wallet,
+                activity = %hex::encode(artifact.activity),
+                error = %e,
+                "an imported shielded spend's history row was not kept"
+            );
+        }
+    }
+}
+
+/// Saves a pending history row for the spend of `artifact` the 0.1 build
+/// stored, under its activity, while the journal has it open and the
+/// library holds its record of a note spend (the same transition), if the
+/// store has no row of it. The library keeps its rows in memory only, so
+/// after the upgrade and after each restart the spend has none: its release
+/// would fail nothing ([`spend_outcome`] reads none) and its payment would
+/// leave the history. A spend the journal settled or marked
+/// [`FREED_UNKNOWN`], or whose record the library no longer holds, gets
+/// none. `true` when one was saved.
+pub(super) fn keep_import_row<S: ShieldedStore>(
+    store: &mut S,
+    subwallet: SubwalletId,
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+) -> Result<bool, S::Error> {
+    if !imported(artifact) || freed_unknown(artifact) {
+        return Ok(false);
+    }
+    let record = (store.pending_redrives(subwallet)?.into_iter()).find(|r| {
+        r.activity_id == artifact.activity && Some(transition_hash(&r.st_bytes)) == artifact.st_hash
+    });
+    let Some(record) = record.filter(|r| !r.nullifiers.is_empty()) else {
+        return Ok(false);
+    };
+    if store
+        .get_activity_by_entry_id(subwallet, &artifact.activity)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    store.save_activity(
+        subwallet,
+        &import_row(artifact, Status::Pending, record.nullifiers),
+    )?;
+    Ok(true)
+}
+
+/// The status of the history row of `artifact`, a spend the 0.1 build
+/// stored with its transition, that the journal settled: failed for
+/// `not_executed`, confirmed for `executed`. `None` for any other artifact,
+/// an open or archived one (never shown) included.
+fn settled_import_status(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> Option<Status> {
+    if artifact.origin != ArtifactOrigin::ImportedRedrive || artifact.st_hash.is_none() {
+        return None;
+    }
+    match artifact.status {
+        ArtifactStatus::NotExecuted => Some(Status::Failed),
+        ArtifactStatus::Executed => Some(Status::Confirmed),
+        _ => None,
+    }
+}
+
+/// Saves the history row of the spend of `artifact` the 0.1 build stored
+/// and the journal settled, under its activity: failed for `not_executed`,
+/// confirmed for `executed` ([`settled_import_status`]), never pending,
+/// while the library holds nothing of it, if the store has no row of it.
+/// The library keeps its rows in memory only, so after each restart the
+/// settled spend has none and would leave the history. The row settles
+/// nothing again: the journal reads the outcomes of open artifacts only
+/// ([`settle_outcomes`]). `true` when one was saved.
+pub(super) fn keep_settled_import_row<S: ShieldedStore>(
+    store: &mut S,
+    subwallet: SubwalletId,
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+) -> Result<bool, S::Error> {
+    let Some(status) = settled_import_status(artifact) else {
+        return Ok(false);
+    };
+    if holds_activity(&*store, subwallet, &artifact.activity)? {
+        return Ok(false);
+    }
+    if store
+        .get_activity_by_entry_id(subwallet, &artifact.activity)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let nullifiers = artifact.selected.iter().map(|(n, _)| *n).collect();
+    store.save_activity(subwallet, &import_row(artifact, status, nullifiers))?;
+    Ok(true)
+}
+
+/// The history row the engine keeps for the spend of imported `artifact`,
+/// reading `status`, `nullifiers` the notes it took.
+fn import_row(
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+    status: Status,
+    nullifiers: Vec<[u8; 32]>,
+) -> ShieldedActivityEntry {
+    ShieldedActivityEntry {
+        id: artifact.activity,
+        kind: Kind::ShieldedSpend,
+        direction: Direction::Out,
+        amount: 0,
+        fee: None,
+        counterparty: None,
+        memo: None,
+        block_height: None,
+        status,
+        created_at_ms: artifact.at.saturating_mul(1000),
+        min_note_position: None,
+        note_cmxs: Vec::new(),
+        spent_nullifiers: nullifiers,
+    }
+}
+
+/// Flags spent each nullifier of `wallet`'s marked spends (DEC-1057) whose
+/// note the library's store reads spent, in any of the wallet's bound
+/// accounts, and clears each marker all of whose are; at each pass's end.
+/// The store reads a note spent only on a proved scan, a spend's proved
+/// result, or a restore of what those persisted, the evidence the
+/// persister's tap feeds. This covers a spent note whose changeset the tap
+/// did not turn into a flag: the persister refused it, the tap's journal
+/// write failed, or the note was restored spent (a restore queues no
+/// changeset). A nullifier the store reads unspent, or does not hold, stays
+/// as it is.
+pub(crate) async fn note_store_spent_marks(
+    leases: &super::lease::LeaseTable,
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: WalletId,
+) {
+    let markers = match leases.unrecorded_spends(wallet).await {
+        Ok(markers) => markers,
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers could not be read");
+            return;
+        }
+    };
+    let marked: BTreeSet<[u8; 32]> = (markers.iter())
+        .flat_map(|m| m.nullifiers.iter())
+        .filter(|(_, spent)| !spent)
+        .map(|(nullifier, _)| *nullifier)
+        .collect();
+    if marked.is_empty() {
+        return;
+    }
+    let mut subwallets: BTreeSet<SubwalletId> = (coordinator.registered_subwallets().await)
+        .into_iter()
+        .filter(|s| s.wallet_id == wallet.0)
+        .collect();
+    subwallets.insert(SubwalletId::new(wallet.0, SHIELDED_ACCOUNT));
+    let spent: Vec<[u8; 32]> = {
+        let store = coordinator.store().read().await;
+        (subwallets.into_iter())
+            .filter_map(|s| match store.get_all_notes(s) {
+                Ok(notes) => Some(notes),
+                Err(e) => {
+                    tracing::warn!(wallet_id = %wallet, error = %e, "the shielded notes could not be read");
+                    None
+                }
+            })
+            .flatten()
+            .filter(|note| note.is_spent && marked.contains(&note.nullifier))
+            .map(|note| note.nullifier)
+            .collect()
+    };
+    if !spent.is_empty() {
+        leases.note_spent_nullifiers_off_thread(wallet, spent).await;
+    }
+}
+
 /// Whether the library holds a record or a reserved note of `activity`.
 fn holds_activity<S: ShieldedStore>(
     store: &S,
@@ -3661,10 +4301,13 @@ fn holds_activity<S: ShieldedStore>(
 }
 
 /// Whether the library reports an outcome of one of `wallet`'s open
-/// artifacts that [`settle_outcomes`] has not read into the journal yet;
-/// `None` when the journal is not ready, or the artifacts or a history row
-/// cannot be read.
-async fn reported_outcome(
+/// artifacts that [`settle_outcomes`] has not read into the journal yet,
+/// a pending row of an imported spend the library holds nothing of and an
+/// unknown one not yet marked [`FREED_UNKNOWN`] included ([`spend_outcome`]
+/// reads both); never one so marked, which reads nothing. `None` when the
+/// journal is not ready, or the artifacts, a history row or what the
+/// library holds cannot be read.
+pub(super) async fn reported_outcome(
     leases: &super::lease::LeaseTable,
     coordinator: &NetworkShieldedCoordinator,
     wallet: WalletId,
@@ -3679,7 +4322,16 @@ async fn reported_outcome(
         let row = store
             .get_activity_by_entry_id(subwallet, &artifact.activity)
             .ok()?;
-        if row.is_some_and(|e| matches!(e.status, Status::Confirmed | Status::Failed)) {
+        let reported = match row.map(|e| e.status) {
+            _ if freed_unknown(artifact) => false,
+            Some(Status::Confirmed | Status::Failed) => true,
+            Some(Status::Pending) if imported(artifact) => {
+                !holds_activity(&*store, subwallet, &artifact.activity).ok()?
+            }
+            Some(Status::Unknown) => imported(artifact),
+            _ => false,
+        };
+        if reported {
             return Some(true);
         }
     }
@@ -3880,6 +4532,7 @@ pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 /// The dispatch hook refuses meanwhile ([`HookFence`]).
 pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>, fence: &HookFence) {
     fence.draining.fetch_add(1, Ordering::SeqCst);
+    fence.drains.fetch_add(1, Ordering::SeqCst);
     let _draining = Draining(&fence.draining);
     // One acquire, kept across the log: its place in the lock's queue too.
     let write = passes.write();
@@ -4019,6 +4672,9 @@ async fn pass(
             let _ = pause.resume.await;
         }
     }
+    for wallet in pass_wallets(manager, &coordinator).await {
+        keep_import_rows(session, &coordinator, WalletId(wallet)).await;
+    }
     if let Some((count, proved_at)) = count
         && pool_is_idle(session, manager, &coordinator, count)
             .await
@@ -4036,6 +4692,7 @@ async fn pass(
     if !runs(session) {
         return false;
     }
+    prepare_drained_pass(session, &coordinator).await;
     #[cfg(test)]
     session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
@@ -4045,10 +4702,19 @@ async fn pass(
             "a shielded sync pass failed"
         );
     }
-    for wallet in pass_wallets(manager, &coordinator).await {
+    let wallets = pass_wallets(manager, &coordinator).await;
+    for &wallet in &wallets {
         settle_outcomes(session, &coordinator, WalletId(wallet)).await;
+        note_store_spent_marks(&session.leases, &coordinator, WalletId(wallet)).await;
         // A contact payout settles on its artifact's status (C-funding P7).
         session.settle_shielded_payouts(WalletId(wallet)).await;
+    }
+    // After the scan: a note it read spent is lifted, and a hold the
+    // library's resolutions cleared is back before any spend.
+    let wallets: Vec<[u8; 32]> = wallets.into_iter().collect();
+    if let Err(e) = sync_drained_holds(session, &coordinator, &wallets).await {
+        // The holds taken stand; each spend's dispatch checks the journal.
+        tracing::warn!(error = %e, "the drained shielded holds were not synced after the pass");
     }
     for (&id, outcome) in &summary.wallet_results {
         let WalletShieldedOutcome::Ok(scan) = outcome else {
@@ -4059,6 +4725,34 @@ async fn pass(
         let now = crate::events::unix_now();
         if let Err(e) = async { observe_rest(&lib?, !scan.is_cooldown_skip, now).await }.await {
             tracing::warn!(wallet_id = %wallet, error = %e, "the shielded rest clock was not recorded");
+        }
+    }
+    if let Some(evidence) = &summary.evidence {
+        // Settled with no pass running (Q110 110-3, E3), and only while no
+        // lock or close has drained the passes since this one: a drain
+        // that took the write first has ended this pass for its caller.
+        let fence = &session.platform.hook_fence;
+        let drains = fence.drains();
+        let open = fence.refusal().is_none();
+        drop(_pass);
+        #[cfg(test)]
+        {
+            let pause = (session.platform.settle_pause.lock())
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(pause) = pause {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.await;
+            }
+        }
+        let _passes = session.platform.shielded_passes.write().await;
+        if open
+            && runs(session)
+            && fence.refusal().is_none()
+            && fence.drains() == drains
+            && let Err(e) = release_drained_spends(session, &coordinator, evidence).await
+        {
+            tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
         }
     }
     true

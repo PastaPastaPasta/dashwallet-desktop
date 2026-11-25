@@ -32,7 +32,7 @@ import { keys } from "./queries";
 let kept: Set<unknown> | undefined;
 
 export const keptWhileLocked = (key: QueryKey): boolean =>
-  (kept ??= new Set<unknown>([keys.network[0], keys.lockStatus[0], keys.lastLockReport[0], keys.lockReconcile[0], keys.lockDrain[0]])).has(key[0]);
+  (kept ??= new Set<unknown>([keys.network[0], keys.lockStatus[0], keys.lastLockReport[0], keys.lockReconcile[0], keys.lockDrain[0], keys.upgradeNotice[0]])).has(key[0]);
 
 /** Removes every query the lock screen does not read. A read still under way is cancelled with
  * its query, so its answer lands nowhere. */

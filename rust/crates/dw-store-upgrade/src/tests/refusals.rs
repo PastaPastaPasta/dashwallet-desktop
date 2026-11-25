@@ -213,3 +213,80 @@ fn reconcile_refusal_leaves_the_store_unchanged() {
     assert!(err.file_unchanged());
     assert_eq!(tree(&f.net), before);
 }
+
+/// A store the snapshot copies that SQLite reads as no database is refused
+/// with the unexpected-state screen, not retried: a retry fails the same way.
+#[test]
+fn a_damaged_store_stops_the_snapshot_with_a_refusal() {
+    let f = fixture("v0.1.0");
+    let dispatch = f.net.join("dispatch.sqlite");
+    let mut bytes = fs::read(&dispatch).unwrap();
+    bytes[..100].fill(0x5a);
+    fs::write(&dispatch, bytes).unwrap();
+    for _ in 0..2 {
+        crate::token::reset_opened_for_test();
+        let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
+        assert!(
+            matches!(&err, StoreUpgradeError::SnapshotSourceDamaged { store, .. } if store == "dispatch.sqlite"),
+            "{err:?}"
+        );
+        assert!(err.is_refusal() && err.file_unchanged());
+        assert!(crate::copy::retry_copy_for(&err).is_none());
+        let screen = crate::copy::screen_for(&err, crate::copy::ProvedState::default()).unwrap();
+        assert_eq!(screen.cause, crate::copy::RefusedCause::Unexpected);
+    }
+}
+
+/// A copy that fails its integrity check while its source is sound is the
+/// machine's fault: retried, never a refusal.
+#[test]
+fn a_copy_that_fails_its_check_beside_a_sound_store_is_retried() {
+    let f = fixture("v0.1.0");
+    crate::fsx::arm_fault("copy.integrity", 0);
+    let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
+    crate::fsx::disarm_fault();
+    assert!(
+        matches!(err, StoreUpgradeError::SnapshotFailed { .. }),
+        "{err:?}"
+    );
+    assert!(crate::copy::retry_copy_for(&err).is_some());
+}
+
+#[test]
+fn refuses_an_unreleased_fork_table_no_upstream_migration_made() {
+    let f = fixture("v0.1.0");
+    exec(
+        &f.wallet(),
+        build().fresh_table_sql("core_dismissed_txids").unwrap(),
+    );
+    let (_fresh_dir, fresh) = fresh_store();
+    let objects = |path: &Path| {
+        crate::sql::objects_on(&Connection::open(path).unwrap(), "core_dismissed_txids").unwrap()
+    };
+    assert_eq!(objects(&f.wallet()), objects(&fresh), "this build's shape");
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
+    );
+}
+
+#[test]
+fn refuses_an_upstream_made_table_that_is_not_this_builds() {
+    let f = fixture("v0.1.0");
+    let snapshot = crate::snapshot::take_snapshot(&f.net, now()).unwrap();
+    crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();
+    drop(open_and_load(&f.net));
+    assert!(matches!(
+        precheck_with(&f.net, build()).unwrap(),
+        Precheck::Fork { .. }
+    ));
+    exec(
+        &f.wallet(),
+        "DROP TABLE core_dismissed_txids; \
+         CREATE TABLE core_dismissed_txids (wallet_id BLOB NOT NULL, txid BLOB NOT NULL)",
+    );
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkStoreShapeMismatch { object } if object == "core_dismissed_txids without fork version 4"),
+    );
+}

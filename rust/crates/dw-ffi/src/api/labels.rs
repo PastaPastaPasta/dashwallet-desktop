@@ -86,6 +86,9 @@ impl From<dw_engine::EngineError> for LabelsError {
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
             | E::RetryableIo(_)
             | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(_) => Self::NotImplemented { call: detail },

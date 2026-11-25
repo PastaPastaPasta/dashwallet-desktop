@@ -4,6 +4,7 @@
 mod store_upgrade_common;
 
 use dw_engine::EngineError;
+use dw_store_upgrade::copy::WayOut;
 use dw_store_upgrade::{Adopters, P9aStatus};
 use store_upgrade_common::*;
 
@@ -21,7 +22,17 @@ fn a_rotated_contact_fork_file_is_refused_unchanged_without_p9a() {
     };
     assert_eq!(r.cause, "RetiredPoolWithoutAdopter");
     assert_eq!(r.folder, f.net);
-    assert_eq!(r.screen.text_key, "storeUpgrade.cantOpen.textWithoutBackup");
+    let screen = &r.screen;
+    assert_eq!(
+        (screen.detail.key, screen.way_out),
+        (
+            "storeUpgrade.refused.detail.contactsTable",
+            WayOut::Previous
+        )
+    );
+    assert_eq!(screen.unchanged.key, "storeUpgrade.refused.unchanged");
+    let keys: Vec<&str> = screen.buttons.iter().map(|b| b.key).collect();
+    assert_eq!(keys, ["storeUpgrade.refused.quit"]);
 
     let empty = fixture("v0.1.0");
     let engine = engine(&empty.root);

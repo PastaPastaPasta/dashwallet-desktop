@@ -35,9 +35,11 @@ pub(crate) fn refuse_insecure_root(data_dir: &Path) -> Result<(), crate::error::
     let linked = std::fs::symlink_metadata(data_dir).is_ok_and(|m| m.file_type().is_symlink());
     match dw_fs::insecure_ancestor(if linked { data_dir } else { root })? {
         None => Ok(()),
-        Some(why) => Err(crate::error::EngineError::Storage(format!(
-            "the data folder is not private: {why}"
-        ))),
+        Some(a) => Err(crate::error::EngineError::DataFolderNotPrivate {
+            folder: a.dir,
+            reason: a.reason,
+            detail: a.detail,
+        }),
     }
 }
 

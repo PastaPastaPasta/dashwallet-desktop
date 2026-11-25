@@ -244,6 +244,9 @@ impl From<dw_engine::EngineError> for HistoryError {
             | E::Storage(_)
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
             | E::RetryableIo(_)
             | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },

@@ -506,9 +506,10 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
             "invalid or missing --dapi value"
         }
         EngineError::StorageInUse { .. } => "--datadir is in use by another process",
-        EngineError::Storage(_) | EngineError::Io(_) | EngineError::Vault(_) => {
-            "--datadir could not be opened"
-        }
+        EngineError::Storage(_)
+        | EngineError::DataFolderNotPrivate { .. }
+        | EngineError::Io(_)
+        | EngineError::Vault(_) => "--datadir could not be opened",
         _ => "the network could not be opened (check --dapi, --quorum-url and --peer)",
     }
 }

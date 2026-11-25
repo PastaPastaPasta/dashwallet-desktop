@@ -59,8 +59,8 @@ describe("fixture pending commands", () => {
 
   it("keeps the foreign files with keep_current_files, and the open after it opens them, restored", async () => {
     clearMocks();
-    fixture = installFixture({ scenario: "funded", openRefused: "restoreForeign" });
-    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_refused", data: { cause: "RestoreIncomplete" } });
+    fixture = installFixture({ scenario: "funded", openRestore: "foreign:otherLineage" });
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_restore", data: { state: "foreign", cause: "otherLineage" } });
     const actions = new OpenFailureActions(backend);
     let reopened: Promise<unknown> | null = null;
     await actions.keep(() => (reopened = backend.openNetwork()));

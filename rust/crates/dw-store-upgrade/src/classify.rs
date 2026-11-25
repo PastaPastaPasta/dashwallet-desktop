@@ -151,8 +151,8 @@ pub(crate) fn classify(conn: &Connection, adopters: &Adopters) -> Result<Classif
         return Ok(Classification::Refuse(refusal));
     }
     let reference = crate::shapes::Reference::build(adopters)?;
-    let p4_applied = history.iter().any(|r| r.name == P4_NAME);
-    if let Some(object) = crate::shapes::check(conn, &versions, &reference, p4_applied)? {
+    let applied: BTreeSet<&str> = history.iter().map(|r| r.name.as_str()).collect();
+    if let Some(object) = crate::shapes::check(conn, &versions, &reference, &applied)? {
         return Ok(mismatch(object));
     }
     let retired_rows = count_rows(conn, fork::RETIRED_POOL).map_err(&q)?;
@@ -194,9 +194,11 @@ fn history_mismatch(history: &[HistoryRow], adopters: &Adopters) -> Option<Store
 /// unless P9a is Present (checked after the shape). Fork V2 needs P4.
 /// Fork V3: accepted without P8 (Q93 T1-T4): only the exact published V3
 /// (history name, checksum, shape), and V3's table is kept as found, never
-/// written, until P8 adopts its rows. Fork V4/V5:
-/// refused until their adopters and exact shapes are compiled in
-/// (FIXTURES-TODO.md).
+/// written, until P8 adopts its rows. Fork V4/V5: files with fork version 4
+/// or 5 are still refused, because accepting them is a separate decision. A
+/// `core_block_spends` or `core_dismissed_txids` table that upstream's own
+/// migration made, with no fork version, passes the shape check instead
+/// ([`crate::shapes::check`]).
 pub(crate) fn version_set_accepted(versions: &BTreeSet<u32>, adopters: &Adopters) -> bool {
     if !fork::published_sets().contains(versions) || versions.iter().any(|v| *v >= 4) {
         return false;

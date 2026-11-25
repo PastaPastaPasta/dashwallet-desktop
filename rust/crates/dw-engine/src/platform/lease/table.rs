@@ -975,10 +975,6 @@ impl Lease {
     /// The shielded spend key a call's permit hands out (0.1 E1): the
     /// permit's J step already charged the call's quote, so the Credits
     /// budget may be at 0.
-    #[allow(
-        dead_code,
-        reason = "no key set spend entry point at this platform pin (P13c)"
-    )]
     pub(crate) fn call_shielded_spend_key(&self) -> Result<ShieldedSpendKey, LeaseError> {
         self.with_entry(BudgetPurpose::Credits, |e| {
             if !e.credits.granted() {
