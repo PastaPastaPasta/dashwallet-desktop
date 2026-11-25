@@ -265,6 +265,7 @@ fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
     let journal = f.net.join(UPGRADE_BACKUPS_DIR).join(RESTORE_JOURNAL);
     fs::write(&journal, b"not a journal\n").unwrap();
     let before = tree(s.dir());
+    let record = upgraded_from(&f);
 
     let err = crate::snapshot::take_snapshot(&f.net, later(60)).unwrap_err();
     assert!(
@@ -282,6 +283,7 @@ fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
     assert_eq!(format!("{started:?}"), ordered, "the restore goes first");
     assert!(!s.dir().join(NOT_THIS_WALLET).exists());
     assert_eq!(tree(s.dir()), before);
+    assert_eq!(upgraded_from(&f), record);
     assert!(journal.exists());
 }
 
@@ -294,6 +296,7 @@ fn a_restore_request_keeps_a_snapshot_of_other_data_unmarked() {
         "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)",
     );
     let before = tree(s.dir());
+    let record = upgraded_from(&f);
     let err = crate::snapshot::take_snapshot(&f.net, later(60)).unwrap_err();
     assert!(
         matches!(err, StoreUpgradeError::RestorePending { .. }),
@@ -301,6 +304,16 @@ fn a_restore_request_keeps_a_snapshot_of_other_data_unmarked() {
     );
     assert!(!s.dir().join(NOT_THIS_WALLET).exists());
     assert_eq!(tree(s.dir()), before);
+    assert_eq!(upgraded_from(&f), record);
+}
+
+fn upgraded_from(f: &Fixture) -> Vec<u8> {
+    fs::read(
+        f.net
+            .join(UPGRADE_BACKUPS_DIR)
+            .join(crate::snapshot::UPGRADED_FROM),
+    )
+    .unwrap()
 }
 
 /// A fault reading the snapshot under R1's lock, once upgraded, is retried

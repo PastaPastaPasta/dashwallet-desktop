@@ -41,8 +41,9 @@ pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
 pub const NOT_THIS_WALLET: &str = "NOT-THIS-WALLET";
 /// Written in `upgrade-backups/` by R1 under its lock, before the drop: the
 /// before-upgrade snapshot the file is upgraded from (its directory name and
-/// manifest sha256), or `none`. Once the file is upgraded, a before-upgrade
-/// snapshot is its backup only if this names it.
+/// manifest sha256) and the file's `wallets.wallet_id` set, or `none`. Once
+/// the file is upgraded, a before-upgrade snapshot is its backup only if
+/// this names it and the live file holds exactly those wallets.
 pub const UPGRADED_FROM: &str = "UPGRADED-FROM";
 const UPGRADED_FROM_HEADER: &str = "dw-store-upgrade upgraded from";
 const MARKER_HEADER: &str = "dw-store-upgrade snapshot";
@@ -305,7 +306,13 @@ pub(crate) fn check_snapshot(
 /// What [`UPGRADED_FROM`] records.
 #[derive(Debug, PartialEq, Eq)]
 enum Lineage {
-    Snapshot { name: String, manifest: String },
+    /// The snapshot and the `wallets.wallet_id` set (hex, sorted) of the
+    /// file R1 upgraded.
+    Snapshot {
+        name: String,
+        manifest: String,
+        wallets: BTreeSet<String>,
+    },
     None,
 }
 
@@ -321,70 +328,162 @@ fn read_lineage(network_dir: &Path) -> io::Result<Option<Lineage>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let garbled = || {
+    parse_lineage(&text).map(Some).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{UPGRADED_FROM} garbled"),
         )
-    };
+    })
+}
+
+fn parse_lineage(text: &str) -> Option<Lineage> {
     let mut lines = text.lines();
-    if lines.next() != Some(UPGRADED_FROM_HEADER) || lines.next() != Some("format 1") {
-        return Err(garbled());
+    if lines.next()? != UPGRADED_FROM_HEADER || lines.next()? != "format 1" {
+        return None;
     }
-    let record = match lines.next().and_then(|l| l.strip_prefix("snapshot ")) {
-        Some("none") => Lineage::None,
-        Some(rest) => match rest.split(' ').collect::<Vec<_>>()[..] {
-            [name, manifest]
-                if name.starts_with(&format!("{BEFORE_PREFIX}-"))
-                    && !name.contains(['/', '\\'])
-                    && manifest.len() == 64 =>
-            {
-                Lineage::Snapshot {
-                    name: name.into(),
-                    manifest: manifest.into(),
-                }
+    let record = match lines.next()?.strip_prefix("snapshot ")? {
+        "none" => Lineage::None,
+        rest => {
+            let (name, manifest) = rest.split_once(' ')?;
+            let wallets = match lines.next()?.strip_prefix("wallets ")? {
+                "-" => BTreeSet::new(),
+                ids => ids.split(',').map(str::to_string).collect(),
+            };
+            let ok = name.starts_with(&format!("{BEFORE_PREFIX}-"))
+                && !name.contains(['/', '\\', ' '])
+                && manifest.len() == 64
+                && wallets
+                    .iter()
+                    .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_hexdigit()));
+            if !ok {
+                return None;
             }
-            _ => return Err(garbled()),
-        },
-        None => return Err(garbled()),
+            Lineage::Snapshot {
+                name: name.into(),
+                manifest: manifest.into(),
+                wallets,
+            }
+        }
     };
-    if lines.next().is_some() {
-        return Err(garbled());
+    lines.next().is_none().then_some(record)
+}
+
+/// Write [`UPGRADED_FROM`]. Never while a restore is requested or part-done:
+/// the restore reads the snapshot it names at every resume.
+fn write_lineage(
+    network_dir: &Path,
+    named: Option<(&SnapshotInfo, &BTreeSet<String>)>,
+) -> Result<()> {
+    crate::restore::refuse_if_restore_pending(network_dir)?;
+    let mut text = format!("{UPGRADED_FROM_HEADER}\nformat 1\n");
+    match named {
+        Some((info, wallets)) => {
+            let ids: Vec<&str> = wallets.iter().map(String::as_str).collect();
+            text += &format!(
+                "snapshot {} {}\nwallets {}\n",
+                name_of(&info.dir),
+                info.manifest_sha256,
+                if ids.is_empty() {
+                    "-".into()
+                } else {
+                    ids.join(",")
+                }
+            );
+        }
+        None => text += "snapshot none\n",
     }
-    Ok(Some(record))
-}
-
-fn write_lineage(network_dir: &Path, snapshot: Option<&SnapshotInfo>) -> io::Result<()> {
-    let named = match snapshot {
-        Some(info) => format!(
-            "{} {}",
-            info.dir.file_name().unwrap_or_default().to_string_lossy(),
-            info.manifest_sha256
-        ),
-        None => "none".into(),
-    };
-    let text = format!("{UPGRADED_FROM_HEADER}\nformat 1\nsnapshot {named}\n");
     fsx::write_durable(&lineage_path(network_dir), text.as_bytes())
+        .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))
 }
 
-/// R1, under its lock and before the drop: record `snapshot` as the one the
-/// file is upgraded from, or `none` for a `part-upgraded` copy.
-pub(crate) fn record_lineage(network_dir: &Path, snapshot: &SnapshotInfo) -> io::Result<()> {
-    write_lineage(network_dir, restorable(snapshot).then_some(snapshot))
+/// R1, under its lock (`wallet` holds it) and before the drop: record
+/// `snapshot` and the file's wallet ids as what it is upgraded from, or
+/// `none` for a `part-upgraded` copy.
+pub(crate) fn record_lineage(
+    network_dir: &Path,
+    snapshot: &SnapshotInfo,
+    wallet: &Connection,
+) -> Result<()> {
+    if !restorable(snapshot) {
+        return write_lineage(network_dir, None);
+    }
+    let wallets =
+        wallet_ids(wallet).map_err(StoreUpgradeError::sqlite("read the wallet ids", true))?;
+    write_lineage(network_dir, Some((snapshot, &wallets)))
+}
+
+/// The `wallets.wallet_id` set, as upper-case hex.
+fn wallet_ids(wallet: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+    if !has_table(wallet, "wallets")? {
+        return Ok(BTreeSet::new());
+    }
+    wallet
+        .prepare("SELECT hex(wallet_id) FROM wallets")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect()
 }
 
 fn names(record: &Lineage, info: &SnapshotInfo) -> bool {
-    matches!(record, Lineage::Snapshot { name, manifest }
+    matches!(record, Lineage::Snapshot { name, manifest, .. }
         if info.dir.file_name().is_some_and(|n| n == name.as_str())
             && *manifest == info.manifest_sha256)
 }
 
+/// `network_dir`'s `wallet.sqlite` as the lineage gate reads it.
+enum LiveWallet {
+    Absent,
+    /// It can't be read, so whether it is upgraded is not known.
+    Unreadable,
+    /// Upgraded (R1's drop committed, or refinery past V018), with its
+    /// wallet ids, `None` when they can't be read.
+    Upgraded(Option<BTreeSet<String>>),
+    NotUpgraded,
+}
+
+fn live_wallet(network_dir: &Path) -> LiveWallet {
+    match fs::symlink_metadata(network_dir.join(STORE_FILES[0])) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return LiveWallet::Absent,
+        Err(_) => return LiveWallet::Unreadable,
+        Ok(_) => {}
+    }
+    let read = read_live_wallet(network_dir, |conn| {
+        let (refinery_max, _, between) = upgrade_state(conn)?;
+        Ok((
+            between || refinery_max > fork::FORK_REFINERY_MAX,
+            wallet_ids(conn).ok(),
+        ))
+    });
+    match read {
+        Some((true, ids)) => LiveWallet::Upgraded(ids),
+        Some((false, _)) => LiveWallet::NotUpgraded,
+        None => LiveWallet::Unreadable,
+    }
+}
+
+/// Read `network_dir`'s `wallet.sqlite` with its log applied and without
+/// touching it or a side file: with no log, `immutable=1`; with a non-empty
+/// `-wal` or `-journal`, a private copy of the file and its log, opened
+/// there. [`open_live`] would make or change `-shm` beside the live file,
+/// and a restore reads snapshots while it owns the live side files. `None`
+/// when that fails.
+fn read_live_wallet<T>(
+    network_dir: &Path,
+    read: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> Option<T> {
+    let path = network_dir.join(STORE_FILES[0]);
+    if !logged(&path) {
+        return read(&sql::open_immutable(&path).ok()?).ok();
+    }
+    let copy = crate::precheck::ScratchCopy::of(network_dir).ok()?;
+    read(&Connection::open(copy.wallet()).ok()?).ok()
+}
+
 /// Once `wallet.sqlite` is upgraded, a before-upgrade snapshot is its backup
-/// only if [`UPGRADED_FROM`] names it with this manifest. A file with a
-/// non-empty `-wal` or `-journal` is read as upgraded when the record exists:
-/// the read never opens the log (restore reads snapshots mid-swap), and R1
-/// writes the record before its drop. A file that can't be read and no
-/// record leave the snapshot as it verified.
+/// only if [`UPGRADED_FROM`] names it with this manifest and the live wallet
+/// ids are exactly those R1 recorded: a restore replaces every store, so a
+/// wallet added since would be lost and another wallet's file would be
+/// rolled back to this one. Ids that can't be read prove nothing. A file
+/// that can't be read is held to the record when there is one.
 fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), SnapshotFault> {
     let Some(network_dir) = dir
         .parent()
@@ -396,35 +495,27 @@ fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), S
     if !restorable(info) {
         return Ok(());
     }
-    let upgraded = live_upgraded(network_dir);
-    if upgraded == Some(false) {
-        return Ok(());
-    }
-    match read_lineage(network_dir).map_err(snapshot_fault(UPGRADED_FROM))? {
-        Some(record) if names(&record, info) => Ok(()),
-        None if upgraded.is_none() => Ok(()),
-        _ => Err(SnapshotFault::Defect(
+    let live = match live_wallet(network_dir) {
+        LiveWallet::Absent | LiveWallet::NotUpgraded => return Ok(()),
+        LiveWallet::Upgraded(ids) => Some(ids),
+        LiveWallet::Unreadable => None,
+    };
+    let record = read_lineage(network_dir).map_err(snapshot_fault(UPGRADED_FROM))?;
+    let held = match (&record, &live) {
+        (None, None) => return Ok(()),
+        (Some(record), Some(Some(ids))) if names(record, info) => {
+            matches!(record, Lineage::Snapshot { wallets, .. } if wallets == ids)
+        }
+        _ => false,
+    };
+    if held {
+        Ok(())
+    } else {
+        Err(SnapshotFault::Defect(
             "not the snapshot this wallet was upgraded from".into(),
-        )),
+        ))
     }
 }
-
-/// Whether `network_dir`'s `wallet.sqlite` is upgraded (R1's drop committed,
-/// or refinery past V018), read with `immutable=1`. `None` when it can't be
-/// read so: a read error, or a non-empty `-wal` or `-journal`.
-fn live_upgraded(network_dir: &Path) -> Option<bool> {
-    let path = network_dir.join(STORE_FILES[0]);
-    match fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(false),
-        Err(_) => return None,
-        Ok(_) if logged(&path) => return None,
-        Ok(_) => {}
-    }
-    let conn = sql::open_immutable(&path).ok()?;
-    let (refinery_max, _, between) = upgrade_state(&conn).ok()?;
-    Some(between || refinery_max > fork::FORK_REFINERY_MAX)
-}
-
 /// Every `before-upgrade-*` directory, oldest name first.
 fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
     dirs_named(network_dir, BEFORE_PREFIX)
@@ -730,8 +821,9 @@ fn released(info: &SnapshotInfo) -> rusqlite::Result<bool> {
 pub enum MissingSnapshot {
     /// No record, a record of `none`, or the named directory is gone.
     Absent,
-    /// The named directory is there and doesn't verify (its marker lost
-    /// counts), or the record doesn't parse.
+    /// The named directory is there and doesn't verify (its marker lost, or
+    /// live wallet ids other than those R1 recorded, count), or the record
+    /// doesn't parse.
     Unverified,
     /// The named snapshot is marked [`NOT_THIS_WALLET`], or verifies and is
     /// not this upgrade's: judged against the data only in the between
@@ -773,7 +865,6 @@ fn mark_not_this_wallet(network_dir: &Path, dir: &Path, now: SystemTime) -> Resu
         {
             tracing::warn!(dir = %dir.display(), error = %e, "store upgrade: snapshot is not of this wallet and can't be marked; no longer named");
             write_lineage(network_dir, None)
-                .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))
         }
         Err(e) => Err(StoreUpgradeError::io("mark a snapshot of other data", true)(e)),
     }

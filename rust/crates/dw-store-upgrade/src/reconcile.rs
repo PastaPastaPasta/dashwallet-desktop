@@ -271,8 +271,7 @@ fn write_in_transaction(
         ensure_backup_dir(dir)?;
     }
     if state.column_present {
-        snapshot::record_lineage(network_dir, snapshot)
-            .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))?;
+        snapshot::record_lineage(network_dir, snapshot, conn)?;
         fault("reconcile.after_lineage")?;
         conn.execute_batch(DROP_SQL)
             .map_err(StoreUpgradeError::sqlite(

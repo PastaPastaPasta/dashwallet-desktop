@@ -14,6 +14,9 @@ use crate::snapshot::{
     read_snapshot, snapshot_state, upgrade_copy_present,
 };
 
+const NEW_WALLET: &str = "INSERT INTO wallets (wallet_id, network, birth_height) \
+     VALUES (X'00000000000000000000000000000000000000000000000000000000000000AA', 'regtest', 0)";
+
 const BUMP: &str =
     "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)";
 
@@ -228,4 +231,92 @@ fn a_snapshot_unreadable_for_its_permissions_is_unverified() {
     crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| *h.borrow_mut() = None);
     assert!(matches!(state.unwrap(), SnapshotState::Unverified { .. }));
     assert_eq!(tree(s.dir()), untouched, "never marked");
+}
+
+/// R1 committed, then upstream migrated the file.
+fn migrated() -> (Fixture, SnapshotInfo) {
+    let (f, s) = failed_open();
+    start_opens(&f, None, true);
+    assert!(refinery_max(&f) > crate::fork::FORK_REFINERY_MAX);
+    (f, s)
+}
+
+/// The true snapshot is no longer offered, and is left as it is.
+fn assert_not_offered(f: &Fixture, s: &SnapshotInfo, at: &str) {
+    assert!(
+        !matches!(snapshot_state(&f.net).unwrap(), SnapshotState::Verified(_)),
+        "{at}"
+    );
+    assert_ne!(
+        ProvedState::read(&f.net, false).backup,
+        Some(BackupState::Verified),
+        "{at}"
+    );
+    assert!(
+        matches!(
+            crate::restore::request_restore(&f.net, s),
+            Err(StoreUpgradeError::SnapshotInvalid { .. })
+        ),
+        "{at}"
+    );
+}
+
+#[test]
+fn the_true_wallet_unchanged_once_migrated_restores() {
+    let (f, s) = migrated();
+    assert_backup(&f, &s, "migrated");
+    crate::restore::request_restore(&f.net, &s).unwrap();
+    assert!(start(&f, later(300)).unwrap().restored.is_some());
+    assert!(column_present(&f));
+}
+
+#[test]
+fn a_wallet_added_once_migrated_ends_the_offer() {
+    let (f, s) = migrated();
+    let untouched = tree(s.dir());
+    exec(&f.wallet(), NEW_WALLET);
+    assert_not_offered(&f, &s, "a wallet added");
+    assert_eq!(tree(s.dir()), untouched);
+    exec(
+        &f.wallet(),
+        "DELETE FROM wallets WHERE wallet_id = \
+         X'00000000000000000000000000000000000000000000000000000000000000AA'",
+    );
+    assert_backup(&f, &s, "the same wallets again");
+}
+
+#[test]
+fn another_wallets_file_swapped_in_once_migrated_is_never_rolled_back() {
+    let (f, s) = migrated();
+    let g = fixture("v0.2.0");
+    let gs = start(&g, now()).unwrap().snapshot.unwrap();
+    reconcile_fork_store(&config(&g.net), &gs, build()).unwrap();
+    drop(open_and_load(&g.net));
+    for side in ["", "-wal", "-shm"] {
+        let name = format!("wallet.sqlite{side}");
+        let _ = fs::remove_file(f.net.join(&name));
+        if g.net.join(&name).exists() {
+            fs::copy(g.net.join(&name), f.net.join(&name)).unwrap();
+        }
+    }
+    let untouched = tree(s.dir());
+    assert_not_offered(&f, &s, "swapped");
+    start(&f, later(300)).unwrap();
+    assert_not_offered(&f, &s, "after a start");
+    assert_eq!(tree(s.dir()), untouched, "never marked, never changed");
+}
+
+#[test]
+fn live_wallet_ids_only_in_the_wal_are_read() {
+    let (f, s) = migrated();
+    super::review_fixes::hot_wal(&f, NEW_WALLET);
+    let wal = f.net.join("wallet.sqlite-wal");
+    assert!(fs::metadata(&wal).unwrap().len() > 0);
+    let logged = crate::sql::sha256_file(&wal).unwrap();
+    assert_not_offered(&f, &s, "a wallet added in the -wal only");
+    assert_eq!(
+        crate::sql::sha256_file(&wal).unwrap(),
+        logged,
+        "never checkpointed"
+    );
 }

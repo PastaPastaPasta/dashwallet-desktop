@@ -254,13 +254,13 @@ fn effective_uid() -> u32 {
 
 /// `wallet.sqlite` and its log, copied into a private 0700 directory under
 /// the data root; removed on drop.
-struct ScratchCopy {
+pub(crate) struct ScratchCopy {
     dir: tempfile::TempDir,
     wallet: PathBuf,
 }
 
 impl ScratchCopy {
-    fn of(network_dir: &Path) -> Result<Self> {
+    pub(crate) fn of(network_dir: &Path) -> Result<Self> {
         let io = |ctx| StoreUpgradeError::io(ctx, true);
         let dir = tempfile::Builder::new()
             .prefix(SCRATCH_PREFIX)
@@ -282,6 +282,11 @@ impl ScratchCopy {
             }
         }
         Ok(Self { dir, wallet })
+    }
+
+    /// The copy of `wallet.sqlite`, its log beside it.
+    pub(crate) fn wallet(&self) -> &Path {
+        &self.wallet
     }
 
     /// M4: R1's drop, then the upstream open and load under
