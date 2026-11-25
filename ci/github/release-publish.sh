@@ -15,7 +15,9 @@
 # are present (SHA256SUMS.asc, signed-manifest.json from release-attach.sh with pinned identities and
 # all 11 file hashes, and the signed updater feed latest.json). Set DW_ALLOW_UNSIGNED_STABLE=1 only
 # for an explicit unsigned override (DW_SIGNING_REQUIRED=1 still overrides that escape hatch).
-# Release candidates (-rc.N) never require signing.
+# Release candidates (-rc.N) are keyless unless DW_SIGN_RC=1 opts them in (docs/release/RC-SIGNING.md):
+# then a pushed candidate is refused here (release.yml waits instead) and only release-publish-signed.yml
+# publishes it, with SHA256SUMS.asc and a signed-manifest.json of 9 files (no updater feed on a candidate).
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
 # write instead of doing it, so the logic can be run by hand against the real repository.
 #
@@ -75,9 +77,9 @@ if [[ "$event" == push ]]; then
   elif [[ "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
     kind=tag
   fi
-elif [[ "$event" == workflow_dispatch && "${DW_SIGNED_DISPATCH:-}" == 1 && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+elif [[ "$event" == workflow_dispatch && "${DW_SIGNED_DISPATCH:-}" == 1 && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
   # Blocker #1: GitHub Actions preserves GITHUB_EVENT_NAME=workflow_dispatch over step env;
-  # release-publish-signed.yml opts into this explicit signed-dispatch mode for final vX.Y.Z tags.
+  # release-publish-signed.yml opts into this explicit signed-dispatch mode for vX.Y.Z and vX.Y.Z-rc.N tags.
   kind=tag
   signed_dispatch=1
 fi
@@ -173,13 +175,23 @@ if ((${#feed[@]})); then
 fi
 # Decision 1: Final stable tags vX.Y.Z fail closed and always require verified attached signatures
 # unless DW_ALLOW_UNSIGNED_STABLE=1 is explicitly set (and neither DW_SIGNING_REQUIRED=1 nor
-# DW_SIGNED_DISPATCH=1 is set). Release candidates (-rc.N) and main/continuous are never required to be signed.
+# DW_SIGNED_DISPATCH=1 is set). A release candidate (-rc.N) requires them only on a signed dispatch or when
+# DW_SIGN_RC=1 opted candidates in; main/continuous are never required to be signed.
 require_signed=0
+rc_tag=0
 if [[ "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   if ((signed_dispatch)) || [[ "${DW_ALLOW_UNSIGNED_STABLE:-}" != 1 || "${DW_SIGNING_REQUIRED:-}" == 1 ]]; then
     require_signed=1
   fi
+elif [[ "$kind" == tag ]]; then
+  rc_tag=1
+  if ((signed_dispatch)) || [[ "${DW_SIGN_RC:-}" == 1 ]]; then
+    require_signed=1
+  fi
 fi
+# A signed stable release has 11 files; a signed candidate has no updater feed (latest.json, .app.tar.gz).
+signed_n=11
+((!rc_tag)) || signed_n=9
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -189,28 +201,27 @@ sha256_of() {
 }
 verify_signed_manifest() {
   local base_dir=$1 feed_dir=$2 manifest=$3
-  jq -e --arg v "$VERSION" \
+  jq -e --arg v "$VERSION" --argjson n "$signed_n" \
     '.schema == 1
      and .version == $v
      and (.pgp_fpr | type == "string" and test("^[0-9A-Fa-f]{40}$"))
      and (.apple_team_id | type == "string" and test("^[A-Z0-9]{10}$"))
      and (.windows_leaf_sha256 | type == "string" and test("^sha256:[0-9a-f]{64}$"))
-     and (.files | type == "object" and length == 11)' \
+     and (.files | type == "object" and length == $n)' \
     "$manifest" >/dev/null ||
-    die "$tag: signed-manifest.json is missing required pinned identities (pgp_fpr/apple_team_id/windows_leaf_sha256) or 11 file hashes"
+    die "$tag: signed-manifest.json is missing required pinned identities (pgp_fpr/apple_team_id/windows_leaf_sha256) or $signed_n file hashes"
   local expected_all=(
     "SHA256SUMS"
     "SHA256SUMS.asc"
     "dash-wallet-$VERSION-linux-amd64.deb"
     "dash-wallet-$VERSION-linux-x86_64.AppImage"
     "dash-wallet-$VERSION-linux-x86_64.flatpak"
-    "dash-wallet-$VERSION-macos-universal.app.tar.gz"
     "dash-wallet-$VERSION-macos-universal.dmg"
     "dash-wallet-$VERSION-sbom-npm.cdx.json"
     "dash-wallet-$VERSION-sbom-rust.cdx.json"
     "dash-wallet-$VERSION-windows-x64-setup.exe"
-    "latest.json"
   )
+  ((rc_tag)) || expected_all+=("dash-wallet-$VERSION-macos-universal.app.tar.gz" "latest.json")
   local fname want_h src got_h
   for fname in "${expected_all[@]}"; do
     want_h=$(jq -r --arg k "$fname" '.files[$k] // empty' "$manifest")
@@ -233,14 +244,17 @@ fi
 if ((require_signed)); then
   missing_sigs=()
   ((${#asc[@]})) || missing_sigs+=("SHA256SUMS.asc")
-  ((${#feed[@]})) || missing_sigs+=("updater feed (latest.json + macos-universal.app.tar.gz)")
+  ((rc_tag || ${#feed[@]})) || missing_sigs+=("updater feed (latest.json + macos-universal.app.tar.gz)")
   manifest=${SIGNED_MANIFEST:-$DIST/../signed-manifest.json}
   [[ -f "$manifest" ]] || missing_sigs+=("attached macOS/Windows signatures (signed-manifest.json from release-attach.sh)")
   if ((${#missing_sigs[@]})); then
     missing_str=$(IFS=', '; echo "${missing_sigs[*]}")
+    if ((rc_tag)); then
+      die "$tag requires attached signatures (a signed dispatch, or DW_SIGN_RC=1 opted candidates in), missing: $missing_str (sign locally and run release-publish-signed.yml; see docs/release/RC-SIGNING.md)"
+    fi
     die "$tag requires attached signatures (stable tags fail closed; set DW_ALLOW_UNSIGNED_STABLE=1 only for an explicit unsigned override), missing: $missing_str (sign locally and run ci/github/release-attach.sh; see docs/release/SIGNING.md)"
   fi
-  verify_signed_manifest "$DIST" "$FEED" "$manifest"
+  verify_signed_manifest "$DIST" "${FEED:-}" "$manifest"
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
 
@@ -332,9 +346,9 @@ publish)
           seen=$((seen + 1))
         done <<<"$remote_assets"
         rm -f "$dl_tmp"
-        [[ $seen -eq 11 ]] ||
-          die "$tag: existing public release verified $seen/11 assets against signed-manifest.json"
-        echo "release-publish: release $tag exists and all 11 published assets match signed-manifest.json; leaving it as it is"
+        [[ $seen -eq $signed_n ]] ||
+          die "$tag: existing public release verified $seen/$signed_n assets against signed-manifest.json"
+        echo "release-publish: release $tag exists and all $signed_n published assets match signed-manifest.json; leaving it as it is"
       else
         echo "release-publish: release $tag exists and is complete; leaving it as it is"
       fi

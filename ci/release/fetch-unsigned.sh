@@ -40,7 +40,7 @@ done
 
 die() { echo "fetch-unsigned: $*" >&2; exit 1; }
 
-[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--tag must be vX.Y.Z"
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--tag must be vX.Y.Z or vX.Y.Z-rc.N"
 [[ "$tag_sha" =~ ^[0-9a-fA-F]{40}$ ]] || die "--tag-sha must be a 40-hex commit SHA from your locally verified signed tag"
 [[ "$run_id" =~ ^[0-9]+$ ]] || die "--run-id must be numeric"
 [[ -n "$unsigned_dir" && -n "$sigs_dir" ]] || die "--unsigned-dir and --sigs-dir are required"

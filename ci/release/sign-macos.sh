@@ -47,7 +47,7 @@ done
 die() { echo "sign-macos: $*" >&2; exit 1; }
 
 [[ "$(uname -s)" == Darwin ]] || die "must run on macOS"
-[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be X.Y.Z"
+[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--version must be X.Y.Z or X.Y.Z-rc.N"
 [[ -d "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir not found"
 [[ -n "$sigs_dir" && -n "$out_dir" && -n "$identity" ]] || die "--sigs-dir, --out-dir, and --identity are required"
 
@@ -131,8 +131,12 @@ codesign --verify --deep --strict --verbose=2 "$work/roundtrip/Dash Wallet.app"
 spctl --assess --type execute -vv "$work/roundtrip/Dash Wallet.app"
 xcrun stapler validate "$work/roundtrip/Dash Wallet.app"
 
-app_tar="$out_dir/feed/dash-wallet-$version-macos-universal.app.tar.gz"
-python3 "$gh_dir/macos-detached-sig.py" pack-app "$work/roundtrip/Dash Wallet.app" "$app_tar"
+# The updater archive is part of a stable release's feed only; a candidate publishes no feed.
+app_tar="(none: release candidate, no updater feed)"
+if [[ "$version" != *-rc.* ]]; then
+  app_tar="$out_dir/feed/dash-wallet-$version-macos-universal.app.tar.gz"
+  python3 "$gh_dir/macos-detached-sig.py" pack-app "$work/roundtrip/Dash Wallet.app" "$app_tar"
+fi
 
 echo "sign-macos: creating, signing, notarizing, and stapling the .dmg"
 dmg_src="$work/dmg-src"
