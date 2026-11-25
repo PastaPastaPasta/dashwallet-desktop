@@ -259,14 +259,18 @@ It refuses when the head has moved since the review, and refuses any model but O
 is never a reviewer. Rules:
 
 - Only records naming the current head count. Any push, a merge of main included, makes the old ones stale.
-- For each kind, the latest record at the head wins: `verdict=block` withdraws an earlier approve.
+- For each kind, the latest record at the head wins: `verdict=block` withdraws an earlier approve. "Latest" is
+  by the comment's creation time; editing an old comment changes its record in place.
 - A pull request that changes no funds path passes with no records.
 - If the API truncates the file list, the gate treats the pull request as funds.
 
-`funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review), on a pull
+`funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review, edited: a base
+change alters the file list), on a pull
 request comment that adds, edits or deletes a record, and on a dispatch (`gh workflow run funds-gate.yml -f
 pr=<N>`). It posts the commit status **Funds review gate** on the head: success or failure. It runs the
-gate from the default branch, never from the pull request, and checks out no pull request code. The PO's
+gate from the pull request's base branch (comment runs: the default branch), never from the pull
+request, and checks out no pull request code. The status is advisory until `main`'s branch protection
+requires the context `Funds review gate` (not the job name, whose run passes on a refusal). The PO's
 drain script runs the same `funds-gate.py check --sha <head>` from origin/main before every merge and
 refuses on anything but a pass. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
 pattern in `ci/funds-paths.txt` still matches a tracked file.

@@ -6,14 +6,16 @@
 # and on every comment that adds, edits or deletes a record, so a push after a verdict turns the status
 # red until the new head is reviewed.
 #
-# pull_request_target and issue_comment run this file and the gate script from the default branch, never
-# the pull request's copy, so a pull request cannot loosen its own gate. No pull request code is checked
-# out or run. The PO's drain script runs the same script from origin/main before every merge.
+# pull_request_target runs this file and the gate script from the pull request's base branch (main for
+# every pull request the drain merges), issue_comment from the default branch; never the pull request's
+# copy, so a pull request cannot loosen its own gate. No pull request code is checked out or run.
+# `edited` covers a base change, which changes the file list without a push. The PO's drain script runs
+# the same script from origin/main before every merge.
 name: Funds review gate
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -28,16 +30,16 @@ permissions:
   pull-requests: read
   statuses: write
 
-concurrency:
-  group: funds-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
-  cancel-in-progress: true
-
 jobs:
   evaluate:
     name: Evaluate the funds review gate
     if: >-
       ${{ github.event_name != 'issue_comment' || (github.event.issue.pull_request &&
       (contains(github.event.comment.body, 'dwd-review') || contains(github.event.changes.body.from, 'dwd-review'))) }}
+    # Job-level, so a comment run that the `if` skips never cancels a real evaluation.
+    concurrency:
+      group: funds-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

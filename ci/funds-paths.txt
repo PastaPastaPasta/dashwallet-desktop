@@ -26,6 +26,7 @@ rust/crates/dw-protx/**
 rust/crates/dw-coinjoin/**
 rust/crates/dw-units/**
 rust/crates/dw-uri/**
+rust/crates/dw-message/**
 
 # Engine: send, coin selection and control, fees, keys, backup, restore, CoinJoin, wallet lifecycle.
 rust/crates/dw-engine/src/send/**
@@ -47,6 +48,7 @@ rust/crates/dw-engine/src/wallet_gone_tests.rs
 rust/crates/dw-engine/src/multiwallet.rs
 rust/crates/dw-engine/src/compat.rs
 rust/crates/dw-engine/src/gate.rs
+rust/crates/dw-engine/src/session.rs
 rust/crates/dw-engine/src/held_writes.rs
 rust/crates/dw-engine/src/crash_send_tests.rs
 rust/crates/dw-engine/src/own_spend_*.rs
@@ -72,6 +74,11 @@ rust/crates/dw-engine/src/platform/**
 # Engine: masternode collateral, ProTx, payouts, credit withdrawals, shared masternodes; proposal collateral.
 rust/crates/dw-engine/src/masternodes/**
 rust/crates/dw-engine/src/governance/collateral*
+
+# The console: sendtoaddress, walletpassphrase and the other RPC-style wallet commands.
+rust/crates/dw-console/**
+rust/crates/dw-app/src/api/console.rs
+rust/crates/dw-ffi/src/api/console.rs
 
 # app.sqlite records of holds, barriers, withdrawals, registrations and shared-masternode sessions.
 rust/crates/dw-appdb/**
@@ -104,6 +111,7 @@ rust/crates/dw-ffi/src/api/wallet.rs
 rust/crates/dw-ffi/src/api/tx_actions.rs
 rust/crates/dw-ffi/src/api/units.rs
 rust/crates/dw-ffi/src/api/uri.rs
+rust/crates/dw-ffi/src/api/message.rs
 
 # Renderer logic that turns what the user typed into amounts and send requests.
 apps/desktop/src/format/amount*
@@ -115,6 +123,8 @@ apps/desktop/src/shielded/**
 apps/desktop/src/transfer/**
 apps/desktop/src/recovery/**
 
-# Swift app: send and PSBT.
+# Swift app: amounts, send and PSBT.
+Sources/DashKit/Amount.swift
+Sources/CrossUI/SendScreen.swift
 Sources/WalletFeatures/Send/**
 Sources/WalletFeatures/PSBT/**
