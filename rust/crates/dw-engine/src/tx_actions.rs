@@ -62,8 +62,8 @@ pub enum TxActionRefusal {
     /// stays until that wallet is removed and restored.
     RecordUnreadable(WalletId),
     /// It, or a later transaction that spends from it, funds a Platform
-    /// transfer, top-up or registration whose asset lock is still tracked:
-    /// the catch-up resumes it, sending it again.
+    /// transfer, top-up or registration whose asset lock is still tracked
+    /// and unsent or unproved: the catch-up resumes it, sending it again.
     PlatformFunding,
 }
 
@@ -890,6 +890,17 @@ struct Facts {
     platform_funding: bool,
 }
 
+/// Whether one of the transactions `is` picks funds an asset lock of
+/// `locks` the catch-up's resume may still send (`Built`, `Broadcast`).
+fn funds_a_pending_lock<'a>(
+    locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
+    is: impl Fn(&Txid) -> bool,
+) -> bool {
+    (locks.into_iter()).any(|l| {
+        crate::platform::lease::TrackedStatus::from(&l.status).pending() && is(&l.out_point.txid)
+    })
+}
+
 /// Abandons `root`, then each of `descendants` key-wallet's own walk did
 /// not reach; nothing when it refuses `root`.
 fn abandon_with(
@@ -1650,8 +1661,14 @@ impl NetworkSession {
         if offer {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            f.platform_funding = (wm.get_wallet_info(&wallet.0))
-                .is_some_and(|i| i.tracked_asset_locks.keys().any(|o| o.txid == txid));
+            f.platform_funding = (wm.get_wallet_info(&wallet.0)).is_some_and(|i| {
+                let (descendants, _) = (self.hub.history).read(&wallet, |txs| {
+                    unmined_descendants(txs, &i.core_wallet, txid)
+                });
+                funds_a_pending_lock(i.tracked_asset_locks.values(), |t| {
+                    *t == txid || descendants.contains(t)
+                })
+            });
         }
         // The exception's evidence on the inputs, as the abandon checks it:
         // not offered when it would refuse as locked.
@@ -1702,24 +1719,33 @@ impl NetworkSession {
         core: &ManagedWalletInfo,
     ) -> BTreeSet<Txid> {
         let spends: HashSet<Txid> = (core.accounts.all_accounts().into_iter())
+            .filter(|a| !a.managed_account_type().is_contact_owned())
             .flat_map(|a| a.transactions().iter())
             .filter(|(t, r)| txids.contains(*t) && !r.input_details.is_empty())
             .map(|(t, _)| *t)
             .collect();
-        let mut sent = BTreeSet::new();
-        for t in txids {
-            let own = spends.contains(t)
-                || (self.hub.history).read_wallet(&wallet, |h| {
-                    h.txs.get(t).is_some_and(|e| !e.own_inputs.is_empty())
-                        || h.drop_inputs.get(t).is_some_and(|i| !i.is_empty())
-                });
-            let marked = || {
-                let t = *t;
-                self.appdb_op(move |db| has_sent_mark(db, wallet, t))
-            };
-            if own || !matches!(marked().await, Ok(false)) {
-                sent.insert(*t);
+        let (mut sent, rest): (BTreeSet<Txid>, BTreeSet<Txid>) =
+            (txids.iter().copied()).partition(|t| {
+                spends.contains(t)
+                    || (self.hub.history).read_wallet(&wallet, |h| {
+                        h.txs.get(t).is_some_and(|e| !e.own_inputs.is_empty())
+                            || h.drop_inputs.get(t).is_some_and(|i| !i.is_empty())
+                    })
+            });
+        if rest.is_empty() {
+            return sent;
+        }
+        let marked = self.appdb_op({
+            let rest = rest.clone();
+            move |db| {
+                (rest.into_iter())
+                    .map(|t| Ok((t, has_sent_mark(db, wallet, t)?)))
+                    .collect::<Result<Vec<_>, dw_appdb::AppDbError>>()
             }
+        });
+        match marked.await {
+            Ok(marks) => sent.extend(marks.into_iter().filter(|(_, m)| *m).map(|(t, _)| t)),
+            Err(_) => sent.extend(rest),
         }
         sent
     }
@@ -1953,9 +1979,9 @@ impl NetworkSession {
                 &info.core_wallet,
                 &settled,
             )?;
-            // A drop's are dead, and a resume's send of one is refused.
+            // A drop's are dead: the network refuses a resume's send of one.
             if dead_drop.is_none()
-                && (info.tracked_asset_locks.keys()).any(|o| planned.contains(&o.txid))
+                && funds_a_pending_lock(info.tracked_asset_locks.values(), |t| planned.contains(t))
             {
                 return Err(EngineError::TxActionRefused(
                     TxActionRefusal::PlatformFunding,

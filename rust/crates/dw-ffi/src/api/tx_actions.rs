@@ -67,6 +67,9 @@ pub enum TxActionRefusal {
     /// what descends from this one is unknown: removing and restoring that
     /// wallet clears it.
     RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which the wallet sends again.
+    PlatformFunding,
 }
 
 /// One row of a transaction notification (QT-031): one per dash-qt record,
@@ -157,6 +160,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::PlatformFunding => Self::PlatformFunding,
         }
     }
 }
