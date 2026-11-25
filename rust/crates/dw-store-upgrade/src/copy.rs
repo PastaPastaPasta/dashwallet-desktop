@@ -133,7 +133,7 @@ pub fn restore_foreign() -> ScreenCopy {
                 "Keep the current files",
             ),
             button("settings.about.links.issues", "Report a problem"),
-            button("storeUpgrade.cantOpen.quit", "Quit"),
+            button("storeUpgrade.restore.foreign.quit", "Quit"),
         ],
         hint: Some((
             "storeUpgrade.restore.foreign.keepMeaning",

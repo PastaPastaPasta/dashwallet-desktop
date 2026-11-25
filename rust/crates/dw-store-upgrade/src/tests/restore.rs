@@ -647,6 +647,13 @@ fn s4_other_lineage_refuses_with_keep_action() {
         assert_eq!(screen, crate::copy::restore_foreign(), "{foreign}");
         assert_eq!(screen.buttons[0].key, "storeUpgrade.restore.foreign.keep");
         assert!(
+            screen
+                .buttons
+                .iter()
+                .all(|b| !b.key.starts_with("storeUpgrade.cantOpen.")),
+            "no key the cantOpen family may retire"
+        );
+        assert!(
             !screen.buttons[0].default_focus,
             "Keep is not the default focus"
         );
