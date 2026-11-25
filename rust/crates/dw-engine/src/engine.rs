@@ -128,6 +128,11 @@ impl Engine {
                 dw_fs::instance::InstanceError::Io(e) => EngineError::from(e),
             })?;
         mark("instance");
+        crate::store_upgrade::order::record(
+            &config.data_root,
+            crate::store_upgrade::order::Step::Instance,
+        );
+        crate::store_upgrade::sweep_once(&config.data_root);
         install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.

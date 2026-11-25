@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# `Adopters::cache_with_p9a_for_test` for other crates' tests (debug builds
+# only): a test binary's open path meets a chosen P9a outcome.
+test-support = []
+
 [dependencies]
 # The data root's instance lock, which proves no other process runs a check.
 dw-fs = { workspace = true }

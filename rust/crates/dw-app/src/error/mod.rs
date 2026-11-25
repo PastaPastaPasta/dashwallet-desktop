@@ -488,6 +488,76 @@ pub enum ErrorData {
         refusal: StuckFundingRefusalName,
         retry_later: bool,
     },
+    /// `storage_refused`: the open's store-upgrade check refused the
+    /// network's wallet data and changed nothing in it. `screen` is the
+    /// store upgrade's own screen with `{folder}` filled in; `folder` is the
+    /// network directory; `cause` names the refusal for tests and logs only.
+    StoreRefused {
+        screen: Box<StoreScreen>,
+        folder: String,
+        cause: String,
+    },
+    /// `storage_in_use`: whether trying again in this process may succeed;
+    /// false means only a restart clears it.
+    StorageInUse { retryable: bool },
+    /// `io` from the open's store-upgrade step: the machine failed (disk
+    /// full, a read error), not the data; trying again may succeed.
+    Io { retryable: bool },
+}
+
+/// A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for` gives
+/// it: catalog keys with their English, `{folder}` filled in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreScreen {
+    pub title_key: String,
+    pub title: String,
+    pub text_key: String,
+    pub text: String,
+    pub buttons: Vec<StoreButton>,
+    /// A line under the buttons.
+    pub hint: Option<StoreHint>,
+}
+
+/// One button of a [`StoreScreen`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreButton {
+    pub key: String,
+    pub label: String,
+    pub destructive: bool,
+    pub default_focus: bool,
+}
+
+/// The line under a [`StoreScreen`]'s buttons.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreHint {
+    pub key: String,
+    pub text: String,
+}
+
+impl StoreScreen {
+    pub fn new(screen: &dw_engine::store_upgrade::copy::ScreenCopy, folder: &str) -> Self {
+        Self {
+            title_key: screen.title_key.into(),
+            title: screen.title.into(),
+            text_key: screen.text_key.into(),
+            text: screen.text.replace("{folder}", folder),
+            buttons: (screen.buttons.iter())
+                .map(|b| StoreButton {
+                    key: b.key.into(),
+                    label: b.label.into(),
+                    destructive: b.destructive,
+                    default_focus: b.default_focus,
+                })
+                .collect(),
+            hint: screen.hint.map(|(key, text)| StoreHint {
+                key: key.into(),
+                text: text.into(),
+            }),
+        }
+    }
 }
 
 /// Why Repair refused a stuck funding step (E0-04 §6.5; the engine's

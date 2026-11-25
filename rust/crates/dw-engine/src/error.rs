@@ -23,12 +23,21 @@ pub enum EngineError {
     StorageInUse(String),
     #[error("storage error: {0}")]
     Storage(String),
-    /// The wallet database was written by a newer build: its upstream or its
-    /// fork schema history is beyond what this build knows (DP3-04b D35).
-    /// Nothing was changed; the newer build, or a backup this build wrote,
-    /// opens it.
+    /// The wallet database was written by a newer build: its schema history
+    /// is beyond what this build knows (DP3-04b D35), met outside the open's
+    /// store-upgrade check (which reports it as [`Self::StoreRefused`] with
+    /// cause `SchemaTooNew`). Nothing was changed.
     #[error("this wallet file was written by a newer build: {0}")]
     StorageTooNew(String),
+    /// The open's store-upgrade check refused the network's wallet data
+    /// (dw-store-upgrade): nothing in the folder was changed. Carries the
+    /// cause and the way out the folder's proved state allows.
+    #[error("this build can't safely open the wallet data in {}: {}", .0.folder.display(), .0.detail)]
+    StoreRefused(Box<crate::store_upgrade::StoreRefusal>),
+    /// The open's store-upgrade step failed for the machine (disk full, an
+    /// I/O error, the snapshot), not the data: trying again may succeed.
+    #[error("io error: {0}")]
+    RetryableIo(String),
     #[error("wallet not found: {0}")]
     WalletNotFound(String),
     /// The phrase is not a valid BIP39 mnemonic in any supported wordlist.
@@ -179,6 +188,8 @@ impl EngineError {
             EngineError::StorageInUse(_) => "storage_in_use",
             EngineError::Storage(_) => "storage",
             EngineError::StorageTooNew(_) => "storage_too_new",
+            EngineError::StoreRefused(_) => "storage_refused",
+            EngineError::RetryableIo(_) => "io",
             EngineError::WalletNotFound(_) => "wallet_not_found",
             EngineError::InvalidMnemonic(_) => "invalid_mnemonic",
             EngineError::WalletAlreadyExists(_) => "wallet_already_exists",

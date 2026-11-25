@@ -114,6 +114,23 @@ impl Adopters {
         EMBEDDED.get_or_init(probe)
     }
 
+    /// Other crates' tests (debug builds only): run this build's probe under
+    /// `data_root` and cache it with its P9a outcome replaced by `p9a`, so
+    /// the process's real open path meets that outcome. Panics if the probe
+    /// already ran in this process.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub fn cache_with_p9a_for_test(data_root: &Path, p9a: P9aStatus) -> &'static Adopters {
+        let adopters = Adopters {
+            p9a,
+            ..Self::probe_new_root(data_root)
+        };
+        assert!(
+            EMBEDDED.set(adopters).is_ok(),
+            "the probe already ran in this process"
+        );
+        Self::cached().expect("just cached")
+    }
+
     fn broken(detail: String) -> Adopters {
         Adopters {
             embedded: Vec::new(),

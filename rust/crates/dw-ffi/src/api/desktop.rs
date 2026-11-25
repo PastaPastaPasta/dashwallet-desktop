@@ -58,7 +58,11 @@ impl From<dw_engine::EngineError> for DesktopError {
         match e {
             E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
             E::NotImplemented(call) => Self::NotImplemented { call },
-            E::Io(_) | E::Storage(_) | E::StorageTooNew(_) => Self::OsError { detail },
+            E::Io(_)
+            | E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::RetryableIo(_) => Self::OsError { detail },
             _ => Self::Internal { detail },
         }
     }
