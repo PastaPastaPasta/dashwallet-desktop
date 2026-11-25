@@ -2042,6 +2042,32 @@ mod tests {
         engine.block_on(engine.shutdown()).unwrap();
     }
 
+    /// A raise of a Core wallet's lookahead in the session (the recovery
+    /// scan's) widens the gap past Core's counters too, not just past the
+    /// last address used.
+    #[test]
+    fn a_raised_lookahead_widens_the_gap_past_cores_counters() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let options = ImportOptions {
+            lookahead: Some(50),
+            ..ImportOptions::default()
+        };
+        let id = (engine.block_on(s.import_wallet_dat(file, None, options)))
+            .unwrap()
+            .wallet_id;
+        let addresses = addresses_of(&engine, &s, id);
+        let before = highest(&addresses, AddressChain::Receiving);
+        assert!(before < 1000 + CORE_COMPAT_LOOKAHEAD, "{before}");
+
+        let manager = s.manager().unwrap();
+        (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) >= 1 + CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// Review L4: what the guard's drop runs replaces the private key.
     #[test]
     fn master_key_guard_erases_the_private_key() {
