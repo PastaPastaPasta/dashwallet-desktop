@@ -17,6 +17,9 @@ test("the sheet shows the App ID, the app's unverified name and where it returns
   const sheet = await openConnect(page, "ok");
   await expect(sheet.getByRole("heading", { name: "Sign in to an app" })).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toHaveText("“Yappr” (name given by the app, not verified)");
+  await expect(page.getByTestId("connect-unverified")).toHaveText(
+    "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+  );
   await expect(page.getByTestId("connect-app-id")).toHaveText(APP_ID);
   await expect(page.getByTestId("connect-returns-to")).toHaveText("Returns you to yappr.example");
   await expect(page.getByTestId("connect-identity")).toHaveValue(/.+/);
@@ -100,6 +103,7 @@ test("a request typed into Open URI has no way back; closing the sheet forgets t
   await page.getByTestId("open-uri-input").fill("dashpay://connect?v=2&fixture=1");
   await page.getByTestId("open-uri-open").click();
   await page.locator("[data-testid=connect-body][data-phase=sheet]").waitFor();
+  await expect(page.getByTestId("connect-unverified")).toBeVisible();
   await expect(page.getByTestId("connect-returns-to")).toHaveCount(0);
   await page.getByTestId("connect-deny").click();
   await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
@@ -121,7 +125,7 @@ test("a send that failed says so; Retry sending signs in", async ({ page }) => {
   await page.getByTestId("connect-approve").click();
   await authorize(page);
   await expect(page.getByTestId("connect-send-failed")).toHaveText(
-    "The keys were added to your identity, but the app hasn't received them yet. Retry sending, or return to the app and start again.",
+    "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
   );
   await expect(page.getByTestId("connect-return")).toHaveCount(0);
   await page.getByTestId("connect-retry").click();
@@ -176,6 +180,21 @@ test("a Deny after keys not confirmed doesn't say nothing was added", async ({ p
   await expect(page.getByTestId("connect-denied")).toHaveText(
     "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
   );
+});
+
+test("a Deny after keys not confirmed on a typed request shows the denied state instead of closing", async ({ page }) => {
+  await openConnect(page, "notConfirmed", "light", null);
+  await quoted(page);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-quote-error")).toBeVisible();
+  await page.getByTestId("connect-deny").click();
+  await expect(page.getByTestId("connect-denied")).toHaveText(
+    "You declined this sign-in request. Keys from your earlier approval may already be on your identity, but the app hasn't received them, so it can't use them.",
+  );
+  await expect(page.getByTestId("connect-return")).toHaveCount(0);
+  await page.getByTestId("connect-close").click();
+  await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
 });
 
 test("a request that arrives while locked opens once the wallet is unlocked", async ({ page }) => {

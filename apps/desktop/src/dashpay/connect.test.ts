@@ -189,10 +189,39 @@ describe("the flow over the fixture", () => {
     expect(closed).toHaveBeenCalledOnce();
   });
 
-  it("Deny on a request with no return link just closes", async () => {
-    const { flow, closed } = await open("ok", null);
+  it("Deny on a request with no return link closes straight away when no approval was attempted", async () => {
+    const { flow, closed, link } = await open("ok", null);
     await flow.deny();
+    expect(flow.attempted).toBeNull();
+    expect(link().answer).toBe("declined");
+    expect(flow.closed).toBe(true);
     expect(closed).toHaveBeenCalledOnce();
+  });
+
+  it("Deny on a request with no return link shows the denied state when an approval was attempted", async () => {
+    const { flow, closed, link } = await open("notConfirmed", null);
+    await approve(flow);
+    expect(flow.attempted).not.toBeNull();
+    await flow.deny();
+    expect(flow.phase).toBe("denied");
+    expect(flow.closed).toBe(false);
+    expect(closed).not.toHaveBeenCalled();
+    expect(link().answer).toBe("declined");
+    flow.close();
+    expect(closed).toHaveBeenCalledOnce();
+  });
+
+  it("Deny on a reopened sheet with no return link shows the denied state after an earlier approval", async () => {
+    const { flow } = await open("notConfirmed", null);
+    await approve(flow);
+    const closed = vi.fn();
+    const again = new ConnectFlow(new IpcBackend("fixture"), FIXTURE_WALLET_ID, flow.linkId, null, closed);
+    await again.load();
+    await again.deny();
+    expect(again.phase).toBe("denied");
+    expect(again.attempted).not.toBeNull();
+    expect(again.closed).toBe(false);
+    expect(closed).not.toHaveBeenCalled();
   });
 
   it("Approve asks for the passphrase every time, then signs in", async () => {
@@ -218,6 +247,12 @@ describe("the flow over the fixture", () => {
     await approve(flow);
     expect(flow.phase).toBe("sendFailed");
     expect(flow.closable).toBe(true);
+    expect(t("dashpay.connect.sendFailed")).toBe(
+      "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
+    );
+    expect(t("dashpay.connect.app.unverified")).toBe(
+      "Dash Wallet can't check which app sent this request. Approve it only if you just started signing in on that app's own website.",
+    );
     await flow.retrySend();
     expect(flow.phase).toBe("done");
     expect(link().answer).toBe("ok");

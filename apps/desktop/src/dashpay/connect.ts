@@ -407,7 +407,7 @@ export class ConnectFlow extends Model {
     this.changed();
     try {
       await this.api.appConnectDeny(this.linkId);
-      if (this.returnsTo === null) return this.close();
+      if (this.returnsTo === null && this.attempted === null) return this.close();
       this.phase = "denied";
     } catch (e) {
       this.#fail(e);

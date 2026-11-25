@@ -27,6 +27,11 @@ function AppHeader({ flow }: { flow: ConnectFlow }) {
           <p className="connect-claim" data-testid="connect-claim">
             {t("dashpay.connect.app.claim", { label: sheet.label })}
           </p>
+          {flow.phase === "sheet" && (
+            <p className="sheet-text" data-testid="connect-unverified">
+              {t("dashpay.connect.app.unverified")}
+            </p>
+          )}
           <div className="connect-app-id">
             <span className="detail-label">{t("dashpay.connect.app.id")}</span>
             <span className="connect-app-id-value">
