@@ -107,6 +107,10 @@ const KEEP_CURRENT_TITLE: &str =
     "[MG placeholder] Dash Wallet couldn't finish restoring your wallet data";
 const KEEP_CURRENT_TEXT: &str = "[MG placeholder] Another version of Dash Wallet changed the wallet data in {folder} after the earlier data was put back. You can keep the wallet data as it is now. Every set of wallet data is kept in the upgrade-backups folder inside {folder}: don't delete anything there.";
 
+const SNAPSHOT_MISSING_TITLE: &str =
+    "[MG placeholder] Dash Wallet can't open this wallet data safely";
+const SNAPSHOT_MISSING_TEXT: &str = "[MG placeholder] This version of Dash Wallet can't safely open the wallet data in {folder}: it started upgrading it but can't find the copy it saved before the upgrade. Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it. Earlier versions of Dash Wallet can't open it either. Choose Report a problem, and don't delete anything in {folder}.";
+
 /// Which refusal the can't-open screen shows for (Q78-A (j)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CantOpenCause {
@@ -263,12 +267,30 @@ pub fn restore_keep_current() -> ScreenCopy {
     }
 }
 
+/// `storeUpgrade.snapshotMissing.*`: an upgrade part-done with no snapshot
+/// to keep (M1), in the shape of MG's draft refusal family with its
+/// `wayOut.support`. The same for every state; the state stays in the error.
+pub fn snapshot_missing(_state: crate::snapshot::MissingSnapshot) -> ScreenCopy {
+    ScreenCopy {
+        hint: Some(("settings.links.issuesHint", ISSUES_HINT)),
+        ..screen(
+            ("storeUpgrade.snapshotMissing.title", SNAPSHOT_MISSING_TITLE),
+            ("storeUpgrade.snapshotMissing.text", SNAPSHOT_MISSING_TEXT),
+            vec![
+                button("storeUpgrade.snapshotMissing.report", "Report a problem"),
+                button("storeUpgrade.snapshotMissing.quit", "Quit"),
+            ],
+        )
+    }
+}
+
 /// The screen for an error from this crate, if it has one.
 pub fn screen_for(e: &StoreUpgradeError, backup: BackupState) -> Option<ScreenCopy> {
     if let Some(c) = CantOpenCause::of(e) {
         return Some(cant_open(c, backup));
     }
     Some(match e {
+        StoreUpgradeError::UpgradeSnapshotMissing { state, .. } => snapshot_missing(*state),
         StoreUpgradeError::RestoreRefused { cause } => restore_refused(*cause),
         StoreUpgradeError::RestoreNoSpace { .. } => restore_no_space(),
         StoreUpgradeError::RestoreIncomplete {
@@ -298,6 +320,7 @@ pub fn all_screens() -> Vec<ScreenCopy> {
         restore_no_space(),
         restore_not_started(IncompleteCause::Other),
         restore_keep_current(),
+        snapshot_missing(crate::snapshot::MissingSnapshot::Absent),
     ];
     v.dedup();
     v

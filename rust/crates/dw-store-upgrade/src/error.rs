@@ -98,6 +98,23 @@ pub enum StoreUpgradeError {
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
 
+    /// An upgrade that stopped after R1's drop, and no before-upgrade
+    /// snapshot this upgrade can keep: none at all, none that verifies, or
+    /// none of this wallet (`storeUpgrade.snapshotMissing.*`). The file stays
+    /// as the earlier start left it; nothing more is written.
+    #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
+    UpgradeSnapshotMissing {
+        state: crate::snapshot::MissingSnapshot,
+        dir: PathBuf,
+    },
+
+    /// `wallet.sqlite` is a symbolic link or is owned by another user: the
+    /// upstream open refuses the first and can't make the second owner-only,
+    /// and the copy the upgrade is rehearsed on has neither. Refused before
+    /// R1's drop. No screen. Nothing changed.
+    #[error("wallet.sqlite {detail}")]
+    WalletFileUnsupported { detail: String },
+
     /// [`crate::PersisterOpened::open`] was asked for a load policy other
     /// than `Strict` (Q78 R6). Nothing was opened.
     #[error("the wallet store opens only with LoadPolicy::Strict, not {policy}")]
@@ -165,6 +182,8 @@ impl StoreUpgradeError {
             | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
+            | Self::UpgradeSnapshotMissing { .. }
+            | Self::WalletFileUnsupported { .. }
             | Self::RestorePending { .. }
             | Self::RestoreRefused { .. }
             | Self::RestoreNoSpace { .. }
@@ -180,9 +199,8 @@ impl StoreUpgradeError {
         }
     }
 
-    /// Whether this is a refusal the user sees on a "can't open" screen
-    /// ([`crate::copy::screen_for`]): this build cannot take this data, and
-    /// left it unchanged.
+    /// Whether this build refuses this data as it is, leaving it unchanged.
+    /// Some refusals have a screen ([`crate::copy::screen_for`]).
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
@@ -194,6 +212,8 @@ impl StoreUpgradeError {
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }
+                | Self::UpgradeSnapshotMissing { .. }
+                | Self::WalletFileUnsupported { .. }
         )
     }
 

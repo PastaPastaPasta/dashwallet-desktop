@@ -55,8 +55,9 @@ pub use restore::{
     touched_paths,
 };
 pub use snapshot::{
-    STORE_FILES, SnapshotFile, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot,
-    snapshot_present, snapshot_state, take_snapshot,
+    ABSENT_SNAPSHOT_POLICY, AbsentSnapshotPolicy, MissingSnapshot, STORE_FILES, SnapshotFile,
+    SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, latest_snapshot, snapshot_present,
+    snapshot_state, take_snapshot,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 

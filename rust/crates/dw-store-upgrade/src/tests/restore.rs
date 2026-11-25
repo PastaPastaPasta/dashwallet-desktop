@@ -1166,7 +1166,8 @@ fn placeholders_are_only_the_keys_mg_has_not_written() {
         keys,
         [
             "storeUpgrade.restore.keepCurrent.title",
-            "storeUpgrade.restore.notStarted.title"
+            "storeUpgrade.restore.notStarted.title",
+            "storeUpgrade.snapshotMissing.title"
         ]
     );
 }
