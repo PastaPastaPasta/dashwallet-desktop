@@ -792,7 +792,9 @@ also while `shielded.sqlite` has a `shielded_pending_spends` row of the wallet, 
 this session counts, or cannot be read: `shielded_spend_unresolved` with data `shieldedHold`, `inFlight` (a stored or
 reserved spend) or `carriedOver` (a DEC-1057 or fork-held mark, or a marker, journal, outcome or store that does not
 read, or a row the open store did not load), checked after the grant is checked and before anything of the wallet is
-revoked, redeemed or deleted, and again before its vault records go. Item 1,
+revoked, redeemed or deleted, and again before its vault records go. A fork disposition the open's drain moved into
+the journal (`shielded_drained_hold`) does not refuse it: the removal leaves those rows, a later bind of the wallet
+holds their notes again, and the dispatch hook refuses any spend of them. Item 1,
 on the fork line, replaces this with an upstream detach.
 
 **While the dispatch journal is unavailable** (version 69: `dispatch.sqlite` could not be opened or is of a newer

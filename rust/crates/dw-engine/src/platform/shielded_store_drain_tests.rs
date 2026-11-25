@@ -34,6 +34,9 @@ use crate::{DashNetwork, Engine, EngineConfig, EngineEvent, EventSink, NetworkSe
 const MAIN: &str = "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add";
 /// The fixture's vault passphrase.
 const PASS: &[u8] = b"upgrade fixture passphrase";
+/// "Fixture main"'s recovery phrase (`expected.json`).
+const MAIN_PHRASE: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 fn main_wallet() -> WalletId {
     let mut id = [0; 32];
@@ -312,6 +315,38 @@ impl Opened {
             .unwrap()
     }
 
+    /// The engine's dispatch hook's answer to the first send of a transfer
+    /// `[n; 32]` of the main wallet selecting the test note at `position`.
+    fn dispatch(
+        &self,
+        c: &Arc<NetworkShieldedCoordinator>,
+        n: u8,
+        position: u64,
+    ) -> Result<(), String> {
+        let hook = EngineDispatch::new(&self.session, c);
+        let note = note(position, NOTE);
+        let st_bytes = format!("signed transition {n}").into_bytes();
+        let payload = ShieldedDispatchPayload {
+            kind: ShieldedDispatchKind::Transfer,
+            wallet_id: main_wallet().0,
+            account_index: SHIELDED_ACCOUNT,
+            activity_id: [n; 32],
+            st_hash: sha2::Sha256::digest(&st_bytes).into(),
+            st_bytes,
+            anchor: [0xa0; 32],
+            selected_notes: vec![DispatchedNote {
+                nullifier: note.nullifier,
+                cmx: note.cmx,
+                value: note.value,
+                position: note.position,
+            }],
+            published_nullifiers: vec![note.nullifier, [0xee; 32]],
+        };
+        (self.engine)
+            .block_on(async move { hook.dispatch(payload).await })
+            .map_err(|e| e.reason)
+    }
+
     /// One forced shielded pass.
     fn pass(&self) -> bool {
         let (s, m) = (Arc::clone(&self.session), self.session.manager().unwrap());
@@ -567,37 +602,12 @@ fn dispatch_refuses_a_spend_of_a_drained_note() {
     let o = root.open();
     let c = o.bound();
     o.save_notes(&c, &[1, 2]);
-    let hook = Arc::new(EngineDispatch::new(&o.session, &c));
-    let dispatch = |n: u8, position: u64| {
-        let note = note(position, NOTE);
-        let st_bytes = format!("signed transition {n}").into_bytes();
-        let payload = ShieldedDispatchPayload {
-            kind: ShieldedDispatchKind::Transfer,
-            wallet_id: main_wallet().0,
-            account_index: SHIELDED_ACCOUNT,
-            activity_id: [n; 32],
-            st_hash: sha2::Sha256::digest(&st_bytes).into(),
-            st_bytes,
-            anchor: [0xa0; 32],
-            selected_notes: vec![DispatchedNote {
-                nullifier: note.nullifier,
-                cmx: note.cmx,
-                value: note.value,
-                position: note.position,
-            }],
-            published_nullifiers: vec![note.nullifier, [0xee; 32]],
-        };
-        let hook = Arc::clone(&hook);
-        (o.engine)
-            .block_on(async move { hook.dispatch(payload).await })
-            .map_err(|e| e.reason)
-    };
     assert_eq!(
-        dispatch(7, 1),
+        o.dispatch(&c, 7, 1),
         Err("the spend takes a note a drained fork disposition holds".into())
     );
     assert_eq!(
-        dispatch(8, 2),
+        o.dispatch(&c, 8, 2),
         Err("the library stored no spend for the activity".into())
     );
     o.close();
@@ -999,10 +1009,11 @@ fn a_drained_fork_spend_and_its_stored_row_refuse_the_removal() {
 
 /// What the removal does with a drained hold alone (the fork's unresolved
 /// disposition, no stored record left): `holds_unresolved` does not read
-/// the journal's drained holds, so the removal goes through, and the hold
-/// stays in the journal for the wallet's id, where the dispatch hook
-/// refuses any spend of its note ([`dispatch_refuses_a_spend_of_a_drained_note`])
-/// and a later bind of the same wallet holds it again.
+/// the journal's drained holds, so the removal goes through, upstream's
+/// store open and the hold's reservation purged with the wallet. The hold
+/// stays in the journal under the wallet's id: a re-import of the same
+/// seed holds the note again at its bind, and the dispatch hook refuses
+/// any spend of it.
 #[test]
 fn a_drained_hold_alone_leaves_the_removal_and_stays_in_the_journal() {
     let root = Root::new(&[unresolved(1, &[1])]);
@@ -1010,10 +1021,34 @@ fn a_drained_hold_alone_leaves_the_removal_and_stays_in_the_journal() {
     assert_eq!(o.verdict(), Some(Ok(())));
     assert!(stored_rows(&root.net(), main_wallet()).is_empty());
     assert_eq!(o.holds(), vec![(0, nf(1))]);
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.selectable(&c), (vec![nf(2)], NOTE));
+    drop(c);
+
     let (removed, _) = remove_main(&o);
     removed.unwrap();
     assert!(o.session.require_wallet(&main_wallet()).is_err(), "removed");
     assert_eq!(o.holds(), vec![(0, nf(1))], "the drained hold stays");
+
+    let imported = o.engine.block_on(o.session.import_wallet(
+        zeroize::Zeroizing::new(MAIN_PHRASE.as_bytes().to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            core_compat: false,
+            ..Default::default()
+        },
+    ));
+    assert_eq!(imported.unwrap(), main_wallet(), "the same seed");
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.selectable(&c), (vec![nf(2)], NOTE), "held again");
+    assert_eq!(
+        o.dispatch(&c, 7, 1),
+        Err("the spend takes a note a drained fork disposition holds".into())
+    );
+    drop(c);
     o.close();
     let o = root.open();
     assert_eq!(o.holds(), vec![(0, nf(1))], "and at the next start");

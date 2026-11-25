@@ -4513,6 +4513,11 @@ pub(crate) async fn holds_unresolved(
 /// open did not load; the library's purge deletes exactly these rows
 /// (`file_store.rs` `purge_wallet`). A store that cannot be read holds.
 ///
+/// A fork disposition the open's drain moved into the journal
+/// (`shielded_drained_hold`) does not hold: the removal leaves those rows
+/// (`erase_wallet`), a later bind of the wallet holds its notes again
+/// ([`sync_drained_holds`]), and the dispatch hook refuses any spend of them.
+///
 /// `CarriedOver` when a confirmation alone does not clear it: a DEC-1057 or
 /// fork-held mark, a marker, journal, outcome or store that does not read,
 /// or a row on disk the open store did not load (a damaged record the
