@@ -22,10 +22,10 @@ import type { QrMatrix } from "../api/generated/QrMatrix";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
 import type { Recipient } from "../api/generated/Recipient";
 import type { TxActionRefusalName } from "../api/generated/TxActionRefusalName";
-import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxEstimate } from "../api/generated/TxEstimate";
 import type { TxRow } from "../api/generated/TxRow";
 import type { Utxo } from "../api/generated/Utxo";
+import { pendingUnproven, restored, type HeldTxActionRefusalName, type HeldTxExtras } from "../api/restoreHolds";
 import type { LockResolutionName } from "../api/generated/LockResolutionName";
 import type { PaymentLockInfo } from "../api/generated/PaymentLockInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -106,6 +106,8 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  /** Payments that still hold their `restore_hold` from before a restore (Q92 H2), until abandoned. */
+  restoreHeld: string[];
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -122,6 +124,7 @@ export const newSendWorld = (): SendWorld => ({
   settledChildHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  restoreHeld: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -448,14 +451,14 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
 /** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst and
  * recordUnreadable steps are marked as the fixture's, so only the renderer's catalog text can show
  * them unmarked. */
-const refusalMessage = (refusal: TxActionRefusalName) =>
+const refusalMessage = (refusal: HeldTxActionRefusalName) =>
   refusal === "rescanFirst"
     ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
     : refusal === "recordUnreadable"
       ? "[fixture engine] A saved transaction of an open wallet can't be read."
       : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
-export const refused = (refusal: TxActionRefusalName, walletId: string | null = null) =>
-  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal, walletId });
+export const refused = (refusal: HeldTxActionRefusalName, walletId: string | null = null) =>
+  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal: refusal as TxActionRefusalName, walletId });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -850,7 +853,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     tx_detail_extras: ({ walletId, txid }, { world }) => {
       const row = rowOf(wallet(world, walletId), txid);
       const d = txDetails(row);
-      const extras: TxDetailExtrasInfo = {
+      const extras: HeldTxExtras = {
         txid,
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
@@ -864,12 +867,14 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
+        restoreHeld: world.send.restoreHeld.includes(txid),
       };
       return extras;
     },
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
+      if (restored(w.summary.balances)) throw refused("restored");
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
@@ -878,7 +883,13 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
       const mine = ctx.world.send.sent[txid];
       if (mine) {
-        w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
+        const isChange = (u: Utxo) => !!mine.change && sameOutpoint(u.outpoint, mine.change);
+        // A held change was counted as pending, not confirmed.
+        for (const u of w.coins.filter((c) => isChange(c) && pendingUnproven(c))) {
+          moveBalance(w, -u.amount, "unconfirmed");
+          moveBalance(w, u.amount);
+        }
+        w.coins = [...w.coins.filter((u) => !isChange(u)), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
         moveBalance(w, -row.amount);
       } else {
@@ -891,10 +902,12 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         sh.abandonable = true;
         sh.abandonCharge = abandonFee(sh.reserved.length);
       }
+      ctx.world.send.restoreHeld = ctx.world.send.restoreHeld.filter((t) => t !== txid);
       changed(ctx, w, [txid]);
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
+      if (restored(wallet(world, walletId).summary.balances)) throw refused("restored");
       const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);

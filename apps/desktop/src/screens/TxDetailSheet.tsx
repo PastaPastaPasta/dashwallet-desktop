@@ -2,7 +2,7 @@
 // facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15). With prices
 // (MP-01), what the payment was worth when first seen (its stamp, rates-engine §6) and its value now.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
@@ -13,7 +13,8 @@ import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
-import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { keys, useBackend, useBalance, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { isRestoredRefusal, restored, restoreHeld } from "../api/restoreHolds";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
@@ -172,6 +173,17 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
   return x.inputsUnresolved ? t("activity.abandon.unknownInputs") : t("activity.abandon.notSpending");
 }
 
+/** MG's line above the abandon confirm while the payment still holds its hold from before a restore
+ * (Q92 H2); abandoning ends the hold, so a later confirm shows none. */
+export const abandonHint = (x: TxDetailExtrasInfo): string | null => (restoreHeld(x) ? t("activity.abandon.restoredHint") : null);
+
+/** What the sheet offers for one action the engine says applies: the action, nothing, or, while the
+ * restored wallet data is still being checked (RESTORED), the money gate's refusal in its place. */
+export function actionOffer(applies: boolean, walletRestored: boolean): "offer" | "gated" | "none" {
+  if (!applies) return "none";
+  return walletRestored ? "gated" : "offer";
+}
+
 /** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
  * refusal, why a `settledDescendant` one can't be abandoned, and which open wallet (of `wallets`)
  * a `recordUnreadable` one names from the catalog. */
@@ -181,22 +193,31 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+    if (isRestoredRefusal(e.data.refusal)) return t("activity.abandon.restoredGate");
   }
   return errorMessage(e);
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
-function Actions({ walletId, txid }: { walletId: string; txid: string }) {
+export function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const b = useBackend();
   const client = useQueryClient();
   const extras = useTxDetailExtras(walletId, txid);
+  const balance = useBalance(walletId);
   const [confirming, setConfirming] = useState(false);
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  const can = !!x && (x.canAbandon || x.canResend);
+  const walletRestored = restored(balance.data);
+  const abandon = actionOffer(!!x?.canAbandon, walletRestored);
+  const resend = actionOffer(!!x?.canResend, walletRestored);
+  useEffect(() => {
+    if (abandon !== "offer") setConfirming(false);
+  }, [abandon]);
+  const can = abandon === "offer" || resend === "offer";
+  const gated = abandon === "gated" || resend === "gated";
   // After an abandon the actions go, but its note stays.
-  if (!x || (!can && !note)) return null;
+  if (!x || (!can && !gated && !note)) return null;
   const run = async (what: "abandon" | "resend") => {
     setBusy(true);
     setNote(null);
@@ -214,10 +235,16 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       setBusy(false);
     }
   };
+  const hint = abandonHint(x);
   return (
     <section className="tx-actions card-l1" aria-label="Actions" data-testid="tx-detail-actions">
-      {confirming ? (
+      {confirming && abandon === "offer" ? (
         <>
+          {hint && (
+            <p className="tx-actions-question" data-testid="tx-abandon-restored-hint">
+              {hint}
+            </p>
+          )}
           <p className="tx-actions-question">
             {abandonQuestion(x)}
           </p>
@@ -233,18 +260,23 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       ) : (
         can && (
           <span className="tx-actions-row">
-            {x.canResend && (
+            {resend === "offer" && (
               <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
                 Resend
               </DashButton>
             )}
-            {x.canAbandon && (
+            {abandon === "offer" && (
               <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
                 Abandon transaction
               </DashButton>
             )}
           </span>
         )
+      )}
+      {gated && (
+        <p className="placeholder-note" role="status" data-testid="tx-restored-gate">
+          {abandon === "gated" ? t("activity.abandon.restoredGate") : t("common.fundsPaused")}
+        </p>
       )}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">

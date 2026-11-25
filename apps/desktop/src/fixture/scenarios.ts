@@ -34,6 +34,7 @@ import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashP
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
+import type { HeldUtxo, RestoredBalances } from "../api/restoreHolds";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -60,7 +61,7 @@ export const SECOND_WALLET_ID = "b2".repeat(32);
 export interface FixtureWallet {
   summary: WalletSummary;
   rows: TxRow[];
-  coins: Utxo[];
+  coins: HeldUtxo[];
   receive: ReceiveWorld;
   /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
   scanHeight?: number | null;
@@ -497,6 +498,53 @@ export function withHistoryGap(w: World): World {
   return w;
 }
 
+/** The `restore-holds` scenarios' payment. */
+export const RESTORE_HELD_TXID = "4e".repeat(32);
+
+/** A payment still unconfirmed in the wallet data restored from before the upgrade (Q92 H1, H2): it
+ * spent the 7.5 DASH coin, and its change is shown but never offered, counted as pending. */
+function withRestoreHold(w: World, stillRestored: boolean): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const row: TxRow = {
+    ...sent,
+    txid: RESTORE_HELD_TXID,
+    timestamp: (sent.timestamp ?? 0) + 60,
+    blockHeight: null,
+    label: null,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  const spent = wallet.coins.find((u) => u.amount === 750_000_000)!;
+  const change: HeldUtxo = {
+    ...spent,
+    outpoint: { txid: RESTORE_HELD_TXID, vout: 1 },
+    amount: spent.amount + row.amount,
+    confirmations: 0,
+    blockHeight: null,
+    timestamp: row.timestamp,
+    instantLocked: false,
+    chainLocked: false,
+    label: null,
+    isChange: true,
+    spendable: false,
+    pendingUnproven: true,
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [...wallet.coins.filter((u) => u !== spent), change];
+  const b = wallet.summary.balances!;
+  const balances: RestoredBalances = {
+    ...b,
+    confirmed: b.confirmed - spent.amount,
+    unconfirmed: b.unconfirmed + change.amount,
+    total: b.total + row.amount,
+    restored: stillRestored,
+  };
+  wallet.summary = { ...wallet.summary, balances };
+  w.send.sent[RESTORE_HELD_TXID] = { walletId: wallet.summary.walletId, spent: [spent], change: change.outpoint };
+  w.send.restoreHeld = [RESTORE_HELD_TXID];
+  return w;
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -844,6 +892,11 @@ const SCENARIOS = {
     w.send.debitUnknown = [row.txid];
     return w;
   },
+  /** RESTORED cleared, with a payment still held from before the restore: its change shows MG's
+   * pendingUnproven line in Coin Selection, and Abandon's confirm starts with the restoredHint. */
+  "restore-holds": (t) => withRestoreHold(base(t), false),
+  /** As `restore-holds` while RESTORED is still set: the money gate's line stands in for Abandon. */
+  "restore-holds-restored": (t) => withRestoreHold(base(t), true),
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);

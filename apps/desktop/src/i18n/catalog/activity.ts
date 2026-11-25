@@ -15,6 +15,11 @@ export const activity = {
     /** As `recordUnreadable`, with only {wallet} open. */
     recordUnreadableOnly:
       "Dash Wallet can't read one of the transaction records in {wallet}, so Abandon and Remove Unconfirmed are unavailable until it's fixed. To fix it, you'll remove {wallet} and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in {settings} ▸ {walletTab}: add another wallet (a new one is fine), remove {wallet}, and restore it with {addWallet} and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed. You can remove the extra wallet afterwards.",
+    /** Above the confirm, while the payment holds its hold from before a restore (Q92 H2). */
+    restoredHint:
+      "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.",
+    /** Instead of Abandon, while the restored wallet data is still being checked. */
+    restoredGate: "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
   },
   /** Transaction details ▸ Details (QT-090, IOS-032). */
   detail: {

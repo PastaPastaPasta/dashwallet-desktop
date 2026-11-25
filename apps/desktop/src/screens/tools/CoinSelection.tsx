@@ -7,7 +7,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useUtxos, useWalletCatchUp } from "../../api/queries";
+import { keys, useBalance, useUtxos, useWalletCatchUp } from "../../api/queries";
+import { restored } from "../../api/restoreHolds";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
@@ -58,6 +59,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const t = useT();
   const utxos = useUtxos(walletId, true);
+  const walletRestored = restored(useBalance(walletId).data);
   const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
     rowCount: utxos.data?.length ?? 0,
@@ -181,10 +183,15 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </p>
       )}
       <div className="tool-actions">
-        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
+        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={walletRestored || model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
           {t("tools.coins.payWithCoins")}
         </DashButton>
       </div>
+      {walletRestored && (
+        <p className="placeholder-note" role="status" data-testid="coins-restored-gate">
+          {t("common.fundsPaused")}
+        </p>
+      )}
     </div>
   );
 }

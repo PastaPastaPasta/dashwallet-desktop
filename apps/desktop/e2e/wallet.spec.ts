@@ -841,6 +841,31 @@ test.describe("Activity", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Q92_H2: the abandon confirm of a payment from before a restore starts with MG's line, until it's abandoned", async ({ page }) => {
+    const errors = await open(page, "restore-holds");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-abandon-restored-hint")).toHaveText(
+      "This payment was still pending in your wallet data from before the upgrade, and it hasn't confirmed since. Anything you did with it after the upgrade, such as abandoning it, is no longer recorded here.",
+    );
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    expect(errors).toEqual([]);
+  });
+
+  test("Q92 money gate: while the restored wallet data is checked, its line stands in for Abandon", async ({ page }) => {
+    const errors = await open(page, "restore-holds-restored");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"4e".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-restored-gate")).toHaveText(
+      "Dash Wallet is checking the wallet data it restored from before the upgrade. You can abandon this payment once the wallet has finished syncing.",
+    );
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-resend")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test("Abandon isn't offered for a payment a settled later payment spends from", async ({ page }) => {
     const errors = await open(page, "abandon-settled-child-hidden");
     await page.getByTestId("sidebar-activity").click();
