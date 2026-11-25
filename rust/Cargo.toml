@@ -73,6 +73,7 @@ dw-message = { path = "crates/dw-message" }
 dw-p2p = { path = "crates/dw-p2p" }
 dw-protx = { path = "crates/dw-protx" }
 dw-psbt = { path = "crates/dw-psbt" }
+dw-store-upgrade = { path = "crates/dw-store-upgrade" }
 dw-testutil = { path = "crates/dw-testutil" }
 dw-units = { path = "crates/dw-units" }
 dw-uri = { path = "crates/dw-uri" }

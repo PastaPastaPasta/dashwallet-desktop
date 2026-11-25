@@ -1,0 +1,156 @@
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+/// Every way the store upgrade stops. [`StoreUpgradeError::file_unchanged`]
+/// says whether the wallet files were left exactly as found.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreUpgradeError {
+    /// The fork history holds a version set no published build wrote, or one
+    /// whose adopting migration this build lacks (Q78 R4). File unchanged.
+    #[error("fork store versions {versions:?} are not supported by this build")]
+    ForkStoreUnsupported { versions: BTreeSet<u32> },
+
+    /// A fork object differs from the fork's exact definition, or another
+    /// object refers to the column R1 drops. File unchanged.
+    #[error("fork store object {object} does not have the expected shape")]
+    ForkStoreShapeMismatch { object: String },
+
+    /// `core_address_pool_retired` holds rows and this build's P9a probe read
+    /// Absent (Q78-A R1 amendment §2). File unchanged.
+    #[error("{rows} retired contact-pool rows and this build has no P9a")]
+    RetiredPoolWithoutAdopter { rows: u64 },
+
+    /// The P9a probe read Broken: every wallet open is refused (Q78-A A4).
+    /// File unchanged.
+    #[error("this build's P9a support is broken: {detail}")]
+    P9aBroken { detail: String },
+
+    /// Fork V1 recorded as refinery version 19, before the fork history table
+    /// existed. File unchanged.
+    #[error("the file records the fork migration in upstream's history (pre-history shape)")]
+    PreHistoryFork,
+
+    /// Refinery `MAX(version)` above this build's embedded migrations. File
+    /// unchanged.
+    #[error("schema version {found} is newer than this build's {supported}")]
+    SchemaTooNew { found: i64, supported: i64 },
+
+    /// An applied refinery row differs from this build's embedded migration.
+    /// File unchanged.
+    #[error("refinery history version {version}: {detail}")]
+    SchemaHistoryMismatch { version: i64, detail: String },
+
+    /// The snapshot handed to the reconciler or restore is missing, not
+    /// complete, or not this directory's. File unchanged.
+    #[error("upgrade snapshot {dir}: {detail}")]
+    SnapshotInvalid { dir: PathBuf, detail: String },
+
+    /// Taking the pre-upgrade snapshot failed. The wallet files are unchanged;
+    /// the incomplete snapshot directory is redone on the next start.
+    #[error("upgrade snapshot failed: {detail}")]
+    SnapshotFailed { detail: String },
+
+    /// A restore is requested or part-done in {dir}: no store may open
+    /// there until the next start runs it.
+    #[error("a restore is pending in {dir}")]
+    RestorePending { dir: PathBuf },
+
+    /// The store is held open in this process (upstream `AlreadyOpen`, a
+    /// live [`crate::PersisterOpened`], or the `app.sqlite` lock). Never read
+    /// as "no wallet" (Q82-G1 F4-d). Nothing changed.
+    #[error("the wallet store at {path} is open")]
+    StoreHeld { path: PathBuf },
+
+    /// `SqlitePersister::open` failed. Its grouped migration rolls back, but
+    /// an open can fail after that commit, so this does not claim the file
+    /// unchanged.
+    #[error("open the wallet store in {dir}: {source}")]
+    PersisterOpen {
+        dir: PathBuf,
+        #[source]
+        source: Box<platform_wallet_storage::WalletStorageError>,
+    },
+
+    /// SQLite failed. `unchanged` is false only when a write may have
+    /// committed.
+    #[error("{context}: {source}")]
+    Sqlite {
+        context: &'static str,
+        unchanged: bool,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// The file system failed. `unchanged` as for [`Self::Sqlite`].
+    #[error("{context}: {source}")]
+    Io {
+        context: &'static str,
+        unchanged: bool,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[cfg(test)]
+    #[error("injected fault at {0}")]
+    InjectedFault(&'static str),
+}
+
+impl StoreUpgradeError {
+    /// Whether the wallet files were left exactly as found.
+    pub fn file_unchanged(&self) -> bool {
+        match self {
+            Self::ForkStoreUnsupported { .. }
+            | Self::ForkStoreShapeMismatch { .. }
+            | Self::RetiredPoolWithoutAdopter { .. }
+            | Self::P9aBroken { .. }
+            | Self::PreHistoryFork
+            | Self::SchemaTooNew { .. }
+            | Self::SchemaHistoryMismatch { .. }
+            | Self::SnapshotInvalid { .. }
+            | Self::SnapshotFailed { .. }
+            | Self::RestorePending { .. }
+            | Self::StoreHeld { .. } => true,
+            Self::PersisterOpen { .. } => false,
+            Self::Sqlite { unchanged, .. } | Self::Io { unchanged, .. } => *unchanged,
+            #[cfg(test)]
+            Self::InjectedFault(_) => true,
+        }
+    }
+
+    /// Whether this is a refusal the user sees on the "can't open" screen
+    /// ([`crate::CantOpen`]): the build cannot take this data, and the
+    /// previous version still opens it unchanged.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::ForkStoreUnsupported { .. }
+                | Self::ForkStoreShapeMismatch { .. }
+                | Self::RetiredPoolWithoutAdopter { .. }
+                | Self::P9aBroken { .. }
+                | Self::PreHistoryFork
+                | Self::SchemaTooNew { .. }
+                | Self::SchemaHistoryMismatch { .. }
+        )
+    }
+
+    pub(crate) fn sqlite(
+        context: &'static str,
+        unchanged: bool,
+    ) -> impl Fn(rusqlite::Error) -> Self {
+        move |source| Self::Sqlite {
+            context,
+            unchanged,
+            source,
+        }
+    }
+
+    pub(crate) fn io(context: &'static str, unchanged: bool) -> impl Fn(std::io::Error) -> Self {
+        move |source| Self::Io {
+            context,
+            unchanged,
+            source,
+        }
+    }
+}
+
+pub type Result<T, E = StoreUpgradeError> = std::result::Result<T, E>;
