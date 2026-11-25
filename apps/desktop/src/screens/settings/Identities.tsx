@@ -216,7 +216,7 @@ function DetailSheet({ walletId, identity, model, onClose }: { walletId: string;
     <Sheet title={D.title} width="large" testId="identity-detail" onClose={onClose}>
       {d === undefined ? (
         q.isError ? (
-          <div data-testid="identity-detail-failed">
+          <div className="identity-detail-failed" data-testid="identity-detail-failed">
             <p className="form-problem" role="alert">
               {identityErrorText(q.error)}
             </p>

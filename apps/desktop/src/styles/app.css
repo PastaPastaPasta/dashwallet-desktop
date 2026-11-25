@@ -566,7 +566,6 @@ input[type="radio"]:disabled {
   align-items: center;
   justify-content: center;
   gap: var(--dw-space-s);
-  margin-bottom: var(--dw-space-s);
 }
 
 .share-who-text {
@@ -1780,6 +1779,32 @@ input[type="radio"]:disabled {
   overflow: auto;
 }
 
+/* Step-flow, status and form wrappers inside a sheet share one section stack gap. */
+.sheet-body [data-step],
+.sheet-body [data-step] > div[role="status"],
+.sheet .mg-sheet-body,
+.sheet .tool-stack,
+.identity-detail-failed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.identity-detail-failed {
+  align-items: flex-start;
+}
+
+/* Notes and error placeholders in a sheet stack are spaced by the flex gap; empty alert live-regions
+   take no room so they do not inject phantom gaps. */
+.sheet-body .form-problem,
+.sheet-body .placeholder-note {
+  margin: 0;
+}
+
+.sheet-body .form-problem:empty {
+  display: none;
+}
+
 .tx-detail-summary {
   display: flex;
   flex-direction: column;
@@ -1878,6 +1903,11 @@ input[type="radio"]:disabled {
 }
 
 .detail-list {
+  padding: 0;
+}
+
+.detail-list.card-l1,
+.disclosure > .detail-list {
   padding: var(--dw-space-xs) var(--dw-layout-card-padding);
   border-radius: var(--dw-radius-card);
 }
@@ -3361,6 +3391,16 @@ input[type="radio"]:disabled {
   overflow-x: auto;
 }
 
+.identity-keys-wrap .data-table th:first-child,
+.identity-keys-wrap .data-table td:first-child {
+  padding-inline-start: 0;
+}
+
+.identity-keys-wrap .data-table th:last-child,
+.identity-keys-wrap .data-table td:last-child {
+  padding-inline-end: 0;
+}
+
 .identity-find-form {
   display: flex;
   flex-wrap: wrap;
@@ -3378,7 +3418,6 @@ input[type="radio"]:disabled {
 
 .settings-details {
   width: 100%;
-  padding: 0;
 }
 
 .settings-inline-form {
@@ -3537,10 +3576,6 @@ input[type="radio"]:disabled {
 
 .tool-card .placeholder-note {
   margin: 0;
-}
-
-.tool-card .detail-list {
-  padding: 0;
 }
 
 .tool-card-header {
@@ -3820,6 +3855,10 @@ input[type="radio"]:disabled {
   flex: none;
   gap: var(--dw-space-xs);
   padding-inline-end: var(--dw-space-s);
+}
+
+.tx-group .contact-row-actions {
+  padding-inline-end: var(--dw-space-transaction-row-horizontal);
 }
 
 .contacts-enable-text {
@@ -4647,7 +4686,7 @@ button.bell-row-open:focus-visible {
 .transfer {
   display: flex;
   flex-direction: column;
-  gap: var(--dw-space-m);
+  gap: var(--dw-space-l);
 }
 
 .transfer-running {
@@ -5086,8 +5125,14 @@ button.bell-row-open:focus-visible {
   margin-bottom: var(--dw-space-l);
 }
 
+.coinjoin-explainer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
 .coinjoin-explainer p {
-  margin: 0 0 var(--dw-space-m);
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
@@ -5371,7 +5416,7 @@ button.bell-row-open:focus-visible {
 .topup-form {
   display: flex;
   flex-direction: column;
-  gap: var(--dw-space-s);
+  gap: var(--dw-space-m);
 }
 
 .topup-choices {
@@ -5403,10 +5448,6 @@ button.bell-row-open:focus-visible {
   cursor: default;
 }
 
-.topup-sources {
-  margin-bottom: var(--dw-space-s);
-}
-
 /* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
 .topup-platform-message {
   overflow-wrap: anywhere;
@@ -5436,7 +5477,7 @@ button.bell-row-open:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--dw-space-s);
-  margin: 0 0 var(--dw-space-xs);
+  margin: 0;
   font-size: var(--dw-type-subhead-medium-size);
   font-weight: var(--dw-type-subhead-medium-weight);
   line-height: var(--dw-type-subhead-medium-line);
@@ -5449,7 +5490,7 @@ button.bell-row-open:focus-visible {
 /* ------------------------------------------------------------------ saved links (DP5-01 D11) */
 
 .saved-links {
-  margin: 0 0 var(--dw-space-m);
+  margin: 0;
   padding: 0;
   list-style: none;
 }
@@ -5665,7 +5706,7 @@ button.bell-row-open:focus-visible {
   align-items: center;
   gap: var(--dw-space-m);
   width: 100%;
-  padding: var(--dw-space-transaction-row-vertical) var(--dw-space-l);
+  padding: var(--dw-space-transaction-row-vertical) var(--dw-space-transaction-row-horizontal);
   border: 0;
   border-radius: var(--dw-radius-standard);
   background: transparent;
@@ -5848,8 +5889,8 @@ button.bell-row-open:focus-visible {
 
 /* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
 .mg-key-list {
-  margin: var(--dw-space-m) 0;
-  padding: 0 var(--dw-space-m);
+  margin: 0;
+  padding: 0 var(--dw-layout-card-padding);
   list-style: none;
 }
 
@@ -6180,7 +6221,7 @@ button.bell-row-open:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
-  padding: var(--dw-space-m) var(--dw-layout-page-padding-h) var(--dw-layout-page-padding-h);
+  padding: var(--dw-space-l) 0 0;
   border-top: 1px solid var(--dw-role-separator);
 }
 
@@ -6200,6 +6241,8 @@ button.bell-row-open:focus-visible {
   bottom: 0;
   z-index: 1;
   flex-wrap: wrap;
+  margin-bottom: calc(-1 * var(--dw-layout-page-padding-h));
+  padding-bottom: var(--dw-layout-page-padding-h);
   background: var(--dw-role-card);
 }
 
@@ -6533,10 +6576,6 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-card);
 }
 
-.sheet .mg-operator-body {
-  gap: var(--dw-space-s);
-}
-
 .mg-operator-list {
   display: flex;
   flex-direction: column;
@@ -6559,7 +6598,6 @@ button.bell-row-open:focus-visible {
   flex-direction: column;
   gap: var(--dw-space-s);
   padding: var(--dw-space-m);
-  margin-bottom: var(--dw-space-m);
 }
 
 .sh-choice h3 {
@@ -6764,8 +6802,8 @@ button.bell-row-open:focus-visible {
 /* "Most of this goes to fees" on a confirm sheet (DEC-1058 #8). */
 .fee-warning {
   margin: 0;
-  padding: var(--dw-space-s) var(--dw-space-m);
-  border-radius: var(--dw-radius-small);
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
   background: var(--dw-role-warning-tint);
   color: var(--dw-role-text-primary);
   font-weight: var(--dw-type-subhead-medium-weight);

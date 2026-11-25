@@ -97,6 +97,16 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
       await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     },
   },
+  "transfer-shielded-confirm": {
+    scenario: "funded",
+    go: async (page) => {
+      await openTransfer(page, "coreToShielded");
+      await page.getByTestId("transfer-amount").fill("0.001");
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("shielded-quote").waitFor();
+      await expect(page.getByTestId("shielded-fee-warning")).toBeVisible();
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",
@@ -612,6 +622,20 @@ for (const theme of THEMES) {
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
     await page.getByTestId("notifications-earlier").waitFor();
     await shoot(page, "notifications", theme);
+  });
+
+  test(`visual notifications-payments ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.receivePayment(150_000_000));
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "notifications" }));
+    await page.getByTestId("bell-payments").waitFor();
+    await page.getByTestId("notifications-requests").waitFor();
+    await page.getByTestId("notifications-new").waitFor();
+    await page.getByTestId("notifications-earlier").waitFor();
+    await page.locator(".toast").waitFor({ state: "detached" });
+    await shoot(page, "notifications-payments", theme);
   });
 }
 
