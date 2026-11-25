@@ -69,7 +69,10 @@ fn open_in_child_with(root: &Path, without_p9a: bool) -> String {
     }
     let out = child.stdin(Stdio::null()).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    match stdout.lines().find_map(|l| l.strip_prefix(RESULT)) {
+    match stdout
+        .lines()
+        .find_map(|l| l.split_once(RESULT).map(|(_, r)| r))
+    {
         Some(r) if out.status.success() => r.to_string(),
         _ => panic!(
             "the child failed: {stdout}\n{}",
@@ -156,6 +159,22 @@ fn a_refusal_after_a_restore_says_the_files_changed() {
         open_in_child_with(&f.root, true),
         "refused RetiredPoolWithoutAdopter storeUpgrade.refused.unchanged"
     );
+}
+
+/// An unreadable request on a fork file that was never upgraded: the open
+/// stops before any store opens, and only the request is gone; every other
+/// file and directory is byte-identical.
+#[test]
+fn an_unreadable_request_keeps_every_store_closed_and_unchanged() {
+    let f = fixture("v0.1.0");
+    let before = tree(&f.net);
+    std::fs::create_dir(backups(&f)).unwrap();
+    std::fs::write(backups(&f).join("RESTORE-REQUESTED"), b"").unwrap();
+    assert_eq!(open_in_child(&f.root), "restore Refused garbledMarker");
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    let mut after = tree(&f.net);
+    after.retain(|k, _| !k.starts_with(UPGRADE_BACKUPS_DIR));
+    assert_eq!(tree_diff(&before, &after), Vec::<String>::new());
 }
 
 /// A request the next start can't honour stops that open as

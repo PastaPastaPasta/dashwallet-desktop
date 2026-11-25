@@ -90,27 +90,6 @@ fn a_refinery_history_no_release_wrote_is_refused_unchanged() {
     assert_eq!(open_refused(&f), "SchemaHistoryMismatch");
 }
 
-/// A requested restore keeps every store closed: nothing opens or changes
-/// until a build that runs it starts.
-#[test]
-fn a_pending_restore_keeps_every_store_closed_and_unchanged() {
-    let f = fixture("v0.1.0");
-    let before = tree(&f.net);
-    std::fs::create_dir(f.net.join("upgrade-backups")).unwrap();
-    std::fs::write(f.net.join("upgrade-backups/RESTORE-REQUESTED"), b"").unwrap();
-    let before_marker = tree(&f.net);
-    let engine = engine(&f.root);
-    let err = engine
-        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
-        .err()
-        .expect("refused");
-    assert_eq!(err.code(), "internal", "{err:?}");
-    assert!(err.to_string().contains("RestorePending"), "{err}");
-    assert!(tree_diff(&before_marker, &tree(&f.net)).is_empty());
-    assert_eq!(before.len() + 2, before_marker.len());
-    engine.block_on(engine.shutdown()).unwrap();
-}
-
 /// Each released fixture upgrades through the open: the pre-upgrade
 /// snapshot is taken, R1's column is dropped, every wallet loads; the next
 /// start retires the fork history and reuses the snapshot.
