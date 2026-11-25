@@ -3411,6 +3411,8 @@ pub(crate) fn lock_status(
         S::ChainLocked => LockStatus::ChainLocked,
         S::Consumed => LockStatus::Consumed,
         S::RecoveredFromChain => LockStatus::RecoveredFromChain,
+        // Only the library's own wallet drain writes it: the lock is out and spent.
+        S::DrainCompleted => LockStatus::Consumed,
     }
 }
 
