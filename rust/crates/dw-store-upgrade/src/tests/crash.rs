@@ -48,6 +48,10 @@ fn finish(f: &Fixture) {
 
 #[test]
 fn crash_during_the_drop_transaction_converges() {
+    with_v3_accepted(crash_during_the_drop_transaction);
+}
+
+fn crash_during_the_drop_transaction() {
     for version in ["v0.1.0", "v0.3.0"] {
         let (want, snapshots) = uninterrupted(version);
         let f = fixture(version);
@@ -70,7 +74,7 @@ fn crash_during_the_drop_transaction_converges() {
 }
 
 #[test]
-fn crash_between_the_upstream_migration_and_the_retire_converges() {
+fn retire_fault_rolls_back_and_converges() {
     let (want, snapshots) = uninterrupted("v0.2.0");
     let f = fixture("v0.2.0");
     let (_, first) = start(&f, now()).unwrap();
@@ -119,6 +123,10 @@ fn crash_mid_snapshot_converges() {
 
 #[test]
 fn crash_before_the_snapshot_marker_converges() {
+    with_v3_accepted(crash_before_the_snapshot_marker);
+}
+
+fn crash_before_the_snapshot_marker() {
     let (want, snapshots) = uninterrupted("v0.3.0");
     let f = fixture("v0.3.0");
     arm_fault("snapshot.before_marker", 0);

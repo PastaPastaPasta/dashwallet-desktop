@@ -1,29 +1,31 @@
 //! The persister open through this crate, and the process gate restore
 //! checks (Q82-G1 F4-a/F4-b).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
+use platform_wallet_storage::{
+    LoadPolicy, SqlitePersister, SqlitePersisterConfig, WalletStorageError,
+};
 
 use crate::error::{Result, StoreUpgradeError};
 
 /// Proof that `SqlitePersister::open` succeeded on a network directory's
-/// `wallet.sqlite` in this process, and that its store is held while this
-/// value lives.
+/// `wallet.sqlite` in this process.
 ///
 /// Sealed: the only constructor is [`PersisterOpened::open`], which opens the
-/// persister itself, so a token can't exist without a successful open.
-/// Keep it next to the persister and drop it with the persister.
+/// persister itself, so a token can't exist without a successful open. The
+/// store counts as held while any clone of the returned `Arc` lives, whether
+/// or not the token does.
 #[derive(Debug)]
 pub struct PersisterOpened {
     network_dir: PathBuf,
 }
 
-fn held_dirs() -> &'static Mutex<HashSet<PathBuf>> {
-    static HELD: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-    HELD.get_or_init(|| Mutex::new(HashSet::new()))
+fn held_dirs() -> &'static Mutex<HashMap<PathBuf, Weak<SqlitePersister>>> {
+    static HELD: OnceLock<Mutex<HashMap<PathBuf, Weak<SqlitePersister>>>> = OnceLock::new();
+    HELD.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(not(test))]
@@ -67,12 +69,40 @@ fn key(network_dir: &Path) -> PathBuf {
         .unwrap_or_else(|_| network_dir.to_path_buf())
 }
 
-/// Whether a [`PersisterOpened`] for `network_dir` is alive.
+/// Whether a persister opened through [`PersisterOpened::open`] for
+/// `network_dir` is still alive.
 pub(crate) fn is_held(network_dir: &Path) -> bool {
     held_dirs()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .contains(&key(network_dir))
+        .get(&key(network_dir))
+        .is_some_and(|w| w.strong_count() > 0)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROBE_FOR_OPEN: std::cell::RefCell<Option<Option<crate::adopters::P9aStatus>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn probe_for_open() -> Option<crate::adopters::P9aStatus> {
+    #[cfg(test)]
+    if let Some(forced) = PROBE_FOR_OPEN.with(|p| p.borrow().clone()) {
+        return forced;
+    }
+    #[cfg(test)]
+    crate::tests::build();
+    crate::adopters::Adopters::cached().map(|a| a.p9a_status().clone())
+}
+
+fn refuse_unless_probed() -> Result<()> {
+    match probe_for_open() {
+        None => Err(StoreUpgradeError::ProbeNotRun),
+        Some(crate::adopters::P9aStatus::Broken { detail }) => {
+            Err(StoreUpgradeError::P9aBroken { detail })
+        }
+        Some(_) => Ok(()),
+    }
 }
 
 pub(crate) fn refuse_if_held(network_dir: &Path) -> Result<()> {
@@ -86,38 +116,32 @@ pub(crate) fn refuse_if_held(network_dir: &Path) -> Result<()> {
 
 impl PersisterOpened {
     /// Open the persister for `config.path` (a network directory's
-    /// `wallet.sqlite`) and mint the token. Refuses while a restore is
-    /// requested or part-done there. Upstream's `AlreadyOpen` comes back as
+    /// `wallet.sqlite`) and mint the token. Refuses, opening nothing, when
+    /// the load policy is not `Strict` (Q78 R6), when this build's probe has
+    /// not run or read Broken (Q78-A A4), and while a restore is requested or
+    /// part-done there. Upstream's `AlreadyOpen` comes back as
     /// [`StoreUpgradeError::StoreHeld`], never as an empty store (F4-d).
-    pub fn open(config: SqlitePersisterConfig) -> Result<(SqlitePersister, Self)> {
-        let network_dir = config
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
+    pub fn open(config: SqlitePersisterConfig) -> Result<(Arc<SqlitePersister>, Self)> {
+        let network_dir = crate::precheck::parent_dir(&config.path)?.to_path_buf();
         set_opened();
+        if config.load_policy != LoadPolicy::Strict {
+            return Err(StoreUpgradeError::NonStrictOpen {
+                policy: format!("{:?}", config.load_policy),
+            });
+        }
+        refuse_unless_probed()?;
         crate::restore::refuse_if_restore_pending(&network_dir)?;
         let persister =
-            SqlitePersister::open(config).map_err(|e| map_open_error(e, &network_dir))?;
+            Arc::new(SqlitePersister::open(config).map_err(|e| map_open_error(e, &network_dir))?);
         held_dirs()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key(&network_dir));
+            .insert(key(&network_dir), Arc::downgrade(&persister));
         Ok((persister, Self { network_dir }))
     }
 
     pub fn network_dir(&self) -> &Path {
         &self.network_dir
-    }
-}
-
-impl Drop for PersisterOpened {
-    fn drop(&mut self) {
-        held_dirs()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&key(&self.network_dir));
     }
 }
 

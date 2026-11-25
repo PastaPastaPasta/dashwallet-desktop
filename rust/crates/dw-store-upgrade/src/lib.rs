@@ -4,11 +4,13 @@
 //! Startup order for one network directory `{folder}` (all before any store
 //! opens, in `spawn_blocking`):
 //! 1. [`prepare`]: the refusal check ([`precheck`], [`precheck_locked`]),
-//!    then the snapshot ([`take_snapshot`]) for a fork file. A refusal
-//!    writes, renames and locks nothing in `{folder}`. A pending restore
-//!    keeps every store closed ([`StoreUpgradeError::RestorePending`]).
-//! 2. [`note_stores_opening`], then vault and `app.sqlite`.
-//! 3. [`reconcile_fork_store`] just before the persister.
+//!    the upgrade rehearsed on a private copy, then the snapshot
+//!    ([`take_snapshot`]) for a fork file. A refusal writes, renames and
+//!    locks nothing in `{folder}`. A pending restore keeps every store
+//!    closed ([`StoreUpgradeError::RestorePending`]).
+//! 2. [`reconcile_fork_store`] straight after, before any store opens: it
+//!    requires the snapshot to fingerprint all four stores as they are.
+//! 3. [`note_stores_opening`], then vault and `app.sqlite`.
 //! 4. [`PersisterOpened::open`].
 
 mod adopters;
@@ -33,7 +35,9 @@ use std::time::SystemTime;
 
 pub use adopters::{Adopters, EmbeddedMigration, P9aStatus, p9a_present, r1d_line_required};
 pub use error::{Result, StoreUpgradeError};
-pub use precheck::{Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with};
+pub use precheck::{
+    Precheck, precheck, precheck_locked, precheck_locked_with, precheck_with, sweep_stale_scratch,
+};
 pub use reconcile::{Outcome, reconcile_fork_store};
 pub use restore::{PendingRestore, RESTORE_JOURNAL, RESTORE_REQUESTED, pending_restore};
 pub use snapshot::{
@@ -54,7 +58,7 @@ pub struct Prepared {
 pub fn prepare(network_dir: &Path, now: SystemTime) -> Result<Prepared> {
     prepare_with(
         network_dir,
-        Adopters::for_build(precheck::data_root(network_dir)),
+        Adopters::for_build(precheck::parent_dir(network_dir)?),
         now,
     )
 }

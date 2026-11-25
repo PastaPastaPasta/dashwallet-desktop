@@ -6,11 +6,11 @@ mod fixtures;
 mod meta;
 mod p9a;
 mod refusals;
+mod review_fixes;
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use platform_wallet_storage::{LoadPolicy, SqlitePersister, SqlitePersisterConfig};
@@ -27,8 +27,7 @@ pub(crate) fn repo_root() -> PathBuf {
 
 /// This build's adopters, probed once for the test binary.
 pub(crate) fn build() -> &'static Adopters {
-    static BUILD: OnceLock<Adopters> = OnceLock::new();
-    BUILD.get_or_init(|| {
+    Adopters::cache_for_test(|| {
         let dir = Box::leak(Box::new(private_tempdir()));
         let adopters = Adopters::probe(dir.path());
         eprintln!(
@@ -119,6 +118,17 @@ pub(crate) fn tree(dir: &Path) -> BTreeMap<String, String> {
     out
 }
 
+/// The paths whose hash differs between two [`tree`]s, or that only one has.
+pub(crate) fn tree_diff(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<String> {
+    a.keys()
+        .chain(b.keys())
+        .filter(|k| a.get(*k) != b.get(*k))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub(crate) fn now() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_795_567_800)
 }
@@ -134,7 +144,7 @@ pub(crate) fn config(net: &Path) -> SqlitePersisterConfig {
 }
 
 /// Open the upstream persister Strict and load every wallet.
-pub(crate) fn open_and_load(net: &Path) -> (SqlitePersister, PersisterOpened) {
+pub(crate) fn open_and_load(net: &Path) -> (std::sync::Arc<SqlitePersister>, PersisterOpened) {
     use platform_wallet::changeset::PlatformWalletPersistence;
     let (p, token) = PersisterOpened::open(config(net)).expect("upstream open");
     p.load().expect("upstream load");
@@ -182,6 +192,14 @@ pub(crate) fn fresh_store() -> (tempfile::TempDir, PathBuf) {
         .unwrap(),
     );
     (dir, path)
+}
+
+/// Run `f` with fork V3 accepted, as if P8 or the Q93 ruling allowed it.
+pub(crate) fn with_v3_accepted<T>(f: impl FnOnce() -> T) -> T {
+    crate::classify::ACCEPT_V3_FOR_TEST.with(|a| a.set(true));
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    crate::classify::ACCEPT_V3_FOR_TEST.with(|a| a.set(false));
+    out.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
 pub(crate) fn exec(path: &Path, sql: &str) {

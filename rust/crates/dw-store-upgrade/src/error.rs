@@ -25,6 +25,19 @@ pub enum StoreUpgradeError {
     #[error("this build's P9a support is broken: {detail}")]
     P9aBroken { detail: String },
 
+    /// The file carries fork V3 and this build has no P8 to adopt it. Refused
+    /// until the Q93 ruling. File unchanged.
+    #[error(
+        "fork store versions {versions:?} include V3, which this build cannot adopt without P8"
+    )]
+    ForkV3WithoutP8 { versions: BTreeSet<u32> },
+
+    /// The upgrade, rehearsed on a private copy (R1's drop, then the upstream
+    /// open under `LoadPolicy::Strict`), failed: the real file would be left
+    /// part-upgraded. File unchanged.
+    #[error("the upgrade fails on a copy of this wallet file: {detail}")]
+    UpgradeRehearsalFailed { detail: String },
+
     /// Fork V1 recorded as refinery version 19, before the fork history table
     /// existed. File unchanged.
     #[error("the file records the fork migration in upstream's history (pre-history shape)")]
@@ -60,6 +73,16 @@ pub enum StoreUpgradeError {
     /// as "no wallet" (Q82-G1 F4-d). Nothing changed.
     #[error("the wallet store at {path} is open")]
     StoreHeld { path: PathBuf },
+
+    /// [`crate::PersisterOpened::open`] was asked for a load policy other
+    /// than `Strict` (Q78 R6). Nothing was opened.
+    #[error("the wallet store opens only with LoadPolicy::Strict, not {policy}")]
+    NonStrictOpen { policy: String },
+
+    /// [`crate::PersisterOpened::open`] ran before this build's probe
+    /// ([`crate::Adopters::for_build`]). Nothing was opened.
+    #[error("the platform-wallet-storage probe has not run in this process")]
+    ProbeNotRun,
 
     /// `SqlitePersister::open` failed. Its grouped migration rolls back, but
     /// an open can fail after that commit, so this does not claim the file
@@ -103,9 +126,13 @@ impl StoreUpgradeError {
             | Self::ForkStoreShapeMismatch { .. }
             | Self::RetiredPoolWithoutAdopter { .. }
             | Self::P9aBroken { .. }
+            | Self::ForkV3WithoutP8 { .. }
+            | Self::UpgradeRehearsalFailed { .. }
             | Self::PreHistoryFork
             | Self::SchemaTooNew { .. }
             | Self::SchemaHistoryMismatch { .. }
+            | Self::NonStrictOpen { .. }
+            | Self::ProbeNotRun
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
             | Self::RestorePending { .. }
@@ -117,9 +144,9 @@ impl StoreUpgradeError {
         }
     }
 
-    /// Whether this is a refusal the user sees on the "can't open" screen
-    /// ([`crate::CantOpen`]): the build cannot take this data, and the
-    /// previous version still opens it unchanged.
+    /// Whether this is a refusal the user sees on a "can't open" screen
+    /// ([`crate::copy::screen_for`]): this build cannot take this data, and
+    /// left it unchanged.
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,
@@ -127,6 +154,8 @@ impl StoreUpgradeError {
                 | Self::ForkStoreShapeMismatch { .. }
                 | Self::RetiredPoolWithoutAdopter { .. }
                 | Self::P9aBroken { .. }
+                | Self::ForkV3WithoutP8 { .. }
+                | Self::UpgradeRehearsalFailed { .. }
                 | Self::PreHistoryFork
                 | Self::SchemaTooNew { .. }
                 | Self::SchemaHistoryMismatch { .. }

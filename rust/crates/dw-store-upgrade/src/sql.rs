@@ -123,23 +123,40 @@ pub(crate) fn count_rows(conn: &Connection, table: &str) -> rusqlite::Result<u64
 /// A `file:` URI for `path` with `query`, percent-encoding what SQLite's URI
 /// parser would read as syntax.
 fn file_uri(path: &Path, query: &str) -> String {
-    let raw = path.to_string_lossy();
-    let mut s = String::from("file:");
-    if cfg!(windows) {
-        s.push('/');
-    }
-    for b in raw.bytes() {
+    format!(
+        "file:{}?{query}",
+        uri_path(&path.to_string_lossy(), cfg!(windows))
+    )
+}
+
+/// The URI path part for `raw`. On Windows the authority is always empty:
+/// `\\?\` is stripped, `\\?\UNC\server\share` and `\\server\share` become
+/// `////server/share`, and a drive or rooted path gets `///`.
+fn uri_path(raw: &str, windows: bool) -> String {
+    let path = if windows {
+        let unprefixed = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else {
+            raw.strip_prefix(r"\\?\").unwrap_or(raw).to_string()
+        };
+        let slashed = unprefixed.replace('\\', "/");
+        if slashed.starts_with('/') {
+            format!("//{slashed}")
+        } else {
+            format!("///{slashed}")
+        }
+    } else {
+        raw.to_string()
+    };
+    let mut s = String::with_capacity(path.len());
+    for b in path.bytes() {
         let c = b as char;
-        if cfg!(windows) && c == '\\' {
-            s.push('/');
-        } else if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | ':') {
+        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | ':') {
             s.push(c);
         } else {
             s.push_str(&format!("%{b:02X}"));
         }
     }
-    s.push('?');
-    s.push_str(query);
     s
 }
 
@@ -271,8 +288,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn file_uri_escapes_uri_syntax() {
         let uri = file_uri(Path::new("/a b/c?d#e%f"), "immutable=1");
         assert_eq!(uri, "file:/a%20b/c%3Fd%23e%25f?immutable=1");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn file_uri_escapes_uri_syntax() {
+        let uri = file_uri(Path::new(r"C:\a b\c#d.sqlite"), "immutable=1");
+        assert_eq!(uri, "file:///C:/a%20b/c%23d.sqlite?immutable=1");
+    }
+
+    #[test]
+    fn windows_uri_paths_keep_an_empty_authority() {
+        for (raw, want) in [
+            (r"C:\Users\a b\w.sqlite", "///C:/Users/a%20b/w.sqlite"),
+            (r"\\?\C:\Users\w.sqlite", "///C:/Users/w.sqlite"),
+            (r"\\server\share\d\w.sqlite", "////server/share/d/w.sqlite"),
+            (
+                r"\\?\UNC\server\share\w.sqlite",
+                "////server/share/w.sqlite",
+            ),
+            (r"\a b\w.sqlite", "///a%20b/w.sqlite"),
+        ] {
+            assert_eq!(uri_path(raw, true), want, "{raw}");
+        }
+        assert_eq!(uri_path("/a b/c?d", false), "/a%20b/c%3Fd");
     }
 }

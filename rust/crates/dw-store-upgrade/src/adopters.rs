@@ -84,15 +84,45 @@ static EMBEDDED: OnceLock<Adopters> = OnceLock::new();
 
 impl Adopters {
     /// This build's adopters, probed once per process in a private directory
-    /// under `data_root` (the parent of every network directory). Blocking:
-    /// call it from `spawn_blocking`, before the first wallet open.
+    /// under `data_root` (the parent of every network directory), which is
+    /// created 0700 first. Blocking: call it from `spawn_blocking`, before
+    /// the first wallet open.
     pub fn for_build(data_root: &Path) -> &'static Adopters {
         EMBEDDED.get_or_init(|| {
-            let adopters = Self::probe(data_root);
+            let adopters = Self::probe_new_root(data_root);
             tracing::info!(p9a = ?adopters.p9a, observations = ?adopters.observations,
                 "store upgrade: platform-wallet-storage probe");
             adopters
         })
+    }
+
+    /// The probe, uncached, after creating `data_root` 0700 if missing.
+    pub(crate) fn probe_new_root(data_root: &Path) -> Adopters {
+        match create_private_dir_all(data_root) {
+            Ok(()) => Self::probe(data_root),
+            Err(e) => Self::broken(format!("create the data root {}: {e}", data_root.display())),
+        }
+    }
+
+    /// The probe's result, if it has run in this process.
+    pub fn cached() -> Option<&'static Adopters> {
+        EMBEDDED.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache_for_test(probe: impl FnOnce() -> Adopters) -> &'static Adopters {
+        EMBEDDED.get_or_init(probe)
+    }
+
+    fn broken(detail: String) -> Adopters {
+        Adopters {
+            embedded: Vec::new(),
+            fresh: Vec::new(),
+            p9a: P9aStatus::Broken {
+                detail: format!("probe failed: {detail}"),
+            },
+            observations: Vec::new(),
+        }
     }
 
     /// Run the probe now, uncached.
@@ -117,12 +147,8 @@ impl Adopters {
                 observations,
             },
             Err(detail) => Adopters {
-                embedded: Vec::new(),
-                fresh: Vec::new(),
-                p9a: P9aStatus::Broken {
-                    detail: format!("probe failed: {detail}"),
-                },
                 observations,
+                ..Self::broken(detail)
             },
         }
     }
@@ -370,8 +396,12 @@ fn first_address(entries: &[AccountAddressPoolEntry]) -> Result<Address, String>
         .ok_or_else(|| "no address at index 0".into())
 }
 
+/// The net a seeded record is stored with: no check passes on it, so each
+/// one proves this build's accounting rewrote the record.
+const UNACCOUNTED_NET: i64 = -1_000_000_007;
+
 /// An incoming Mempool transaction paying `value` to `address`, its record as
-/// the wallet would store it, and its coin.
+/// the wallet would store it (net [`UNACCOUNTED_NET`]), and its coin.
 fn incoming(tag: u8, address: &Address, value: u64) -> (TransactionRecord, Utxo) {
     let transaction = Transaction {
         version: 2,
@@ -403,7 +433,7 @@ fn incoming(tag: u8, address: &Address, value: u64) -> (TransactionRecord, Utxo)
             address: Some(address.clone()),
             value,
         }],
-        value as i64,
+        UNACCOUNTED_NET,
     );
     let outpoint = OutPoint {
         txid: record.txid,

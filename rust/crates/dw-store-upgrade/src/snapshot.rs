@@ -252,7 +252,7 @@ pub fn latest_snapshot(network_dir: &Path) -> Result<Option<SnapshotInfo>> {
 }
 
 /// What identifies the wallet data a snapshot was taken of.
-struct LiveState {
+pub(crate) struct LiveState {
     refinery_max: i64,
     fork_versions: BTreeSet<u32>,
     fingerprint: String,
@@ -277,9 +277,16 @@ fn fingerprint(conn: &Connection) -> rusqlite::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
-fn live_state(conn: &Connection) -> rusqlite::Result<LiveState> {
-    let refinery_max = if has_table(conn, "refinery_schema_history")? {
-        conn.query_row(
+/// The state of a directory's stores: `wallet` is a connection on its
+/// `wallet.sqlite`, the other stores are opened with `open`. The
+/// fingerprint covers all four (an absent store as `-`).
+pub(crate) fn live_state(
+    wallet: &Connection,
+    dir: &Path,
+    open: impl Fn(&Path) -> rusqlite::Result<Connection>,
+) -> rusqlite::Result<LiveState> {
+    let refinery_max = if has_table(wallet, "refinery_schema_history")? {
+        wallet.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM refinery_schema_history",
             [],
             |r| r.get(0),
@@ -287,33 +294,88 @@ fn live_state(conn: &Connection) -> rusqlite::Result<LiveState> {
     } else {
         0
     };
-    let fork_versions = if has_table(conn, fork::FORK_HISTORY)? {
-        conn.prepare(&format!("SELECT version FROM {}", fork::FORK_HISTORY))?
+    let fork_versions = if has_table(wallet, fork::FORK_HISTORY)? {
+        wallet
+            .prepare(&format!("SELECT version FROM {}", fork::FORK_HISTORY))?
             .query_map([], |r| r.get::<_, u32>(0))?
             .collect::<rusqlite::Result<_>>()?
     } else {
         BTreeSet::new()
     };
+    let mut h = Sha256::new();
+    h.update(format!("{}={}\n", STORE_FILES[0], fingerprint(wallet)?).as_bytes());
+    for name in &STORE_FILES[1..] {
+        let path = dir.join(name);
+        let digest = if path.exists() {
+            let conn = open(&path)?;
+            let mut d = Sha256::new();
+            for (table, digest) in sql::table_digests(&conn, &[])? {
+                d.update(format!("{table}={digest}\n").as_bytes());
+            }
+            hex(&d.finalize())
+        } else {
+            "-".into()
+        };
+        h.update(format!("{name}={digest}\n").as_bytes());
+    }
     Ok(LiveState {
         refinery_max,
         fork_versions,
-        fingerprint: fingerprint(conn)?,
+        fingerprint: hex(&h.finalize()),
     })
 }
 
-fn open_source(path: &Path) -> rusqlite::Result<Connection> {
+/// A connection that reads a live store and writes nothing beside it: with
+/// no log, `immutable=1` (no lock, no `-wal`/`-shm` created); with a
+/// non-empty `-wal` or `-journal`, read-only, never checkpointing (not even
+/// on close), waiting at most `busy`.
+fn open_source(path: &Path, busy: std::time::Duration) -> rusqlite::Result<Connection> {
+    let logged = ["-wal", "-journal"].iter().any(|suffix| {
+        let mut side = path.as_os_str().to_owned();
+        side.push(suffix);
+        fs::metadata(PathBuf::from(side)).is_ok_and(|m| m.len() > 0)
+    });
+    if !logged {
+        return sql::open_immutable(path);
+    }
     let conn = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    conn.busy_timeout(busy)?;
     Ok(conn)
+}
+
+fn open_live(path: &Path) -> rusqlite::Result<Connection> {
+    open_source(path, std::time::Duration::from_secs(5))
+}
+
+/// M1: `snapshot` is of the data `wallet` (a connection holding the write
+/// lock on `network_dir`'s `wallet.sqlite`) and the other stores hold now.
+pub(crate) fn require_reusable(
+    snapshot: &SnapshotInfo,
+    wallet: &Connection,
+    network_dir: &Path,
+) -> Result<()> {
+    let live = live_state(wallet, network_dir, open_live)
+        .map_err(StoreUpgradeError::sqlite("read the live state", true))?;
+    if reusable(snapshot, &live) {
+        return Ok(());
+    }
+    Err(StoreUpgradeError::SnapshotInvalid {
+        dir: snapshot.dir().to_path_buf(),
+        detail: "taken of other data than the stores hold now".into(),
+    })
 }
 
 /// A completed snapshot is this upgrade's when the fork versions match and
 /// either upstream has migrated since (the upgrade is in flight) or the data
 /// is the same apart from what the upgrade changes.
-fn reusable(info: &SnapshotInfo, live: &LiveState) -> bool {
+pub(crate) fn reusable(info: &SnapshotInfo, live: &LiveState) -> bool {
     info.fork_versions == live.fork_versions
         && (live.refinery_max > info.refinery_max || live.fingerprint == info.fingerprint)
 }
@@ -326,14 +388,22 @@ fn failed(detail: impl std::fmt::Display) -> StoreUpgradeError {
 
 /// Take the pre-upgrade snapshot of `network_dir`, or return this upgrade's
 /// completed one. A directory left without its marker by an interrupted run
-/// is discarded and redone. The wallet files are not changed (the source
-/// connections only read, though closing one may checkpoint its WAL).
+/// is discarded and redone. The wallet files are not changed: the sources
+/// are read through read-only connections that never checkpoint.
 pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo> {
     crate::token::refuse_if_held(network_dir)?;
     let wallet = network_dir.join(STORE_FILES[0]);
     let live = if wallet.exists() {
-        let conn = open_source(&wallet).map_err(|e| failed(format!("open wallet.sqlite: {e}")))?;
-        Some(live_state(&conn).map_err(|e| failed(format!("read wallet.sqlite: {e}")))?)
+        let read = |e: rusqlite::Error| match e.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                StoreUpgradeError::StoreHeld {
+                    path: network_dir.to_path_buf(),
+                }
+            }
+            _ => failed(format!("read the live stores: {e}")),
+        };
+        let conn = open_live(&wallet).map_err(read)?;
+        Some(live_state(&conn, network_dir, open_live).map_err(read)?)
     } else {
         None
     };
@@ -370,13 +440,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
             continue;
         }
         let dest = dir.join(name);
-        copy_store(&src_path, &dest).map_err(|e| failed(format!("copy {name}: {e}")))?;
-        if name == STORE_FILES[0] {
-            let conn =
-                sql::open_immutable(&dest).map_err(|e| failed(format!("reopen copy: {e}")))?;
-            snapshot_state =
-                Some(live_state(&conn).map_err(|e| failed(format!("read copy: {e}")))?);
-        }
+        copy_store(&src_path, &dest)?;
         files.push(SnapshotFile {
             name: name.into(),
             bytes: fs::metadata(&dest)
@@ -385,6 +449,14 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
             sha256: sha256_file(&dest).map_err(|e| failed(format!("{name}: {e}")))?,
         });
         fault("snapshot.after_file")?;
+    }
+    if files.iter().any(|f| f.name == STORE_FILES[0]) {
+        let conn = sql::open_immutable(&dir.join(STORE_FILES[0]))
+            .map_err(|e| failed(format!("reopen copy: {e}")))?;
+        snapshot_state = Some(
+            live_state(&conn, &dir, sql::open_immutable)
+                .map_err(|e| failed(format!("read copy: {e}")))?,
+        );
     }
     let state = snapshot_state.unwrap_or(LiveState {
         refinery_max: 0,
@@ -412,41 +484,54 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
     Ok(info)
 }
 
+/// Busy or locked backup steps tolerated before the source counts as held.
+const BUSY_STEPS: u32 = 100;
+
 /// The online backup of one store into a single rollback-journal file,
-/// integrity-checked and fsynced.
-fn copy_store(src_path: &Path, dest: &Path) -> std::result::Result<(), String> {
-    let src = open_source(src_path).map_err(|e| e.to_string())?;
-    let mut dst = Connection::open(dest).map_err(|e| e.to_string())?;
+/// integrity-checked and fsynced. A source kept busy past [`BUSY_STEPS`] is
+/// [`StoreUpgradeError::StoreHeld`].
+pub(crate) fn copy_store(src_path: &Path, dest: &Path) -> Result<()> {
+    let name = src_path.file_name().unwrap_or_default().to_string_lossy();
+    let fail = |e: &dyn std::fmt::Display| failed(format!("copy {name}: {e}"));
+    let src = open_source(src_path, std::time::Duration::ZERO).map_err(|e| fail(&e))?;
+    let mut dst = Connection::open(dest).map_err(|e| fail(&e))?;
     {
-        let backup = rusqlite::backup::Backup::new(&src, &mut dst).map_err(|e| e.to_string())?;
+        let backup = rusqlite::backup::Backup::new(&src, &mut dst).map_err(|e| fail(&e))?;
+        let mut busy = 0;
         loop {
-            match backup.step(-1).map_err(|e| e.to_string())? {
+            match backup.step(-1).map_err(|e| fail(&e))? {
                 rusqlite::backup::StepResult::Done => break,
                 rusqlite::backup::StepResult::More => continue,
                 rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
+                    busy += 1;
+                    if busy >= BUSY_STEPS {
+                        return Err(StoreUpgradeError::StoreHeld {
+                            path: src_path.to_path_buf(),
+                        });
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                _ => return Err("unexpected backup step".into()),
+                _ => return Err(fail(&"unexpected backup step")),
             }
         }
     }
     drop(src);
     let mode: String = dst
         .query_row("PRAGMA journal_mode = DELETE", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| fail(&e))?;
     if !mode.eq_ignore_ascii_case("delete") {
-        return Err(format!("copy journal mode is {mode}"));
+        return Err(fail(&format!("copy journal mode is {mode}")));
     }
-    if !sql::integrity_ok(&dst).map_err(|e| e.to_string())? {
-        return Err("integrity_check of the copy failed".into());
+    if !sql::integrity_ok(&dst).map_err(|e| fail(&e))? {
+        return Err(fail(&"integrity_check of the copy failed"));
     }
-    dst.close().map_err(|(_, e)| e.to_string())?;
+    dst.close().map_err(|(_, e)| fail(&e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dest, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+        fs::set_permissions(dest, fs::Permissions::from_mode(0o600)).map_err(|e| fail(&e))?;
     }
-    fsx::fsync_file(dest).map_err(|e| e.to_string())
+    fsx::fsync_file(dest).map_err(|e| fail(&e))
 }
 
 /// Each completed snapshot's dir and marker sha256, for tests and the log.

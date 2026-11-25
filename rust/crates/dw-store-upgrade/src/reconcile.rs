@@ -76,16 +76,17 @@ fn check_snapshot(
 }
 
 /// Reconcile `wallet_db` (a network directory's `wallet.sqlite`) for this
-/// build. Every refusal is decided by a read that writes nothing; the writes
-/// (R1's drop, the retire) run in one transaction after the snapshot is
-/// checked, so a crash leaves the file as before or as after. Never opens
-/// with `LoadPolicy::Recovery`.
+/// build. Every refusal is decided by a read that writes nothing, the upgrade
+/// rehearsed on a private copy first; the writes (R1's drop, the retire) run
+/// in one transaction after the snapshot is checked to be of the data held
+/// under that transaction's lock, so a crash leaves the file as before or as
+/// after. Never opens with `LoadPolicy::Recovery`.
 pub fn reconcile_fork_store(
     wallet_db: &Path,
     snapshot: &SnapshotInfo,
     adopters: &Adopters,
 ) -> Result<Outcome> {
-    let network_dir = crate::precheck::data_root(wallet_db);
+    let network_dir = crate::precheck::parent_dir(wallet_db)?;
     crate::token::refuse_if_held(network_dir)?;
     crate::restore::refuse_if_restore_pending(network_dir)?;
     let read = match precheck_with(network_dir, adopters)? {
@@ -104,7 +105,9 @@ pub fn reconcile_fork_store(
         open_existing(wallet_db).map_err(StoreUpgradeError::sqlite("open wallet.sqlite", true))?;
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(StoreUpgradeError::sqlite("lock wallet.sqlite", true))?;
-    match write_in_transaction(&conn, adopters, &versions) {
+    let written = snapshot::require_reusable(snapshot, &conn, network_dir)
+        .and_then(|()| write_in_transaction(&conn, adopters, &versions));
+    match written {
         Ok(outcome) => {
             conn.execute_batch("COMMIT")
                 .map_err(StoreUpgradeError::sqlite("commit the reconcile", false))?;

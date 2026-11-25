@@ -122,8 +122,8 @@ fn v0_2_0_upgrades_and_retires() {
 }
 
 #[test]
-fn v0_3_0_upgrades_and_retires() {
-    upgrade("v0.3.0", &[1, 2, 3]);
+fn v0_3_0_upgrades_and_retires_once_v3_is_accepted() {
+    with_v3_accepted(|| upgrade("v0.3.0", &[1, 2, 3]));
 }
 
 #[test]

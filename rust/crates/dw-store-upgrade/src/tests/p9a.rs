@@ -71,8 +71,8 @@ fn rotated_contact_fork_file_is_refused_without_p9a() {
 #[test]
 fn rotated_contact_refusal_comes_before_the_drop_and_any_migration() {
     let f = fixture("v0.1.0");
-    let snapshot = take_snapshot(&f.net, now()).unwrap();
     add_retired_row(&f.wallet());
+    let snapshot = take_snapshot(&f.net, now()).unwrap();
     let before = tree(&f.net);
     let err = reconcile_fork_store(&f.wallet(), &snapshot, &build().with_p9a(P9aStatus::Absent))
         .unwrap_err();

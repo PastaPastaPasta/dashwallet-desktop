@@ -6,11 +6,7 @@ use super::*;
 use crate::copy::{self, CantOpenCause};
 
 #[test]
-fn published_pins_copy_gives_the_accepted_sets() {
-    let copy =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("data/published-pins.md"))
-            .unwrap();
-    assert_eq!(copy, crate::fork::PUBLISHED_PINS);
+fn published_pins_give_the_accepted_sets() {
     assert_eq!(crate::fork::published_pin_count(), 17);
     let want: BTreeSet<BTreeSet<u32>> = [vec![1], vec![1, 2, 3]]
         .into_iter()

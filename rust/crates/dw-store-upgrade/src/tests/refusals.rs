@@ -212,3 +212,12 @@ fn reconcile_refusal_leaves_the_store_unchanged() {
     assert!(err.file_unchanged());
     assert_eq!(tree(&f.net), before);
 }
+
+#[test]
+fn refuses_fork_v3_without_p8() {
+    let f = fixture("v0.3.0");
+    refused(
+        &f,
+        |e| matches!(e, StoreUpgradeError::ForkV3WithoutP8 { versions } if versions.iter().eq([1, 2, 3].iter())),
+    );
+}
