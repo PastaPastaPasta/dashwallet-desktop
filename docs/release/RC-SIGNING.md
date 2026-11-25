@@ -1,9 +1,9 @@
 # Signing a release candidate
 
-The release signer signs a release candidate `vX.Y.Z-rc.N` on his own Mac, the same way as a stable release
+The release signer signs a release candidate `vX.Y.Z-rc.N` on their own Mac, the same way as a stable release
 ([`SIGNING.md`](SIGNING.md), the Dash Core detached-signatures model). CI builds and attests the unsigned files. The
-signer signs them locally with Dash Core's Apple Developer ID, the Windows code-signing certificate on his
-YubiKey, and his PGP key, then commits the small detached signatures to the detached-signatures repository.
+signer signs them locally with Dash Core's Apple Developer ID, the Windows code-signing certificate on their
+YubiKey, and their PGP key, then commits the small detached signatures to the detached-signatures repository.
 `release-publish-signed.yml` re-attaches them to CI's exact bytes, verifies every signature against the
 identities pinned in this repository, attests the result and publishes the candidate. No key, certificate, PIN or
 password goes into GitHub Actions, and no agent handles any of them.
@@ -450,7 +450,7 @@ without the Gatekeeper right-click step, and on Windows the installer shows Dash
 
 ## Public identity values the signer fills in
 
-These are public values. Only the signer fills them in, from his own devices, by pull request to `main` before the
+These are public values. Only the signer fills them in, from their own devices, by pull request to `main` before the
 candidate's tag. Nobody else invents or looks them up. The placeholders fail closed, so nothing publishes until they
 are real.
 
