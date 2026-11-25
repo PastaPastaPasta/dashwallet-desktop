@@ -1260,6 +1260,24 @@ pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
     FAILING_OUTCOME_WRITES.lock().unwrap().remove(&key)
 }
 
+/// Sets the `FromShielded` record of `activity` to `state` in place.
+pub(crate) async fn set_record_state(
+    session: &NetworkSession,
+    wallet: WalletId,
+    activity: [u8; 32],
+    state: PlatformActivityState,
+) {
+    let store = Store::of(session, wallet).unwrap();
+    let mut record = (store.shielded_record(&hex::encode(activity)).await)
+        .unwrap()
+        .unwrap();
+    record.state = state;
+    store
+        .commit(vec![from_shielded_write(&record).unwrap()])
+        .await
+        .unwrap();
+}
+
 static FAILING_ARMS: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
 /// The next arming of a `FromShielded` record of the session's wallets
@@ -3708,6 +3726,26 @@ fn a_failed_from_shielded_settle_write_gives_back_once() {
     for _ in 0..2 {
         assert_eq!(incoming_total(&w.activity()), DASH / 2);
         assert_eq!(w.shielded_row(1).state, PlatformActivityState::Failed);
+    }
+}
+
+/// A settled record (failed or done) is not armed again: `false`, as for
+/// no record.
+#[test]
+fn a_settled_from_shielded_record_is_not_armed() {
+    let w = World::new();
+    let a = w.address(0);
+    for (n, state) in [
+        (1u8, PlatformActivityState::Failed),
+        (3, PlatformActivityState::Done),
+    ] {
+        w.arm_unshield(n, a, DASH).unwrap();
+        let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+        let armed = (w.f.engine).block_on(async move {
+            set_record_state(&s, id, [n; 32], state).await;
+            arm_from_shielded(&s, id, ([n; 32], [n.wrapping_add(1); 32])).await
+        });
+        assert_eq!(armed, Ok(false), "{state:?}");
     }
 }
 

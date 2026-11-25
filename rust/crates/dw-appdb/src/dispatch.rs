@@ -501,6 +501,16 @@ pub struct UnrecordedSpend {
     pub nullifiers: Vec<([u8; 32], bool)>,
 }
 
+/// A spend the fork's shielded store held notes for until it was
+/// acknowledged (its `shielded_spend_dispositions` row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkHold {
+    pub wallet: [u8; 32],
+    pub st_hash: [u8; 32],
+    pub activity: [u8; 32],
+    pub nullifiers: Vec<[u8; 32]>,
+}
+
 /// Where a shielded artifact (schema 11) came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtifactOrigin {
@@ -1721,6 +1731,65 @@ impl DispatchJournal {
         Ok(added)
     }
 
+    /// Marks each fork hold once (DEC-1057), in one transaction; the number
+    /// marked now. A hold seen before is skipped, even if its marker was
+    /// cleared. Nullifiers already seen spent on an artifact's note are
+    /// marked spent; a hold whose nullifiers are all spent marks nothing. A
+    /// standing marker of the same activity gains the hold's nullifiers.
+    /// The fork kept no anchor, so a new marker's anchor is zero.
+    pub fn import_fork_holds(&self, holds: &[ForkHold], now: u64) -> Result<usize> {
+        if holds.iter().any(|h| h.nullifiers.is_empty()) {
+            return Err(AppDbError::Corrupt(
+                "a fork-held shielded spend holds no nullifier".into(),
+            ));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut imported = 0;
+        for hold in holds {
+            let seen = tx.execute(
+                "INSERT INTO meta (k, v) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![fork_hold_key(&hold.wallet, &hold.st_hash), now as i64],
+            )? == 0;
+            if seen {
+                continue;
+            }
+            let mut notes = Vec::with_capacity(hold.nullifiers.len());
+            for nullifier in &hold.nullifiers {
+                let spent: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM shielded_artifact_note \
+                     WHERE wallet = ?1 AND nullifier = ?2 AND spent = 1)",
+                    params![&hold.wallet[..], &nullifier[..]],
+                    |r| r.get(0),
+                )?;
+                notes.push((nullifier, spent));
+            }
+            if notes.iter().all(|(_, spent)| *spent) {
+                continue;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO shielded_unrecorded (wallet, activity, anchor, at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &hold.wallet[..],
+                    &hold.activity[..],
+                    &[0u8; 32][..],
+                    now as i64
+                ],
+            )?;
+            for (nullifier, spent) in notes {
+                tx.execute(
+                    "INSERT OR IGNORE INTO shielded_unrecorded_nullifier \
+                     (wallet, activity, nullifier, spent) VALUES (?1, ?2, ?3, ?4)",
+                    params![&hold.wallet[..], &hold.activity[..], &nullifier[..], spent],
+                )?;
+            }
+            imported += 1;
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
+
     /// The marked shielded spends of `wallet` (schema 10), by activity.
     pub fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>> {
         let conn = self.conn();
@@ -2759,6 +2828,15 @@ fn sweep(conn: &Connection) -> Result<()> {
     compact(conn, None).map(drop)
 }
 
+fn fork_hold_key(wallet: &[u8; 32], st_hash: &[u8; 32]) -> String {
+    let mut key = String::with_capacity(10 + 128);
+    key.push_str("fork_hold:");
+    for b in wallet.iter().chain(st_hash) {
+        key.push_str(&format!("{b:02x}"));
+    }
+    key
+}
+
 fn seeded_key(wallet: &[u8; 32]) -> String {
     let mut key = String::with_capacity(7 + 64);
     key.push_str("seeded:");
@@ -3558,6 +3636,110 @@ mod tests {
             )
             .unwrap();
         assert_eq!(left, 0);
+    }
+
+    /// A fork hold is marked once: imported again, its marker cleared by a
+    /// scan or not, it is skipped. One without nullifiers is refused and
+    /// nothing of the call is written.
+    #[test]
+    fn a_fork_hold_is_marked_once() {
+        let j = journal();
+        let hold = |st: u8, activity: u8, nullifiers: Vec<[u8; 32]>| ForkHold {
+            wallet: W,
+            st_hash: [st; 32],
+            activity: [activity; 32],
+            nullifiers,
+        };
+        let (a, b) = (
+            hold(1, 11, vec![[21; 32]]),
+            hold(2, 12, vec![[22; 32], [23; 32]]),
+        );
+        assert_eq!(j.import_fork_holds(&[a.clone(), b.clone()], 4).unwrap(), 2);
+        let marked = j.unrecorded_spends(&W).unwrap();
+        assert_eq!(
+            marked
+                .iter()
+                .map(|m| (m.activity, m.anchor))
+                .collect::<Vec<_>>(),
+            [([11; 32], [0; 32]), ([12; 32], [0; 32])]
+        );
+        assert_eq!(marked[1].nullifiers, [([22; 32], false), ([23; 32], false)]);
+        assert_eq!(j.import_fork_holds(&[a.clone(), b.clone()], 5).unwrap(), 0);
+        assert_eq!(
+            j.note_spent_nullifiers(&W, &[[21; 32]]).unwrap(),
+            [[11; 32]]
+        );
+        assert_eq!(j.import_fork_holds(&[a.clone(), b], 6).unwrap(), 0);
+        assert_eq!(
+            j.unrecorded_spends(&W).unwrap().len(),
+            1,
+            "cleared stays cleared"
+        );
+
+        let c = hold(3, 13, vec![[24; 32]]);
+        assert!(
+            j.import_fork_holds(&[c.clone(), hold(4, 14, vec![])], 7)
+                .is_err()
+        );
+        assert_eq!(j.import_fork_holds(&[c], 8).unwrap(), 1);
+
+        // A marker of the activity standing gains the hold's nullifiers.
+        assert!(
+            j.record_unrecorded_spend(&W, &[15; 32], &[50; 32], &[[25; 32]], 9)
+                .unwrap()
+        );
+        assert_eq!(
+            j.import_fork_holds(&[hold(5, 15, vec![[26; 32]])], 9)
+                .unwrap(),
+            1
+        );
+        let standing = (j.unrecorded_spends(&W).unwrap().into_iter())
+            .find(|m| m.activity == [15; 32])
+            .unwrap();
+        assert_eq!(
+            (standing.anchor, standing.nullifiers),
+            ([50; 32], vec![([25; 32], false), ([26; 32], false)])
+        );
+        assert!(j.note_spent_nullifiers(&W, &[[25; 32]]).unwrap().is_empty());
+
+        // Nullifiers an artifact's notes have seen spent: marked spent, and a
+        // hold of those alone marks nothing.
+        let artifact = NewShieldedArtifact {
+            activity: [16; 32],
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some([16; 32]),
+            kind: Some(ArtifactKind::Transfer),
+            anchor: Some([2; 32]),
+            identity_id: None,
+            selected: vec![[27; 32], [28; 32]],
+            published: vec![[27; 32], [28; 32]],
+        };
+        assert!(j.record_shielded_artifact(&W, &artifact, 10).unwrap());
+        assert!(
+            j.note_spent_nullifiers(&W, &[[27; 32], [28; 32]])
+                .unwrap()
+                .is_empty()
+        );
+        let before = j.unrecorded_spends(&W).unwrap().len();
+        assert_eq!(
+            j.import_fork_holds(&[hold(6, 16, vec![[27; 32], [28; 32]])], 11)
+                .unwrap(),
+            0
+        );
+        assert_eq!(j.unrecorded_spends(&W).unwrap().len(), before);
+        assert_eq!(
+            j.import_fork_holds(&[hold(7, 17, vec![[27; 32], [29; 32]])], 12)
+                .unwrap(),
+            1
+        );
+        let partial = (j.unrecorded_spends(&W).unwrap().into_iter())
+            .find(|m| m.activity == [17; 32])
+            .unwrap();
+        assert_eq!(partial.nullifiers, [([27; 32], true), ([29; 32], false)]);
+        assert_eq!(
+            j.note_spent_nullifiers(&W, &[[29; 32]]).unwrap(),
+            [[17; 32]]
+        );
     }
 
     /// A release (schema 7, review R6-01) is written only against a

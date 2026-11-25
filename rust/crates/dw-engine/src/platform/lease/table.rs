@@ -344,6 +344,9 @@ pub struct LeaseTable {
     pub(crate) background: Arc<super::background::Background>,
     /// The catch-up's resume path (H6 part 2); the session installs it.
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
+    /// The wallets held for the session by a fork hold not marked
+    /// ([`Self::hold_fork_wallets`]); `None`: every wallet.
+    pub(crate) fork_held: Mutex<Option<BTreeSet<WalletId>>>,
     /// The table itself, for work a J step's effects start.
     pub(super) me: Weak<LeaseTable>,
     /// Rows a test's scripted library tracks, which the session's evidence
@@ -402,6 +405,7 @@ impl LeaseTable {
             refresh: tokio::sync::Mutex::new(()),
             background: Arc::default(),
             resumer: OnceLock::new(),
+            fork_held: Mutex::new(Some(BTreeSet::new())),
             me: me.clone(),
             #[cfg(test)]
             test_rows: Default::default(),
