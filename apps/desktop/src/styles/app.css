@@ -1316,7 +1316,7 @@ input[type="radio"]:disabled {
   bottom: 0;
   left: 50%;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   width: calc(100% - 2 * var(--dw-layout-page-padding-h));
   max-width: var(--dw-layout-shortcut-card-max-width);
   padding: var(--dw-space-xxs);
