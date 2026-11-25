@@ -36,6 +36,9 @@
 #   updater/latest.json                                    # signed with local stable updater key
 #   SHA256SUMS                                             # final hashes of all 9 release files
 #   SHA256SUMS.asc                                         # detached armored PGP signature over SHA256SUMS
+#
+# A release candidate (--version X.Y.Z-rc.N, docs/release/RC-SIGNING.md) has no updater feed: no
+# updater/ directory (refused if present), no .app.tar.gz, and SHA256SUMS lists the 7 bundles and SBOMs.
 set -euo pipefail
 umask 022
 
@@ -86,7 +89,9 @@ if [[ "$(uname -s)" != Darwin ]] && ((!allow_non_darwin)); then
   die "macOS codesign, spctl, stapler, and .dmg layout verification require macOS (pass --allow-non-darwin only for Linux test suites, never for publishing)"
 fi
 
-[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be a stable X.Y.Z"
+[[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "--version must be X.Y.Z or X.Y.Z-rc.N"
+rc=0
+[[ "$version" != *-rc.* ]] || rc=1
 [[ -d "$unsigned_dir" && ! -L "$unsigned_dir" ]] || die "--unsigned-dir $unsigned_dir does not exist"
 [[ -d "$sigs_dir" && ! -L "$sigs_dir" ]] || die "--sigs-dir $sigs_dir does not exist"
 [[ -n "$out_dir" ]] || die "--out-dir is required"
@@ -262,8 +267,10 @@ else
   echo "release-attach: WARNING: skipping macOS codesign/spctl/stapler/.dmg mount verification (--allow-non-darwin)" >&2
 fi
 
-mac_app_tar="$feed_out/dash-wallet-$version-macos-universal.app.tar.gz"
-python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/Dash Wallet.app" "$mac_app_tar"
+if ((!rc)); then
+  mac_app_tar="$feed_out/dash-wallet-$version-macos-universal.app.tar.gz"
+  python3 "$here/macos-detached-sig.py" pack-app "$work/mac-signed/Dash Wallet.app" "$mac_app_tar"
+fi
 
 # 5. macOS .dmg: verify signed .dmg Developer ID cert + Team ID, spctl primary-signature, staple, exact top-level layout, and interior Dash Wallet.app.
 dmg_name="dash-wallet-$version-macos-universal.dmg"
@@ -284,16 +291,20 @@ cp "$signed_dmg" "$dist_out/$dmg_name"
 
 # 6. Updater feed: verify all 4 exact URLs and minisign signatures against tauri.conf.json pubkey and version.
 latest_src="$sigs_dir/updater/latest.json"
-[[ -s "$latest_src" ]] || die "missing $latest_src"
-cp "$latest_src" "$feed_out/latest.json"
-echo "release-attach: verifying updater latest.json minisign signatures"
-python3 "$here/verify-minisign.py" \
-  --pubkey-from-tauri "$tauri_conf" \
-  --latest-json "$feed_out/latest.json" \
-  --version "$version" \
-  --files-dir "$dist_out" \
-  --files-dir "$feed_out" \
-  --repo "$repo"
+if ((rc)); then
+  [[ ! -e "$sigs_dir/updater" ]] || die "$sigs_dir/updater on release candidate $version: a candidate publishes no updater feed"
+else
+  [[ -s "$latest_src" ]] || die "missing $latest_src"
+  cp "$latest_src" "$feed_out/latest.json"
+  echo "release-attach: verifying updater latest.json minisign signatures"
+  python3 "$here/verify-minisign.py" \
+    --pubkey-from-tauri "$tauri_conf" \
+    --latest-json "$feed_out/latest.json" \
+    --version "$version" \
+    --files-dir "$dist_out" \
+    --files-dir "$feed_out" \
+    --repo "$repo"
+fi
 
 # 7. Final SHA256SUMS + mandatory pinned PGP SHA256SUMS.asc verification (rejecting revoked/expired keys).
 final_sums="$sigs_dir/SHA256SUMS"
@@ -307,13 +318,15 @@ expected_names=(
   "dash-wallet-$version-linux-amd64.deb"
   "dash-wallet-$version-linux-x86_64.AppImage"
   "dash-wallet-$version-linux-x86_64.flatpak"
-  "dash-wallet-$version-macos-universal.app.tar.gz"
+)
+((rc)) || expected_names+=("dash-wallet-$version-macos-universal.app.tar.gz")
+expected_names+=(
   "dash-wallet-$version-macos-universal.dmg"
   "dash-wallet-$version-sbom-npm.cdx.json"
   "dash-wallet-$version-sbom-rust.cdx.json"
   "dash-wallet-$version-windows-x64-setup.exe"
-  "latest.json"
 )
+((rc)) || expected_names+=("latest.json")
 actual_names=()
 while IFS= read -r fname; do
   [[ -n "$fname" ]] && actual_names+=("$fname")
@@ -336,7 +349,7 @@ while read -r want_hash fname; do
   fi
   [[ "$got_hash" == "$want_hash" ]] || die "SHA-256 mismatch for $fname: got $got_hash, expected $want_hash"
 done < "$dist_out/SHA256SUMS"
-echo "release-attach: all 9 final release files match SHA256SUMS"
+echo "release-attach: all ${#expected_names[@]} final release files match SHA256SUMS"
 
 command -v gpg >/dev/null 2>&1 || die "gpg is required to verify SHA256SUMS.asc"
 # Short /tmp path keeps gpg-agent/keyboxd sockets well under macOS's 104-byte UNIX_PATH_MAX.
@@ -371,25 +384,13 @@ sig_primary=$(awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print toupper($12); ex
   die "SHA256SUMS.asc signed by primary key $sig_primary, expected $want_fpr"
 echo "release-attach: verified PGP signature SHA256SUMS.asc (GOODSIG + pinned primary key $sig_primary)"
 
-# L4 / H2: Record pinned identities and SHA-256 of ALL 11 published files in signed-manifest.json.
-python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" <<'PY'
+# L4 / H2: Record pinned identities and SHA-256 of ALL published files (11; 9 on a candidate) in signed-manifest.json.
+python3 - "$version" "$sig_primary" "$apple_team_id" "$win_leaf_hash" "$dist_out" "$feed_out" "$out_dir/signed-manifest.json" "${expected_names[@]}" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 
-version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path = sys.argv[1:]
-expected = [
-    f"dash-wallet-{version}-linux-amd64.deb",
-    f"dash-wallet-{version}-linux-x86_64.AppImage",
-    f"dash-wallet-{version}-linux-x86_64.flatpak",
-    f"dash-wallet-{version}-macos-universal.app.tar.gz",
-    f"dash-wallet-{version}-macos-universal.dmg",
-    f"dash-wallet-{version}-sbom-npm.cdx.json",
-    f"dash-wallet-{version}-sbom-rust.cdx.json",
-    f"dash-wallet-{version}-windows-x64-setup.exe",
-    "latest.json",
-    "SHA256SUMS",
-    "SHA256SUMS.asc",
-]
+version, pgp_fpr, apple_team_id, win_leaf, dist_dir, feed_dir, out_path = sys.argv[1:8]
+expected = sys.argv[8:] + ["SHA256SUMS", "SHA256SUMS.asc"]
 files = {}
 for name in sorted(expected):
     p = Path(dist_dir) / name
