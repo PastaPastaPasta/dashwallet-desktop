@@ -271,11 +271,12 @@ export const dashpay = {
       syncing: "Your shielded balance is still syncing.",
     },
     /** "Make your username private", the step before the name (C-funding F19; the iOS and Android
-     * wallets' copy, "Dash balance" read as "Dash wallet"). */
+     * wallets' copy, "Dash balance" read as "Dash wallet", and the Shielded note says what it hides:
+     * the link between the funds and the username, which itself is public). */
     privacy: {
       title: "Make your username private",
       body: "To help keep your payment activity private, we recommend paying for the username from your Shielded balance",
-      shieldedNote: "Keeps your username private",
+      shieldedNote: "Helps hide the link between your funds and your username",
       coreNote: "Funds will be traceable to your username",
       advanced: "Advanced",
       shieldFirst: "Shield your funds first",

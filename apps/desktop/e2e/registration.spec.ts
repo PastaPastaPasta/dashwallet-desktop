@@ -202,7 +202,7 @@ test("C-funding F19: Make your username private lists Shielded first and Dash wa
   const radio = (s: string) => page.getByTestId(`pay-with-${s}`).getByRole("radio");
   await expect(page.getByTestId("pay-with-sources").or(step.locator(".pay-with-source"))).toHaveCount(2);
   await expect(step.locator(".pay-with-source").first()).toHaveAttribute("data-testid", "pay-with-shielded");
-  await expect(page.getByTestId("pay-with-shielded-note")).toHaveText("Keeps your username private");
+  await expect(page.getByTestId("pay-with-shielded-note")).toHaveText("Helps hide the link between your funds and your username");
   await expect(page.getByTestId("pay-with-core-note")).toHaveText("Funds will be traceable to your username");
   await expect(radio("shielded")).not.toBeChecked();
   await expect(radio("core")).not.toBeChecked();
