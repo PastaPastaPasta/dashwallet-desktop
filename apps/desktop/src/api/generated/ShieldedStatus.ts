@@ -66,6 +66,13 @@ lastSyncAt: number | null, syncing: boolean,
  */
 proverReady: boolean,
 /**
+ * This build can send, unshield and pay a contact from Shielded. When
+ * false those calls, and a new shield into the pool, refuse
+ * `platform.unavailable`; finishing a shield already sent, receive,
+ * sync and balance still work.
+ */
+spendsAvailable: boolean,
+/**
  * Whether the viewing key is bound, or what holds its first bind;
  * `null` while the network is not active. Once bound the receive
  * address reads before any scan.

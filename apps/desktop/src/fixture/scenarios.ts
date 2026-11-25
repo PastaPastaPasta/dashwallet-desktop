@@ -1317,6 +1317,19 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "15000000";
     return w;
   },
+  /** This build cannot spend from Shielded: Send, the moves out and paying from it wait with one reason. */
+  "shielded-spends-off": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    return w;
+  },
+  /** As `shielded-spends-off`, with a shield lock sent and not applied yet: Finish stays open. */
+  "shielded-spends-off-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);
@@ -1575,6 +1588,14 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** `dashpay-registered` where this build cannot spend from Shielded: Pay a contact's Shielded row says so. */
+  "dashpay-registered-spends-off": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    attributePayments(w);
+    w.pending.shielded!.spendsAvailable = false;
     return w;
   },
   /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */

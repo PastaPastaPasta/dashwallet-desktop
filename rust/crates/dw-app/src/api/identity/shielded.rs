@@ -68,6 +68,11 @@ pub struct ShieldedStatus {
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
     pub prover_ready: bool,
+    /// This build can send, unshield and pay a contact from Shielded. When
+    /// false those calls, and a new shield into the pool, refuse
+    /// `platform.unavailable`; finishing a shield already sent, receive,
+    /// sync and balance still work.
+    pub spends_available: bool,
     /// Whether the viewing key is bound, or what holds its first bind;
     /// `null` while the network is not active. Once bound the receive
     /// address reads before any scan.
@@ -129,6 +134,9 @@ pub struct ShieldedSyncInfo {
     pub scan: Option<ShieldedScanProgress>,
     /// The wallet's last pass this session failed, until one succeeds.
     pub last_pass_failed: bool,
+    /// As `ShieldedStatus.spendsAvailable`, and read on an inactive network
+    /// too.
+    pub spends_available: bool,
 }
 
 impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
@@ -140,6 +148,7 @@ impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
             syncing,
             scan,
             last_pass_failed,
+            spends_available,
         } = s;
         ShieldedSyncInfo {
             active,
@@ -148,6 +157,7 @@ impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
             syncing,
             scan: scan.map(Into::into),
             last_pass_failed,
+            spends_available,
         }
     }
 }
@@ -170,6 +180,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
             account,
             scan,
             last_pass_failed,
@@ -190,6 +201,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
             account: account.map(Into::into),
             scan: scan.map(Into::into),
             last_pass_failed,

@@ -82,6 +82,12 @@ pub struct ShieldedStatus {
     /// engine builds it in the background when the session's Platform side
     /// starts on an active network).
     pub prover_ready: bool,
+    /// The library can spend from the pool's key set: send, unshield to Core
+    /// or Platform, and pay a contact from Shielded. While false those, and a
+    /// new move into the pool, refuse `platform.unavailable` before anything
+    /// else; finishing a shield already sent, receive, sync and the balance
+    /// keep working. Read on an inactive network too.
+    pub spends_available: bool,
     /// Whether the account's viewing key is bound, or what holds its first
     /// bind; `None` while the network is not active. Once bound the receive
     /// address reads before any scan ([`ShieldedAddress`]).
@@ -149,6 +155,9 @@ pub struct ShieldedSyncInfo {
     pub scan: Option<ShieldedScanProgress>,
     /// The wallet's last pass this session failed, until one succeeds.
     pub last_pass_failed: bool,
+    /// As [`ShieldedStatus::spends_available`], read on an inactive network
+    /// too, so Receive holds the address without waiting for a status read.
+    pub spends_available: bool,
 }
 
 /// A shielded payment address of the wallet, for "Receive" and its QR.
@@ -566,10 +575,15 @@ impl DashPay {
 
     /// The wallet's shielded receive address. A bound key's address reads
     /// with no read of the note store, so it answers during a pass; the
-    /// first bind goes through the pool.
+    /// first bind goes through the pool. While the library cannot spend from
+    /// the key set (`spends_available`) no address is issued:
+    /// `platform.unavailable` first.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
         let wallet = self.wallet_id;
         let bound = pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            if !pool::keyset_spends(&pw) {
+                return Err(super::PlatformError::Unavailable.into());
+            }
             Ok(pool::bound_address(&pw).await)
         })
         .await?;

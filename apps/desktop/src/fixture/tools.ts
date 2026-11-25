@@ -508,7 +508,10 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
       });
       return [
         ...(world.coinjoin.drainUnknown === "stuck" ? [priced(DRAIN_STEP, true, coinJoinAccount(w))] : []),
-        ...(world.pending.shielded?.shieldUnknown ? [priced(SHIELD_STEP, false, mainBalanceCoins(w))] : []),
+        ...(world.pending.shielded?.shieldUnknown === true ? [priced(SHIELD_STEP, false, mainBalanceCoins(w))] : []),
+        ...(world.pending.shielded?.shieldUnknown === "blocked"
+          ? [{ step: SHIELD_STEP, state: "maybeSent" as const, repair: null, blocked: { reason: "noKnownLock" as const, retryLater: false } }]
+          : []),
       ];
     },
     resolve_stuck_funding: ({ walletId, step, grant: grantId }, { world }) => {
