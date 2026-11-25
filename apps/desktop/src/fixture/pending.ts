@@ -569,8 +569,8 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   // Keep runs KeepLive: the request and the journal go, RESTORED stays.
   keep_current_files: (_: { network: string | null }, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("keepCurrentFiles");
-    if (world.openRefusal?.screen.titleKey === "storeUpgrade.restore.foreign.title") {
-      world.openRefusal = undefined;
+    if (world.openRestore?.state === "foreign") {
+      world.openRestore = undefined;
       world.restored = true;
     }
     return null;

@@ -14,20 +14,21 @@ test.describe("a refused store", () => {
   for (const scenario of ["funded", "no-wallet"])
     test(`shows the engine's screen and quits, never onboarding (${scenario})`, async ({ page }) => {
       const errors = trackPageErrors(page);
-      await page.goto(fixtureUrl(scenario, "light", "&openRefused=cantOpenWithoutBackup"));
+      await page.goto(fixtureUrl(scenario, "light", "&openRefused=refusedPrevious"));
       const screen = page.getByTestId("store-refused");
-      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't open this wallet data");
-      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet. Nothing in it was changed. Your funds");
+      await expect(screen.getByRole("heading")).toHaveText("Dash Wallet can't open this wallet data safely");
+      await expect(page.getByTestId("store-refused-text")).toContainText("/home/user/.local/share/dashwallet/testnet: it holds contact data that this version can't read yet. Dash Wallet didn't change anything in it.");
       await expectNoWallet(page);
-      await page.getByTestId("store-refused-button-storeUpgrade.cantOpen.quit").click();
+      await page.getByTestId("store-refused-button-storeUpgrade.refused.quit").click();
       await expect.poll(() => appExits(page)).toEqual(["quit"]);
       await expect(page.getByTestId("store-refused-problem")).toHaveCount(0);
       expect(errors).toEqual([]);
     });
 
-  test("names the backup folder when a verified backup exists", async ({ page }) => {
-    await page.goto(fixtureUrl("funded", "dark", "&openRefused=cantOpen"));
-    await expect(page.getByTestId("store-refused-text")).toContainText("is still in the upgrade-backups folder inside /home/user/.local/share/dashwallet/testnet");
+  test("offers Report a problem when the way out is support", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "dark", "&openRefused=refusedSupport"));
+    await expect(page.getByTestId("store-refused-text")).toContainText("Choose Report a problem.");
+    await expect(page.getByTestId("store-refused-button-storeUpgrade.refused.report")).toHaveText("Report a problem");
     await expectNoWallet(page);
   });
 });

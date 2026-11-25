@@ -6,13 +6,6 @@ import type { Tree } from "../core";
  * renderer's own screens for `storage_restore`, its confirm and banner, and the foreign screen's keys,
  * which come in the engine's screen. */
 export const storeUpgrade = {
-  cantOpen: {
-    title: "Dash Wallet can't open this wallet data",
-    text: "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed, and the wallet data saved before the upgrade is still in the upgrade-backups folder inside {folder}. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
-    textWithoutBackup:
-      "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
-    quit: "Quit",
-  },
   restored: {
     text: "Dash Wallet is using your wallet data from before the upgrade, so anything that happened since the upgrade is missing. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent, so anything that moves your funds is paused until then.",
   },

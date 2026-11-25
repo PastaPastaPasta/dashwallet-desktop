@@ -1,11 +1,11 @@
-// The store-refusal and StorageInUse shapes come from dw-app's ts-rs export (src/api/generated). The
-// restore shapes (`storage_restore`, `Restore`, `NetworkInfo.restored`; DTO contract v3) are hand-written
-// until the bindings carry them. This module adds the runtime checks an open's error goes through before
-// the screen trusts it.
+// The store-refusal, StorageInUse and restore shapes (`storage_restore`, DTO contract v3) and
+// `NetworkInfo.restored` come from dw-app's ts-rs export (src/api/generated). This module adds the runtime
+// checks an open's error goes through before the screen trusts it.
 
 import type { NetworkInfo } from "./generated/NetworkInfo";
 
 import type { ErrorData } from "./generated/ErrorData";
+import type { RestoreStateName } from "./generated/RestoreStateName";
 import type { StoreButton } from "./generated/StoreButton";
 import type { StoreHint } from "./generated/StoreHint";
 import type { StoreScreen } from "./generated/StoreScreen";
@@ -18,7 +18,7 @@ export type StoreRefusedData = Extract<ErrorData, { kind: "storeRefused" }>;
 export type StorageInUseData = Extract<ErrorData, { kind: "storageInUse" }>;
 
 /** Where a pending restore stopped the open (`run_pending_restore`); the request, on the next start. */
-export type RestoreState = "refused" | "noSpace" | "notStarted" | "incomplete";
+export type RestoreState = RestoreStateName;
 
 /** The causes the engine names, by state; `noSpace` has none of its own. */
 export const RESTORE_CAUSES = {
@@ -26,13 +26,14 @@ export const RESTORE_CAUSES = {
   noSpace: ["diskFull"],
   notStarted: ["diskFull", "permissionDenied", "fileVanished", "other"],
   incomplete: ["diskFull", "permissionDenied", "fileVanished", "other"],
+  foreign: ["otherLineage", "oldBuildWrote"],
 } as const satisfies Record<RestoreState, readonly string[]>;
 
 const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
 
 /** `storage_restore`'s data. `cause` is for tests and logs: each state's screen is the same for every
  * cause (MG (n), (q)). `neededBytes` is the space the copies need, `noSpace` only. */
-export type StoreRestoreData = { kind: "restore"; state: RestoreState; cause: string; neededBytes: number | null; folder: string };
+export type StoreRestoreData = Extract<ErrorData, { kind: "restore" }>;
 
 /** The open's refusals: a store refusal, StorageInUse with its `retryable`, or a pending restore that
  * stopped the open. */
@@ -86,7 +87,7 @@ export function storeRestore(e: unknown): StoreRestoreData | null {
 
 /** The network as `open_network` and `active_network` give it, with whether its wallet data was restored
  * and the engine has not yet cleared RESTORED (its first full sync). */
-export type RestoredNetworkInfo = NetworkInfo & { restored: boolean };
+export type RestoredNetworkInfo = NetworkInfo & Required<Pick<NetworkInfo, "restored">>;
 
 /** `restored` of a network; `false` for a dw-app before it, which never restores. */
-export const isRestored = (network: unknown): boolean => object(network) && (network as Partial<RestoredNetworkInfo>).restored === true;
+export const isRestored = (network: unknown): boolean => object(network) && (network as Partial<NetworkInfo>).restored === true;

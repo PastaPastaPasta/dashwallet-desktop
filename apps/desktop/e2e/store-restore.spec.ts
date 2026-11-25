@@ -81,12 +81,12 @@ test.describe("the foreign lineage", () => {
   for (const theme of THEMES)
     test(`Keep the current files keeps them and opens them, restored (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
-      await page.goto(fixtureUrl("funded", theme, "&openRefused=restoreForeign"));
-      const screen = page.getByTestId("store-refused");
+      await page.goto(fixtureUrl("funded", theme, "&openRestore=foreign:otherLineage"));
+      const screen = page.getByTestId("store-restore");
       await expect(screen.getByRole("heading")).toHaveText("These wallet files don't match the restore");
-      await expect(page.getByTestId("store-refused-hint")).toContainText(`opens the files in ${FOLDER} as they are now`);
-      await expect(page.getByTestId("store-refused-issues-hint")).toHaveText("Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.");
-      const keep = page.getByTestId("store-refused-button-storeUpgrade.restore.foreign.keep");
+      await expect(page.getByTestId("store-restore-hint")).toContainText(`opens the files in ${FOLDER} as they are now`);
+      await expect(page.getByTestId("store-restore-issues-hint")).toHaveText("Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.");
+      const keep = page.getByTestId("store-restore-button-storeUpgrade.restore.foreign.keep");
       await expect(keep).not.toBeFocused();
       await expectNoWallet(page);
       await keep.click();
@@ -97,9 +97,9 @@ test.describe("the foreign lineage", () => {
     });
 
   test("Quit quits through its own key, keeping nothing", async ({ page }) => {
-    await page.goto(fixtureUrl("funded", "light", "&openRefused=restoreForeign"));
-    await expect(page.getByTestId("store-refused-button-storeUpgrade.cantOpen.quit")).toHaveCount(0);
-    const quit = page.getByTestId("store-refused-button-storeUpgrade.restore.foreign.quit");
+    await page.goto(fixtureUrl("funded", "light", "&openRestore=foreign:otherLineage"));
+    await expect(page.getByTestId("store-restore-button-storeUpgrade.refused.quit")).toHaveCount(0);
+    const quit = page.getByTestId("store-restore-button-storeUpgrade.restore.foreign.quit");
     await expect(quit).toHaveText("Quit");
     await quit.click();
     await expect.poll(async () => (await world(page)).appExits).toEqual(["quit"]);
@@ -111,7 +111,7 @@ test.describe("the foreign lineage", () => {
 test.describe("Restore earlier data", () => {
   test("shows only while a verified snapshot is there", async ({ page }) => {
     await page.goto(fixtureUrl("funded", "light", "&openRefused=refusedRestore&restoreAvailable=no"));
-    await page.getByTestId("store-refused").waitFor();
+    await page.getByTestId("store-restore").waitFor();
     await expect.poll(async () => (await world(page)).restoreCalls).toEqual(["restoreAvailable"]);
     await expect(page.getByTestId("store-refused-button-storeUpgrade.refused.restore")).toHaveCount(0);
   });
@@ -136,7 +136,7 @@ test.describe("Restore earlier data", () => {
       await expect(page.getByTestId("restore-confirm-text").first()).toContainText(`upgrade-backups folder inside ${FOLDER}`);
       await page.getByTestId("restore-confirm-confirm").click();
       await unlockIfLocked(page);
-      await expect(page.getByTestId("store-refused")).toHaveCount(0);
+      await expect(page.getByTestId("store-restore")).toHaveCount(0);
       await expect(page.getByTestId("restored-banner-text")).toContainText("Dash Wallet is using your wallet data from before the upgrade");
       const after = await world(page);
       expect(after.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);

@@ -21,7 +21,7 @@ describe("the splash's open failure", () => {
   });
 
   it("gives a store refusal its own screen, with the engine's screen", () => {
-    const refusal = STORE_SCREENS.cantOpen("/data/testnet");
+    const refusal = STORE_SCREENS.refusedPrevious("/data/testnet");
     expect(openFailure(storeRefusedError(refusal))).toEqual({ kind: "refused", refusal });
   });
 
@@ -49,11 +49,11 @@ describe("the splash's open failure", () => {
   it("does not take a storage_refused without its screen for a refusal", () => {
     expect(openFailure({ code: "storage_refused", message: "x", data: null })).toMatchObject({ kind: "message", retry: false });
     expect(openFailure({ code: "storage_refused", message: "x", data: { kind: "storeRefused", folder: "/data", cause: "P9aBroken" } })).toMatchObject({ kind: "message", retry: false });
-    const whole = STORE_SCREENS.cantOpen("/data");
+    const whole = STORE_SCREENS.refusedPrevious("/data");
     const broken = [
       { ...whole, screen: { ...whole.screen, buttons: undefined } },
-      { ...whole, screen: { ...whole.screen, buttons: [{ key: "storeUpgrade.cantOpen.quit", label: 3, destructive: false, defaultFocus: false }] } },
-      { ...whole, screen: { ...whole.screen, title_key: "storeUpgrade.cantOpen.title", titleKey: undefined } },
+      { ...whole, screen: { ...whole.screen, buttons: [{ key: "storeUpgrade.refused.quit", label: 3, destructive: false, defaultFocus: false }] } },
+      { ...whole, screen: { ...whole.screen, title_key: "storeUpgrade.refused.title", titleKey: undefined } },
       { ...whole, screen: { ...whole.screen, hint: { key: "x" } } },
       { ...whole, folder: null },
     ];
