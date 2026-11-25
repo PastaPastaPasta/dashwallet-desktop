@@ -70,13 +70,11 @@ export const storeUpgrade = {
       title: "The earlier wallet data couldn't be restored",
       text: "Dash Wallet couldn't use the wallet data it saved before the upgrade, so nothing was changed. The wallet is using the same data as before you chose to restore.",
       ok: "OK",
-      quit: "Quit",
     },
     noSpace: {
       title: "Not enough disk space to restore",
       text: "Dash Wallet needs more free disk space to restore your wallet data from before the upgrade, so nothing was changed. Free up space on the disk that holds {folder}, then choose to restore again.",
       ok: "OK",
-      quit: "Quit",
     },
     notStarted: {
       title: "Dash Wallet couldn't start restoring your wallet data",

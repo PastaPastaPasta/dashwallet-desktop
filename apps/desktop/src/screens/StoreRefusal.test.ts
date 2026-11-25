@@ -35,6 +35,7 @@ import { en } from "../i18n/en";
 import {
   buttonAction,
   OpenFailureActions,
+  perform,
   RESTORE_BUTTONS,
   restoreButtonKey,
   RestoreConfirmView,
@@ -528,7 +529,7 @@ describe("the restore screens", () => {
           expect(b?.tag.includes("dash-button-filledBlue"), k).toBe(!foreign && i === 0);
         });
         expect(html).not.toContain("disabled");
-        expect(keys.at(-1)).toBe("quit");
+        expect(keys.at(-1)).toBe(restore.state === "refused" || restore.state === "noSpace" ? "ok" : "quit");
         expect(html).not.toContain(escaped(en.app.tryAgain));
         const reports = keys.includes("report");
         expect(html.includes(`>${escaped(en.settings.about.links.issuesHint)}</p>`)).toBe(reports);
@@ -554,9 +555,7 @@ describe("the restore screens", () => {
   it("gives every button an action: OK opens the wallet data, Restart restarts, Cancel restore drops the request", () => {
     expect(RESTORE_STATES.flatMap((state) => RESTORE_BUTTONS[state].map((k) => [`${state}.${k}`, buttonAction(restoreButtonKey(state, k))]))).toEqual([
       ["refused.ok", "reopen"],
-      ["refused.quit", "quit"],
       ["noSpace.ok", "reopen"],
-      ["noSpace.quit", "quit"],
       ["notStarted.restart", "restart"],
       ["notStarted.cancel", "cancelRestore"],
       ["notStarted.report", "report"],
@@ -567,6 +566,24 @@ describe("the restore screens", () => {
       ["foreign.keep", "keep"],
       ["foreign.report", "report"],
       ["foreign.quit", "quit"],
+    ]);
+  });
+
+  it("offers the buttons copy.rs gives each state, in its order: OK alone where nothing changed", () => {
+    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+    const body = (fn: string) => new RegExp(`pub fn ${fn}\\([\\s\\S]*?\\n}\\n`).exec(rust)![0];
+    const buttonsOf = (fn: string) => [...body(fn).matchAll(/\bbutton\("storeUpgrade\.restore\.(\w+)\.(\w+)"/g)].map((m) => `${m[1]}.${m[2]}`);
+    expect(buttonsOf("restore_refused")).toEqual(RESTORE_BUTTONS.refused.map((k) => `refused.${k}`));
+    expect(buttonsOf("restore_no_space")).toEqual(RESTORE_BUTTONS.noSpace.map((k) => `noSpace.${k}`));
+    expect(buttonsOf("restore_not_started")).toEqual(RESTORE_BUTTONS.notStarted.map((k) => `notStarted.${k}`));
+    expect(RESTORE_BUTTONS.notStarted).toEqual(["restart", "cancel", "report", "quit"]);
+    expect([...ENGLISH.keys()].filter((k) => /^storeUpgrade\.restore\.(refused|noSpace)\./.test(k)).sort()).toEqual([
+      "storeUpgrade.restore.noSpace.ok",
+      "storeUpgrade.restore.noSpace.text",
+      "storeUpgrade.restore.noSpace.title",
+      "storeUpgrade.restore.refused.ok",
+      "storeUpgrade.restore.refused.text",
+      "storeUpgrade.restore.refused.title",
     ]);
   });
 
@@ -740,6 +757,25 @@ describe("the restore actions", () => {
     const calls: string[] = [];
     await new OpenFailureActions(api(calls)).cancelRestore(() => calls.push("reopen"));
     expect(calls).toEqual(["cancelRestore", "reopen"]);
+  });
+
+  /** Presses `state`'s button `k` as its click does: its key's action, through `perform`. */
+  async function press(state: RestoreState, k: string): Promise<string[]> {
+    const calls: string[] = [];
+    const action = buttonAction(restoreButtonKey(state, k));
+    expect(action, `${state}.${k}`).not.toBeNull();
+    perform(new OpenFailureActions(api(calls)), action!, () => calls.push("reopen"));
+    await new Promise((r) => setTimeout(r, 0));
+    return calls;
+  }
+
+  it("notStarted's Cancel restore calls cancel_restore once and nothing else, then opens the data again", async () => {
+    expect(await press("notStarted", "cancel")).toEqual(["cancelRestore", "reopen"]);
+  });
+
+  it("notStarted's Report a problem opens the issues link Settings opens, and nothing else", async () => {
+    expect(await press("notStarted", "report")).toEqual(["link:issues"]);
+    expect(R.notStarted.report).toBe(en.settings.about.links.issues);
   });
 
   it("Report a problem opens the issues page, and names it to copy when no browser opens", async () => {

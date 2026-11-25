@@ -8,6 +8,7 @@ import { fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 
 const FOLDER = "/home/user/.local/share/dashwallet/testnet";
 const world = (page: Page) => page.evaluate(() => window.__dwFixture!.world);
+const calls = (page: Page) => page.evaluate(() => [...window.__dwFixture!.calls]);
 
 async function expectNoWallet(page: Page) {
   for (const id of ["onboarding-welcome", "onboarding-create", "hero", "history-empty", "wallets-error", "toolbar-lock"]) await expect(page.getByTestId(id)).toHaveCount(0);
@@ -23,8 +24,8 @@ async function unlockIfLocked(page: Page) {
 }
 
 const STATES = [
-  { name: "refused:missingBackup", title: "The earlier wallet data couldn't be restored", buttons: ["ok", "quit"] },
-  { name: "noSpace:diskFull", title: "Not enough disk space to restore", buttons: ["ok", "quit"] },
+  { name: "refused:missingBackup", title: "The earlier wallet data couldn't be restored", buttons: ["ok"] },
+  { name: "noSpace:diskFull", title: "Not enough disk space to restore", buttons: ["ok"] },
   { name: "notStarted:permissionDenied", title: "Dash Wallet couldn't start restoring your wallet data", buttons: ["restart", "cancel", "report", "quit"] },
   { name: "incomplete:diskFull", title: "Dash Wallet couldn't finish restoring your wallet data", buttons: ["restart", "report", "quit"] },
 ];
@@ -60,6 +61,33 @@ test.describe("a restore that stopped the open", () => {
     await page.getByTestId("store-restore-button-storeUpgrade.restore.notStarted.cancel").click();
     await page.getByTestId("hero").waitFor();
     expect((await world(page)).restoreCalls).toEqual(["cancelRestore"]);
+  });
+
+  test("notStarted's Cancel restore calls cancel_restore once and nothing else before the open again", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light", "&openRestore=notStarted:permissionDenied"));
+    await page.getByTestId("store-restore").waitFor();
+    const before = (await calls(page)).length;
+    await page.getByTestId("store-restore-button-storeUpgrade.restore.notStarted.cancel").click();
+    await unlockIfLocked(page);
+    const after = (await calls(page)).slice(before);
+    expect(after.slice(0, after.indexOf("open_network"))).toEqual(["cancel_restore"]);
+    const w = await world(page);
+    expect(w.restoreCalls).toEqual(["cancelRestore"]);
+    expect(w.appExits ?? []).toEqual([]);
+    expect(w.linksOpened ?? []).toEqual([]);
+  });
+
+  test("notStarted's Report a problem opens the issues link, and nothing else", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light", "&openRestore=notStarted:permissionDenied"));
+    await page.getByTestId("store-restore").waitFor();
+    const before = (await calls(page)).length;
+    await page.getByTestId("store-restore-button-storeUpgrade.restore.notStarted.report").click();
+    await expect.poll(async () => (await world(page)).linksOpened).toEqual(["issues"]);
+    expect((await calls(page)).slice(before)).toEqual(["open_project_link"]);
+    const w = await world(page);
+    expect(w.restoreCalls ?? []).toEqual([]);
+    expect(w.appExits ?? []).toEqual([]);
+    await expect(page.getByTestId("store-restore")).toBeVisible();
   });
 
   test("Restart on a restore that stopped partway starts again and still shows it", async ({ page }) => {

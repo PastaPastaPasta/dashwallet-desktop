@@ -72,8 +72,8 @@ export function buttonAction(key: string): ButtonAction | null {
 /** The buttons of a restore state's screen, by their last key segment, in order; the first has the focus,
  * except on the foreign screen, where none has it (Keep is never the default). */
 export const RESTORE_BUTTONS: Record<RestoreState, readonly string[]> = {
-  refused: ["ok", "quit"],
-  noSpace: ["ok", "quit"],
+  refused: ["ok"],
+  noSpace: ["ok"],
   notStarted: ["restart", "cancel", "report", "quit"],
   incomplete: ["restart", "report", "quit"],
   foreign: ["keep", "report", "quit"],
@@ -165,7 +165,8 @@ function useActions() {
   return useModel(actions);
 }
 
-function perform(actions: OpenFailureActions, action: ButtonAction, reopen: () => void) {
+/** Runs a screen button's action: what its click does. */
+export function perform(actions: OpenFailureActions, action: ButtonAction, reopen: () => void) {
   if (action === "quit") void actions.quit();
   else if (action === "restart") void actions.restart();
   else if (action === "reopen") reopen();
