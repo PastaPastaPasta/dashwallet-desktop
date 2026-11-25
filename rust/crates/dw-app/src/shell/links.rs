@@ -134,7 +134,8 @@ pub enum LinkOrigin {
 }
 
 /// The App Connect requests the renderer can act on, by id, at most
-/// [`MAX_CONNECT_LINKS`]: the oldest goes first.
+/// [`MAX_CONNECT_LINKS`]: the oldest whose approval has not started goes
+/// first, so a running approval keeps its link for "Retry sending".
 #[derive(Default)]
 pub struct ConnectLinks(Mutex<VecDeque<(String, ConnectLink)>>);
 
@@ -177,7 +178,8 @@ impl ConnectLinks {
         let id = hex::encode(id);
         let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if links.len() >= MAX_CONNECT_LINKS {
-            links.pop_front();
+            let oldest = links.iter().position(|(_, l)| !l.started).unwrap_or(0);
+            links.remove(oldest);
         }
         links.push_back((id.clone(), link));
         id

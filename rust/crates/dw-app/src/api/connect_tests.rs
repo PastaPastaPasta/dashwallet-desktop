@@ -114,6 +114,20 @@ fn connect_links_are_bounded() {
 }
 
 #[test]
+fn a_started_approval_keeps_its_link_past_the_bound() {
+    let inbox = Inbox::default();
+    let active = link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os));
+    let queued: Vec<String> = (1..MAX_CONNECT_LINKS)
+        .map(|_| link_id(&take(&inbox, &connect_uri(false), LinkOrigin::Os)))
+        .collect();
+    assert!(inbox.connect.start(&active).is_some());
+    take(&inbox, &connect_uri(false), LinkOrigin::Os);
+    inbox.connect.answer(&active, Status::Ok);
+    assert_eq!(inbox.connect.get(&active).unwrap().answer, Some(Status::Ok));
+    assert!(inbox.connect.get(&queued[0]).is_none(), "the oldest not started goes");
+}
+
+#[test]
 fn refused_links_get_no_sheet() {
     let inbox = Inbox::default();
     let rejected = |reason| LinkRoute::Rejected {
