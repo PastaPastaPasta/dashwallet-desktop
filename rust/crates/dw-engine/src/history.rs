@@ -1172,35 +1172,41 @@ impl Deaths {
 /// (#749 Q81c §2, Q81d): it is not live in the history, and (a) its
 /// `dropped:` mark is a never-valid verdict, (b) a conflict sweep removed
 /// it for a winner whose block the header chain proves final (`proven`),
-/// or (c) another transaction spent one of its inputs ([`Deaths::inputs_of`])
-/// finally: a spend note naming that spender in a proven block
-/// (`spent`), or a ChainLocked transaction of the history (at or below
-/// `chainlock`). Its abandoned mark alone proves nothing, nor does a note
-/// with no spender: a mined parent spends its own inputs.
+/// or (c) another transaction spent one of its inputs
+/// ([`Deaths::inputs_of`]) in a block the header chain proves final: a
+/// spend note naming that spender (`spent`), or a transaction of the
+/// history. A claim sweep's parent dies only by (a) (S3). Its abandoned
+/// mark alone proves nothing, nor does a note with no spender: a mined
+/// parent spends its own inputs.
 pub(crate) fn dead_for_good(
     parent: &Txid,
     deaths: &Deaths,
     txs: &HashMap<Txid, TxEntry>,
-    chainlock: Option<u32>,
     spent: &BTreeMap<OutPoint, SpendNote>,
     proven: impl Fn((u32, dashcore::BlockHash)) -> bool,
 ) -> bool {
     if txs.get(parent).is_some_and(|e| !e.is_abandoned()) {
         return false;
     }
+    if deaths.never_valid.contains(parent) {
+        return true;
+    }
     let swept = deaths.swept_by.get(parent);
+    if swept.is_some_and(|s| s.claim) {
+        return false;
+    }
     let spent_finally = |o: OutPoint| {
         (spent.get(&o))
             .is_some_and(|n| n.spender.is_some_and(|s| s != *parent) && proven((n.height, n.block)))
             || (txs.iter()).any(|(t, e)| {
                 t != parent
                     && !e.is_abandoned()
-                    && chain_locked(&e.context, chainlock)
+                    && (e.context.block_info())
+                        .is_some_and(|b| proven((b.height(), b.block_hash())))
                     && e.tx.input.iter().any(|i| i.previous_output == o)
             })
     };
-    deaths.never_valid.contains(parent)
-        || swept.is_some_and(|s| !s.claim && s.block.is_some_and(&proven))
+    swept.is_some_and(|s| s.block.is_some_and(&proven))
         || deaths.inputs_of(parent).any(spent_finally)
 }
 
@@ -4492,7 +4498,7 @@ mod tests {
                       txs: &HashMap<Txid, TxEntry>,
                       spent: &BTreeMap<OutPoint, SpendNote>,
                       gone: &[Txid]| {
-            let dead = |g: &Txid| dead_for_good(g, deaths, txs, None, spent, proven);
+            let dead = |g: &Txid| dead_for_good(g, deaths, txs, spent, proven);
             held_awaiting(
                 &held,
                 &orphan(gone),
@@ -4615,10 +4621,10 @@ mod tests {
 
     /// Q81d: a parent whose `dropped:` mark is no verdict by its bytes (a
     /// replaced transaction's, or one that doesn't read) leaves the orphan
-    /// waiting until (b) or (c) holds; so does a claim sweep beside it,
-    /// however final its winner. A child of a payment the claim rule kept as
-    /// built on a never-valid claim settles with no ChainLock, as the claim
-    /// rule's own drop of it would.
+    /// waiting until (b) or (c) holds; a claim sweep's parent waits for (a)
+    /// alone, however final its winner or a spend of its input. A child of
+    /// a payment the claim rule kept as built on a never-valid claim
+    /// settles with no ChainLock, as the claim rule's own drop of it would.
     #[test]
     fn an_orphan_of_a_parent_with_no_verdict_waits_for_its_death() {
         let t = |n: u8| Txid::from_byte_array([n; 32]);
@@ -4628,7 +4634,7 @@ mod tests {
         let proven = |b: (u32, BlockHash)| b == (7, x);
         let none = HashMap::new();
         let dead = |deaths: &Deaths, spent: &BTreeMap<OutPoint, SpendNote>| {
-            dead_for_good(&p_id, deaths, &none, None, spent, proven)
+            dead_for_good(&p_id, deaths, &none, spent, proven)
         };
         let replaced_or_garbage = Deaths {
             copies: BTreeMap::from([(p_id, p.clone())]),
@@ -4673,6 +4679,10 @@ mod tests {
             !dead(&claim, &BTreeMap::new()),
             "a claim sweep's final winner"
         );
+        assert!(
+            !dead(&claim, &spent),
+            "a claim sweep's parent dies by (a) only"
+        );
 
         let mut path3 = none.clone();
         let mut kept = entry(p.clone(), TransactionContext::Mempool);
@@ -4681,13 +4691,12 @@ mod tests {
         let built_on_a_claim = Deaths {
             never_valid: BTreeSet::from([p_id]),
             copies: BTreeMap::from([(p_id, p.clone())]),
-            ..Deaths::default()
+            ..claim
         };
         assert!(dead_for_good(
             &p_id,
             &built_on_a_claim,
             &path3,
-            None,
             &BTreeMap::new(),
             |_| false
         ));

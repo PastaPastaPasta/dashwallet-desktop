@@ -560,6 +560,10 @@ pub(crate) struct SessionHub {
     /// Reads a wallet's balances again from the manager, after the event
     /// being applied (`update_balance`).
     balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Refreshes the held report of every loaded wallet whose drops hold a
+    /// coin: a lock key-wallet heard is noted before a restart forgets it
+    /// (#749, Q81c C1).
+    held_refresh: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -858,6 +862,7 @@ impl SessionHub {
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
+            held_refresh: OnceLock::new(),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -965,6 +970,29 @@ impl SessionHub {
     /// Sets what reads a wallet's balances again (once).
     pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
         let _ = self.balance_reread.set(run);
+    }
+
+    /// Sets what refreshes the held reports of the wallets with holds
+    /// (once).
+    pub(crate) fn attach_held_refresh(&self, run: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.held_refresh.set(run);
+    }
+
+    /// The loaded wallets whose drops hold a coin.
+    pub(crate) fn wallets_with_holds(&self) -> Vec<WalletId> {
+        let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+        (holds.iter())
+            .filter(|(_, held)| !held.is_empty())
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// A lock was heard: key-wallet adds it to every wallet's locks, so
+    /// each wallet with holds notes it if it may spend a held coin.
+    fn lock_heard(&self) {
+        if let Some(refresh) = self.held_refresh.get() {
+            refresh();
+        }
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -1751,6 +1779,7 @@ impl SessionHub {
                 // the mempool: none (BL-76).
                 if matches!(record.context, TransactionContext::InstantSend(_)) {
                     self.note_seen(id, [record.txid]);
+                    self.lock_heard();
                 }
             }
             WalletEvent::TransactionInstantLocked {
@@ -1766,6 +1795,7 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
+                self.lock_heard();
             }
             WalletEvent::TransactionsSwept {
                 txids,

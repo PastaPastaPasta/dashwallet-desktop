@@ -248,9 +248,12 @@ const DROP_SPENT_PREFIX: &str = "drop_spent:";
 /// InstantSend lock of a transaction the wallet holds no copy of may spend
 /// (#749, Q81c C1): the lock's txids, comma-separated. key-wallet keeps
 /// such locks in memory only, so the note keeps the coin awaiting after a
-/// restart. It goes on the coin's final spend, and each txid once its
-/// transaction is learned and ChainLocked or beaten. Only the held report
-/// reads it; it frees and claims nothing.
+/// restart. It goes on the coin's final spend, or once no drop holds the
+/// coin, and each txid once its transaction is learned and ChainLocked or
+/// beaten in a block the header chain proves final, or is dead for good. A
+/// note that doesn't read keeps its coin awaiting until the coin's final
+/// spend, and one naming no coin keeps every held coin awaiting. Only the
+/// held report reads it; it frees and claims nothing.
 const DROP_LOCKED_PREFIX: &str = "drop_locked:";
 
 /// Settings key prefix (wallet scope) of a transaction key-wallet swept,
@@ -258,8 +261,10 @@ const DROP_LOCKED_PREFIX: &str = "drop_locked:";
 /// written with the sweep's other marks. What proves an orphan's gone
 /// parent dead ([`crate::history::dead_for_good`]); a note that doesn't
 /// read is absent. Its block goes at a fork at or below it, a reset of the
-/// chain data, or a header naming another block; the note goes once its
-/// transaction is live again. Only the held report reads it.
+/// chain data, or a header naming another block. The note goes once its
+/// transaction is stored or live again, with the last orphan's drop naming
+/// it when that drop is undone, and at a load once no drop names it and
+/// nothing spends its outputs (S6). Only the held report reads it.
 const SWEPT_BY_PREFIX: &str = "swept_by:";
 
 /// Settings key prefix (wallet scope) of a transaction key-wallet swept
@@ -316,6 +321,11 @@ pub(crate) struct DropNotes {
     pub drops: crate::history::HeldDrops,
     pub spent: BTreeMap<OutPoint, crate::history::SpendNote>,
     pub locked: BTreeMap<OutPoint, BTreeSet<Txid>>,
+    /// The coins whose lock note doesn't read: each awaits until its own
+    /// final spend (Q81c C1).
+    pub locked_unread: BTreeSet<OutPoint>,
+    /// A lock note names no coin: every held coin awaits.
+    pub locked_astray: bool,
     pub deaths: crate::history::Deaths,
 }
 
@@ -355,9 +365,20 @@ pub(crate) fn drop_notes(
         }
     }
     for (coin, locks) in rows(DROP_LOCKED_PREFIX)? {
-        if let (Ok(coin), Some(locks)) = (OutPoint::from_str(&coin), locks) {
-            let locks: BTreeSet<Txid> = locks.split(',').filter_map(txid).collect();
-            notes.locked.insert(coin, locks);
+        let Ok(coin) = OutPoint::from_str(&coin) else {
+            notes.locked_astray = true;
+            continue;
+        };
+        let locks: Option<BTreeSet<Txid>> = (locks.as_deref())
+            .and_then(|l| l.split(',').map(txid).collect::<Option<_>>())
+            .filter(|l: &BTreeSet<Txid>| !l.is_empty());
+        match locks {
+            Some(locks) => {
+                notes.locked.insert(coin, locks);
+            }
+            None => {
+                notes.locked_unread.insert(coin);
+            }
         }
     }
     let deaths = &mut notes.deaths;
@@ -2402,7 +2423,54 @@ impl NetworkSession {
                 }
             }
         }
+        if let Some((stored, _)) = stored {
+            self.prune_sweep_notes(wallet, stored).await;
+        }
         self.refresh_held(manager, wallet).await;
+    }
+
+    /// Deletes, at a load that read every stored transaction (`stored`),
+    /// the sweep notes no drop needs (Q81d S6): of a transaction stored or
+    /// live again, and of one that no drop names as gone and whose outputs
+    /// no transaction of the history and no dropped one spends, so no load
+    /// can find a child of it orphaned. A note a drop names stays.
+    async fn prune_sweep_notes(&self, wallet: WalletId, stored: &HashSet<Txid>) {
+        let notes = match self.appdb_op(move |db| drop_notes(db, wallet)).await {
+            Ok(notes) => notes,
+            Err(e) => {
+                tracing::warn!(%wallet, error = %e, "could not read the drops' notes");
+                return;
+            }
+        };
+        let named: HashSet<&Txid> = (notes.drops.values())
+            .filter_map(|(_, origin)| origin.as_ref())
+            .flat_map(|o| &o.gone)
+            .collect();
+        let parent_of = |tx: &Transaction| -> Vec<Txid> {
+            tx.input.iter().map(|i| i.previous_output.txid).collect()
+        };
+        let dropped: HashSet<Txid> = (notes.drops.keys())
+            .filter_map(|t| notes.deaths.copies.get(t))
+            .flat_map(parent_of)
+            .collect();
+        let keys: Vec<String> = (self.hub.history).read(&wallet, |txs| {
+            let parents: HashSet<Txid> = (txs.values())
+                .flat_map(|e| parent_of(&e.tx))
+                .chain(dropped)
+                .collect();
+            (notes.deaths.swept_by.keys())
+                .filter(|t| {
+                    stored.contains(*t)
+                        || txs.get(*t).is_some_and(|e| !e.is_abandoned())
+                        || (!named.contains(t) && !parents.contains(*t))
+                })
+                .map(|t| format!("{SWEPT_BY_PREFIX}{t}"))
+                .collect()
+        });
+        if !keys.is_empty() {
+            self.keep_notes(wallet, keys.into_iter().map(|k| (k, None)).collect())
+                .await;
+        }
     }
 
     /// Reads again what wallet `wallet`'s drops hold (the coins their notes
@@ -2442,12 +2510,15 @@ impl NetworkSession {
     /// the wallet is gone. On the way it keeps the sweep notes (Q81d S4-S6)
     /// and the lock notes (Q81c C1).
     async fn held_report(&self, manager: &Manager, wallet: WalletId) -> Option<(u64, u32, bool)> {
-        use crate::history::{SpendNote, chain_locked, proven_final};
+        use crate::history::{SpendNote, proven_final};
+        type Block = (u32, BlockHash);
         let notes = self.appdb_op(move |db| drop_notes(db, wallet)).await;
         let DropNotes {
             drops,
             mut spent,
             mut locked,
+            mut locked_unread,
+            locked_astray,
             mut deaths,
         } = match notes {
             Ok(notes) => notes,
@@ -2458,12 +2529,16 @@ impl NetworkSession {
         };
         let origins = || drops.values().filter_map(|(_, origin)| origin.as_ref());
         let gone: BTreeSet<Txid> = origins().flat_map(|o| o.gone.iter().copied()).collect();
-        let watched: BTreeSet<OutPoint> = (drops.values())
+        let holds: BTreeSet<OutPoint> = (drops.values())
             .flat_map(|(held, _)| held.iter().copied())
+            .collect();
+        let watched: BTreeSet<OutPoint> = (holds.iter().copied())
             .chain(origins().flat_map(|o| o.contested.iter().copied()))
             .chain(gone.iter().flat_map(|p| deaths.inputs_of(p)))
             .collect();
-        let (seen, chainlock) = {
+        // What key-wallet holds of the locks it heard and the noted ones:
+        // each locked transaction's record, in any account, with its block.
+        let (seen, chainlock, heard, recorded) = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let core = &wm.get_wallet_info(&wallet.0)?.core_wallet;
@@ -2473,12 +2548,54 @@ impl NetworkSession {
                 .collect();
             let chainlock = (core.metadata.last_applied_chain_lock.as_ref())
                 .map(|c| (c.block_height, c.block_hash));
-            (seen, chainlock)
+            let heard = core.instant_send_locks().clone();
+            let noted: HashSet<&Txid> = locked.values().flatten().chain(&heard).collect();
+            let recorded: HashMap<Txid, (Transaction, Option<Block>)> =
+                (core.accounts.all_accounts().into_iter())
+                    .flat_map(|a| a.transactions().iter())
+                    .filter(|(t, _)| noted.contains(t))
+                    .map(|(t, r)| {
+                        let block = (r.context.block_info()).map(|b| (b.height(), b.block_hash()));
+                        (*t, (r.transaction.clone(), block))
+                    })
+                    .collect();
+            (seen, chainlock, heard, recorded)
         };
         let forked = self.hub.take_held_fork(wallet);
-        // The winners' blocks the history holds, and the swept transactions
-        // live again.
-        let (mined, live): (HashMap<Txid, (u32, BlockHash)>, Vec<Txid>) =
+        let locks: BTreeSet<Txid> = locked.values().flatten().chain(&heard).copied().collect();
+        // Of each locked transaction any loaded wallet's history or
+        // key-wallet holds, its block and the blocks of the transactions
+        // spending one of its inputs: either proven final settles it.
+        let lock_blocks: HashMap<Txid, Vec<Block>> = (self.hub.history).read_all(|all| {
+            let blocks = |tx: &Transaction, own: Option<Block>, t: &Txid| -> Vec<Block> {
+                let inputs: HashSet<OutPoint> =
+                    tx.input.iter().map(|i| i.previous_output).collect();
+                let rivals = (all.iter().flat_map(|txs| txs.iter()))
+                    .filter(|(w, we)| {
+                        *w != t
+                            && !we.is_abandoned()
+                            && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+                    })
+                    .filter_map(|(_, we)| we.context.block_info())
+                    .map(|b| (b.height(), b.block_hash()));
+                own.into_iter().chain(rivals).collect()
+            };
+            (locks.iter())
+                .filter_map(|t| {
+                    let found = (all.iter().find_map(|txs| txs.get(t)))
+                        .map(|e| {
+                            let own = e.context.block_info().map(|b| (b.height(), b.block_hash()));
+                            (e.tx.clone(), own)
+                        })
+                        .or_else(|| recorded.get(t).cloned())?;
+                    Some((*t, blocks(&found.0, found.1, t)))
+                })
+                .collect()
+        });
+        // The winners' blocks the history holds, the swept transactions
+        // live again, and the blocks of the history's spends of the coins
+        // watched or noted.
+        let (mined, live, spends): (HashMap<Txid, Block>, Vec<Txid>, Vec<Block>) =
             (self.hub.history).read(&wallet, |txs| {
                 let mined = (deaths.swept_by.values())
                     .filter_map(|n| {
@@ -2490,7 +2607,16 @@ impl NetworkSession {
                     .filter(|t| txs.get(*t).is_some_and(|e| !e.is_abandoned()))
                     .copied()
                     .collect();
-                (mined, live)
+                let coins: HashSet<&OutPoint> = (watched.iter())
+                    .chain(locked.keys())
+                    .chain(&locked_unread)
+                    .collect();
+                let spends = (txs.values())
+                    .filter(|e| (e.tx.input.iter()).any(|i| coins.contains(&i.previous_output)))
+                    .filter_map(|e| e.context.block_info())
+                    .map(|b| (b.height(), b.block_hash()))
+                    .collect();
+                (mined, live, spends)
             });
         let heights: BTreeSet<u32> = (spent.values().map(|n| n.height))
             .chain(seen.values().copied())
@@ -2501,6 +2627,8 @@ impl NetworkSession {
                     .filter_map(|n| n.block.map(|b| b.0)),
             )
             .chain(mined.values().map(|b| b.0))
+            .chain(lock_blocks.values().flatten().map(|b| b.0))
+            .chain(spends.iter().map(|b| b.0))
             .collect();
         let under = match chainlock {
             Some(cl) => self.headers_under(cl, heights.clone()).await,
@@ -2510,8 +2638,7 @@ impl NetworkSession {
             Some(headers) => headers.clone(),
             None => self.hub.header_hashes(heights).await,
         };
-        let proven =
-            |b: (u32, BlockHash)| (under.as_ref()).is_some_and(|h| proven_final(b, chainlock, h));
+        let proven = |b: Block| (under.as_ref()).is_some_and(|h| proven_final(b, chainlock, h));
         let is_final = |n: &SpendNote| proven((n.height, n.block));
         let mut writes: Vec<(String, Option<String>)> = Vec::new();
         spent.retain(|coin, note| {
@@ -2570,9 +2697,6 @@ impl NetworkSession {
             .filter(|(_, n)| is_final(n))
             .map(|(o, _)| *o)
             .collect();
-        let holds: BTreeSet<OutPoint> = (drops.values())
-            .flat_map(|(held, _)| held.iter().copied())
-            .collect();
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let info = wm.get_wallet_info(&wallet.0)?;
@@ -2580,48 +2704,28 @@ impl NetworkSession {
         let chainlock_height = self.chainlock_height(core);
         let observed = core.observed_spent_outpoints();
         let owned = crate::history_ops::owned_scripts(info);
-        let accounts: Vec<_> = (core.accounts.all_accounts().into_iter())
+        let by_record: HashSet<OutPoint> = (core.accounts.all_accounts().into_iter())
             .filter(|a| !a.managed_account_type().is_contact_owned())
-            .collect();
-        let by_record: HashSet<OutPoint> = (accounts.iter())
             .flat_map(|a| a.transactions().values())
             .flat_map(|r| r.transaction.input.iter().map(|i| i.previous_output))
             .filter(|o| holds.contains(o))
             .collect();
-        let recorded = |t: &Txid| accounts.iter().any(|a| a.transactions().contains_key(t));
-        // A lock's transaction any loaded wallet's history learned, and that
-        // is ChainLocked or beaten by a ChainLocked spend of an input.
-        let locks: BTreeSet<Txid> = (locked.values().flatten())
-            .chain(core.instant_send_locks())
-            .copied()
-            .collect();
-        let settled_locks: HashSet<Txid> = (self.hub.history).read_all(|all| {
-            (locks.iter())
-                .filter(|t| {
-                    all.iter().any(|txs| {
-                        txs.get(*t).is_some_and(|e| {
-                            chain_locked(&e.context, chainlock_height)
-                                || (txs.iter()).any(|(w, we)| {
-                                    w != *t
-                                        && !we.is_abandoned()
-                                        && chain_locked(&we.context, chainlock_height)
-                                        && (we.tx.input.iter()).any(|j| {
-                                            (e.tx.input.iter())
-                                                .any(|i| i.previous_output == j.previous_output)
-                                        })
-                                })
-                        })
-                    })
-                })
-                .copied()
-                .collect()
-        });
         let (report, lock_writes) = (self.hub.history).read(&wallet, |txs| {
             let left_out = |o: &OutPoint| proven_spends.contains(o) || gone.contains(&o.txid);
             let held = crate::history::still_held(&holds, txs, observed, left_out);
             let (sum, unvalued) = crate::history::held_total(&held, txs, |s| owned.contains_key(s));
-            let unknown: BTreeSet<Txid> = (core.instant_send_locks().iter())
-                .filter(|t| !txs.contains_key(*t) && !recorded(t) && !settled_locks.contains(*t))
+            let dead_for_good =
+                |p: &Txid| crate::history::dead_for_good(p, &deaths, txs, &spent, proven);
+            // A lock is settled once its transaction is learned and its
+            // block or a rival's spend of an input is proven final, or the
+            // transaction is dead for good.
+            let settled_lock = |t: &Txid| {
+                (lock_blocks.get(t)).is_some_and(|b| b.iter().copied().any(proven))
+                    || dead_for_good(t)
+            };
+            let unknown: BTreeSet<Txid> = (heard.iter())
+                .filter(|t| !txs.contains_key(*t) && !recorded.contains_key(*t))
+                .filter(|t| !settled_lock(t))
                 .copied()
                 .collect();
             let final_spend = |o: &OutPoint| {
@@ -2629,50 +2733,61 @@ impl NetworkSession {
                     || (observed.get(o))
                         .is_some_and(|h| chainlock_height.is_some_and(|cl| *h <= cl))
             };
+            let spent_finally = |o: &OutPoint| {
+                final_spend(o)
+                    || (txs.values()).any(|e| {
+                        !e.is_abandoned()
+                            && (e.context.block_info())
+                                .is_some_and(|b| proven((b.height(), b.block_hash())))
+                            && e.tx.input.iter().any(|i| i.previous_output == *o)
+                    })
+            };
             let mut lock_writes: Vec<(String, Option<String>)> = Vec::new();
+            let key = |coin: &OutPoint| format!("{DROP_LOCKED_PREFIX}{coin}");
+            locked_unread.retain(|coin| {
+                let keep = holds.contains(coin) && !spent_finally(coin);
+                if !keep {
+                    lock_writes.push((key(coin), None));
+                }
+                keep
+            });
             let coins: BTreeSet<OutPoint> = (locked.keys().copied())
                 .chain(held.iter().copied().filter(|_| !unknown.is_empty()))
+                .filter(|c| !locked_unread.contains(c))
                 .collect();
             for coin in coins {
                 let before = locked.get(&coin).cloned().unwrap_or_default();
-                let spent_finally = final_spend(&coin)
-                    || (txs.values()).any(|e| {
-                        !e.is_abandoned()
-                            && chain_locked(&e.context, chainlock_height)
-                            && e.tx.input.iter().any(|i| i.previous_output == coin)
-                    });
-                let after: BTreeSet<Txid> = match spent_finally {
+                let after: BTreeSet<Txid> = match !holds.contains(&coin) || spent_finally(&coin) {
                     true => BTreeSet::new(),
                     false => (before.iter())
-                        .filter(|t| !settled_locks.contains(*t))
+                        .filter(|t| !settled_lock(t))
                         .chain(unknown.iter().filter(|_| held.contains(&coin)))
                         .copied()
                         .collect(),
                 };
                 if after != before {
-                    let key = format!("{DROP_LOCKED_PREFIX}{coin}");
                     let value = (!after.is_empty()).then(|| {
-                        after
-                            .iter()
-                            .map(|t| t.to_string())
+                        (after.iter().map(|t| t.to_string()))
                             .collect::<Vec<_>>()
                             .join(",")
                     });
-                    lock_writes.push((key, value));
+                    lock_writes.push((key(&coin), value));
                 }
                 match after.is_empty() {
                     true => locked.remove(&coin),
                     false => locked.insert(coin, after),
                 };
             }
-            let dead_for_good = |p: &Txid| {
-                crate::history::dead_for_good(p, &deaths, txs, chainlock_height, &spent, proven)
-            };
             let evidence = crate::history::HeldEvidence {
                 chainlock: chainlock_height,
                 final_spend: &final_spend,
                 spent_by_record: &|o| by_record.contains(o),
-                unknown_lock: &|o| !unknown.is_empty() || locked.contains_key(o),
+                unknown_lock: &|o| {
+                    locked_astray
+                        || !unknown.is_empty()
+                        || locked.contains_key(o)
+                        || locked_unread.contains(o)
+                },
                 dead_for_good: &dead_for_good,
             };
             let awaiting = crate::history::held_awaiting(&held, &drops, txs, &evidence);
@@ -2877,7 +2992,25 @@ impl NetworkSession {
                 })
                 .collect();
             let scope = wallet.to_string();
+            let (gone, dropped): (BTreeSet<Txid>, BTreeSet<Txid>) =
+                (gone.clone(), plan.copies.iter().map(|(t, _)| *t).collect());
             self.appdb_op(move |db| {
+                let mut keys = keys;
+                // An orphan's drop goes with the sweep notes of the parents
+                // no other drop names as gone (Q81d S6).
+                if !gone.is_empty() {
+                    let notes = drop_notes(db, wallet)?;
+                    let named: BTreeSet<&Txid> = (notes.drops.iter())
+                        .filter(|(t, _)| !dropped.contains(*t))
+                        .filter_map(|(_, (_, origin))| origin.as_ref())
+                        .flat_map(|o| &o.gone)
+                        .collect();
+                    keys.extend(
+                        (gone.iter())
+                            .filter(|p| !named.contains(p))
+                            .map(|p| format!("{SWEPT_BY_PREFIX}{p}")),
+                    );
+                }
                 let writes: Vec<(&str, Option<&str>)> =
                     keys.iter().map(|k| (k.as_str(), None)).collect();
                 db.set_settings_durable(&scope, &writes)
@@ -3750,6 +3883,31 @@ impl NetworkSession {
 
     /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
     /// [`Self::abandon_unsigned_claims`] to its new transactions.
+    /// Hooks the held reports of the wallets with holds to the locks the
+    /// hub hears (Q81c C1): each one notes a lock that may spend a held
+    /// coin before a restart forgets it.
+    pub(crate) fn attach_held_refresh(self: &Arc<Self>) {
+        let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
+        self.hub.attach_held_refresh(Box::new(move || {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                let Ok(_op) = session.enter().await else {
+                    return;
+                };
+                let Ok(manager) = session.manager() else {
+                    return;
+                };
+                let _gate = session.hub.drop_gate.lock().await;
+                for wallet in session.hub.wallets_with_holds() {
+                    session.refresh_held(&manager, wallet).await;
+                }
+            });
+        }));
+    }
+
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_swept_dead(Box::new(move |id, dead| {
@@ -4042,7 +4200,8 @@ mod tests {
     /// winner and bytes, a claim sweep's with no block; a later sweep that
     /// names the winner's block fills it in its earlier conflict notes; a
     /// reset of the chain data drops every note's block and keeps the rest.
-    /// The drops' notes read them back, with the lock notes, the strict
+    /// The drops' notes read them back, with the lock notes (those that
+    /// don't read set apart, by coin or astray), the strict
     /// reading of the `dropped:` marks and the abandoned copies, and take a
     /// drop with no origin note as an older one.
     #[test]
@@ -4118,6 +4277,7 @@ mod tests {
         db.set_settings_durable(&scope, &writes).unwrap();
         let notes = drop_notes(&db, wallet).unwrap();
         assert_eq!(notes.locked.get(&coin), Some(&BTreeSet::from([t(8), t(9)])));
+        assert!(notes.locked_unread.is_empty() && !notes.locked_astray);
         assert_eq!(notes.deaths.never_valid, BTreeSet::from([t(1)]));
         assert_eq!(notes.deaths.swept_by.len(), 2);
         assert_eq!(notes.deaths.copies.len(), 2);
@@ -4127,6 +4287,30 @@ mod tests {
             Some(BTreeSet::from([OutPoint::new(t(5), 0)])),
             "C's root R's input"
         );
+
+        let unread: Vec<(OutPoint, String)> = vec![
+            (OutPoint::new(t(10), 0), "junk".into()),
+            (OutPoint::new(t(10), 1), format!("{},junk", t(8))),
+            (OutPoint::new(t(10), 2), String::new()),
+        ];
+        let writes: Vec<(String, String)> = (unread.iter())
+            .map(|(o, v)| (format!("{DROP_LOCKED_PREFIX}{o}"), v.clone()))
+            .collect();
+        let writes: Vec<(&str, Option<&str>)> = (writes.iter())
+            .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+            .collect();
+        db.set_settings_durable(&scope, &writes).unwrap();
+        let notes = drop_notes(&db, wallet).unwrap();
+        assert_eq!(notes.locked.len(), 1);
+        assert_eq!(
+            notes.locked_unread,
+            unread.iter().map(|(o, _)| *o).collect::<BTreeSet<_>>()
+        );
+        assert!(!notes.locked_astray);
+        let astray = format!("{DROP_LOCKED_PREFIX}not-a-coin");
+        db.set_settings_durable(&scope, &[(astray.as_str(), Some(""))])
+            .unwrap();
+        assert!(drop_notes(&db, wallet).unwrap().locked_astray);
 
         forget_spend_notes(&db, wallet).unwrap();
         assert_eq!(db.setting_lossy(&scope, &spent_key).unwrap(), None);
