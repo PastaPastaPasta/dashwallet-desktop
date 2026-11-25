@@ -2796,6 +2796,43 @@ fn a_child_of_a_payment_swept_while_another_wallet_opens_goes_when_the_open_ends
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }
 
+/// #170 case 4, S1: as above, but a fork the hub hears truncates the chain
+/// while the drop of C waits: the sweep's winner may be gone, so C is not
+/// dropped on it when the open ends.
+#[test]
+fn a_child_of_a_payment_swept_while_another_wallet_opens_stays_after_a_fork() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert!(session.hub.deferred_drop_wallets().contains(&id));
+    let heard = session.hub.truncations();
+    super::deliver(&engine, &session, id, |wm| {
+        Box::pin(async move {
+            wm.truncate_above(TIP).unwrap();
+        })
+    });
+    assert!(session.hub.truncations() > heard, "the hub heard the fork");
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    assert!(
+        live_in_history(&session, id, c.txid()),
+        "C is not dropped on a sweep a fork may have undone"
+    );
+}
+
 /// #170 case 4: the app stops after key-wallet's sweep of P is stored and
 /// its marks dropped, before C goes. The next load finds C orphaned (no
 /// row of P, which spent its coin) and drops it with its winner unknown:

@@ -2276,9 +2276,20 @@ impl NetworkSession {
         stored: Option<(&HashSet<Txid>, &HashSet<Txid>)>,
     ) {
         let _gate = self.hub.drop_gate.lock().await;
+        let truncations = self.hub.truncations();
+        // A child that waited across a truncation may have lost its winner:
+        // it waits for the next sweep or orphan pass to be found again.
+        // A beaten root's recheck reads its winner again under the lock.
+        let waited = (self.hub.take_deferred_drops(wallet).into_iter()).filter(|(t, w)| {
+            let stale = *t != truncations && w.3.is_none();
+            if stale {
+                tracing::warn!(%wallet, roots = ?w.0, "a waiting drop is void after a truncation");
+            }
+            !stale
+        });
         let mut work: VecDeque<_> = (self.hub.take_dead_children(wallet).into_iter())
             .map(|(roots, winner, swept)| (roots, winner, swept, None))
-            .chain(self.hub.take_deferred_drops(wallet))
+            .chain(waited.map(|(_, w)| w))
             .collect();
         let mut stored = stored;
         for _ in 0..=DETECTIONS {
@@ -2301,7 +2312,7 @@ impl NetworkSession {
                 // rest wait, with their evidence, for its open to end.
                 if out.deferred {
                     work.push_front((roots, winner, links, recheck));
-                    self.hub.defer_drops(wallet, work);
+                    self.hub.defer_drops(wallet, truncations, work);
                     return;
                 }
                 again |= out.regrouped;
@@ -2500,6 +2511,9 @@ impl NetworkSession {
                             continue;
                         }
                         let bound = r.block.is_some() && r.truncations == truncations;
+                        if r.block.is_some() && !bound && !r.spent.is_empty() {
+                            tracing::warn!(%wallet, root = %t, "a beaten payment's detected spend is void after a truncation");
+                        }
                         let spent = match bound && !recorded(t) {
                             true => spend_forgotten_as_final(&h.txs, core, t, winner, r),
                             false => BTreeMap::new(),

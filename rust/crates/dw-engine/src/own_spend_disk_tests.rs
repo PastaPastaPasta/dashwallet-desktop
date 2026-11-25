@@ -1704,11 +1704,12 @@ fn a_beaten_payment_goes_when_another_wallets_open_ends_after_a_chainlock_forgot
 /// #818 gap 2, the negative baseline: a block scanned under a ChainLock
 /// already applied at its height, as a rescan below the ChainLock or a
 /// catch-up after a restart scans it, spends A by a transaction the
-/// wallet does not know. Key-wallet forgets that spend in the scan's own
-/// step, so no reconcile can see it: only a stored record of the block's
-/// spends can stand for it.
+/// wallet does not know. Key-wallet processes the block and takes A out of
+/// its coins, but forgets the spend in the scan's own step, so no
+/// reconcile can see it: only a stored record of the block's spends can
+/// stand for it.
 #[test]
-fn a_rescan_below_the_chainlock_leaves_no_observed_spend() {
+fn a_block_scanned_under_its_applied_chainlock_leaves_no_observed_spend() {
     let t = beaten_payment_with_a_child();
     let block = super::block_with(vec![t.winner.clone(), t.elsewhere_spend.clone()]);
     let id = t.id;
@@ -1725,12 +1726,48 @@ fn a_rescan_below_the_chainlock_leaves_no_observed_spend() {
             wm.update_wallet_synced_height(&id.0, TIP + 1);
         })
     });
-    assert_eq!(t.synced(), TIP + 1, "the block was scanned");
     let a = OutPoint::new(t.paid.txid(), 0);
+    let manager = Arc::clone(&t.session.live().unwrap().manager);
+    let (processed, a_held) = t.engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let core = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let held = (core.accounts.all_funding_accounts().into_iter())
+            .any(|acc| acc.utxos.contains_key(&a));
+        (core.last_processed_height(), held)
+    });
+    assert_eq!(processed, TIP + 1, "key-wallet processed the block");
+    assert!(!a_held, "the block's spend of A took it out of the coins");
     assert!(
         !t.observed().contains(&a),
         "a block scanned under its applied ChainLock leaves no observed spend of A"
     );
+}
+
+/// #818, S1: as above, but while the drop waits a fork the hub hears takes
+/// the block away, and the new chain passes its height under a ChainLock
+/// with no spend of A. The spend is gone, not final: when the open ends,
+/// the other payment and its child stay, also after a restart.
+#[test]
+fn a_beaten_payment_stays_when_a_fork_takes_its_winner_while_its_drop_waits() {
+    let t = beaten_payment_with_a_child();
+    let (pause, opening) = another_wallet_opening(&t.engine, &t.session);
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    header_chain(&t.session, &[(TIP + 1, block_hash(&block))]);
+    mined(&t.engine, &t.session, t.id, TIP + 1, block.to_vec());
+    eventually("the drop waits for the other wallet's open", || {
+        t.session.hub.deferred_drop_wallets().contains(&t.id)
+    });
+    t.truncate(TIP);
+    let fork = [t.winner.clone()];
+    header_chain(&t.session, &[(TIP + 1, block_hash(&fork))]);
+    mined(&t.engine, &t.session, t.id, TIP + 1, fork.to_vec());
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, block_hash(&fork));
+    pause.release.notify_one();
+    t.engine.block_on(opening).unwrap().unwrap();
+    t.assert_kept(&t.session, "after the open");
+    let session = reopen(&t.engine, Arc::clone(&t.session));
+    t.assert_kept(&session, "a restart");
 }
 
 impl Beaten {
@@ -6294,7 +6331,6 @@ fn a_header_chain_behind_a_payments_block_keeps_its_mark() {
     assert!(sent_marks(&session, id).contains(&p.txid()));
 }
 
-/// A second wallet of the session, born at [`BIRTH`].
 /// Opens another wallet of the session and holds its open part-way, as a
 /// slow history load does: its history is not whole meanwhile. Returns
 /// the pause to release and the open to wait for.
@@ -6322,6 +6358,7 @@ pub(super) fn another_wallet_opening(
     (pause, opening)
 }
 
+/// A second wallet of the session, born at [`BIRTH`].
 pub(super) fn second_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
     engine
         .block_on(

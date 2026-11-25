@@ -575,9 +575,10 @@ pub(crate) struct SessionHub {
     /// swept payments: dropped at the next reconcile (#170 case 4).
     dead_children: Mutex<Vec<DeadChildren>>,
     /// The drops that waited for another wallet's open, by wallet, each
-    /// with its detection's evidence: dropped when an open ends, or at the
-    /// wallet's next drop (#818, S1).
-    deferred_drops: Mutex<Vec<(WalletId, crate::tx_actions::DeadWork)>>,
+    /// with its detection's evidence and the truncations applied when it
+    /// began to wait: dropped when an open ends, or at the wallet's next
+    /// drop (#818, S1).
+    deferred_drops: Mutex<Vec<(WalletId, u64, crate::tx_actions::DeadWork)>>,
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
@@ -1140,37 +1141,43 @@ impl SessionHub {
     }
 
     /// Keeps `work`, drops of wallet `id` that wait for another wallet's
-    /// open; one already waiting is kept once.
+    /// open, found with `truncations` applied; one already waiting is kept
+    /// once.
     pub(crate) fn defer_drops(
         &self,
         id: WalletId,
+        truncations: u64,
         work: impl IntoIterator<Item = crate::tx_actions::DeadWork>,
     ) {
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         for w in work {
-            if !deferred
-                .iter()
-                .any(|(d, waiting)| *d == id && *waiting == w)
-            {
-                deferred.push((id, w));
+            let waiting = |(d, t, waiting): &(WalletId, u64, crate::tx_actions::DeadWork)| {
+                (*d, *t) == (id, truncations) && *waiting == w
+            };
+            if !deferred.iter().any(waiting) {
+                deferred.push((id, truncations, w));
             }
         }
     }
 
-    /// The drops of wallet `id` that waited for another wallet's open.
-    pub(crate) fn take_deferred_drops(&self, id: WalletId) -> Vec<crate::tx_actions::DeadWork> {
+    /// The drops of wallet `id` that waited for another wallet's open, each
+    /// with the truncations applied when it began to wait.
+    pub(crate) fn take_deferred_drops(
+        &self,
+        id: WalletId,
+    ) -> Vec<(u64, crate::tx_actions::DeadWork)> {
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *deferred)
             .into_iter()
-            .partition(|(w, _)| *w == id);
+            .partition(|(w, ..)| *w == id);
         *deferred = others;
-        mine.into_iter().map(|(_, w)| w).collect()
+        mine.into_iter().map(|(_, t, w)| (t, w)).collect()
     }
 
     /// The wallets with drops that wait for another wallet's open.
     pub(crate) fn deferred_drop_wallets(&self) -> BTreeSet<WalletId> {
         let deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
-        deferred.iter().map(|(w, _)| *w).collect()
+        deferred.iter().map(|(w, ..)| *w).collect()
     }
 
     /// Keeps the drops' holds an open read, by wallet.
@@ -1419,7 +1426,7 @@ impl SessionHub {
             .deferred_drops
             .lock()
             .unwrap_or_else(|p| p.into_inner()))
-        .retain(|(w, _)| w != id);
+        .retain(|(w, ..)| w != id);
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
