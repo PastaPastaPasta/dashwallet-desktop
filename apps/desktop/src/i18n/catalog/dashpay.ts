@@ -117,11 +117,11 @@ export const dashpay = {
     /** A paid failure of a registration from the Shielded balance (C-funding F12): Platform sent
      * the payment, less a penalty, to this wallet's Platform balance. */
     refundedShielded:
-      "Dash Platform could not create the identity with this wallet's keys. It kept a penalty and sent the rest of the payment to your Platform balance.",
+      "Dash Platform couldn't register the username. It kept part of the payment as a penalty and sent the rest to your Platform balance.",
     /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
-    shieldedNotReady: "Your Shielded balance can't pay for the username right now. Nothing was spent.",
+    shieldedNotReady: "Your Shielded balance can't pay for the username right now, so nothing was spent. Try again in a moment.",
     /** A Shielded payment that was refused before it was sent. */
-    shieldedRefused: "The payment from your Shielded balance did not go through. Nothing was spent.",
+    shieldedRefused: "The payment from your Shielded balance didn't go through, so nothing was spent. You can try again.",
     /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
      * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
     quoteChanged:

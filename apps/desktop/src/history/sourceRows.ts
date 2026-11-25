@@ -30,7 +30,7 @@ export const SourceRowText = {
   recovered: "Recovered from an unfinished transfer",
   /** What Platform returned to this wallet's Platform address when it could not create the
    * identity a username paid from Shielded (C-funding F12). */
-  registrationRefund: "Returned from a username payment",
+  registrationRefund: "Username payment refund",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   /** A move, send or top-up that failed by height but may still execute: not "Not accepted". */
