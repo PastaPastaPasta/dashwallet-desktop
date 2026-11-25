@@ -19,7 +19,8 @@ import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
 import { SHIELDED_SYNC_COPY, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
-import { TRANSFER_COPY } from "../transfer/model";
+import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
+import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
@@ -199,8 +200,10 @@ function Row({ label, value, testId, total, address }: { label: string; value: s
 }
 
 function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; walletId: string; status: ShieldedStatus | null; fmt: ReturnType<typeof useFormats> }) {
+  const tr = useT();
   const quote = useShieldedQuote(walletId, flow.request);
   const q = quote.data;
+  const coreMax = flow.request?.kind === "add" && !!flow.request.all;
   const { duffs, credits } = fmt;
   const kind = flow.kind;
   const syncing = shieldedSyncing(status);
@@ -214,7 +217,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-quote-error">
-          {shieldedErrorText(quote.error, credits, duffs, kind, syncing)}
+          {shieldedErrorText(quote.error, credits, duffs, kind, syncing, coreMax)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -240,6 +243,16 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
             </>
           )}
         </dl>
+      )}
+      {q?.kind === "add" && coreMax && (
+        <div className="core-max-confirm" data-testid="core-max-confirm">
+          <p className="sheet-text">{tr("transfer.shielded.confirm.maxAll", { total: duffs(q.quote.totalDuffs), fee: duffs(q.quote.feeDuffs) })}</p>
+          {coreMaxNotes(q.quote.max, duffs).map((note) => (
+            <p key={note} className="field-hint" data-testid="core-max-note">
+              {note}
+            </p>
+          ))}
+        </div>
       )}
       {q?.kind === "add" && (
         <p className="field-hint" data-testid="shielded-pool-fee-note">
@@ -349,13 +362,18 @@ export function ShieldedBody({ flow, walletId, network, status }: { flow: Shield
           <p className="sheet-text" data-testid="shielded-progress">
             {flow.kind === "add" || flow.kind === "resume" ? C.running.lock : C.running.prove}
           </p>
+          {flow.preparing.shown && (
+            <p className="sheet-text" data-testid="transfer-preparing">
+              {preparingText()}
+            </p>
+          )}
         </div>
       )}
       {step === "done" && <Outcome flow={flow} fmt={fmt} />}
       {step === "refused" && (
         <>
           <p className="form-problem" role="alert" data-testid="shielded-refusal">
-            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedSyncing(status))}
+            {shieldedErrorText(flow.error, fmt.credits, fmt.duffs, flow.kind, shieldedSyncing(status), flow.request?.kind === "add" && !!flow.request.all)}
           </p>
           <div className="sheet-actions">
             {shieldedCanChange(flow.error) && flow.request?.kind !== "resume" && (

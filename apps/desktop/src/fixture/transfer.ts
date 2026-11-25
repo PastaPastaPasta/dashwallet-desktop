@@ -21,10 +21,27 @@ function smallCoins(w: World, n: number): World {
   return w;
 }
 
+/** A main balance of one coin of 0.00005 DASH, too little for either route's smallest amount once the
+ * fee comes out; with `mixed`, a mixed coin of 0.1 DASH as well, which Max leaves in the wallet. */
+function dustCoins(w: World, mixed: boolean): World {
+  const main = w.wallets[0];
+  const coin = (amount: number, vout: number, extra: Partial<Utxo> = {}): Utxo => ({ ...main.coins[0], outpoint: { txid: "d5".repeat(32), vout }, amount, label: null, isChange: false, reserved: false, userLocked: false, ...extra });
+  main.coins = [coin(5_000, 0), ...(mixed ? [coin(10_000_100, 1, { coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds })] : [])];
+  const sum = main.coins.reduce((s, u) => s + u.amount, 0);
+  const b = main.summary.balances!;
+  const coinjoin = main.coins.filter((u) => u.coinjoinDenominated).reduce((s, u) => s + u.amount, 0);
+  main.summary = { ...main.summary, balances: { ...b, confirmed: sum, unconfirmed: 0, total: sum + b.immature + b.locked, coinjoin } };
+  return w;
+}
+
 export function transferScenarios(base: Base) {
   return {
     /** A main balance of 60 coins of 0.1 DASH: Max needs more coins than one lock takes. */
     "transfer-many-coins": (t: ThemeName | null) => smallCoins(base(t), 60),
+    /** Max from the Dash wallet moves less than the smallest amount, and nothing is left out. */
+    "transfer-max-dust": (t: ThemeName | null) => dustCoins(base(t), false),
+    /** As "transfer-max-dust", with a mixed coin Max leaves in the Dash wallet. */
+    "transfer-max-dust-left": (t: ThemeName | null) => dustCoins(base(t), true),
     /** Shielded not active and no Platform addresses: Transfer has nowhere to go and says why. */
     "transfer-none": (t: ThemeName | null) => {
       const w = base(t);

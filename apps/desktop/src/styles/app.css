@@ -556,6 +556,18 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* Max from the Dash wallet on Confirm: what it moves, then what stays behind, each its own line. */
+.core-max-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-block: var(--dw-space-s);
+}
+
+.core-max-confirm p {
+  margin: 0;
+}
+
 /* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
 .mn-banned-notice {
   overflow-wrap: anywhere;
@@ -1845,6 +1857,17 @@ input[type="radio"]:disabled {
 
 .tx-detail-state.is-problem {
   color: var(--dw-role-danger);
+}
+
+/* Why Dash Wallet dropped the transaction itself, and where its coins are. */
+.tx-detail-dropped {
+  max-width: 34rem;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
 }
 
 .tx-detail-explorer {
@@ -4005,10 +4028,31 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-l);
 }
 
+.notifications:not(:empty) + * {
+  margin-top: var(--dw-space-l);
+}
+
 .notifications .bell-section {
-  padding: var(--dw-layout-card-padding);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xs) var(--dw-space-sm);
   border-radius: var(--dw-radius-card);
   background: var(--dw-role-card);
+}
+
+.notifications .bell-section-title,
+.notifications .bell-more {
+  padding-inline: var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .bell-more {
+  padding-bottom: var(--dw-space-xs);
+}
+
+.notifications .bell-row-open {
+  padding: var(--dw-space-xs) var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .contact-row-actions {
+  padding-inline-end: var(--dw-space-transaction-row-horizontal);
 }
 
 /* ------------------------------------------------------------------ DashPay status (DP1-08) */

@@ -101,7 +101,7 @@ pub(super) fn plan_of(
     let duffs = total_duffs.saturating_sub(fee_duffs);
     let min = drain_floor(pool_fee);
     if duffs < min {
-        return Err(ShieldedError::BelowMinimum { min });
+        return Err(ShieldedError::BelowMinimum { min, max: None });
     }
     Ok(MixedShieldQuote {
         inputs: coins.len() as u32,

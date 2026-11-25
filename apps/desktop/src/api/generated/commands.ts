@@ -63,6 +63,7 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { EvonodeCredits } from "./EvonodeCredits";
@@ -174,6 +175,7 @@ import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
+import type { RecoverQuote } from "./RecoverQuote";
 import type { RegistrationQuote } from "./RegistrationQuote";
 import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
@@ -1103,6 +1105,21 @@ export function exportHistoryCsv(walletId: string, filter: HistoryFilterRequest,
  */
 export function txNotices(walletId: string, txids: Array<string>): Promise<Array<TxNoticeRow>> {
   return invoke<Array<TxNoticeRow>>("tx_notices", { walletId, txids });
+}
+
+/**
+ * The notices of payments Dash Wallet dropped because what they spent
+ * came from a transaction that was never valid, not yet dismissed.
+ */
+export function droppedNotices(walletId: string): Promise<Array<DroppedNoticeRow>> {
+  return invoke<Array<DroppedNoticeRow>>("dropped_notices", { walletId });
+}
+
+/**
+ * Dismisses the notices of the dropped payments `txids` for good.
+ */
+export function dismissDroppedNotices(walletId: string, txids: Array<string>): Promise<null> {
+  return invoke<null>("dismiss_dropped_notices", { walletId, txids });
 }
 
 /**
@@ -2306,6 +2323,24 @@ export function finishTransfer(walletId: string, kind: LockKind, txid: string, v
 }
 
 /**
+ * What a recover of the partly used transfer to Shielded at
+ * `txid`:`vout` would move, read from Platform's proved state now.
+ */
+export function recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote> {
+  return invoke<RecoverQuote>("recover_transfer_quote", { walletId, txid, vout });
+}
+
+/**
+ * Recovers what is left on the partly used transfer to Shielded at
+ * `txid`:`vout` to the wallet's own Platform address under `grant`,
+ * whose credits cap is the quote's `credits`; only a proved apply
+ * finishes it.
+ */
+export function recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("recover_transfer", { walletId, txid, vout, grant });
+}
+
+/**
  * The contacts of `identity` in the sections `query` selects.
  */
 export function dashpayContacts(walletId: string, identity: string, query: ContactQueryArgs): Promise<ContactList> {
@@ -3480,6 +3515,8 @@ export type CommandArgs = {
   drop_unconfirmed: { walletId: string | null };
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
+  dropped_notices: { walletId: string };
+  dismiss_dropped_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
   open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
@@ -3629,6 +3666,8 @@ export type CommandArgs = {
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
+  recover_transfer_quote: { walletId: string; txid: string; vout: number };
+  recover_transfer: { walletId: string; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -3859,6 +3898,8 @@ export type CommandResults = {
   drop_unconfirmed: number;
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
+  dropped_notices: Array<DroppedNoticeRow>;
+  dismiss_dropped_notices: null;
   is_coinjoin_internal: boolean;
   open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
@@ -4008,6 +4049,8 @@ export type CommandResults = {
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
+  recover_transfer_quote: RecoverQuote;
+  recover_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -4240,6 +4283,8 @@ export const COMMANDS: Record<CommandName, string> = {
   drop_unconfirmed: "history",
   export_history_csv: "history",
   tx_notices: "history",
+  dropped_notices: "history",
+  dismiss_dropped_notices: "history",
   is_coinjoin_internal: "history",
   open_tx_in_explorer: "history",
   backup_wallet: "backup",
@@ -4389,6 +4434,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
+  recover_transfer_quote: "identity",
+  recover_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",

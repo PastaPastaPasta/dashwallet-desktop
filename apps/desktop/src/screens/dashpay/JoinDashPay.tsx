@@ -13,7 +13,8 @@ import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
-import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
+import { useNamesRead, useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
+import { temporaryOutcome } from "../../dashpay/instantOffer";
 import { PAY_WITH_COPY } from "../../dashpay/payWith";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
@@ -25,6 +26,7 @@ import { Page } from "../Routes";
 import { DashPayFaqSheet, VotingInfoSheet } from "./AboutDashPay";
 import { ClaimConfirmStep, ClaimScreen, InvitationPasteSheet } from "./Claim";
 import { DashPayCard, defaultCardAction, moveToDashWallet } from "./DashPayCard";
+import { chooseName, identityCardAction } from "./MyProfile";
 import { RegistrationScreen, WizardSteps } from "./Registration";
 
 function Intro() {
@@ -66,6 +68,11 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const draft =
     wiz.draft ?? claim?.draft ?? (status?.kind === "registering" ? status.draft : status?.kind === "noIdentity" ? (stopped?.draft ?? null) : null);
   const row = draft === null ? undefined : rows.data?.find((r) => r.draft === draft);
+  // What became of the row's temporary name, from a names read since it reached its contest.
+  const namesRead = useNamesRead(walletId, row);
+  // An instant username registered this session from credits (D13) while the own vote runs.
+  const instantFor =
+    wiz.named?.result.kind === "registered" && wiz.mode.kind === "credits" && wiz.mode.instant === true && status?.kind === "contestPending" ? status.label : null;
   const shown = row?.draft;
   useEffect(() => {
     if (shown !== undefined) wiz.adopt(shown);
@@ -88,6 +95,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const moveToCore = () => moveToDashWallet(b, walletId);
   const onAction = (kind: CardActionKind) => {
     if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
+    if (identityCardAction(b, walletId, inputs.main, kind, model.kind === "card" ? model.card : null)) return;
     return defaultCardAction(kind, retry, moveToCore);
   };
   // A claim seen through leaves the claim screen too.
@@ -109,6 +117,12 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
         return void wiz.finish();
       case "another":
         return void wiz.another(row ?? null);
+      case "instantRetry":
+        if (!row?.identity || !row.temporaryLabel) return;
+        wiz.close();
+        return chooseName(b, walletId, row.identity, true, row.temporaryLabel);
+      case "reconfirm":
+        return void (row && wiz.reconfirm(row));
       case "done":
         return leave();
       case "wallet":
@@ -135,14 +149,14 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
         {wiz.step === "confirm" && wiz.mode.kind === "invitation" ? (
           <ClaimConfirmStep wiz={wiz} walletId={walletId} inputs={inputs} />
         ) : (
-          <WizardSteps wiz={wiz} walletId={walletId} inputs={inputs} />
+          <WizardSteps wiz={wiz} walletId={walletId} inputs={inputs} network={network.kind} />
         )}
       </Page>
     );
   if (wiz.named)
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date)} onAction={onScreenAction} inputs={inputs} share={share} />
+        <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date, instantFor)} onAction={onScreenAction} inputs={inputs} share={share} />
       </Page>
     );
   // Started this session, its row not read yet (D23): never the Join page, which offers Create.
@@ -154,10 +168,17 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     );
   if (row) {
     const contest = status?.kind === "contestPending" && status.label === row.label ? status : null;
-    const screen = screenModel(row, { contestPending: contest !== null, contestEndsAt: contest?.endsAt ?? null, date: inputs.date, amount: inputs.amount, discreet: inputs.discreet });
+    const screen = screenModel(row, {
+      contestPending: contest !== null,
+      contestEndsAt: contest?.endsAt ?? null,
+      date: inputs.date,
+      amount: inputs.amount,
+      discreet: inputs.discreet,
+      temporary: temporaryOutcome(row, namesRead),
+    });
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} onAction={onScreenAction} inputs={inputs} share={share} />
+        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} fromPlatform={row.fromPlatform} onAction={onScreenAction} inputs={inputs} share={share} />
       </Page>
     );
   }

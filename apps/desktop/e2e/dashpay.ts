@@ -1,5 +1,8 @@
 // DP1-08 fixture states shared by dashpay.spec.ts and visual.spec.ts.
 
+import { expect, type Page } from "@playwright/test";
+import { authorize } from "./helpers";
+
 /** Each Home card state (docs/design/DP1-08-status-card.md S2–S17, DP1-10-my-profile.md S19–S20),
  * its scenario, title and chip. */
 export const CARDS: Record<string, { scenario: string; extra?: string; title: string; chip: string | null }> = {
@@ -44,3 +47,25 @@ export const CHIP_TEXT: Record<string, string> = {
   noUsername: "No username",
   namesUnknown: "Username not loaded",
 };
+
+/** From the Join page: a registration paid from the Platform balance whose run fails, up to its
+ * failed screen: its create fails in a block (C-funding F10), or its plan changed (F22). */
+export async function platformRunFails(page: Page, label: string, outcome: "paidFailure" | "replanRefused") {
+  await page.evaluate((o) => (window.__dwFixture!.world.dashpay.platformCreates = [o]), outcome);
+  await page.getByTestId("join-pay-another").click();
+  await page.getByTestId("pay-with-platform").getByRole("radio").check();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("registration-name-field").fill(label);
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("registration-fee").waitFor();
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  await page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+  await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "failed");
+  // No step under the pointer.
+  await page.mouse.move(0, 0);
+}
