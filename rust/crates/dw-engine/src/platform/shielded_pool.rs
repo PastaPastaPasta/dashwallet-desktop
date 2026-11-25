@@ -2227,8 +2227,8 @@ pub(super) async fn apply(
 /// after the InstantSend wait timed out (`shielded/fund_from_asset_lock.rs:245-262`)
 /// or after Platform refused the InstantSend one (`:396-433`); the
 /// ChainLock proof persisted on an "already consumed" report, the row then
-/// `RecoveredFromChain` (`asset_lock/orchestration.rs:478-521`,
-/// `sync/tracking.rs:351`); after Platform refused a ChainLock proof, the
+/// `RecoveredFromChain` (`asset_lock/orchestration.rs:345-411`,
+/// `sync/tracking.rs:386`); after Platform refused a ChainLock proof, the
 /// record's InstantSend proof, another ChainLock proof, or none until the
 /// next resume derives one (`fund_from_asset_lock.rs:441-445` →
 /// `sync/tracking.rs:564-620`). Within one call the ChainLock-height
