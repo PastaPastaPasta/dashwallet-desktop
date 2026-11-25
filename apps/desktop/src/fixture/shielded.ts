@@ -434,6 +434,8 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     return { active: st.active, account: st.account, established: st.ready, syncing: st.syncing, scan: st.scan, lastPassFailed: st.lastPassFailed, spendsAvailable: st.spendsAvailable };
   },
   shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
+    // No address while this build cannot spend from Shielded: the engine refuses it first.
+    refuseSpendsOff(ctx, walletId, "shielded_receive_address");
     const s = shieldedOf(ctx, walletId, "shielded_receive_address");
     // The viewing key's address: it reads once bound, before the first scan ends.
     if ((s.account ?? "bound") !== "bound") raise(SHIELDED_CODES.notSynced, "the fixture account's viewing key is not bound");

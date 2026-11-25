@@ -19,7 +19,7 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SPENDS_COPY, shieldedSpendsOff } from "../shielded/spends";
+import { SHIELDED_SPENDS_COPY, shieldedSpendsOff, spendsOffText } from "../shielded/spends";
 import { SHIELDED_SYNC_COPY, scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText } from "../shielded/syncing";
 import { coreMaxNotes, TRANSFER_COPY } from "../transfer/model";
 import { preparingText } from "../transfer/preparing";
@@ -70,9 +70,9 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const spendsOff = shieldedSpendsOff(status);
   const waitText = shieldedWaitText(status);
   const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", shieldedWait(status), false, spendsOff) : null;
-  const maxWhy = spendsOff ? SHIELDED_SPENDS_COPY.unavailable : syncing ? waitText : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
+  const maxWhy = spendsOff ? spendsOffText(kind) : syncing ? waitText : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = spendsOff
-    ? SHIELDED_SPENDS_COPY.unavailable
+    ? spendsOffText(kind)
     : syncing
     ? waitText
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
@@ -287,7 +287,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
         <DashButton variant="tintedGray" size="large" data-testid="shielded-back" disabled={flow.running} onClick={() => flow.back()}>
           {C.confirm.back}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={spendBlocked ? SHIELDED_SPENDS_COPY.unavailable : syncing ? shieldedWaitText(status) : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing || spendBlocked} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
+        <DashButton variant="filledBlue" size="large" data-testid="shielded-go" why={spendBlocked ? spendsOffText(kind) : syncing ? shieldedWaitText(status) : quote.isError ? C.confirm.quoteFailed : flow.running ? C.running.title : C.confirm.quoting} disabled={!q || quote.isError || quote.isFetching || flow.running || syncing || spendBlocked} onClick={() => q && (unrecorded ? setAsking(true) : void flow.run(q.quote.grant))}>
           {C.confirm.go}
         </DashButton>
       </div>
@@ -455,7 +455,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     if (spendsOff)
       return (
         <p className="field-hint" data-testid="shielded-receive-spends-off">
-          {SHIELDED_SPENDS_COPY.unavailable}
+          {SHIELDED_SPENDS_COPY.receive}
         </p>
       );
     if (gate === "unlock") {

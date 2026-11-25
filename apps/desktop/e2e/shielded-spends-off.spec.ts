@@ -5,13 +5,16 @@ import { authorize, fixtureUrl, fontsReady, openTransfer, THEMES, trackPageError
 import { callsOf } from "./transfer";
 
 // Where this build cannot spend from Shielded (`ShieldedStatus.spendsAvailable` false): Send from
-// Shielded, Pay's Shielded route, the moves out of Shielded and every way into Shielded (Transfer,
-// CoinJoin's move, Receive's address) wait with one reason line, and nothing reaches the engine.
-// The balance carries on. With the flag on (main today), every one of them is as it was.
+// Shielded, Pay's Shielded route and the moves out of Shielded wait with one reason line; every way
+// into Shielded (Transfer from the Dash wallet or Platform, CoinJoin's move) with another, and
+// Receive shows no Shielded address, with its own line. Nothing reaches the engine. The balance
+// carries on. With the flag on (main today), every one of them is as it was.
 
 const REASON = "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.";
+const SHIELD_IN = "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.";
+const RECEIVE = "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.";
 const SHIELDED_ADDRESS = "tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2";
-const SPENDS = ["shielded_send", "shielded_send_quote", "unshield_to_core", "unshield_quote", "unshield_to_platform", "unshield_to_platform_quote", "shield_from_core", "shield_quote", "shield_mixed_coins", "shield_mixed_quote"];
+const SPENDS = ["shielded_send", "shielded_send_quote", "unshield_to_core", "unshield_quote", "unshield_to_platform", "unshield_to_platform_quote", "shield_from_core", "shield_quote", "shield_mixed_coins", "shield_mixed_quote", "platform_shield_quote"];
 
 async function shot(page: Page, name: string) {
   const dir = process.env.DW_SHOTS;
@@ -53,7 +56,7 @@ async function toShieldedConfirm(page: Page) {
 
 test.describe("Shielded spends off", () => {
   for (const theme of THEMES) {
-    test(`every spend from Shielded and every way into it waits with one reason (${theme})`, async ({ page }) => {
+    test(`every spend from Shielded and every way into it waits with its reason (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-spends-off", theme);
       await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
 
@@ -71,7 +74,7 @@ test.describe("Shielded spends off", () => {
       await page.getByTestId("sidebar-home").click();
       for (const route of ["shieldedToCore", "shieldedToPlatform", "coreToShielded"] as const) {
         await openTransfer(page, route);
-        await expect(page.getByTestId("transfer-unavailable")).toHaveText(REASON);
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText(route === "coreToShielded" ? SHIELD_IN : REASON);
         await expect(page.getByTestId("transfer-continue")).toBeDisabled();
         await shot(page, `${theme}-transfer-${route}-off`);
         expect(await seriousAxeViolations(page)).toEqual([]);
@@ -80,7 +83,7 @@ test.describe("Shielded spends off", () => {
       await openTransfer(page, "platformToCore");
       await page.getByTestId("transfer-to").click();
       await page.getByTestId("transfer-picker-shielded").click();
-      await expect(page.getByTestId("transfer-unavailable")).toHaveText(REASON);
+      await expect(page.getByTestId("transfer-unavailable")).toHaveText(SHIELD_IN);
       await expect(page.getByTestId("transfer-continue")).toHaveCount(0);
       await shot(page, `${theme}-transfer-platformToShielded-off`);
       expect(await seriousAxeViolations(page)).toEqual([]);
@@ -89,7 +92,7 @@ test.describe("Shielded spends off", () => {
 
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();
-      await expect(page.getByTestId("shielded-receive-spends-off")).toHaveText(REASON);
+      await expect(page.getByTestId("shielded-receive-spends-off")).toHaveText(RECEIVE);
       await expect(page.getByTestId("shielded-receive-address")).toHaveCount(0);
       await expect(page.getByTestId("shielded-receive-qr")).toHaveCount(0);
       await shot(page, `${theme}-receive-off`);
@@ -101,14 +104,14 @@ test.describe("Shielded spends off", () => {
     });
   }
 
-  test("moving mixed coins into Shielded waits with the same reason", async ({ page }) => {
+  test("moving mixed coins into Shielded waits with the ways-in reason", async ({ page }) => {
     const errors = trackPageErrors(page);
     for (const scenario of ["coinjoin-move-spends-off", "coinjoin-move"] as const) {
       await page.goto(fixtureUrl(scenario, "light"));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
       if (scenario === "coinjoin-move-spends-off") {
-        expect(await reasonOf(page, "coinjoin-move-shield")).toBe(REASON);
+        expect(await reasonOf(page, "coinjoin-move-shield")).toBe(SHIELD_IN);
         await expect(page.getByTestId("coinjoin-move-open")).toBeEnabled();
         expect(await seriousAxeViolations(page)).toEqual([]);
         expect(await spendCalls(page)).toBe(0);
@@ -172,7 +175,7 @@ test.describe("Shielded spends off", () => {
     await expect(page.getByTestId("shielded-receive-spends-off")).toHaveCount(0);
     await page.getByTestId("sidebar-home").click();
     await toShieldedConfirm(page);
-    await expect(page.getByText(REASON)).toHaveCount(0);
+    for (const line of [REASON, SHIELD_IN, RECEIVE]) await expect(page.getByText(line)).toHaveCount(0);
     await page.getByTestId("shielded-go").click();
     await authorize(page);
     await expect(page.getByTestId("shielded-body")).toHaveAttribute("data-step", "done");

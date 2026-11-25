@@ -1,8 +1,8 @@
 // Where this build's engine cannot spend from Shielded (`ShieldedStatus.spendsAvailable`): Send from
-// Shielded, the moves to the Dash wallet and to Platform, paying a contact from Shielded, and every
-// way into Shielded (shielding, CoinJoin's move, Receive's address) wait with one reason line, and
-// the engine's refusal of a spend or a new shield reads the same. Finishing a shield already sent, sync, the
-// balance and history carry on. The engine's flag is the only switch.
+// Shielded, the moves to the Dash wallet and to Platform, and paying a contact from Shielded wait
+// with one reason line; every way into Shielded (shielding from the Dash wallet, CoinJoin or Platform)
+// waits with another, and Receive shows no Shielded address. The engine refuses the same calls. Finishing
+// a shield already sent, sync, the balance and history carry on. The engine's flag is the only switch.
 
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { t } from "../i18n";
@@ -27,4 +27,15 @@ export const SHIELDED_SPENDS_COPY = {
   get source() {
     return t("transfer.shielded.spends.source");
   },
+  /** Where a move into Shielded would be. */
+  get shieldIn() {
+    return t("transfer.shielded.shieldInUnavailable");
+  },
+  /** Receive's Shielded tab, in place of the address. */
+  get receive() {
+    return t("transfer.shielded.receiveUnavailable");
+  },
 };
+
+/** The reason a `kind` held by this build gives: a move into Shielded (`add`) or a spend from it. */
+export const spendsOffText = (kind: ShieldedKind | undefined): string => (kind === "add" ? SHIELDED_SPENDS_COPY.shieldIn : SHIELDED_SPENDS_COPY.unavailable);

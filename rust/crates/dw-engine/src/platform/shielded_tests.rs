@@ -4972,6 +4972,96 @@ fn a_shield_already_sent_finishes_while_the_library_cannot_spend_from_the_key_se
     assert_eq!(*lib.applied.lock().unwrap(), vec![outpoint; 2]);
 }
 
+/// A library that cannot spend from the key set issues no receive address
+/// and quotes no shield from the Platform addresses: both refuse
+/// `platform.unavailable` before any read. When it can again, both answer.
+#[test]
+fn no_way_in_opens_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::at(11, 12));
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let refused = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::receive_address(lib).await),
+            code(pool::platform_shield_gate(lib).await),
+        ]
+    });
+    assert_eq!(refused, ["platform.unavailable"; 2]);
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "refused before any read"
+    );
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    let (address, version) = run(&fx, &lib, |_, lib| async move {
+        let address = pool::receive_address(&*lib).await.unwrap();
+        let version = pool::platform_shield_gate(&*lib).await.unwrap();
+        (address, version.protocol_version)
+    });
+    assert_eq!((address.address, version), (payee_text(), 12));
+}
+
+/// A payment to an address given out before the library lost key-set
+/// spends still lands: the pass finds it and the status shows it in the
+/// balance, while no new address is issued.
+#[test]
+fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let early = run(&fx, &lib, |_, lib| async move {
+        pool::receive_address(&*lib).await.unwrap()
+    });
+    assert_eq!(early.address, payee_text());
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.scan_ledger.lock().unwrap() = Some(Ledger {
+        spendable: NOTE,
+        synced_index: None,
+    });
+    let (status, again) = run(&fx, &lib, |_, lib| async move {
+        lib.sync_now().await;
+        let status = pool::status(&*lib).await.unwrap();
+        (status, code(pool::receive_address(&*lib).await))
+    });
+    assert_eq!(status.balance, NOTE);
+    assert!(!status.spends_available);
+    assert_eq!(again, "platform.unavailable");
+}
+
+/// Through the real library: while it cannot spend from the key set the
+/// facade issues no address, neither a bound key's (read during a pass)
+/// nor a first bind's; when it can again, the same address.
+#[test]
+fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set() {
+    use super::topup_tests::fixture;
+    let f = fixture(true);
+    let dp = f.session.dashpay(f.wallet);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
+    let address = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+
+    f.session.keyset_spends_off.store(true, Ordering::SeqCst);
+    let refused = f.engine.block_on(dp.shielded_receive_address());
+    assert_eq!(code(refused), "platform.unavailable", "the bound key's");
+    let fresh = fixture(true);
+    let off = &fresh.session.keyset_spends_off;
+    off.store(true, Ordering::SeqCst);
+    let first_dp = fresh.session.dashpay(fresh.wallet);
+    let first = fresh.engine.block_on(first_dp.shielded_receive_address());
+    assert_eq!(code(first), "platform.unavailable", "a first bind's");
+    let status = (f.engine)
+        .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
+            pool::status(&lib).await
+        }))
+        .unwrap();
+    assert!(!status.spends_available, "the status reads the same switch");
+
+    f.session.keyset_spends_off.store(false, Ordering::SeqCst);
+    let again = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+    assert_eq!(again, address);
+}
+
 /// Without the dispatch hook no spend starts: a send and an unshield are
 /// refused before anything else, so nothing is quoted, no receive address
 /// is issued, the grant is kept and no key leaves the vault.

@@ -136,7 +136,7 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
           {MOVE_COPY.card.open}
         </DashButton>
         {shielded && (
-          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff || wait !== null} why={spendsOff ? SHIELDED_SPENDS_COPY.unavailable : wait?.why} onClick={() => flow.begin("shielded")}>
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff || wait !== null} why={spendsOff ? SHIELDED_SPENDS_COPY.shieldIn : wait?.why} onClick={() => flow.begin("shielded")}>
             {MOVE_COPY.card.shield}
           </DashButton>
         )}

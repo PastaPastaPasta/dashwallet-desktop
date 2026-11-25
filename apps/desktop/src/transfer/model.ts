@@ -48,7 +48,8 @@ export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsup
  * wallet → Platform is off too, the line names no detour through the Dash wallet; while this build
  * cannot spend from Shielded, every detour into or out of it waits too, so the line is that reason. */
 export function unsupportedText(from: Pool, to: Pool, mainnet = false, spendsOff = false): string {
-  if (spendsOff && (from === "shielded" || to === "shielded")) return SHIELDED_SPENDS_COPY.unavailable;
+  if (spendsOff && to === "shielded") return SHIELDED_SPENDS_COPY.shieldIn;
+  if (spendsOff && from === "shielded") return SHIELDED_SPENDS_COPY.unavailable;
   if (from === "core" && to === "platform") return MAINNET_OFF_COPY.add;
   if (from === "shielded" && to === "platform") return mainnet ? TRANSFER_COPY.offOnMainnet.shieldedToPlatform : TRANSFER_COPY.offOnNetwork;
   if (from === "platform" && to === "shielded" && mainnet) return TRANSFER_COPY.offOnMainnet.platformToShielded;
@@ -310,7 +311,7 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
-      if (s.spendsOff) return SHIELDED_SPENDS_COPY.unavailable;
+      if (s.spendsOff) return route === "coreToShielded" ? SHIELDED_SPENDS_COPY.shieldIn : SHIELDED_SPENDS_COPY.unavailable;
       if (s.syncing) return SHIELDED_SYNC_COPY.wait(s.wait ?? "syncing");
       if (route === "coreToShielded" && pools.coreSyncing) return SHIELDED_SYNC_COPY.syncing;
       const f = flows.shielded;

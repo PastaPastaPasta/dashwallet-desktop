@@ -554,10 +554,15 @@ impl DashPay {
 
     /// The wallet's shielded receive address. A bound key's address reads
     /// with no read of the note store, so it answers during a pass; the
-    /// first bind goes through the pool.
+    /// first bind goes through the pool. While the library cannot spend from
+    /// the key set (`spends_available`) no address is issued:
+    /// `platform.unavailable` first.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
         let wallet = self.wallet_id;
         let bound = pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            if !pool::keyset_spends(&pw) {
+                return Err(super::PlatformError::Unavailable.into());
+            }
             Ok(pool::bound_address(&pw).await)
         })
         .await?;

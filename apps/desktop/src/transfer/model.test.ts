@@ -112,7 +112,7 @@ describe("routes", () => {
     expect(MAX_DERIVE.shieldedToPlatform).toBe(shieldedSpendMax);
     expect(unsupportedText("platform", "shielded")).toBe(TRANSFER_COPY.unsupported);
     for (const mainnet of [false, true]) {
-      expect(unsupportedText("platform", "shielded", mainnet, true)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+      expect(unsupportedText("platform", "shielded", mainnet, true)).toBe(SHIELDED_SPENDS_COPY.shieldIn);
       expect(unsupportedText("shielded", "platform", mainnet, true)).toBe(SHIELDED_SPENDS_COPY.unavailable);
       expect(unsupportedText("core", "platform", mainnet, true)).toBe(unsupportedText("core", "platform", mainnet));
       expect(unsupportedText("platform", "shielded", mainnet, false)).toBe(unsupportedText("platform", "shielded", mainnet));
@@ -197,13 +197,13 @@ describe("routes", () => {
     expect(listedPools({ ...POOLS, shielded: null, platform: null })).toEqual(["core"]);
   });
 
-  it("hold the moves into and out of Shielded with one reason where this build cannot spend from it", () => {
+  it("hold the moves out of Shielded with one reason, and into it with another, where this build cannot spend from it", () => {
     const { shielded, fund, move } = flows();
     const f = { shielded, fund, move };
     const off: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: true } };
     expect(routeWhy("shieldedToCore", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
     expect(routeWhy("shieldedToPlatform", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
-    expect(routeWhy("coreToShielded", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("coreToShielded", off, f)).toBe(SHIELDED_SPENDS_COPY.shieldIn);
     expect(routeWhy("coreToPlatform", off, f)).toBeNull();
     const on: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: false } };
     for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, on, f), r).toBe(routeWhy(r, POOLS, f));

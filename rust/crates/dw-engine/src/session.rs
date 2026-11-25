@@ -302,6 +302,10 @@ pub struct NetworkSession {
     /// load (`test_support::hold_close_fence`).
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) close_load_wait: std::sync::Mutex<Option<std::time::Duration>>,
+    /// Tests: the library cannot spend from the pool's key set
+    /// (`shielded_pool::keyset_spends`).
+    #[cfg(test)]
+    pub(crate) keyset_spends_off: std::sync::atomic::AtomicBool,
     /// Other crates' tests: holds the next Platform send before it starts
     /// (`test_support::hold_platform_send`).
     #[cfg(all(debug_assertions, feature = "test-support"))]
@@ -769,6 +773,8 @@ impl NetworkSession {
             gate: OpGate::default(),
             #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             close_load_wait: Default::default(),
+            #[cfg(test)]
+            keyset_spends_off: Default::default(),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             hold_platform_send: Default::default(),
             wallet_lifecycle: WalletLifecycle::default(),

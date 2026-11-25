@@ -110,6 +110,36 @@ fn a_restored_shield_lock_is_listed_and_finished_on_its_outpoint() {
     assert_eq!(lib.applied.lock().unwrap().len(), 1, "applied once");
 }
 
+/// Tools ▸ Repair ▸ Finish transfers still finishes a stuck move into
+/// Shielded while the library cannot spend from the key set: the lock is
+/// already committed, so it lists and applies on its outpoint as before,
+/// once, funding nothing.
+#[test]
+fn a_stuck_shield_finishes_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let restored = lock(1, LockStatus::RecoveredFromChain);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![restored.clone()],
+        no_keyset_spends: AtomicBool::new(true),
+        ..FakeShielded::default()
+    });
+    assert_eq!(
+        state_of(&fx, &lib),
+        [(LockOrigin::Restored, UnfinishedState::Checking)]
+    );
+
+    answer(&lib, Ok(Applied::Done));
+    let before = funding_counts(&lib);
+    let (finished, begun) = finish(&fx, &lib, restored.outpoint);
+    assert_eq!(finished.unwrap(), LockFinish::Applied);
+    assert!(begun);
+    assert_eq!(*lib.applied.lock().unwrap(), [restored.outpoint]);
+    assert_eq!(*lib.settles.lock().unwrap(), [restored.outpoint.txid]);
+    assert_no_funding(&lib, before);
+    assert!(listed(&fx, &lib).unwrap().is_empty());
+    assert!(!lib.keyset_spends(), "still off");
+}
+
 /// Platform's unproved "already consumed" and a failure after the lock's
 /// key signed both leave the lock unfinished, "Checking", with no settle
 /// (SR1).

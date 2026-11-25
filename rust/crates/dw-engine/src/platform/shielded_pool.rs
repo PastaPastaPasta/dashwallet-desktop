@@ -325,10 +325,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
     /// The library can spend from the pool's key set ([`keyset_spends`]).
-    /// While false every spend from Shielded ([`unhooked`]) and every new
-    /// shield ([`keyset_closed`]) refuses `platform.unavailable` first, and
-    /// the status says so; finishing a shield already sent, receive, sync and
-    /// the balance are unaffected.
+    /// While false every spend from Shielded ([`unhooked`]) and every way
+    /// into it ([`keyset_closed`]: a new shield from Core, CoinJoin or the
+    /// Platform addresses, and the receive address) refuses
+    /// `platform.unavailable` first, and the status says so; finishing a
+    /// shield already sent, sync and the balance are unaffected.
     fn keyset_spends(&self) -> bool;
     /// The account's spends the library resolved with no proof of either
     /// outcome and whose notes it holds until that is acknowledged, each by
@@ -533,11 +534,12 @@ pub(super) async fn priced_gate(
 }
 
 /// The pool's gates for a shield from the Platform addresses (C-routes
-/// C1-6), before anything else is read: [`priced_gate`], then the
-/// account's viewing keys bound (`shielded.not_synced{account}`).
+/// C1-6), before anything else is read: [`keyset_closed`], [`priced_gate`],
+/// then the account's viewing keys bound (`shielded.not_synced{account}`).
 pub(super) async fn platform_shield_gate(
     lib: &impl ShieldedLib,
 ) -> Result<&'static PlatformVersion, ShieldedError> {
+    keyset_closed(lib)?;
     let version = priced_gate(lib).await?;
     if !lib.bind().await?.is_bound() {
         return Err(ShieldedError::not_synced(Wait::Account));
@@ -882,6 +884,7 @@ pub(crate) async fn observe_rest(
 pub(crate) async fn receive_address(
     lib: &impl ShieldedLib,
 ) -> Result<ShieldedAddress, ShieldedError> {
+    keyset_closed(lib)?;
     gate(lib).await?;
     if !lib.bind().await?.is_bound() {
         return Err(ShieldedError::not_synced(Wait::Account));
@@ -1689,10 +1692,11 @@ pub(super) async fn send_armed(
     }
 }
 
-/// Refuses a new move into the pool while the library cannot spend from the
+/// Refuses a new way into the pool while the library cannot spend from the
 /// key set: what goes in could not come out in this build. Asked before
-/// anything else, so nothing is quoted, locked or granted. Finishing a shield
-/// already sent (`resume`) is not refused.
+/// anything else, so nothing is quoted, locked or granted and no receive
+/// address is issued. Finishing a shield already sent (`resume`, Repair's
+/// `ShieldLocks`) is not refused.
 pub(crate) fn keyset_closed(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if lib.keyset_spends() {
         Ok(())
@@ -2987,8 +2991,14 @@ pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
 }
 
 /// The one switch for spends from the pool's key set: the library's answer
-/// for both [`ShieldedLib::keyset_spends`] and [`ShieldedSyncInfo`].
-pub(crate) fn keyset_spends(_pw: &PwLib) -> bool {
+/// for [`ShieldedLib::keyset_spends`], [`ShieldedSyncInfo`] and the receive
+/// address (`DashPay::shielded_receive_address`).
+pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
+    #[cfg(test)]
+    if (pw.session.keyset_spends_off).load(Ordering::SeqCst) {
+        return false;
+    }
+    let _ = pw;
     true
 }
 
