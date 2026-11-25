@@ -291,7 +291,7 @@ impl NetworkSession {
     /// transition is `st_hash` (P6, P7, P9): no artifact, never sent, but
     /// only while the hook never recorded its dispatch (else the journal is
     /// lost or older: unknown); executed by the library's own disposition,
-    /// sent; not executed, not sent with its address consumed (P5).
+    /// or by the release's proof of a refused first send, sent; not executed, not sent with its address consumed (P5).
     /// Anything else, a read failure and an execution the library could not
     /// attribute included, is unknown.
     pub(crate) async fn shielded_payout_evidence(
@@ -305,9 +305,8 @@ impl NetworkSession {
         };
         let executed = |a: &dw_appdb::dispatch::ShieldedArtifact| {
             a.status == ArtifactStatus::Executed
-                && a.disposition
-                    .as_ref()
-                    .is_some_and(|(kind, _)| kind == "executed")
+                && ((a.disposition.as_ref()).is_some_and(|(kind, _)| kind == "executed")
+                    || super::shielded_release::disposition_is_cancelled(a))
         };
         match artifacts.iter().find(|a| a.st_hash == Some(st_hash)) {
             None => {

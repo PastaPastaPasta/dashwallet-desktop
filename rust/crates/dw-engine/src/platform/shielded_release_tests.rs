@@ -463,6 +463,15 @@ fn every_nullifier_spent_settles_executed() {
         )
     );
     assert!(f.listing().contains(&st_hash(1)), "held until read spent");
+    let evidence = (f.engine).block_on(f.session.shielded_payout_evidence(
+        f.wallet,
+        "payout",
+        st_hash(1),
+    ));
+    assert_eq!(
+        evidence,
+        crate::platform::payment_locks::PayoutEvidence::Sent
+    );
 
     spent_seen(&f.session, f.wallet, &nullifiers(1));
     f.pass();

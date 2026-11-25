@@ -761,7 +761,8 @@ pub(crate) async fn arm_from_shielded(
 
 /// The wallet's `FromShielded` records, each pending one settled by its
 /// spend's artifact as the dispatch journal reads it now: executed by the
-/// library's own proof of it, `done`; not executed, `failed`, what it
+/// library's own proof of it, or by the release's proof of a refused first
+/// send (every nullifier it published proved spent), `done`; not executed, `failed`, what it
 /// absorbed taken over by the other records of its address armed before
 /// it was read, the oldest first, and the rest given back. An artifact
 /// that cannot be read, or reads anything else (an execution the library
@@ -792,7 +793,8 @@ async fn from_shielded(
                 continue;
             }
         };
-        let proved = (artifact.disposition.as_ref()).is_some_and(|(kind, _)| kind == "executed");
+        let proved = (artifact.disposition.as_ref()).is_some_and(|(kind, _)| kind == "executed")
+            || super::shielded_release::disposition_is_cancelled(&artifact);
         match artifact.status {
             ArtifactStatus::Executed if proved => records[i].executed(height),
             ArtifactStatus::NotExecuted => {

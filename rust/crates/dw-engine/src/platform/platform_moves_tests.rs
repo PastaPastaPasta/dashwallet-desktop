@@ -3538,6 +3538,23 @@ fn from_shielded_unattributable_execution_stays_pending() {
     );
 }
 
+/// A refused first send the release settled `executed` (every nullifier it
+/// published proved spent, the library's `Unresolved(Cancelled)` kept) is
+/// proved: the record is done.
+#[test]
+fn from_shielded_executed_by_the_release_is_done() {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.settle_unshield_as(
+        1,
+        ArtifactStatus::Executed,
+        ("unresolved", Some("cancelled")),
+    );
+    assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+}
+
 /// A done record's credit is what the first read above the height it was
 /// settled at shows of it. What that read did not show as its own (the
 /// address fell in the same read: a debit beside the credit) is no later
