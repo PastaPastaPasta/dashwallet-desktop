@@ -947,6 +947,16 @@ fn broadcast_and_proof_answers_classify() {
         executed(Refusal::Reason("refused"))
     );
     assert_eq!(proof_outcome::<()>(Err(timeout())), Cast::Unknown);
+    // Submitted, outcome unresolved: the refusal it carries is diagnostic.
+    let unconfirmed = |e| dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(e));
+    assert_eq!(
+        broadcast_outcome(Err(unconfirmed(at_check_tx()))),
+        Broadcast::Unknown
+    );
+    assert_eq!(
+        proof_outcome::<()>(Err(unconfirmed(typed()))),
+        Cast::Unknown
+    );
 }
 
 fn poll() -> VotePoll {

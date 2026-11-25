@@ -371,6 +371,25 @@ fn a_top_up_with_a_malformed_fee_input_is_refused() {
     assert_eq!(w.sent(), 0);
 }
 
+/// A top-up from Platform whose wait ends unconfirmed is pending and able
+/// to land, and holds the next one: nothing is signed again.
+#[test]
+fn top_up_from_platform_unconfirmed_is_pending() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Unconfirmed);
+    let out = w.top_up(credits(DASH)).unwrap();
+    assert_eq!(
+        (out.state, out.may_land),
+        (PlatformActivityState::Pending, true)
+    );
+    assert_eq!(
+        w.top_up(credits(DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    assert_eq!(w.sent(), 1);
+}
+
 /// An unknown outcome leaves the record pending and able to land; the next
 /// move, send, shield quote and top-up from Platform are
 /// `credits.move_pending`, and a second submit signs nothing.

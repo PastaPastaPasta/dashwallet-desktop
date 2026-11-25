@@ -585,8 +585,9 @@ where
     consumed_verdict(found, keys)
 }
 
-/// `identity` holds exactly `keys`: the same ids, types and data, as the
-/// library's adoption compares.
+/// `identity` holds exactly `keys`: the same ids, types and data. Only our
+/// signer can prove those keys, so the identity is our claim's. The
+/// library's adoption also compares each key's other creation fields.
 fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
     let actual = identity.public_keys();
     actual.len() == keys.len()

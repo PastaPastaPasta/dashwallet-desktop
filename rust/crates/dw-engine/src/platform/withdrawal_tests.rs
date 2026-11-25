@@ -1228,7 +1228,11 @@ fn only_a_consensus_refusal_says_nothing_happened() {
     let timeout = dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(30), "x".into());
     let check_tx =
         dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(cause.clone())));
+    // Submitted, outcome unresolved: the refusal it carries is diagnostic.
+    let unconfirmed =
+        dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(refused(Some(cause.clone()))));
     let cases = [
+        (Err(unconfirmed), "unknown"),
         (Err(refused(Some(cause))), "refused"),
         (Err(refused(None)), "unknown"),
         (Err(timeout), "unknown"),

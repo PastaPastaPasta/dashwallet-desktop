@@ -48,7 +48,9 @@ pub enum PlatformError {
     },
     /// A signed artifact was handed off and its outcome is unknown: it may
     /// already be out (E0-04 `MaybeSent`). Never retried blindly.
-    #[error("broadcast outcome unknown for {artifact}")]
+    /// `artifact` is empty when the SDK named none (an unconfirmed
+    /// transition the engine did not build an artifact for).
+    #[error("broadcast outcome unknown{}", for_artifact(artifact))]
     BroadcastUnknown { artifact: String },
     /// The artifact is committed and the engine will send it again, for
     /// example when the network is back. Never retried.
@@ -807,6 +809,14 @@ impl ShieldedError {
 // code and falls back to `Internal{detail}`; later tasks extend these in
 // place rather than mapping on their own.
 
+fn for_artifact(artifact: &str) -> String {
+    if artifact.is_empty() {
+        String::new()
+    } else {
+        format!(" for {artifact}")
+    }
+}
+
 fn internal(e: impl std::fmt::Display) -> PlatformError {
     PlatformError::Internal {
         detail: e.to_string(),
@@ -852,6 +862,14 @@ fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
         return wallet_leaf(promoted);
     }
     match e {
+        // Submitted, outcome unresolved: whatever it wraps is diagnostic,
+        // never a refusal nor leave to send a replacement.
+        Sdk::StateTransitionResultUnconfirmed(cause) => {
+            tracing::info!("a state transition's outcome is unconfirmed: {cause}");
+            PlatformError::BroadcastUnknown {
+                artifact: String::new(),
+            }
+        }
         Sdk::TimeoutReached(..) => PlatformError::Timeout,
         Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
         // A quorum key the provider refused (§2.2): the proof was not judged.
@@ -916,6 +934,19 @@ fn wallet_leaf(e: platform_wallet::PlatformWalletError) -> PlatformError {
         Pw::IdentityNotFound(_) => PlatformError::Identity(IdentityError::NotFound),
         Pw::ContactSyncUnreachable { .. } => PlatformError::Unavailable,
         Pw::InvalidParameter(detail) => PlatformError::InvalidArgument { detail },
+        // The library's own "may have been delivered" verdicts: never a
+        // refusal nor leave to resend.
+        e @ (Pw::PublicContactRequestUnconfirmed(_)
+        | Pw::ShieldedBroadcastUnconfirmed { .. }
+        | Pw::ShieldedSpendUnconfirmed { .. }
+        | Pw::ShieldedBroadcastMaybeDelivered(_)
+        | Pw::MasternodeWithdrawalUnconfirmed { .. }
+        | Pw::TransactionBroadcastUnconfirmed(_)) => {
+            tracing::info!("a broadcast's outcome is unconfirmed: {e}");
+            PlatformError::BroadcastUnknown {
+                artifact: String::new(),
+            }
+        }
         e @ (Pw::PersisterLoad(_) | Pw::PersisterStore(_) | Pw::Persistence(_)) => {
             PlatformError::Storage {
                 detail: e.to_string(),
@@ -1212,6 +1243,98 @@ mod mapping_tests {
             "wrapped errors mapped wrong:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// An unconfirmed submission may have executed: `broadcast_unknown`,
+    /// through every wrapper, whatever cause it carries. Before, it fell to
+    /// `internal`, and under a retry envelope to `platform.unavailable`.
+    #[test]
+    fn an_unconfirmed_transition_is_a_broadcast_of_unknown_outcome() {
+        use dash_sdk::Error as Sdk;
+        let unconfirmed = |cause| Sdk::StateTransitionResultUnconfirmed(Box::new(cause));
+        let retried = |last| Sdk::NoAvailableAddressesToRetry(Box::new(last));
+        let token = |source| PlatformWalletError::TokenOperationFailed {
+            operation: "purchase",
+            source,
+        };
+        let unknown = PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        };
+        let cases = [
+            ("timeout", PlatformError::from(unconfirmed(timeout()))),
+            (
+                "balance refusal",
+                PlatformError::from(unconfirmed(balance_refusal())),
+            ),
+            (
+                "generic",
+                PlatformError::from(unconfirmed(Sdk::Generic("x".into()))),
+            ),
+            (
+                "retried",
+                PlatformError::from(retried(unconfirmed(Sdk::Generic("x".into())))),
+            ),
+            (
+                "library",
+                PlatformError::from(PlatformWalletError::Sdk(unconfirmed(timeout()))),
+            ),
+            (
+                "library, retried",
+                PlatformError::from(PlatformWalletError::Sdk(retried(unconfirmed(
+                    balance_refusal(),
+                )))),
+            ),
+            ("token", PlatformError::from(token(unconfirmed(timeout())))),
+        ];
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter(|(_, got)| *got != unknown)
+            .map(|(path, got)| format!("{path}: {got:?}"))
+            .collect();
+        assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
+        assert_eq!(unknown.to_string(), "broadcast outcome unknown");
+        let named = PlatformError::BroadcastUnknown {
+            artifact: "st".into(),
+        };
+        assert_eq!(named.to_string(), "broadcast outcome unknown for st");
+    }
+
+    /// The library's own unconfirmed verdicts are `broadcast_unknown` too,
+    /// never `internal`.
+    #[test]
+    fn the_librarys_unconfirmed_verdicts_are_unknown_outcomes() {
+        let id = dpp::prelude::Identifier::from([4u8; 32]);
+        let reason = || String::from("timeout");
+        let cases = [
+            PlatformWalletError::PublicContactRequestUnconfirmed(id),
+            PlatformWalletError::ShieldedBroadcastUnconfirmed {
+                identity_id: id,
+                reason: reason(),
+            },
+            PlatformWalletError::ShieldedSpendUnconfirmed {
+                operation: "transfer",
+                reason: reason(),
+            },
+            PlatformWalletError::ShieldedBroadcastMaybeDelivered(reason()),
+            PlatformWalletError::MasternodeWithdrawalUnconfirmed {
+                identity_id: id,
+                amount_credits: 1,
+                reason: reason(),
+            },
+            PlatformWalletError::TransactionBroadcastUnconfirmed(reason()),
+        ];
+        let unknown = PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        };
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter_map(|e| {
+                let shown = format!("{e:?}");
+                let got = PlatformError::from(e);
+                (got != unknown).then(|| format!("{shown}: {got:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
     }
 
     #[test]

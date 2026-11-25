@@ -125,8 +125,11 @@ export type ContactPayApi = Pick<Backend, "contactPay" | "platformActivity" | "a
 /** `lost`: the call failed after it was sent, without a definitive refusal: it may have paid. */
 export type FromStep = "confirm" | "running" | "done" | "refused" | "lost";
 
-/** A refusal the engine answered before anything was signed (every coded refusal but `internal`). */
-const definitive = (e: unknown) => isAppError(e) && e.code !== "internal";
+/** Codes that say the payment may already be out: the engine could not confirm its outcome. */
+const MAYBE_OUT: ReadonlySet<string> = new Set(["internal", "platform.broadcast_unknown", "platform.will_be_sent"]);
+
+/** A refusal the engine answered before anything was signed (every coded refusal but `MAYBE_OUT`'s). */
+const definitive = (e: unknown) => isAppError(e) && !MAYBE_OUT.has(e.code);
 
 /** One payment from a balance: the grant the quote sizes, then `contactPay` (one call at a time). */
 export class ContactPayFlow extends Model {

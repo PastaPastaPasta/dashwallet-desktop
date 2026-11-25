@@ -556,6 +556,23 @@ enum IdentityAttempt {
     ReleasedThenUnavailable,
     /// The height caught up at the second attempt: created.
     RetriedThenCreated,
+    /// The transition was released and submitted, and the library's wait
+    /// ended unconfirmed (`StateTransitionResultUnconfirmed`); `retried`:
+    /// under the SDK's retry envelope. Nothing landed.
+    ReleasedThenUnconfirmed { retried: bool },
+}
+
+/// The SDK's unconfirmed outcome, as a wait that gave up returns it,
+/// under its retry envelope when `retried`.
+fn unconfirmed(retried: bool) -> dash_sdk::Error {
+    let e = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    if retried {
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(e))
+    } else {
+        e
+    }
 }
 
 /// The tap's report of the lock `outpoint`, as the journal builds it: its
@@ -972,6 +989,10 @@ impl RegistrationLib for Fake {
                 permit.note_released();
                 permit.note_released();
             }
+            Some(IdentityAttempt::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(PlatformError::from(unconfirmed(retried)));
+            }
             None => permit.note_released(),
         }
         let id = self.create_identity(outpoint, index);
@@ -1180,6 +1201,12 @@ impl RegistrationLib for Fake {
             Some(ClaimScript::DuplicateKeys) => {
                 permit.note_released();
                 return Err(ClaimError::DuplicateKeys);
+            }
+            Some(ClaimScript::ReleasedThenUnconfirmed { retried }) => {
+                permit.note_released();
+                return Err(ClaimError::Failed(PlatformError::from(unconfirmed(
+                    retried,
+                ))));
             }
             Some(ClaimScript::OtherAppearsThenUnavailable) => {
                 self.w().identities.push((index, invitation::OTHER.into()));
@@ -4272,7 +4299,8 @@ fn an_unknown_outcome_after_the_identity_does_not_settle() {
     let unknown = PlatformError::BroadcastUnknown {
         artifact: "st".into(),
     };
-    for error in [PlatformError::Timeout, unknown.clone()] {
+    let sdk_unconfirmed = PlatformError::from(unconfirmed(false));
+    for error in [PlatformError::Timeout, unknown.clone(), sdk_unconfirmed] {
         let f = fixture(false);
         let lib = f.fake();
         lib.w().name_error = Some(NameError::Platform(error.clone()));

@@ -206,3 +206,36 @@ fn step2_retries_that_give_up_wait_for_the_network_and_go_on() {
     done(&f, draft);
     assert_eq!(lib.counts(), (1, 1));
 }
+
+/// The library's wait for the released IdentityCreate ends unconfirmed,
+/// alone or under the SDK's retry envelope: it may have executed. The flow
+/// fails `platform.broadcast_unknown`, for the user to continue, and sends
+/// nothing again on its own (before, the envelope read `unavailable` and a
+/// running flow re-ran the step itself); the marker stands. Continued, it
+/// looks for the lock's identity first and creates it once.
+#[test]
+fn step2_an_unconfirmed_identity_create_is_unknown_and_not_resent() {
+    for retried in [false, true] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().identity_script = [IdentityAttempt::ReleasedThenUnconfirmed { retried }].into();
+        let draft = f.insert(core_row(PLAIN));
+        f.spawn(&lib, draft, Some(f.lease()));
+        f.settle(draft);
+        let row = f.row(draft);
+        assert_eq!(
+            (row.error.as_deref(), row.retryable),
+            (Some("platform.broadcast_unknown"), true),
+            "retried {retried}: {row:?}"
+        );
+        assert!(row.identity.is_none());
+        assert_eq!(lib.counts(), (1, 0), "retried {retried}: nothing re-sent");
+        assert_eq!(
+            identity_call(&f, draft),
+            CallStepStatus::Marked { durable: true }
+        );
+        regrant(&f, &lib, draft);
+        done(&f, draft);
+        assert_eq!(lib.counts(), (1, 1));
+    }
+}

@@ -253,9 +253,10 @@ impl From<PlatformError> for AppError {
                     remaining,
                 }),
             ),
+            // No artifact when the SDK named none: nothing to look up.
             P::BroadcastUnknown { artifact } => (
                 PlatformCode::BroadcastUnknown.into(),
-                Some(ErrorData::Artifact { artifact }),
+                (!artifact.is_empty()).then_some(ErrorData::Artifact { artifact }),
             ),
             P::WillBeSent { artifact } => (
                 PlatformCode::WillBeSent.into(),
@@ -773,6 +774,25 @@ mod tests {
                 "needed": "30000000000000000",
                 "remaining": "7"
             })
+        );
+        // An unknown outcome with no artifact carries no data to look up.
+        let e = AppError::from(PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            (&v["code"], &v["data"]),
+            (
+                &serde_json::json!("platform.broadcast_unknown"),
+                &serde_json::Value::Null
+            )
+        );
+        let e = AppError::from(PlatformError::BroadcastUnknown {
+            artifact: "st".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({"kind": "artifact", "artifact": "st"})
         );
         // DEC-1058 #4: what Shielded is still syncing.
         let e = AppError::from(ShieldedError::NotSynced {
