@@ -112,11 +112,21 @@ test("Shielded shows its address while the first scan runs", async ({ page }) =>
   await expect(page.getByTestId("shielded-receive-scan")).toContainText("You can receive now.");
 });
 
-test("Shielded waiting for a full unlock shows no address, and its Unlock shows it", async ({ page }) => {
+test("Shielded waiting for an unlock says so and shows no address", async ({ page }) => {
   await page.goto(fixtureUrl("shielded-locked", "light"));
   await page.getByTestId("sidebar-receive").click();
   await page.getByTestId("shielded-receive-open").click();
   await expect(page.getByTestId("shielded-receive-locked")).toContainText("Unlock the wallet to show your Shielded address.");
+  await expect(page.getByTestId("shielded-receive-unlock")).toHaveText("Unlock");
+  await expect(page.getByTestId("shielded-receive-address")).toHaveCount(0);
+});
+
+test("Shielded unlocked for mixing only shows no address, and its Unlock fully shows it", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-mixing-only", "light"));
+  await page.getByTestId("sidebar-receive").click();
+  await page.getByTestId("shielded-receive-open").click();
+  await expect(page.getByTestId("shielded-receive-locked")).toContainText("The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.");
+  await expect(page.getByTestId("shielded-receive-unlock")).toHaveText("Unlock fully");
   await expect(page.getByTestId("shielded-receive-address")).toHaveCount(0);
   await expect(page.getByTestId("shielded-receive-progress")).toHaveCount(0);
   await page.getByTestId("shielded-receive-unlock").click();

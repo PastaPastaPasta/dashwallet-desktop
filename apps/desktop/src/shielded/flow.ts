@@ -17,7 +17,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
-import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
+import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
 
@@ -301,6 +301,9 @@ export const SHIELDED_COPY = {
     get unlock() {
       return t("transfer.shielded.receive.unlock");
     },
+    get mixingOnly() {
+      return t("transfer.shielded.receive.mixingOnly");
+    },
     get watchOnly() {
       return t("transfer.shielded.receive.watchOnly");
     },
@@ -318,11 +321,11 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
-  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
+  if (syncingRefusal(err.code, wait !== false && wait !== null)) return SHIELDED_SYNC_COPY.wait(typeof wait === "string" ? wait : "syncing");
   switch (err.code) {
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;

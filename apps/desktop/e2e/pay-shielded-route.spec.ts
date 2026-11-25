@@ -47,4 +47,18 @@ test.describe("a Shielded address in Pay to", () => {
     expect(id).toBeTruthy();
     await expect(page.locator(`[id="${id}"]`)).toHaveText("Shielded is still syncing. Try again when it finishes.");
   });
+
+  // MG: when the vault's lock or a watch-only wallet holds the account, the line names it.
+  for (const [scenario, line] of [
+    ["shielded-locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes."],
+    ["shielded-mixing-only", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes."],
+    ["shielded-watch-only", "Shielded isn't available in a watch-only wallet."],
+  ])
+    test(`waits, and names the cause, in ${scenario}`, async ({ page }) => {
+      await payTo(page, scenario, SHIELDED_ADDRESS);
+      const button = page.getByTestId("pay-shielded-route");
+      await expect(button).toBeDisabled();
+      const id = await button.getAttribute("aria-describedby");
+      await expect(page.locator(`[id="${id}"]`)).toHaveText(line);
+    });
 });

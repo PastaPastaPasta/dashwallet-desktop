@@ -132,6 +132,21 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
       await page.getByTestId("shielded-receive-locked").waitFor();
     },
   },
+  "receive-shielded-mixing-only": {
+    scenario: "shielded-mixing-only",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-locked").waitFor();
+    },
+  },
+  "transfer-shielded-mixing-only": {
+    scenario: "shielded-mixing-only",
+    go: async (page) => {
+      await openTransfer(page, "coreToShielded");
+      await page.getByTestId("transfer-unavailable").waitFor();
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",

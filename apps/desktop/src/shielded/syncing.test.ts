@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
-import { shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText, syncingRefusal } from "./syncing";
+import { shieldedReceiveGate, shieldedScanPercent, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText, syncingRefusal } from "./syncing";
+import { shieldedErrorText } from "./flow";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>
   ({ active: true, ready: true, syncing: false, balance: "0", pending: "0", pendingShields: [], proverReady: true, ...over }) as ShieldedStatus;
@@ -68,5 +69,26 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(shieldedScanPercent(status({ ready: false, scan: null }))).toBeNull();
     expect(shieldedScanPercent(status({ ready: false, scan: { checked: 0, total: 0 } }))).toBeNull();
     expect(shieldedScanPercent(status({ ready: true, scan: { checked: 25, total: 100 } }))).toBeNull();
+  });
+
+  // MG: Send, Add and Transfer name the cause when the vault's lock or a watch-only wallet holds the
+  // account; a real catch-up keeps "still syncing".
+  it("names the cause of the wait: the lock, a mixing-only unlock, a watch-only wallet, or the sync", () => {
+    const cases: [ShieldedStatus["account"], string][] = [
+      ["locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes."],
+      ["mixingOnly", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes."],
+      ["watchOnly", "Shielded isn't available in a watch-only wallet."],
+      ["bound", "Shielded is still syncing. Try again when it finishes."],
+      ["binding", "Shielded is still syncing. Try again when it finishes."],
+      [null, "Shielded is still syncing. Try again when it finishes."],
+    ];
+    for (const [account, line] of cases) {
+      const s = status({ ready: false, account });
+      expect(shieldedWaitText(s), String(account)).toBe(line);
+      expect(shieldedErrorText({ code: "shielded.not_synced", message: "", data: null }, String, String, "send", shieldedWait(s)), String(account)).toBe(line);
+    }
+    // Established, or not active: nothing waits.
+    expect(shieldedWait(status({ ready: true, account: "bound" }))).toBeNull();
+    expect(shieldedWait(status({ active: false, ready: false, account: null }))).toBeNull();
   });
 });

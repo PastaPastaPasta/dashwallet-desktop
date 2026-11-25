@@ -57,10 +57,28 @@ export function shieldedReceiveGate(status: ShieldedStatus | null | undefined): 
   }
 }
 
+/** Why Send, Add and Transfer wait while the account is not established: the vault's lock or a
+ * watch-only wallet when that holds the viewing key's first bind, else the sync itself. */
+export type ShieldedWait = "syncing" | "locked" | "mixingOnly" | "watchOnly";
+
+/** `null` once established, or while Shielded is not active (`shieldedSyncing`). */
+export function shieldedWait(status: ShieldedStatus | null | undefined): ShieldedWait | null {
+  if (!status || !shieldedSyncing(status)) return null;
+  const a = status.account;
+  return a === "locked" || a === "mixingOnly" || a === "watchOnly" ? a : "syncing";
+}
+
+/** The line for `shieldedWait`, or `null`. */
+export const shieldedWaitText = (status: ShieldedStatus | null | undefined): string | null => {
+  const wait = shieldedWait(status);
+  return wait && SHIELDED_SYNC_COPY.wait(wait);
+};
+
 export const SHIELDED_SYNC_COPY = {
   get syncing() {
     return t("transfer.shielded.sync.syncing");
   },
+  wait: (wait: ShieldedWait) => t(`transfer.shielded.sync.${wait}`),
   /** `percent` formatted, or `null`: "Syncing Shielded…" alone. */
   progress: (percent: string | null) => (percent === null ? t("shell.status.syncingShielded") : t("transfer.shielded.sync.progress", { percent })),
   get scanning() {

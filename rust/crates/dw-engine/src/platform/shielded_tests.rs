@@ -3369,6 +3369,27 @@ fn the_viewing_key_binds_once_and_from_storage_after_a_restart() {
         .unwrap();
     assert_eq!(account, Some(ShieldedAccount::Locked));
     assert_eq!(address, Err("shielded.not_synced"));
+
+    // An unlock for mixing only still holds it back; after a full unlock the
+    // next bind (a status read binds, and the renderer re-reads the status
+    // on the unlock) binds the key, which joins the wallet to the periodic
+    // passes.
+    let unlock = |scope| {
+        let session = Arc::clone(&fresh.session);
+        (fresh.engine)
+            .block_on(session.vault_op(move |v| v.unlock(super::topup_tests::PASS, scope)))
+            .unwrap();
+    };
+    unlock(dw_vault::UnlockScope::MixingOnly);
+    assert_eq!(
+        bound_address(&fresh.engine, &fresh.session, fresh.wallet).0,
+        ShieldedAccount::MixingOnly
+    );
+    fresh.session.vault.lock();
+    unlock(dw_vault::UnlockScope::Full);
+    let (account, address) = bound_address(&fresh.engine, &fresh.session, fresh.wallet);
+    assert_eq!(account, ShieldedAccount::Bound);
+    assert!(address.is_some(), "the address reads once bound");
 }
 
 /// A spend stored under the hook is represented by its artifact, while a

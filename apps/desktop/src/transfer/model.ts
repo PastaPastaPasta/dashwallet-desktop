@@ -13,7 +13,7 @@ import { Model } from "../onboarding/model";
 import { fundFor, type PlatformFundApi, type PlatformFundFlow } from "../platform/fund";
 import { MOVE_COPY, moveFor, type MoveBlock, type PlatformMoveApi, type PlatformMoveFlow } from "../platform/move";
 import { SHIELDED_COPY, shieldedFor, type ShieldedApi, type ShieldedFlow, type ShieldedKind } from "../shielded/flow";
-import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, type ShieldedWait } from "../shielded/syncing";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -164,7 +164,7 @@ export interface Pools {
   mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. */
-  shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
+  shielded: { active: boolean; syncing: boolean; wait?: ShieldedWait | null; duffs: number | null } | null | undefined;
   /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
    * move of everything would take. */
   platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null | undefined;
@@ -247,7 +247,8 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       const s = pools.shielded;
       if (s === undefined) return TRANSFER_COPY.loading;
       if (!s?.active) return SHIELDED_COPY.card.inactive;
-      if (s.syncing || (route === "coreToShielded" && pools.coreSyncing)) return SHIELDED_SYNC_COPY.syncing;
+      if (s.syncing) return SHIELDED_SYNC_COPY.wait(s.wait ?? "syncing");
+      if (route === "coreToShielded" && pools.coreSyncing) return SHIELDED_SYNC_COPY.syncing;
       const f = flows.shielded;
       // The flow is shared: another of its moves is running, or its result waits to be seen.
       if (f.running) return SHIELDED_COPY.card.why.busy;

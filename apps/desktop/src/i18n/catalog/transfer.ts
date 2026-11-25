@@ -194,6 +194,11 @@ export const transfer = {
     /** While Shielded's account is not established (shielded/syncing.ts). */
     sync: {
       syncing: "Shielded is still syncing. Try again when it finishes.",
+      /** Instead of `syncing` when the vault's lock (`locked`, `mixingOnly`) or a watch-only wallet holds
+       * the viewing key's first bind. */
+      locked: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.",
+      mixingOnly: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
       /** Receive's line while the first scan runs; `percent` is formatted. */
       progress: "Syncing Shielded… {percent}",
       scanning: "Scanning…",
@@ -283,6 +288,7 @@ export const transfer = {
       /** Under the address while Shielded's first scan runs. */
       early: "You can receive now. Your Shielded balance shows when the sync finishes.",
       locked: "Unlock the wallet to show your Shielded address.",
+      mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.",
       unlock: "Unlock",
       watchOnly: "Shielded isn't available in a watch-only wallet.",
       qr: "QR code of {address}",
