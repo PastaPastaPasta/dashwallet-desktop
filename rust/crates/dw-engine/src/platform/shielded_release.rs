@@ -5,8 +5,10 @@
 //! on proved evidence, ordered by chain height and never by a clock, that it
 //! never executed and never can:
 //! - its anchor was proved recorded at a height Hp (the dispatch hook's read
-//!   before the first send, or a later pass that found it still recorded;
-//!   the highest is kept in app.sqlite), and is proved absent from
+//!   before the first send, or a later pass that found it still recorded,
+//!   whatever its nullifier read gave; only an SPV-verified read counts,
+//!   the trusted-only toggle notwithstanding; the highest is kept durably in
+//!   app.sqlite), and is proved absent from
 //!   Platform's anchors tree at a height Ha > Hp. Platform executes a spend
 //!   only while its anchor is recorded, and a recorded anchor leaves the
 //!   tree only when pruned, never to return; absent above a height it was
@@ -294,31 +296,34 @@ pub(crate) async fn presence(
 }
 
 /// Records that the anchor of `wallet`'s spend `st_hash` was proved recorded
-/// at `height`, keeping the highest.
+/// at `height`, keeping the highest, durably against power loss once it
+/// returns `Ok` (the library's refusal is durable in its own store, and a
+/// lost height would hold the spend for good). An error when the stored
+/// value is not a height of at least `height`.
 pub(crate) async fn record_presence(
     session: &NetworkSession,
     wallet: WalletId,
     st_hash: [u8; 32],
     height: u64,
-) -> Result<(), crate::EngineError> {
+) -> Result<(), String> {
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let key = presence_key(st_hash);
-    session
-        .appdb_op(move |db| {
-            let known = (db.setting(&scope, &key)?).and_then(|v| v.parse::<u64>().ok());
-            if known.is_some_and(|k| k >= height) {
-                return Ok(());
-            }
-            db.set_setting(&scope, &key, Some(&height.to_string()))
-        })
+    let stored = (session.appdb_op(move |db| db.raise_setting_durable(&scope, &key, height)))
         .await
+        .map_err(|e| e.to_string())?;
+    match stored.parse::<u64>() {
+        Ok(kept) if kept >= height => Ok(()),
+        _ => Err(format!(
+            "the stored height is {stored:?}, not at least {height}"
+        )),
+    }
 }
 
 /// The dispatch hook's chain-order read, before anything of the spend is
 /// written or sent: one proved anchors read must find the spend's anchor
 /// recorded, and its height is kept as the spend's Hp when the read is
-/// SPV-verified (or rule 5 is off). A failed read, or one without the
-/// anchor, refuses the spend. Tests without a release script model a read
+/// SPV-verified, whatever rule 5 says. A failed read, or one without the
+/// anchor, or a height not kept, refuses the spend. Tests without a release script model a read
 /// that proves the anchor recorded at height 1.
 pub(crate) async fn anchor_recorded_at_dispatch(
     session: &NetworkSession,
@@ -338,7 +343,7 @@ pub(crate) async fn anchor_recorded_at_dispatch(
     if !anchors.value.contains(&payload.anchor) {
         return Err("the spend's anchor is not recorded on Platform".into());
     }
-    if anchors.verified || unverified_counts(session) {
+    if anchors.verified {
         (record_presence(session, wallet, payload.st_hash, anchors.height).await)
             .map_err(|e| format!("the anchor's height was not kept: {e}"))?;
     }
@@ -541,7 +546,16 @@ pub(crate) async fn release_final_rejections(
                 .map(|&i| (due[i].st_hash, Arc::clone(&statuses))),
         );
     }
-    if read.is_empty() {
+    // Hp from this pass's anchors read, whatever the nullifier reads gave:
+    // a verified read that finds the anchor, of a spend still held as read.
+    let present = |spend: &Held| {
+        (anchors.as_ref()).filter(|a| a.verified).and_then(|a| {
+            (spend.anchor)
+                .filter(|anchor| a.value.contains(anchor))
+                .map(|_| a.height)
+        })
+    };
+    if read.is_empty() && !due.iter().any(|spend| present(spend).is_some()) {
         return;
     }
     #[cfg(test)]
@@ -559,6 +573,14 @@ pub(crate) async fn release_final_rejections(
     let Some((now_held, journal_spent)) = held(session, coordinator, wallet).await else {
         return;
     };
+    for spend in due.iter().filter(|spend| now_held.contains(spend)) {
+        if let Some(height) = present(spend)
+            && let Err(e) = record_presence(session, wallet, spend.st_hash, height).await
+        {
+            let transition = hex::encode(spend.st_hash);
+            tracing::warn!(wallet_id = %wallet, %transition, error = %e, "a refused shielded spend's anchor height was not kept");
+        }
+    }
     for spend in due {
         let Some(nullifiers) = read.get(&spend.st_hash) else {
             continue;
@@ -586,11 +608,6 @@ pub(crate) async fn release_final_rejections(
                 (ArtifactStatus::Executed, durable)
             }
             Verdict::AnchorRecorded => {
-                if let Some(a) = anchors.as_ref().filter(|a| a.verified || trusted)
-                    && let Err(e) = record_presence(session, wallet, spend.st_hash, a.height).await
-                {
-                    tracing::warn!(wallet_id = %wallet, %transition, error = %e, "a refused shielded spend's anchor height was not kept");
-                }
                 (session.platform.release_backoff.lock())
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(spend.st_hash, now + ANCHOR_RECHECK);
@@ -706,7 +723,8 @@ fn listing_fails(_: &NetworkSession) -> bool {
 /// reads failed from the refusal on: held (pending, never failed) while the
 /// library holds its notes or the hook's artifact is not reconciled yet,
 /// released once settled `not_executed` and no longer held, confirmed once
-/// settled `executed`. While either source cannot be read (the library's
+/// settled `executed` on proof of this transition ([`proves_execution`]),
+/// unknown when its notes were spent by what may be another spend. While either source cannot be read (the library's
 /// outcomes, or the journal, not ready included) every failed row reads
 /// held: it may be a refused spend that can still execute, or one that did.
 /// Other rows stay as they are.
@@ -771,7 +789,11 @@ pub(crate) async fn mark_refused(
         let refused = artifact.is_some_and(disposition_is_cancelled);
         let (status, refusal) = match artifact {
             Some(a) if refused && a.status == ArtifactStatus::Executed => {
-                (ShieldedActivityStatus::Confirmed, None)
+                if proves_execution(a) {
+                    (ShieldedActivityStatus::Confirmed, None)
+                } else {
+                    (ShieldedActivityStatus::Unknown, None)
+                }
             }
             Some(a) if refused && a.status == ArtifactStatus::NotExecuted && !library_holds => (
                 ShieldedActivityStatus::Failed,

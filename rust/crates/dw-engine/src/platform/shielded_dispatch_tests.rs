@@ -582,6 +582,17 @@ fn the_hook_proves_the_anchor_recorded_before_the_artifact() {
     assert_eq!(h.dispatch(unverified), Ok(()));
     assert!(h.artifact(2).is_some());
     assert_eq!(presence(2), None, "unverified: no Hp");
+
+    h.f.session.trust.set_trusted_only(true);
+    let trusted_only = h.staged(3, &[4]);
+    reads(Some((vec![[0xa0; 32]], 42)), false);
+    assert_eq!(h.dispatch(trusted_only), Ok(()));
+    assert_eq!(
+        presence(3),
+        None,
+        "unverified under the trusted-only toggle: no Hp"
+    );
+    h.f.session.trust.set_trusted_only(false);
 }
 
 /// A pass may re-send only what the hook accepted: the artifact's wallet,

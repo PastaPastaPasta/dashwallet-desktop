@@ -528,6 +528,9 @@ fn every_nullifier_spent_settles_executed() {
         )
     );
     assert!(f.listing().contains(&st_hash(1)), "held until read spent");
+    // No padding nullifier: its notes were spent, perhaps by another
+    // device's spend, so its row reads neither confirmed nor failed.
+    assert_eq!(f.row(), (Shown::Unknown, None));
     let evidence = (f.engine).block_on(f.session.shielded_payout_evidence(
         f.wallet,
         "payout",
@@ -549,6 +552,7 @@ fn every_nullifier_spent_settles_executed() {
         )
     );
     assert!(!f.listing().contains(&st_hash(1)));
+    assert_eq!(f.row(), (Shown::Unknown, None));
 }
 
 /// ASK-2, some but not all published nullifiers proved spent: it never
@@ -750,11 +754,82 @@ fn an_unverified_read_of_a_recorded_anchor_keeps_no_height() {
     f.assert_held();
     assert_eq!(f.presence(1), None);
 
+    // The trusted-only toggle lets an unverified read decide, but never
+    // keeps its height: one kept so would still count once it is off.
+    f.session.trust.set_trusted_only(true);
+    f.forget_backoff();
+    f.pass();
+    f.assert_held();
+    assert_eq!(f.presence(1), None, "no height from an unverified read");
+    f.session.trust.set_trusted_only(false);
+
     f.platform().unverified = false;
     f.forget_backoff();
     f.pass();
     f.assert_held();
     assert_eq!(f.presence(1), Some(100));
+}
+
+/// A verified anchors read that finds a held spend's anchor keeps its
+/// height even when the spend's nullifier read fails: the next pass may
+/// come only after the anchor is pruned, and without the height the spend
+/// would stay held for good.
+#[test]
+fn a_failed_nullifier_read_keeps_the_anchors_height() {
+    let f = Fixture::stuck(Platform {
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        fail_nullifier_reads: 1,
+        ..Default::default()
+    });
+    f.pass();
+    f.assert_held();
+    assert_eq!(f.presence(1), Some(100));
+
+    f.platform().anchors = Some((vec![[0xbb; 32]], 101));
+    f.platform().nullifiers_height = Some(101);
+    f.forget_backoff();
+    f.pass();
+    f.assert_released();
+}
+
+/// A kept height survives a power loss once it is kept: the library's
+/// refusal is durable in its own store, and a refusal whose height was lost
+/// would stay held once the anchor is pruned. A stored value that is not a
+/// height is reported, never taken as one.
+#[test]
+fn a_kept_anchor_height_survives_a_power_loss() {
+    use crate::platform::shielded_release::{presence, record_presence};
+    use dw_appdb::durability_sim::{arm, power_loss};
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let session = open(&engine);
+    let appdb = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let wallet = WalletId([7; 32]);
+    drop(session);
+    (engine.block_on(engine.close_network(DashNetwork::Regtest))).unwrap();
+    arm(&appdb, false);
+    let session = open(&engine);
+    let s = Arc::clone(&session);
+    (engine.block_on(async move { record_presence(&s, wallet, st_hash(1), 100).await })).unwrap();
+    drop(session);
+    (engine.block_on(engine.close_network(DashNetwork::Regtest))).unwrap();
+    power_loss(&appdb);
+
+    let session = open(&engine);
+    let s = Arc::clone(&session);
+    let kept = engine.block_on(async move { presence(&s, wallet, st_hash(1)).await });
+    assert_eq!(kept, Some(Some(100)));
+
+    let (s, scope) = (
+        Arc::clone(&session),
+        dw_appdb::local_scope(&wallet.to_string()),
+    );
+    let key = format!("shielded_anchor_recorded/{}", hex::encode(st_hash(2)));
+    (engine.block_on(s.appdb_op(move |db| db.set_setting(&scope, &key, Some("x"))))).unwrap();
+    let s = Arc::clone(&session);
+    let garbled = engine.block_on(async move { record_presence(&s, wallet, st_hash(2), 5).await });
+    assert!(garbled.is_err(), "{garbled:?}");
 }
 
 /// An anchors read one block behind (the SDK's height tolerance) can be
