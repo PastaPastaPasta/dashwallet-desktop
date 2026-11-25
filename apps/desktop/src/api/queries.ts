@@ -176,7 +176,7 @@ export const PENDING_MOVE_REFETCH_MS = 30_000;
 // A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
 // within minutes: look again.
 export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
-  hasPendingMove(data) || data?.some((a) => a.kind === "fromCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
+  hasPendingMove(data) || data?.some((a) => (a.kind === "fromCore" || a.kind === "recovered") && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
