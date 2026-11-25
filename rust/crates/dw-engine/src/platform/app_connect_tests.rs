@@ -135,6 +135,9 @@ pub(crate) struct FakeConnect {
     /// Updates are accepted but never land.
     lose_updates: AtomicBool,
     refuse_update: Mutex<Option<PlatformError>>,
+    /// The library builds an update from its cached identity. Platform
+    /// refuses one built before the last refresh, as its revision is old.
+    refreshed: AtomicBool,
 }
 
 impl FakeConnect {
@@ -179,6 +182,7 @@ impl FakeConnect {
             stale: Mutex::default(),
             lose_updates: AtomicBool::new(false),
             refuse_update: Mutex::default(),
+            refreshed: AtomicBool::new(false),
         }
     }
 
@@ -252,6 +256,7 @@ impl ConnectNet for FakeConnect {
 
     async fn refresh(&self, _: &PlatformWallet, id: Identifier) -> Result<Identity, PlatformError> {
         self.read("refresh");
+        self.refreshed.store(true, Ordering::SeqCst);
         let found = (self.stale.lock().unwrap().clone())
             .or_else(|| self.identities.lock().unwrap().get(&id).cloned());
         found.ok_or(PlatformError::Unavailable)
@@ -285,6 +290,11 @@ impl ConnectNet for FakeConnect {
             .await
             .map_err(|_| PlatformError::SignerUnavailable)?;
         self.signed.lock().unwrap().push(master.id());
+        if !self.refreshed.swap(false, Ordering::SeqCst) {
+            return Err(PlatformError::Internal {
+                detail: "Failed to broadcast identity update".into(),
+            });
+        }
         if let Some(e) = self.refuse_update.lock().unwrap().take() {
             return Err(e);
         }
