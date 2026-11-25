@@ -4114,24 +4114,30 @@ fn imported(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
 /// before each pass's library pass, so a release or a scan in the pass
 /// finds them: [`keep_import_row`] for each open artifact, and
 /// [`keep_settled_import_row`] for each settled one, for those the store
-/// has no row of. Nothing while the journal is not open, or while the
-/// artifacts cannot be read.
+/// has no row of. `false` when the artifacts cannot be read or a row was
+/// not kept while the library holds a spend with no row
+/// ([`holds_rowless`]): a release or a scan of it in the pass would leave
+/// no row to read its outcome by ([`spend_outcome`]), nor to hold its freed
+/// notes from a new spend ([`undecided_import_note`]), so the pass holds
+/// back (#931). A spend with a row keeps it for the session. `true` while
+/// the journal is not open: no spend is accepted then, every artifact
+/// write refusing.
 pub(crate) async fn keep_import_rows(
     session: &NetworkSession,
     coordinator: &NetworkShieldedCoordinator,
     wallet: WalletId,
-) {
+) -> bool {
     if !session.leases.journal_ready() {
-        return;
+        return true;
     }
+    let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
     let artifacts = match session.leases.shielded_artifacts(wallet).await {
         Ok(artifacts) => artifacts,
         Err(e) => {
             tracing::warn!(wallet_id = %wallet, error = %e, "the shielded artifacts could not be read");
-            return;
+            return !holds_rowless(&*coordinator.store().read().await, subwallet);
         }
     };
-    let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
     let rowless: Vec<_> = {
         let store = coordinator.store().read().await;
         (artifacts.iter())
@@ -4145,8 +4151,9 @@ pub(crate) async fn keep_import_rows(
             .collect()
     };
     if rowless.is_empty() {
-        return;
+        return true;
     }
+    let mut kept_all = true;
     let mut store = coordinator.store().write().await;
     for artifact in rowless {
         let kept = if imported(artifact) {
@@ -4161,7 +4168,27 @@ pub(crate) async fn keep_import_rows(
                 error = %e,
                 "an imported shielded spend's history row was not kept"
             );
+            kept_all = false;
         }
+    }
+    kept_all || !holds_rowless(&*store, subwallet)
+}
+
+/// Whether the library holds a record or a reserved note whose activity
+/// has no history row, or what it holds cannot be read: the spends a pass
+/// could release or drop with no row to read their outcome by.
+fn holds_rowless<S: ShieldedStore>(store: &S, subwallet: SubwalletId) -> bool {
+    let rowless =
+        |a: &[u8; 32]| !matches!(store.get_activity_by_entry_id(subwallet, a), Ok(Some(_)));
+    match (
+        store.pending_redrives(subwallet),
+        store.stale_pending_spends(subwallet),
+    ) {
+        (Ok(records), Ok(reserved)) => {
+            records.iter().any(|r| rowless(&r.activity_id))
+                || (reserved.iter()).any(|(_, _, a, _)| a.as_ref().is_some_and(rowless))
+        }
+        _ => true,
     }
 }
 
@@ -4670,8 +4697,10 @@ pub(crate) async fn periodic_pass(
 }
 
 /// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
-/// are taken and again as the library's pass starts; a periodic one's proved
-/// note `count`, with the time it was proved at, may skip it.
+/// are taken and again as the library's pass starts, and while imported
+/// spends' history rows cannot be kept and the library holds a spend with
+/// no row ([`keep_import_rows`]); a periodic one's proved note `count`,
+/// with the time it was proved at, may skip it.
 async fn pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
@@ -4710,8 +4739,15 @@ async fn pass(
             let _ = pause.resume.await;
         }
     }
+    let mut kept = true;
     for wallet in pass_wallets(manager, &coordinator).await {
-        keep_import_rows(session, &coordinator, WalletId(wallet)).await;
+        kept &= keep_import_rows(session, &coordinator, WalletId(wallet)).await;
+    }
+    if !kept {
+        tracing::warn!(
+            "imported shielded spends' history rows could not be kept; the sync pass is held back"
+        );
+        return false;
     }
     if let Some((count, proved_at)) = count
         && pool_is_idle(session, manager, &coordinator, count)
