@@ -1,12 +1,13 @@
 //! Q107: a start that finds the store upgraded never refuses for a snapshot
-//! reason (107-1) and offers no way out that needs the earlier data (107-2).
+//! reason (107-1), offers no way out that needs the earlier data (107-2),
+//! and never retires a snapshot while a restore owns `upgrade-backups/`.
 
 use super::review_fixes::column_present;
 use super::*;
 use crate::copy::{ProvedState, RefusedCause, WayOut};
 use crate::error::StoreUpgradeError;
 use crate::reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
-use crate::restore::{RESTORE_REQUESTED, RefusalCause};
+use crate::restore::{RESTORE_JOURNAL, RESTORE_REQUESTED, RefusalCause};
 use crate::snapshot::{
     NOT_THIS_WALLET, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state,
 };
@@ -235,4 +236,34 @@ fn failing_opens_never_stack_upgrade_copies() {
     start_opens(&f, None, false);
     assert_eq!(named(&f, "part-upgraded-").len(), 1);
     assert_plain_reopen(&f);
+}
+
+#[test]
+fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
+    let (f, s) = failed_open();
+    exec(
+        &f.wallet(),
+        "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)",
+    );
+    let journal = f.net.join(UPGRADE_BACKUPS_DIR).join(RESTORE_JOURNAL);
+    fs::write(&journal, b"not a journal\n").unwrap();
+    let before = tree(s.dir());
+
+    let err = crate::snapshot::take_snapshot(&f.net, later(60)).unwrap_err();
+    assert!(
+        matches!(err, StoreUpgradeError::RestorePending { .. }),
+        "{err:?}"
+    );
+    assert_eq!(tree(s.dir()), before);
+
+    crate::token::reset_opened_for_test();
+    let ordered = format!(
+        "{:?}",
+        crate::restore::run_pending_restore(&f.net, later(60)).unwrap_err()
+    );
+    let started = start(&f, later(60)).unwrap_err();
+    assert_eq!(format!("{started:?}"), ordered, "the restore goes first");
+    assert!(!s.dir().join(NOT_THIS_WALLET).exists());
+    assert_eq!(tree(s.dir()), before);
+    assert!(journal.exists());
 }
