@@ -2751,6 +2751,14 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 - `platform.restored` (Contract-Version 90, the R3 restore's money gate): while the network's restored mark is set,
   every lease whose flow moves funds is refused before it begins, its grants unused. The mark clears at the first full
   sync after the restore; profile, contact, DashPay-key and voting flows are not refused.
+  Contract-Version 91: a mark cleared in a session without Platform leaves a Platform residue
+  (`upgrade-backups/PLATFORM_PENDING`, written before the mark goes). While it is present, or does not read, every
+  flow that moves Platform funds (identity, name, Platform-address, shield, shielded, evonode credit and balance-paid
+  contact flows) is refused the same way, at its lease and at each call that signs without one; the evonode
+  withdrawal's calls are refused (as while the mark is present, mn-engine version 32), and the asset-lock resume and
+  the background withdrawal recheck wait. Core funds are not, nor is accepting a contact request and paying it from
+  Core. It clears in a session with Platform once the masternode list has synced, a clean Platform-address pass and
+  the shielded pass have completed and that session's drop-dead pass has run.
 - `platform.unavailable` (Contract-Version 91) in a session without Platform: every funds flow that needs Platform is
   refused with it before any grant is redeemed or any lease, record or signature made (`LeaseError::PlatformUnavailable`
   at its lease), whatever the restore's state; it takes precedence over `platform.restored`. The evonode credit
@@ -2819,6 +2827,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   | `LeaseError::Parked` or `NeedsGrant`: the flow needs a fresh grant (its own key passed `key_until`, an unlock, a scope or passphrase change, a budget at 0, or a lease without the call's purpose) | `platform.needs_grant{purpose}` |
   | a budget refusal: the charge does not fit | `platform.grant_exceeded{purpose, needed, remaining}` |
   | an unknown, used or other-wallet grant or lease id | `platform.grant_invalid` |
+  | `LeaseError::Restored`: a funds flow while the restore's mark, or for a flow that moves Platform funds its Platform residue, is present | `platform.restored` |
   | `LeaseError::PlatformUnavailable`: a funds flow that needs Platform in a session without Platform | `platform.unavailable` |
   | the dispatch journal is unavailable, or its schema is newer (E0-04 §6.4) | `storage`, with `Notice{DispatchJournalUnavailable}` |
 

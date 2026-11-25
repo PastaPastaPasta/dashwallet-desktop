@@ -2919,8 +2919,16 @@ fn the_open_network_says_whether_its_data_was_restored() {
 }
 
 /// A mainnet window opened with Platform on a network a restore left
-/// restored (its mark written while it was closed).
+/// restored (its mark written while it was closed), with one wallet.
 fn restored_mainnet() -> Demo {
+    let demo = restored_mainnet_without_wallet();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    demo
+}
+
+/// [`restored_mainnet`] with no wallet: nothing restored yet.
+fn restored_mainnet_without_wallet() -> Demo {
     let demo = launched_on_mainnet();
     if let Some(endpoints) = demo.state().test_endpoints.lock().unwrap().as_mut() {
         endpoints.no_platform = false;
@@ -2953,13 +2961,12 @@ fn restore_waits_for(demo: &Demo, wait: &str) -> bool {
 fn finishing_without_platform_reopens_the_network_with_platform_off() {
     let demo = restored_mainnet();
     assert!(restore_waits_for(&demo, "platformPass"));
+    assert_eq!(demo.ok("restore_status", json!({}))["platformOnly"], false);
     let opened = demo.ok("finish_without_platform", json!({}));
     assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
     assert_eq!(demo.active(), "mainnet");
-    assert_eq!(
-        demo.ok("restore_status", json!({}))["waiting"],
-        json!(["coreSync"])
-    );
+    assert!(restore_waits_for(&demo, "coreSync"));
+    assert!(!restore_waits_for(&demo, "platformPass"));
     assert_eq!(demo.ok("restore_retry", json!({})), Value::Null);
     assert_eq!(demo.ok("close_network", json!({})), true);
     demo.ok("open_network", json!({}));
@@ -3023,6 +3030,58 @@ fn a_failed_open_without_platform_rolls_back() {
     assert!(
         restore_waits_for(&demo, "platformPass"),
         "the rollback opened without Platform"
+    );
+}
+
+/// C6: with Core's gate open and only Platform's check left (a finish
+/// without Platform earlier), the status names Platform alone and finishing
+/// without Platform again keeps the session as it is.
+#[test]
+fn finishing_without_platform_with_only_platform_left_does_nothing() {
+    let demo = launched_on_mainnet();
+    if let Some(endpoints) = demo.state().test_endpoints.lock().unwrap().as_mut() {
+        endpoints.no_platform = false;
+    }
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    demo.ok("create_wallet", json!({ "wordCount": 12 }));
+    assert_eq!(demo.ok("close_network", json!({})), true);
+    let dir = demo.data_root().join("mainnet").join("upgrade-backups");
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(dir.join("PLATFORM_PENDING"), "platform-pending\n").unwrap();
+    demo.ok("open_network", json!({}));
+    let status = demo.ok("restore_status", json!({}));
+    assert_eq!(status["platformOnly"], true, "{status}");
+    assert_eq!(status["waiting"], json!(["platformPass"]), "{status}");
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let opened = demo.ok("finish_without_platform", json!({}));
+    assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
+    drop(in_flight);
+    assert_eq!(demo.ok("restore_status", json!({}))["platformOnly"], true);
+}
+
+/// Q107: with no wallet open there is nothing restored to check, so the
+/// gate waits for one and finishing without Platform keeps the session as
+/// it is.
+#[test]
+fn finishing_without_platform_with_no_wallet_does_nothing() {
+    let demo = restored_mainnet_without_wallet();
+    assert!(restore_waits_for(&demo, "wallet"));
+    assert!(restore_waits_for(&demo, "platformPass"));
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let opened = demo.ok("finish_without_platform", json!({}));
+    assert_eq!(opened["network"]["dirName"], "mainnet", "{opened}");
+    drop(in_flight);
+    assert!(
+        restore_waits_for(&demo, "platformPass"),
+        "Platform went off"
     );
 }
 

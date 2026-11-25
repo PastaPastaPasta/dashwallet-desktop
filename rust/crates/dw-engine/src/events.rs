@@ -1974,7 +1974,7 @@ impl EventHandler for SessionHub {
         }
         if changed {
             self.pump.mark_sync();
-            if self.restore.is_restored() {
+            if self.restore.platform_held() {
                 self.restore.wake.notify_one();
             }
         }

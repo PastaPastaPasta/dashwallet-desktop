@@ -985,7 +985,7 @@ fn without_platform_the_mark_clears_on_core_and_the_loads() {
     session.hub.restore.wake.notify_one();
     eventually("the mark clears without Platform", || !session.restored());
     assert!(!mark_present(&session));
-    assert_eq!(waiting(&engine, &session), None);
+    assert_eq!(waiting(&engine, &session), Some(vec![PlatformPass]));
     let session = reopen_with(&engine, session, false);
     assert!(!session.restored(), "the gate closed again");
     assert!(
@@ -1016,6 +1016,325 @@ fn a_mark_gone_outside_the_clear_ends_the_watcher_once() {
         restore.cleared_runs.load(SeqCst),
         1,
         "the watcher kept running"
+    );
+}
+
+/// [`held_payment`] on an engine whose events are kept.
+fn recorded_held_payment() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Arc<super::Recorder>,
+) {
+    use super::own_spend_disk_tests::{COINS, FUNDED_AT, foreign, fresh_address, funding};
+    let (dir, engine, session, id, recorder) = super::engine_wallet_recorded();
+    mined(&engine, &session, id, FUNDED_AT, vec![foreign()]);
+    let to: Vec<_> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let paid = funding(7, &to, COIN);
+    mempool(&engine, &session, id, &paid);
+    instant_lock(&engine, &session, id, &paid);
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = restored(&engine, session, &[]);
+    assert!(holds(&session, id).contains_key(&p.txid()));
+    (dir, engine, session, id, paid, recorder)
+}
+
+fn residue_present(session: &NetworkSession) -> bool {
+    mark_dir(session).join("PLATFORM_PENDING").exists()
+}
+
+/// Opened without Platform with Core caught up: the mark clears and leaves
+/// the Platform residue.
+fn finished_without_platform(engine: &Engine, session: Arc<NetworkSession>) -> Arc<NetworkSession> {
+    let session = reopen_with(engine, session, true);
+    *session.hub.restore.core_synced.lock().unwrap() = Some(true);
+    session.hub.restore.wake.notify_one();
+    eventually("the mark clears without Platform", || !session.restored());
+    assert!(!mark_present(&session), "the mark stayed");
+    assert!(residue_present(&session), "no Platform residue");
+    session
+}
+
+/// C6: after a finish without Platform, a session with Platform offers a
+/// Core send but refuses a Shield lease, keeps the asset-lock resume and
+/// the masternode withdrawals' recheck waiting, and names Platform's pass
+/// alone, until Platform is checked and its own drop-dead pass ran; then
+/// the residue is gone and they run.
+#[test]
+fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
+    use crate::RestoreWait::PlatformPass;
+    use crate::masternodes::WithdrawalKeyChoice;
+    use crate::platform::lease::resume::{Resumed, Resumer};
+    use crate::platform::{FlowKind, LeaseError, WithdrawAmount};
+    use dw_vault::{Credential, GrantKind, GrantPurpose};
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, id, paid, recorder) = recorded_held_payment();
+    let session = finished_without_platform(&engine, session);
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(status.platform_only, "{status:?}");
+    assert_eq!(status.waiting, [PlatformPass]);
+    let dead = Txid::from_byte_array([0x26; 32]);
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), &format!("dropped:{dead}"), Some(""))
+        .unwrap();
+    let session = reopen_with(&engine, session, false);
+    let restore = &session.hub.restore;
+    assert!(!session.restored() && residue_present(&session));
+    let b = OutPoint::new(paid.txid(), 1);
+    let accept = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (_draft, prepared) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![b]),
+        COIN / 2,
+        false,
+        &accept,
+    );
+    assert!(prepared.is_ok(), "a Core send: {:?}", prepared.err());
+    let shield = engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(
+        matches!(shield, Err(LeaseError::Restored)),
+        "{:?}",
+        shield.err()
+    );
+    let tracked = crate::platform::lease::mode_b::SessionTracked {
+        session: Arc::downgrade(&session),
+    };
+    let txid = Txid::from_byte_array([0x31; 32]);
+    assert_eq!(engine.block_on(tracked.resume(id, txid)), Resumed::NotRun);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(restore.recheck_runs.load(SeqCst), 0, "the recheck ran");
+    let status = engine.block_on(session.restore_status()).unwrap().unwrap();
+    assert!(
+        status.platform_only && status.history_wallets.is_empty(),
+        "{status:?}"
+    );
+    assert_eq!(status.waiting, [PlatformPass]);
+    assert!(residue_present(&session), "the residue cleared unchecked");
+    let grant = || {
+        let purpose = GrantPurpose::PlatformOp {
+            max_duffs: COIN,
+            max_credits: COIN * 1000,
+        };
+        (session
+            .vault()
+            .authorize(purpose, Some(&id.0), Credential::None))
+        .unwrap()
+        .id
+    };
+    let dp = session.dashpay(id);
+    let (g1, g2, g3) = (grant(), grant(), grant());
+    let codes = [
+        engine
+            .block_on(dp.platform_send("op".into(), g1.clone()))
+            .err()
+            .map(|e| e.code()),
+        engine
+            .block_on(dp.shielded_send("x".into(), 1000, None, g2.clone(), false))
+            .err()
+            .map(|e| e.code()),
+        engine
+            .block_on(session.masternodes().withdraw_credits(
+                id,
+                "22".repeat(32),
+                WithdrawalKeyChoice::Owner,
+                WithdrawAmount::Credits { credits: 100_000 },
+                None,
+                g3.clone(),
+            ))
+            .err()
+            .map(|e| e.code()),
+        engine
+            .block_on(session.masternodes().recheck_withdrawal("33".repeat(16)))
+            .err()
+            .map(|e| e.code()),
+    ];
+    assert_eq!(codes, [Some("platform.restored"); 4]);
+    for g in [&g1, &g2, &g3] {
+        assert!(
+            session
+                .vault()
+                .grant_purpose(g, GrantKind::PlatformOp, Some(&id.0))
+                .is_ok(),
+            "a grant was redeemed"
+        );
+    }
+    let accept = engine.block_on(session.begin_lease(id, FlowKind::AcceptAndPay, &[]));
+    assert!(
+        !matches!(accept, Err(LeaseError::Restored)),
+        "{:?}",
+        accept.err()
+    );
+    drop(accept);
+    let from = recorder.len();
+    all_synced(&session);
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(
+        recorder.wait_for(from, |e| matches!(e, crate::EngineEvent::Sync { .. })),
+        "no sync event for the panel"
+    );
+    assert_eq!(
+        restore.pass_runs.lock().unwrap().as_slice(),
+        [(id, BTreeSet::from([dead]))],
+        "the clear ran its own drop-dead pass"
+    );
+    eventually("what waited runs", || {
+        restore.cleared_runs.load(SeqCst) == 1
+    });
+    assert_eq!(engine.block_on(session.restore_status()).unwrap(), None);
+    let shield = engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(
+        !matches!(shield, Err(LeaseError::Restored)),
+        "{:?}",
+        shield.err()
+    );
+    assert_eq!(engine.block_on(tracked.resume(id, txid)), Resumed::Ran);
+    let session = reopen_with(&engine, session, false);
+    eventually("the recheck runs", || {
+        session.hub.restore.recheck_runs.load(SeqCst) > 0
+    });
+}
+
+/// C6: a residue that does not read, or a gate without its dir, reads
+/// present.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_residue_reads_present() {
+    use crate::platform::{FlowKind, LeaseError};
+    assert!(crate::restore_gate::RestoreGate::default().platform_pending());
+    let (_dir, engine, session, id, _paid, _p) = held_payment();
+    cleared(&session);
+    assert!(!session.hub.restore.platform_held());
+    let dir = mark_dir(&session);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::write(&dir, b"").unwrap();
+    assert!(
+        session.hub.restore.platform_pending(),
+        "an unreadable residue reads absent"
+    );
+    let shield = engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(
+        matches!(shield, Err(LeaseError::Restored)),
+        "{:?}",
+        shield.err()
+    );
+}
+
+/// C6: a stop after the residue's write and before the mark's clear leaves
+/// both, so a session with Platform opens with Core's gate and Platform's
+/// closed.
+#[test]
+fn a_stop_between_the_residue_and_the_clear_leaves_both_gates_closed() {
+    use crate::platform::{FlowKind, LeaseError};
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, id, _paid, _p) = held_payment();
+    let session = reopen_with(&engine, session, true);
+    let restore = &session.hub.restore;
+    restore.clear_fails.store(u32::MAX, SeqCst);
+    *restore.backoff.lock().unwrap() = Some(std::time::Duration::from_secs(600));
+    *restore.core_synced.lock().unwrap() = Some(true);
+    restore.wake.notify_one();
+    eventually("the clear fails", || {
+        restore.clear_attempts.load(SeqCst) == 1
+    });
+    assert!(session.restored() && mark_present(&session));
+    assert!(residue_present(&session), "no residue before the clear");
+    let session = reopen_with(&engine, session, false);
+    assert!(session.restored() && session.hub.restore.platform_pending());
+    assert!(matches!(
+        session.refuse_while_restored(),
+        Err(EngineError::Restored)
+    ));
+    let shield = engine.block_on(session.begin_lease(id, FlowKind::Shield, &[]));
+    assert!(
+        matches!(shield, Err(LeaseError::Restored)),
+        "{:?}",
+        shield.err()
+    );
+}
+
+/// C6: a residue that does not write keeps the mark; the next try writes
+/// it and clears.
+#[test]
+fn a_residue_that_does_not_write_keeps_the_mark() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, _id, _paid, _p) = held_payment();
+    let session = reopen_with(&engine, session, true);
+    let restore = &session.hub.restore;
+    restore.residue_fails.store(1, SeqCst);
+    *restore.backoff.lock().unwrap() = Some(std::time::Duration::from_secs(600));
+    *restore.core_synced.lock().unwrap() = Some(true);
+    restore.wake.notify_one();
+    eventually("the residue's write fails", || {
+        engine
+            .block_on(session.restore_status())
+            .unwrap()
+            .is_some_and(|s| s.clear_failed)
+    });
+    assert!(
+        session.restored() && mark_present(&session),
+        "the mark cleared"
+    );
+    assert!(!residue_present(&session));
+    engine.block_on(session.restore_retry()).unwrap();
+    eventually("the retry clears", || !session.restored());
+    assert!(!mark_present(&session) && residue_present(&session));
+    eventually("the failure is no longer shown", || {
+        engine
+            .block_on(session.restore_status())
+            .unwrap()
+            .is_some_and(|s| s.platform_only && !s.clear_failed)
+    });
+}
+
+/// In a session without Platform, a mark gone outside the clear while the
+/// Platform residue stays opens Core once and ends the watcher; the
+/// residue stays for a session with Platform.
+#[test]
+fn without_platform_a_mark_gone_beside_the_residue_ends_the_watcher_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, _id, _paid, _p) = held_payment();
+    let session = reopen_with(&engine, session, true);
+    let restore = &session.hub.restore;
+    let before = restore.cleared_runs.load(SeqCst);
+    std::fs::write(
+        mark_dir(&session).join("PLATFORM_PENDING"),
+        "platform-pending\n",
+    )
+    .unwrap();
+    std::fs::remove_file(mark_dir(&session).join("RESTORED")).unwrap();
+    assert!(!session.restored() && residue_present(&session));
+    restore.wake.notify_one();
+    eventually("the watcher lets what waited run", || {
+        restore.cleared_runs.load(SeqCst) == before + 1
+    });
+    for _ in 0..5 {
+        restore.wake.notify_one();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(
+        restore.cleared_runs.load(SeqCst),
+        before + 1,
+        "the watcher kept running"
+    );
+    assert!(
+        residue_present(&session),
+        "the residue cleared without Platform"
     );
 }
 
@@ -1059,7 +1378,7 @@ fn without_platform_every_platform_funds_flow_is_refused_up_front() {
     use dw_vault::{Credential, GrantKind, GrantPurpose};
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let session = reopen_with(&engine, session, true);
-    assert!(!session.restored());
+    assert!(!session.restored() && !session.hub.restore.platform_held());
     std::thread::sleep(std::time::Duration::from_secs(1));
     let rows = table_rows(&session);
     let grant = || {
@@ -1282,4 +1601,94 @@ fn without_platform_every_platform_funds_flow_is_refused_up_front() {
         &accept,
     );
     assert!(prepared.is_ok(), "a Core send: {:?}", prepared.err());
+}
+
+/// A real engine and offline regtest session with a vault and no wallet.
+fn engine_without_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>) {
+    use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::new(
+        crate::EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(2),
+            vault: VaultConfig {
+                kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                os_store: Arc::new(MemoryOsStore::new()),
+                ..Default::default()
+            },
+        },
+        Arc::new(super::Recorder::default()) as Arc<dyn crate::EventSink>,
+    )
+    .unwrap();
+    let session = super::open(&engine);
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+    (dir, engine, session)
+}
+
+fn import(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
+    engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(super::PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(super::BIRTH),
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+}
+
+/// Q107: a restored network with no wallet (a recovery's fresh folder)
+/// keeps its mark with Core, Platform and the passes done, and names the
+/// wallet it waits for; once a wallet is loaded (here imported, then
+/// opened again so its load builds the holds) the mark clears.
+#[test]
+fn the_mark_stays_while_the_network_has_no_wallet() {
+    use crate::RestoreWait::Wallet;
+    let (_dir, engine, session) = engine_without_wallet();
+    let session = restored_with(&engine, session, "");
+    all_synced(&session);
+    eventually("only a wallet is waited for", || {
+        waiting(&engine, &session) == Some(vec![Wallet])
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        session.restored() && mark_present(&session),
+        "the mark cleared with no wallet"
+    );
+    let id = import(&engine, &session);
+    let session = reopen(&engine, session);
+    assert!(session.restored(), "the reopen cleared the mark");
+    all_synced(&session);
+    eventually("the mark clears", || !session.restored());
+    assert!(!mark_present(&session));
+    assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
+}
+
+/// Q107 with C6: the Platform residue of a network with no wallet stays
+/// once Platform is checked, and names the wallet; once a wallet is
+/// loaded, it clears.
+#[test]
+fn the_platform_residue_stays_while_the_network_has_no_wallet() {
+    use crate::RestoreWait::Wallet;
+    let (_dir, engine, session) = engine_without_wallet();
+    let dir = mark_dir(&session);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PLATFORM_PENDING"), "platform-pending\n").unwrap();
+    let session = reopen(&engine, session);
+    assert!(!session.restored() && residue_present(&session));
+    all_synced(&session);
+    eventually("only a wallet is waited for", || {
+        waiting(&engine, &session) == Some(vec![Wallet])
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        residue_present(&session),
+        "the residue cleared with no wallet"
+    );
+    import(&engine, &session);
+    session.hub.restore.wake.notify_one();
+    eventually("the residue clears", || !residue_present(&session));
 }

@@ -249,10 +249,14 @@ pub struct RestoreStatus {
     pub waiting: Vec<RestoreWait>,
     /// The loaded wallets whose history has not loaded (`historyLoad`).
     pub history_wallets: Vec<String>,
-    /// The last attempt to open the gate failed reading or writing its
-    /// mark; it is tried again after a growing delay, at once on
-    /// `restoreRetry`.
+    /// The last attempt to clear failed (the mark did not read or write,
+    /// the dropped records did not read, or the session was closing); it
+    /// is tried again after a growing delay, at once on `restoreRetry`.
     pub clear_failed: bool,
+    /// Core's gate is open, and only Platform's check after a finish
+    /// without Platform is waited for: Platform and Shielded funds actions
+    /// stay refused until a session with Platform has checked them.
+    pub platform_only: bool,
 }
 
 /// One thing a restored network waits for.
@@ -261,14 +265,20 @@ pub struct RestoreStatus {
 pub enum RestoreWait {
     /// Core has not caught up with the network.
     CoreSync,
-    /// Platform's first check since the network opened has not completed;
-    /// a network opened with `noPlatform` never waits for it.
+    /// Platform's first check since the network opened has not completed.
+    /// A network opened with `noPlatform` waits for it only for what a
+    /// finish without Platform left (`platformOnly`): a session with
+    /// Platform checks it.
     PlatformPass,
     /// A wallet's history has not loaded.
     HistoryLoad,
+    /// No wallet is open on the network (a recovery's new folder before
+    /// its wallets are restored, or every wallet closed): the gate waits
+    /// for one.
+    Wallet,
 }
 
-mirror_enum!(dw_engine::RestoreWait => RestoreWait { CoreSync, PlatformPass, HistoryLoad });
+mirror_enum!(dw_engine::RestoreWait => RestoreWait { CoreSync, PlatformPass, HistoryLoad, Wallet });
 
 impl From<dw_engine::RestoreStatus> for RestoreStatus {
     fn from(s: dw_engine::RestoreStatus) -> Self {
@@ -276,6 +286,7 @@ impl From<dw_engine::RestoreStatus> for RestoreStatus {
             waiting: s.waiting.into_iter().map(Into::into).collect(),
             history_wallets: s.history_wallets.iter().map(ToString::to_string).collect(),
             clear_failed: s.clear_failed,
+            platform_only: s.platform_only,
         }
     }
 }
@@ -450,8 +461,10 @@ commands! {
     /// Platform. Without Platform the restore's gate opens once Core has
     /// caught up and every wallet's history has loaded. While the gate is
     /// open, or does not wait for Platform (the network already runs
-    /// without it, or only Core or a history load is waited for), it does
-    /// nothing and returns the active network. A
+    /// without it, or only Core or a history load is waited for), or only
+    /// Platform's check is left (`platformOnly`), or no wallet is open
+    /// (`wallet`: nothing restored to check), it does nothing and
+    /// returns the active network. A
     /// failed open reopens the network with Platform and is
     /// `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
     /// `rolledBack` false when that failed too, the window then without a
@@ -467,8 +480,11 @@ commands! {
             return Err(AppError::new(EngineCode::NetworkNotOpen, "call open_network first"));
         };
         let network = session.network().clone();
-        let waits_for_platform = (session.restore_status().await?)
-            .is_some_and(|s| s.waiting.contains(&dw_engine::RestoreWait::PlatformPass));
+        let waits_for_platform = (session.restore_status().await?).is_some_and(|s| {
+            !s.platform_only
+                && s.waiting.contains(&dw_engine::RestoreWait::PlatformPass)
+                && !s.waiting.contains(&dw_engine::RestoreWait::Wallet)
+        });
         if !waits_for_platform {
             return Ok(OpenedNetwork::of(&session, NetworkInfo::opened(&session)));
         }

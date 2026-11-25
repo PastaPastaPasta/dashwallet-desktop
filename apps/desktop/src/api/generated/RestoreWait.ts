@@ -3,4 +3,4 @@
 /**
  * One thing a restored network waits for.
  */
-export type RestoreWait = "coreSync" | "platformPass" | "historyLoad";
+export type RestoreWait = "coreSync" | "platformPass" | "historyLoad" | "wallet";

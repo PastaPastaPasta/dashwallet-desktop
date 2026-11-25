@@ -14,8 +14,14 @@ waiting: Array<RestoreWait>,
  */
 historyWallets: Array<string>,
 /**
- * The last attempt to open the gate failed reading or writing its
- * mark; it is tried again after a growing delay, at once on
- * `restoreRetry`.
+ * The last attempt to clear failed (the mark did not read or write,
+ * the dropped records did not read, or the session was closing); it
+ * is tried again after a growing delay, at once on `restoreRetry`.
  */
-clearFailed: boolean, };
+clearFailed: boolean,
+/**
+ * Core's gate is open, and only Platform's check after a finish
+ * without Platform is waited for: Platform and Shielded funds actions
+ * stay refused until a session with Platform has checked them.
+ */
+platformOnly: boolean, };

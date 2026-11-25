@@ -11,6 +11,13 @@
 //! as whatever ends P: its block, a sweep, an abandon or a drop (H2). The
 //! mark clears at the first all-Synced once a drop-dead pass started after
 //! it has completed (H4).
+//!
+//! A mark cleared in a session without Platform leaves
+//! `upgrade-backups/PLATFORM_PENDING` (C6), written before the mark goes:
+//! while it is present, funds actions that need Platform are refused
+//! (`platform.restored`), and the asset-lock resume and the masternode
+//! withdrawals' recheck wait, until a session with Platform has checked it
+//! and run its own drop-dead pass. Core is not gated by it.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -39,6 +46,22 @@ const WATCH_EVERY: Duration = Duration::from_secs(2);
 /// The longest a failed clear waits before the next attempt.
 const CLEAR_BACKOFF_MAX: Duration = Duration::from_secs(60);
 
+/// The Platform-pending residue, beside the restored mark.
+const PLATFORM_PENDING: &str = "PLATFORM_PENDING";
+
+fn residue_path(network_dir: &Path) -> PathBuf {
+    (network_dir.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR)).join(PLATFORM_PENDING)
+}
+
+/// Makes the directory's entries durable.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// What a restored network waits for before its money gate opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreStatus {
@@ -51,6 +74,9 @@ pub struct RestoreStatus {
     /// is tried again after a growing delay, at once on
     /// [`NetworkSession::restore_retry`].
     pub clear_failed: bool,
+    /// Core's gate is open: only Platform's check after a Platform-off
+    /// finish is waited for.
+    pub platform_only: bool,
 }
 
 /// One thing a restored network waits for.
@@ -63,6 +89,9 @@ pub enum RestoreWait {
     PlatformPass,
     /// A loaded wallet's history has not loaded.
     HistoryLoad,
+    /// No wallet is loaded (a recovery's new folder before its wallets
+    /// are restored, or every wallet closed): the gate waits for one.
+    Wallet,
 }
 
 /// The network's RESTORED state: its mark, read where it lives.
@@ -115,6 +144,9 @@ pub(crate) struct RestoreGate {
     /// Tests: how many times what waited for the gate was let run.
     #[cfg(test)]
     pub(crate) cleared_runs: std::sync::atomic::AtomicU32,
+    /// Tests: this many writes of the Platform residue fail.
+    #[cfg(test)]
+    pub(crate) residue_fails: std::sync::atomic::AtomicU32,
 }
 
 impl RestoreGate {
@@ -123,6 +155,55 @@ impl RestoreGate {
     /// network's dir is set.
     pub(crate) fn is_restored(&self) -> bool {
         (self.network_dir.get()).is_none_or(|d| dw_store_upgrade::restored_mark_present(d))
+    }
+
+    /// Whether the Platform-pending residue is present: a mark cleared
+    /// without Platform. Present before the network's dir is set and when
+    /// it does not read.
+    pub(crate) fn platform_pending(&self) -> bool {
+        (self.network_dir.get()).is_none_or(|d| {
+            !std::fs::symlink_metadata(residue_path(d))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        })
+    }
+
+    /// Funds actions that need Platform wait: the mark or the residue.
+    pub(crate) fn platform_held(&self) -> bool {
+        self.is_restored() || self.platform_pending()
+    }
+
+    /// Writes the residue durably, its directory's entry included.
+    fn write_residue(&self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if (self.residue_fails)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(std::io::Error::other("the residue did not write"));
+        }
+        let dir = self
+            .network_dir
+            .get()
+            .ok_or_else(|| std::io::Error::other("the network's dir is not set"))?;
+        let path = residue_path(dir);
+        let mut file = std::fs::File::create(&path)?;
+        std::io::Write::write_all(&mut file, b"platform-pending\n")?;
+        file.sync_all()?;
+        sync_dir(path.parent().unwrap_or(dir))
+    }
+
+    /// Removes the residue durably; one already gone is no error.
+    fn remove_residue(&self) -> std::io::Result<()> {
+        let dir = self
+            .network_dir
+            .get()
+            .ok_or_else(|| std::io::Error::other("the network's dir is not set"))?;
+        let path = residue_path(dir);
+        match std::fs::remove_file(&path) {
+            Ok(()) => sync_dir(path.parent().unwrap_or(dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Where the network's mark lives; set as the session opens, before
@@ -471,10 +552,14 @@ impl NetworkSession {
 
     /// A funds action that needs Platform, before any grant, lease,
     /// intent, journal row or signature: `platform.unavailable` in a
-    /// session without Platform (C7).
+    /// session without Platform (C7), else `platform.restored` while the
+    /// restored mark or its Platform residue is present (C6).
     pub(crate) fn refuse_platform_funds(&self) -> Result<(), crate::platform::PlatformError> {
-        match self.platform.funds_off() {
-            true => Err(crate::platform::PlatformError::Unavailable),
+        if self.platform.funds_off() {
+            return Err(crate::platform::PlatformError::Unavailable);
+        }
+        match self.hub.restore.platform_held() {
+            true => Err(crate::platform::PlatformError::Restored),
             false => Ok(()),
         }
     }
@@ -486,14 +571,19 @@ impl NetworkSession {
     }
 
     /// Reads the network's mark before the history loads and, when it is
-    /// set, starts the watcher that clears it (H4). A failed clear is tried
-    /// again after a growing delay, or at once on a retry; meanwhile the
-    /// watcher still publishes what the gate waits for.
+    /// set, or its Platform residue is in a session with Platform, starts
+    /// the watcher that clears them (H4, C6). A failed clear is tried again
+    /// after a growing delay, or at once on a retry; meanwhile the watcher
+    /// still publishes what the gate waits for.
     pub(crate) fn attach_restore_gate(self: &Arc<Self>) {
-        if !self.hub.restore.init(self.data_dir()) {
+        let gate = &self.hub.restore;
+        if gate.init(self.data_dir()) {
+            tracing::info!("restore: the money gate is on until the first full sync");
+        } else if self.platform.enabled() && gate.platform_pending() {
+            tracing::info!("restore: Platform funds wait for the first Platform check");
+        } else {
             return;
         }
-        tracing::info!("restore: the money gate is on until the first full sync");
         let weak = Arc::downgrade(self);
         self.rt.spawn(async move {
             let mut failures = 0u32;
@@ -509,7 +599,10 @@ impl NetworkSession {
                     }
                     if tokio::time::Instant::now() >= next_try {
                         match session.try_clear_restored().await {
-                            Ok(true) => return,
+                            Ok(true) => {
+                                gate.clear_failed.store(false, Ordering::SeqCst);
+                                return;
+                            }
                             Ok(false) => failures = 0,
                             Err(e) => {
                                 failures = failures.saturating_add(1);
@@ -532,16 +625,30 @@ impl NetworkSession {
         });
     }
 
-    /// What the money gate waits for; `None` when it is off.
+    /// What the money gate waits for; `None` when it is off. With the
+    /// mark gone and the Platform residue present: `platform_only`, waiting
+    /// for `PlatformPass` until a session with Platform has checked it (and
+    /// `Wallet` while none is loaded).
     pub async fn restore_status(&self) -> Result<Option<RestoreStatus>, EngineError> {
-        if !self.hub.restore.is_restored() {
+        let gate = &self.hub.restore;
+        let clear_failed = gate.clear_failed.load(Ordering::SeqCst);
+        if gate.is_restored() {
+            let (waiting, history_wallets) = self.restore_waiting().await?;
+            return Ok(Some(RestoreStatus {
+                waiting,
+                history_wallets,
+                clear_failed,
+                platform_only: false,
+            }));
+        }
+        if !gate.platform_pending() {
             return Ok(None);
         }
-        let (waiting, history_wallets) = self.restore_waiting().await?;
         Ok(Some(RestoreStatus {
-            waiting,
-            history_wallets,
-            clear_failed: self.hub.restore.clear_failed.load(Ordering::SeqCst),
+            waiting: self.residue_waiting().await?,
+            history_wallets: Vec::new(),
+            clear_failed,
+            platform_only: true,
         }))
     }
 
@@ -568,7 +675,7 @@ impl NetworkSession {
     /// while the session is open. Does nothing while the gate is off.
     pub async fn restore_retry(self: &Arc<Self>) -> Result<(), EngineError> {
         let gate = &self.hub.restore;
-        if !gate.is_restored() {
+        if !gate.platform_held() {
             return Ok(());
         }
         gate.retry.store(true, Ordering::SeqCst);
@@ -590,10 +697,13 @@ impl NetworkSession {
 
     /// What all-Synced still waits for, and the loaded wallets whose holds
     /// are not built. Core, Platform and Shielded synced, a service that
-    /// is off counting as synced, and every loaded wallet's holds built.
+    /// is off counting as synced, every loaded wallet's holds built, and at
+    /// least one wallet loaded.
     async fn restore_waiting(&self) -> Result<(Vec<RestoreWait>, Vec<WalletId>), EngineError> {
         let manager = self.manager()?;
-        let unbuilt: Vec<WalletId> = (manager.list_wallet_ids_blocking().into_iter())
+        let wallets = manager.list_wallet_ids_blocking();
+        let some_wallet = !wallets.is_empty();
+        let unbuilt: Vec<WalletId> = (wallets.into_iter())
             .map(WalletId)
             .filter(|id| !(self.hub.history).read_wallet(id, |h| h.restore_holds_built))
             .collect();
@@ -602,6 +712,7 @@ impl NetworkSession {
             (core, RestoreWait::CoreSync),
             (platform, RestoreWait::PlatformPass),
             (unbuilt.is_empty(), RestoreWait::HistoryLoad),
+            (some_wallet, RestoreWait::Wallet),
         ];
         let waiting = (waiting.into_iter())
             .filter_map(|(done, wait)| (!done).then_some(wait))
@@ -631,23 +742,55 @@ impl NetworkSession {
         (core, platform && shielded)
     }
 
-    async fn restore_all_synced(&self) -> Result<bool, EngineError> {
-        Ok(self.restore_waiting().await?.0.is_empty())
+    /// With the mark: all-Synced. Without it: Platform checked in this
+    /// session and a wallet loaded.
+    async fn restore_ready(&self, mark: bool) -> Result<bool, EngineError> {
+        Ok(match mark {
+            true => self.restore_waiting().await?.0.is_empty(),
+            false => self.residue_waiting().await?.is_empty(),
+        })
+    }
+
+    /// What the Platform residue waits for: `PlatformPass` until a session
+    /// with Platform has checked it, `Wallet` while no wallet is loaded.
+    async fn residue_waiting(&self) -> Result<Vec<RestoreWait>, EngineError> {
+        let manager = self.manager()?;
+        let checked = self.platform.enabled() && self.restore_services(&manager).await.1;
+        let some_wallet = !manager.list_wallet_ids_blocking().is_empty();
+        Ok([
+            (checked, RestoreWait::PlatformPass),
+            (some_wallet, RestoreWait::Wallet),
+        ]
+        .into_iter()
+        .filter_map(|(done, wait)| (!done).then_some(wait))
+        .collect())
     }
 
     /// H4: at all-Synced, runs one drop-dead pass over every loaded wallet
-    /// and then clears the mark. Returns whether it cleared.
+    /// and then clears the mark; without Platform it first writes the
+    /// Platform residue, so a stop leaves both or the mark (C6). With
+    /// Platform, the residue goes once Platform is checked and the pass
+    /// ran, with the mark or alone. Returns whether nothing is left that
+    /// this session can clear.
     pub(crate) async fn try_clear_restored(self: &Arc<Self>) -> Result<bool, EngineError> {
-        if !self.hub.restore.is_restored() {
-            self.restore_cleared()?;
-            return Ok(true);
+        let gate = &self.hub.restore;
+        let mark = gate.is_restored();
+        if !mark {
+            if !gate.platform_pending() {
+                self.restore_cleared()?;
+                return Ok(true);
+            }
+            if !self.platform.enabled() {
+                self.restore_cleared()?;
+                return Ok(true);
+            }
         }
-        if !self.restore_all_synced().await? {
+        if !self.restore_ready(mark).await? {
             return Ok(false);
         }
         let _op = self.enter().await?;
         let manager = self.manager()?;
-        {
+        let residue = {
             let _lifecycle = self.wallet_lifecycle.hold().await;
             #[cfg(test)]
             crate::coins::pause_at(&self.hub.restore.pause_pass).await;
@@ -696,45 +839,62 @@ impl NetworkSession {
                     (self.hub.restore.pass_runs.lock().unwrap()).push((wallet, dead));
                 }
             }
-            if !self.restore_all_synced().await? {
+            if !self.restore_ready(mark).await? {
                 return Ok(false);
             }
-            let unloaded: Vec<WalletId> = live.store.unloaded().into_iter().map(WalletId).collect();
-            if !unloaded.is_empty() {
-                let appdb = Arc::clone(&live.appdb);
-                tokio::task::spawn_blocking(move || {
-                    (unloaded.iter()).try_for_each(|w| {
-                        appdb.set_settings_durable(
-                            &w.to_string(),
-                            &[(RESTORE_BUILD_PENDING, Some(""))],
-                        )
-                    })
-                })
-                .await
-                .map_err(|e| EngineError::Internal(format!("restore: build marks: {e}")))?
-                .map_err(|e| EngineError::Storage(format!("restore: build marks: {e}")))?;
+            if mark {
+                self.clear_mark(&live).await?;
             }
-            #[cfg(test)]
-            (self.hub.restore.clear_attempts).fetch_add(1, Ordering::SeqCst);
-            #[cfg(test)]
-            let fault = (self.hub.restore.clear_fails)
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok();
-            #[cfg(not(test))]
-            let fault = false;
-            let cleared = match fault {
-                true => Err(EngineError::Storage(
-                    "restore: the mark did not read".into(),
-                )),
-                false => dw_store_upgrade::clear_restored_mark_on_first_all_synced(
-                    &live._persister_opened,
-                )
-                .map_err(|e| EngineError::Storage(e.to_string())),
-            };
-            cleared?;
+            match self.platform.enabled() {
+                true => gate.remove_residue().map_err(|e| {
+                    EngineError::Storage(format!(
+                        "restore: the Platform residue did not clear: {e}"
+                    ))
+                }),
+                false => Ok(()),
+            }
+        };
+        if mark || residue.is_ok() {
+            self.restore_cleared()?;
         }
-        self.restore_cleared()?;
+        residue?;
         Ok(true)
+    }
+
+    /// Writes the holds' build marks of the unloaded wallets and, without
+    /// Platform, the Platform residue, then clears the mark.
+    async fn clear_mark(&self, live: &crate::session::Live) -> Result<(), EngineError> {
+        let unloaded: Vec<WalletId> = live.store.unloaded().into_iter().map(WalletId).collect();
+        if !unloaded.is_empty() {
+            let appdb = Arc::clone(&live.appdb);
+            tokio::task::spawn_blocking(move || {
+                (unloaded.iter()).try_for_each(|w| {
+                    appdb.set_settings_durable(&w.to_string(), &[(RESTORE_BUILD_PENDING, Some(""))])
+                })
+            })
+            .await
+            .map_err(|e| EngineError::Internal(format!("restore: build marks: {e}")))?
+            .map_err(|e| EngineError::Storage(format!("restore: build marks: {e}")))?;
+        }
+        if !self.platform.enabled() {
+            (self.hub.restore.write_residue()).map_err(|e| {
+                EngineError::Storage(format!("restore: the Platform residue did not write: {e}"))
+            })?;
+        }
+        #[cfg(test)]
+        (self.hub.restore.clear_attempts).fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        if (self.hub.restore.clear_fails)
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(EngineError::Storage(
+                "restore: the mark did not read".into(),
+            ));
+        }
+        dw_store_upgrade::clear_restored_mark_on_first_all_synced(&live._persister_opened)
+            .map(|_| ())
+            .map_err(|e| EngineError::Storage(e.to_string()))
     }
 
     /// Once the mark is gone, however it went (a clear whose last step

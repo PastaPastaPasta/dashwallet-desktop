@@ -370,10 +370,11 @@ impl NetworkSession {
         platform_address: bool,
     ) -> Result<Lease, LeaseError> {
         if flow.moves_funds() {
+            let gate = &self.hub.restore;
             if flow.needs_platform() && self.platform.funds_off() {
                 return Err(LeaseError::PlatformUnavailable);
             }
-            if self.hub.restore.is_restored() {
+            if gate.is_restored() || (flow.moves_platform_funds() && gate.platform_pending()) {
                 return Err(LeaseError::Restored);
             }
         }

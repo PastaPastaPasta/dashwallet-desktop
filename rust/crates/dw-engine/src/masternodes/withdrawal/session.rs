@@ -544,6 +544,9 @@ impl NetworkSession {
         grant: &str,
         sibling_of: Option<&str>,
     ) -> Result<WithdrawalRow, WithdrawalError> {
+        if self.platform.enabled() && self.hub.restore.platform_held() {
+            return Err(crate::platform::PlatformError::Restored.into());
+        }
         let hash = parse_pro_tx_hash(&call.pro_tx_hash)?;
         // The grant names the masternode the user acted on: one for
         // another is refused here, unredeemed, and its signer would refuse
@@ -655,7 +658,7 @@ impl WithdrawalRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
-                if !s.hub.restore.is_restored()
+                if !s.hub.restore.platform_held()
                     && let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
                 {
                     #[cfg(test)]

@@ -124,6 +124,14 @@ impl FlowKind {
                 | Self::Proposal
         )
     }
+
+    /// Whether the flow moves funds on Platform's side (credits, shielded
+    /// notes, or Core coins into an asset lock): a restore's Platform
+    /// residue refuses it. "Accept and pay" needs Platform for its accept,
+    /// which moves nothing; its payment is Core's.
+    pub(crate) fn moves_platform_funds(self) -> bool {
+        self.moves_funds() && self.needs_platform() && self != Self::AcceptAndPay
+    }
 }
 
 /// A lease's budgets (E0-04 §4.2).

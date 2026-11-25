@@ -399,8 +399,10 @@ export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
  * Platform. Without Platform the restore's gate opens once Core has
  * caught up and every wallet's history has loaded. While the gate is
  * open, or does not wait for Platform (the network already runs
- * without it, or only Core or a history load is waited for), it does
- * nothing and returns the active network. A
+ * without it, or only Core or a history load is waited for), or only
+ * Platform's check is left (`platformOnly`), or no wallet is open
+ * (`wallet`: nothing restored to check), it does nothing and
+ * returns the active network. A
  * failed open reopens the network with Platform and is
  * `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
  * `rolledBack` false when that failed too, the window then without a
