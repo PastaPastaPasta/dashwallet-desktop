@@ -429,7 +429,7 @@ impl WalletState {
             locked: b.locked(),
             total: b.total(),
             coinjoin,
-            withheld: self.excluded.total(),
+            withheld: self.excluded.pending,
             catching_up: self.catching_up(),
         }
     }

@@ -58,6 +58,9 @@ pub(crate) type Exclusions = BTreeMap<OutPoint, ExclusionReason>;
 pub(crate) struct Excluded {
     pub balance: WalletCoreBalance,
     pub accounts: BTreeMap<AccountType, WalletCoreBalance>,
+    /// The value of those shown as pending ([`ExclusionReason::listed`]):
+    /// a coin waiting for its rescan is kept out without being shown.
+    pub pending: u64,
 }
 
 impl Excluded {
@@ -74,6 +77,9 @@ impl Excluded {
             let (mut confirmed, mut unconfirmed, mut immature, mut locked) = (0u64, 0u64, 0, 0);
             for u in (account.utxos.values()).filter(|u| coins.contains_key(&u.outpoint)) {
                 let value = u.txout.value;
+                if coins.get(&u.outpoint).is_some_and(|r| r.listed()) {
+                    out.pending += value;
+                }
                 if u.is_locked {
                     locked += value;
                 } else if !u.is_mature(height) {
@@ -94,7 +100,7 @@ impl Excluded {
         out
     }
 
-    /// The excluded coins' value: what shows as pending.
+    /// The excluded coins' value.
     pub(crate) fn total(&self) -> u64 {
         self.balance.total()
     }
