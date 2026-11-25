@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, useShieldedBind, useShieldedQuote, useShieldedStatus, useShieldedSyncInfo } from "../api/queries";
 import { useDebounced } from "../app/useDebounced";
 import { ui, useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -416,12 +416,11 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
-  // The sync read answers while a pass holds the note store; the full status read binds a key it
-  // finds bindable.
+  // The sync read answers while a pass holds the note store.
   const infoRead = useShieldedSyncInfo(walletId, enabled);
   const status = infoRead.data ?? null;
   const gate = shieldedReceiveGate(status);
-  useShieldedStatus(walletId, true, enabled && status?.account === "binding");
+  useShieldedBind(walletId, status, enabled);
   const settled = infoRead.data !== undefined || infoRead.isError;
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
   const firstScan = !!status?.active && !status.established;

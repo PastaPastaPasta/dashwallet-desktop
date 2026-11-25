@@ -2854,8 +2854,8 @@ where
 
 /// The network takes shielded transitions and the session runs Platform,
 /// whose loops run the passes.
-fn pool_active(session: &NetworkSession, protocol_version: u32) -> bool {
-    session.platform.enabled() && protocol_version >= SHIELDED_ACTIVATION_VERSION
+fn pool_active(pw: &PwLib) -> bool {
+    pw.session.platform.enabled() && pw.sdk.protocol_version_number() >= SHIELDED_ACTIVATION_VERSION
 }
 
 /// Why an unbound account cannot bind now, read with no prompt and no
@@ -2874,9 +2874,10 @@ pub(crate) fn unbindable(vault: &dw_vault::Vault, wallet: WalletId) -> Option<Sh
 
 /// [`ShieldedSyncInfo`]: the account from the wallet's bound keys or
 /// [`unbindable`], the pass from the session hub.
-pub(crate) async fn sync_info(session: &NetworkSession, pw: &PwLib) -> ShieldedSyncInfo {
+pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
+    let session = &pw.session;
     let mut info = ShieldedSyncInfo {
-        active: pool_active(session, pw.sdk.protocol_version_number()),
+        active: pool_active(pw),
         account: None,
         established: false,
         syncing: false,
@@ -2905,14 +2906,14 @@ pub(crate) async fn sync_info(session: &NetworkSession, pw: &PwLib) -> ShieldedS
 /// The address of an account whose key is bound, read from the wallet's
 /// keys alone; `None` when not bound, or the pool not active, for the
 /// pool's path to answer.
-pub(crate) async fn bound_address(session: &NetworkSession, pw: &PwLib) -> Option<ShieldedAddress> {
-    if !pool_active(session, pw.sdk.protocol_version_number()) {
+pub(crate) async fn bound_address(pw: &PwLib) -> Option<ShieldedAddress> {
+    if !pool_active(pw) {
         return None;
     }
     let raw = pw.wallet.shielded_default_address(SHIELDED_ACCOUNT).await?;
     let address = OrchardAddress::from_raw_bytes(&raw).ok()?;
     Some(ShieldedAddress {
-        address: address.to_bech32m_string(session.vault.network()),
+        address: address.to_bech32m_string(pw.session.vault.network()),
         account: SHIELDED_ACCOUNT,
     })
 }

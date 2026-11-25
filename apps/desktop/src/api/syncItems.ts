@@ -6,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { dashpayKeys } from "../dashpay/queries";
 import { coreItem, platformItem, shieldedItem, type SyncItem } from "../format/syncItems";
-import { SHIELDED_SCAN_POLL_MS, useBackend, useShieldedStatus, useShieldedSyncInfo, useSyncStatus } from "./queries";
+import { SHIELDED_SCAN_POLL_MS, useBackend, useShieldedBind, useShieldedSyncInfo, useSyncStatus } from "./queries";
 
 /** The open wallet's syncs, the network's first; `null` items are not on this network or wallet. */
 export function useSyncItems(walletId: string | null): (SyncItem | null)[] {
@@ -20,8 +20,7 @@ export function useSyncItems(walletId: string | null): (SyncItem | null)[] {
     refetchInterval: (q) => (q.state.status === "error" || platformItem(q.state.data)?.state === "syncing" ? SHIELDED_SCAN_POLL_MS : false),
   });
   const shielded = useShieldedSyncInfo(walletId ?? "", walletId !== null);
-  // The full status read binds a key the sync read finds bindable.
-  useShieldedStatus(walletId ?? "", true, walletId !== null && shielded.data?.account === "binding");
+  useShieldedBind(walletId ?? "", shielded.data, walletId !== null);
   if (walletId === null) return [coreItem(sync)];
   return [coreItem(sync), platformItem(platform.data, platform.isError), shieldedItem(shielded.data, shielded.isError)];
 }

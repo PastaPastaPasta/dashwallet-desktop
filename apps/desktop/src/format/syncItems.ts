@@ -9,7 +9,7 @@ import type { DashPaySyncStatus } from "../api/generated/DashPaySyncStatus";
 import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
-import { scanShare } from "../shielded/syncing";
+import { scanShare, shieldedReceiveGate } from "../shielded/syncing";
 import { isSyncing, syncPercent, syncState } from "./sync";
 import { t } from "../i18n";
 
@@ -32,14 +32,6 @@ export interface SyncItem {
 
 const item = (name: SyncItemName, state: SyncItemState, percent: number | null = null): SyncItem => ({ name, state, percent });
 
-/** A status not read yet is syncing; a failed read with no reading is unread. `null` is no such
- * sync (the command absent, or not on this network). */
-function unreadItem(name: SyncItemName, s: unknown, failed: boolean): SyncItem | null | undefined {
-  if (s === null) return null;
-  if (s === undefined) return item(name, failed ? "unread" : "syncing");
-  return undefined;
-}
-
 export function coreItem(sync: SyncStatus | undefined): SyncItem {
   if (!sync) return item("core", "waiting");
   if (!sync.running) return item("core", "offline");
@@ -53,8 +45,8 @@ const PLATFORM_INCOMPLETE: ReadonlySet<StartupStatus> = new Set(["discoveryFaile
  * `failed`: the read failed (`s` is then the last reading, if any). The wallet's address balances
  * are synced once its own Platform-address pass succeeded this session. */
 export function platformItem(s: DashPaySyncStatus | null | undefined, failed = false): SyncItem | null {
-  const unread = unreadItem("platform", s, failed);
-  if (unread !== undefined || !s) return unread ?? null;
+  if (s === null) return null;
+  if (s === undefined) return item("platform", failed ? "unread" : "syncing");
   if (!s.platformEnabled) return null;
   if (s.startup === "starting") return item("platform", "syncing");
   if (PLATFORM_INCOMPLETE.has(s.startup)) return item("platform", "incomplete");
@@ -68,16 +60,15 @@ export function platformItem(s: DashPaySyncStatus | null | undefined, failed = f
  * of the last pass's outcome; not established yet is syncing too (passes run again); once
  * established, a failed last pass is incomplete until one succeeds. */
 export function shieldedItem(s: ShieldedSyncInfo | null | undefined, failed = false): SyncItem | null {
-  const unread = unreadItem("shielded", s, failed);
-  if (unread !== undefined || !s) return unread ?? null;
+  if (s === null) return null;
+  if (s === undefined) return item("shielded", failed ? "unread" : "syncing");
   if (!s.active) return null;
-  if (s.account === "locked" || s.account === "mixingOnly") return item("shielded", "unlock");
-  if (s.account === "watchOnly") return item("shielded", "watchOnly");
+  const gate = shieldedReceiveGate(s);
+  if (gate === "unlock" || gate === "watchOnly") return item("shielded", gate);
   if (s.syncing) return item("shielded", "syncing", scanShare(s.scan));
   if (!s.established) return item("shielded", "syncing");
   return s.lastPassFailed ? { ...item("shielded", "incomplete"), pass: true } : item("shielded", "done");
 }
-
 
 export type BarButton = "offline" | "syncing" | "incomplete" | "synced";
 

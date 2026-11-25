@@ -175,11 +175,7 @@ impl DashPay {
             loops: s.platform_loops()?,
             quorum_source: s.quorum_source()?,
             platform_enabled: s.platform.enabled(),
-            addresses: match s.hub.platform_addresses_synced(self.wallet_id) {
-                None => AddressSync::Pending,
-                Some(false) => AddressSync::Failed,
-                Some(true) => AddressSync::Done,
-            },
+            addresses: s.hub.platform_addresses(self.wallet_id),
         })
     }
 

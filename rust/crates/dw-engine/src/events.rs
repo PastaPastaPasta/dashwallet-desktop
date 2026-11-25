@@ -586,9 +586,9 @@ pub(crate) struct SessionHub {
     /// The wallets a status read found ready (a ledger restored from the
     /// store), before any pass of this session scanned them.
     shielded_ready: Mutex<HashSet<WalletId>>,
-    /// Each wallet's last Platform-address pass of this session: `true` it
-    /// succeeded. Absent until a pass ran for it.
-    platform_addresses: Mutex<HashMap<WalletId, bool>>,
+    /// Each wallet's last Platform-address pass of this session; absent
+    /// (pending) until a pass ran for it.
+    platform_addresses: Mutex<HashMap<WalletId, crate::platform::AddressSync>>,
     /// The children of payments key-wallet's conflict sweep took, which it
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
@@ -799,19 +799,15 @@ impl SessionHub {
         lock(&self.shielded_ready).insert(wallet);
     }
 
-    /// `wallet`'s last Platform-address pass of this session: `None` before
-    /// one ran for it, else whether it succeeded.
-    pub(crate) fn platform_addresses_synced(&self, wallet: WalletId) -> Option<bool> {
-        lock(&self.platform_addresses).get(&wallet).copied()
+    /// `wallet`'s last Platform-address pass of this session.
+    pub(crate) fn platform_addresses(&self, wallet: WalletId) -> crate::platform::AddressSync {
+        (lock(&self.platform_addresses).get(&wallet).copied())
+            .unwrap_or(crate::platform::AddressSync::Pending)
     }
 
     /// `wallet`'s last shielded pass of this session failed.
     pub(crate) fn shielded_pass_failed(&self, wallet: WalletId) -> bool {
-        (self
-            .shielded_failed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()))
-        .contains(&wallet)
+        lock(&self.shielded_failed).contains(&wallet)
     }
 
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
@@ -1372,16 +1368,8 @@ impl SessionHub {
     fn forget_shielded_passes(&self, id: &WalletId) {
         lock(&self.shielded_ready).remove(id);
         lock(&self.platform_addresses).remove(id);
-        (self
-            .shielded_synced
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()))
-        .remove(id);
-        (self
-            .shielded_failed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()))
-        .remove(id);
+        lock(&self.shielded_synced).remove(id);
+        lock(&self.shielded_failed).remove(id);
     }
 
     /// Publishes rescan state: `f` changes the running rescan under the
@@ -2186,11 +2174,17 @@ impl PlatformEventHandler for SessionHub {
         &self,
         summary: &platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary,
     ) {
+        use crate::platform::AddressSync;
         let mut last = lock(&self.platform_addresses);
         for (id, outcome) in &summary.wallet_results {
             let wallet = WalletId(*id);
             let ok = outcome.is_ok();
-            let changed = last.insert(wallet, ok) != Some(ok);
+            let now = if ok {
+                AddressSync::Done
+            } else {
+                AddressSync::Failed
+            };
+            let changed = last.insert(wallet, now) != Some(now);
             if ok {
                 self.pump
                     .mark_platform(wallet, [PlatformChange::PlatformAddresses]);
@@ -2244,15 +2238,13 @@ impl PlatformEventHandler for SessionHub {
     /// pass's first batch tells the established wallets' hosts a pass runs
     /// (the others read their status until established).
     fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
-        let started = (self.shielded_scan.lock().unwrap_or_else(|e| e.into_inner()))
+        let started = (lock(&self.shielded_scan))
             .replace((leaves_committed, total_target))
             .is_none();
         if started {
-            let established: Vec<WalletId> = (lock(&self.shielded_synced).iter())
+            let established: HashSet<WalletId> = (lock(&self.shielded_synced).iter())
                 .chain(lock(&self.shielded_ready).iter())
                 .copied()
-                .collect::<HashSet<_>>()
-                .into_iter()
                 .collect();
             for wallet in established {
                 self.pump.mark_platform(wallet, [PlatformChange::Shielded]);
@@ -2545,6 +2537,7 @@ mod tests {
     /// sync status at each change.
     #[test]
     fn a_wallet_platform_addresses_are_synced_by_its_own_pass() {
+        use crate::platform::AddressSync;
         use platform_wallet::manager::platform_address_sync::{
             PlatformAddressSyncSummary, WalletSyncOutcome,
         };
@@ -2563,24 +2556,24 @@ mod tests {
             sync_unix_seconds: 1_700_000_000,
         };
         let other = WalletId([8; 32]);
-        assert_eq!(hub.platform_addresses_synced(W), None);
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
         hub.on_platform_address_sync_completed(&pass(vec![(other, true)]));
-        assert_eq!(hub.platform_addresses_synced(W), None);
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
         assert_eq!(startup_marks(&hub), [other]);
         hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
-        assert_eq!(hub.platform_addresses_synced(W), Some(false));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Failed);
         assert_eq!(startup_marks(&hub), [W]);
         hub.on_platform_address_sync_completed(&pass(vec![(W, false)]));
         assert_eq!(startup_marks(&hub), []);
         hub.on_platform_address_sync_completed(&pass(vec![(W, true)]));
-        assert_eq!(hub.platform_addresses_synced(W), Some(true));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Done);
         assert_eq!(startup_marks(&hub), [W]);
         // A skipped pass (another in flight) names no wallet.
         hub.on_platform_address_sync_completed(&PlatformAddressSyncSummary::default());
-        assert_eq!(hub.platform_addresses_synced(W), Some(true));
+        assert_eq!(hub.platform_addresses(W), AddressSync::Done);
         // A wallet loaded again waits for its own pass again.
         hub.forget_shielded_passes(&W);
-        assert_eq!(hub.platform_addresses_synced(W), None);
+        assert_eq!(hub.platform_addresses(W), AddressSync::Pending);
     }
 
     /// A pass's first batch tells the established wallets' hosts a pass

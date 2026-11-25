@@ -516,8 +516,8 @@ impl DashPay {
     /// no read of the note store.
     pub async fn shielded_sync_info(&self) -> Result<ShieldedSyncInfo, ShieldedError> {
         let wallet = self.wallet_id;
-        pool::on_wallet(&self.session, wallet, move |session, pw| async move {
-            Ok(pool::sync_info(&session, &pw).await)
+        pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            Ok(pool::sync_info(&pw).await)
         })
         .await
     }
@@ -527,8 +527,8 @@ impl DashPay {
     /// first bind goes through the pool.
     pub async fn shielded_receive_address(&self) -> Result<ShieldedAddress, ShieldedError> {
         let wallet = self.wallet_id;
-        let bound = pool::on_wallet(&self.session, wallet, |session, pw| async move {
-            Ok(pool::bound_address(&session, &pw).await)
+        let bound = pool::on_wallet(&self.session, wallet, |_, pw| async move {
+            Ok(pool::bound_address(&pw).await)
         })
         .await?;
         if let Some(address) = bound {

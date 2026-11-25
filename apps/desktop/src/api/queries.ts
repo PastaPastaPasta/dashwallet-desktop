@@ -266,7 +266,7 @@ export function useShieldedStatus(walletId: string, pollWhileSyncing = false, en
     queryFn: () => b.shieldedStatus(walletId),
     enabled,
     retry: false,
-    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+    refetchInterval: pollWhileSyncing ? (q) => (q.state.status === "error" ? SHIELDED_SCAN_POLL_MS : shieldedStatusRefetchMs(q.state.data)) : false,
   });
 }
 
@@ -289,6 +289,22 @@ export function useShieldedSyncInfo(walletId: string, enabled = true) {
     retry: false,
     refetchInterval: (q) => shieldedSyncInfoRefetchMs(q.state.data, q.state.status === "error"),
   });
+}
+
+/** An account the full status read may bind: the sync read cannot see a viewing key saved by an
+ * earlier session, which binds with no unlock. */
+export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
+  return !!info?.active && info.account !== null && info.account !== "bound";
+}
+
+/** The full status read binds a bindable account, and the sync read is read again once it binds. */
+export function useShieldedBind(walletId: string, info: ShieldedSyncInfo | null | undefined, enabled = true) {
+  const qc = useQueryClient();
+  const bindable = shieldedBindable(info);
+  const bound = useShieldedStatus(walletId, true, enabled && bindable).data?.account === "bound";
+  useEffect(() => {
+    if (bindable && bound) void qc.invalidateQueries({ queryKey: keys.shieldedSyncInfo(walletId) });
+  }, [bindable, bound, qc, walletId]);
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */

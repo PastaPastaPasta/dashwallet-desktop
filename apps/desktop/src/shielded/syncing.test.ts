@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
-import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
+import { SHIELDED_SCAN_POLL_MS, shieldedBindable, shieldedStatusRefetchMs, shieldedSyncInfoRefetchMs } from "../api/queries";
 import { scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText, syncingRefusal } from "./syncing";
 import { shieldedErrorText } from "./flow";
 
@@ -52,6 +53,26 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(shieldedStatusRefetchMs(status({ ready: false, account: "mixingOnly" }))).toBe(false);
     expect(shieldedStatusRefetchMs(status({ ready: false, account: "watchOnly" }))).toBe(false);
     expect(shieldedStatusRefetchMs(status({ active: false, ready: false, account: null }))).toBe(false);
+  });
+
+  it("lets the full read bind any unbound account, as a key saved earlier binds with no unlock", () => {
+    const info = (over: Partial<ShieldedSyncInfo>) => ({ active: true, account: "binding", established: false, syncing: false, scan: null, lastPassFailed: false, ...over }) as ShieldedSyncInfo;
+    for (const account of ["binding", "locked", "mixingOnly", "watchOnly"] as const) expect(shieldedBindable(info({ account }))).toBe(true);
+    expect(shieldedBindable(info({ account: "bound" }))).toBe(false);
+    expect(shieldedBindable(info({ active: false, account: null }))).toBe(false);
+    expect(shieldedBindable(undefined)).toBe(false);
+  });
+
+  it("re-reads the sync while it binds, runs, failed or is unread, and not while an unlock holds it", () => {
+    const info = (over: Partial<ShieldedSyncInfo>) => ({ active: true, account: "bound", established: true, syncing: false, scan: null, lastPassFailed: false, ...over }) as ShieldedSyncInfo;
+    expect(shieldedSyncInfoRefetchMs(info({}), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(info({ syncing: true }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ lastPassFailed: true }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ established: false }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ account: "binding", established: false }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ account: "locked", established: false }), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(info({ active: false, account: null }), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(undefined, true)).toBe(5_000);
   });
 
   it("shows the address once the key is bound, a wait while it binds, and why there is none", () => {
