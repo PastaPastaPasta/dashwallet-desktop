@@ -5409,13 +5409,9 @@ mod normal_payment_beside_mixing {
                 external_addresses, ..
             } = account.managed_account_type_mut()
             {
-                let mainnet_path: DerivationPath = "m/44'/5'/0'/0/0".parse().unwrap();
-                for info in external_addresses.addresses.values_mut() {
-                    if info.address == addr {
-                        info.path = mainnet_path;
-                        break;
-                    }
-                }
+                let mut info = external_addresses.address_info(&addr).unwrap().clone();
+                info.path = "m/44'/5'/0'/0/0".parse::<DerivationPath>().unwrap();
+                external_addresses.insert(info).unwrap();
             }
             let mut utxo = Utxo::new(
                 op,
