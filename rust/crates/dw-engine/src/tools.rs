@@ -532,8 +532,20 @@ impl NetworkSession {
     ) -> Result<u32, EngineError> {
         let replay = self.live()?.replay;
         self.hub.detect_truncation(wallet, &info.core_wallet);
-        self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
-            .await
+        let target = (self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)).await?;
+        // A filter batch in flight applied blocks above the scan: the
+        // record covers them, so an open after a quit keeps the coins this
+        // rewind holds until the scan is past them (#818).
+        let processed = info.core_wallet.last_processed_height();
+        if processed <= target {
+            return Ok(target);
+        }
+        let current = info.core_wallet.synced_height();
+        let birth = info.core_wallet.birth_height().saturating_sub(1);
+        Ok(replay
+            .note_rewind(wallet, checkpoint.min(current), processed, birth)
+            .await?
+            .target)
     }
 
     /// Stores the record of a rewind of `wallet`, whose info `info` the

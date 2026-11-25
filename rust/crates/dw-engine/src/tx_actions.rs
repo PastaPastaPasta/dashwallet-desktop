@@ -33,7 +33,7 @@ use crate::history::{
     WalletHistory, Winner, amounts, beaten_unrecorded, chain_locked, chainlock_beaten, depth_of,
     filtered, orphaned_unmined, records_of, rival_heights, status_of,
 };
-use crate::rescan_hold::{RescanHold, hold_keys, hold_marks};
+use crate::rescan_hold::{RescanHold, hold_marks};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 use key_wallet::transaction_checking::TransactionContext;
@@ -1975,10 +1975,9 @@ impl NetworkSession {
             // No processed block's spend and no stored transaction is
             // evidence the coins are unspent: each waits for the rewind's
             // rescan (#818).
-            let processed = info.core_wallet.last_processed_height();
             let holds: BTreeMap<OutPoint, RescanHold> = match (checkpoint, target) {
                 (Some(c), Some(t)) => (released.iter())
-                    .map(|o| (*o, RescanHold::new(c, t.max(processed))))
+                    .map(|o| (*o, RescanHold::new(c, t)))
                     .collect(),
                 _ => BTreeMap::new(),
             };
@@ -2023,19 +2022,21 @@ impl NetworkSession {
             }
             marks.extend(hold_marks(&holds));
             self.write_abandoned_marks(wallet, marks).await?;
-            self.hub.history.with_wallet(wallet, |h| {
-                h.rescan_holds.extend(holds.iter().map(|(o, r)| (*o, *r)));
+            let previous = (self.hub.history).with_wallet(wallet, |h| {
+                crate::rescan_hold::take_over(&mut h.rescan_holds, &holds)
             });
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if abandoned.is_empty() {
                 self.hub.history.with_wallet(wallet, |h| {
-                    h.rescan_holds.retain(|o, _| !holds.contains_key(o));
+                    crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
-                let keys = hold_keys(holds.keys());
+                let undo = crate::rescan_hold::undo_marks(&holds, &previous);
                 let scope = wallet.to_string();
                 if let Err(e) = (self.appdb_op(move |db| {
-                    let writes: Vec<(&str, Option<&str>)> =
-                        keys.iter().map(|k| (k.as_str(), None)).collect();
+                    let writes: Vec<(&str, Option<&str>)> = undo
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_deref()))
+                        .collect();
                     db.set_settings_durable(&scope, &writes)
                 }))
                 .await
@@ -2342,7 +2343,6 @@ impl NetworkSession {
             .min();
             if let Some(checkpoint) = checkpoint {
                 let target = self.record_rewind_locked(wallet, info, checkpoint).await?;
-                let target = target.max(info.core_wallet.last_processed_height());
                 // What the drop frees no processed block spent and no stored
                 // transaction spends: it waits for the rewind's rescan (#818).
                 rescan_holds = (plan.freed.iter())
@@ -2375,9 +2375,8 @@ impl NetworkSession {
             .chain(hold_marks(&rescan_holds))
             .collect();
         self.write_abandoned_marks(wallet, marks).await?;
-        self.hub.history.with_wallet(wallet, |h| {
-            h.rescan_holds
-                .extend(rescan_holds.iter().map(|(o, r)| (*o, *r)));
+        let previous = (self.hub.history).with_wallet(wallet, |h| {
+            crate::rescan_hold::take_over(&mut h.rescan_holds, &rescan_holds)
         });
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");
@@ -2388,31 +2387,35 @@ impl NetworkSession {
             // key-wallet refused (it settled the root meanwhile): the marks
             // go, so no hold outlives a drop that did not happen.
             self.hub.history.with_wallet(wallet, |h| {
-                h.rescan_holds.retain(|o, _| !rescan_holds.contains_key(o));
+                crate::rescan_hold::put_back(&mut h.rescan_holds, &rescan_holds, &previous)
             });
-            let keys: Vec<String> = (plan.copies.iter())
+            let undo: Vec<(String, Option<String>)> = (plan.copies.iter())
                 .flat_map(|(t, _)| {
                     [
-                        format!("{ABANDONED_PREFIX}{t}"),
-                        format!("{DROP_HOLDS_PREFIX}{t}"),
+                        (format!("{ABANDONED_PREFIX}{t}"), None),
+                        (format!("{DROP_HOLDS_PREFIX}{t}"), None),
                     ]
                 })
-                .chain(hold_keys(rescan_holds.keys()))
+                .chain(crate::rescan_hold::undo_marks(&rescan_holds, &previous))
                 .collect();
             let scope = wallet.to_string();
             self.appdb_op(move |db| {
-                let writes: Vec<(&str, Option<&str>)> =
-                    keys.iter().map(|k| (k.as_str(), None)).collect();
+                let writes: Vec<(&str, Option<&str>)> = undo
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_deref()))
+                    .collect();
                 db.set_settings_durable(&scope, &writes)
             })
             .await?;
             return Ok(abandoned);
         }
-        debug_assert_eq!(abandoned, plan.dead);
         // key-wallet took another than planned: nothing comes back.
         let freed = match abandoned == plan.dead {
             true => plan.freed.clone(),
-            false => BTreeSet::new(),
+            false => {
+                tracing::warn!(%wallet, %root, "key-wallet dropped another set than planned: no coin is freed");
+                BTreeSet::new()
+            }
         };
         let claims: Vec<(OutPoint, Option<Txid>)> = (plan.inputs.iter())
             .filter(|o| !freed.contains(*o))

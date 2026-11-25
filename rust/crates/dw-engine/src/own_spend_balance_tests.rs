@@ -1300,18 +1300,20 @@ fn abandoning_mid_batch_never_lists_a_coin_the_batch_saw_spent() {
     mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
     assert!(in_history(&session, id, w.txid()), "the rescan records W");
     assert!(session.hub.rescan_held(&id).is_empty(), "B's hold is back");
-    assert!(
-        !listed_coins(&engine, &session, id).contains(&a),
-        "the rescan is back: A is listed"
+    // Key-wallet keeps the funding record the batch gave it, so the rescan
+    // does not give B back in this session: B is missing, never counted
+    // twice.
+    kept_out(
+        &engine,
+        &session,
+        id,
+        &[(a, "A")],
+        all - 2 * COIN,
+        "the rescan is back",
     );
-    assert!(
-        !spendable(&engine, &session, id, a),
-        "the rescan is back: A is offered"
-    );
-    assert!(
-        balances(&session, id).total <= all - COIN,
-        "the rescan is back: A is counted"
-    );
+    let session = reopen(&engine, session);
+    kept_out(&engine, &session, id, &[(a, "A")], all - COIN, "reopened");
+    assert!(spendable(&engine, &session, id, b), "B is offered");
 }
 
 /// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend

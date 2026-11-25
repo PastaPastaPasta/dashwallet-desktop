@@ -102,6 +102,38 @@ pub(crate) fn hold_marks<'a>(
         .collect()
 }
 
+/// Puts `holds` in `held`. Returns the holds they replaced, which
+/// [`put_back`] restores.
+pub(crate) fn take_over(
+    held: &mut BTreeMap<OutPoint, RescanHold>,
+    holds: &BTreeMap<OutPoint, RescanHold>,
+) -> BTreeMap<OutPoint, RescanHold> {
+    (holds.iter())
+        .filter_map(|(o, r)| Some((*o, held.insert(*o, *r)?)))
+        .collect()
+}
+
+/// Undoes [`take_over`] of `holds`, which replaced `previous`.
+pub(crate) fn put_back(
+    held: &mut BTreeMap<OutPoint, RescanHold>,
+    holds: &BTreeMap<OutPoint, RescanHold>,
+    previous: &BTreeMap<OutPoint, RescanHold>,
+) {
+    held.retain(|o, _| !holds.contains_key(o));
+    held.extend(previous.iter().map(|(o, r)| (*o, *r)));
+}
+
+/// The writes undoing the marks of `holds`, which replaced `previous`.
+pub(crate) fn undo_marks(
+    holds: &BTreeMap<OutPoint, RescanHold>,
+    previous: &BTreeMap<OutPoint, RescanHold>,
+) -> Vec<(String, Option<String>)> {
+    (hold_keys(holds.keys().filter(|o| !previous.contains_key(*o))).into_iter())
+        .map(|k| (k, None))
+        .chain(hold_marks(previous))
+        .collect()
+}
+
 /// The keys of `coins`' marks.
 pub(crate) fn hold_keys<'a>(coins: impl IntoIterator<Item = &'a OutPoint>) -> Vec<String> {
     (coins.into_iter())

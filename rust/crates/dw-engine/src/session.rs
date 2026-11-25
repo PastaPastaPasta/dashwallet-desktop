@@ -982,13 +982,15 @@ impl NetworkSession {
         self.hub.update_wallet_state(id, |s| s.take_core(read));
         self.hub.release_settled(id, waiting);
         let released = self.hub.settle_rescan_holds(id, Some(synced));
-        drop(wm);
         self.forget_released_holds(id, released).await;
+        drop(wm);
     }
 
     /// Drops the marks of the `released` holds of wallet `id` that no new
     /// hold took again: a later open finding a replay record keeps every
-    /// hold whose mark stays (`crate::rescan_hold::load_for_open`).
+    /// hold whose mark stays (`crate::rescan_hold::load_for_open`). The
+    /// caller holds the manager's lock, so no abandon or drop writes a
+    /// hold's mark between the read of the holds and the delete.
     pub(crate) async fn forget_released_holds(
         &self,
         id: WalletId,
