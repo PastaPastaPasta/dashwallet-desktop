@@ -3,7 +3,7 @@
 //! is the literal folder name (M3-UX (e)).
 //!
 //! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
-//! family, sha256 36670f48…2b30) is title + "{intro}: {detail} {unchanged}
+//! family, sha256 8c2c34db…0da2) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version.
@@ -88,7 +88,8 @@ pub enum RefusedCause {
     ContactsTable,
     /// [`StoreUpgradeError::P9aBroken`]: this build's own check failed. It
     /// refuses every file, migrated or not, and may be a passing fault such
-    /// as a full disk (Q98 98-3), so it never sends the user back.
+    /// as a full disk (Q98 98-3): only a file proved not yet upgraded may go
+    /// back to the earlier version.
     SelfCheck,
     /// Every other error that leaves the files unchanged and is not retried.
     Unexpected,
@@ -240,12 +241,15 @@ pub enum WayOut {
     Support,
     /// Migrated, no backup or the backup not proved.
     SupportMigrated,
-    /// [`RefusedCause::SelfCheck`] only, in every state.
+    /// [`RefusedCause::SelfCheck`], the file migrated or not proved either
+    /// way: never the earlier version.
     SelfCheck,
+    /// [`RefusedCause::SelfCheck`], the file proved not yet upgraded.
+    SelfCheckNotMigrated,
 }
 
 impl WayOut {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Previous,
         Self::Newer,
         Self::Restore,
@@ -253,12 +257,10 @@ impl WayOut {
         Self::Support,
         Self::SupportMigrated,
         Self::SelfCheck,
+        Self::SelfCheckNotMigrated,
     ];
 
-    /// MG's cause → allowed ways out, by the proved state. A failed self
-    /// check gets its own way out whatever the state; `state.migrated` stays
-    /// an input so its text can split by whether the file is at this build's
-    /// schema (Q98 98-3).
+    /// MG's cause → allowed ways out, by the proved state.
     pub fn for_cause(cause: RefusedCause, state: ProvedState) -> Self {
         use RefusedCause as C;
         let by_state = || match (state.migrated, state.backup) {
@@ -269,6 +271,7 @@ impl WayOut {
         };
         match cause {
             C::TooNew => Self::Newer,
+            C::SelfCheck if state.migrated == Some(false) => Self::SelfCheckNotMigrated,
             C::SelfCheck => Self::SelfCheck,
             C::ForkUnsupported | C::RehearsalFailed => match state.migrated {
                 Some(false) => Self::Previous,
@@ -313,6 +316,10 @@ impl WayOut {
             Self::SelfCheck => line(
                 "storeUpgrade.refused.wayOut.selfCheck",
                 "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
+            ),
+            Self::SelfCheckNotMigrated => line(
+                "storeUpgrade.refused.wayOut.selfCheckNotMigrated",
+                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
             ),
         }
     }

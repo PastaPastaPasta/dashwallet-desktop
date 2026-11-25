@@ -92,6 +92,12 @@ fn way_out(w: WayOut) -> (&'static str, String) {
             "supportMigrated",
             format!("{EARLIER} Choose Report a problem."),
         ),
+        WayOut::SelfCheckNotMigrated => (
+            "selfCheckNotMigrated",
+            format!(
+                "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. {L9}"
+            ),
+        ),
         WayOut::SelfCheck => (
             "selfCheck",
             "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.".into(),
@@ -101,8 +107,8 @@ fn way_out(w: WayOut) -> (&'static str, String) {
 
 /// MG's cause → allowed ways out. A cause whose table entry is `previous`
 /// alone also allows `support` / `supportMigrated` for a state not proved
-/// unmigrated (MG (A)). A failed self check has its own way out in every
-/// state (Q98 98-3).
+/// unmigrated (MG (A)). A failed self check has its own two ways out
+/// (Q98 98-3).
 fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
     use RefusedCause::*;
     use WayOut::*;
@@ -113,7 +119,7 @@ fn allowed(cause: RefusedCause) -> BTreeSet<WayOut> {
         }
         TooNew => [Newer].into(),
         ContactsTable => [Previous, Restore, Unverified, Support, SupportMigrated].into(),
-        RefusedCause::SelfCheck => [WayOut::SelfCheck].into(),
+        RefusedCause::SelfCheck => [WayOut::SelfCheck, WayOut::SelfCheckNotMigrated].into(),
     }
 }
 
@@ -162,7 +168,15 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                 ),
                 WayOut::SupportMigrated => assert_eq!(state.migrated, Some(true), "{at}"),
                 WayOut::Support => assert_ne!(state.migrated, Some(true), "{at}"),
-                WayOut::SelfCheck => assert_eq!(cause, RefusedCause::SelfCheck, "{at}"),
+                WayOut::SelfCheck => {
+                    assert_eq!(cause, RefusedCause::SelfCheck, "{at}");
+                    assert_ne!(state.migrated, Some(false), "{at}");
+                }
+                WayOut::SelfCheckNotMigrated => assert_eq!(
+                    (cause, state.migrated),
+                    (RefusedCause::SelfCheck, Some(false)),
+                    "{at}"
+                ),
             }
             if allowed(cause).contains(&WayOut::Previous) && state.migrated == Some(false) {
                 assert_eq!(w, WayOut::Previous, "{at}: the earlier version opens it");
@@ -230,6 +244,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
 #[test]
 fn previous_carries_the_l9_sentence_verbatim() {
     assert!(WayOut::Previous.line().text.ends_with(L9));
+    assert!(WayOut::SelfCheckNotMigrated.line().text.ends_with(L9));
     for w in WayOut::ALL {
         if w != WayOut::Previous {
             assert!(
@@ -392,6 +407,9 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         if allowed(want).contains(&WayOut::Previous) {
             assert_eq!(s.way_out, WayOut::Previous, "{want:?}: a released file");
         }
+        if want == SelfCheck {
+            assert_eq!(s.way_out, WayOut::SelfCheckNotMigrated, "a released file");
+        }
         seen.insert(want);
     };
     let pre = |f: &Fixture| precheck_refusal(f, build());
@@ -521,18 +539,25 @@ fn a_migrated_file_never_offers_the_earlier_version() {
 }
 
 #[test]
-fn a_failed_self_check_never_offers_the_earlier_version() {
+fn a_failed_self_check_offers_the_earlier_version_only_for_a_file_proved_unupgraded() {
     let e = StoreUpgradeError::P9aBroken {
         detail: "disk full".into(),
     };
     for state in states() {
         let s = screen_for(&e, state).unwrap();
         assert_eq!(s.cause, RefusedCause::SelfCheck, "{state:?}");
-        assert_eq!(s.way_out, WayOut::SelfCheck, "{state:?}");
-        assert!(
-            !s.text(FOLDER)
-                .contains("version of Dash Wallet you used before")
+        let (want, earlier) = match state.migrated {
+            Some(false) => (WayOut::SelfCheckNotMigrated, true),
+            Some(true) | None => (WayOut::SelfCheck, false),
+        };
+        assert_eq!(s.way_out, want, "{state:?}");
+        assert_eq!(
+            s.text(FOLDER)
+                .contains("keep using the version you used before"),
+            earlier,
+            "{state:?}"
         );
+        assert_eq!(s.text(FOLDER).ends_with(L9), earlier, "{state:?}");
         assert_eq!(
             labels(&s),
             [
