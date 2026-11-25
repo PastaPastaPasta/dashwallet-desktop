@@ -706,7 +706,11 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   selected is a note of the account (the nullifier of a padding action is not one) and they are exactly the notes the
   library reserved for it, and only after the spend's artifact is written to `dispatch.sqlite` (schema 11,
   `synchronous=FULL`): the wallet, the history row, Platform's hash of the transition, its kind, its anchor, the
-  nullifiers of the notes it takes and of every action it publishes. Anything else is refused and nothing is sent.
+  nullifiers of the notes it takes and of every action it publishes. Before anything of the spend is written, one
+  proved read of Platform's anchors tree must find the spend's anchor recorded; a read that fails, or does not find
+  it, refuses the spend. When that read is SPV-verified (or the trusted-only toggle is on), its height is kept in
+  `app.sqlite` (by wallet and Platform's hash of the transition, the highest kept) as the height the anchor was proved
+  recorded at, which "Refused first sends" below orders by. Anything else is refused and nothing is sent.
 - **Before a pass re-sends** a spend stored under the hook, the engine allows it only when the journal holds that
   artifact (same wallet, history row and hash, written by the engine before the first broadcast, neither settled nor
   archived), the wallet holds its background lease and the session is open. A spend imported from a 0.1 journal, one
@@ -728,7 +732,7 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   library holds neither: no new stored transition and no new held notes (it freed the notes, or never stored the
   spend). When either cannot be read the call is
   `platform.broadcast_unknown{artifact: "shielded transfer"}` (or `"shielded withdraw"`): the payment may still go
-  through. The engine never releases such notes by itself.
+  through. The engine releases such notes only as "Refused first sends" below says.
 - The marker of a spend the library kept no record of (schema 10, "Unrecorded spends" below) is still written and gates
   as below. The schema-9 journal row is written only for a spend stored before any hook was set, at pass admission.
 - **The library's outcomes (version 71).** At the end of each pass and when it opens `shielded.sqlite`, the engine
@@ -740,7 +744,8 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   no note it held becomes selectable while the wallet store could still read it unspent; until then each later pass
   checks again. If the journal never took that spent state (a failed write), it stays held, and Close Wallet refused,
   until Tools ▸ Repair. `Unresolved` reads unresolved (being confirmed) and is never acknowledged by the engine: its notes
-  stay held until a later scan or the user settles it. One the library could not attribute (`Unattributable`) whose
+  stay held until a later scan or the user settles it. The one exception is a refused first send
+  (`Unresolved(Cancelled)`), which the engine settles and acknowledges only as "Refused first sends" below says. One the library could not attribute (`Unattributable`) whose
   history row reads `confirmed` reads executed, never failed: it is no proof, so it is not acknowledged either, nothing
   of it is re-sent or rebuilt, and no gate (`confirm_unrecorded` included) is relaxed by it. An outcome this build
   cannot read is acknowledged by its key only once each note it holds reads spent in the journal (its artifact reads
@@ -749,6 +754,30 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   for Tools ▸ Repair. An outcome of a spend with no artifact (a spend stored
   before any hook was set) or with an unclassified one waits, as does every outcome while the journal is unavailable.
   So Close Wallet and a switch stay refused (DEC-1046, below) only while an outcome is not acknowledged.
+- **Refused first sends (#444).** Platform refusing a spend at its first broadcast proves nothing: the library
+  records it `Unresolved(Cancelled)` and holds its notes, since the spend may still execute. At each pass the engine
+  settles such a spend only on proved evidence, ordered by chain height and never by a clock:
+  - *not executed* (its artifact `not_executed`, the library's disposition kept, then acknowledged, so its notes no
+    other spend has spent are spendable again): its anchor proved absent from the anchors tree at a height above the
+    one it was proved recorded at (kept by the dispatch hook's read, or by a later pass's verified read that found it
+    still recorded), each nullifier it publishes proved unspent at or above that read's height, and each note it holds
+    known unspent to the library and not flagged spent in the journal. Or some but not all of its nullifiers proved
+    spent (a transition inserts all of them at once, so it never can execute), once each held note read spent is
+    spent in the library and durably in the journal. The anchors read must also be at least 45 minutes of block time
+    after the refusal (an extra hold only);
+  - *executed* (its artifact `executed`, acknowledged once its notes read spent in the journal): every nullifier it
+    publishes proved spent. Only when one of them is a padding action's, which no other spend can publish, does it
+    prove this transition executed: then its payout reads sent and its unshield's move done; without one (another
+    device may have spent the same notes) both stay as they were before it settled;
+  - otherwise it stays held: a spend with no height its anchor was proved recorded at (one sent by an earlier build),
+    an absence at or below that height, a read that fails, is incomplete, or whose proof used quorum keys that are not
+    SPV-verified (unless the trusted-only toggle is on), and any contradiction. Nothing transient or ambiguous frees a
+    note. A failed nullifier read holds only the spends it covered. A release raises the Shielded change.
+
+  Its history row reads `pending` with the refusal `held` ("may still go through") from the refusal on, `failed` with
+  `released` once settled not executed and acknowledged, and `confirmed` once settled executed. While the library's
+  outcomes or the journal cannot be read, and while a dispatched spend's artifact is not reconciled, a `failed` row
+  reads `pending` and `held`: it is never shown failed while it may still execute.
 - **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
   the hooked one must not open that directory: it knows neither the unsent mark of a stored spend nor the outcomes
   the hooked library recorded.

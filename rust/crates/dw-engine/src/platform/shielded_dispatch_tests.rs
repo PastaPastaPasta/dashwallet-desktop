@@ -494,6 +494,84 @@ fn h1_writes_the_artifact_before_returning_ok() {
     assert_eq!(h.artifact(2), None);
 }
 
+/// Platform's anchors as the hook reads them: `None`, the read fails.
+struct Anchors {
+    read: Option<(Vec<[u8; 32]>, u64)>,
+    verified: bool,
+}
+
+impl super::super::shielded_release::ReleaseNet for Anchors {
+    fn anchors(
+        &self,
+    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Proved<Vec<[u8; 32]>>>>
+    {
+        let read =
+            (self.read.clone()).map(|(value, height)| super::super::shielded_release::Proved {
+                value,
+                height,
+                time_ms: 0,
+                verified: false,
+            });
+        let verified = self.verified;
+        Box::pin(async move {
+            super::super::trust::note_lookup(verified);
+            read
+        })
+    }
+
+    fn nullifiers(
+        &self,
+        _: Vec<[u8; 32]>,
+    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Statuses>> {
+        Box::pin(async { None })
+    }
+}
+
+/// Q80 R1: before anything of a spend is written or sent, the hook reads
+/// Platform's anchors. A read that fails, or finds the spend's anchor not
+/// recorded, refuses it with no artifact; one that finds it keeps that
+/// height for the spend (its Hp, the release's chain order) when its proof
+/// is SPV-verified, and an unverified one sends with no Hp kept, so a
+/// refusal of it stays held.
+#[test]
+fn the_hook_proves_the_anchor_recorded_before_the_artifact() {
+    let h = Hooked::new();
+    let reads = |read: Option<(Vec<[u8; 32]>, u64)>, verified: bool| {
+        let net: Arc<dyn super::super::shielded_release::ReleaseNet> =
+            Arc::new(Anchors { read, verified });
+        *h.f.session.platform.release_net.lock().unwrap() = Some(net);
+    };
+    let presence = |n: u8| {
+        let (s, w, st_hash) = (Arc::clone(&h.f.session), h.f.wallet, h.st_hash(n));
+        (h.f.engine)
+            .block_on(async move { super::super::shielded_release::presence(&s, w, st_hash).await })
+            .unwrap()
+    };
+    let payload = h.staged(1, &[1, 2]);
+
+    reads(None, true);
+    let refused = h.dispatch(payload.clone()).unwrap_err();
+    assert!(refused.contains("could not be read"), "{refused}");
+    assert_eq!(h.artifact(1), None);
+
+    reads(Some((vec![[0xbb; 32]], 40)), true);
+    let refused = h.dispatch(payload.clone()).unwrap_err();
+    assert!(refused.contains("not recorded"), "{refused}");
+    assert_eq!(h.artifact(1), None);
+    assert_eq!(presence(1), None);
+
+    reads(Some((vec![[0xbb; 32], [0xa0; 32]], 40)), true);
+    assert_eq!(h.dispatch(payload), Ok(()));
+    assert!(h.artifact(1).is_some());
+    assert_eq!(presence(1), Some(40));
+
+    let unverified = h.staged(2, &[3]);
+    reads(Some((vec![[0xa0; 32]], 41)), false);
+    assert_eq!(h.dispatch(unverified), Ok(()));
+    assert!(h.artifact(2).is_some());
+    assert_eq!(presence(2), None, "unverified: no Hp");
+}
+
 /// A pass may re-send only what the hook accepted: the artifact's wallet,
 /// activity and hash. Another hash, an activity with no artifact, another
 /// account and a journal that cannot be read are refused, and the stored

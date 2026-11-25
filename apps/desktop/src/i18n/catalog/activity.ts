@@ -94,7 +94,7 @@ export const activity = {
       heldNoAmount:
         "Dash Platform didn't accept this payment when it was sent, but it may still accept it later. Until Dash Wallet can prove it no longer can, the Shielded funds it spends stay held. Don't send this payment again: both could go through. If it goes through, Activity shows it as sent. If it can no longer go through, the funds become spendable again. This can take hours, or days when Shielded is quiet.",
       /** After Dash Wallet proved it can no longer go through. */
-      released: "Dash Platform didn't accept this payment, and it can no longer go through. Its funds are spendable again.",
+      released: "Dash Platform didn't accept this payment, and it can no longer go through, so Dash Wallet has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.",
     },
   },
 } as const satisfies Tree;

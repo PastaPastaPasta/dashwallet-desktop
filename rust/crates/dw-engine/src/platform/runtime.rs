@@ -190,6 +190,10 @@ pub(crate) struct PlatformRuntime {
     /// second look at the held spends.
     #[cfg(test)]
     pub(crate) release_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's failure of the library's dispositions listing as history
+    /// reads it (`shielded_release::mark_refused`).
+    #[cfg(test)]
+    pub(crate) fail_disposition_listing: AtomicBool,
     /// Refused shielded spends whose anchor a read found still recorded, by
     /// transition hash, with when to read them again (in memory: a new
     /// session reads at its first pass).
@@ -583,6 +587,8 @@ impl PlatformRuntime {
             release_net: Mutex::new(None),
             #[cfg(test)]
             release_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_disposition_listing: AtomicBool::new(false),
             release_backoff: Mutex::default(),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),

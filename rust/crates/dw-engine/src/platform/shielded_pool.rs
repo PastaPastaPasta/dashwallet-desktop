@@ -2631,6 +2631,12 @@ impl ShieldedDispatch for EngineDispatch {
                 "the spend is not the one the library stored for the activity",
             ));
         }
+        // Chain order for a release after a refusal (#444): the anchor
+        // proved recorded, at a height kept for the spend, before anything
+        // of it is written or sent.
+        super::shielded_release::anchor_recorded_at_dispatch(&session, &payload)
+            .await
+            .map_err(refused)?;
         let from_shielded = match payload.kind {
             ShieldedDispatchKind::Unshield => Some(unshield_record(&session, &payload)?),
             _ => None,
@@ -3665,6 +3671,7 @@ pub(crate) async fn consume_dispositions(
             }
         };
         for d in records {
+            let mut released = false;
             let (status, ack) = match d.disposition {
                 ShieldedSpendDisposition::NotExecuted(_) => (ArtifactStatus::NotExecuted, true),
                 ShieldedSpendDisposition::Executed => {
@@ -3684,19 +3691,24 @@ pub(crate) async fn consume_dispositions(
                     (ArtifactStatus::Executed, false)
                 }
                 ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled) => {
-                    super::shielded_release::settled_by_release(
+                    match super::shielded_release::settled_by_release(
                         &artifacts,
                         d.st_hash,
                         durable(&d.held_nullifiers),
-                    )
-                    .unwrap_or((ArtifactStatus::Unresolved { unrecorded: false }, false))
+                    ) {
+                        Some(settled) => {
+                            released |= settled.1;
+                            settled
+                        }
+                        None => (ArtifactStatus::Unresolved { unrecorded: false }, false),
+                    }
                 }
                 ShieldedSpendDisposition::Unresolved(_) => {
                     (ArtifactStatus::Unresolved { unrecorded: false }, false)
                 }
             };
             let stored = Some((d.disposition.kind_str(), d.disposition.reason_str()));
-            settle_then_ack(
+            let acked = settle_then_ack(
                 session,
                 coordinator,
                 d.subwallet,
@@ -3706,6 +3718,14 @@ pub(crate) async fn consume_dispositions(
                 ack,
             )
             .await;
+            // The release's acknowledgement completed here changes what
+            // History and the balance read.
+            if released && acked {
+                session
+                    .hub
+                    .pump
+                    .mark_platform(wallet, [PlatformChange::Shielded]);
+            }
         }
         return;
     }

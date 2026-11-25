@@ -3499,8 +3499,16 @@ mod shield;
 
 impl World {
     /// The dispatch artifact of unshield `n`, registered as the hook
-    /// writes it before the first send.
+    /// writes it before the first send: one note and a padding action.
     fn unshield_artifact(&self, n: u8) {
+        let note = [n.wrapping_add(100); 32];
+        self.unshield_artifact_spending(n, (vec![note], vec![note, [0xee; 32]]));
+    }
+
+    /// As [`Self::unshield_artifact`], its selected and published
+    /// nullifiers `spending`.
+    fn unshield_artifact_spending(&self, n: u8, spending: (Vec<[u8; 32]>, Vec<[u8; 32]>)) {
+        let (selected, published) = spending;
         use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, NewShieldedArtifact};
         let artifact = NewShieldedArtifact {
             activity: [n; 32],
@@ -3509,8 +3517,8 @@ impl World {
             kind: Some(ArtifactKind::Unshield),
             anchor: Some([0xa0; 32]),
             identity_id: None,
-            selected: vec![[n.wrapping_add(100); 32]],
-            published: vec![[n.wrapping_add(100); 32], [0xee; 32]],
+            selected,
+            published,
         };
         let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
         let wrote = (self.f.engine)
@@ -3521,8 +3529,23 @@ impl World {
     /// The hook's accept of unshield `n` crediting `to` with `credits`: its
     /// record, its artifact, then the record armed.
     fn arm_unshield(&self, n: u8, to: PlatformAddress, credits: u64) -> Result<(), PlatformError> {
+        self.arm_unshield_spending(n, to, credits, None)
+    }
+
+    /// As [`Self::arm_unshield`]; `spending`, when given, is the artifact's
+    /// selected and published nullifiers.
+    fn arm_unshield_spending(
+        &self,
+        n: u8,
+        to: PlatformAddress,
+        credits: u64,
+        spending: Option<(Vec<[u8; 32]>, Vec<[u8; 32]>)>,
+    ) -> Result<(), PlatformError> {
         self.stage_unshield(n, to, credits, n.wrapping_add(1))?;
-        self.unshield_artifact(n);
+        match spending {
+            Some(spending) => self.unshield_artifact_spending(n, spending),
+            None => self.unshield_artifact(n),
+        }
         let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
         let armed = (self.f.engine).block_on(async move {
             arm_from_shielded(&s, id, ([n; 32], [n.wrapping_add(1); 32])).await
@@ -3934,10 +3957,12 @@ fn a_held_refused_spend_proves_no_payout_and_no_move() {
 }
 
 /// A refused first send the release settled `executed` (every nullifier it
-/// published proved spent, the library's `Unresolved(Cancelled)` kept) is
-/// proved: the record is done.
+/// published proved spent, the library's `Unresolved(Cancelled)` kept,
+/// one of them padding no other spend can publish) is proved: the record
+/// is done and its payout sent.
 #[test]
 fn from_shielded_executed_by_the_release_is_done() {
+    use crate::platform::payment_locks::PayoutEvidence;
     use dw_appdb::dispatch::ArtifactStatus;
     let w = World::new();
     let a = w.address(0);
@@ -3948,6 +3973,39 @@ fn from_shielded_executed_by_the_release_is_done() {
         ("unresolved", Some("cancelled")),
     );
     assert_eq!(w.shielded_row(1).state, PlatformActivityState::Done);
+    let evidence = (w.f.engine).block_on(
+        w.f.s
+            .shielded_payout_evidence(w.f.wallet, "payout", [2; 32]),
+    );
+    assert_eq!(evidence, PayoutEvidence::Sent);
+}
+
+/// A spend of two notes and no padding nullifier: every published one spent may be
+/// another device's spend of the same notes: the release's `executed`
+/// proves nothing of this transition. The record stays pending and its
+/// payout evidence unknown, as before the release settled it.
+#[test]
+fn a_release_executed_spend_without_padding_proves_nothing() {
+    use crate::platform::payment_locks::PayoutEvidence;
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    let notes = vec![[101; 32], [102; 32]];
+    (w.arm_unshield_spending(1, a, DASH, Some((notes.clone(), notes)))).unwrap();
+    w.settle_unshield_as(
+        1,
+        ArtifactStatus::Executed,
+        ("unresolved", Some("cancelled")),
+    );
+    w.net.fund(a, DASH);
+    for _ in 0..2 {
+        assert_eq!(w.shielded_row(1).state, PlatformActivityState::Pending);
+    }
+    let evidence = (w.f.engine).block_on(
+        w.f.s
+            .shielded_payout_evidence(w.f.wallet, "payout", [2; 32]),
+    );
+    assert_eq!(evidence, PayoutEvidence::Unknown);
 }
 
 /// A done record's credit is what the first read above the height it was

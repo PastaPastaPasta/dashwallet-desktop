@@ -430,7 +430,8 @@ pub enum ShieldedRefusal {
     /// It may still go through: its notes stay held, and nothing invites
     /// sending it again.
     Held,
-    /// Proved never to go through: its notes are spendable again.
+    /// Proved never to go through: the wallet stops holding its notes,
+    /// and those no other spend has spent are spendable again.
     Released,
 }
 

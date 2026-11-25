@@ -29,6 +29,10 @@ struct Platform {
     missing: HashSet<[u8; 32]>,
     /// The anchors read's block time (ms); `None`: [`later_ms`].
     anchors_time_ms: Option<u64>,
+    /// The proofs' quorum keys are the trusted service's, not SPV-verified.
+    unverified: bool,
+    /// How many of the next nullifier reads fail.
+    fail_nullifier_reads: usize,
 }
 
 #[derive(Default)]
@@ -56,15 +60,23 @@ impl ReleaseNet for Script {
             value,
             height,
             time_ms: p.anchors_time_ms.unwrap_or_else(later_ms),
+            // `trust::scoped` sets it from the lookups noted below.
+            verified: false,
         });
-        Box::pin(async move { read })
+        let verified = !p.unverified;
+        Box::pin(async move {
+            crate::platform::trust::note_lookup(verified);
+            read
+        })
     }
 
     fn nullifiers(&self, nullifiers: Vec<[u8; 32]>) -> BoxFuture<Option<Statuses>> {
         self.nullifier_reads.fetch_add(1, Ordering::SeqCst);
-        let p = self.platform.lock().unwrap();
+        let mut p = self.platform.lock().unwrap();
+        let failing = p.fail_nullifier_reads > 0;
+        p.fail_nullifier_reads = p.fail_nullifier_reads.saturating_sub(1);
         // Platform refuses a longer query outright.
-        let answered = nullifiers.len() <= NULLIFIER_READ_LIMIT;
+        let answered = !failing && nullifiers.len() <= NULLIFIER_READ_LIMIT;
         let read = (p.nullifiers_height.filter(|_| answered)).map(|height| Proved {
             value: (nullifiers.into_iter())
                 .filter(|n| !p.missing.contains(n))
@@ -72,8 +84,13 @@ impl ReleaseNet for Script {
                 .collect(),
             height,
             time_ms: later_ms(),
+            verified: false,
         });
-        Box::pin(async move { read })
+        let verified = !p.unverified;
+        Box::pin(async move {
+            crate::platform::trust::note_lookup(verified);
+            read
+        })
     }
 }
 
@@ -118,6 +135,15 @@ impl Fixture {
     /// Spend 1 refused at its first broadcast, the library knowing its
     /// notes unspent; spend 2 still stored. Platform reads as `platform`.
     fn new(platform: Platform) -> Self {
+        let f = Self::stuck(platform);
+        f.recorded_at(1, 1);
+        f.recorded_at(2, 1);
+        f
+    }
+
+    /// As [`Self::new`], with no height either spend's anchor was proved
+    /// recorded at: as an earlier build left them.
+    fn stuck(platform: Platform) -> Self {
         let dir = dw_testutil::private_tempdir();
         let engine = engine_at(dir.path());
         let (session, wallet) = first_launch(&engine);
@@ -133,6 +159,27 @@ impl Fixture {
         f.cancel(1);
         f.reads(platform);
         f
+    }
+
+    /// The dispatch hook's read: spend `n`'s anchor proved recorded at
+    /// `height`.
+    fn recorded_at(&self, n: u8, height: u64) {
+        let (s, w) = (Arc::clone(&self.session), self.wallet);
+        (self.engine)
+            .block_on(async move {
+                crate::platform::shielded_release::record_presence(&s, w, st_hash(n), height).await
+            })
+            .unwrap();
+    }
+
+    /// The height spend `n`'s anchor was proved recorded at, as kept.
+    fn presence(&self, n: u8) -> Option<u64> {
+        let (s, w) = (Arc::clone(&self.session), self.wallet);
+        (self.engine)
+            .block_on(async move {
+                crate::platform::shielded_release::presence(&s, w, st_hash(n)).await
+            })
+            .unwrap()
     }
 
     fn reads(&self, platform: Platform) {
@@ -250,8 +297,13 @@ impl Fixture {
     /// The library's own row of spend 1, which it flips to failed at the
     /// refusal.
     fn save_failed_row(&self) {
+        self.save_failed_row_of(1);
+    }
+
+    /// The library's own row of spend `n`, failed.
+    fn save_failed_row_of(&self, n: u8) {
         let failed = ShieldedActivityEntry {
-            id: [1; 32],
+            id: [n; 32],
             kind: ShieldedActivityKind::Sent,
             direction: ShieldedDirection::Out,
             amount: 1_000,
@@ -263,7 +315,7 @@ impl Fixture {
             created_at_ms: 0,
             min_note_position: None,
             note_cmxs: Vec::new(),
-            spent_nullifiers: nullifiers(1),
+            spent_nullifiers: nullifiers(n),
         };
         let (coordinator, wallet) = (self.coordinator(), self.wallet);
         self.engine.block_on(async move {
@@ -275,11 +327,16 @@ impl Fixture {
 
     /// Spend 1's history row as the facade reads it: status and refusal.
     fn row(&self) -> (Shown, Option<ShieldedRefusal>) {
+        self.row_of(1)
+    }
+
+    /// Spend `n`'s history row as the facade reads it.
+    fn row_of(&self, n: u8) -> (Shown, Option<ShieldedRefusal>) {
         let rows = (self.engine)
             .block_on(self.session.dashpay(self.wallet).shielded_history(0, 50))
             .unwrap();
         let row = (rows.into_iter())
-            .find(|r| r.id == hex::encode([1u8; 32]))
+            .find(|r| r.id == hex::encode([n; 32]))
             .unwrap();
         (row.status, row.refusal)
     }
@@ -444,7 +501,9 @@ fn unproved_or_contradicted_nullifiers_hold() {
 
 /// ASK-2, all published nullifiers proved spent: it executed. Settled
 /// `executed` (never failed), acknowledged once the journal reads its notes
-/// spent, at a later pass.
+/// spent, at a later pass. It published no padding nullifier, so another
+/// device's spend of the same notes reads the same: its payout evidence
+/// stays unknown.
 #[test]
 fn every_nullifier_spent_settles_executed() {
     let f = Fixture::new(Platform {
@@ -470,7 +529,7 @@ fn every_nullifier_spent_settles_executed() {
     ));
     assert_eq!(
         evidence,
-        crate::platform::payment_locks::PayoutEvidence::Sent
+        crate::platform::payment_locks::PayoutEvidence::Unknown
     );
 
     spent_seen(&f.session, f.wallet, &nullifiers(1));
@@ -487,8 +546,10 @@ fn every_nullifier_spent_settles_executed() {
 }
 
 /// ASK-2, some but not all published nullifiers proved spent: it never
-/// executed and never can. Held until the library reads the spent note
-/// spent (so nothing selects it), then released whatever the anchor.
+/// executed and never can. Held until the spent note reads spent in the
+/// library and in the journal, which records it only once the wallet's
+/// write succeeded (so no relaunch selects it), then released whatever the
+/// anchor.
 #[test]
 fn some_nullifiers_spent_release_once_read_spent_locally() {
     let spent = nullifiers(1)[0];
@@ -502,6 +563,10 @@ fn some_nullifiers_spent_release_once_read_spent_locally() {
     assert_eq!(f.settlement(), held());
 
     f.mark_spent(&[spent]);
+    f.pass();
+    assert_eq!(f.settlement(), held(), "read spent in memory only");
+
+    spent_seen(&f.session, f.wallet, &[spent]);
     f.pass();
     assert_eq!(f.settlement().0, ArtifactStatus::NotExecuted);
     assert!(f.settlement().2);
@@ -630,6 +695,62 @@ fn an_offline_release_never_settles_executed() {
     assert_eq!(f.reads_taken(), (0, 0));
 }
 
+/// Platform data that frees notes or confirms a contact payment must be
+/// SPV-verified (rule 5, `strict_rule_5`): reads whose proofs used the
+/// trusted service's quorum keys settle nothing, whatever they prove; with
+/// the trusted-only toggle on, they do.
+#[test]
+fn reads_on_unverified_quorum_keys_settle_nothing() {
+    let f = Fixture::new(Platform {
+        unverified: true,
+        ..pruned()
+    });
+    f.pass();
+    f.assert_held();
+
+    let executed = Fixture::new(Platform {
+        unverified: true,
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        spent: nullifiers(1).into_iter().collect(),
+        ..Default::default()
+    });
+    executed.pass();
+    assert_eq!(executed.settlement(), held());
+
+    f.session.trust.set_trusted_only(true);
+    f.forget_backoff();
+    f.pass();
+    f.assert_released();
+}
+
+/// An anchors read one block behind (the SDK's height tolerance) can be
+/// from before the spend's anchor was recorded, whatever the clock said at
+/// the refusal: once a read proved the anchor recorded at a height, its
+/// absence counts only above that height.
+#[test]
+fn an_absence_at_or_below_a_proved_presence_holds() {
+    let f = Fixture::new(Platform {
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        ..Default::default()
+    });
+    f.pass();
+    f.assert_held();
+
+    f.platform().anchors = Some((vec![[0xbb; 32]], 99));
+    f.platform().nullifiers_height = Some(99);
+    f.forget_backoff();
+    f.pass();
+    f.assert_held();
+
+    f.platform().anchors = Some((vec![[0xbb; 32]], 101));
+    f.platform().nullifiers_height = Some(101);
+    f.forget_backoff();
+    f.pass();
+    f.assert_released();
+}
+
 /// T7: whatever refused it (a consensus verdict, a transport failure), the
 /// library writes the same `Unresolved(Cancelled)`, so a second refused
 /// spend of the wallet is released by the same rule in the same pass.
@@ -697,6 +818,160 @@ fn the_history_row_follows_the_release() {
     assert_eq!(f.row(), (Shown::Failed, Some(ShieldedRefusal::Released)));
 }
 
+/// Q80 R3, a source unread: while the library's outcomes cannot be listed
+/// (here between the release's settle and the library's acknowledgement,
+/// so the journal alone reads released) a failed row reads held; while the
+/// journal cannot be read, a failed row the library does not list (spend
+/// 2, dispatched, its result unknown) reads held too. Neither reads failed.
+#[test]
+fn a_failed_row_reads_held_while_its_sources_cannot_be_read() {
+    let f = Fixture::new(pruned());
+    f.save_failed_row();
+    f.save_failed_row_of(2);
+    let crash = &f.session.platform.crash_before_ack;
+    crash.store(true, Ordering::SeqCst);
+    f.pass();
+    assert_eq!(f.settlement().0, ArtifactStatus::NotExecuted);
+    let fail_listing = &f.session.platform.fail_disposition_listing;
+    fail_listing.store(true, Ordering::SeqCst);
+    assert_eq!(f.row(), (Shown::Pending, Some(ShieldedRefusal::Held)));
+    fail_listing.store(false, Ordering::SeqCst);
+    assert_eq!(f.row(), (Shown::Pending, Some(ShieldedRefusal::Held)));
+
+    f.engine.block_on(f.session.leases.close_journal());
+    assert!(!f.session.leases.journal_ready());
+    assert_eq!(f.row_of(2), (Shown::Pending, Some(ShieldedRefusal::Held)));
+}
+
+/// Q80 R3, unreconciled: a dispatched spend whose result the journal does
+/// not hold yet (spend 2, registered by the hook, the library's row failed
+/// before any outcome reached the journal) is never shown failed.
+#[test]
+fn an_unreconciled_dispatched_spend_never_reads_failed() {
+    let f = Fixture::new(pruned());
+    f.save_failed_row_of(2);
+    assert_eq!(
+        settlement(&f.engine, &f.session, f.wallet, 2).0,
+        ArtifactStatus::Registered
+    );
+    assert_eq!(f.row_of(2), (Shown::Pending, Some(ShieldedRefusal::Held)));
+}
+
+/// Q80 S1: a release changes the wallet's Shielded balance and history, so
+/// it raises the Shielded change for the next notification; a pass that
+/// releases nothing raises none.
+#[test]
+fn a_release_raises_the_shielded_change() {
+    let f = Fixture::new(Platform {
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        ..Default::default()
+    });
+    let marks = &f.session.hub.pump.platform_marks;
+    let shielded = |m: &Vec<(
+        WalletId,
+        std::collections::BTreeSet<crate::events::PlatformChange>,
+    )>| {
+        m.iter()
+            .any(|(w, c)| *w == f.wallet && c.contains(&crate::events::PlatformChange::Shielded))
+    };
+    *marks.lock().unwrap() = Some(Vec::new());
+    f.pass();
+    f.assert_held();
+    assert!(
+        !shielded(marks.lock().unwrap().as_ref().unwrap()),
+        "held: none"
+    );
+
+    f.platform().anchors = Some((vec![[0xbb; 32]], 1300));
+    f.platform().nullifiers_height = Some(1300);
+    f.forget_backoff();
+    f.pass();
+    f.assert_released();
+    assert!(
+        shielded(marks.lock().unwrap().as_ref().unwrap()),
+        "released"
+    );
+}
+
+/// Q80 S2: a failed nullifier read holds only the spends of its batch; the
+/// pass goes on to the next batch. Spend 3 publishes enough nullifiers that
+/// it reads apart from spend 1; whichever is read first fails.
+#[test]
+fn a_failed_batch_holds_only_its_own_spends() {
+    let f = Fixture::new(pruned());
+    let big = big_spend();
+    f.save_notes(&big.nullifiers);
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    let stored = big.clone();
+    f.engine.block_on(async move {
+        let m = s.manager().unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        for n in &stored.nullifiers {
+            assert!(store.mark_pending(subwallet(w), n).unwrap());
+            (store.set_pending_spend(subwallet(w), n, stored.anchor, stored.activity_id)).unwrap();
+        }
+        store.arm_redrive(subwallet(w), stored.clone()).unwrap();
+        drop(store);
+        s.leases
+            .record_shielded_artifact(
+                w,
+                NewShieldedArtifact {
+                    activity: stored.activity_id,
+                    origin: ArtifactOrigin::Dispatched,
+                    st_hash: Some(Sha256::digest(&stored.st_bytes).into()),
+                    kind: Some(ArtifactKind::Transfer),
+                    anchor: Some(stored.anchor),
+                    identity_id: None,
+                    selected: stored.nullifiers.clone(),
+                    published: stored.nullifiers.clone(),
+                },
+            )
+            .await
+            .unwrap();
+    });
+    let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
+    resolve(&f.engine, &f.session, f.wallet, 3, cancelled);
+    let big_hash: [u8; 32] = Sha256::digest(&big.st_bytes).into();
+    let (s, w) = (Arc::clone(&f.session), f.wallet);
+    (f.engine)
+        .block_on(async move {
+            crate::platform::shielded_release::record_presence(&s, w, big_hash, 1).await
+        })
+        .unwrap();
+    f.platform().fail_nullifier_reads = 1;
+    f.pass();
+    assert_eq!(f.reads_taken(), (1, 2), "both batches read");
+    let released =
+        |n: u8| settlement(&f.engine, &f.session, f.wallet, n).0 == ArtifactStatus::NotExecuted;
+    assert!(
+        released(1) != released(3),
+        "one batch released, the other held"
+    );
+}
+
+/// Spend 3: 99 nullifiers on its own anchor, cancelled like spend 1.
+fn big_spend() -> PendingRedrive {
+    let anchor = [0xa3; 32];
+    let nullifiers: Vec<[u8; 32]> = (0..99u8)
+        .map(|i| {
+            let mut n = [0x33; 32];
+            n[0] = i;
+            n
+        })
+        .collect();
+    PendingRedrive {
+        activity_id: [3; 32],
+        st_bytes: transition(1, anchor, &nullifiers),
+        anchor,
+        nullifiers,
+        attempts: 0,
+        identity_nonce_finalized: false,
+        identity_user_abandoned: false,
+    }
+}
+
 /// Where [`a_wallet_stuck_before_the_upgrade_is_released_after_the_relaunch`]'s
 /// child keeps its data root.
 const STUCK_ROOT: &str = "DW_444_STUCK_ROOT";
@@ -729,8 +1004,10 @@ fn stuck_before_the_upgrade_child() {
 }
 
 /// T12: a wallet stuck before the upgrade (the journal reads the spend
-/// `unresolved`/`cancelled`, the library holds it) is released at the
-/// first pass after the relaunch once the evidence holds.
+/// `unresolved`/`cancelled`, the library holds it, no height its anchor was
+/// proved recorded at) is held while its anchor reads recorded, that read
+/// keeping its height, and released at the first pass after it was pruned
+/// above that height.
 #[test]
 fn a_wallet_stuck_before_the_upgrade_is_released_after_the_relaunch() {
     let dir = dw_testutil::private_tempdir();
@@ -771,11 +1048,44 @@ fn a_wallet_stuck_before_the_upgrade_is_released_after_the_relaunch() {
         f.listing().contains(&st_hash(1)),
         "still held by the library"
     );
+    assert_eq!(f.presence(1), None);
     // The notes as the library's bind restores them from its scan.
     f.save_notes(&nullifiers(1));
-    f.reads(pruned());
+    f.reads(Platform {
+        anchors: Some((vec![anchor()], 100)),
+        nullifiers_height: Some(100),
+        ..Default::default()
+    });
+    f.pass();
+    f.assert_held();
+    assert_eq!(f.presence(1), Some(100));
+    *f.platform() = Platform {
+        anchors: Some((vec![[0xbb; 32]], 1300)),
+        nullifiers_height: Some(1300),
+        ..Default::default()
+    };
+    f.forget_backoff();
     f.pass();
     f.assert_released();
+}
+
+/// A spend no read ever proved its anchor recorded at (sent by an earlier
+/// build, its anchor pruned before any pass read it) has no height its
+/// absence can be ordered above: it stays held, however late the read.
+#[test]
+fn a_spend_never_proved_recorded_stays_held() {
+    let f = Fixture::stuck(Platform {
+        anchors: Some((vec![[0xbb; 32]], 5000)),
+        nullifiers_height: Some(5000),
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        f.forget_backoff();
+        f.pass();
+        f.assert_held();
+    }
+    assert_eq!(f.presence(1), None);
+    assert_eq!(f.reads_taken(), (2, 2));
 }
 
 fn nf(i: u16) -> [u8; 32] {
@@ -795,6 +1105,7 @@ fn held_spend(first: u16, actions: u16) -> Held {
         anchor: Some([0xa1; 32]),
         selected: ns[..ns.len() - 1].iter().map(|&n| (n, false)).collect(),
         published: ns,
+        presence: Some(50),
     }
 }
 
@@ -818,9 +1129,10 @@ fn spends_are_read_in_batches_platform_answers() {
 }
 
 /// Every branch of the rule on one spend (two held notes and a padding
-/// nullifier): only the full evidence releases, every published nullifier
-/// spent is executed, some spent releases once the library reads those
-/// spent, and anything missing or contradicting holds.
+/// nullifier, its anchor proved recorded at 50): only the full evidence
+/// releases, every published nullifier spent is executed, some spent
+/// releases once the library and the journal read those spent, and
+/// anything missing, unverified or contradicting holds.
 #[test]
 fn the_verdict_releases_only_on_the_whole_evidence() {
     let spend = held_spend(0x40, 3);
@@ -830,6 +1142,7 @@ fn the_verdict_releases_only_on_the_whole_evidence() {
         value: vec![[0xbb; 32]],
         height: 100,
         time_ms: 1_001 + margin,
+        verified: true,
     };
     let read = |spent: &[[u8; 32]], height| Proved {
         value: (spend.nullifiers().into_iter())
@@ -837,14 +1150,16 @@ fn the_verdict_releases_only_on_the_whole_evidence() {
             .collect(),
         height,
         time_ms: 0,
+        verified: true,
     };
     let unspent: HashMap<[u8; 32], bool> = spend.held.iter().map(|&n| (n, false)).collect();
     let none = HashSet::new();
-    let judge = |s: &Held,
-                 a: Option<&Proved<Vec<[u8; 32]>>>,
-                 n: &Statuses,
-                 notes: &HashMap<[u8; 32], bool>,
-                 flagged: &HashSet<[u8; 32]>| verdict(s, a, n, notes, flagged);
+    let judge =
+        |s: &Held,
+         a: Option<&Proved<Vec<[u8; 32]>>>,
+         n: &Statuses,
+         notes: &HashMap<[u8; 32], bool>,
+         flagged: &HashSet<[u8; 32]>| verdict(s, a, n, notes, flagged, false);
     let fresh = read(&[], 100);
     assert_eq!(
         judge(&spend, Some(&anchors), &fresh, &unspent, &none),
@@ -874,7 +1189,49 @@ fn the_verdict_releases_only_on_the_whole_evidence() {
     twice.published.push(pad);
     let mut gap = read(&[], 100);
     gap.value.retain(|(n, _)| *n != pad);
+    let mut no_presence = spend.clone();
+    no_presence.presence = None;
+    let mut present_at_ha = spend.clone();
+    present_at_ha.presence = Some(100);
+    let unverified_anchors = Proved {
+        verified: false,
+        ..anchors.clone()
+    };
+    let mut unverified_fresh = read(&[], 100);
+    unverified_fresh.verified = false;
+    let mut unverified_all = read(&spend.published, 100);
+    unverified_all.verified = false;
     for (case, got) in [
+        (
+            "no height the anchor was proved recorded at",
+            judge(&no_presence, Some(&anchors), &fresh, &unspent, &none),
+        ),
+        (
+            "absent at the height it was proved recorded at",
+            judge(&present_at_ha, Some(&anchors), &fresh, &unspent, &none),
+        ),
+        (
+            "the anchors read unverified",
+            judge(&spend, Some(&unverified_anchors), &fresh, &unspent, &none),
+        ),
+        (
+            "the nullifier read unverified",
+            judge(&spend, Some(&anchors), &unverified_fresh, &unspent, &none),
+        ),
+        (
+            "every nullifier spent, unverified",
+            judge(&spend, Some(&anchors), &unverified_all, &unspent, &none),
+        ),
+        (
+            "a held note spent, read spent in memory only",
+            judge(
+                &spend,
+                Some(&anchors),
+                &read(&[n1], 100),
+                &read_spent,
+                &none,
+            ),
+        ),
         (
             "block time within the margin",
             judge(&spend, Some(&at_margin), &fresh, &unspent, &none),
@@ -951,8 +1308,20 @@ fn the_verdict_releases_only_on_the_whole_evidence() {
             Some(&recorded),
             &read(&[n1], 100),
             &read_spent,
-            &none
+            &flagged
         ),
         Verdict::NotExecuted
+    );
+    assert_eq!(
+        verdict(
+            &spend,
+            Some(&unverified_anchors),
+            &unverified_fresh,
+            &unspent,
+            &none,
+            true
+        ),
+        Verdict::NotExecuted,
+        "rule 5 off"
     );
 }

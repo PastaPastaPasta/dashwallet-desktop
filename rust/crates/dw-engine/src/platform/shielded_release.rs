@@ -2,12 +2,16 @@
 //! broadcast (#444). The library records such a spend `Unresolved(Cancelled)`
 //! and holds its notes until the host acknowledges it; the refusal proves
 //! nothing, as the spend may still execute. The engine acknowledges it only
-//! on proved evidence that it never executed and never can:
-//! - its anchor is proved absent from Platform's anchors tree at height Ha
-//!   (Platform executes a spend only while its anchor is recorded, and a
-//!   pruned anchor never returns), at a block time more than
-//!   [`ANCHOR_READ_MARGIN`] after the refusal, so Ha is above the height the
-//!   spend was built at and the anchor is not merely unrecorded yet;
+//! on proved evidence, ordered by chain height and never by a clock, that it
+//! never executed and never can:
+//! - its anchor was proved recorded at a height Hp (the dispatch hook's read
+//!   before the first send, or a later pass that found it still recorded;
+//!   the highest is kept in app.sqlite), and is proved absent from
+//!   Platform's anchors tree at a height Ha > Hp. Platform executes a spend
+//!   only while its anchor is recorded, and a recorded anchor leaves the
+//!   tree only when pruned, never to return; absent above a height it was
+//!   present at, it was pruned. A spend with no Hp (sent by an earlier
+//!   build, its anchor pruned before any pass saw it) stays held;
 //! - each of its nullifiers is proved unspent at height Hn ≥ Ha, so no block
 //!   up to Hn executed it;
 //! - the library knows each note it holds, unspent, and the journal flags
@@ -16,8 +20,12 @@
 //! The same one nullifier read settles the residual case: every nullifier
 //! it publishes proved spent means it executed; some but not all means it
 //! never executed and never can (a transition inserts all its nullifiers at
-//! once, and a spent one fails it). Anything else, a failed or unproved
-//! read included, holds.
+//! once, and a spent one fails it), released once every held note Platform
+//! reads spent reads spent in the library and in the journal. A decisive
+//! read must be SPV-verified (every quorum key its proof used, counted by
+//! `trust::scoped`; rule 5 as `strict_rule_5`, so the trusted-only toggle
+//! lifts it). Anything else, a failed, unproved or unverified read
+//! included, holds.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, PoisonError};
@@ -58,24 +66,39 @@ pub(crate) const ANCHOR_RECHECK: Duration = Duration::from_secs(600);
 /// How long one transport attempt of a release read waits.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How much later than the refusal the anchors read's block time must be.
-/// The SDK accepts a response only within 31 minutes of the local clock,
-/// so the block the spend was built on is at most that far past the local
-/// time the library stamped the refusal with; a block time past this
-/// margin is from a later block, whatever the local clock says.
+/// How much later than the refusal the anchors read's block time must be:
+/// an extra hold only. The release's safety rests on chain order (Ha > Hp,
+/// module doc); the refusal's time is the library's local clock, which
+/// orders nothing.
 pub(crate) const ANCHOR_READ_MARGIN: Duration = Duration::from_secs(45 * 60);
 
 /// The most nullifiers Platform answers in one read; the release packs
 /// whole spends into reads up to it.
 pub(crate) const NULLIFIER_READ_LIMIT: usize = 100;
 
-/// A proved answer: its value, and the height and block time (ms) of the
-/// response it came in.
+/// A proved answer: its value, the height and block time (ms) of the
+/// response it came in, and whether every quorum key its proof used was
+/// SPV-verified (set by [`scoped`], the reads leave it `false`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Proved<T> {
     pub(crate) value: T,
     pub(crate) height: u64,
     pub(crate) time_ms: u64,
+    pub(crate) verified: bool,
+}
+
+/// `read` in its own trust scope, its provenance recorded.
+async fn scoped<T>(read: BoxFuture<Option<Proved<T>>>) -> Option<Proved<T>> {
+    let (read, tally) = super::trust::scoped(read).await;
+    read.map(|p| Proved {
+        verified: tally.verified(),
+        ..p
+    })
+}
+
+/// Whether rule 5 lets an unverified read decide (the trusted-only toggle).
+fn unverified_counts(session: &NetworkSession) -> bool {
+    session.trust.strict_rule_5() == super::trust::Rule5::Off
 }
 
 /// A proved nullifier read: each nullifier with whether it is spent.
@@ -118,6 +141,7 @@ impl ReleaseNet for SdkReads {
                     value: anchors.map(|a| a.0).unwrap_or_default(),
                     height: metadata.height,
                     time_ms: metadata.time_ms,
+                    verified: false,
                 }),
                 Err(e) => {
                     tracing::debug!(error = %e, "the shielded anchors were not read");
@@ -143,6 +167,7 @@ impl ReleaseNet for SdkReads {
                         .collect(),
                     height: metadata.height,
                     time_ms: metadata.time_ms,
+                    verified: false,
                 }),
                 Err(e) => {
                     tracing::debug!(error = %e, "the shielded nullifiers were not read");
@@ -186,6 +211,8 @@ pub(crate) struct Held {
     pub(crate) anchor: Option<[u8; 32]>,
     pub(crate) selected: Vec<([u8; 32], bool)>,
     pub(crate) published: Vec<[u8; 32]>,
+    /// Hp: the highest height its anchor was proved recorded at.
+    pub(crate) presence: Option<u64>,
 }
 
 impl Held {
@@ -235,9 +262,87 @@ async fn held(
             anchor: artifact.anchor,
             selected: artifact.selected.clone(),
             published: artifact.published.clone(),
+            presence: None,
         });
     }
+    for spend in &mut found {
+        spend.presence = presence(session, wallet, spend.st_hash).await?;
+    }
     Some((found, journal_spent))
+}
+
+/// The app.sqlite key of the highest height `st_hash`'s anchor was proved
+/// recorded at.
+fn presence_key(st_hash: [u8; 32]) -> String {
+    format!("shielded_anchor_recorded/{}", hex::encode(st_hash))
+}
+
+/// The highest height the anchor of `wallet`'s spend `st_hash` was proved
+/// recorded at (`Some(None)`: none); `None` when it cannot be read.
+pub(crate) async fn presence(
+    session: &NetworkSession,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+) -> Option<Option<u64>> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = presence_key(st_hash);
+    let value = (session.appdb_op(move |db| db.setting(&scope, &key)).await).ok()?;
+    match value {
+        None => Some(None),
+        Some(v) => v.parse().ok().map(Some),
+    }
+}
+
+/// Records that the anchor of `wallet`'s spend `st_hash` was proved recorded
+/// at `height`, keeping the highest.
+pub(crate) async fn record_presence(
+    session: &NetworkSession,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+    height: u64,
+) -> Result<(), crate::EngineError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = presence_key(st_hash);
+    session
+        .appdb_op(move |db| {
+            let known = (db.setting(&scope, &key)?).and_then(|v| v.parse::<u64>().ok());
+            if known.is_some_and(|k| k >= height) {
+                return Ok(());
+            }
+            db.set_setting(&scope, &key, Some(&height.to_string()))
+        })
+        .await
+}
+
+/// The dispatch hook's chain-order read, before anything of the spend is
+/// written or sent: one proved anchors read must find the spend's anchor
+/// recorded, and its height is kept as the spend's Hp when the read is
+/// SPV-verified (or rule 5 is off). A failed read, or one without the
+/// anchor, refuses the spend. Tests without a release script model a read
+/// that proves the anchor recorded at height 1.
+pub(crate) async fn anchor_recorded_at_dispatch(
+    session: &NetworkSession,
+    payload: &ShieldedDispatchPayload,
+) -> Result<(), String> {
+    let wallet = WalletId(payload.wallet_id);
+    #[cfg(test)]
+    if super::runtime::guard(&session.platform.release_net).is_none() {
+        return (record_presence(session, wallet, payload.st_hash, 1).await)
+            .map_err(|e| format!("the anchor's height was not kept: {e}"));
+    }
+    let manager = session.manager().map_err(|e| e.to_string())?;
+    let net = release_net(session, &manager);
+    let Some(anchors) = scoped(net.anchors()).await else {
+        return Err("Platform's recorded anchors could not be read".into());
+    };
+    if !anchors.value.contains(&payload.anchor) {
+        return Err("the spend's anchor is not recorded on Platform".into());
+    }
+    if anchors.verified || unverified_counts(session) {
+        (record_presence(session, wallet, payload.st_hash, anchors.height).await)
+            .map_err(|e| format!("the anchor's height was not kept: {e}"))?;
+    }
+    Ok(())
 }
 
 fn standing(a: &ShieldedArtifact) -> bool {
@@ -252,6 +357,23 @@ pub(crate) fn disposition_is_cancelled(a: &ShieldedArtifact) -> bool {
     a.disposition
         .as_ref()
         .is_some_and(|(kind, reason)| (kind.as_str(), reason.as_deref()) == CANCELLED)
+}
+
+/// Whether the journal proves `a`'s transition executed: settled `executed`
+/// on the library's own `executed` disposition, or by the release on a
+/// refused first send that published a padding nullifier (one of no
+/// selected note: a random dummy note's, which no other spend can spend,
+/// so all published spent is this transition). A release-settled spend of
+/// only real notes may have been spent by another device holding the same
+/// notes, which proves nothing of this transition.
+pub(crate) fn proves_execution(a: &ShieldedArtifact) -> bool {
+    let padded = || {
+        let selected: HashSet<[u8; 32]> = a.selected.iter().map(|&(n, _)| n).collect();
+        a.published.iter().any(|n| !selected.contains(n))
+    };
+    a.status == ArtifactStatus::Executed
+        && ((a.disposition.as_ref()).is_some_and(|(kind, _)| kind == "executed")
+            || (disposition_is_cancelled(a) && padded()))
 }
 
 /// What the evidence proves of one held spend.
@@ -270,13 +392,16 @@ pub(crate) enum Verdict {
 
 /// The verdict on `spend` from the anchors read and the nullifier read,
 /// with the library's notes of the account and the journal's spent flags.
+/// An unverified read decides nothing unless `unverified_counts`.
 pub(crate) fn verdict(
     spend: &Held,
     anchors: Option<&Proved<Vec<[u8; 32]>>>,
     nullifiers: &Statuses,
     notes: &HashMap<[u8; 32], bool>,
     journal_spent: &HashSet<[u8; 32]>,
+    unverified_counts: bool,
 ) -> Verdict {
+    let counts = |verified: bool| verified || unverified_counts;
     let published: BTreeSet<[u8; 32]> = spend.published.iter().copied().collect();
     if published.len() != spend.published.len()
         || !spend.held.is_subset(&published)
@@ -292,15 +417,19 @@ pub(crate) fn verdict(
         return Verdict::Hold;
     };
     let published_spent = (spend.published.iter()).filter(|n| statuses[*n]).count();
+    if published_spent > 0 && !counts(nullifiers.verified) {
+        return Verdict::Hold;
+    }
     if published_spent == spend.published.len() {
         return Verdict::Executed;
     }
     if published_spent > 0 {
-        // Each held note Platform reads spent must read spent locally too
-        // before the others go back, or the next spend could select it.
+        // Each held note Platform reads spent must read spent locally, and
+        // durably in the journal, before the others go back, or the next
+        // spend (or a relaunch's) could select it.
         let local = (spend.held.iter())
             .filter(|n| statuses[*n])
-            .all(|n| notes.get(n) == Some(&true));
+            .all(|n| notes.get(n) == Some(&true) && journal_spent.contains(n));
         return if local {
             Verdict::NotExecuted
         } else {
@@ -319,7 +448,10 @@ pub(crate) fn verdict(
     let known_unspent = (spend.held.iter()).all(|n| notes.get(n) == Some(&false));
     let flagged = (spend.held.iter()).any(|n| journal_spent.contains(n));
     let margin = u64::try_from(ANCHOR_READ_MARGIN.as_millis()).unwrap_or(u64::MAX);
-    if nullifiers.height < anchors.height
+    if spend.presence.is_none_or(|hp| anchors.height <= hp)
+        || !counts(anchors.verified)
+        || !counts(nullifiers.verified)
+        || nullifiers.height < anchors.height
         || anchors.time_ms <= spend.at_ms.saturating_add(margin)
         || !known_unspent
         || flagged
@@ -394,13 +526,13 @@ pub(crate) async fn release_final_rejections(
         return;
     }
     let net = release_net(session, manager);
-    let anchors = net.anchors().await;
+    let anchors = scoped(net.anchors()).await;
     let mut read: HashMap<[u8; 32], Arc<Statuses>> = HashMap::new();
     for batch in batches(&due) {
         let wanted: BTreeSet<[u8; 32]> = batch.iter().flat_map(|&i| due[i].nullifiers()).collect();
-        let Some(statuses) = net.nullifiers(wanted.into_iter().collect()).await else {
+        let Some(statuses) = scoped(net.nullifiers(wanted.into_iter().collect())).await else {
             tracing::debug!(wallet_id = %wallet, "refused shielded spends stay held: their nullifiers were not read");
-            break;
+            continue;
         };
         let statuses = Arc::new(statuses);
         read.extend(
@@ -437,7 +569,15 @@ pub(crate) async fn release_final_rejections(
         let Some(notes) = notes(coordinator, spend.subwallet).await else {
             continue;
         };
-        let verdict = verdict(&spend, anchors.as_ref(), nullifiers, &notes, &journal_spent);
+        let trusted = unverified_counts(session);
+        let verdict = verdict(
+            &spend,
+            anchors.as_ref(),
+            nullifiers,
+            &notes,
+            &journal_spent,
+            trusted,
+        );
         let transition = hex::encode(spend.st_hash);
         let (status, ack) = match verdict {
             Verdict::NotExecuted => (ArtifactStatus::NotExecuted, true),
@@ -446,6 +586,11 @@ pub(crate) async fn release_final_rejections(
                 (ArtifactStatus::Executed, durable)
             }
             Verdict::AnchorRecorded => {
+                if let Some(a) = anchors.as_ref().filter(|a| a.verified || trusted)
+                    && let Err(e) = record_presence(session, wallet, spend.st_hash, a.height).await
+                {
+                    tracing::warn!(wallet_id = %wallet, %transition, error = %e, "a refused shielded spend's anchor height was not kept");
+                }
                 (session.platform.release_backoff.lock())
                     .unwrap_or_else(PoisonError::into_inner)
                     .insert(spend.st_hash, now + ANCHOR_RECHECK);
@@ -462,7 +607,10 @@ pub(crate) async fn release_final_rejections(
             %transition,
             ?verdict,
             anchors_height = anchors.as_ref().map(|a| a.height),
+            anchor_recorded_height = spend.presence,
             nullifiers_height = nullifiers.height,
+            anchors_verified = anchors.as_ref().map(|a| a.verified),
+            nullifiers_verified = nullifiers.verified,
             "a refused shielded spend is settled on proved evidence"
         );
         settle_then_ack(
@@ -475,6 +623,10 @@ pub(crate) async fn release_final_rejections(
             ack,
         )
         .await;
+        session
+            .hub
+            .pump
+            .mark_platform(wallet, [crate::events::PlatformChange::Shielded]);
     }
 }
 
@@ -539,13 +691,25 @@ pub(crate) fn bundle_matches(payload: &ShieldedDispatchPayload) -> bool {
     })
 }
 
+#[cfg(test)]
+fn listing_fails(session: &NetworkSession) -> bool {
+    (session.platform.fail_disposition_listing).load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(not(test))]
+fn listing_fails(_: &NetworkSession) -> bool {
+    false
+}
+
 /// Reads each of `rows` that is a refused first send from the library's
 /// outcome and its journal artifact rather than the library's row, which
 /// reads failed from the refusal on: held (pending, never failed) while the
-/// library holds its notes, released once settled `not_executed` and no
-/// longer held (held while the library's outcomes cannot be read),
-/// confirmed once settled `executed`. Rows stay as they are where neither
-/// reads the spend refused.
+/// library holds its notes or the hook's artifact is not reconciled yet,
+/// released once settled `not_executed` and no longer held, confirmed once
+/// settled `executed`. While either source cannot be read (the library's
+/// outcomes, or the journal, not ready included) every failed row reads
+/// held: it may be a refused spend that can still execute, or one that did.
+/// Other rows stay as they are.
 pub(crate) async fn mark_refused(
     session: &NetworkSession,
     wallet: WalletId,
@@ -562,7 +726,8 @@ pub(crate) async fn mark_refused(
     }
     let cancelled = ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled);
     let mut held: Option<HashSet<String>> = None;
-    if let Ok(manager) = session.manager()
+    if !listing_fails(session)
+        && let Ok(manager) = session.manager()
         && let Some(coordinator) = manager.shielded_coordinator().await
         && let Ok(dispositions) = coordinator.spend_dispositions(wallet.0).await
     {
@@ -573,33 +738,51 @@ pub(crate) async fn mark_refused(
                 .collect(),
         );
     }
-    let mut settled: HashMap<String, ArtifactStatus> = HashMap::new();
+    let mut journal: Option<HashMap<String, ShieldedArtifact>> = None;
     if session.leases.journal_ready()
         && let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await
     {
-        settled.extend(
-            (artifacts.iter())
-                .filter(|a| a.origin == ArtifactOrigin::Dispatched && disposition_is_cancelled(a))
-                .map(|a| (hex::encode(a.activity), a.status)),
+        journal = Some(
+            (artifacts.into_iter())
+                .filter(|a| a.origin == ArtifactOrigin::Dispatched)
+                .map(|a| (hex::encode(a.activity), a))
+                .collect(),
         );
     }
+    let (Some(held), Some(journal)) = (held, journal) else {
+        let failed = |r: &&mut ShieldedActivity| r.status == ShieldedActivityStatus::Failed;
+        for row in rows.iter_mut().filter(failed) {
+            row.status = ShieldedActivityStatus::Pending;
+            row.refusal = Some(ShieldedRefusal::Held);
+        }
+        return;
+    };
+    let unreconciled = |a: &ShieldedArtifact| {
+        matches!(
+            a.status,
+            ArtifactStatus::Registered
+                | ArtifactStatus::Unclassified
+                | ArtifactStatus::Unresolved { .. }
+        )
+    };
     for row in rows.iter_mut().filter(|r| open(&r.status)) {
-        let library_holds = held.as_ref().is_none_or(|held| held.contains(&row.id));
-        let (status, refusal) = match settled.get(&row.id) {
-            Some(ArtifactStatus::Executed) => (ShieldedActivityStatus::Confirmed, None),
-            Some(_) if library_holds => {
-                (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held))
+        let library_holds = held.contains(&row.id);
+        let artifact = journal.get(&row.id);
+        let refused = artifact.is_some_and(disposition_is_cancelled);
+        let (status, refusal) = match artifact {
+            Some(a) if refused && a.status == ArtifactStatus::Executed => {
+                (ShieldedActivityStatus::Confirmed, None)
             }
-            None if held.as_ref().is_some_and(|held| held.contains(&row.id)) => {
-                (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held))
-            }
-            Some(ArtifactStatus::Unresolved { .. }) => {
-                (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held))
-            }
-            Some(ArtifactStatus::NotExecuted) => (
+            Some(a) if refused && a.status == ArtifactStatus::NotExecuted && !library_holds => (
                 ShieldedActivityStatus::Failed,
                 Some(ShieldedRefusal::Released),
             ),
+            _ if library_holds => (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held)),
+            Some(a)
+                if unreconciled(a) && (refused || row.status == ShieldedActivityStatus::Failed) =>
+            {
+                (ShieldedActivityStatus::Pending, Some(ShieldedRefusal::Held))
+            }
             _ => continue,
         };
         row.status = status;

@@ -158,7 +158,7 @@ test.describe("Activity: details of a Shielded or Platform-address row", () => {
       await refuse("failed", "released");
       await expect(page.getByTestId("source-detail-status")).toHaveText("Not accepted");
       await expect(page.getByTestId("source-detail-status")).toHaveClass(/is-problem/);
-      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through. Its funds are spendable again.");
+      await expect(page.getByTestId("source-detail-refusal")).toHaveText("Dash Platform didn't accept this payment, and it can no longer go through, so Dash Wallet has stopped holding the Shielded funds it used. Any of those funds that another payment hasn't spent are spendable again.");
       await page.keyboard.press("Escape");
       await expect(page.locator('button[data-txid="shielded:sent:sh-2"]')).toContainText("Not accepted");
       expect(errors).toEqual([]);
