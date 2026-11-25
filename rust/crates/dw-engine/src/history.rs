@@ -2222,9 +2222,8 @@ mod tests {
     }
 
     fn test_key(n: u8) -> dashcore::PublicKey {
-        let secret = dashcore::secp256k1::SecretKey::from_slice(&[n; 32]).unwrap();
-        let secp = dashcore::secp256k1::Secp256k1::signing_only();
-        dashcore::PublicKey::new(secret.public_key(&secp))
+        let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([n; 32]).unwrap();
+        dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret))
     }
 
     fn key_script(n: u8) -> ScriptBuf {
