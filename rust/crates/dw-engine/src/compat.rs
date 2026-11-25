@@ -983,17 +983,16 @@ impl NetworkSession {
             let Some(last) = next.checked_sub(1) else {
                 continue;
             };
+            let reach = pool.highest_used().map_or(last, |h| h.max(last));
+            let target = reach.saturating_add(pool.gap_limit());
             let from = pool.highest_generated().map_or(0, |h| h + 1);
-            pool.generate_addresses(last.saturating_add(1).saturating_sub(from), &key)
+            pool.generate_addresses(target.saturating_add(1).saturating_sub(from), &key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
             for index in 0..=last {
                 if let Some(address) = pool.address_at_index(index) {
                     pool.reserve(&address, 0);
                 }
             }
-            pool.highest_used = pool.highest_used.max(Some(last));
-            pool.maintain_gap_limit(&key)
-                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
         }
         managed.bump_monitor_revision();
         Ok(())

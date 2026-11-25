@@ -199,9 +199,7 @@ fn derived_outside_funds(info: &ManagedWalletInfo, script: &ScriptBuf) -> bool {
         .filter(|(t, keys)| *keys || t.is_contact_owned())
         .any(|(t, _)| {
             (t.address_pools().iter()).any(|p| {
-                p.addresses()
-                    .values()
-                    .any(|a| a.address.script_pubkey() == *script)
+                Address::from_script(script, p.network()).is_ok_and(|a| p.contains_address(&a))
             })
         })
 }
