@@ -294,8 +294,7 @@ mod tests {
         let hash = tx.signature_hash_all(index, &code).unwrap();
         let der = &sig.as_bytes()[..sig.len() - 1];
         EcdsaSignature::from_der(der)
-            .and_then(|s| pk.inner.verify(&hash, s))
-            .is_ok()
+            .is_ok_and(|s| s.is_low_s() && pk.inner.verify(&hash, s).is_ok())
     }
 
     #[test]

@@ -952,6 +952,7 @@ fn test_QT_126_funding_signatures_verify_against_the_special_tx_sighash() {
             let pubkey = EcdsaPublicKey::from_bytes(pubkey).unwrap();
             let script_code = ScriptBuf::new_p2pkh(&dashcore::PublicKey::new(pubkey).pubkey_hash());
             let sig = EcdsaSignature::from_der(der).unwrap();
+            assert!(sig.is_low_s(), "input {i}: high S");
             let digest = |t: &SpecialTx| t.signature_hash_all(i, &script_code).unwrap();
             pubkey
                 .verify(&digest(&tx), sig)

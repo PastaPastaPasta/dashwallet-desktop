@@ -382,7 +382,7 @@ pub fn signed_by(sig: &[u8], hash: [u8; 32], key_id: [u8; 20]) -> bool {
     let Ok(mut sig) = <[u8; 65]>::try_from(sig) else {
         return false;
     };
-    // As `VerifyHash` reads the header; `from_slice` alone is narrower.
+    // As `VerifyHash` reads the header; `recover_pubkey` alone is narrower.
     sig[0] = 27 + (sig[0].wrapping_sub(27) & 7);
     let sig = EcdsaRecSignature::from(sig);
     let Ok(public) = recover_pubkey(&sig, sha256d::Hash::from_byte_array(hash)) else {
