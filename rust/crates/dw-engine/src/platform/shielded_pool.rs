@@ -3330,8 +3330,6 @@ impl ShieldedLib for PwShielded {
         create: &ShieldedCreate,
     ) -> Result<(), SpendError> {
         use dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
-        let keys = permit.shielded_keys()?;
-        let prover = CachedOrchardProver::new();
         let signer = permit.identity_signer(&[create.index])?;
         let public = (signer
             .derive_public_keys(create.index, &super::keys_policy::registration_specs()))
@@ -3343,6 +3341,10 @@ impl ShieldedLib for PwShielded {
                 (key, in_creation)
             })
             .collect();
+        // Released last: a failure above ends the call with nothing released,
+        // so its outcome is Cancelled, not MaybeSent.
+        let keys = permit.shielded_keys()?;
+        let prover = CachedOrchardProver::new();
         (self.pw.wallet)
             .shielded_identity_create_from_pool_with_keyset(
                 &self.coordinator,
