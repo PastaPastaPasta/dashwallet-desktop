@@ -305,6 +305,10 @@ pub(crate) type DroppedHolds = HashMap<WalletId, BTreeSet<OutPoint>>;
 #[cfg(all(test, debug_assertions))]
 pub(crate) const DROPPED_HOLDS_FAULT: &str = "tx_actions.dropped_holds";
 
+/// A test's fault point on the held report's read of the drops' notes.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const HELD_REPORT_FAULT: &str = "tx_actions.held_report";
+
 /// The coins the drops of `wallet` hold for good ([`DROP_HOLDS_PREFIX`]); a
 /// note whose value does not parse holds nothing.
 pub(crate) fn dropped_holds(
@@ -2578,7 +2582,12 @@ impl NetworkSession {
     async fn held_report(&self, manager: &Manager, wallet: WalletId) -> Option<(u64, u32, bool)> {
         use crate::history::{SpendNote, proven_final};
         type Block = (u32, BlockHash);
-        let notes = self.appdb_op(move |db| drop_notes(db, wallet)).await;
+        let notes = (self.appdb_op(move |db| {
+            #[cfg(all(test, debug_assertions))]
+            db.fault_point(HELD_REPORT_FAULT, dw_appdb::fault::Stage::Before)?;
+            drop_notes(db, wallet)
+        }))
+        .await;
         let DropNotes {
             drops,
             mut spent,
@@ -2590,7 +2599,9 @@ impl NetworkSession {
             Ok(notes) => notes,
             Err(e) => {
                 tracing::warn!(%wallet, error = %e, "could not read the drops' notes");
-                return None;
+                let (sum, unvalued, _) =
+                    (self.hub.wallet_state(&wallet)).map_or((0, 0, false), |s| s.held);
+                return Some((sum, unvalued, true));
             }
         };
         let origins = || drops.values().filter_map(|(_, origin)| origin.as_ref());
@@ -2598,6 +2609,7 @@ impl NetworkSession {
         let holds: BTreeSet<OutPoint> = (drops.values())
             .flat_map(|(held, _)| held.iter().copied())
             .collect();
+        let network_locks = self.hub.held_locks(&holds);
         let watched: BTreeSet<OutPoint> = (holds.iter().copied())
             .chain(origins().flat_map(|o| o.contested.iter().copied()))
             .chain(gone.iter().flat_map(|p| deaths.inputs_of(p)))
@@ -2615,7 +2627,10 @@ impl NetworkSession {
             let chainlock = (core.metadata.last_applied_chain_lock.as_ref())
                 .map(|c| (c.block_height, c.block_hash));
             let heard = core.instant_send_locks().clone();
-            let noted: HashSet<&Txid> = locked.values().flatten().chain(&heard).collect();
+            let noted: HashSet<&Txid> = (locked.values().flatten())
+                .chain(&heard)
+                .chain(network_locks.keys())
+                .collect();
             let recorded: HashMap<Txid, (Transaction, Option<Block>)> =
                 (core.accounts.all_accounts().into_iter())
                     .flat_map(|a| a.transactions().iter())
@@ -2628,7 +2643,11 @@ impl NetworkSession {
             (seen, chainlock, heard, recorded)
         };
         let forked = self.hub.take_held_fork(wallet);
-        let locks: BTreeSet<Txid> = locked.values().flatten().chain(&heard).copied().collect();
+        let locks: BTreeSet<Txid> = (locked.values().flatten())
+            .chain(&heard)
+            .chain(network_locks.keys())
+            .copied()
+            .collect();
         // Of each locked transaction any loaded wallet's history or
         // key-wallet holds, its block and the blocks of the transactions
         // spending one of its inputs: either proven final settles it.
@@ -2789,11 +2808,22 @@ impl NetworkSession {
                 (lock_blocks.get(t)).is_some_and(|b| b.iter().copied().any(proven))
                     || dead_for_good(t)
             };
+            let outstanding =
+                |t: &&Txid| !txs.contains_key(*t) && !recorded.contains_key(*t) && !settled_lock(t);
+            // A lock heard on the network names the coins it spends; one
+            // only key-wallet heard may spend any held coin.
             let unknown: BTreeSet<Txid> = (heard.iter())
-                .filter(|t| !txs.contains_key(*t) && !recorded.contains_key(*t))
-                .filter(|t| !settled_lock(t))
+                .filter(|t| !network_locks.contains_key(*t))
+                .filter(outstanding)
                 .copied()
                 .collect();
+            let network_unknown: BTreeMap<OutPoint, BTreeSet<Txid>> = (network_locks.iter())
+                .filter(|(t, _)| outstanding(t))
+                .flat_map(|(t, spent)| spent.iter().map(move |o| (*o, *t)))
+                .fold(BTreeMap::new(), |mut by_coin, (o, t)| {
+                    by_coin.entry(o).or_default().insert(t);
+                    by_coin
+                });
             let final_spend = |o: &OutPoint| {
                 proven_spends.contains(o)
                     || (observed.get(o))
@@ -2819,6 +2849,7 @@ impl NetworkSession {
             });
             let coins: BTreeSet<OutPoint> = (locked.keys().copied())
                 .chain(held.iter().copied().filter(|_| !unknown.is_empty()))
+                .chain(network_unknown.keys().copied().filter(|c| held.contains(c)))
                 .filter(|c| !locked_unread.contains(c))
                 .collect();
             for coin in coins {
@@ -2828,6 +2859,10 @@ impl NetworkSession {
                     false => (before.iter())
                         .filter(|t| !settled_lock(t))
                         .chain(unknown.iter().filter(|_| held.contains(&coin)))
+                        .chain(
+                            (network_unknown.get(&coin).into_iter().flatten())
+                                .filter(|_| held.contains(&coin)),
+                        )
                         .copied()
                         .collect(),
                 };
@@ -2856,7 +2891,13 @@ impl NetworkSession {
                 },
                 dead_for_good: &dead_for_good,
             };
-            let awaiting = crate::history::held_awaiting(&held, &drops, txs, &evidence);
+            // A coin out of `held` for a spend in a block not yet final
+            // awaits that block (#749).
+            let unsettled_spend = (holds.iter())
+                .filter(|o| !held.contains(o) && !gone.contains(&o.txid))
+                .any(|o| !spent_finally(o));
+            let awaiting =
+                unsettled_spend || crate::history::held_awaiting(&held, &drops, txs, &evidence);
             ((sum, unvalued, awaiting), lock_writes)
         });
         drop(wm);

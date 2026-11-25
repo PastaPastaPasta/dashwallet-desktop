@@ -609,6 +609,10 @@ pub(crate) struct SessionHub {
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
+    /// The inputs of each verified InstantSend lock heard on the network
+    /// that spends a coin the drops hold, whether or not key-wallet hears
+    /// it: the held report notes the lock on those coins (#749).
+    held_locks: Mutex<HashMap<Txid, BTreeSet<dashcore::OutPoint>>>,
     /// The lowest height a fork truncated each wallet to since its held
     /// report last ran (`NetworkSession::refresh_held`): the spend notes
     /// above it that are not final go.
@@ -902,6 +906,7 @@ impl SessionHub {
             final_sends: Mutex::new(Vec::new()),
             dead_children: Mutex::new(Vec::new()),
             dropped_holds: Mutex::new(HashMap::new()),
+            held_locks: Mutex::new(HashMap::new()),
             held_forks: Mutex::new(HashMap::new()),
             drop_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
@@ -1019,6 +1024,42 @@ impl SessionHub {
         (holds.iter())
             .filter(|(_, held)| !held.is_empty())
             .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// A verified lock was heard on the network: when it spends a coin a
+    /// drop holds, its inputs are kept for the held report, which notes
+    /// it on those coins, though key-wallet may never hear it (#749).
+    fn held_lock_heard(&self, lock: &InstantLock) {
+        let inputs: BTreeSet<dashcore::OutPoint> = lock.inputs.iter().copied().collect();
+        let hit = {
+            let holds = self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner());
+            (holds.values()).any(|held| held.iter().any(|o| inputs.contains(o)))
+        };
+        if !hit {
+            return;
+        }
+        (self.held_locks.lock().unwrap_or_else(|p| p.into_inner())).insert(lock.txid, inputs);
+        if let Some(refresh) = self.held_refresh.get() {
+            refresh();
+        }
+    }
+
+    /// The verified locks heard on the network that spend a coin of
+    /// `holds`, each with the coins of `holds` it spends.
+    pub(crate) fn held_locks(
+        &self,
+        holds: &BTreeSet<dashcore::OutPoint>,
+    ) -> HashMap<Txid, BTreeSet<dashcore::OutPoint>> {
+        let locks = self.held_locks.lock().unwrap_or_else(|p| p.into_inner());
+        (locks.iter())
+            .map(|(t, inputs)| {
+                (
+                    *t,
+                    inputs.intersection(holds).copied().collect::<BTreeSet<_>>(),
+                )
+            })
+            .filter(|(_, spent)| !spent.is_empty())
             .collect()
     }
 
@@ -2398,6 +2439,7 @@ impl EventHandler for SessionHub {
             validated: true,
         } = event
         {
+            self.held_lock_heard(instant_lock);
             let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
             self.fan_out_lock(instant_lock.txid, instant_lock, &unloaded);
         }

@@ -4822,6 +4822,87 @@ fn another_wallets_lock_is_noted_at_once_and_goes_once_its_block_is_final() {
     assert!(lock_rows(&session, id).is_empty(), "the note goes");
 }
 
+/// #749: a verified lock heard on the network of a payment no wallet
+/// holds, which key-wallet never hears, spends D, held: the lock is noted
+/// on D at once and D awaits, after a restart too. An unverified lock of
+/// it, and a verified lock spending no held coin, note nothing.
+#[test]
+fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting() {
+    use dash_spv::EventHandler;
+    use dashcore::hashes::Hash;
+    let (_dir, engine, session, id, d, paid, w_block) = settled_holding_d();
+    let x = paid.output[d.vout as usize].value;
+    let heard = |session: &NetworkSession, txid: Txid, inputs: Vec<OutPoint>, validated| {
+        let instant_lock = dashcore::InstantLock {
+            txid,
+            inputs,
+            ..dashcore::InstantLock::default()
+        };
+        (session.hub).on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
+            instant_lock,
+            validated,
+        });
+    };
+    let elsewhere = OutPoint::new(Txid::from_byte_array([52; 32]), 0);
+    let s = Txid::from_byte_array([53; 32]);
+    heard(
+        &session,
+        Txid::from_byte_array([51; 32]),
+        vec![elsewhere],
+        true,
+    );
+    heard(&session, s, vec![d], false);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, false), "no lock spends D");
+    assert!(lock_rows(&session, id).is_empty());
+
+    heard(&session, s, vec![elsewhere, d], true);
+    eventually("the lock is noted", || held_report(&session, id).2);
+    assert_eq!(
+        lock_rows(&session, id),
+        BTreeMap::from([(format!("drop_locked:{d}"), Some(s.to_string()))])
+    );
+
+    let session = reopen(&engine, session);
+    reload_with_headers(&engine, &session, id, &[(TIP + 1, w_block)]);
+    assert_eq!(held_report(&session, id), (x, 0, true), "restarted");
+    assert_eq!(lock_rows(&session, id).len(), 1, "the note stays");
+}
+
+/// #749: a block above the ChainLock spends D, held: D is out of the held
+/// total, but the wallet awaits that block until it is final.
+#[test]
+fn a_held_coin_spent_in_a_block_not_yet_final_keeps_the_wallet_awaiting() {
+    let (_dir, engine, session, id, d, paid, w_block) = settled_holding_d();
+    let spend = foreign_winner(&engine, &session, id, &paid, &[d]);
+    let block = super::block_with(vec![spend.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
+    mined(&engine, &session, id, TIP + 2, vec![spend]);
+    reconciled(&engine, &session, id);
+    assert_eq!(observed(&engine, &session, id).get(&d), Some(&(TIP + 2)));
+    assert_eq!(held_report(&session, id), (0, 0, true), "not final");
+
+    chain_lock(&engine, &session, id, TIP + 2, block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (0, 0, false), "final");
+}
+
+/// #749: the held report's read of the drops' notes fails: the held total
+/// stays, and the wallet awaits until a read succeeds.
+#[test]
+fn a_failed_read_of_the_drops_notes_keeps_the_wallet_awaiting() {
+    let (_dir, engine, session, id, d, paid, _w_block) = settled_holding_d();
+    let x = paid.output[d.vout as usize].value;
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::tx_actions::HELD_REPORT_FAULT, stage);
+    reconciled(&engine, &session, id);
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(held_report(&session, id), (x, 0, true), "unread");
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, false), "read again");
+}
+
 /// #749 (Q81c C1, review M2): a lock note of D, held, that doesn't read
 /// (garbage, a list with one txid that doesn't read, an empty value) keeps
 /// D awaiting, after a restart too, and so does a lock note naming no coin.
