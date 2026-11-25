@@ -702,10 +702,117 @@ fn disposition_replayed_after_crash_before_ack() {
     panic!("GAP G2: no upstream disposition to acknowledge");
 }
 
+/// What the hook answers the library's pass asking to re-send spend `n`.
+fn admit(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    n: u8,
+) -> Result<(), String> {
+    use platform_wallet::wallet::shielded::ShieldedDispatch;
+    let st_hash: [u8; 32] = Sha256::digest(&spends()[usize::from(n) - 1].st_bytes).into();
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let hook = pool::EngineDispatch::new(&s, &coordinator);
+        (hook
+            .admit(wallet.0, dw_vault::SHIELDED_ACCOUNT, [n; 32], st_hash)
+            .await)
+            .map_err(|refusal| refusal.reason)
+    })
+}
+
+/// The status each of `wallet`'s history rows shows.
+fn shown(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+) -> Vec<(String, crate::platform::shielded::ShieldedActivityStatus)> {
+    engine
+        .block_on(on_pool(session, wallet, |_, lib| async move {
+            let network = pool::ShieldedLib::network(&lib);
+            let rows = pool::ShieldedLib::activity(&lib, 0, 10).await?;
+            Ok((rows.into_iter())
+                .map(|e| pool::activity(e, network))
+                .map(|a| (a.id, a.status))
+                .collect())
+        }))
+        .unwrap()
+}
+
+/// Upstream reports no `Unattributable` outcome: a spend whose history row
+/// it confirmed executed (its success arm, or the scan that finds its notes
+/// spent) reads done, and nothing offers it again. Spend 1's row is
+/// confirmed with its record and reservations gone (the scan's path), spend
+/// 2's with both kept (a success arm whose mark-spent failed). Before a pass
+/// reads them and after, the hook admits no re-send of either; the pass
+/// settles both with the `executed` disposition; each history row shows
+/// confirmed, never failed.
 #[test]
-#[ignore = "GAP G6: upstream reports no Unattributable outcome; a confirmed row settles executed (reported_outcomes_settle_the_journal)"]
-fn unattributable_with_confirmed_activity_reads_done_and_offers_no_retry() {
-    panic!("GAP G6: no upstream Unattributable outcome");
+fn a_confirmed_row_reads_done_and_offers_no_retry() {
+    use crate::platform::shielded::ShieldedActivityStatus as Shown;
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends(&engine, &session, wallet);
+    for n in [1, 2] {
+        assert_eq!(
+            admit(&engine, &session, wallet, n),
+            Ok(()),
+            "spend {n} held"
+        );
+    }
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let [scanned, kept]: [PendingRedrive; 2] = spends().try_into().unwrap();
+        for n in &scanned.nullifiers {
+            store.clear_pending(subwallet(wallet), n).unwrap();
+        }
+        store
+            .clear_redrive(subwallet(wallet), &scanned.activity_id)
+            .unwrap();
+        for spend in [&scanned, &kept] {
+            history_row(
+                &mut *store,
+                subwallet(wallet),
+                spend,
+                ShieldedActivityStatus::Confirmed,
+            );
+        }
+        let held = store.pending_redrives(subwallet(wallet)).unwrap();
+        assert!(held.iter().any(|r| r.activity_id == kept.activity_id));
+    });
+    let confirmed = |n: u8| (hex::encode([n; 32]), Shown::Confirmed);
+    for n in [1, 2] {
+        assert_eq!(
+            admit(&engine, &session, wallet, n),
+            Err("the spend's history row reads confirmed".into()),
+            "spend {n}"
+        );
+        assert_eq!(
+            settlement(&engine, &session, wallet, n).0,
+            ArtifactStatus::Registered
+        );
+    }
+
+    pass(&engine, &session);
+    for n in [1, 2] {
+        assert_eq!(
+            settlement(&engine, &session, wallet, n),
+            (
+                ArtifactStatus::Executed,
+                Some(("executed".into(), None)),
+                false
+            ),
+            "spend {n}"
+        );
+        assert!(admit(&engine, &session, wallet, n).is_err(), "spend {n}");
+    }
+    let mut rows = shown(&engine, &session, wallet);
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(rows, [confirmed(1), confirmed(2)]);
 }
 
 #[test]
