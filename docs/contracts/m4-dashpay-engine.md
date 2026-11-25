@@ -1303,6 +1303,7 @@ pub enum PlatformError {
     BroadcastUnknown { artifact: String },
     WillBeSent { artifact: String },
     Cancelled,
+    Restored,
     NeedsGrant { purpose: BudgetPurpose },
     LeaseRevoked { cause: RevokeCause },
     LeaseExpired,
@@ -2731,7 +2732,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 | Error enum | Codes |
 |---|---|
-| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
+| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.restored`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed`, `registration.refunded` |
@@ -2747,6 +2748,9 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   host's code table (`ServiceErrorCode`) needs both. It also carries the engine's `rescan_interrupted` (Contract-Version 49,
   0.1.x-bal §1): asset-lock funding after a rescan the user stopped part way, refused until a rescan runs again. A
   replay that runs is `platform.context_unavailable`, a wait for sync.
+- `platform.restored` (Contract-Version 89, the R3 restore's money gate): while the network's restored mark is set,
+  every lease whose flow moves funds is refused before it begins, its grants unused. The mark clears at the first full
+  sync after the restore; profile, contact, DashPay-key and voting flows are not refused.
 - During a replay (a rewind of a wallet's filter checkpoint: a rescan, an abandon's rescan, Rebuild Index, the DashPay
   backfill), the balance, the coin list and Activity can include a coin spent above the rewound checkpoint until its
   spend replays. Spends of the wallet's coins are refused until the replay is back (`rescan_in_progress`, or

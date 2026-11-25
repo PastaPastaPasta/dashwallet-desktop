@@ -255,6 +255,7 @@ impl From<dw_engine::EngineError> for SendError {
                 F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
                 F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },
                 F::HeldUntilRestart => Self::HeldUntilRestart,
+                F::Restored => Self::Internal { detail },
             },
             E::SpvNotRunning => Self::NoPeers,
             E::InvalidConfig(_) | E::InvalidArgument(_) | E::InvalidAddress(_) => {

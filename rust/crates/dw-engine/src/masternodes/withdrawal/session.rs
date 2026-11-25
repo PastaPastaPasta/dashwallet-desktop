@@ -650,7 +650,8 @@ impl WithdrawalRuntime {
             loop {
                 let Some(s) = weak.upgrade() else { return };
                 let every = s.masternodes.withdrawals.waits().recheck;
-                if let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
+                if !s.hub.restore.is_restored()
+                    && let (Ok(env), Ok(net)) = (SessionEnv::of(&s), s.mn_withdraw_net())
                     && let Err(e) = recheck_all(&env, &net).await
                 {
                     tracing::info!(error = %e, "the masternode withdrawals' recheck");

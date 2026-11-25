@@ -173,6 +173,10 @@ pub enum SendFailure {
     InvalidChangeAddress,
     #[error("watch-only wallet")]
     WatchOnly,
+    /// The network's data was restored from its backup: sends wait for its
+    /// first full sync (the money gate, `restore_gate`).
+    #[error("sends wait for the first sync after a restore")]
+    Restored,
     #[error("vault locked")]
     VaultLocked,
     #[error("grant invalid")]
@@ -234,6 +238,7 @@ pub(crate) fn lease_failure(e: LeaseError, outflow: u64) -> EngineError {
             return EngineError::Internal(e.to_string());
         }
         LeaseError::Revoked(_) | LeaseError::Locked => SendFailure::Cancelled,
+        LeaseError::Restored => SendFailure::Restored,
         LeaseError::Ended | LeaseError::Invalid => SendFailure::GrantInvalid,
         // A coin send names no identity keys, so `KeysNotHeld` cannot arise.
         LeaseError::Parked(_)
@@ -1148,6 +1153,9 @@ impl TxDraft {
         self: &Arc<Self>,
         grant_id: String,
     ) -> Result<Arc<PreparedTx>, EngineError> {
+        if self.session.hub.restore.is_restored() {
+            return Err(SendFailure::Restored.into());
+        }
         let contact = self.state().contact;
         if let Some(pair) = contact {
             return self.prepare_contact(grant_id, pair).await;

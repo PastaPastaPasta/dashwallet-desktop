@@ -543,6 +543,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_while_restored()?;
             if !dw_psbt::finalize(&mut psbt) {
                 return Err(PsbtFailure::NotComplete.into());
             }

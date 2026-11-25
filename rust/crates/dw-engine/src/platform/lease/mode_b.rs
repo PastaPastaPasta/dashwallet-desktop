@@ -2102,6 +2102,9 @@ impl Resumer for SessionTracked {
             let Some(session) = self.session.upgrade() else {
                 return Resumed::NotRun;
             };
+            if session.hub.restore.is_restored() {
+                return Resumed::NotRun;
+            }
             match session.wallet(&wallet).await {
                 Ok(w) => w,
                 Err(_) => return Resumed::NotRun,

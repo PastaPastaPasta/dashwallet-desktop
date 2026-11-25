@@ -445,6 +445,9 @@ struct LoadedHistory {
     /// [`Persisted::dropped`] and what this app dropped
     /// ([`crate::tx_actions::load_dropped`]).
     dropped: BTreeSet<Txid>,
+    /// The restore holds (`restore_gate`), and whether a build waits for
+    /// this load; `None` when they didn't read.
+    restore_holds: Option<(std::collections::BTreeMap<Txid, BTreeSet<OutPoint>>, bool)>,
 }
 
 impl NetworkSession {
@@ -529,6 +532,12 @@ impl NetworkSession {
                         persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains(t)
                     });
                     let abandoned = abandoned.copies;
+                    let restore_holds = crate::restore_gate::read_holds(&appdb, wallet)
+                        .and_then(|h| Ok((h, crate::restore_gate::build_pending(&appdb, wallet)?)))
+                        .inspect_err(|e| {
+                            tracing::warn!(%wallet, error = %e, "could not read the restore holds")
+                        })
+                        .ok();
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
                             .chain(persisted.recordless)
@@ -561,6 +570,7 @@ impl NetworkSession {
                             .filter(|t| !persisted.dropped_doubtful.contains(t))
                             .chain(dropped_here)
                             .collect(),
+                        restore_holds,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -579,6 +589,7 @@ impl NetworkSession {
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
         let mut sends = Vec::new();
+        let mut buildable = Vec::new();
         for LoadedHistory {
             wallet,
             records,
@@ -591,6 +602,7 @@ impl NetworkSession {
             settled,
             lock_parents,
             dropped,
+            restore_holds,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -630,6 +642,10 @@ impl NetworkSession {
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
+                h.restore_holds_unread = restore_holds.as_ref().is_none_or(|(_, pending)| *pending);
+                if let Some((holds, _)) = &restore_holds {
+                    h.restore_holds = holds.clone();
+                }
                 if complete {
                     h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
                 }
@@ -647,6 +663,9 @@ impl NetworkSession {
                 }
             });
             sends.push((wallet, sent, complete, claims, settled, dropped));
+            if let (true, Some((_, pending))) = (complete, &restore_holds) {
+                buildable.push((wallet, *pending));
+            }
         }
         drop(wm);
         for (wallet, sent, complete, claims, stored, dropped) in sends {
@@ -660,6 +679,19 @@ impl NetworkSession {
                     .await;
             }
         }
+        let restored = self.hub.restore.is_restored();
+        for wallet in ids {
+            let build =
+                (buildable.iter()).any(|(w, pending)| *w == wallet && (restored || *pending));
+            if build {
+                let (hub, appdb) = (Arc::clone(&self.hub), Arc::clone(&live.appdb));
+                tokio::task::spawn_blocking(move || hub.build_restore_holds(&appdb, wallet, true))
+                    .await?;
+            } else {
+                self.hub.refresh_restore_held(wallet);
+            }
+        }
+        self.hub.restore.wake.notify_one();
         Ok(())
     }
 

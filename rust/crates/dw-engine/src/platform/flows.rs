@@ -91,6 +91,24 @@ pub enum FlowKind {
     ContactPayFromBalance,
 }
 
+impl FlowKind {
+    /// Whether the flow spends Core coins, credits or shielded notes: the
+    /// restore's money gate refuses it while the restored mark is set
+    /// (`restore_gate`). Profile and contact writes, DashPay keys and votes
+    /// move nothing.
+    pub(crate) fn moves_funds(self) -> bool {
+        !matches!(
+            self,
+            Self::ProfileEdit
+                | Self::ContactRequest
+                | Self::Accept
+                | Self::PrivateDetails
+                | Self::EnableDashPayKeys
+                | Self::Voting
+        )
+    }
+}
+
 /// A lease's budgets (E0-04 §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

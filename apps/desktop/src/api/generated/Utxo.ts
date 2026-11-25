@@ -28,4 +28,10 @@ coinjoinRounds: number | null,
 /**
  * Spendable now: mature, not locked or reserved, keys available.
  */
-spendable: boolean, };
+spendable: boolean,
+/**
+ * Held back while the payment from before a restore that sent or
+ * spends it is unproven: not offered or counted as spendable until it
+ * is mined, dropped or abandoned (`coins.pendingUnproven`).
+ */
+pendingUnproven: boolean, };

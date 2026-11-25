@@ -82,6 +82,9 @@ use crate::{EngineError, EngineEvent, NetworkSession, WalletId};
 pub enum CoinJoinFailure {
     /// CoinJoin features are turned off (`enablecoinjoin` false).
     Disabled,
+    /// The network's data was restored from its backup: mixing waits for
+    /// its first full sync (the money gate, `restore_gate`).
+    Restored,
     /// The wallet has no private keys.
     WatchOnly,
     /// The balance is below the mixing minimum (0.00140001 DASH);
@@ -120,6 +123,7 @@ impl std::fmt::Display for CoinJoinFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("coinjoin is disabled"),
+            Self::Restored => f.write_str("mixing waits for the first sync after a restore"),
             Self::WatchOnly => f.write_str("watch-only wallet"),
             Self::InsufficientFunds { min_duffs } => {
                 write!(f, "balance below the mixing minimum of {min_duffs} duffs")
@@ -1331,7 +1335,7 @@ impl NetworkSession {
         &self,
         fence: &CoinFence,
     ) -> Result<Option<MixView>, EngineError> {
-        if !self.leases.journal_ready() {
+        if !self.leases.journal_ready() || self.hub.restore.is_restored() {
             return Ok(None);
         }
         let view = (self.replay_guarded(fence.wallet_id(), self.mix_view(fence))).await;
@@ -1606,6 +1610,9 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.wallet(&wallet_id).await?;
+            if this.hub.restore.is_restored() {
+                return Err(CoinJoinFailure::Restored.into());
+            }
             let settings = this.coinjoin.settings();
             if !settings.enabled {
                 return Err(CoinJoinFailure::Disabled.into());
@@ -2762,7 +2769,7 @@ impl NetworkSession {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if !this.rescan_running() {
-                    match this.replay_guard(wallet_id, 0).await {
+                    match this.replay_wait(wallet_id, 0).await {
                         Ok(_) if cancels() != cancels_before => {
                             return Err(EngineError::RescanInterrupted);
                         }
@@ -3170,6 +3177,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_while_restored()?;
             let wallet = this.wallet(&wallet_id).await?;
             let _claim = this.coinjoin.claim_resend(wallet_id)?;
             let (records, gone) = this.sweep_out_states(wallet_id).await?;

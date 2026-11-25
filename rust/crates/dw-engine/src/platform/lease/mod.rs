@@ -286,12 +286,17 @@ pub enum LeaseError {
     /// unused (DP2-02): `identity.keys_missing`.
     #[error("the vault holds none of the write's keys")]
     KeysNotHeld,
+    /// A flow that moves funds while the network's restored mark is set
+    /// (the money gate, `restore_gate`): `platform.restored`.
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
 }
 
 impl From<LeaseError> for PlatformError {
     fn from(e: LeaseError) -> Self {
         match e {
             LeaseError::Locked => PlatformError::Cancelled,
+            LeaseError::Restored => PlatformError::Restored,
             LeaseError::Revoked(cause) => PlatformError::LeaseRevoked { cause },
             LeaseError::Ended => PlatformError::LeaseExpired,
             LeaseError::Parked(purpose) | LeaseError::NeedsGrant(purpose) => {

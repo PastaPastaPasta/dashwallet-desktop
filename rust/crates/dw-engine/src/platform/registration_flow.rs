@@ -3664,6 +3664,7 @@ impl RegistrationLib for PwLib {
         match self.session.replay_guard(self.wallet_id, 0).await {
             Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
             Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            Err(crate::EngineError::Restored) => Some(PlatformError::Restored),
             _ => None,
         }
     }

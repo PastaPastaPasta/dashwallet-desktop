@@ -36,6 +36,10 @@ pub struct Utxo {
     pub coinjoin_rounds: Option<u32>,
     /// Spendable now: mature, not locked or reserved, keys available.
     pub spendable: bool,
+    /// Held back while the payment from before a restore that sent or
+    /// spends it is unproven: not offered or counted as spendable until it
+    /// is mined, dropped or abandoned (`coins.pendingUnproven`).
+    pub pending_unproven: bool,
 }
 
 impl From<CoinInfo> for Utxo {
@@ -57,6 +61,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            pending_unproven,
         } = c;
         Utxo {
             outpoint: outpoint.into(),
@@ -75,6 +80,7 @@ impl From<CoinInfo> for Utxo {
             coinjoin_denominated,
             coinjoin_rounds,
             spendable,
+            pending_unproven,
         }
     }
 }

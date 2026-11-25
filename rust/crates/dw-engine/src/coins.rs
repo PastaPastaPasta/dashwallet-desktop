@@ -383,8 +383,11 @@ impl TempUtxoLocks {
             platform_wallet::PlatformWalletInfo,
         >,
     ) {
-        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints) {
-            (self.hub).apply_balance_read(WalletId(self.wallet_id), &balance, &accounts);
+        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints)
+            && let Some(info) = wm.get_wallet_info(&self.wallet_id)
+        {
+            let id = WalletId(self.wallet_id);
+            (self.hub).apply_balance_read(id, &info.core_wallet, &balance, &accounts);
         }
     }
 }
@@ -736,6 +739,10 @@ pub struct CoinInfo {
     /// other coins and unknown chains ("n/a").
     pub coinjoin_rounds: Option<u32>,
     pub spendable: bool,
+    /// An output or input of a payment the restore holds while it is
+    /// unproven (`restore_gate`, H1): neither offered nor counted as
+    /// spendable until it is mined, dropped or abandoned.
+    pub pending_unproven: bool,
 }
 
 /// `(txid display hex, vout)`, the dw-appdb key of an outpoint.
@@ -961,7 +968,7 @@ impl NetworkSession {
         let wm = wm.read().await;
         if let Some(info) = wm.get_wallet_info(&id.0) {
             let core = &info.core_wallet;
-            (self.hub).apply_balance_read(id, &core.balance(), &core.account_balances());
+            (self.hub).apply_balance_read(id, core, &core.balance(), &core.account_balances());
         }
     }
 
@@ -1134,9 +1141,13 @@ impl NetworkSession {
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
             .max(self.hub.best_chainlock().map(|(h, _)| h));
-        let spent = (self.hub.history).read(&wallet_id, |txs| {
-            crate::history::spent_outpoints(txs, chainlock)
-        });
+        let (spent, (restore_outputs, restore_inputs)) =
+            (self.hub.history).read_wallet(&wallet_id, |h| {
+                (
+                    crate::history::spent_outpoints(&h.txs, chainlock),
+                    h.restore_held_coins(),
+                )
+            });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
@@ -1149,7 +1160,9 @@ impl NetworkSession {
             let spend_reserved = reserved.contains(&o)
                 || swept.contains(&o)
                 || (spent.contains(&o) && !lock_held)
-                || unseen.contains(&o);
+                || unseen.contains(&o)
+                || restore_outputs.contains(&o.txid)
+                || restore_inputs.contains(&o);
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
@@ -1178,6 +1191,8 @@ impl NetworkSession {
                 .appdb_op(move |db| Ok(db.labels(&id, LabelKind::Address)?.into_iter().collect()))
                 .await?;
             let height = view.height;
+            let (restore_outputs, restore_inputs) =
+                (this.hub.history).read_wallet(&wallet_id, |h| h.restore_held_coins());
             let mut rows: Vec<CoinInfo> = view
                 .coins
                 .iter()
@@ -1205,6 +1220,8 @@ impl NetworkSession {
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
+                        pending_unproven: restore_outputs.contains(&u.outpoint.txid)
+                            || restore_inputs.contains(&u.outpoint),
                     }
                 })
                 .filter(|row| {

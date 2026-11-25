@@ -60,6 +60,9 @@ pub enum TxActionRefusal {
     /// restart clears it once the record reads; a record that never does
     /// stays until that wallet is removed and restored.
     RecordUnreadable(WalletId),
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    Restored,
 }
 
 impl TxActionRefusal {
@@ -100,6 +103,8 @@ pub struct TxDetailExtras {
     pub can_resend: bool,
     pub dust_locked_outputs: Vec<OutPoint>,
     pub last_announced_at: Option<u64>,
+    /// A restore hold exists for it (`restore_gate`).
+    pub restore_held: bool,
 }
 
 /// One notification row (one per dash-qt record).
@@ -345,7 +350,15 @@ pub(crate) fn forget_swept(
         return Ok(());
     }
     let keys: Vec<String> = (gone.iter())
-        .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
+        .flat_map(|t| {
+            [
+                SENT_PREFIX,
+                SENT_TX_PREFIX,
+                SENT_IN_PREFIX,
+                crate::restore_gate::RESTORE_HOLD_PREFIX,
+            ]
+            .map(|p| format!("{p}{t}"))
+        })
         .collect();
     let dropped: Vec<String> = dead
         .iter()
@@ -1373,6 +1386,8 @@ impl NetworkSession {
                 can_resend: f.resend_refusal().is_none(),
                 dust_locked_outputs,
                 last_announced_at: this.hub.announced_at(&txid),
+                restore_held: (this.hub.history)
+                    .read_wallet(&wallet, |h| h.restore_holds_in_effect().contains_key(&txid)),
             })
         })
         .await
@@ -1395,6 +1410,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             // Not while a wallet loads: its spend claims are read before
             // they are restored.
             let _lifecycle = this.wallet_lifecycle.hold().await;
@@ -1593,7 +1609,13 @@ impl NetworkSession {
                     }
                 }
             }
+            marks.extend(
+                crate::restore_gate::hold_keys(&planned)
+                    .into_iter()
+                    .map(|k| (k, None)),
+            );
             self.write_abandoned_marks(wallet, marks).await?;
+            self.hub.forget_restore_holds(wallet, &planned);
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
@@ -2107,6 +2129,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
             let peers = this.hub.tracker().snapshot().connected_peers;
@@ -2184,6 +2207,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             if let Some(id) = &wallet {
@@ -2512,9 +2536,21 @@ impl NetworkSession {
         }
     }
 
+    /// The money gate of Abandon, Resend and Remove Unconfirmed
+    /// (`restore_gate`).
+    fn refuse_tx_action_while_restored(&self) -> Result<(), EngineError> {
+        match self.hub.restore.is_restored() {
+            true => Err(EngineError::TxActionRefused(TxActionRefusal::Restored)),
+            false => Ok(()),
+        }
+    }
+
     /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
-    /// [`Self::abandon_unsigned_claims`] to its new transactions.
+    /// [`Self::abandon_unsigned_claims`] to its new transactions; reads the
+    /// restored mark and starts what clears it (`restore_gate`), before the
+    /// history loads.
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
+        self.attach_restore_gate();
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_swept_dead(Box::new(move |id, dead| {
             let weak = weak.clone();

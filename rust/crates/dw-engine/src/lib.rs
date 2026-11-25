@@ -83,6 +83,7 @@ pub mod mix_shield_test;
 #[doc(hidden)]
 pub struct TestSupportProbe;
 
+mod restore_gate;
 mod tools;
 mod tx_actions;
 mod wallet_read;

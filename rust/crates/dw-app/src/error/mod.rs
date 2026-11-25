@@ -747,6 +747,9 @@ pub enum TxActionRefusalName {
     /// A saved transaction of the loaded wallet `walletId` names didn't
     /// read at its load, so what descends from this one is unknown.
     RecordUnreadable,
+    /// The network's data was restored from its backup: Abandon, Resend
+    /// and Remove Unconfirmed wait for its first full sync.
+    Restored,
 }
 
 impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
@@ -762,6 +765,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
             R::RescanFirst => Self::RescanFirst,
             R::SettledDescendant => Self::SettledDescendant,
             R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::Restored => Self::Restored,
         }
     }
 }

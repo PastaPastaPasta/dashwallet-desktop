@@ -56,6 +56,9 @@ pub struct TxDetailExtrasInfo {
     pub dust_locked_outputs: Vec<OutPoint>,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
+    /// A restore holds it: it was pending in the wallet data from before
+    /// the restore and hasn't confirmed since (`activity.abandon.restoredHint`).
+    pub restore_held: bool,
 }
 
 impl From<TxDetailExtras> for TxDetailExtrasInfo {
@@ -74,6 +77,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_resend,
             dust_locked_outputs,
             last_announced_at,
+            restore_held,
         } = x;
         TxDetailExtrasInfo {
             txid,
@@ -89,6 +93,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_resend,
             dust_locked_outputs: dust_locked_outputs.into_iter().map(Into::into).collect(),
             last_announced_at,
+            restore_held,
         }
     }
 }

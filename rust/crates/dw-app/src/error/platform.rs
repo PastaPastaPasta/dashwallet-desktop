@@ -23,6 +23,7 @@ codes! {
         BroadcastUnknown = "platform.broadcast_unknown",
         WillBeSent = "platform.will_be_sent",
         Cancelled = "platform.cancelled",
+        Restored = "platform.restored",
         NeedsGrant = "platform.needs_grant",
         LeaseRevoked = "platform.lease_revoked",
         LeaseExpired = "platform.lease_expired",
@@ -270,6 +271,7 @@ impl From<PlatformError> for AppError {
                 Some(ErrorData::Artifact { artifact }),
             ),
             P::Cancelled => (PlatformCode::Cancelled.into(), None),
+            P::Restored => (PlatformCode::Restored.into(), None),
             P::NeedsGrant { purpose } => (
                 PlatformCode::NeedsGrant.into(),
                 Some(ErrorData::NeedsGrant {
@@ -572,6 +574,7 @@ mod tests {
             PlatformError::BroadcastUnknown { artifact: s() },
             PlatformError::WillBeSent { artifact: s() },
             PlatformError::Cancelled,
+            PlatformError::Restored,
             PlatformError::NeedsGrant {
                 purpose: BudgetPurpose::Spend,
             },

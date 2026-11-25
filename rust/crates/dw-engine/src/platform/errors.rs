@@ -60,6 +60,10 @@ pub enum PlatformError {
     /// (E0-04 `Cancelled`, `lease.locked`).
     #[error("cancelled before anything was sent")]
     Cancelled,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
     /// The lease is parked or its grants died with an unlock, a scope or a
     /// passphrase change: the flow needs a fresh grant for `purpose`.
     #[error("needs a new grant for {purpose:?}")]
@@ -112,6 +116,7 @@ impl PlatformError {
             Self::BroadcastUnknown { .. } => "platform.broadcast_unknown",
             Self::WillBeSent { .. } => "platform.will_be_sent",
             Self::Cancelled => "platform.cancelled",
+            Self::Restored => "platform.restored",
             Self::NeedsGrant { .. } => "platform.needs_grant",
             Self::LeaseRevoked { .. } => "platform.lease_revoked",
             Self::LeaseExpired => "platform.lease_expired",
@@ -1015,6 +1020,7 @@ impl From<crate::EngineError> for PlatformError {
             E::Signer(dw_vault::SignerError::Locked) => Self::SignerUnavailable,
             E::Signer(dw_vault::SignerError::Vault(e)) => e.into(),
             E::NotImplemented(call) => Self::NotImplemented { call },
+            E::Restored | E::Send(crate::SendFailure::Restored) => Self::Restored,
             E::Contact(ContactError::Platform(e)) => e,
             other => internal(other),
         }
