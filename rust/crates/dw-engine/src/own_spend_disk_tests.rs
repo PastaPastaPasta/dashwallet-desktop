@@ -1458,6 +1458,13 @@ impl Beaten {
             held.iter().map(|(_, v)| v).sum::<u64>(),
             "{state}: {b:?}"
         );
+        // Q89 R4: a beaten payment is no dropped one; its coin is not back.
+        let marks = (session.live().unwrap().appdb)
+            .settings_with_prefix(&id.to_string(), "dropped:")
+            .unwrap();
+        assert!(marks.is_empty(), "{state}: no dropped mark: {marks:?}");
+        let drops = (session.hub.history).read_wallet(&id, |h| h.drops.len());
+        assert_eq!(drops, 0, "{state}: nothing listed as dropped");
     }
 
     /// Waits for the held drop, released, to finish: the drop gate is
