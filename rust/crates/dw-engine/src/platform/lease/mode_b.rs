@@ -1470,6 +1470,10 @@ impl LeaseTable {
     /// Records the shielded spends `redrives` of `wallet` the library holds
     /// to re-send, `(activity, transition)` (schema 9, 0.1 E1, DEC-1032);
     /// each first record stands. On the blocking pool.
+    #[allow(
+        dead_code,
+        reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+    )]
     pub(crate) async fn record_shielded_redrives(
         &self,
         wallet: WalletId,
@@ -1529,8 +1533,8 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
-    /// Settles `wallet`'s artifacts of transition `st_hash` from the
-    /// library's disposition of it (`disposition`: its stored strings), in
+    /// Settles `wallet`'s artifacts of transition `st_hash` from the outcome
+    /// the library reports of it (`disposition`: its stored strings), in
     /// dispatch.sqlite (`synchronous=FULL`): written when this returns
     /// `Ok`. On the blocking pool.
     pub(crate) async fn settle_shielded_artifact(

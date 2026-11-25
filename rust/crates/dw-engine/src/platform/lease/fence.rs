@@ -41,6 +41,10 @@ use dw_appdb::dispatch::{
 
 /// A shielded spend on record: `(activity, transition)`, the library's
 /// activity id and the SHA-256 of the transition it holds to re-send.
+#[allow(
+    dead_code,
+    reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+)]
 pub(crate) type ShieldedRedrive = ([u8; 32], [u8; 32]);
 
 /// The durable medium of the journal (§6.2): `dispatch.sqlite`, or a fake
@@ -154,6 +158,10 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// Records the shielded spend `activity` the library holds to re-send
     /// as transition `transition` (schema 9, 0.1 E1); the first record
     /// stands.
+    #[allow(
+        dead_code,
+        reason = "admit gates every re-send, so the engine no longer re-records pre-hook spends"
+    )]
     fn record_shielded_redrive(
         &self,
         _wallet: &[u8; 32],
