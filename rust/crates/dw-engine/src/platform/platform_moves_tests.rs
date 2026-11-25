@@ -3497,6 +3497,9 @@ mod shield;
 
 // ---- C-routes C1b-2: credits from Shielded ----
 
+/// An unshield artifact's selected and published nullifiers.
+type Spending = (Vec<[u8; 32]>, Vec<[u8; 32]>);
+
 impl World {
     /// The dispatch artifact of unshield `n`, registered as the hook
     /// writes it before the first send: one note and a padding action.
@@ -3507,7 +3510,7 @@ impl World {
 
     /// As [`Self::unshield_artifact`], its selected and published
     /// nullifiers `spending`.
-    fn unshield_artifact_spending(&self, n: u8, spending: (Vec<[u8; 32]>, Vec<[u8; 32]>)) {
+    fn unshield_artifact_spending(&self, n: u8, spending: Spending) {
         let (selected, published) = spending;
         use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, NewShieldedArtifact};
         let artifact = NewShieldedArtifact {
@@ -3539,7 +3542,7 @@ impl World {
         n: u8,
         to: PlatformAddress,
         credits: u64,
-        spending: Option<(Vec<[u8; 32]>, Vec<[u8; 32]>)>,
+        spending: Option<Spending>,
     ) -> Result<(), PlatformError> {
         self.stage_unshield(n, to, credits, n.wrapping_add(1))?;
         match spending {
