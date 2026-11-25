@@ -24,6 +24,8 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "dropped_claim_tests.rs"]
 mod dropped_claim_tests;
+#[path = "g1_islock_tests.rs"]
+mod g1_islock_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]
@@ -100,6 +102,19 @@ fn engine_wallet_recorded() -> (
     WalletId,
     Arc<Recorder>,
 ) {
+    engine_wallet_on(offline())
+}
+
+/// [`engine_wallet_recorded`] with the session opened with `options`.
+fn engine_wallet_on(
+    options: crate::SessionOptions,
+) -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Arc<Recorder>,
+) {
     use crate::EngineConfig;
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
     let dir = tempfile::tempdir().unwrap();
@@ -117,7 +132,9 @@ fn engine_wallet_recorded() -> (
         Arc::clone(&recorder) as Arc<dyn crate::EventSink>,
     )
     .unwrap();
-    let session = open(&engine);
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, options))
+        .unwrap();
     engine
         .block_on(session.vault_op(|v| v.create(None)))
         .unwrap();
