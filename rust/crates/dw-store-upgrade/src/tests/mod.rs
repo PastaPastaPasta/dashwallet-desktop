@@ -13,6 +13,7 @@ mod review_fixes_2;
 mod review_fixes_3;
 mod startup_order;
 mod v3;
+mod v3_dropped;
 
 use std::collections::BTreeMap;
 use std::fs;

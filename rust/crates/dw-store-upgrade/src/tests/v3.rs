@@ -2,7 +2,7 @@
 //! kept exactly as found (T2), the coins a drop gave back still unspent
 //! (T3 b), and only user removal's cascade deletes rows (T3 c). Rows here
 //! are built by hand on the v0.3.0 fixture; the fixture made by the fork's
-//! own drop path is T3 (a).
+//! own drop path is in [`super::v3_dropped`] (T3 a).
 
 use super::*;
 use crate::reconcile::{Outcome, reconcile_fork_store};
