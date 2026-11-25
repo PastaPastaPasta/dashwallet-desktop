@@ -18,6 +18,7 @@ codes! {
         Storage = "storage",
         StorageTooNew = "storage_too_new",
         StorageRefused = "storage_refused",
+        StorageNotPrivate = "storage_not_private",
         WalletNotFound = "wallet_not_found",
         InvalidMnemonic = "invalid_mnemonic",
         WalletAlreadyExists = "wallet_already_exists",
@@ -159,6 +160,13 @@ impl From<EngineError> for AppError {
                     }),
                 )
             }
+            E::DataFolderNotPrivate { folder, reason, .. } => (
+                EngineCode::StorageNotPrivate.into(),
+                Some(ErrorData::NotPrivate {
+                    folder: folder.display().to_string(),
+                    reason: reason.into(),
+                }),
+            ),
             E::RetryableIo(_) => (
                 EngineCode::Io.into(),
                 Some(ErrorData::Io { retryable: true }),
@@ -315,6 +323,30 @@ mod tests {
         );
     }
 
+    /// A data root others can change rides in data as the folder and why,
+    /// each reason by its camelCase name.
+    #[test]
+    fn a_data_folder_not_private_rides_in_data() {
+        use dw_fs::InsecureReason as R;
+        for (reason, name) in [
+            (R::GroupWritable, "groupWritable"),
+            (R::OtherWritable, "otherWritable"),
+            (R::OtherOwner, "otherOwner"),
+        ] {
+            let e = serde_json::to_value(AppError::from(EngineError::DataFolderNotPrivate {
+                folder: "/home/u/dash".into(),
+                reason,
+                detail: "x".into(),
+            }))
+            .unwrap();
+            assert_eq!(e["code"], "storage_not_private");
+            assert_eq!(
+                e["data"],
+                serde_json::json!({ "kind": "notPrivate", "folder": "/home/u/dash", "reason": name })
+            );
+        }
+    }
+
     /// `storage_in_use` carries the engine's own `retryable`: true for a
     /// store a clean close releases, false for one held until a restart;
     /// the store upgrade's machine failures are `io`, retryable, never a
@@ -360,6 +392,11 @@ mod tests {
             E::Storage(s()),
             E::StorageTooNew(s()),
             E::StoreRefused(Box::new(refusal())),
+            E::DataFolderNotPrivate {
+                folder: "/data".into(),
+                reason: dw_fs::InsecureReason::GroupWritable,
+                detail: s(),
+            },
             E::RetryableIo(s()),
             E::WalletNotFound(s()),
             E::InvalidMnemonic(s()),

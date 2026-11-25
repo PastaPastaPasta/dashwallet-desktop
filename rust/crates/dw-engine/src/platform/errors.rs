@@ -994,6 +994,7 @@ impl From<crate::EngineError> for PlatformError {
             | E::StorageInUse { .. }
             | E::StorageTooNew(_)
             | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
             | E::RetryableIo(_)
             | E::Io(_)) => Self::Storage {
                 detail: e.to_string(),

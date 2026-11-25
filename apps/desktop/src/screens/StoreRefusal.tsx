@@ -1,12 +1,13 @@
 // The screens shown instead of the wallet when its data can't be opened: a store refusal, the screen the
 // engine gives as it gives it (it changed nothing); a restore the user asked for that stopped the open,
-// by its state; and StorageInUse (the session before still holds the data). Each replaces the shell, so
+// by its state; a data folder other accounts can change (the engine read nothing below it); and
+// StorageInUse (the session before still holds the data). Each replaces the shell, so
 // none ever shows onboarding, an empty wallet list or a zero balance. A restore only ever runs at the
 // next start: "Restore earlier data" asks for it and restarts.
 
 import { useId, useState, type ReactNode } from "react";
 import type { Backend } from "../api/backend";
-import { storeRestore, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
+import { storeRestore, type NotPrivateData, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
 import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -41,6 +42,8 @@ const ACTIONS: Record<string, ButtonAction> = {
   "storeUpgrade.restore.notStarted.report": "report",
   "storeUpgrade.restore.incomplete.report": "report",
   "storeUpgrade.refused.report": "report",
+  "storeUpgrade.notPrivate.retry": "reopen",
+  "storeUpgrade.notPrivate.report": "report",
   "settings.about.links.issues": "report",
 };
 
@@ -57,6 +60,9 @@ export const RESTORE_BUTTONS: Record<RestoreState, readonly string[]> = {
   notStarted: ["restart", "cancel", "report", "quit"],
   incomplete: ["restart", "report", "quit"],
 };
+
+/** The not-private screen's buttons, by their last key segment, in order; the first has the focus. */
+export const NOT_PRIVATE_BUTTONS = ["retry", "report", "quit"] as const;
 
 type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "openProjectLink">;
 
@@ -138,7 +144,8 @@ function useActions() {
   return useModel(actions);
 }
 
-function perform(actions: OpenFailureActions, action: ButtonAction, reopen: () => void) {
+/** Runs a screen button's action; `reopen` tries the open again. */
+export function perform(actions: OpenFailureActions, action: ButtonAction, reopen: () => void) {
   if (action === "quit") void actions.quit();
   else if (action === "restart") void actions.restart();
   else if (action === "reopen") reopen();
@@ -154,6 +161,7 @@ function Panel({
   text,
   problem,
   failedLink = null,
+  describedBy = [],
   children,
 }: {
   id: string;
@@ -162,10 +170,12 @@ function Panel({
   text: string;
   problem: string | null;
   failedLink?: string | null;
+  /** Ids of further lines that describe the dialog, after its text. */
+  describedBy?: string[];
   children: ReactNode;
 }) {
   return (
-    <div className="onboarding" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-body`} data-testid={testId}>
+    <div className="onboarding" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={[`${id}-body`, ...describedBy].join(" ")} data-testid={testId}>
       <div className="onboarding-panel">
         <header className="onboarding-header">
           <span className="onboarding-header-side" />
@@ -287,6 +297,49 @@ export function StoreRestoreView({ restore, problem, failedLink = null, busy = f
   );
 }
 
+export interface StoreNotPrivateViewProps {
+  notPrivate: NotPrivateData;
+  problem: string | null;
+  failedLink?: string | null;
+  busy?: boolean;
+  onAction: (action: ButtonAction) => void;
+}
+
+/** A data folder others can change: which folder and why, how to fix it, then Try again (focused), Report
+ * a problem with the issues warning under the buttons, and Quit. */
+export function StoreNotPrivateView({ notPrivate, problem, failedLink = null, busy = false, onAction }: StoreNotPrivateViewProps) {
+  const tr = useT();
+  const say = tr as unknown as LooseTranslate;
+  const id = useId();
+  const { folder, reason } = notPrivate;
+  const [what, ...fix] = tr("storeUpgrade.notPrivate.text", { folder }).split("\n\n");
+  const buttons = NOT_PRIVATE_BUTTONS.map((k, i): ShownButton => {
+    const key = `storeUpgrade.notPrivate.${k}`;
+    return { key, label: say(key), destructive: false, defaultFocus: i === 0, action: buttonAction(key) };
+  });
+  return (
+    <Panel
+      id={id}
+      testId="store-not-private"
+      title={tr("storeUpgrade.notPrivate.title")}
+      text={what}
+      problem={problem}
+      failedLink={failedLink}
+      describedBy={[`${id}-reason`, ...fix.map((_, i) => `${id}-fix-${i}`)]}
+    >
+      <p className="onboarding-text store-open-text" id={`${id}-reason`} data-testid="store-not-private-reason">
+        {say(`storeUpgrade.notPrivate.reason.${reason}`)}
+      </p>
+      {fix.map((paragraph, i) => (
+        <p key={i} className="onboarding-text store-open-text" id={`${id}-fix-${i}`} data-testid="store-not-private-fix">
+          {paragraph}
+        </p>
+      ))}
+      <Buttons id={id} testId="store-not-private" buttons={buttons} hint={tr(ISSUES_HINT)} busy={busy} onAction={onAction} />
+    </Panel>
+  );
+}
+
 export interface RestoreConfirmViewProps {
   folder: string;
   busy: boolean;
@@ -360,6 +413,11 @@ export function StoreRefusalScreen({ refusal, onReopen, retrying }: OpenFailureS
 export function StoreRestoreScreen({ restore, onReopen, retrying }: OpenFailureScreenProps & { restore: StoreRestoreData }) {
   const exit = useActions();
   return <StoreRestoreView restore={restore} problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, onReopen)} />;
+}
+
+export function StoreNotPrivateScreen({ notPrivate, onReopen, retrying }: OpenFailureScreenProps & { notPrivate: NotPrivateData }) {
+  const exit = useActions();
+  return <StoreNotPrivateView notPrivate={notPrivate} problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, onReopen)} />;
 }
 
 export interface StorageInUseViewProps {

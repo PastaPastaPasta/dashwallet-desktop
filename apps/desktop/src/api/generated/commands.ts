@@ -4584,6 +4584,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "storage",
   "storage_too_new",
   "storage_refused",
+  "storage_not_private",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",

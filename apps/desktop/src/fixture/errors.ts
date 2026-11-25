@@ -6,7 +6,7 @@
 
 import type { AppError } from "../api/generated/AppError";
 import type { ErrorData } from "../api/generated/ErrorData";
-import { RESTORE_CAUSES, type RestoreState, type StoreOpenError, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
+import { RESTORE_CAUSES, type NotPrivateData, type NotPrivateReason, type RestoreState, type StoreOpenError, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
 
 export type ErrorClass = ErrorData["kind"] | "none";
 
@@ -118,6 +118,7 @@ const SAMPLES: Samples = {
     },
   },
   storageInUse: { code: "storage_in_use", data: { kind: "storageInUse", retryable: true } },
+  notPrivate: { code: "storage_not_private", data: { kind: "notPrivate", folder: "/home/user/.local/share/dashwallet", reason: "groupWritable" } },
   io: { code: "io", data: { kind: "io", retryable: true } },
   operationState: { code: "masternodes.operation_state", data: { kind: "operationState", state: "inputs_spent" } },
   keyRole: { code: "masternodes.keys_exhausted", data: { kind: "keyRole", role: "voting" } },
@@ -244,5 +245,15 @@ export function restoreFailure(name: string, folder: string): StoreRestoreData {
 export const storeRestoreError = (data: StoreRestoreData): StoreOpenError => ({
   code: "storage_restore",
   message: `fixture: restoring the wallet data in ${data.folder} stopped (${data.state}, ${data.cause})`,
+  data,
+});
+
+/** The `storage_not_private` data for a data folder others can change, and why. */
+export const notPrivateFailure = (reason: NotPrivateReason, folder: string): NotPrivateData => ({ kind: "notPrivate", folder, reason });
+
+/** `storage_not_private` as `open_network` rejects with it. */
+export const storeNotPrivateError = (data: NotPrivateData): StoreOpenError => ({
+  code: "storage_not_private",
+  message: `fixture: the data folder is not private: ${data.folder} (${data.reason})`,
   data,
 });

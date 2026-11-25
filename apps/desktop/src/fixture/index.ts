@@ -16,8 +16,9 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
 import type { UpdatePhase } from "../api/generated/UpdatePhase";
+import { NOT_PRIVATE_REASONS, type NotPrivateReason } from "../api/storeOpen";
 import { startingPhase, UPDATE_FAULTS, type UpdateFault } from "./updates";
-import { isErrorClass, RESTORE_FAILURE_NAMES, restoreFailure, sampleError, STORE_SCREEN_NAMES, STORE_SCREENS, type ErrorClass, type StoreScreenName } from "./errors";
+import { isErrorClass, notPrivateFailure, RESTORE_FAILURE_NAMES, restoreFailure, sampleError, STORE_SCREEN_NAMES, STORE_SCREENS, type ErrorClass, type StoreScreenName } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
@@ -59,6 +60,8 @@ export interface FixtureOptions {
   /** `openRefused=<screen>`: `open_network` refuses the wallet data with one of `screen_for`'s screens
    * (a fresh world only). */
   openRefused?: StoreScreenName;
+  /** `notPrivate=<reason>`: `open_network` refuses the data root as one others can change (a fresh world only). */
+  notPrivate?: NotPrivateReason;
   /** `storageInUse=retry|restart`: `open_network` finds the data still held, once or until a restart
    * (a fresh world only). */
   storageInUse?: "retry" | "restart";
@@ -157,6 +160,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   }
   const dataDir = `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`;
   if (!carried && opts.openRefused) world.openRefusal = STORE_SCREENS[opts.openRefused](dataDir);
+  if (!carried && opts.notPrivate) world.openNotPrivate = notPrivateFailure(opts.notPrivate, FIXTURE_DATA_DIR);
   if (!carried && opts.storageInUse) world.storageHeld = { retryable: opts.storageInUse === "retry" };
   if (!carried && opts.openRestore) world.openRestore = restoreFailure(opts.openRestore, dataDir);
   if (!carried && opts.restoreAvailable !== undefined) world.restoreAvailable = opts.restoreAvailable;
@@ -233,7 +237,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>&openRefused=<screen>&storageInUse=retry|restart&openRestore=<state>:<cause>&restoreAvailable=yes|no&restored=yes`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>&openRefused=<screen>&notPrivate=<reason>&storageInUse=retry|restart&openRestore=<state>:<cause>&restoreAvailable=yes|no&restored=yes`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -275,6 +279,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const updateFault = oneOf(p, "updateFault", UPDATE_FAULTS);
   const delay = Number(p.get("delay") ?? 0);
   const openRefused = oneOf(p, "openRefused", STORE_SCREEN_NAMES);
+  const notPrivate = oneOf(p, "notPrivate", NOT_PRIVATE_REASONS);
   const storageInUse = oneOf(p, "storageInUse", ["retry", "restart"] as const);
   const openRestore = oneOf(p, "openRestore", RESTORE_FAILURE_NAMES);
   const available = oneOf(p, "restoreAvailable", ["yes", "no"] as const);
@@ -293,6 +298,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     updateFault,
     delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined,
     openRefused,
+    notPrivate,
     storageInUse,
     openRestore,
     restoreAvailable: available === undefined ? undefined : available === "yes",

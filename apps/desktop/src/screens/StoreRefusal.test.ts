@@ -12,17 +12,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../api/backend";
 import { BackendContext, keys } from "../api/queries";
-import { RESTORE_CAUSES, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
+import { NOT_PRIVATE_REASONS, RESTORE_CAUSES, type NotPrivateData, type RestoreState, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { App } from "../app/App";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { RESTORE_FAILURE_NAMES, restoreFailure, STORE_COPY, STORE_SCREEN_NAMES, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import { notPrivateFailure, RESTORE_FAILURE_NAMES, restoreFailure, STORE_COPY, STORE_SCREEN_NAMES, STORE_SCREENS, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "../fixture/errors";
 import { HANDLERS } from "../fixture/handlers";
 import { PENDING_HANDLERS } from "../fixture/pending";
 import { buildWorld } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { flatten } from "../i18n/core";
 import { en } from "../i18n/en";
-import { buttonAction, OpenFailureActions, RESTORE_BUTTONS, RestoreConfirmView, StorageInUseView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
+import { buttonAction, NOT_PRIVATE_BUTTONS, OpenFailureActions, perform, RESTORE_BUTTONS, RestoreConfirmView, StorageInUseView, StoreNotPrivateView, StoreRefusalView, StoreRestoreView } from "./StoreRefusal";
 import { RestoredBanner } from "./RestoredBanner";
 
 // Server rendering needs a snapshot for every external store the app reads; the client's stands in.
@@ -691,5 +691,116 @@ describe("the fixture's restore", () => {
     expect(active({}, ctx)).toMatchObject({ restored: true });
     expect(world.restoreCalls).toEqual(["restoreAvailable", "requestRestore", "restoreAvailable", "requestRestore"]);
     expect(world.appExits).toEqual(["restart"]);
+  });
+});
+
+describe("the not-private screen", () => {
+  const N = en.storeUpgrade.notPrivate;
+  const ROOT = "/home/user/.local/share/dashwallet";
+  const [what, fix] = N.text.replaceAll("{folder}", ROOT).split("\n\n");
+  const renderNotPrivate = (notPrivate: NotPrivateData, problem: string | null = null, busy = false) =>
+    renderToStaticMarkup(createElement(StoreNotPrivateView, { notPrivate, problem, busy, onAction: noop }));
+  const NP_FIXTURES = NOT_PRIVATE_REASONS.map((reason) => [reason, notPrivateFailure(reason, ROOT)] as const);
+
+  for (const theme of THEMES)
+    describe(`in ${theme}`, () => {
+      it.each(NP_FIXTURES)("names the folder and why (%s), how to fix it, Try again focused, Report a problem and Quit", (reason, notPrivate) => {
+        ui.set({ theme });
+        const html = renderNotPrivate(notPrivate);
+        expect(html).toContain('role="alertdialog"');
+        const describedBy = /aria-describedby="([^"]+)"/.exec(html)![1].split(" ");
+        expect(describedBy.map((ref) => new RegExp(`id="${ref}"[^>]*data-testid="([^"]+)"`).exec(html)?.[1])).toEqual(["store-not-private-text", "store-not-private-reason", "store-not-private-fix"]);
+        expect(html).toContain(`>${escaped(N.title)}</h1>`);
+        expect(html).toContain(`data-testid="store-not-private-text">${escaped(what)}</p>`);
+        expect(html).toContain(`data-testid="store-not-private-reason">${escaped(N.reason[reason])}</p>`);
+        expect(html).toContain(`data-testid="store-not-private-fix">${escaped(fix)}</p>`);
+        expect(html).not.toContain("{folder}");
+        expect(html.match(/<button/g)).toHaveLength(NOT_PRIVATE_BUTTONS.length);
+        NOT_PRIVATE_BUTTONS.forEach((k, i) => {
+          const b = button(html, `store-not-private-button-storeUpgrade.notPrivate.${k}`);
+          expect(b?.label, k).toBe(escaped(N[k]));
+          expect(b?.tag.includes("dash-button-filledBlue"), k).toBe(i === 0);
+          expect(b?.tag.includes("autofocus"), k).toBe(i === 0);
+        });
+        expect(html).toContain(`data-testid="store-not-private-hint">${escaped(en.settings.about.links.issuesHint)}</p>`);
+        expect(html).not.toContain("disabled");
+        for (const other of NOT_PRIVATE_REASONS.filter((r) => r !== reason)) expect(html).not.toContain(escaped(N.reason[other]));
+        expectNoWalletFallthrough(html);
+        expectStyledClasses(html);
+      });
+    });
+
+  it("renders the same markup in light and dark", () => {
+    for (const [, notPrivate] of NP_FIXTURES) sameInBothThemes(() => renderNotPrivate(notPrivate));
+  });
+
+  it("keeps the copy: the folder in the text, a reason line per reason, Report a problem as Settings labels it", () => {
+    expect(N.text).toContain("{folder}");
+    expect(N.text.split("\n\n")).toHaveLength(2);
+    expect(Object.keys(N.reason)).toEqual([...NOT_PRIVATE_REASONS]);
+    expect(N.report).toBe(en.settings.about.links.issues);
+    expect(N.retry).toBe(en.app.tryAgain);
+  });
+
+  it("wires Try again to the open again, Report a problem to the issues page and Quit to quit", async () => {
+    expect(NOT_PRIVATE_BUTTONS.map((k) => buttonAction(`storeUpgrade.notPrivate.${k}`))).toEqual(["reopen", "report", "quit"]);
+    const calls: string[] = [];
+    const actions = new OpenFailureActions(api(calls));
+    for (const k of NOT_PRIVATE_BUTTONS) {
+      perform(actions, buttonAction(`storeUpgrade.notPrivate.${k}`)!, () => calls.push("reopen"));
+      await vi.waitFor(() => expect(actions.running).toBe(false));
+    }
+    expect(calls).toEqual(["reopen", "link:issues", "quit"]);
+  });
+
+  it("holds Try again and Report a problem while the open again runs, never Quit", () => {
+    const html = renderNotPrivate(notPrivateFailure("otherOwner", ROOT), null, true);
+    for (const k of NOT_PRIVATE_BUTTONS) expect(button(html, `store-not-private-button-storeUpgrade.notPrivate.${k}`)?.tag.includes('disabled=""'), k).toBe(k !== "quit");
+  });
+
+  it("shows an action that failed", () => {
+    expect(renderNotPrivate(notPrivateFailure("groupWritable", ROOT), "This is not available in this build.")).toContain('data-testid="store-not-private-problem">This is not available in this build.</p>');
+  });
+
+  it("follows the language: en-XA for every line, the folder kept as it is", () => {
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    const html = renderNotPrivate(notPrivateFailure("otherWritable", ROOT));
+    for (const text of [N.title, what, fix, N.reason.otherWritable, N.retry, N.report, N.quit]) expect(html).not.toContain(`>${escaped(text)}<`);
+    expect(html).toContain(ROOT);
+    expect(html).toContain("⟦");
+  });
+
+  it("shows instead of the shell or onboarding, for every reason", () => {
+    for (const [, notPrivate] of NP_FIXTURES) {
+      const html = renderAppFailed(storeNotPrivateError(notPrivate));
+      expect(html).toContain('data-testid="store-not-private"');
+      expect(html).not.toContain('data-testid="splash"');
+      expectNoWalletFallthrough(html);
+    }
+  });
+
+  it("shows a malformed storage_not_private as the splash's message, with Try again", () => {
+    const html = renderAppFailed({ code: "storage_not_private", message: "the data folder is not private", data: { kind: "notPrivate", folder: ROOT, reason: "later" } });
+    expect(html).toContain('data-testid="splash"');
+    expect(html).not.toContain('data-testid="store-not-private"');
+    expect(html).toContain("Dash Wallet could not open the wallet: the data folder is not private");
+    expect(html).toContain(escaped(en.app.tryAgain));
+  });
+
+  it("is refused by the fixture on every open, a restart's included, until the folder is private", () => {
+    type Ctx = Parameters<(typeof PENDING_HANDLERS)["restart_app"]>[1];
+    const call = (handler: unknown) => handler as (args: object, ctx: Ctx) => unknown;
+    const [open, restart] = [call(HANDLERS.open_network), call(PENDING_HANDLERS.restart_app)];
+    const world = buildWorld("funded", null);
+    world.openNotPrivate = notPrivateFailure("groupWritable", ROOT);
+    // A restore asked for never runs below a folder others can change.
+    world.openRestore = restoreFailure("notStarted:other", `${ROOT}/testnet`);
+    const ctx: Ctx = { world, emit: noop, relaunch: noop };
+    expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_not_private", data: world.openNotPrivate }));
+    restart({}, ctx);
+    expect(() => open({}, ctx)).toThrow(expect.objectContaining({ code: "storage_not_private" }));
+    world.openNotPrivate = undefined;
+    world.openRestore = undefined;
+    expect(open({}, ctx)).toMatchObject({ network: expect.anything() });
   });
 });

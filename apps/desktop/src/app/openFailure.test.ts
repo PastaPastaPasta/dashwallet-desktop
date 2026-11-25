@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { restoreFailure, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError } from "../fixture/errors";
+import { NOT_PRIVATE_REASONS } from "../api/storeOpen";
+import { notPrivateFailure, restoreFailure, STORE_SCREENS, storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError } from "../fixture/errors";
 import { openFailure } from "./openFailure";
 
 // DP3-04b D35: a wallet file from a newer build is its own, recoverable, refusal.
@@ -58,5 +59,23 @@ describe("the splash's open failure", () => {
       { ...whole, folder: null },
     ];
     for (const data of broken) expect(openFailure({ code: "storage_refused", message: "x", data })).toMatchObject({ kind: "message", retry: false });
+  });
+
+  it("gives a data folder others can change its own screen, for each reason", () => {
+    for (const reason of NOT_PRIVATE_REASONS) {
+      const notPrivate = notPrivateFailure(reason, "/data");
+      expect(openFailure(storeNotPrivateError(notPrivate))).toEqual({ kind: "notPrivate", notPrivate });
+    }
+  });
+
+  it("does not take a storage_not_private without whole data for its screen, and keeps the retry", () => {
+    const whole = notPrivateFailure("otherOwner", "/data");
+    const broken = [null, { ...whole, kind: "storageInUse" }, { ...whole, reason: "worldWritable" }, { ...whole, folder: 7 }, { ...whole, folder: undefined }];
+    for (const data of broken)
+      expect(openFailure({ code: "storage_not_private", message: "the data folder is not private", data })).toEqual({
+        kind: "message",
+        text: "Dash Wallet could not open the wallet: the data folder is not private",
+        retry: true,
+      });
   });
 });

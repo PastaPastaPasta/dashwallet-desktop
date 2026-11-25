@@ -35,6 +35,17 @@ pub enum EngineError {
     /// cause and the way out the folder's proved state allows.
     #[error("this build can't safely open the wallet data in {}: {}", .0.folder.display(), .0.detail)]
     StoreRefused(Box<crate::store_upgrade::StoreRefusal>),
+    /// The data root, a directory above it, or one on a symlinked network
+    /// directory's path lets someone other than the user or root replace its
+    /// entries ([`dw_fs::insecure_ancestor`]): the open refused it before
+    /// reading or writing anything below. `folder` is that directory; its
+    /// mode was left as it is.
+    #[error("the data folder is not private: {detail}")]
+    DataFolderNotPrivate {
+        folder: std::path::PathBuf,
+        reason: dw_fs::InsecureReason,
+        detail: String,
+    },
     /// The open's store-upgrade step failed for the machine (disk full, an
     /// I/O error, the snapshot), not the data: trying again may succeed.
     #[error("io error: {0}")]
@@ -190,6 +201,7 @@ impl EngineError {
             EngineError::Storage(_) => "storage",
             EngineError::StorageTooNew(_) => "storage_too_new",
             EngineError::StoreRefused(_) => "storage_refused",
+            EngineError::DataFolderNotPrivate { .. } => "storage_not_private",
             EngineError::RetryableIo(_) => "io",
             EngineError::WalletNotFound(_) => "wallet_not_found",
             EngineError::InvalidMnemonic(_) => "invalid_mnemonic",

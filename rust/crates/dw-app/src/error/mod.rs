@@ -219,6 +219,28 @@ pub enum CloseRefusalReason {
     ShieldedSpendUnresolved,
 }
 
+/// Why the data folder is not private ([`ErrorData::NotPrivate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum NotPrivateReason {
+    /// Its group can write to it.
+    GroupWritable,
+    /// Every account can write to it.
+    OtherWritable,
+    /// Another account owns it.
+    OtherOwner,
+}
+
+impl From<dw_fs::InsecureReason> for NotPrivateReason {
+    fn from(r: dw_fs::InsecureReason) -> Self {
+        match r {
+            dw_fs::InsecureReason::GroupWritable => Self::GroupWritable,
+            dw_fs::InsecureReason::OtherWritable => Self::OtherWritable,
+            dw_fs::InsecureReason::OtherOwner => Self::OtherOwner,
+        }
+    }
+}
+
 /// What `app.update_busy` waits for ([`ErrorData::UpdateBusy`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -496,6 +518,15 @@ pub enum ErrorData {
         screen: Box<StoreScreen>,
         folder: String,
         cause: String,
+    },
+    /// `storage_not_private`: the open refused the data root before reading
+    /// or writing anything below it. `folder` is the directory someone other
+    /// than the user or root can change (the root, one above it, or one on a
+    /// symlinked network directory's path), left as it is; trying again opens
+    /// only once its permissions change.
+    NotPrivate {
+        folder: String,
+        reason: NotPrivateReason,
     },
     /// `storage_in_use`: whether trying again in this process may succeed;
     /// false means only a restart clears it.

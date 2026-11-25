@@ -69,7 +69,10 @@ impl From<dw_engine::EngineError> for EngineError {
             E::StorageInUse { .. } => Self::StorageInUse { detail },
             // The frozen Swift shells have no code for it: `storage`, with
             // the newer-build text as its detail (DP3-04b D35).
-            E::Storage(_) | E::StorageTooNew(_) | E::StoreRefused(_) => Self::Storage { detail },
+            E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. } => Self::Storage { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::WalletAlreadyExists { detail },
@@ -161,8 +164,8 @@ mod tests {
 
     /// The §4 row of `EngineError` lists exactly the codes its variants
     /// have, plus the engine codes it marks as not in the frozen dw-ffi
-    /// (`shielded_spend_unresolved`, reported as `wallet`; `storage_refused`,
-    /// reported as `storage`).
+    /// (`shielded_spend_unresolved`, reported as `wallet`; `storage_refused`
+    /// and `storage_not_private`, reported as `storage`).
     #[test]
     fn engine_error_codes_match_the_contract() {
         let contract = contract_engine_codes();
@@ -172,7 +175,11 @@ mod tests {
             .collect();
         assert_eq!(
             engine_only,
-            ["shielded_spend_unresolved", "storage_refused"]
+            [
+                "shielded_spend_unresolved",
+                "storage_refused",
+                "storage_not_private"
+            ]
         );
         // Reported as the row says.
         let mapped = EngineError::from(dw_engine::EngineError::ShieldedSpendUnresolved);
