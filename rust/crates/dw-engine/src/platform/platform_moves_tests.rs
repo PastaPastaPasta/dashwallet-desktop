@@ -3887,6 +3887,52 @@ fn from_shielded_unattributable_execution_stays_pending() {
     );
 }
 
+/// Q80 C2 (a): an execution the library could not attribute proves no
+/// payout either: the evidence of its transition is unknown.
+#[test]
+fn payout_evidence_of_an_unattributable_execution_is_unknown() {
+    use crate::platform::payment_locks::PayoutEvidence;
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    w.arm_unshield(1, w.address(0), DASH).unwrap();
+    w.settle_unshield_as(
+        1,
+        ArtifactStatus::Executed,
+        ("unresolved", Some("unattributable")),
+    );
+    let evidence = (w.f.engine).block_on(
+        w.f.s
+            .shielded_payout_evidence(w.f.wallet, "payout", [2; 32]),
+    );
+    assert_eq!(evidence, PayoutEvidence::Unknown);
+}
+
+/// Q80 C2 (b): a refused first send the library still holds
+/// (`Unresolved(Cancelled)`, not settled by the release) proves nothing:
+/// its payout evidence is unknown and its record stays pending.
+#[test]
+fn a_held_refused_spend_proves_no_payout_and_no_move() {
+    use crate::platform::payment_locks::PayoutEvidence;
+    use dw_appdb::dispatch::ArtifactStatus;
+    let w = World::new();
+    let a = w.address(0);
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.settle_unshield_as(
+        1,
+        ArtifactStatus::Unresolved { unrecorded: false },
+        ("unresolved", Some("cancelled")),
+    );
+    w.net.fund(a, DASH);
+    let evidence = (w.f.engine).block_on(
+        w.f.s
+            .shielded_payout_evidence(w.f.wallet, "payout", [2; 32]),
+    );
+    assert_eq!(evidence, PayoutEvidence::Unknown);
+    for _ in 0..2 {
+        assert_eq!(w.shielded_row(1).state, PlatformActivityState::Pending);
+    }
+}
+
 /// A refused first send the release settled `executed` (every nullifier it
 /// published proved spent, the library's `Unresolved(Cancelled)` kept) is
 /// proved: the record is done.

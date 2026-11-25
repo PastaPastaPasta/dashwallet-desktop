@@ -614,11 +614,36 @@ fn a_change_after_the_reads_writes_nothing() {
     assert_eq!(f.settlement(), held());
 }
 
+/// Q80 C2's premise: only the release settles a refused first send
+/// `executed`. With the release offline (every read fails), passes leave
+/// its artifact `unresolved` with the library's `unresolved/cancelled`,
+/// never executed, and acknowledge nothing.
+#[test]
+fn an_offline_release_never_settles_executed() {
+    let f = Fixture::new(pruned());
+    *f.session.platform.release_net.lock().unwrap() = None;
+    for _ in 0..2 {
+        f.forget_backoff();
+        f.pass();
+        f.assert_held();
+    }
+    assert_eq!(f.reads_taken(), (0, 0));
+}
+
 /// T7: whatever refused it (a consensus verdict, a transport failure), the
-/// library writes the same `Unresolved(Cancelled)`
-/// (`settle_failed_spend` → `cancel_pending`, pinned by the library's own
-/// tests), so a second refused spend of the wallet is released by the same
-/// rule in the same pass.
+/// library writes the same `Unresolved(Cancelled)`, so a second refused
+/// spend of the wallet is released by the same rule in the same pass.
+/// `settle_failed_spend` takes no error: every send error but
+/// `ShieldedSpendUnconfirmed` reaches it, and it writes the disposition
+/// through `cancel_pending`. Pinned by rs-platform-wallet's
+/// `wallet/shielded/operations.rs` tests at the pinned revision: which
+/// errors are definitive, `consensus_cause_is_a_definitive_rejection` and
+/// `broadcast_consensus_rejection_is_definitive` (a consensus verdict),
+/// `broadcast_connection_failures_and_rejections_are_definitive` (a refused
+/// connection, `Unavailable`, and `ResourceExhausted`); the disposition,
+/// `a_failed_first_send_after_dispatch_holds_its_notes`,
+/// `a_failed_cancel_write_leaves_the_activity_pending` and
+/// `cancel_after_armed_first_send_records_disposition`.
 #[test]
 fn two_refused_spends_release_in_one_pass() {
     let f = Fixture::new(pruned());
