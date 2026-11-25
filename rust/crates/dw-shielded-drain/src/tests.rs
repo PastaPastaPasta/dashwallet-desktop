@@ -828,6 +828,68 @@ fn the_drain_refuses_without_the_snapshot_and_changes_nothing() {
     assert_eq!(d.sha256s(), before);
 }
 
+/// Turns the snapshot just taken into a `part-upgraded` copy, the copy a
+/// part-done upgrade takes without a verified before-upgrade snapshot
+/// (Q107 107-1), and returns its directory.
+fn as_part_upgraded(info: &dw_store_upgrade::SnapshotInfo) -> PathBuf {
+    let dir = info.dir();
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    let rest = name
+        .strip_prefix("before-upgrade")
+        .expect("a before-upgrade snapshot");
+    let to = dir.with_file_name(format!("part-upgraded{rest}"));
+    std::fs::rename(dir, &to).unwrap();
+    to
+}
+
+/// Q110 110-1: a part-done upgrade without a verified before-upgrade
+/// snapshot drains on its part-upgraded copy when the copy holds the store,
+/// and refuses, changing nothing, when it doesn't or doesn't verify.
+#[test]
+fn the_drain_proceeds_on_a_part_upgraded_copy_that_holds_the_store() {
+    let mut d = Dir::new();
+    let s = d.fork_store(Some(FORK_DISPOSITIONS));
+    disposition(&s, 1, "executed", None, &[1], false);
+    drop(s);
+    drop(d.journal());
+    let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
+    as_part_upgraded(&info);
+    assert!(!dw_store_upgrade::snapshot_present(&d.net).unwrap());
+    d.open_persister();
+    assert!(matches!(d.drain(None).unwrap(), DrainOutcome::Drained(_)));
+    assert_eq!(
+        d.journal().shielded_drained_holds(&W).unwrap(),
+        vec![(0, n(1))]
+    );
+
+    for case in ["without the store", "unverified"] {
+        let mut d = Dir::new();
+        if case == "without the store" {
+            drop(d.journal());
+            let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
+            as_part_upgraded(&info);
+            let s = d.fork_store(Some(FORK_DISPOSITIONS));
+            disposition(&s, 1, "executed", None, &[1], false);
+        } else {
+            let s = d.fork_store(Some(FORK_DISPOSITIONS));
+            disposition(&s, 1, "executed", None, &[1], false);
+            drop(s);
+            drop(d.journal());
+            let info = take_snapshot(&d.net, SystemTime::now()).unwrap();
+            let copy = as_part_upgraded(&info);
+            std::fs::write(copy.join(SHIELDED_STORE_FILE), b"not the store").unwrap();
+        }
+        d.open_persister();
+        let before = d.sha256s();
+        assert_eq!(
+            d.drain(None),
+            Err(ShieldedDrainError::Precondition),
+            "{case}"
+        );
+        assert_eq!(d.sha256s(), before, "{case}");
+    }
+}
+
 /// Step 0: while a store holds the owner lock the drain refuses.
 #[test]
 fn the_drain_refuses_while_a_store_holds_the_file() {

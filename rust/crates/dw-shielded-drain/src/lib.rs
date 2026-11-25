@@ -26,7 +26,7 @@ use dw_appdb::dispatch::{
     DispatchJournal, DrainedDisposition, DrainedOutcome, NeverSentSpend, ShieldedDrainPlan,
     ShieldedDrainState,
 };
-use dw_store_upgrade::{PersisterOpened, snapshot_present};
+use dw_store_upgrade::{PersisterOpened, upgrade_copy_present};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, Row, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -66,9 +66,11 @@ pub struct DrainReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ShieldedDrainError {
-    /// No completed pre-upgrade snapshot of this directory, or the
+    /// No copy of the store from this directory's upgrade, or the
     /// persister opened was another directory's. Nothing was written.
-    #[error("the shielded store drain needs this directory's pre-upgrade snapshot and persister")]
+    #[error(
+        "the shielded store drain needs a copy of the store from this upgrade and its persister"
+    )]
     Precondition,
     /// Another store holds `shielded.sqlite`.
     #[error("another store holds shielded.sqlite")]
@@ -98,7 +100,7 @@ enum FailAfter {
 ///
 /// A store with no fork rows returns [`DrainOutcome::NotForkFormat`]
 /// before any check. Otherwise the drain takes the store's owner lock,
-/// requires this directory's completed pre-upgrade snapshot and `opened`
+/// requires a copy of the store from this directory's upgrade and `opened`
 /// for this directory, reads every fork row in one read transaction,
 /// writes the journal in one transaction (marker `journaled`), retires the
 /// fork rows in one store transaction, then marks the journal `done`.
@@ -237,12 +239,17 @@ fn same_dir(network_dir: &Path, opened: &PersisterOpened) -> bool {
     }
 }
 
-/// The drain writes only beside this start's persister and this
-/// directory's completed pre-upgrade snapshot. A marker-only finish needs
-/// the persister alone: its `journaled` marker proves an earlier drain met
-/// this, and the snapshot may since have been pruned.
+/// The drain writes only beside this start's persister and a copy of the
+/// store from this upgrade: a verified before-upgrade snapshot, or a
+/// completed part-upgraded copy that includes it. The retire keeps every
+/// fork row but the proved never-sent ones, so a copy, not a restorable
+/// backup, is what it needs. A marker-only finish needs the persister
+/// alone: its `journaled` marker proves an earlier drain met this, and the
+/// copy may since have been pruned.
 fn precondition(network_dir: &Path, opened: &PersisterOpened) -> Result<()> {
-    if !same_dir(network_dir, opened) || !snapshot_present(network_dir).unwrap_or(false) {
+    if !same_dir(network_dir, opened)
+        || !upgrade_copy_present(network_dir, SHIELDED_STORE_FILE).unwrap_or(false)
+    {
         return Err(ShieldedDrainError::Precondition);
     }
     Ok(())
