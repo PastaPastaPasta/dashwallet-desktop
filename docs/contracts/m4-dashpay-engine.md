@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 86
+Contract-Version: 87
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -575,7 +575,7 @@ request's opt-out, the row's `invitation`, and the stash's holds; decisions in `
 | `NetworkSession.end_flow(lease)` | sync | Releases the lease; idempotent. The session holds the lease from `begin_flow` until `end_flow` or the idle reaper; naming it in a call never ends it. In-flight hand-offs finish first (E0-04 §4.1). | `PlatformError` |
 | `NetworkSession.leases()` | sync | The live leases as `LeaseView`s (E0-04 §4.6): flow, state, own key and its seconds left, `funds_committed`, budgets, permits in flight, and whether a library call of the flow runs (which picks the copy, E0-04 §16.10). Re-queried on E0-04's `LeaseChanged` (§6). | `PlatformError` |
 | `grant_request(identity, action)` | async | The `GrantRequest` for one write that has no quote of its own: `send_request`, `accept_request`, `register_name`, `update_profile`, `set_private_details` (publishing) and `enable_dashpay_keys`. `GrantAction` carries no payload except the label, so the request is a worst-case bound for the action, which the engine budgets against (E0-04 owns enforcing it). The other actions get E0-04's per-action credit bound (`flows.rs`, no duffs) until DP1-06's cost table. `RegisterName` is DP1-03's quote: no duffs, credits for the estimated fee bound plus the label's fund to join at the contest's current size; until DP1-06 and E0-04's accounting the fee part is an estimate, not a ceiling the engine enforces. | `PlatformError` |
-| `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
+| `dispatch_status(artifact)` | async | What the engine knows about a handed-off artifact: a txid, a state-transition hash, or a funding step id (`registration/<draft>/funding`, `topup/<id>/funding`), as `broadcast_unknown{artifact}` and `will_be_sent{artifact}` carry. A `broadcast_unknown` may carry an empty artifact: a submission's outcome was not confirmed (the SDK's `StateTransitionResultUnconfirmed`, or a platform-wallet `…Unconfirmed` verdict that the generic mapping reads) and the write named no journal entry. There is nothing to look up; the host reads it as unknown and offers no retry. `WillBeSent`, `MaybeSent`, `Sent` or `NotSent`; `None` means the engine has no entry. Answered by E0-04 §16.6's table (§4.1). The host reads every `None` as unknown, and only `Some(NotSent)` allows a retry it offers; it calls this before it offers any retry. | `PlatformError` |
 
 ### 2.12 Platform addresses (`platform_addresses.rs`; release 0.1, lane E2)
 
@@ -968,7 +968,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 86 -->
+<!-- surface-sha256: f6e703e47fea2ee2a3761ad98a3cffc1e3b95ccce24b8f29ab4f51e37c259105 version: 87 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2766,8 +2766,11 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   `send_request`, `accept_request`, `set_private_details` (when it publishes), `enable_dashpay_keys`, `register_name`,
   `update_profile`, `top_up` and `withdraw`. For registration the state machine records the outcome in the row
   instead (`waiting`, or a `Failed` phase with `retryable`).
-  - `broadcast_unknown{artifact}`: the artifact may already be out. **The UI never offers a blind retry**: it says
-    "may have been sent", and offers a retry only once `dispatch_status(artifact)` says `NotSent` (or the
+  - `broadcast_unknown{artifact}`: the artifact may already be out. The artifact is empty when a submission's outcome
+    was not confirmed (the SDK's `StateTransitionResultUnconfirmed`, or a library `…Unconfirmed` verdict that reaches
+    the generic mapping) and the write names no journal entry; the app then sends no `artifact` data and the UI, with
+    nothing for `dispatch_status` to settle, never offers a retry. **The UI never offers a blind retry**: it says "may
+    have been sent", and offers a retry only once `dispatch_status(artifact)` says `NotSent` (or the
     `DispatchResolved` event does, §6). A re-query of the chain or Platform is not enough: a committed entry the
     journal still holds can be resent later, so a retry on "nothing on chain" could pay twice (E0-04 review finding
     2). This mirrors m1's `send.broadcast_unknown`.
@@ -4867,3 +4870,18 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     `platform.grant_invalid`, and a held row signs only its stored plan, once more. A grant is not bound to the
     row it was sized for: like every `PlatformOp` grant it caps what any one redemption may take, which the user
     approves.
+
+106. **An unconfirmed submission is an unknown outcome (upstream SDK pins; version 87).** The upstream SDK wraps every
+    wait-phase error after a submission in `StateTransitionResultUnconfirmed`, and platform-wallet reports its own
+    unconfirmed broadcasts (a contact request, a shielded broadcast or spend, a masternode withdrawal, a transaction)
+    as `…Unconfirmed` verdicts. The generic mapping (`From<dash_sdk::Error>` and `From<PlatformWalletError>` for
+    `PlatformError`) reads all of them as `platform.broadcast_unknown`, no longer `internal` or, under the SDK's retry
+    envelope, `platform.unavailable`. Where the write names no journal entry the artifact is empty and the app sends
+    no `artifact` data (§2.11 `dispatch_status`, §4). A flow that classifies the error before that mapping keeps its
+    own result: the registration's `settled`, a withdrawal's read-back, a move's evidence, a Built lock's re-broadcast
+    (`TransactionBroadcastUnconfirmed` there waits for the network, `platform.unavailable`), the send, CoinJoin and
+    shielded paths. An error that reaches the facade through `EngineError` keeps that path's code. A registration
+    records the code as it recorded `internal`: a retryable `Failed` phase, whose Continue looks for the lock's
+    identity before any resend. `PublicContactRequestUnconfirmed` also answers a second send or accept while the first
+    is unconfirmed; it reads `broadcast_unknown` too, since the first may be out. No signature, record or code
+    changes.
