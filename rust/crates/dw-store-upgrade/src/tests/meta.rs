@@ -129,7 +129,7 @@ fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
         CantOpenCause::RetiredPoolWithoutP9a,
         CantOpenCause::P9aBroken,
     ] {
-        let with = copy::cant_open(cause, true);
+        let with = copy::cant_open(cause, copy::BackupState::Verified);
         let shown = with.render(folder);
         assert!(shown.starts_with("Dash Wallet can't open this wallet data\n"));
         assert!(shown.contains(&format!(
@@ -138,13 +138,13 @@ fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
         assert!(shown.contains(&format!("upgrade-backups folder inside {folder}.")));
         assert!(shown.ends_with("[Quit]"));
         assert_eq!(with.text_key, "storeUpgrade.cantOpen.text");
-        let without = copy::cant_open(cause, false);
+        let without = copy::cant_open(cause, copy::BackupState::None);
         assert_eq!(without.text_key, "storeUpgrade.cantOpen.textWithoutBackup");
         assert!(!without.render(folder).contains("upgrade-backups"));
         assert!(
             without
                 .render(folder)
-                .contains("Nothing in it was changed. Your funds")
+                .contains("Nothing in it was changed. Keep")
         );
     }
     let err = crate::StoreUpgradeError::RetiredPoolWithoutAdopter { rows: 1 };
@@ -154,8 +154,11 @@ fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
     );
     let err = crate::StoreUpgradeError::P9aBroken { detail: "x".into() };
     assert_eq!(
-        copy::screen_for(&err, true),
-        Some(copy::cant_open(CantOpenCause::P9aBroken, true))
+        copy::screen_for(&err, copy::BackupState::Verified),
+        Some(copy::cant_open(
+            CantOpenCause::P9aBroken,
+            copy::BackupState::Verified
+        ))
     );
 }
 
@@ -172,7 +175,7 @@ fn backup_sentence_follows_snapshot_presence() {
 #[test]
 fn copy_names_the_folder_the_snapshot_writes() {
     assert_eq!(copy::COPY_FOLDER_NAME, "upgrade-backups");
-    let text = copy::cant_open(CantOpenCause::P9aBroken, true).text;
+    let text = copy::cant_open(CantOpenCause::P9aBroken, copy::BackupState::Verified).text;
     assert!(text.contains(&format!(
         "the {} folder inside {{folder}}",
         crate::snapshot::UPGRADE_BACKUPS_DIR

@@ -28,6 +28,8 @@ pub const STORE_FILES: [&str; 4] = [
 /// The folder under `{folder}` holding every upgrade copy. A literal,
 /// untranslated name: user copy names it (M3-UX (e)).
 pub const UPGRADE_BACKUPS_DIR: &str = "upgrade-backups";
+/// SQLite's side files of a store.
+pub(crate) const SIDE_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 pub(crate) const BEFORE_PREFIX: &str = "before-upgrade";
 pub(crate) const MARKER: &str = "SNAPSHOT-COMPLETE";
 const MARKER_HEADER: &str = "dw-store-upgrade snapshot";
@@ -77,6 +79,10 @@ impl SnapshotInfo {
     pub fn fork_versions(&self) -> &BTreeSet<u32> {
         &self.fork_versions
     }
+    pub(crate) fn refinery_max(&self) -> i64 {
+        self.refinery_max
+    }
+
     /// sha256 of the marker file: names this exact snapshot.
     pub fn manifest_sha256(&self) -> &str {
         &self.manifest_sha256
@@ -236,12 +242,44 @@ fn before_dirs(network_dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// Whether a completed before-upgrade snapshot exists with its files present
-/// (chooses `storeUpgrade.cantOpen.text` over `textWithoutBackup`).
+/// What [`snapshot_state`] found in `upgrade-backups/`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SnapshotState {
+    /// The newest snapshot whose marker parses and whose every file matches
+    /// its size and sha256: a backup.
+    Verified(SnapshotInfo),
+    /// A completed snapshot (its marker exists) that fails verification, and
+    /// no verified one. Never described as a backup.
+    Unverified { dir: PathBuf, detail: String },
+    /// No completed snapshot.
+    None,
+}
+
+/// The backup state of `network_dir`: a verified snapshot wins over an
+/// unverified one; among each, the newest.
+pub fn snapshot_state(network_dir: &Path) -> io::Result<SnapshotState> {
+    let mut unverified = None;
+    for dir in before_dirs(network_dir)?.into_iter().rev() {
+        if !dir.join(MARKER).exists() {
+            continue;
+        }
+        match read_snapshot(&dir, true) {
+            Ok(info) => return Ok(SnapshotState::Verified(info)),
+            Err(detail) => {
+                unverified.get_or_insert(SnapshotState::Unverified { dir, detail });
+            }
+        }
+    }
+    Ok(unverified.unwrap_or(SnapshotState::None))
+}
+
+/// Whether a verified before-upgrade snapshot exists (chooses
+/// `storeUpgrade.cantOpen.text` over `textWithoutBackup`).
 pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
-    Ok(before_dirs(network_dir)?
-        .iter()
-        .any(|d| read_snapshot(d, false).is_ok()))
+    Ok(matches!(
+        snapshot_state(network_dir)?,
+        SnapshotState::Verified(_)
+    ))
 }
 
 /// The newest completed snapshot, its files checked against their sha256.

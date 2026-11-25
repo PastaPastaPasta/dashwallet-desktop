@@ -63,6 +63,35 @@ pub enum StoreUpgradeError {
     #[error("a restore is pending in {dir}")]
     RestorePending { dir: PathBuf },
 
+    /// The requested restore was refused before anything moved
+    /// (`storeUpgrade.restore.refused.*`). The request was removed so the
+    /// refusal shows once (MG (k)); every wallet and backup file is unchanged.
+    #[error("restore refused: {cause}")]
+    RestoreRefused { cause: crate::restore::RefusalCause },
+
+    /// Not enough space for the copies a restore makes before its journal
+    /// (`storeUpgrade.restore.noSpace.*`). This attempt's copies were removed
+    /// (or marked safe to delete) and the request cleared (MG (s)). Nothing
+    /// was changed. `needed` is the extra space the copies take.
+    #[error("not enough disk space to restore (needs {needed:?} bytes)")]
+    RestoreNoSpace { needed: Option<u64> },
+
+    /// A restore stopped. Before its journal (`journal_written` false) nothing
+    /// changed and the request stays (`storeUpgrade.restore.notStarted.*`);
+    /// after it the stores may be part-swapped and no store may open until a
+    /// restart finishes it (`storeUpgrade.restore.incomplete.*`).
+    #[error("restore stopped ({cause}): {detail}")]
+    RestoreIncomplete {
+        cause: crate::restore::IncompleteCause,
+        journal_written: bool,
+        detail: String,
+    },
+
+    /// A restore was asked for after a store opened in this process
+    /// (Q82-G1 F4-a, Q86 (f)). Nothing changed; the request stays.
+    #[error("restore refused: a wallet store has already opened in this process")]
+    RestoreAfterOpen,
+
     /// The store is held open in this process (upstream `AlreadyOpen`, a
     /// live [`crate::PersisterOpened`], or the `app.sqlite` lock). Never read
     /// as "no wallet" (Q82-G1 F4-d). Nothing changed.
@@ -137,7 +166,13 @@ impl StoreUpgradeError {
             | Self::SnapshotInvalid { .. }
             | Self::SnapshotFailed { .. }
             | Self::RestorePending { .. }
+            | Self::RestoreRefused { .. }
+            | Self::RestoreNoSpace { .. }
+            | Self::RestoreAfterOpen
             | Self::StoreHeld { .. } => true,
+            Self::RestoreIncomplete {
+                journal_written, ..
+            } => !journal_written,
             Self::PersisterOpen { .. } => false,
             Self::Sqlite { unchanged, .. } | Self::Io { unchanged, .. } => *unchanged,
             #[cfg(test)]
