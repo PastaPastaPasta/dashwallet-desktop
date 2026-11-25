@@ -184,8 +184,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-          shared-key: release-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # CI's cache, restore only: a saved 2.3 GB release cache pushed the repository over the 10 GB
+          # Actions cache cap and evicted CI's caches (docs/ci.md, "Main CI wall time").
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
