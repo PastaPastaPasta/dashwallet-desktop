@@ -9,7 +9,7 @@
 //!
 //! The refusal at open (`storeUpgrade.refused.*`, MG's final cantOpen
 //! family, sha256 8c2c34db…0da2, with its Q107 C1 damaged-store keys,
-//! sha256 6b1c75d2…8f99) is title + "{intro}: {detail} {unchanged}
+//! sha256 e74ef931…0049, wayOut v2) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version. "{unchanged}" says Dash Wallet changed
@@ -456,7 +456,7 @@ impl WayOut {
             ),
             Self::Damaged => line(
                 "storeUpgrade.refused.wayOut.damaged",
-                "To set up a wallet again from its recovery phrase, choose Set up from recovery phrase. Dash Wallet starts with a new data folder and leaves {folder} as it is, without deleting anything. Setting up again rebuilds the wallet from the network, so anything saved only in this wallet data, such as labels and notes, isn't brought across. If you don't have the recovery phrase, choose Report a problem.",
+                "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
             ),
         }
     }
