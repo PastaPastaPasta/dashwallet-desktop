@@ -179,7 +179,7 @@ pub use registration::{
     ShieldedReadiness,
 };
 pub use shielded::{
-    HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, SHIELDED_SPENDS_AVAILABLE, ShieldOutcome,
+    HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome,
     ShieldQuote, ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind,
     ShieldedActivityStatus, ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedSpendState, ShieldedStatus, ShieldedSyncWait, StuckShieldFunding,

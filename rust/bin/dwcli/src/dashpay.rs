@@ -3851,11 +3851,7 @@ mod tests {
                 .get_mut("result")
                 .and_then(|r| r.get_mut("spends_available"))
             {
-                assert_eq!(
-                    *spends,
-                    json!(dw_engine::platform::SHIELDED_SPENDS_AVAILABLE),
-                    "{args:?}"
-                );
+                assert!(spends.is_boolean(), "{args:?}");
                 *spends = json!(true);
             }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");

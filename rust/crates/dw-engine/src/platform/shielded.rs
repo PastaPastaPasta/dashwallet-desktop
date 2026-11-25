@@ -28,12 +28,6 @@ use crate::EngineError;
 pub const SHIELDED_ACTIVATION_VERSION: u32 =
     dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 
-/// This build can spend from the shielded account: send, unshield to Core or
-/// Platform, and pay a contact from Shielded. A build whose SDK cannot sets it
-/// false; the spends then refuse `platform.unavailable` before any proof,
-/// and shielding, receive, sync and balance keep working.
-pub const SHIELDED_SPENDS_AVAILABLE: bool = true;
-
 /// Where the wallet's shielded account stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedStatus {
@@ -88,7 +82,10 @@ pub struct ShieldedStatus {
     /// engine builds it in the background when the session's Platform side
     /// starts on an active network).
     pub prover_ready: bool,
-    /// [`SHIELDED_SPENDS_AVAILABLE`], active or not.
+    /// The library can spend from the pool's key set: send, unshield to Core
+    /// or Platform, and pay a contact from Shielded. While false those refuse
+    /// `platform.unavailable` before anything else; shielding, receive, sync
+    /// and the balance keep working. Read on an inactive network too.
     pub spends_available: bool,
 }
 

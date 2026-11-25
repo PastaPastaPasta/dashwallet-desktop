@@ -159,7 +159,7 @@ use super::registration_flow::{
 use super::requests::{leased, write_permit};
 use super::shield_drain::DrainCoin;
 use super::shielded::{
-    HeldSpend, PendingShield, SHIELDED_ACTIVATION_VERSION, SHIELDED_SPENDS_AVAILABLE, ShieldOutcome, ShieldQuote, ShieldState,
+    HeldSpend, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
     ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
     ShieldedStatus, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
@@ -314,6 +314,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// coordinator ([`EngineDispatch`]). Without it the library would send
     /// a spend the engine never accepted.
     fn hooked(&self) -> impl Future<Output = bool> + Send;
+    /// The library can spend from the pool's key set. While false every
+    /// spend from Shielded refuses `platform.unavailable` first
+    /// ([`unhooked`]) and the status says so; shields, receive, sync and the
+    /// balance are unaffected.
+    fn keyset_spends(&self) -> bool;
     /// The account's spends the library resolved with no proof of either
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
@@ -594,7 +599,7 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
         last_sync_at: None,
         syncing: false,
         prover_ready: false,
-        spends_available: SHIELDED_SPENDS_AVAILABLE,
+        spends_available: lib.keyset_spends(),
     };
     if !status.active {
         return Ok(status);
@@ -1667,12 +1672,12 @@ pub(super) async fn send_armed(
 }
 
 /// Refuses a spend while this build cannot spend from the pool
-/// ([`SHIELDED_SPENDS_AVAILABLE`]) or the coordinator has no dispatch hook:
+/// ([`ShieldedLib::keyset_spends`]) or the coordinator has no dispatch hook:
 /// the library would send what the engine never accepted. `send` and
 /// `unshield` ask before anything else, so the refusal quotes nothing, issues
 /// no address and keeps the grant.
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
-    if !SHIELDED_SPENDS_AVAILABLE || !lib.hooked().await {
+    if !lib.keyset_spends() || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
     }
     Ok(())
@@ -3152,6 +3157,10 @@ impl ShieldedLib for PwShielded {
 
     async fn hooked(&self) -> bool {
         hooked(&self.coordinator).await
+    }
+
+    fn keyset_spends(&self) -> bool {
+        true
     }
 
     async fn rest_clock(&self) -> Result<RestClock, PlatformError> {
