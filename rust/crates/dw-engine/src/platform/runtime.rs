@@ -4,7 +4,7 @@
 //! cadence. The bring-up itself is in `bringup.rs`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
@@ -128,6 +128,9 @@ pub(crate) struct PlatformRuntime {
     /// Bumped when a wallet's bring-up outcome changes or a rerun a flow
     /// asked for ends: what [`Self::await_bring_up`] waits on.
     startup_seen: watch::Sender<u64>,
+    /// Flows inside [`Self::await_bring_up`]: an in-app close they refuse
+    /// names them ([`Self::preparing`]).
+    bring_up_waiters: AtomicUsize,
     cadence: Mutex<PlatformCadence>,
     pub(super) lock: watch::Sender<LockView>,
     /// Each wallet's bring-up or unlock task in flight, ended when the
@@ -356,6 +359,22 @@ impl Drop for StartupWrite<'_> {
     }
 }
 
+/// One flow counted in [`PlatformRuntime::bring_up_waiters`] while it lives.
+pub(crate) struct Waiting<'a>(&'a AtomicUsize);
+
+impl<'a> Waiting<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A one-shot pause point for tests.
 #[cfg(test)]
 #[derive(Default)]
@@ -533,6 +552,7 @@ impl PlatformRuntime {
             startup: RwLock::new(HashMap::new()),
             hub,
             startup_seen: watch::Sender::new(0),
+            bring_up_waiters: AtomicUsize::new(0),
             cadence: Mutex::new(PlatformCadence::default()),
             lock: watch::Sender::new(LockView {
                 state: lock,
@@ -898,6 +918,7 @@ impl PlatformRuntime {
         else {
             return;
         };
+        let _waiting = Waiting::new(&self.bring_up_waiters);
         let (queued, running) = self.bring_up_waits();
         let mut deadline = Instant::now() + queued;
         let mut started = false;
@@ -925,6 +946,17 @@ impl PlatformRuntime {
                 }
             }
         }
+    }
+
+    /// A flow waits on a wallet's bring-up ([`Self::await_bring_up`]).
+    pub(crate) fn preparing(&self) -> bool {
+        self.bring_up_waiters.load(Ordering::SeqCst) > 0
+    }
+
+    /// Counts as a flow waiting on a bring-up while it lives.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) fn waiting(&self) -> Waiting<'_> {
+        Waiting::new(&self.bring_up_waiters)
     }
 
     /// [`Self::await_bring_up`]'s waits: queued, then running.

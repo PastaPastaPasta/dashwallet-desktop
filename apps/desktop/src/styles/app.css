@@ -1316,7 +1316,7 @@ input[type="radio"]:disabled {
   bottom: 0;
   left: 50%;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   width: calc(100% - 2 * var(--dw-layout-page-padding-h));
   max-width: var(--dw-layout-shortcut-card-max-width);
   padding: var(--dw-space-xxs);
@@ -4035,10 +4035,31 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-l);
 }
 
+.notifications:not(:empty) + * {
+  margin-top: var(--dw-space-l);
+}
+
 .notifications .bell-section {
-  padding: var(--dw-layout-card-padding);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xs) var(--dw-space-sm);
   border-radius: var(--dw-radius-card);
   background: var(--dw-role-card);
+}
+
+.notifications .bell-section-title,
+.notifications .bell-more {
+  padding-inline: var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .bell-more {
+  padding-bottom: var(--dw-space-xs);
+}
+
+.notifications .bell-row-open {
+  padding: var(--dw-space-xs) var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .contact-row-actions {
+  padding-inline-end: var(--dw-space-transaction-row-horizontal);
 }
 
 /* ------------------------------------------------------------------ DashPay status (DP1-08) */

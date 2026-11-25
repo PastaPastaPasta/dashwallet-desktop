@@ -61,6 +61,13 @@ describe("platform activity rows", () => {
     expect(isMayLandRow(pending)).toBe(false);
   });
 
+  it("shows a recover of a refused transfer to Shielded as a receipt on Platform, with its own title (#402)", () => {
+    const done = platformRow(act("r", { kind: "recovered", credits: "289944000000" }));
+    expect([rowSource(done), sourceRowTitle(done), done.category, done.txType, done.amount, done.address]).toEqual(["platform", "Recovered from an unfinished transfer", "received", "recvWithAddress", 289_944_000, "tdash1abc"]);
+    const pending = platformRow(act("s", { kind: "recovered", state: "pending", estimated: true }));
+    expect(pending.status.kind).toBe("unconfirmed");
+  });
+
   it("shows an unshield to an own Platform address as From Shielded, a receipt there", () => {
     const done = platformRow(act("s", { kind: "fromShielded", credits: "25000000000" }));
     expect([sourceRowTitle(done), done.category, done.txType, done.amount, done.address]).toEqual(["From Shielded", "received", "recvWithAddress", 25_000_000, "tdash1abc"]);
