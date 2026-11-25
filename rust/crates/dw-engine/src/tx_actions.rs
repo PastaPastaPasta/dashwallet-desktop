@@ -2681,23 +2681,23 @@ impl NetworkSession {
         // The blocks the header chain holds, with the take, at the heights
         // the drops with no recheck anchor to (#891): the processed height
         // too, for the orphans `queue_dead` finds below. Read with key-wallet
-        // where it was at the take, or none.
-        let anchors = match processed {
+        // where it was at the take; if it moved meanwhile, a drop that waits
+        // is stamped with no height, and void at its next take.
+        let (stamped, anchors) = match processed {
             Some(p) => {
                 let unrechecked = (work.iter()).filter(|w| w.3.is_none());
                 let heights = unrechecked.map(|(_, winner, ..)| take_anchor(p, *winner));
                 let anchors = self.hub.header_hashes(heights.chain([p]).collect()).await;
-                if processed_height(manager, wallet).await == processed {
-                    anchors
-                } else {
-                    HashMap::new()
+                match processed_height(manager, wallet).await == processed {
+                    true => (processed, anchors),
+                    false => (None, HashMap::new()),
                 }
             }
-            None => HashMap::new(),
+            None => (None, HashMap::new()),
         };
         let found_at = |winner: Winner| {
-            let anchor = processed.and_then(|p| anchors.get(&take_anchor(p, winner)).copied());
-            (truncations, processed, anchor)
+            let anchor = stamped.and_then(|p| anchors.get(&take_anchor(p, winner)).copied());
+            (truncations, stamped, anchor)
         };
         work.extend(self.carried_drops(wallet, truncations).await);
         let all = stored;
@@ -2810,10 +2810,11 @@ impl NetworkSession {
         }
     }
 
-    /// The drops that waited for another wallet's open go, with the
-    /// evidence they were found on (#818, S1): after any drop that saw the
-    /// open, or the unload or removal that ended it, under way has put
-    /// itself to wait. Those of unloaded wallets went with them.
+    /// The drops that wait are taken again, with the evidence they were
+    /// found on (#818, S1), each going only while what it was found at
+    /// holds (#891): after any drop that saw another wallet's open, or the
+    /// unload or removal that ended it, under way has put itself to wait.
+    /// Those of unloaded wallets went with them.
     pub(crate) async fn drain_deferred_drops(&self, manager: &Manager) {
         drop(self.hub.drop_gate.lock().await);
         let Ok(live) = self.live() else {
@@ -3413,11 +3414,10 @@ impl NetworkSession {
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let unrechecked = recheck.is_none();
         #[cfg(test)]
-        let pause = match unrechecked && !links.is_empty() {
-            true => self.hub.pause_drop_child.lock().unwrap().take(),
-            false => (recheck.is_some())
-                .then(|| self.hub.pause_drop_recheck.lock().unwrap().take())
-                .flatten(),
+        let pause = match (unrechecked, links.is_empty()) {
+            (true, false) => self.hub.pause_drop_child.lock().unwrap().take(),
+            (true, true) => self.hub.pause_drop_orphan.lock().unwrap().take(),
+            (false, _) => self.hub.pause_drop_recheck.lock().unwrap().take(),
         };
         #[cfg(test)]
         if let Some(pause) = &pause {

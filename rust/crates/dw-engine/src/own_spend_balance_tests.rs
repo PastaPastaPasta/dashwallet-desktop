@@ -3831,7 +3831,7 @@ fn a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load() {
 /// waits; a block lands on top of the chain before that wallet is closed.
 /// The block leaves the drop's take standing: C goes at the close.
 #[test]
-fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_waits() {
+fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallets_history_is_not_whole() {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
@@ -3873,6 +3873,61 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_waits() {
     eventually("C goes", || !live_in_history(&session, id, c.txid()));
     drops_done(&engine, &session);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the close");
+}
+
+/// #891: as above, but key-wallet processes a block while the load's
+/// orphan drop of C is between its take and the write lock. The drop is
+/// put off with the block at its take's height, which the header chain
+/// still holds at the load's next drop: C goes then.
+#[test]
+fn a_child_orphaned_by_a_sweep_goes_after_a_block_between_its_take_and_the_lock() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            sweeps: vec![platform_wallet::changeset::changeset::SweepBatch {
+                txids: vec![p.txid()],
+                superseded_by: winner.txid(),
+                winner_mined_height: Some(TIP + 1),
+                released_outpoints: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    );
+    crate::tx_actions::forget_sent(&session.live().unwrap().appdb, id, &[p.txid()]).unwrap();
+    let chain: Vec<_> = (FUNDED_AT..=TIP + 2)
+        .map(|h| (h, vec![unrelated(h as u8)]))
+        .collect();
+    headers(&session, &chain);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_drop_orphan.lock().unwrap() = Some(Arc::clone(&pause));
+    let loading = {
+        let session = Arc::clone(&session);
+        (session.rt.clone()).spawn(async move { session.load_wallet(id).await })
+    };
+    eventually("the load's orphan drop took C", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let manager = session.manager().unwrap();
+    // Straight to key-wallet: the load holds the drop gate.
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let block = super::block_with(vec![unrelated((TIP + 2) as u8)]);
+        let wallets = BTreeSet::from([id.0]);
+        (wm.process_block_for_wallets(&block, block.block_hash(), TIP + 2, &wallets)).await;
+        wm.update_wallet_synced_height(&id.0, TIP + 2);
+    });
+    pause.release.notify_one();
+    engine.block_on(loading).unwrap().unwrap();
+    drops_done(&engine, &session);
+    eventually("C goes", || !live_in_history(&session, id, c.txid()));
+    drops_done(&engine, &session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the load");
 }
 
 /// #170 case 4: C relayed between key-wallet's sweep of P and the

@@ -627,7 +627,9 @@ pub(crate) struct SessionHub {
     platform_addresses: Mutex<HashMap<WalletId, crate::platform::AddressSync>>,
     /// The children of payments key-wallet's conflict sweep took, which it
     /// holds no record of, by wallet, each set with its winner and the
-    /// swept payments: dropped at the next reconcile (#170 case 4).
+    /// swept payments, and the truncations applied when it was queued:
+    /// dropped at the next reconcile (#170 case 4), unless a truncation
+    /// came since (#891).
     dead_children: Mutex<Vec<DeadChildren>>,
     /// The drops that wait, by wallet: for another wallet's open (#818,
     /// S1), or, with no recheck, for key-wallet's risen height to be read
@@ -797,6 +799,10 @@ pub(crate) struct SessionHub {
     /// took them, before the write lock.
     #[cfg(test)]
     pub(crate) pause_drop_child: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop with no recheck and no swept payment (an
+    /// orphan) after it took it, before the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_orphan: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next drop of beaten payments after it read its
     /// block's proof, before the write lock.
     #[cfg(test)]
@@ -1097,6 +1103,8 @@ impl SessionHub {
             pause_drop_recheck: Mutex::new(None),
             #[cfg(test)]
             pause_drop_child: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_orphan: Mutex::new(None),
             #[cfg(test)]
             pause_drop_proven: Mutex::new(None),
             #[cfg(test)]
