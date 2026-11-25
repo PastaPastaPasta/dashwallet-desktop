@@ -499,10 +499,25 @@ fn signed_by_wallet_each(
     owners: &[Address],
     tx: Transaction,
 ) -> Transaction {
+    let phrase = std::str::from_utf8(PHRASE).unwrap();
+    signed_by_phrase_each(engine, session, id, phrase, owners, tx)
+}
+
+/// [`signed_by_wallet_each`] with the keys of `phrase`, the device that
+/// holds wallet `id`'s secret (a watch-only wallet's own is elsewhere).
+fn signed_by_phrase_each(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    phrase: &str,
+    owners: &[Address],
+    tx: Transaction,
+) -> Transaction {
     use key_wallet::wallet::initialization::WalletAccountCreationOptions;
     use key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionSigner;
     let manager = session.manager().unwrap();
     let owners = owners.to_vec();
+    let phrase = phrase.to_owned();
     engine.block_on(async move {
         let wm = manager.wallet_manager_arc();
         let paths: std::collections::HashMap<Address, _> = {
@@ -517,9 +532,8 @@ fn signed_by_wallet_each(
                 })
                 .collect()
         };
-        let phrase = std::str::from_utf8(PHRASE).unwrap();
         let device = key_wallet::Wallet::from_mnemonic(
-            key_wallet::Mnemonic::from_phrase(phrase).unwrap(),
+            key_wallet::Mnemonic::from_phrase(&phrase).unwrap(),
             key_wallet::Network::Regtest,
             WalletAccountCreationOptions::Default,
         )
