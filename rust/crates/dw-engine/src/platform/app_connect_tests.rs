@@ -134,6 +134,7 @@ pub(crate) struct FakeConnect {
     stale: Mutex<Option<Identity>>,
     /// Updates are accepted but never land.
     lose_updates: AtomicBool,
+    refuse_update: Mutex<Option<PlatformError>>,
 }
 
 impl FakeConnect {
@@ -177,6 +178,7 @@ impl FakeConnect {
             after_update: Mutex::default(),
             stale: Mutex::default(),
             lose_updates: AtomicBool::new(false),
+            refuse_update: Mutex::default(),
         }
     }
 
@@ -283,6 +285,9 @@ impl ConnectNet for FakeConnect {
             .await
             .map_err(|_| PlatformError::SignerUnavailable)?;
         self.signed.lock().unwrap().push(master.id());
+        if let Some(e) = self.refuse_update.lock().unwrap().take() {
+            return Err(e);
+        }
         if !self.lose_updates.load(Ordering::SeqCst) {
             let mut all = self.identities.lock().unwrap();
             let me = all.get_mut(&id).unwrap();
@@ -1204,6 +1209,41 @@ fn approving_again_after_not_confirmed_adds_keys_that_never_landed() {
         let copies = (me.public_keys().values()).filter(|on| on.data() == k.data());
         assert_eq!(copies.count(), 1, "key {}", k.id());
     }
+}
+
+/// An update Platform refused says so, instead of claiming the keys may
+/// still land; the request stays open and approving again succeeds.
+#[test]
+fn a_refused_update_is_not_reported_as_unconfirmed() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    *f.net.refuse_update.lock().unwrap() = Some(PlatformError::InvalidArgument {
+        detail: "revision".into(),
+    });
+    let grant = f.quoted_grant(&l, &Fixture::choice());
+    let refused = f.approve(&l, &Fixture::choice(), &grant).unwrap_err();
+    assert!(matches!(refused, ConnectError::Platform(_)), "{refused:?}");
+    assert!(refused.keeps_open());
+    assert!(f.net.updates.lock().unwrap().is_empty());
+    assert!(f.net.published.lock().unwrap().is_empty());
+    let again = f.quoted_grant(&l, &Fixture::choice());
+    f.approve(&l, &Fixture::choice(), &again).unwrap();
+    assert_eq!(f.net.published.lock().unwrap().len(), 1);
+}
+
+/// A timed-out update still reads as not confirmed: its keys may land.
+#[test]
+fn a_timed_out_update_stays_not_confirmed() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    *f.net.refuse_update.lock().unwrap() = Some(PlatformError::Timeout);
+    let grant = f.quoted_grant(&l, &Fixture::choice());
+    assert_eq!(
+        f.approve(&l, &Fixture::choice(), &grant).unwrap_err(),
+        ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed
+        }
+    );
 }
 
 /// An identity with no key that may sign the response is refused before

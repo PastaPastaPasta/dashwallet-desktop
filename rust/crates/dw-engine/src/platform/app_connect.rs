@@ -682,6 +682,15 @@ async fn earlier_approval(
     Ok(found)
 }
 
+/// An update error that proves the transition never took effect, unlike
+/// a timeout or an unknown broadcast, after which the keys may still land.
+fn refused_unsent(e: &PlatformError) -> bool {
+    !matches!(
+        e,
+        PlatformError::Timeout | PlatformError::Unavailable | PlatformError::BroadcastUnknown { .. }
+    )
+}
+
 fn parse_identity(text: &str) -> Result<Identifier, ConnectError> {
     Identifier::from_string(text, Encoding::Base58).map_err(|_| {
         PlatformError::InvalidArgument {
@@ -1196,6 +1205,10 @@ pub(crate) async fn approve(
             update.finish(false);
             return Err(e);
         }
+        if let Err(e) = net.refresh(wallet, id).await {
+            update.finish(false);
+            return Err(e.into());
+        }
         put_record(session, wallet_id, record.clone()).await?;
         let signer = ConnectUpdateSigner {
             master: update
@@ -1214,12 +1227,15 @@ pub(crate) async fn approve(
         .await;
         drop(signer);
         update.finish(written.is_ok());
-        if let Err(e) = written {
+        if let Err(e) = &written {
             tracing::info!("app connect update: {}", e.code());
         }
         if !confirm(net, wallet, id, &plan.add, &disable).await {
-            return Err(ConnectError::Failed {
-                failure: ConnectFailure::NotConfirmed,
+            return Err(match written {
+                Err(e) if refused_unsent(&e) => e.into(),
+                _ => ConnectError::Failed {
+                    failure: ConnectFailure::NotConfirmed,
+                },
             });
         }
     }
