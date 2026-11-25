@@ -166,6 +166,7 @@ impl Pure {
             chainlock_height: None,
             network: NET,
             payees: &self.payees,
+            drops: &crate::history::NO_DROPS,
         }
     }
 
