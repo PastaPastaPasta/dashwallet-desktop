@@ -143,6 +143,10 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
+    /// The coordinator the engine's dispatch hook is set on: the library
+    /// takes a hook once and does not say whether one is set.
+    pub(crate) shielded_hooked:
+        Mutex<std::sync::Weak<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>>,
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
@@ -171,10 +175,6 @@ pub(crate) struct PlatformRuntime {
     /// How many shielded passes reached the library's pass.
     #[cfg(test)]
     pub(crate) passes_run: std::sync::atomic::AtomicUsize,
-    /// A test's crash of the disposition consumer between its journal
-    /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
-    #[cfg(test)]
-    pub(crate) crash_before_ack: AtomicBool,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -511,6 +511,7 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
+            shielded_hooked: Mutex::new(std::sync::Weak::new()),
             shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
@@ -526,8 +527,6 @@ impl PlatformRuntime {
             admitting: Mutex::new(None),
             #[cfg(test)]
             passes_run: Default::default(),
-            #[cfg(test)]
-            crash_before_ack: AtomicBool::new(false),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
             wallet_loads: tokio::sync::RwLock::new(()),
