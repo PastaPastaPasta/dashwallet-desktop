@@ -68,6 +68,12 @@ class Paths(unittest.TestCase):
             "rust/crates/dw-engine/src/platform/contact_payout.rs",
             "rust/bin/dwcli/src/pay.rs",
             "rust/crates/dw-app/capabilities/send.json",
+            "rust/crates/dw-engine/src/governance/sync.rs",
+            "rust/crates/dw-engine/src/governance/records.rs",
+            "rust/crates/dw-engine/src/platform/contacts.rs",
+            "rust/crates/dw-engine/src/platform/profiles.rs",
+            "rust/crates/dw-app/src/dto/governance.rs",
+            "rust/crates/dw-app/src/shell/links.rs",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -78,7 +84,6 @@ class Paths(unittest.TestCase):
             "rust/crates/dw-engine/src/platform/profile.rs",
             "rust/crates/dw-engine/src/platform/contacts_tests/rows.rs",
             "rust/crates/dw-engine/src/rates/service.rs",
-            "rust/crates/dw-engine/src/platform/contacts.rs",
             "rust/crates/dw-engine/src/governance/voting.rs",
             "rust/crates/dw-engine/src/csv_export.rs",
             "rust/crates/dw-appdb/src/avatar.rs",
