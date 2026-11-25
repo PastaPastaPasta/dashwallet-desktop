@@ -17,6 +17,7 @@ mod startup_order;
 mod support;
 mod upgrade_copy;
 mod upgraded_from;
+mod upstream_shapes;
 mod v3;
 mod v3_dropped;
 
