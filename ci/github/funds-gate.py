@@ -49,7 +49,7 @@ def glob_regex(glob):
             out, i = out + "[^/]", i + 1
         else:
             out, i = out + re.escape(glob[i]), i + 1
-    return re.compile(out + r"\Z")
+    return re.compile(out + r"\Z", re.S)
 
 
 def load_patterns(path=PATHS_FILE):
@@ -227,17 +227,20 @@ def post_status(repo, sha, state, summary):
 
 def cmd_match(args):
     rules = load_patterns(args.paths)
-    for line in sys.stdin:
-        f = line.strip()
+    text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    names = text.split("\0") if args.z else text.splitlines()
+    for f in names:
+        f = f if args.z else f.strip()
         if f and is_funds(f, rules):
             print(f)
     return 0
 
 
 def policy_unchanged(repo, base, paths):
-    """A retry may only classify with the patterns it loaded if the new base carries the same list."""
-    if gh("-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/ci/funds-paths.txt?ref={base}") != Path(paths).read_text():
-        raise RuntimeError(f"ci/funds-paths.txt changed at base {base} during the check; run it again")
+    """A retry may only judge with the list and script it loaded if the new base carries the same ones."""
+    for name, local in (("ci/funds-paths.txt", Path(paths)), ("ci/github/funds-gate.py", Path(__file__))):
+        if gh("-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/{name}?ref={base}") != local.read_text():
+            raise RuntimeError(f"{name} changed at base {base} during the check; run it again")
 
 
 def cmd_check(args):
@@ -321,6 +324,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("match")
     m.add_argument("--paths", default=PATHS_FILE)
+    m.add_argument("-z", action="store_true", help="names on stdin are NUL-separated (git diff -z)")
     c = sub.add_parser("check")
     c.add_argument("--repo", required=True)
     c.add_argument("--pr", type=int, required=True)

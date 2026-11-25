@@ -5,7 +5,7 @@
 # Syntax: one glob per line, relative to the repository root. `*` matches within one path segment,
 # `**` matches across segments, `?` matches one character. A line starting with `!` takes matching
 # files back out. The last line that matches a file decides. `#` starts a comment line.
-# Check a change locally: git diff --no-renames --name-only origin/main... | ci/github/funds-gate.py match
+# Check a change locally: git diff --no-renames --name-only -z origin/main... | ci/github/funds-gate.py match -z
 
 # The gate itself.
 ci/funds-paths.txt
@@ -123,6 +123,7 @@ apps/desktop/src/api/send*
 apps/desktop/src/api/lockGate*
 apps/desktop/src/api/pending*
 apps/desktop/src/api/tauri.ts
+apps/desktop/src/api/backend.ts
 apps/desktop/src/app/files.ts
 apps/desktop/src/shielded/**
 apps/desktop/src/transfer/**
@@ -215,6 +216,7 @@ Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
 Sources/WalletFeatures/Security/SecurityViewModel.swift
 Sources/WalletFeatures/Onboarding/OnboardingViewModel.swift
 Sources/WalletFeatures/Wallets/WalletManagementViewModel.swift
+Sources/WalletFeatures/Wallets/WalletWiper.swift
 Sources/WalletRuntime/M3/CoinJoinAdapters.swift
 Sources/CrossUI/ToolScreens.swift
 Sources/MacUI/SignVerify/**
