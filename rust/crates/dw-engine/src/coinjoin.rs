@@ -2938,6 +2938,7 @@ impl NetworkSession {
             return;
         };
         let appdb = Arc::downgrade(&live.appdb);
+        let hub = Arc::downgrade(&self.hub);
         self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
             // Closed: there is nothing to write and nothing to try again.
             let Some(appdb) = appdb.upgrade() else {
@@ -2950,7 +2951,12 @@ impl NetworkSession {
                     write_beaten(&appdb, &scope, txids, winner, at)
                 }
                 SweepNews::Dropped { dead, released } => {
-                    retire_dropped(&appdb, &scope, dead, released)
+                    retire_dropped(&appdb, wallet_id, dead, released).map(|retired| {
+                        if let Some(hub) = hub.upgrade() {
+                            hub.forget_restore_holds(wallet_id, &retired);
+                        }
+                        !retired.is_empty()
+                    })
                 }
             };
             written
@@ -3735,35 +3741,44 @@ pub(crate) fn write_beaten(
 }
 
 /// Deletes the sweep record of each of `dead` whose every input is an
-/// output of one of `dead` or in `released`, with its beaten row, durably:
-/// it can never confirm, and key-wallet gave back what it spent. One with
-/// any other input keeps holding them all, and is sent again until a rival
-/// of that input settles it. Whether any was deleted.
+/// output of one of `dead` or in `released`, with its beaten row and its
+/// restore hold (in the wallet scope), in one durable write: it can never
+/// confirm, and key-wallet gave back what it spent. One with any other
+/// input keeps holding them all, and is sent again until a rival of that
+/// input settles it. The txids retired.
 pub(crate) fn retire_dropped(
     db: &AppDb,
-    scope: &str,
+    wallet: WalletId,
     dead: &BTreeSet<Txid>,
     released: &[OutPoint],
-) -> Result<bool, AppDbError> {
-    let mut gone = Vec::new();
+) -> Result<Vec<Txid>, AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let mut retired = Vec::new();
     for t in dead {
         let key = format!("{SWEEP_OUT_PREFIX}{t}");
-        let Some(o) = (db.setting(scope, &key)?).and_then(|v| SweepOut::decode(&key, &v)) else {
+        let Some(o) = (db.setting(&scope, &key)?).and_then(|v| SweepOut::decode(&key, &v)) else {
             continue;
         };
         if o.inputs()
             .all(|i| dead.contains(&i.txid) || released.contains(&i))
         {
-            gone.push(key);
-            gone.push(format!("{SWEEP_BEATEN_PREFIX}{t}"));
+            retired.push(*t);
         }
     }
-    if gone.is_empty() {
-        return Ok(false);
+    if retired.is_empty() {
+        return Ok(retired);
     }
-    let writes: Vec<(&str, Option<&str>)> = gone.iter().map(|k| (k.as_str(), None)).collect();
-    db.set_settings_durable(scope, &writes)?;
-    Ok(true)
+    let sweep_keys: Vec<String> = (retired.iter())
+        .flat_map(|t| [SWEEP_OUT_PREFIX, SWEEP_BEATEN_PREFIX].map(|p| format!("{p}{t}")))
+        .collect();
+    let hold_keys = crate::restore_gate::hold_keys(&retired);
+    let wallet_scope = wallet.to_string();
+    let writes: Vec<(&str, &str, Option<&str>)> = (sweep_keys.iter())
+        .map(|k| (scope.as_str(), k.as_str(), None))
+        .chain((hold_keys.iter()).map(|k| (wallet_scope.as_str(), k.as_str(), None)))
+        .collect();
+    db.set_scoped_settings_durable(&writes)?;
+    Ok(retired)
 }
 
 /// Deletes the beaten rows of `scope` whose winner's block a fork above

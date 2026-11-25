@@ -2691,3 +2691,159 @@ fn a_mined_funding_that_drops_a_claim_gives_its_chunk_no_block_row() {
     assert!(sweep_out_keys(&f).is_empty());
     assert_eq!(moved(&f), HashSet::from([released]));
 }
+
+/// A transaction spending `inputs`, paying one coin to nobody in particular.
+fn spending(inputs: &[OutPoint]) -> Transaction {
+    Transaction {
+        version: 2,
+        lock_time: 0,
+        input: (inputs.iter())
+            .map(|o| dashcore::TxIn {
+                previous_output: *o,
+                ..Default::default()
+            })
+            .collect(),
+        output: vec![dashcore::TxOut {
+            value: COIN,
+            script_pubkey: Default::default(),
+        }],
+        special_transaction_payload: None,
+    }
+}
+
+/// Whether `app.sqlite` at `path` refuses to delete the settings rows
+/// whose key is `LIKE pattern` (a storage failure inside a write).
+fn refuse_deletes(path: &std::path::Path, pattern: Option<&str>) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    match pattern {
+        Some(p) => db
+            .execute_batch(&format!(
+                "CREATE TRIGGER refuse_delete BEFORE DELETE ON settings_kv
+                 WHEN old.key LIKE '{p}'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;"
+            ))
+            .unwrap(),
+        None => db.execute_batch("DROP TRIGGER refuse_delete;").unwrap(),
+    }
+}
+
+/// H2 batch invariant on `retire_dropped`: a retired chunk's sweep rows
+/// (local scope) and its restore hold (wallet scope) go in one write. A
+/// write that fails at either scope leaves all of them; a chunk not
+/// retired keeps its own.
+#[test]
+fn a_retired_chunk_takes_its_restore_hold_in_the_same_write() {
+    use crate::coinjoin::{SWEEP_BEATEN_PREFIX, SweepOut, retire_dropped};
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join(dw_appdb::APP_DB_FILE);
+    let db = dw_appdb::AppDb::open(&path).unwrap();
+    let wallet = crate::WalletId([0x5a; 32]);
+    let (local, scope) = (
+        dw_appdb::local_scope(&wallet.to_string()),
+        wallet.to_string(),
+    );
+
+    let claim = spending(&[OutPoint::new(Txid::from_byte_array([0xf0; 32]), 0)]);
+    let released = OutPoint::new(Txid::from_byte_array([0xf1; 32]), 1);
+    let retired = SweepOut {
+        tx: spending(&[OutPoint::new(claim.txid(), 0), released]),
+    };
+    let kept = SweepOut {
+        tx: spending(&[
+            OutPoint::new(claim.txid(), 1),
+            OutPoint::new(Txid::from_byte_array([0xf2; 32]), 0),
+        ]),
+    };
+    let dead: std::collections::BTreeSet<Txid> = [claim.txid(), retired.txid(), kept.txid()].into();
+    for o in [&retired, &kept] {
+        let beaten = format!("{SWEEP_BEATEN_PREFIX}{}", o.txid());
+        let hold = crate::restore_gate::hold_keys([&o.txid()]).remove(0);
+        let value = o.value();
+        db.set_scoped_settings_durable(&[
+            (&local, &o.key(), Some(&value)),
+            (&local, &beaten, Some("is 00")),
+            (&scope, &hold, Some("")),
+        ])
+        .unwrap();
+    }
+    let rows = |o: &SweepOut| {
+        let beaten = format!("{SWEEP_BEATEN_PREFIX}{}", o.txid());
+        let hold = crate::restore_gate::hold_keys([&o.txid()]).remove(0);
+        [
+            db.setting(&local, &o.key()).unwrap().is_some(),
+            db.setting(&local, &beaten).unwrap().is_some(),
+            db.setting(&scope, &hold).unwrap().is_some(),
+        ]
+    };
+
+    for pattern in ["restore_hold:%", "coinjoin.sweep_out.%"] {
+        refuse_deletes(&path, Some(pattern));
+        let failed = retire_dropped(&db, wallet, &dead, &[released]);
+        refuse_deletes(&path, None);
+        assert!(failed.is_err(), "{pattern}: {failed:?}");
+        assert_eq!(
+            rows(&retired),
+            [true; 3],
+            "a write refused at {pattern} leaves them all"
+        );
+    }
+
+    assert_eq!(
+        retire_dropped(&db, wallet, &dead, &[released]).unwrap(),
+        vec![retired.txid()]
+    );
+    assert_eq!(
+        rows(&retired),
+        [false; 3],
+        "the rows and the hold go together"
+    );
+    assert_eq!(rows(&kept), [true; 3], "an input not given back keeps them");
+}
+
+/// The sweep news drops a retired chunk's restore hold from memory once
+/// its write commits, even when the sweep's own marks then fail to write.
+#[test]
+fn a_retired_chunks_restore_hold_leaves_memory_with_its_rows() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let claimed = credit_claim_coin(&f, &claim, 0);
+    let coin = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[claimed, coin]);
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let scope = f.wallet.to_string();
+    let hold = crate::restore_gate::hold_keys([&chunk.txid()]).remove(0);
+    appdb
+        .set_settings_durable(&scope, &[(&hold, Some(""))])
+        .unwrap();
+    let in_memory = || {
+        (f.session.hub.history)
+            .read_wallet(&f.wallet, |h| h.restore_holds.contains_key(&chunk.txid()))
+    };
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.restore_holds.insert(chunk.txid(), Default::default());
+    });
+    assert!(in_memory());
+
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        crate::tx_actions::FORGET_SENT_FAULT,
+        dw_appdb::fault::Stage::Before,
+    );
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), coin],
+    );
+    dw_appdb::fault::disarm(&path);
+    assert!(sweep_out_keys(&f).is_empty(), "the chunk's record goes");
+    assert!(
+        appdb.setting(&scope, &hold).unwrap().is_none(),
+        "with its hold row"
+    );
+    assert!(!in_memory(), "and its hold in memory");
+}
