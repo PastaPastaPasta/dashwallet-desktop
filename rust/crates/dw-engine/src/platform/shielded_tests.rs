@@ -314,6 +314,8 @@ pub(crate) struct FakeShielded {
     consumed: AtomicBool,
     /// Platform's proved spent read of each outpoint; unread when unset.
     pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
+    /// The locks Platform proved partly used, unless `real_rows`.
+    pub(super) partly_used: Mutex<HashSet<OutPoint>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -511,6 +513,7 @@ impl Default for FakeShielded {
             hooks: AtomicBool::new(false),
             drops_artifact: AtomicBool::new(false),
             spent_reads: Mutex::default(),
+            partly_used: Mutex::default(),
         }
     }
 }
@@ -970,6 +973,21 @@ impl ShieldedLib for FakeShielded {
             return self.real().await.mark_unknown(txid).await;
         }
         self.unknown.lock().unwrap().insert(txid);
+    }
+
+    /// The field's, and with a funder the session's own records.
+    async fn partly_used(&self) -> HashSet<OutPoint> {
+        if self.real_rows {
+            return self.real().await.partly_used().await;
+        }
+        let mut out = self.partly_used.lock().unwrap().clone();
+        let funder = self.funder.lock().unwrap().clone();
+        if let Some((session, wallet)) = funder.and_then(|(s, w)| Some((s.upgrade()?, w))) {
+            let kind = crate::platform::unfinished_locks::LockKindId::Shielded;
+            let kept = crate::platform::unfinished_locks::remaining_of(&session, wallet, kind);
+            out.extend(kept.await.into_keys());
+        }
+        out
     }
 
     async fn settled_locks(&self) -> HashSet<Txid> {
@@ -2607,6 +2625,79 @@ fn a_shield_lock_of_unknown_consumption_pends_until_a_proved_apply() {
     });
     assert!(status.pending_shields.is_empty());
     assert_eq!(code(quote(&unread)), "platform.unavailable");
+}
+
+/// #402: this device's own shield that Platform refused after a penalty (its
+/// apply failed after the signature, and Platform's proved state shows the
+/// lock partly used) is kept with what is left: no longer a pending shield,
+/// so it blocks no shield and its "Check again" is refused, and the
+/// unfinished transfers list it Recoverable. A lock Platform has not proved
+/// partly used stays pending.
+#[test]
+fn an_own_shield_refused_after_a_penalty_leaves_the_pending_shields() {
+    let fx = Fixture::new(0);
+    let (partly, plain) = (
+        lock(1, LockStatus::InstantSendLocked),
+        lock(2, LockStatus::InstantSendLocked),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![partly.clone(), plain.clone()],
+        own: Some(HashSet::from([partly.outpoint.txid, plain.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+    lib.spent_reads.lock().unwrap().insert(
+        partly.outpoint,
+        SpentRead::Remaining {
+            credits: 600_000_000,
+        },
+    );
+
+    for n in [1, 2] {
+        assert_eq!(
+            resume_with(&fx, &lib, n, Ok(Applied::Unknown)),
+            ShieldState::ConsumptionUnknown
+        );
+    }
+    let pending: Vec<_> = pending_of(&fx, &lib).into_iter().map(|p| p.0).collect();
+    assert_eq!(
+        pending,
+        [plain.outpoint.txid.to_string()],
+        "only the unproved one pends"
+    );
+
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
+    let txid = partly.outpoint.txid.to_string();
+    let again = run(&fx, &lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid, &grant).await
+    });
+    assert_eq!(
+        code(again),
+        "invalid_argument",
+        "no Check again of a partly used lock"
+    );
+    assert_eq!(lib.applied.lock().unwrap().len(), 2, "not shielded again");
+
+    let listed = run(&fx, &lib, move |s, lib| async move {
+        let kind = crate::platform::unfinished_shields::ShieldLocks::new(&s, wallet, &*lib);
+        crate::platform::unfinished_locks::detect(&kind)
+            .await
+            .unwrap()
+    });
+    let state = |at: OutPoint| {
+        let l = listed
+            .iter()
+            .find(|l| l.txid == at.txid.to_string())
+            .unwrap();
+        (l.state, l.remaining_credits)
+    };
+    use crate::platform::unfinished_locks::UnfinishedState;
+    assert_eq!(
+        state(partly.outpoint),
+        (UnfinishedState::Recoverable, Some(600_000_000))
+    );
+    assert_eq!(state(plain.outpoint).0, UnfinishedState::Checking);
 }
 
 /// E1 r1 R1-2: a shield whose apply failed after its transition was

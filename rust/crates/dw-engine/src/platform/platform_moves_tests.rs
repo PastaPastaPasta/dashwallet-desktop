@@ -3938,7 +3938,7 @@ fn a_removed_restored_funds_give_back_goes_to_the_unshield_it_hid() {
     let at = dashcore::OutPoint::new(txid.parse().unwrap(), 0);
     let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
     let arming = (w.f.engine)
-        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100).await });
+        .block_on(async move { arm_fund(&s, id, (at, 1_000_000), to, DASH / 100, false).await });
     assert_eq!(arming, Ok(Arming::Made));
     w.net.fund(a, DASH);
     let rows = w.activity();
