@@ -261,7 +261,8 @@ screen view-models that build money requests, the dependency pins, and the gate 
 A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
 inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
 count). The record must sit on a line of its own, outside a `>` quote or a code block, so quoting a verdict
-never casts one. `funds-gate.py record` posts it in the right place and refuses a note that contains a record:
+never casts one. Post records with `funds-gate.py record`: it puts the record on the comment's first line and
+refuses a note that contains one. Hand-written records inside lists or HTML blocks may not be read.
 
     <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
     <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->

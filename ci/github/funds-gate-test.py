@@ -188,11 +188,90 @@ class Gate(unittest.TestCase):
         fenced = "```\n" + record("review") + "\n```"
         self.assertFalse(self.run_gate([comment(record("funds") + "\n" + fenced)])[0])
 
+    def test_unclosed_fence_hides_the_rest(self):
+        self.assertFalse(self.run_gate([comment(record("funds") + "\n```\n" + record("review"))])[0])
+
+    def test_longer_fence_is_not_closed_by_a_shorter_one(self):
+        body = record("funds") + "\n````\n```\n" + record("review") + "\n```\n````"
+        self.assertFalse(self.run_gate([comment(body)])[0])
+
+    def test_closer_with_info_text_does_not_close(self):
+        body = record("funds") + "\n```\nx\n```js\n" + record("review") + "\n```"
+        self.assertFalse(self.run_gate([comment(body)])[0])
+
+    def test_inline_code_span_does_not_hide_a_record(self):
+        later = comment("```a``` inline\n" + record("funds", verdict="block") + "\n```b``` inline", at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
+
+    def test_crlf_records_count(self):
+        self.assertTrue(self.run_gate([comment("Approved.\r\n\r\n" + BOTH.replace("\n", "\r\n") + "\r\n\r\n---\r\nfooter")])[0])
+        later = comment("Blocking.\r\n" + record("funds", verdict="block") + "\r\n---\r\nfooter", at="2026-11-25T06:00:00Z", cid=2)
+        self.assertFalse(self.run_gate([comment(BOTH, cid=1), later])[0])
+
     def test_inline_record_does_not_count(self):
         self.assertFalse(self.run_gate([comment("see " + record("funds") + "\n" + record("review"))])[0])
 
     def test_truncated_file_list_is_treated_as_funds(self):
         self.assertFalse(self.run_gate([], files=["docs/ci.md"], complete=False)[0])
+
+
+class Check(unittest.TestCase):
+    def setUp(self):
+        self.saved = gate.fetch_pr, gate.fetch, gate.post_status, gate.gh
+        self.posted = []
+        gate.post_status = lambda repo, sha, state, summary: self.posted.append(state)
+
+    def tearDown(self):
+        gate.fetch_pr, gate.fetch, gate.post_status, gate.gh = self.saved
+
+    def check(self, base_ref="main", comments=(), fetch_error=None, sha=None):
+        info = {"head": {"sha": HEAD}, "base": {"sha": OLD, "ref": base_ref, "repo": {"default_branch": "main"}}}
+        gate.fetch_pr = lambda repo, pr: info
+
+        def fetch(repo, pr, info):
+            if fetch_error:
+                raise RuntimeError(fetch_error)
+            return [FUNDS_FILE], True, list(comments)
+
+        gate.fetch = fetch
+        args = gate.argparse.Namespace(repo="o/r", pr=1, sha=sha, status=True, paths=gate.PATHS_FILE)
+        return gate.cmd_check(args)
+
+    def test_status_goes_pending_then_failure(self):
+        self.assertEqual(self.check(), 1)
+        self.assertEqual(self.posted, ["pending", "failure"])
+
+    def test_status_goes_pending_then_success(self):
+        self.assertEqual(self.check(comments=[comment(BOTH)]), 0)
+        self.assertEqual(self.posted, ["pending", "success"])
+
+    def test_error_leaves_status_pending(self):
+        self.assertEqual(self.check(fetch_error="boom"), 2)
+        self.assertEqual(self.posted, ["pending"])
+
+    def test_no_status_off_the_default_branch(self):
+        self.assertEqual(self.check(base_ref="feature", comments=[comment(BOTH)]), 0)
+        self.assertEqual(self.posted, [])
+
+    def test_sha_mismatch_posts_no_status(self):
+        self.assertEqual(self.check(sha=OLD), 1)
+        self.assertEqual(self.posted, [])
+
+    def test_record_puts_the_record_on_the_first_line(self):
+        sent = []
+        gate.gh = lambda *a, data=None: sent.append(data) or gate.json.dumps({"head": {"sha": HEAD}, "html_url": "u"})
+        args = gate.argparse.Namespace(repo="o/r", pr=1, sha=HEAD, kind="funds", verdict="block", model="claude-opus-5-5",
+                                       note="```\nunclosed", note_file=None)
+        gate.cmd_record(args)
+        first = sent[-1]["body"].split("\n")[0]
+        self.assertTrue(gate.RECORD.fullmatch(first), first)
+        self.assertEqual(gate.parse_records([comment(sent[-1]["body"])])[0]["verdict"], "block")
+
+    def test_head_moving_mid_check_is_an_error(self):
+        moves = iter([{"head": {"sha": OLD}, "base": {"sha": OLD}}])
+        gate.gh = lambda *a, **k: "[[]]" if "--paginate" in a else gate.json.dumps(next(moves))
+        with self.assertRaises(RuntimeError):
+            gate.fetch("o/r", 1, {"head": {"sha": HEAD}, "base": {"sha": OLD}, "changed_files": 0})
 
 
 if __name__ == "__main__":

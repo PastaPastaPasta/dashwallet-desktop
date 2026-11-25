@@ -32,8 +32,8 @@ KINDS = ("funds", "review")
 LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
-RECORD = re.compile(r"^[ \t]*<!--[ \t]*dwd-review[ \t]+([^>\n]*?)[ \t]*-->[ \t]*$", re.M)
-FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.M | re.S)
+RECORD = re.compile(r" {0,3}<!--[ \t]*dwd-review[ \t]+([^>]*?)[ \t]*-->[ \t]*")
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -72,6 +72,20 @@ def is_funds(path, rules):
     return hit
 
 
+def record_lines(body):
+    """Lines outside fenced code blocks (CommonMark: an unclosed fence runs to the end)."""
+    fence = None
+    for line in body.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        m = FENCE.fullmatch(line)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+                fence = None
+        elif m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            fence = m.group(1)
+        else:
+            yield line
+
+
 def parse_records(comments):
     """Records from trusted, non-bot comments, oldest first."""
     records = []
@@ -80,7 +94,10 @@ def parse_records(comments):
         user = c.get("user") or {}
         if c.get("author_association") not in TRUSTED or user.get("type") == "Bot":
             continue
-        for m in RECORD.finditer(FENCE.sub("", c.get("body") or "")):
+        for line in record_lines(c.get("body") or ""):
+            m = RECORD.fullmatch(line)
+            if not m:
+                continue
             fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")
@@ -252,13 +269,14 @@ def cmd_record(args):
     title = "Funds review" if args.kind == "funds" else "Code review"
     note = Path(args.note_file).read_text().strip() if args.note_file else (args.note or "").strip()
     if "dwd-review" in note:
-        raise SystemExit("refused: the note quotes a dwd-review record; quote the verdict line without the marker")
-    body = [f"**{title}: {args.verdict}** at `{args.sha[:12]}` ({args.model})"]
+        raise SystemExit("refused: the note contains \"dwd-review\"; quote the verdict line without the record marker")
+    body = [
+        f"<!-- dwd-review kind={args.kind} verdict={args.verdict} sha={args.sha} model={args.model} -->",
+        f"**{title}: {args.verdict}** at `{args.sha[:12]}` ({args.model})",
+    ]
     if note:
         body += ["", note]
     body += [
-        "",
-        f"<!-- dwd-review kind={args.kind} verdict={args.verdict} sha={args.sha} model={args.model} -->",
         "",
         "---",
         f"🤖 Posted autonomously by Claude ({args.model}) on behalf of pasta.",
