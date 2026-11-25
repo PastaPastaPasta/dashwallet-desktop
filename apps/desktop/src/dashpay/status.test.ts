@@ -9,6 +9,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
 import { t } from "../i18n";
+import { INSTANT_COPY, VOTE_COPY, type InstantInputs } from "./instantOffer";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -348,5 +349,70 @@ describe("AND-071 / IOS-134 voting info and IOS-129 FAQ", () => {
     const text = JSON.stringify([VOTING_INFO, FAQ]);
     expect(text).not.toMatch(/passphrase/i);
     expect(new Set(FAQ.items.map((i) => i.question)).size).toBe(FAQ.items.length);
+  });
+});
+
+describe("the voting card's instant username (D4 reversed)", () => {
+  const CONTEST: DashPayStatus = { kind: "contestPending", identity: "A", label: "alice", endsAt: 1_900_000_000 };
+  const named = (mainName: string | null, balance: string | null = "5000000000") =>
+    ({ identity: "A", mainName, names: mainName ? [mainName] : [], namesUpdating: false, namesCheck: null, balance }) as IdentitySummary;
+  const on: InstantInputs = { offered: true, nameCredits: "2000000000", asked: null };
+  const base = [COPY.voting.deciding, "Results on day 1900000000."];
+
+  it("no temporary name: the hint and Create instant username, voting info beside it", () => {
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: on }))).toMatchObject({
+      state: "voting",
+      lines: [...base, VOTE_COPY.instantHint("alice")],
+      action: { kind: "instantName", label: "Create instant username" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("credits short of a name: the short line and Top up", () => {
+    expect(homeCard(inputs(CONTEST, { main: named(null, "100"), instant: on }))).toMatchObject({
+      lines: [...base, "Not enough credits for an instant username."],
+      action: { kind: "buyCredits", label: "Top up" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("hidden where registration is not offered, and while the names are unread or a temporary name is held", () => {
+    const quiet = { action: { kind: "votingInfo" }, secondary: null };
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: { ...on, offered: false } }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: named(null) }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: identity(null, true), instant: on }))).toMatchObject(quiet);
+    expect(homeCard(inputs(CONTEST, { main: named("alice007"), instant: on }))).toMatchObject({ ...quiet, lines: [...base, "Until then you are @alice007."] });
+  });
+
+  it("the registration's temporary name: success once read, its failure with Try again, nothing until a read says", () => {
+    const asked = (outcome: "owned" | "failed" | null): InstantInputs => ({ ...on, asked: { label: "alice2", outcome } });
+    expect(homeCard(inputs(CONTEST, { main: named("alice2"), instant: asked("owned") }))).toMatchObject({
+      lines: [...base, INSTANT_COPY.success("alice2", "alice")],
+      action: { kind: "votingInfo" },
+    });
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: asked("failed") }))).toMatchObject({
+      tone: "problem",
+      lines: [...base, INSTANT_COPY.failure("alice2")],
+      action: { kind: "instantRetry", label: "Try again" },
+      secondary: { kind: "votingInfo" },
+      retryLabel: "alice2",
+    });
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: asked(null) }))).toMatchObject({ lines: base, action: { kind: "votingInfo" }, secondary: null });
+    // Failed with credits short of the name: Top up, as for a new one, not Try again.
+    expect(homeCard(inputs(CONTEST, { main: named(null, "100"), instant: asked("failed") }))).toMatchObject({
+      tone: "problem",
+      lines: [...base, INSTANT_COPY.failure("alice2"), "Not enough credits for an instant username."],
+      action: { kind: "buyCredits", label: "Top up" },
+      secondary: { kind: "votingInfo" },
+    });
+  });
+
+  it("while the registrations are not read: neither Create nor Try again", () => {
+    const quiet = { lines: base, action: { kind: "votingInfo" }, secondary: null };
+    expect(homeCard(inputs(CONTEST, { main: named(null), instant: { ...on, asked: undefined } }))).toMatchObject(quiet);
+  });
+
+  it("the Join page shows the same card", () => {
+    expect(joinModel(inputs(CONTEST, { main: named(null), instant: on }), null, null)).toMatchObject({ kind: "card", card: { action: { kind: "instantName" } } });
   });
 });

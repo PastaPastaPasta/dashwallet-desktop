@@ -407,6 +407,7 @@ pub(crate) async fn quote(
     lib: &impl FundLib,
     amount: FundAmount,
 ) -> Result<PlatformFundQuote, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
     match amount {
         FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
         FundAmount::All => {
@@ -487,6 +488,7 @@ pub(crate) async fn fund(
     amount: FundAmount,
     grant: &str,
 ) -> Result<PlatformFundOutcome, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
     (session.platform)
         .settle_startup_hold(wallet, || lib.funding_hold())
         .await;

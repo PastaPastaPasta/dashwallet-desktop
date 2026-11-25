@@ -55,7 +55,18 @@ async function confirm(page: Page, label: string) {
   await page.getByTestId("registration-name-field").fill(label);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
+  // A contested label's instant offer, declined.
+  if (label === "alice") await page.getByTestId("instant-offer-decline").click();
   await page.getByTestId("registration-confirm").waitFor();
+}
+
+/** Step 1 for the contested "alice", then its instant offer. */
+async function offered(page: Page) {
+  await nameStep(page);
+  await page.getByTestId("registration-name-field").fill("alice");
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("instant-offer").waitFor();
 }
 
 async function started(page: Page, label = LABEL) {
@@ -63,6 +74,12 @@ async function started(page: Page, label = LABEL) {
   if (label === "alice") await page.getByTestId("registration-accept").check();
   await page.getByTestId("registration-pay").click();
   await authorize(page);
+}
+
+/** The Join page's voting card, once it offers `action`. */
+async function onCard(page: Page, action: string) {
+  await toJoin(page);
+  await expect(page.getByTestId("dashpay-card-action")).toHaveAttribute("data-kind", action);
 }
 
 async function onScreen(page: Page, kind: string) {
@@ -168,6 +185,19 @@ export const STATES: Record<string, State> = {
   "name-taken": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => typed(page, "b0b", /problem/) },
   confirm: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, LABEL) },
   "confirm-contested": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, "alice") },
+  "instant-offer": { scenario: "dashpay-no-identity", roots: ["instant-offer"], go: offered },
+  "instant-form": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await offered(page);
+      await page.getByTestId("instant-offer-create").click();
+      await page.getByTestId("registration-instant-field").fill("alice");
+      await expect(page.getByTestId("registration-instant-check")).toHaveAttribute("data-kind", "contested");
+    },
+  },
+  "voting-instant-card": { scenario: "dashpay-contest-no-temporary", roots: ["page-joinDashPay"], go: (page) => onCard(page, "instantName") },
+  "voting-instant-failed": { scenario: "dashpay-instant-failed", roots: ["page-joinDashPay"], go: (page) => onCard(page, "instantRetry") },
   "confirm-platform": {
     scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],

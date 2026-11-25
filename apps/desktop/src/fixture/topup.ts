@@ -90,6 +90,12 @@ export interface TopUpDeps {
 
 export const creditsOf = (dp: DashPayWorld): CreditsWorld => (dp.credits ??= newCreditsWorld());
 
+/** The identity's main name while it is not the contested `label`: its temporary name. */
+function temporaryOf(dp: DashPayWorld, identity: string, label: string): string | null {
+  const main = dp.identities.find((i) => i.identity === identity)?.mainName ?? null;
+  return main !== null && main !== label ? main : null;
+}
+
 /** `contest_status` with no contest set: the status's own contest, its votes counted. */
 function derivedContest(dp: DashPayWorld, identity: string, label: string): ContestStatus {
   const s = dp.status;
@@ -104,7 +110,8 @@ function derivedContest(dp: DashPayWorld, identity: string, label: string): Cont
     ],
     lockVotes: 2,
     abstainVotes: 1,
-    temporaryName: null,
+    // The engine's `temporary_name` pref, which only a registered temporary name sets.
+    temporaryName: temporaryOf(dp, identity, label),
   };
 }
 

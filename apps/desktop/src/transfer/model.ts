@@ -9,10 +9,11 @@ import type { FundAmount } from "../api/generated/FundAmount";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
-import { CREDITS_PER_DUFF, SHIELDED_CODES } from "../api/pending";
+import { CREDITS_PER_DUFF, creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { fundFor, type PlatformFundApi, type PlatformFundFlow } from "../platform/fund";
+import { MAINNET_OFF_COPY } from "../platform/mainnetOff";
 import { MOVE_COPY, moveFor, type MoveBlock, type PlatformMoveApi, type PlatformMoveFlow } from "../platform/move";
 import { SHIELDED_COPY, shieldedFor, type ShieldedApi, type ShieldedFlow, type ShieldedKind } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
@@ -30,8 +31,9 @@ export const ROUTES: Record<RouteId, { from: Pool; to: Pool }> = {
   platformToCore: { from: "platform", to: "core" },
 };
 
-/** The routes the engine keeps off on mainnet (`platform.feature_off`), each by its flag. */
-export const OFF_ON_MAINNET: ReadonlySet<RouteId> = new Set<RouteId>(["shieldedToPlatform"]);
+/** The routes the engine keeps off on mainnet (`platform.feature_off`), each by its flag. Platform →
+ * Dash wallet is off there too, but still exits a held move (`platformToCoreOff`). */
+export const OFF_ON_MAINNET: ReadonlySet<RouteId> = new Set<RouteId>(["shieldedToPlatform", "coreToPlatform"]);
 
 /** The route from `from` to `to`; `"unsupported"` where no desktop command moves it (Platform →
  * Shielded) or the route is off on this network; `null` for the same pool. */
@@ -41,8 +43,28 @@ export function routeOf(from: Pool, to: Pool, mainnet = false): RouteId | "unsup
   return id && !(mainnet && OFF_ON_MAINNET.has(id)) ? id : "unsupported";
 }
 
-/** Why the ends make no route: off on this network, or no command for it. */
-export const unsupportedText = (from: Pool, to: Pool): string => (from === "shielded" && to === "platform" ? TRANSFER_COPY.offOnNetwork : TRANSFER_COPY.unsupported);
+/** Why the ends make no route: off on this network, or no command for it. On mainnet, where Dash
+ * wallet → Platform is off too, the line names no detour through the Dash wallet. */
+export function unsupportedText(from: Pool, to: Pool, mainnet = false): string {
+  if (from === "core" && to === "platform") return MAINNET_OFF_COPY.add;
+  if (from === "shielded" && to === "platform") return mainnet ? TRANSFER_COPY.offOnMainnet.shieldedToPlatform : TRANSFER_COPY.offOnNetwork;
+  if (from === "platform" && to === "shielded" && mainnet) return TRANSFER_COPY.offOnMainnet.platformToShielded;
+  return TRANSFER_COPY.unsupported;
+}
+
+/** Platform → Dash wallet where this version keeps it off (mainnet): the line in place of its form;
+ * `null` where the route is on, a held move's exit is what it offers, or a record Platform has not
+ * answered holds the move (its waiting line says so). */
+export function platformToCoreOff(pools: Pools): string | null {
+  const off = pools.platform?.mainnet;
+  return off && !off.held && pools.platform?.block !== "pending" ? off.text : null;
+}
+
+/** The picker's Platform row says it can't be reached from this end on this network. */
+export function platformChip(pools: Pools, end: "from" | "to"): boolean {
+  const off = pools.platform?.mainnet;
+  return !!off && (end === "to" || !off.held);
+}
 
 export const TRANSFER_COPY = {
   get title() {
@@ -113,6 +135,14 @@ export const TRANSFER_COPY = {
   get offOnNetwork() {
     return t("transfer.offOnNetwork");
   },
+  offOnMainnet: {
+    get shieldedToPlatform() {
+      return t("transfer.offOnMainnet.shieldedToPlatform");
+    },
+    get platformToShielded() {
+      return t("transfer.offOnMainnet.platformToShielded");
+    },
+  },
   none: {
     get absent() {
       return t("transfer.none.absent");
@@ -169,9 +199,32 @@ export interface Pools {
   shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
   /** `null`: this dw-app has no Platform addresses; `undefined`: still being read. `duffs`: what a
    * move of everything would take. */
-  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string } | null | undefined;
+  platform: { duffs: number | null; dust: boolean; dustText: string; block: MoveBlock | null; waitingText: string; mainnet?: MainnetOff } | null | undefined;
   /** The wallet's Core sync is running and not caught up: a shield's funding waits for it. */
   coreSyncing?: boolean;
+}
+
+/** Set where this version keeps the Platform addresses' funds paths off (mainnet). `held`: payments or
+ * moves made earlier still hold them, so Move stays offered as their exit and `text` says so above it;
+ * otherwise `text` is the line in place of Move. `credits`: what the addresses hold. */
+export interface MainnetOff {
+  held: boolean;
+  text: string;
+  credits: string;
+}
+
+/** The mainnet state from the addresses' credits and how many records hold them (`heldExitOps`). */
+export function mainnetOff(credits: string, held: number, fmt: (duffs: number) => string): MainnetOff {
+  if (held > 0) return { held: true, text: MAINNET_OFF_COPY.heldExit(held), credits };
+  const duffs = creditsToDuffs(credits);
+  return { held: false, text: duffs > 0 ? MAINNET_OFF_COPY.held(fmt(duffs)) : MAINNET_OFF_COPY.moveAndSend, credits };
+}
+
+/** Beside a held exit, what the addresses outside the hold keep: `exit`, the credits the exit's quote
+ * takes (the hold's inputs). `null` when that is nothing. */
+export function heldExitRest(off: MainnetOff, exit: string, fmt: (duffs: number) => string): string | null {
+  const rest = creditsToDuffs(String(BigInt(off.credits) - BigInt(exit)));
+  return rest > 0 ? MAINNET_OFF_COPY.heldExitRest(fmt(rest)) : null;
 }
 
 /** The pools the picker lists: the Dash wallet always, the others while this dw-app has them. */
@@ -599,9 +652,12 @@ export class TransferModel extends Model {
     return this.begun;
   }
 
-  /** The route the ends make: a route, `"unsupported"` (no command, or off on this network) or `null`. */
+  /** The route the ends make: a route, `"unsupported"` (no command, or off on this network) or `null`.
+   * An add to Platform that runs or holds a result not seen yet stays reachable where adding is off. */
   get route(): RouteId | "unsupported" | null {
-    return routeOf(this.from, this.to, this.mainnet);
+    const route = routeOf(this.from, this.to, this.mainnet);
+    const fund = this.flows.fund;
+    return route === "unsupported" && this.from === "core" && this.to === "platform" && (fund.running || fund.unseen) ? "coreToPlatform" : route;
   }
 
   /** The wallet's network: on mainnet a route that is off there is unsupported, and its flow closes. */
