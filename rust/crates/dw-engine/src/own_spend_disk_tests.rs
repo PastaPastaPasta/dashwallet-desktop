@@ -1856,6 +1856,7 @@ fn coins_spent_at_two_heights_keep_the_payment(later: bool) {
     let tip = first.last().unwrap().0;
     super::deliver(&engine, &session, id, move |wm| {
         Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
             for (height, txs) in first {
                 let block = super::block_with(txs);
                 (wm.process_block_for_wallets(
