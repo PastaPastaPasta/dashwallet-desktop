@@ -122,8 +122,8 @@ fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
     );
     let err = crate::StoreUpgradeError::P9aBroken { detail: "x".into() };
     assert_eq!(
-        copy::screen_for(&err, true),
-        Some(copy::cant_open(CantOpenCause::P9aBroken, true))
+        copy::screen_for(&err, &crate::snapshot::SnapshotState::None),
+        Some(copy::cant_open(CantOpenCause::P9aBroken, false))
     );
 }
 

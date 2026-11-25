@@ -4,7 +4,7 @@
 //! folder name (M3-UX (e)).
 
 use crate::error::StoreUpgradeError;
-use crate::snapshot::UPGRADE_BACKUPS_DIR;
+use crate::snapshot::{SnapshotState, UPGRADE_BACKUPS_DIR};
 
 /// One button: its catalog key and label.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,10 +80,21 @@ impl CantOpenCause {
     }
 }
 
-/// `storeUpgrade.cantOpen.*`, the same for both causes; the backup sentence
-/// only when a completed before-upgrade snapshot exists
-/// ([`crate::snapshot_present`]).
-pub fn cant_open(_cause: CantOpenCause, backup_present: bool) -> ScreenCopy {
+/// Whether the copy may promise a before-upgrade backup (Q98 98-5): only a
+/// [`SnapshotState::Verified`] snapshot; `Unverified` and `None` get the
+/// without-backup text.
+pub fn backup_sentence(state: &SnapshotState) -> bool {
+    matches!(state, SnapshotState::Verified(_))
+}
+
+/// `storeUpgrade.cantOpen.*` for `state` (see [`backup_sentence`]).
+pub fn cant_open_for(cause: CantOpenCause, state: &SnapshotState) -> ScreenCopy {
+    cant_open(cause, backup_sentence(state))
+}
+
+/// `storeUpgrade.cantOpen.*`, the same for both causes, with or without the
+/// backup sentence.
+pub(crate) fn cant_open(_cause: CantOpenCause, backup_present: bool) -> ScreenCopy {
     let (text_key, text) = if backup_present {
         ("storeUpgrade.cantOpen.text", CANT_OPEN_TEXT)
     } else {
@@ -102,9 +113,10 @@ pub fn cant_open(_cause: CantOpenCause, backup_present: bool) -> ScreenCopy {
     }
 }
 
-/// The screen for an error from this crate, if it has one.
-pub fn screen_for(e: &StoreUpgradeError, backup_present: bool) -> Option<ScreenCopy> {
-    CantOpenCause::of(e).map(|c| cant_open(c, backup_present))
+/// The screen for an error from this crate, if it has one, worded for the
+/// network dir's [`crate::snapshot_state`].
+pub fn screen_for(e: &StoreUpgradeError, state: &SnapshotState) -> Option<ScreenCopy> {
+    CantOpenCause::of(e).map(|c| cant_open_for(c, state))
 }
 
 /// The folder name the copy names: the one the snapshot is written under.

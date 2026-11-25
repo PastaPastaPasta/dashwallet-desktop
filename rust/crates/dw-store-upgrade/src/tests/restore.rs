@@ -901,6 +901,73 @@ fn enospc_cleanup_failure_leaves_a_safe_to_delete_manifest() {
     }
 }
 
+/// Q98 98-5: only a verified snapshot drives the backup sentence; an
+/// unverified one (a corrupt byte, a garbled marker) and none at all (no
+/// snapshot, or one without its marker) get the without-backup text.
+#[test]
+fn only_a_verified_snapshot_gets_the_backup_sentence() {
+    use crate::copy::{self, CantOpenCause};
+    let err = StoreUpgradeError::P9aBroken {
+        detail: "test".into(),
+    };
+    let key = |net: &Path| {
+        let state = snapshot_state(net).unwrap();
+        let screen = copy::screen_for(&err, &state).unwrap();
+        assert_eq!(
+            screen,
+            copy::cant_open_for(CantOpenCause::P9aBroken, &state)
+        );
+        assert_eq!(
+            snapshot_present(net).unwrap(),
+            copy::backup_sentence(&state)
+        );
+        (state, screen.text_key)
+    };
+    let with = "storeUpgrade.cantOpen.text";
+    let without = "storeUpgrade.cantOpen.textWithoutBackup";
+
+    let u = upgraded();
+    let (state, k) = key(&u.net);
+    assert!(matches!(state, SnapshotState::Verified(_)));
+    assert_eq!(k, with);
+
+    let file = u.snapshot.dir().join("wallet.sqlite");
+    let mut bytes = fs::read(&file).unwrap();
+    bytes[100] ^= 0x80;
+    fs::write(&file, bytes).unwrap();
+    let (state, k) = key(&u.net);
+    assert!(
+        matches!(state, SnapshotState::Unverified { .. }),
+        "{state:?}"
+    );
+    assert_eq!(k, without, "a corrupt byte");
+
+    let u = upgraded();
+    let marker = u.snapshot.dir().join(crate::snapshot::MARKER);
+    let text = fs::read_to_string(&marker).unwrap();
+    fs::write(&marker, text.replacen("refinery-max", "refinery-mix", 1)).unwrap();
+    let (state, k) = key(&u.net);
+    assert!(
+        matches!(state, SnapshotState::Unverified { .. }),
+        "{state:?}"
+    );
+    assert_eq!(k, without, "a garbled marker");
+
+    fs::remove_file(&marker).unwrap();
+    let (state, k) = key(&u.net);
+    assert_eq!(
+        state,
+        SnapshotState::None,
+        "no marker: not a completed snapshot"
+    );
+    assert_eq!(k, without);
+
+    fs::remove_dir_all(u.snapshot.dir()).unwrap();
+    let (state, k) = key(&u.net);
+    assert_eq!(state, SnapshotState::None);
+    assert_eq!(k, without, "no snapshot");
+}
+
 /// One corrupt byte in a snapshot file makes it Unverified: no backup
 /// sentence, and a restore requested from it is refused with nothing moved.
 #[test]

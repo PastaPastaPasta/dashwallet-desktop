@@ -277,10 +277,7 @@ pub fn snapshot_state(network_dir: &Path) -> io::Result<SnapshotState> {
 /// Whether a verified before-upgrade snapshot exists (chooses
 /// `storeUpgrade.cantOpen.text` over `textWithoutBackup`).
 pub fn snapshot_present(network_dir: &Path) -> io::Result<bool> {
-    Ok(matches!(
-        snapshot_state(network_dir)?,
-        SnapshotState::Verified(_)
-    ))
+    Ok(crate::copy::backup_sentence(&snapshot_state(network_dir)?))
 }
 
 /// The newest completed snapshot, its files checked against their sha256.
