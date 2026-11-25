@@ -4,7 +4,7 @@ import { summary } from "../onboarding/testWorld";
 import { heldLine, heldWayOutText } from "./heldUnfinished";
 
 const COIN = 100_000_000;
-const core: Balances = { confirmed: 3 * COIN, unconfirmed: 0, immature: 0, locked: 0, total: 3 * COIN, coinjoin: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
+const core: Balances = { confirmed: 3 * COIN, unconfirmed: 0, immature: 0, locked: 0, total: 3 * COIN, coinjoin: 0, withheld: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
 const fmt = (duffs: number) => (duffs / COIN).toFixed(2);
 const A = "a1".repeat(32);
 const B = "b2".repeat(32);

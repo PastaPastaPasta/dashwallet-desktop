@@ -10,6 +10,11 @@ export type Balances = { confirmed: number, unconfirmed: number, immature: numbe
  */
 coinjoin: number,
 /**
+ * Coins kept out of every bucket above, and out of spending, while
+ * the payment they come from may never confirm: shown as pending.
+ */
+withheld: number,
+/**
  * The wallet is still catching up (its scan has not reached the birth
  * block): the buckets hold what it has seen so far, payments seen in
  * the mempool or locked by InstantSend included, and can miss coins in
