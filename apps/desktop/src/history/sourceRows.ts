@@ -26,6 +26,9 @@ export const SourceRowText = {
   fromCore: "Moved from Dash wallet",
   /** An unshield to this wallet's own Platform address, seen from the address (C-routes D-C1). */
   fromShielded: "From Shielded",
+  /** What Platform returned to this wallet's Platform address when it could not create the
+   * identity a username paid from Shielded (C-funding F12). */
+  registrationRefund: "Returned from a username payment",
   /** A move the engine superseded with a retry: neither a loss nor a completed move. */
   replaced: "Replaced by a retry",
   /** A move, send or top-up that failed by height but may still execute: not "Not accepted". */
@@ -98,7 +101,7 @@ export function platformRow(a: PlatformActivity): TxRow {
   const unknown = a.winnerKnown === false;
   const replaced = a.state === "replaced" && !unknown;
   // What a fund or an unshield adds to the Platform addresses reads as a receipt there.
-  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded";
+  const received = a.kind === "incoming" || a.kind === "fromCore" || a.kind === "fromShielded" || a.kind === "registrationRefund";
   // A move with no proved arrival shows what left (`credits`), never an amount that "arrives".
   const amount = replaced || (unknown && a.state !== "done") ? 0 : move ? (a.expectedDuffs ?? creditsToDuffs(a.credits)) : creditsToDuffs(a.credits);
   const topUp = a.kind === "toIdentity";
@@ -158,7 +161,7 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
 export function sourceRowTitle(row: TxRow): string {
   const kind = row.txid.split(":")[1];
   if (rowSource(row) === "platform")
-    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
+    return isSettledUnknownRow(row) ? settledUnknownText(row).title : kind === "moveToCore" ? SourceRowText.moveToCore : kind === "contactPayment" ? SourceRowText.contactPayment : kind === "send" ? SourceRowText.platformSend : kind === "toIdentity" ? SourceRowText.toIdentity : kind === "fromCore" ? SourceRowText.fromCore : kind === "fromShielded" ? SourceRowText.fromShielded : kind === "registrationRefund" ? SourceRowText.registrationRefund : kind === "incoming" ? SourceRowText.platformIncoming : SourceRowText.platformOutgoing;
   switch (kind) {
     case "shield":
     case "shieldFromCore":

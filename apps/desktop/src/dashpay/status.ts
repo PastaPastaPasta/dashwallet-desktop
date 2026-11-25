@@ -13,6 +13,7 @@ import type { RegistrationPhaseName } from "../api/generated/RegistrationPhaseNa
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
+import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
 import { oneDecimal } from "../format/sync";
@@ -221,6 +222,13 @@ export const WAITS = {
   needsFinish: null,
 } satisfies Record<RegistrationWaitName, string | null>;
 
+/** What `r` waits for, as a line (`null`: nothing to say, or its own card): a payment whose outcome
+ * is unknown names the balance it left. */
+export function waitLine(r: Pick<RegistrationStatus, "waiting" | "fromShielded">): string | null {
+  if (r.waiting === "paymentUnknown" && r.fromShielded) return t("dashpay.wait.paymentUnknownShielded");
+  return r.waiting ? WAITS[r.waiting] : null;
+}
+
 /** A held Platform payment's line where Continue and Move to Dash wallet are both offered: it
  * names them, so nothing else shows it. */
 export function heldWithBoth() {
@@ -252,11 +260,16 @@ export const CLAIM_REFUSAL = {
 };
 
 /** D5: why a registration stopped, by its failure's code. */
-export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
+export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false, fromPlatform = false, fromShielded = false): string {
   switch (failure.code) {
-    // C-funding F10: a create that executed as a paid failure, from the Platform balance.
+    // C-funding F10, F12: a create that executed as a paid failure, from either balance.
     case "registration.refunded":
+      if (fromShielded) return t("dashpay.failure.refundedShielded");
       return fromPlatform ? t("dashpay.failure.refundedPlatform") : t("dashpay.failure.stoppedWith", { code: failure.code });
+    case "registration.shielded_not_ready":
+      return t("dashpay.failure.shieldedNotReady");
+    case "shielded.spend_refused":
+      return t("dashpay.failure.shieldedRefused");
     // A run that stopped when its Platform plan changed: a re-plan refused, or an exit to the Dash wallet.
     case "registration.quote_changed":
       return t("dashpay.failure.quoteChanged");
@@ -356,11 +369,11 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
       secondary: action("moveToCore", COPY.moveToCore),
     });
   if (r.failure || awaitsContinue(r)) {
-    const why = r.failure ? failureText(r.failure, i.amount, i.discreet, r.fromPlatform) : WAITS.authorize;
+    const why = r.failure ? failureText(r.failure, i.amount, i.discreet, r.fromPlatform, r.fromShielded) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }
   if (r.waiting === "unlock") return card("creatingUnlock", "problem", title, [WAITS.unlock], { step, action: unlockAction(i.lock) });
-  const wait = r.waiting ? WAITS[r.waiting] : null;
+  const wait = waitLine(r);
   return card("creating", "pending", title, wait ? [wait] : [], { step, busy: true });
 }
 
@@ -471,6 +484,8 @@ export const JOIN_COPY = withTable(messageTable("dashpay.join", ["headline", "pi
   },
   cost: (amount: string) => t("dashpay.join.cost", { amount }),
   shortfall: (amount: string) => t("dashpay.join.shortfall", { amount }),
+  shortfallBoth: (amount: string, core: string, shielded: string) => t("dashpay.join.shortfallBoth", { amount, core, shielded }),
+  shortfallBothDiscreet: (amount: string) => t("dashpay.join.shortfallBothDiscreet", { amount }),
   get waiting() {
     return COPY.joinWaiting.note;
   },
@@ -488,6 +503,26 @@ export type JoinModel =
   /** An identity with a name, or one whose names are not known yet. */
   | { kind: "joined"; username: string | null };
 
+/** Whether the Shielded balance can pay a username, whether or not it may yet (resting, an
+ * unsettled spend), and what it holds: `null` while its quote is unread. */
+export interface ShieldedFunds {
+  /** The network takes Shielded registrations (no `notOffered` check fails). */
+  offered: boolean;
+  enough: boolean;
+  duffs: number | null;
+}
+
+const NOT_OFFERED_CHECKS = new Set(["poolActive", "featureOn", "denomination"]);
+
+/** The Shielded readiness as the Join page's shortfall reads it: enough when a member of the
+ * network's set fits and the notes cover it. */
+export function shieldedFunds(readiness: ShieldedReadiness | null, duffs: number | null): ShieldedFunds | null {
+  if (readiness === null) return null;
+  const ready = (check: string) => readiness.checks.find((c) => c.check === check)?.ready === true;
+  const offered = readiness.denomination !== null && readiness.checks.every((c) => c.ready || !NOT_OFFERED_CHECKS.has(c.check));
+  return { offered, enough: offered && ready("balance"), duffs };
+}
+
 export function joinModel(
   i: StatusInputs,
   /** The quote's total (duffs), `null` while unread or when it failed. */
@@ -495,6 +530,8 @@ export function joinModel(
   /** What the funding can spend now (duffs, the quote's `availableDuffs`, DP1-09 D5), `null`
    * while unread. */
   available: number | null,
+  /** The Shielded balance (C-funding F16): no shortfall while it can pay, or is unread. */
+  shielded: ShieldedFunds | null = { offered: false, enough: false, duffs: null },
 ): JoinModel {
   const s = i.status;
   if (!i.statusError && s?.kind === "noIdentity") {
@@ -502,14 +539,17 @@ export function joinModel(
     const waiting = s.reason === "waitingForSync";
     if (costDuffs === null) return { kind: "join", cost: JOIN_COPY.costUnknown, shortfall: null, waiting };
     const price = i.amount(roundedCost(costDuffs));
-    return {
-      kind: "join",
-      cost: JOIN_COPY.cost(price),
-      // D18, as DP1-09 D5 measures it: the coins a start can spend, and no shortfall while the
-      // balance is still syncing in.
-      shortfall: !waiting && available !== null && available < costDuffs ? JOIN_COPY.shortfall(price) : null,
-      waiting,
-    };
+    // D18, as DP1-09 D5 measures it: the coins a start can spend, and no shortfall while the
+    // balance is still syncing in, nor while the Shielded balance can pay or is unread. Discreet
+    // mode shows the price but no balance.
+    const short = !waiting && available !== null && available < costDuffs && shielded !== null && !shielded.enough;
+    const both = (core: number) =>
+      !shielded?.offered
+        ? JOIN_COPY.shortfall(price)
+        : i.discreet
+          ? JOIN_COPY.shortfallBothDiscreet(price)
+          : JOIN_COPY.shortfallBoth(price, i.amount(core), i.amount(shielded.duffs ?? 0));
+    return { kind: "join", cost: JOIN_COPY.cost(price), shortfall: short ? both(available) : null, waiting };
   }
   // The credits cards are My Profile's business: the Join page says the user has joined.
   const c = homeCard(i);

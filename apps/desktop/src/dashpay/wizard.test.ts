@@ -12,7 +12,7 @@ import { fakeVault } from "../tools/testApi";
 import { CLAIM_COPY, CLAIM_KEPT, claimErrorText } from "./claim";
 import type { PaySource } from "./payWith";
 import { QUOTE_LABEL } from "./status";
-import { coreRequest, invitationRequest, platformRequest, RegistrationWizard, resetWizards, wizardFor } from "./wizard";
+import { coreRequest, invitationRequest, platformRequest, RegistrationWizard, resetWizards, shieldedRequest, wizardFor } from "./wizard";
 
 const quote = (label: string): RegistrationQuote => ({
   contested: label.length < 6,
@@ -27,6 +27,16 @@ const quote = (label: string): RegistrationQuote => ({
 });
 
 /** A quote from the Platform balance: no duffs; the grant covers the debit and the name. */
+const shieldedQuote: RegistrationQuote = {
+  ...quote("alice-77"),
+  lockDuffs: 0,
+  feeDuffs: 0,
+  totalDuffs: 0,
+  availableDuffs: 0,
+  grant: { maxDuffs: 0, maxCredits: "5000000000" },
+  readiness: { denomination: "3000000000", checks: [], readyAt: null, poolNotes: null, poolRequired: 250, change: "0" },
+};
+
 const platformQuote: RegistrationQuote = {
   ...quote("alice-77"),
   lockDuffs: 0,
@@ -54,6 +64,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -215,13 +226,13 @@ describe("IOS-068 the row's actions", () => {
     expect(wiz.draft).toBe("reg-1");
   });
 
-  it("D7: Choose another username discards an unfunded row and opens step 1; a funded row is never discarded", async () => {
+  it("D7: Choose another username discards an unfunded row and opens the source step; a funded row is never discarded", async () => {
     const { wiz, calls } = setup();
     await wiz.another(row({ fundsCommitted: true }));
     expect(calls).toEqual([]);
     await wiz.another(row({ fundsCommitted: false, phase: "failed" }));
     expect(calls).toEqual(["discard reg-1"]);
-    expect(wiz).toMatchObject({ step: "name", mode: { kind: "core" }, label: "" });
+    expect(wiz).toMatchObject({ step: "source", source: null, mode: { kind: "core" }, label: "" });
   });
 
   it("F22: a Platform run whose plan changed goes back to Confirm for its name and source, and Pay waits for a new quote", async () => {
@@ -251,11 +262,11 @@ describe("IOS-068 the row's actions", () => {
     expect(wiz.step).toBe("name");
   });
 
-  it("D27: from a row stopped for good with its funds committed, step 1 opens and nothing is discarded", async () => {
+  it("D27: from a row stopped for good with its funds committed, the source step opens and nothing is discarded", async () => {
     const { wiz, calls } = setup();
     await wiz.another(row({ phase: "failed", fundsCommitted: true, failure: { code: "registration.islock_timeout", phase: "fundingSent", retryable: false, needed: null, available: null } }));
     expect(calls).toEqual([]);
-    expect(wiz).toMatchObject({ step: "name", mode: { kind: "core" }, draft: null });
+    expect(wiz).toMatchObject({ step: "source", source: null, mode: { kind: "core" }, draft: null });
   });
 
   it("R10: after a refused name, another one is paid from the identity's credits", async () => {
@@ -315,7 +326,7 @@ describe("DP5-03 the claim (invitation mode)", () => {
     expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, true));
     wiz.setRequestInviter(false);
     expect(wiz.request()).toEqual(invitationRequest("carol-77", LINK, false));
-    await wiz.confirm({ grant: { maxDuffs: 0, maxCredits: "3500000000" }, platform: null });
+    await wiz.confirm({ grant: { maxDuffs: 0, maxCredits: "3500000000" }, platform: null, readiness: null });
     expect(api.startRegistration).toHaveBeenCalledWith(WALLET_A, invitationRequest("carol-77", LINK, false), "grant-1");
     expect(wiz.draft).toBe("reg-9");
     // A new claim checks the request again; without an inviter there is no one to ask.
@@ -387,27 +398,27 @@ describe("DP5-03 the claim (invitation mode)", () => {
   });
 });
 
-describe("the Pay with step (C-funding F18, F19)", () => {
-  it("opens on Dash wallet every time, never the last choice (M4)", () => {
+describe("the source step (C-funding F18, F19, mobile parity)", () => {
+  it("opens with nothing chosen every time, never the last choice", () => {
     const { wiz } = setup();
     wiz.begin({ kind: "core" }, "source");
-    expect(wiz).toMatchObject({ step: "source", source: "core" });
+    expect(wiz).toMatchObject({ step: "source", source: null });
     wiz.setSource("shielded");
     wiz.close();
     wiz.begin({ kind: "core" }, "source");
-    expect(wiz.source).toBe("core");
+    expect(wiz.source).toBeNull();
+    // The name step opened directly pays from the Dash wallet.
     wiz.setSource("platform");
     wiz.begin({ kind: "core" });
     expect(wiz.source).toBe("core");
   });
 
-  it("continues to the name only from a source this build can start, and Back returns to it", () => {
+  it("continues to the name only once a source is chosen, and Back returns to it", () => {
     const { wiz } = setup();
     wiz.begin({ kind: "core" }, "source");
-    wiz.setSource("shielded");
     wiz.pickSource();
     expect(wiz.step).toBe("source");
-    for (const s of ["core", "platform"] as const) {
+    for (const s of ["shielded", "core", "platform"] as const) {
       wiz.setSource(s);
       wiz.pickSource();
       expect(wiz.step).toBe("name");
@@ -426,10 +437,11 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     expect(wiz.step).toBeNull();
   });
 
-  it("a start through the step is the Core-funded request", async () => {
+  it("Continue without privacy is the Core-funded request", async () => {
     const { wiz, api } = setup();
     wiz.begin({ kind: "core" }, "source");
-    wiz.pickSource();
+    wiz.withoutPrivacy();
+    expect(wiz).toMatchObject({ step: "name", source: "core" });
     wiz.setLabel("alice-77");
     wiz.next();
     await wiz.confirm(quote("alice-77"));
@@ -477,6 +489,33 @@ describe("the Pay with step (C-funding F18, F19)", () => {
     const at = wiz.requoteAt;
     await wiz.confirm(platformQuote);
     expect(wiz.requoteAt).toBe(at);
+  });
+
+  it("F5: from the Shielded balance, the start carries the quote's denomination under its grant with no duffs", async () => {
+    const { wiz, api, vault } = setup();
+    viaSource(wiz, "shielded");
+    expect(wiz.fromShielded).toBe(true);
+    await wiz.confirm(shieldedQuote);
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "5000000000" } });
+    expect(api.startRegistration.mock.calls[0][1]).toEqual(shieldedRequest("alice-77", "3000000000"));
+  });
+
+  it("a Shielded start under a quote with no denomination authorizes and starts nothing, as a changed cost", async () => {
+    const { wiz, api, vault } = setup();
+    viaSource(wiz, "shielded");
+    await wiz.confirm(quote("alice-77"));
+    expect(vault.calls.authorize).toEqual([]);
+    expect(api.startRegistration).not.toHaveBeenCalled();
+    expect(wiz.error).toMatchObject({ code: "registration.quote_changed" });
+  });
+
+  it("a Shielded row resumes under its own grant and reconfirms on Shielded", async () => {
+    const { wiz, api } = setup();
+    await wiz.resume(row({ waiting: "authorize", running: false, fundsCommitted: false, fromShielded: true }));
+    expect(api.registrationResumeGrant).toHaveBeenCalledTimes(1);
+    expect(api.registrationQuote).not.toHaveBeenCalled();
+    await wiz.reconfirm(row({ phase: "failed", fundsCommitted: false, fromShielded: true, failure: { code: "registration.quote_changed", phase: "keysPrepared", retryable: false, needed: null, available: null } }));
+    expect(wiz).toMatchObject({ step: "confirm", source: "shielded" });
   });
 
   it("only a new identity pays from the Platform balance: a claim and a name from credits ignore the source", () => {

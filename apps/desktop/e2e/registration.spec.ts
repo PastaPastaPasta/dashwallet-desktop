@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { checkUsername } from "../src/fixture/registration";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { platformRunFails } from "./dashpay";
+import { payFrom, payFromDashWallet, platformRunFails } from "./dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-09: the username registration wizard on the fixture backend, by parity ID: IOS-066 (choose
@@ -52,6 +52,7 @@ async function chooseName(page: Page, label: string) {
 async function register(page: Page, label = LABEL) {
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await chooseName(page, label);
   await page.getByTestId("registration-pay").click();
   await authorize(page);
@@ -63,6 +64,7 @@ test("IOS-066: the checklist as typed, availability once valid, the contested ex
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
   const field = page.getByTestId("registration-name-field");
   const rules = page.getByTestId("registration-rules").locator("li");
@@ -103,6 +105,7 @@ test("IOS-067 / IOS-068: Confirm & pay, the progress through its steps on the pa
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await chooseName(page, LABEL);
   await expect(page.getByTestId("registration-fee")).toHaveText("0.0300226 tDASH");
   await expect(page.getByTestId("registration-accept")).toHaveCount(0);
@@ -176,6 +179,7 @@ test("D13: a relaunch on step 1 or 2 starts from the Join card; nothing was paid
   await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await chooseName(page, LABEL);
   await page.evaluate(() => window.__dwFixture!.relaunch());
   await page.getByTestId("lock-field").fill(FIXTURE_PASSPHRASE);
@@ -184,38 +188,107 @@ test("D13: a relaunch on step 1 or 2 starts from the Join card; nothing was paid
   expect(await assetLocks(page)).toBe(0);
 });
 
-test("C-funding F19: Pay another way lists the sources; Dash wallet and Platform can pay here, Dash wallet selected each time; Continue and Back", async ({ page }) => {
+test("C-funding F19: Make your username private lists Shielded first and Dash wallet, nothing chosen; Platform behind Advanced; Continue and Back", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
-  await page.getByTestId("join-pay-another").click();
+  await expect(page.getByTestId("join-pay-another")).toHaveCount(0);
+  await page.getByTestId("join-create").click();
   const step = page.getByTestId("registration-pay-with");
-  await expect(step.getByRole("heading", { level: 2 })).toHaveText("Pay with");
+  await expect(step.getByRole("heading", { level: 2 })).toHaveText("Make your username private");
+  await expect(page.getByTestId("privacy-body")).toHaveText("To help keep your payment activity private, we recommend paying for the username from your Shielded balance");
+  await expect(step).toHaveAttribute("data-kind", "sources");
   const radio = (s: string) => page.getByTestId(`pay-with-${s}`).getByRole("radio");
-  await expect(radio("core")).toBeChecked();
-  await expect(radio("core")).toBeEnabled();
-  await expect(page.getByTestId("pay-with-core-reason")).toHaveCount(0);
+  await expect(page.getByTestId("pay-with-sources").or(step.locator(".pay-with-source"))).toHaveCount(2);
+  await expect(step.locator(".pay-with-source").first()).toHaveAttribute("data-testid", "pay-with-shielded");
+  await expect(page.getByTestId("pay-with-shielded-note")).toHaveText("Keeps your username private");
+  await expect(page.getByTestId("pay-with-core-note")).toHaveText("Funds will be traceable to your username");
+  await expect(radio("shielded")).not.toBeChecked();
+  await expect(radio("core")).not.toBeChecked();
+  await expect(page.getByTestId("registration-next")).toBeDisabled();
+  await expect(radio("platform")).toHaveCount(0);
+  await page.getByTestId("privacy-advanced").click();
   await expect(radio("platform")).toBeEnabled();
-  await expect(radio("platform")).not.toBeChecked();
-  await expect(page.getByTestId("pay-with-platform-reason")).toHaveCount(0);
-  await expect(radio("shielded")).toBeDisabled();
-  await expect(page.getByTestId("pay-with-shielded-reason")).toHaveText("Not available on this network yet.");
-  await expect(radio("shielded")).toHaveAccessibleDescription("Not available on this network yet.");
   expect(await seriousAxeViolations(page)).toEqual([]);
 
+  await radio("core").check();
   await page.getByTestId("registration-next").click();
   await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
   await chooseName(page, LABEL);
   await page.getByTestId("registration-back").click();
   await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
-  // Opened from "Pay with", step 1's Back returns to it, Dash wallet still selected; Cancel leaves.
+  // Step 1's Back returns to the step, Dash wallet still chosen; Cancel leaves.
   await page.getByTestId("registration-back").click();
   await expect(radio("core")).toBeChecked();
   await page.getByTestId("registration-cancel").click();
   await expect(page.getByTestId("join-create")).toBeVisible();
-  // Create username skips the step.
+  // Opened again, nothing is chosen.
   await page.getByTestId("join-create").click();
-  await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  await expect(radio("core")).not.toBeChecked();
   expect(await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "start_registration").length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test("C-funding F16: while Shielded cannot pay, a tip card and its two buttons replace the sources; Shield your funds first waits while resting or the pool is small", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await toJoin(page);
+  const step = page.getByTestId("registration-pay-with");
+  const tip = page.getByTestId("privacy-tip");
+  const shieldFirst = page.getByTestId("privacy-shield-first");
+  const states: { world: Record<string, unknown>; kind: string; title: string; enabled: boolean }[] = [
+    { world: { balance: "0", notes: undefined }, kind: "nothing", title: "Privacy tip", enabled: true },
+    { world: { balance: "1000000000", notes: undefined }, kind: "partly", title: "Not enough shielded funds", enabled: true },
+    { world: { restingUntil: 1_900_000_000 }, kind: "resting", title: "Funds are resting", enabled: false },
+    { world: { poolNotes: 120 }, kind: "pool", title: "Privacy pool too small", enabled: false },
+  ];
+  for (const s of states) {
+    await page.evaluate((w) => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded = { ...f.world.pending.shielded!, ...w };
+      f.emit({ kind: "eventsOverflowed" } as never);
+    }, s.world);
+    await page.getByTestId("join-create").click();
+    await expect(step).toHaveAttribute("data-kind", "tip");
+    await expect(tip).toHaveAttribute("data-kind", s.kind);
+    await expect(tip.locator(".privacy-tip-title")).toHaveText(s.title);
+    await expect(page.getByTestId("pay-with-shielded")).toHaveCount(0);
+    if (s.enabled) await expect(shieldFirst).toBeEnabled();
+    else await expect(shieldFirst).toBeDisabled();
+    await expect(page.getByTestId("privacy-without")).toHaveText("Continue without privacy");
+    await page.getByTestId("registration-cancel").click();
+  }
+  // Shield your funds first opens Transfer, Dash wallet → Shielded.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.pending.shielded = { ...f.world.pending.shielded!, balance: "0", restingUntil: undefined, poolNotes: undefined };
+    f.emit({ kind: "eventsOverflowed" } as never);
+  });
+  await page.getByTestId("join-create").click();
+  await shieldFirst.click();
+  await expect(page.getByTestId("transfer-sheet")).toBeVisible();
+  await expect(page.getByTestId("transfer-from")).toContainText("Dash wallet");
+  await expect(page.getByTestId("transfer-to")).toContainText("Shielded");
+  expect(errors).toEqual([]);
+});
+
+test("C-funding F5, F20: a username paid from the Shielded balance confirms its denomination, fee and change, and registers", async ({ page }) => {
+  const errors = await open(page, "dashpay-no-identity");
+  await toJoin(page);
+  await page.getByTestId("join-create").click();
+  await payFrom(page, "shielded");
+  await chooseName(page, LABEL);
+  const cost = page.getByTestId("registration-cost");
+  await expect(page.getByTestId("registration-fee")).toHaveText("0.03 tDASH");
+  await expect(cost).toContainText("0.03 tDASH leaves your Shielded balance.");
+  await expect(cost).toContainText("Network fee: about");
+  await expect(cost).toContainText("returns to your Shielded balance after the next sync.");
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  const draft = await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft);
+  expect(await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.at(-1)!.fromShielded)).toBe(true);
+  await page.evaluate((d) => {
+    while (window.__dwFixture!.advanceRegistration(d));
+  }, draft);
+  await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "done");
   expect(errors).toEqual([]);
 });
 
@@ -239,6 +312,7 @@ test("IOS-068 contested: I accept before paying, then voting has begun", async (
   await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await chooseName(page, "alice");
   await expect(page.getByTestId("registration-fee")).toHaveText("0.2500226 tDASH");
   await expect(page.getByTestId("registration-cost")).toContainText("The network votes on this username for about two weeks");
@@ -281,9 +355,18 @@ test("IOS-068 failures: a retryable stop continues the same registration; a refu
 
 test("D5: a shortfall against what the wallet can spend holds Confirm & pay", async ({ page }) => {
   await open(page, "empty");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    if (f.world.pending.shielded) f.world.pending.shielded = { ...f.world.pending.shielded, balance: "0", notes: undefined };
+    f.emit({ kind: "eventsOverflowed" } as never);
+  });
   await toJoin(page);
-  await expect(page.getByTestId("join-shortfall")).toHaveText("You need at least 0.031 tDASH to create a username.");
+  // C-funding F16: neither the Dash wallet nor the Shielded balance can pay.
+  await expect(page.getByTestId("join-shortfall")).toHaveText(
+    "You need at least 0.031 tDASH to create a username. Your Dash wallet has 0 tDASH. Your Shielded balance has 0 tDASH.",
+  );
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await chooseName(page, LABEL);
   await expect(page.getByTestId("registration-shortfall")).toHaveText("You need at least 0.0300226 tDASH to create this username.");
   await expect(page.getByTestId("registration-pay")).toBeDisabled();
@@ -354,9 +437,8 @@ test("C-funding F4, F7, F22: paid from the Platform balance, a start waits on an
   const credits = () => page.evaluate(() => window.__dwFixture!.world.pending.platform!.addresses.map((a) => a.credits));
   const before = await credits();
   await toJoin(page);
-  await page.getByTestId("join-pay-another").click();
-  await page.getByTestId("pay-with-platform").getByRole("radio").check();
-  await page.getByTestId("registration-next").click();
+  await page.getByTestId("join-create").click();
+  await payFrom(page, "platform");
   await chooseName(page, LABEL);
   // Confirm: what leaves the Platform balance, the identity's funding and the fee.
   await expect(page.getByTestId("registration-cost")).toContainText(
@@ -398,15 +480,15 @@ test("C-funding F4, F7, F22: paid from the Platform balance, a start waits on an
   expect(errors).toEqual([]);
 });
 
-test("Mainnet: off (flag platform_registration): Pay with says Platform is not available there", async ({ page }) => {
+test("Mainnet: off (flag platform_registration): the privacy step offers no Platform, not even behind Advanced", async ({ page }) => {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-no-identity", "light", "&network=mainnet"));
   await page.getByTestId("toolbar").waitFor();
   await toJoin(page);
-  await page.getByTestId("join-pay-another").click();
-  const radio = page.getByTestId("pay-with-platform").getByRole("radio");
-  await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Not available on this network yet.");
-  await expect(radio).toBeDisabled();
+  await page.getByTestId("join-create").click();
+  await expect(page.getByTestId("registration-pay-with")).toHaveAttribute("data-kind", /^(sources|tip)$/);
+  await expect(page.getByTestId("privacy-advanced")).toHaveCount(0);
+  await expect(page.getByTestId("pay-with-platform")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -519,9 +601,8 @@ test("C-funding F22: a Platform run whose plan changed says so, and Continue goe
 test("C-funding F4: a start refused for a changed cost writes nothing, and Pay waits for the new cost", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
-  await page.getByTestId("join-pay-another").click();
-  await page.getByTestId("pay-with-platform").getByRole("radio").check();
-  await page.getByTestId("registration-next").click();
+  await page.getByTestId("join-create").click();
+  await payFrom(page, "platform");
   await page.getByTestId("registration-name-field").fill(LABEL);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
@@ -559,6 +640,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await page.getByTestId("registration-name-field").fill("alice");
       await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
     },
@@ -568,6 +650,7 @@ const SCREENS: { name: string; scenario: string; reach: (page: Page) => Promise<
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await chooseName(page, "alice");
     },
   },
@@ -599,6 +682,7 @@ test.describe("the instant username beside a contested one", () => {
     await open(page, "dashpay-no-identity");
     await toJoin(page);
     await page.getByTestId("join-create").click();
+    await payFromDashWallet(page);
     await page.getByTestId("registration-name-field").fill("alice");
     await expect(page.getByTestId("registration-next")).toBeEnabled();
     await page.getByTestId("registration-next").click();
@@ -685,6 +769,7 @@ test.describe("the instant username beside a contested one", () => {
     await open(page, "dashpay-no-identity");
     await toJoin(page);
     await page.getByTestId("join-create").click();
+    await payFromDashWallet(page);
     await chooseName(page, LABEL);
     await expect(page.getByTestId("instant-offer")).toHaveCount(0);
   });

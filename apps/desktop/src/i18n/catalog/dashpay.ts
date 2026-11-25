@@ -94,6 +94,7 @@ export const dashpay = {
     unlock: "Unlock the wallet to continue.",
     authorize: "Waiting for your approval to continue.",
     paymentUnknown: "Checking whether the payment from your Platform balance went through.",
+    paymentUnknownShielded: "Checking whether the payment from your Shielded balance went through.",
     paymentHeld: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through, so paying again waits until that's known. Check back later.",
     /** Shown only beside both Continue and Move to Dash wallet, which it names. */
     paymentHeldActions: "Dash Wallet can't tell yet whether the payment from your Platform balance went through. It may still go through. Choosing Continue tries the same payment again, so it can't pay twice. To free your Platform balance instead, choose Move to Dash wallet. Only one of the two can happen: if the move lands first, the registration isn't paid.",
@@ -113,6 +114,14 @@ export const dashpay = {
      * reports no amount, so the line names none. */
     refundedPlatform:
       "Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used.",
+    /** A paid failure of a registration from the Shielded balance (C-funding F12): Platform sent
+     * the payment, less a penalty, to this wallet's Platform balance. */
+    refundedShielded:
+      "Dash Platform could not create the identity with this wallet's keys. It kept a penalty and sent the rest of the payment to your Platform balance.",
+    /** A Shielded-funded run whose readiness no longer held when it was about to pay. */
+    shieldedNotReady: "Your Shielded balance can't pay for the username right now. Nothing was spent.",
+    /** A Shielded payment that was refused before it was sent. */
+    shieldedRefused: "The payment from your Shielded balance did not go through. Nothing was spent.",
     /** A run that stopped when its Platform plan changed (`registration.quote_changed` on the
      * row), whether or not its credits moved first; Confirm's start refusal has its own line. */
     quoteChanged:
@@ -140,6 +149,11 @@ export const dashpay = {
     cost: "A username costs about {amount}. Usernames the network votes on cost more; the exact cost is shown before you pay.",
     costUnknown: "Usernames the network votes on cost more than others. The exact cost is shown before you pay.",
     shortfall: "You need at least {amount} to create a username.",
+    /** Neither the Dash wallet nor the Shielded balance can pay. Every placeholder is an amount
+     * with its unit. */
+    shortfallBoth: "You need at least {amount} to create a username. Your Dash wallet has {core}. Your Shielded balance has {shielded}.",
+    /** As `shortfallBoth` in discreet mode, which shows the price but no balance. */
+    shortfallBothDiscreet: "You need at least {amount} to create a username. Neither your Dash wallet nor your Shielded balance has enough.",
     create: "Create username",
     watchOnly: "A watch-only wallet cannot join DashPay. Restore the wallet from its recovery phrase to join.",
     joinedAs: "You have joined DashPay as {username}.",
@@ -247,6 +261,33 @@ export const dashpay = {
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
       syncing: "Your shielded balance is still syncing.",
     },
+    /** "Make your username private", the step before the name (C-funding F19; the iOS and Android
+     * wallets' copy, "Dash balance" read as "Dash wallet"). */
+    privacy: {
+      title: "Make your username private",
+      body: "To help keep your payment activity private, we recommend paying for the username from your Shielded balance",
+      shieldedNote: "Keeps your username private",
+      coreNote: "Funds will be traceable to your username",
+      advanced: "Advanced",
+      shieldFirst: "Shield your funds first",
+      withoutPrivacy: "Continue without privacy",
+      /** The card shown in place of the sources while the Shielded balance cannot pay. */
+      tip: {
+        restingTitle: "Funds are resting",
+        /** `time` is a clock time, HH:MM. */
+        resting: "Your shielded funds are resting. They will be ready around {time} — creating your username before then links it to where the funds came from.",
+        poolTitle: "Privacy pool too small",
+        /** `notes` and `required` are counts of notes. */
+        pool: "The shared privacy pool holds {notes} of the {required} notes a private registration needs. That count comes from everyone's shielded activity, so it grows on its own — try again later.",
+        partlyTitle: "Not enough shielded funds",
+        /** `have`, `need` and `more` are amounts with their unit. */
+        partly: "Your Shielded balance holds {have} of the {need} a private registration needs. Add {more} more, then let it rest a few hours.",
+        nothingTitle: "Privacy tip",
+        /** `need` is an amount with its unit. */
+        nothing: "Paying privately takes at least {need} in your Shielded balance. Funds move there in seconds, then rest a few hours before they can pay for a username.",
+        waitTitle: "Shielded balance",
+      },
+    },
     /** The name's checklist. */
     rule: {
       minLength: "At least 3 characters",
@@ -281,6 +322,17 @@ export const dashpay = {
       /** Paid from the Platform balance (C-funding F9). `total`, `funding` and `fee` are amounts:
        * `funding` what the identity receives, exactly; `fee` the Platform fee, about; `total` both. */
       fromPlatform: "About {total} leaves your Platform balance: {funding} for your identity and a Platform fee of about {fee}. Your identity starts with a balance of {funding}.",
+      /** Paid from the Shielded balance (C-funding F20). Every placeholder is an amount with its
+       * unit. */
+      shielded: {
+        leaves: "{denomination} leaves your Shielded balance.",
+        fee: "Network fee: about {fee}.",
+        starts: "Your identity starts with {start} in credits. The username and profile are paid from it, and about {left} stays as credits for contacts and profile changes.",
+        /** `starts` when nothing is left after the username and profile. */
+        startsNoneLeft: "Your identity starts with {start} in credits. The username and profile are paid from it.",
+        change: "{change} returns to your Shielded balance after the next sync.",
+        whole: "This uses your whole Shielded balance.",
+      },
       accept: "I accept",
       pay: "Confirm & pay",
       register: "Confirm",

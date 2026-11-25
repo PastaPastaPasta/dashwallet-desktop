@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS, platformRunFails } from "./dashpay";
+import { CARDS, payFrom, payFromDashWallet, platformRunFails } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -41,6 +41,7 @@ async function toJoin(page: Page) {
 async function nameStep(page: Page) {
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await page.getByTestId("registration-name").waitFor();
 }
 
@@ -157,18 +158,25 @@ export const STATES: Record<string, State> = {
     roots: ["page-joinDashPay"],
     go: async (page) => {
       await toJoin(page);
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-shielded-reason").waitFor();
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("pay-with-shielded-note").waitFor();
       await page.getByTestId("pay-with-core-balance").waitFor();
+      await page.getByTestId("privacy-advanced").click();
+      await page.getByTestId("pay-with-platform-balance").waitFor();
     },
   },
-  "pay-with-move-pending": {
-    scenario: "platform-send-held",
+  "privacy-tip": {
+    scenario: "dashpay-no-identity",
     roots: ["page-joinDashPay"],
     go: async (page) => {
+      await page.evaluate(() => {
+        const f = window.__dwFixture!;
+        f.world.pending.shielded = { ...f.world.pending.shielded!, balance: "1000000000", notes: undefined };
+        f.emit({ kind: "eventsOverflowed" } as never);
+      });
       await toJoin(page);
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-platform-reason").waitFor();
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("privacy-tip").waitFor();
     },
   },
   "name-rules": {
@@ -203,9 +211,8 @@ export const STATES: Record<string, State> = {
     roots: ["page-joinDashPay"],
     go: async (page) => {
       await toJoin(page);
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-platform").getByRole("radio").check();
-      await page.getByTestId("registration-next").click();
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "platform");
       await page.getByTestId("registration-name-field").fill(LABEL);
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();

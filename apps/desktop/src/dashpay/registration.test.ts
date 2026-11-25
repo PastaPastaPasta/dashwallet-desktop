@@ -61,6 +61,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -131,6 +132,39 @@ describe("IOS-067 step 2: the cost (D2, D5)", () => {
       shortfall: null,
     });
     expect(confirmModel(quote({ contested: true, totalDuffs: 0, availableDuffs: 0, platform }), amount).lines[1]).toBe(REG_COPY.confirm.contested);
+  });
+});
+
+describe("C-funding F20: Confirm from the Shielded balance", () => {
+  const readiness = (change: string | null) => ({ denomination: "3000000000", checks: [], readyAt: null, poolNotes: null, poolRequired: 250, change });
+  // The denomination 0.03, the names and the profile 0.007, the fee 0.003: 0.02 left.
+  const shielded = (change: string | null, remainingCredits = "2000000000") =>
+    quote({ totalDuffs: 0, availableDuffs: 0, remainingCredits, grant: { maxDuffs: 0, maxCredits: "3700000000" }, readiness: readiness(change) });
+
+  it("the denomination leaves, the fee, the start and what stays, and the change returning to this wallet's Shielded balance", () => {
+    expect(confirmModel(shielded("7000000000"), amount)).toEqual({
+      cost: "0.03 tDASH",
+      lines: [
+        "0.03 tDASH leaves your Shielded balance.",
+        "Network fee: about 0.003 tDASH.",
+        "Your identity starts with 0.027 tDASH in credits. The username and profile are paid from it, and about 0.02 tDASH stays as credits for contacts and profile changes.",
+        "0.07 tDASH returns to your Shielded balance after the next sync.",
+      ],
+      shortfall: null,
+    });
+  });
+
+  it("no change line at zero change; the whole balance says so", () => {
+    expect(confirmModel(shielded("0"), amount, 5_000_000).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000).lines[3]).toBe("This uses your whole Shielded balance.");
+  });
+
+  it("drops the credits-left clause at or below zero", () => {
+    expect(confirmModel(shielded("0", "0"), amount).lines[2]).toBe("Your identity starts with 0.007 tDASH in credits. The username and profile are paid from it.");
+  });
+
+  it("a contested name adds the voting line", () => {
+    expect(confirmModel({ ...shielded("0"), contested: true }, amount).lines.at(-1)).toBe(REG_COPY.confirm.contested);
   });
 });
 

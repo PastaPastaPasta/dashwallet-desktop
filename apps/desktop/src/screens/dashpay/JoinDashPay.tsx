@@ -9,17 +9,17 @@
 
 import { useEffect, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend } from "../../api/queries";
+import { useBackend, usePoolBalances } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
-import { useNamesRead, useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
+import { useNamesRead, useRegistrations, useShieldedReadiness, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
 import { temporaryOutcome } from "../../dashpay/instantOffer";
-import { PAY_WITH_COPY } from "../../dashpay/payWith";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
-import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
+import { JOIN_COPY, joinModel, shieldedFunds, type CardActionKind } from "../../dashpay/status";
 import { findFriends, openEditProfile } from "../../dashpay/welcome";
 import { wizardFor } from "../../dashpay/wizard";
+import { known } from "../../format/homeBalance";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
@@ -56,7 +56,9 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   const { status } = inputs;
   const joining = status?.kind === "noIdentity" && status.reason !== "watchOnly";
   const quote = useUsernameQuote(walletId, joining);
-  const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null);
+  const readiness = useShieldedReadiness(walletId);
+  const pools = usePoolBalances(walletId);
+  const model = joinModel(inputs, quote?.totalDuffs ?? null, quote?.availableDuffs ?? null, shieldedFunds(readiness, known(pools.shielded) ? pools.shielded : null));
   const [sheet, setSheet] = useState<"voting" | "faq" | "invitation" | null>(null);
   // The row shown: this session's (until Done), else the one the status says goes on (D12), else
   // one that stopped for good with its funds committed, which the status no longer names but
@@ -209,7 +211,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
               </p>
             )}
             <div className="join-actions">
-              <DashButton variant="filledBlue" data-testid="join-create" disabled={model.waiting} onClick={() => wiz.begin({ kind: "core" })}>
+              <DashButton variant="filledBlue" data-testid="join-create" disabled={model.waiting} onClick={() => wiz.begin({ kind: "core" }, "source")}>
                 {JOIN_COPY.create}
               </DashButton>
               {model.waiting && inputs.status && (
@@ -217,9 +219,6 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
                   {JOIN_COPY.waiting}
                 </span>
               )}
-              <DashButton variant="plainBlue" data-testid="join-pay-another" disabled={model.waiting} onClick={() => wiz.begin({ kind: "core" }, "source")}>
-                {PAY_WITH_COPY.link}
-              </DashButton>
               <DashButton variant="plainBlue" data-testid="join-invitation" onClick={() => setSheet("invitation")}>
                 {CLAIM_COPY.paste.open}
               </DashButton>

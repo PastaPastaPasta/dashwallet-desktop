@@ -7,7 +7,7 @@
 
 import { hasCode, isAppError } from "../api/backend";
 import { FLOW_NAME } from "../api/lockReport";
-import { creditsToDuffsUp } from "../api/pending";
+import { creditsToDuffs, creditsToDuffsUp } from "../api/pending";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { LockKind } from "../api/generated/LockKind";
@@ -21,7 +21,7 @@ import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
 import { INSTANT_COPY, type TemporaryOutcome } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
-import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, WAITS, withTable, type CardStep } from "./status";
+import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, waitLine, withTable, type CardStep } from "./status";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -65,6 +65,16 @@ export const REG_COPY = {
     shortfall: (amount: string) => t("dashpay.registration.confirm.shortfall", { amount }),
     fromCredits: (credits: string) => t("dashpay.registration.confirm.fromCredits", { credits: new Intl.NumberFormat(formatLocale(undefined)).format(BigInt(credits)) }),
     fromPlatform: (total: string, funding: string, fee: string) => t("dashpay.registration.confirm.fromPlatform", { total, funding, fee }),
+    shielded: {
+      leaves: (denomination: string) => t("dashpay.registration.confirm.shielded.leaves", { denomination }),
+      fee: (fee: string) => t("dashpay.registration.confirm.shielded.fee", { fee }),
+      starts: (start: string, left: string | null) =>
+        left === null ? t("dashpay.registration.confirm.shielded.startsNoneLeft", { start }) : t("dashpay.registration.confirm.shielded.starts", { start, left }),
+      change: (change: string) => t("dashpay.registration.confirm.shielded.change", { change }),
+      get whole() {
+        return t("dashpay.registration.confirm.shielded.whole");
+      },
+    },
   }),
   progress: withTable(reg("progress", ["title", "close", "home", "readFailed", "finish"]), {
     message: (label: string) => t("dashpay.registration.progress.message", username(label)),
@@ -156,10 +166,33 @@ export interface ConfirmModel {
   shortfall: string | null;
 }
 
+/** A Shielded quote's lines (C-funding F20): the denomination that leaves the balance, the fee,
+ * what the identity starts with and what stays after the names and the profile (that clause only
+ * above zero), the change when there is some, and a note when the denomination is the whole
+ * balance. The quote's grant is the denomination plus the names and the profile; its remaining
+ * credits the denomination less the fee, the names and the profile. */
+function shieldedLines(quote: RegistrationQuote, denomination: string, change: string | null, amount: (duffs: number) => string, balanceDuffs: number | null): string[] {
+  const d = BigInt(denomination);
+  const left = BigInt(quote.remainingCredits);
+  const start = left + (BigInt(quote.grant.maxCredits) - d);
+  const c = REG_COPY.confirm.shielded;
+  const lines = [c.leaves(amount(creditsToDuffs(denomination))), c.fee(amount(creditsToDuffsUp(d > start ? d - start : 0n))), c.starts(amount(creditsToDuffs(String(start))), left > 0n ? amount(creditsToDuffs(String(left))) : null)];
+  if (change !== null && BigInt(change) > 0n) lines.push(c.change(amount(creditsToDuffs(change))));
+  else if (change !== null && balanceDuffs === creditsToDuffs(denomination)) lines.push(c.whole);
+  return lines;
+}
+
 /** The quote's cost: from the Dash wallet, its total and what the funding can spend; from the
- * Platform balance (C-funding F9), what leaves it, the identity's funding and the fee. A Platform
- * quote has no shortfall: one the balance cannot pay is refused. */
-export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string): ConfirmModel {
+ * Platform balance (C-funding F9), what leaves it, the identity's funding and the fee; from the
+ * Shielded balance (F20), its denomination. Neither balance quote has a shortfall: one the Platform
+ * balance cannot pay is refused, and a Shielded one says why in its readiness. */
+export function confirmModel(quote: RegistrationQuote, amount: (duffs: number) => string, shieldedDuffs: number | null = null): ConfirmModel {
+  const r = quote.readiness;
+  if (r !== null && r.denomination !== null) {
+    const lines = shieldedLines(quote, r.denomination, r.change, amount, shieldedDuffs);
+    if (quote.contested) lines.push(REG_COPY.confirm.contested);
+    return { cost: amount(creditsToDuffs(r.denomination)), lines, shortfall: null };
+  }
   const p = quote.platform;
   const cost = amount(p ? creditsToDuffsUp(BigInt(p.fundingCredits) + BigInt(p.feeCredits)) : quote.totalDuffs);
   const lines = [p ? REG_COPY.confirm.fromPlatform(cost, amount(creditsToDuffsUp(p.fundingCredits)), amount(creditsToDuffsUp(p.feeCredits))) : REG_COPY.confirm.credits];
@@ -313,7 +346,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
 
   const f = row.failure;
   if (f) {
-    const why = failureText(f, i.amount, i.discreet, row.fromPlatform);
+    const why = failureText(f, i.amount, i.discreet, row.fromPlatform, row.fromShielded);
     const recovery = row.fundsCommitted ? [REG_COPY.recovery] : [];
     if (f.retryable) {
       // D7: a funded row is never discarded from here.
@@ -329,7 +362,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
     if (row.fromPlatform && f.code === "registration.quote_changed")
       return base("failed", REG_COPY.failed.title, [why], [act("reconfirm", REG_COPY.failed.reviewCost)], { step: null });
     // The attempt's keys failed, not the name: the same name may be chosen again.
-    const another = row.fromPlatform && f.code === "registration.refunded" ? REG_COPY.failed.startNew : REG_COPY.failed.another;
+    const another = (row.fromPlatform || row.fromShielded) && f.code === "registration.refunded" ? REG_COPY.failed.startNew : REG_COPY.failed.another;
     return base("failed", REG_COPY.failed.title, [why], [act("another", another)], { step: null });
   }
 
@@ -338,7 +371,7 @@ export function screenModel(row: RegistrationStatus, i: ScreenInputs): ScreenMod
   if (awaitsContinue(row)) return base("paused", progressTitle, [REG_COPY.progress.authorize(label)], [act("continue", REG_COPY.progress.continue)]);
   if (row.waiting === "unlock") return base("unlock", progressTitle, [REG_COPY.progress.unlock(label)], [act("unlock", REG_COPY.progress.unlockAction)]);
 
-  const wait = row.waiting ? WAITS[row.waiting] : null;
+  const wait = waitLine(row);
   return base("progress", progressTitle, [REG_COPY.progress.message(label), ...(wait ? [wait] : []), REG_COPY.progress.close], [act("home", REG_COPY.progress.home)], {
     busy: true,
   });
@@ -427,6 +460,7 @@ export function startErrorText(e: unknown, amount: (duffs: number) => string, di
       ? t("dashpay.failure.fundingNeeded", { needed: amount(needed) })
       : t("dashpay.failure.fundingNeededAvailable", { needed: amount(needed), available: amount(available) });
   }
+  if (hasCode(e, "registration.shielded_not_ready")) return t("dashpay.failure.shieldedNotReady");
   if (hasCode(e, "registration.coins_locked")) return t("dashpay.registration.startError.coinsLocked");
   if (hasCode(e, "registration.not_synced")) return t("dashpay.registration.startError.notSynced");
   if (hasCode(e, "registration.funding_unknown_recent")) {

@@ -33,6 +33,7 @@ const reg = (draft: string, waiting: RegistrationStatus["waiting"]): Registratio
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
 });

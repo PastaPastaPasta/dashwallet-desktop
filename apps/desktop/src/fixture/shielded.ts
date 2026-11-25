@@ -70,6 +70,9 @@ export interface ShieldedWorld {
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** The pool's proved note count a registration's readiness reads (C-funding F16); unset: 120
+   * while `poolTooSmall`, else unknown, which passes. */
+  poolNotes?: number;
   /** The notes are resting until then (Unix seconds; C-funding F17): a registration cannot use
    * them yet. Unset: rested. */
   restingUntil?: number;

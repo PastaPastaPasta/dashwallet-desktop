@@ -234,11 +234,28 @@ export const SHIELDED_DENOMINATION = 3_000_000_000n;
 /** registration_flow.rs `IDENTITY_CREATE_CREDITS`: the create's fee bound the quote takes from it. */
 const CREATE_CREDITS = 300_000_000n;
 
+/** Platform's floor of pool notes before a payment may leave it (`minimum_pool_notes_for_outgoing`). */
+export const POOL_REQUIRED = 250;
+
+/** What the notes a create selects for `denomination` hold above it, in credits: the notes in order
+ * until they cover it (one note of the whole balance when the world lists none). */
+function changeOf(s: ShieldedWorld, denomination: bigint): bigint | null {
+  const notes = (s.notes ?? [s.balance]).map(BigInt);
+  let total = 0n;
+  for (const n of notes) {
+    total += n;
+    if (total >= denomination) return total - denomination;
+  }
+  return null;
+}
+
 /** registration.rs `shielded_readiness` over the fixture's Shielded world (C-funding F16, F17). */
 export function shieldedReadiness(s: ShieldedWorld | null | undefined): ShieldedReadiness {
   const active = s?.active === true;
   const synced = active && s.ready && s.scanning !== true;
   const resting = s?.restingUntil !== undefined && s.restingUntil > secs(FIXTURE_NOW) ? s.restingUntil : null;
+  const poolNotes = s?.poolNotes ?? (s?.poolTooSmall ? 120 : null);
+  const change = active ? changeOf(s, SHIELDED_DENOMINATION) : null;
   const checks: [ShieldedCheckName, boolean][] = [
     ["poolActive", active],
     ["featureOn", true],
@@ -247,8 +264,16 @@ export function shieldedReadiness(s: ShieldedWorld | null | undefined): Shielded
     ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0],
     ["synced", synced],
     ["rested", synced && resting === null],
+    ["poolSize", poolNotes === null || poolNotes >= POOL_REQUIRED],
   ];
-  return { denomination: active ? String(SHIELDED_DENOMINATION) : null, checks: checks.map(([check, ready]) => ({ check, ready })), readyAt: resting };
+  return {
+    denomination: active ? String(SHIELDED_DENOMINATION) : null,
+    checks: checks.map(([check, ready]) => ({ check, ready })),
+    readyAt: resting,
+    poolNotes,
+    poolRequired: POOL_REQUIRED,
+    change: change === null ? null : String(change),
+  };
 }
 
 /** A Shielded-funded quote (registration.rs `shielded_plan`): nothing in duffs; the grant covers
@@ -298,6 +323,10 @@ export interface PlatformRegisterPlan {
  * retries (F10, F12); `replanRefused`: a new plan no longer gives the quoted numbers, refused
  * before anything is signed (platform_register.rs `new_plan`). */
 export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure" | "replanRefused";
+
+/** What a Shielded-funded identity create comes to (C-funding F12): proved, unknown (waits), or
+ * executed without the identity (`registration.refunded`). */
+export type ShieldedCreateOutcome = "registered" | "unknown" | "refunded";
 
 const short = (needed: bigint, available: bigint) =>
   fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
@@ -474,9 +503,9 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const dp = d.dashpay(world, walletId);
     if (request.funding.kind === "invitation") return startClaim(ctx, walletId, request, grantId);
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
     checkTemporary(request);
+    if (request.funding.kind === "shielded") return startFromShielded(ctx, walletId, request, grantId, request.funding.denomination);
     let plan: PlatformRegisterPlan | null = null;
     if (request.funding.kind === "platformAddresses") {
       plan = platformPlan(request.label, world.pending.platform, world.launch.network.kind === "mainnet", dp);
@@ -524,6 +553,59 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         profileFailure: null,
         invitation: null,
         fromPlatform: false,
+        fromShielded: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    dp.runs = [...dp.runs, draft];
+    settleStatus(dp);
+    changed(ctx, walletId, draft);
+    return draft;
+  }
+
+  /** registration.rs `start` from the Shielded balance (C-funding F5, F16): every readiness check
+   * again, the quote's denomination, a grant with no duffs that covers it and the names, and a row
+   * that commits nothing until its create is named. */
+  function startFromShielded(ctx: Ctx, walletId: string, request: RegistrationRequest, grantId: string, denomination: string): string {
+    const { world } = ctx;
+    const dp = d.dashpay(world, walletId);
+    const readiness = shieldedReadiness(world.pending.shielded);
+    const failed = readiness.checks.find((c) => !c.ready);
+    if (failed && ["poolActive", "featureOn", "denomination"].includes(failed.check)) throw shieldedOff();
+    if (failed)
+      throw fail("registration.shielded_not_ready", "not ready", { kind: "shieldedNotReady", reason: failed.check, readyAt: failed.check === "rested" ? readiness.readyAt : null });
+    if (denomination !== readiness.denomination) throw fail("registration.quote_changed", "the quote changed");
+    const credits = BigInt(denomination) + costs(request.label, request.temporaryLabel).credits;
+    const g = d.grant(world, grantId, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0) throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < credits)
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(credits), remaining: g.grant.purpose.maxCredits });
+    const blocker = dp.registrations.find(blocks);
+    if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
+    d.newLease(ctx, walletId, "registration", [g]);
+    const draft = `reg-${dp.assetLocks + dp.registrations.length + 1}`;
+    const now = secs(FIXTURE_NOW);
+    dp.registrations = [
+      ...dp.registrations,
+      {
+        draft,
+        phase: "draft",
+        label: request.label,
+        temporaryLabel: request.temporaryLabel,
+        identity: null,
+        txid: null,
+        waiting: null,
+        holdsKey: g.ownKey,
+        running: true,
+        fundsCommitted: false,
+        contestEndsAt: null,
+        failure: null,
+        nameFailure: null,
+        profileFailure: null,
+        invitation: null,
+        fromPlatform: false,
+        fromShielded: true,
         createdAt: now,
         updatedAt: now,
       },
@@ -568,6 +650,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         profileFailure: null,
         invitation: null,
         fromPlatform: true,
+        fromShielded: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -612,6 +695,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         profileFailure: null,
         invitation: { linkId: plan.linkId, inviter: plan.inviter, requestFailure: null },
         fromPlatform: false,
+        fromShielded: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -744,10 +828,10 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
   // A claim checks its invitation (draft), then claims it (keysPrepared): no lock, no proof.
   const claim = row.invitation !== null;
   // A Platform-funded row's funding step is its identity create (C-funding F9, F10).
-  const step = row.phase === "keysPrepared" ? (claim ? "proofWaiting" : row.fromPlatform ? "platformCreate" : row.phase) : row.phase;
+  const step = row.phase === "keysPrepared" ? (claim ? "proofWaiting" : row.fromPlatform ? "platformCreate" : row.fromShielded ? "shieldedCreate" : row.phase) : row.phase;
   switch (step) {
     case "draft":
-      if (claim || row.fromPlatform) row.phase = "keysPrepared";
+      if (claim || row.fromPlatform || row.fromShielded) row.phase = "keysPrepared";
       else Object.assign(row, { phase: "proofWaiting", waiting: runningWait("proofWaiting") });
       break;
     case "platformCreate": {
@@ -789,6 +873,32 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       }
       Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null, fundsCommitted: true });
       dp.identities = [createdIdentity(String(platformDebit(dp, row).funding))];
+      ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
+      break;
+    }
+    case "shieldedCreate": {
+      // registration_shielded.rs: the denomination leaves the pool once the create is named; the
+      // change returns to the balance. Unknown waits; executed without the identity is refunded.
+      const outcome = dp.shieldedCreates?.shift() ?? "registered";
+      const s = world.pending.shielded;
+      if (s) {
+        s.balance = String(BigInt(s.balance) - SHIELDED_DENOMINATION);
+        if (s.notes) s.notes = [s.balance];
+        ctx.emit({ kind: "platform", network, walletId, change: { domain: "shielded" } });
+      }
+      if (outcome === "unknown") {
+        Object.assign(row, { waiting: "paymentUnknown", fundsCommitted: true });
+        break;
+      }
+      if (outcome === "refunded") {
+        const failure: RegistrationFailure = { phase: row.phase, code: "registration.refunded", retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
+      Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null, fundsCommitted: true });
+      dp.identities = [createdIdentity(String(SHIELDED_DENOMINATION - CREATE_CREDITS))];
       ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
       break;
     }

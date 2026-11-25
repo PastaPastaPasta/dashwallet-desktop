@@ -7,7 +7,9 @@ import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { RegistrationFailure } from "../api/generated/RegistrationFailure";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
+import { CLAIM_REFUSAL, COPY, FAQ, failureText, homeCard, JOIN_COPY, heldWithBoth, joinModel, namesState, QUOTE_LABEL, roundedCost, shieldedFunds, stepOf, VOTING_INFO, WAITS, type StatusInputs } from "./status";
+import type { ShieldedCheckName } from "../api/generated/ShieldedCheckName";
+import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
 import { t } from "../i18n";
 import { INSTANT_COPY, VOTE_COPY, type InstantInputs } from "./instantOffer";
 
@@ -46,6 +48,7 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   profileFailure: null,
   invitation: null,
   fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -323,6 +326,34 @@ describe("IOS-065 Join page readiness (J1–J7)", () => {
     expect(joinModel(inputs(noIdentity()), 3_002_260, 1_000_000)).toMatchObject({ shortfall: JOIN_COPY.shortfall("0.031 tDASH") });
     // Exactly enough is enough.
     expect(joinModel(inputs(noIdentity()), 3_002_260, 3_002_260)).toMatchObject({ shortfall: null });
+  });
+
+  it("C-funding F16: no shortfall while the Shielded balance can pay or is unread; neither can, both balances, or neither in discreet mode", () => {
+    const ready = (checks: Partial<Record<ShieldedCheckName, boolean>> = {}, denomination: string | null = "3000000000"): ShieldedReadiness => ({
+      denomination,
+      checks: (["poolActive", "featureOn", "denomination", "balance", "noUnsettledSpend", "synced", "rested", "poolSize"] as const).map((check) => ({ check, ready: checks[check] ?? true })),
+      readyAt: null,
+      poolNotes: null,
+      poolRequired: 250,
+      change: null,
+    });
+    const short = (r: ShieldedReadiness | null, shielded: number | null, discreet = false) => {
+      const m = joinModel(inputs(noIdentity(), { discreet }), 3_002_260, 1_000_000, shieldedFunds(r, shielded));
+      return m.kind === "join" ? m.shortfall : m.kind;
+    };
+    // Enough in Shielded, even while it rests: the privacy step says when it can pay.
+    expect(short(ready(), 10e8)).toBeNull();
+    expect(short(ready({ rested: false }), 10e8)).toBeNull();
+    expect(short(null, null)).toBeNull();
+    expect(short(ready({ balance: false }), 100_000)).toBe(
+      "You need at least 0.031 tDASH to create a username. Your Dash wallet has 0.01 tDASH. Your Shielded balance has 0.001 tDASH.",
+    );
+    expect(short(ready({ balance: false }), 100_000, true)).toBe(
+      "You need at least 0.031 tDASH to create a username. Neither your Dash wallet nor your Shielded balance has enough.",
+    );
+    // A network without Shielded registrations keeps the plain shortfall.
+    expect(short(ready({ poolActive: false }), null)).toBe(JOIN_COPY.shortfall("0.031 tDASH"));
+    expect(short(ready({}, null), null)).toBe(JOIN_COPY.shortfall("0.031 tDASH"));
   });
 
   it("J2: Create username waits for sync, with no shortfall from a partial balance; J7: an unread or failed quote says only that votes cost more", () => {
