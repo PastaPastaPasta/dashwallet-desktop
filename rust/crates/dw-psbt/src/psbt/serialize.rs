@@ -275,6 +275,28 @@ mod tests {
     }
 
     #[test]
+    fn partial_signatures_need_a_standard_sighash_byte_and_der() {
+        let der = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01];
+        let with = |flag: u8| [&der[..], &[flag]].concat();
+        assert!(ecdsa::Signature::deserialize(&with(0x01)).is_ok());
+        for flag in [0x00, 0x04, 0x05, 0x80, 0xff] {
+            assert!(matches!(
+                ecdsa::Signature::deserialize(&with(flag)),
+                Err(Error::NonStandardSighashType(f)) if f == u32::from(flag)
+            ));
+        }
+        let bad_der = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x02, 0x01, 0x01];
+        assert!(matches!(
+            ecdsa::Signature::deserialize(&bad_der),
+            Err(Error::InvalidEcdsaSignature(_))
+        ));
+        assert!(matches!(
+            ecdsa::Signature::deserialize(&[]),
+            Err(Error::InvalidEcdsaSignature(_))
+        ));
+    }
+
+    #[test]
     #[should_panic(expected = "InvalidMagic")]
     fn invalid_vector_1() {
         let hex_psbt = b"0200000001268171371edff285e937adeea4b37b78000c0566cbb3ad64641713ca42171bf6000000006a473044022070b2245123e6bf474d60c5b50c043d4c691a5d2435f09a34a7662a9dc251790a022001329ca9dacf280bdf30740ec0390422422c81cb45839457aeb76fc12edd95b3012102657d118d3357b8e0f4c2cd46db7b39f6d9c38d9a70abcb9b2de5dc8dbfe4ce31feffffff02d3dff505000000001976a914d0c59903c5bac2868760e90fd521a4665aa7652088ac00e1f5050000000017a9143545e6e33b832c47050f24d3eeb93c9c03948bc787b32e1300";
