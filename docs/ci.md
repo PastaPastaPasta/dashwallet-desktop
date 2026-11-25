@@ -20,11 +20,13 @@ actions call are not all pinned: `compnerd/gha-setup-swift` (pinned) is a compos
 are off by default, and the artifact upload runs only when its installer fails. Accepted, as for its
 unverified installer below; pinning them would mean vendoring the action.
 
-A new push to a branch or pull request cancels that ref's running CI. `main` has one concurrency group per
-workflow that never cancels a running run: one `main` run is in progress at a time, and GitHub keeps at most
-one pending behind it, replacing an older pending run with the newer one. A burst of merges therefore runs the
-first and the newest commit, not every commit in between; the scheduled and dispatched runs on `main` share
-that group. Every `run` step uses bash with `pipefail` (Git Bash on
+A new push to a branch, a pull request or `main` cancels that ref's running CI: a burst of merges runs only
+the newest commit, which covers the merges before it. The scheduled and dispatched runs have their own groups
+(the event is part of the group), so a merge never cancels them, and a re-run of an older run gets its own
+group, so it never cancels the newest commit's run. `main-result.yml` counts a cancelled `main` run that had
+already failed a job as red. `release.yml` still has one `main` group that never cancels a running run.
+A merge that changes only docs (`docs/` and `*.md`, except the docs tests read and `Vendor/`) starts no CI
+run. Every `run` step uses bash with `pipefail` (Git Bash on
 Windows) unless it names another shell. Checkouts do not keep the job token (`persist-credentials: false`).
 
 **Triggers.** A branch is checked once, through its pull request; branch pushes start no run. A pull
@@ -34,7 +36,8 @@ and `ui-playwright` in `ci.yml`, picked by its changed files (below), and `scrip
 `release.yml`, `ci/`, `packaging/` or `rust/crates/dw-app/tauri.conf.json`. These four `ci.yml` jobs and
 `changes` are the required status checks on `main`. The hosted macOS runners (five at a time across the
 account) were the bottleneck, so the macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs, the
-release bundles, and Playwright run on every push to `main` (each merge), on a 02:47 UTC schedule
+release bundles, and Playwright run on every push to `main` that is not docs-only (each merge; the release
+bundles move to tags, the schedule and dispatches only in the pull request after #780), on a 02:47 UTC schedule
 (both workflows; the scheduled release run builds and never publishes) and on a dispatch. The non-blocking
 Windows Swift job runs only on the schedule and on a dispatch. To run everything for a branch before it
 merges: `gh workflow run ci.yml --ref <branch>` and `gh workflow run release.yml --ref <branch>`.
@@ -227,8 +230,10 @@ deep-links leg, Swift + UI T0 and `release.yml`'s Linux build) uninstalls every 
 every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
 depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.
-In `ci.yml` and `release.yml` only `main` saves the Rust caches; `gate.yml`, `nightly.yml` and
-`tauri-selftest.yml` save from whatever branch they run on. A cache is saved only when its job
+Only `ci.yml` on `main` saves the regular Rust caches (one per job OS, `ci-<os>`); `release.yml`'s macOS job
+and `nightly.yml` restore them and never save (nightly's fuzz job keeps its own cache, since it also installs
+a nightly toolchain), installing only `rust/rust-toolchain.toml`'s toolchain so the key matches. The manual
+`gate.yml` and `tauri-selftest.yml` still save from whatever branch they run on. A cache is saved only when its job
 succeeds. Past the repository's cache limit (10 GB by default), GitHub evicts the least recently
 used caches, so a branch whose workflows still save their own caches can push `main`'s out.
 
@@ -354,12 +359,12 @@ So, trimming only (no new runners):
 - `macos-swift` runs the Swift side beside `macos` instead of after it.
 - A newer main push cancels the running main CI run; the newest commit's run covers the merges before it.
 - A docs-only merge starts no CI run (the docs that tests read, and `Vendor/`, still do; GitHub matches a
-  push's first 300 changed files only). A merge never cancels the 02:47 UTC run or a dispatch: the event
+  very large push, GitHub matches only part of the changed files). A merge never cancels the 02:47 UTC run or a dispatch: the event
   is part of the concurrency group.
 - Release builds on tags, at 02:47 UTC and on a dispatch, not on every merge (in the pull request after #780,
   which rewrites `release.yml`).
-- Release's macOS job and nightly restore CI's Rust cache (`ci-<os>`) and never save one, which leaves CI's
-  four (about 9.2 GB) as the only Rust caches. Delete the old `v0-rust-release-macOS-*` entry once, after the
+- Release's macOS job and nightly (except fuzz) restore CI's Rust cache (`ci-<os>`) and never save one, which
+  leaves CI's four (about 9.2 GB) as the only Rust caches the regular workflows save. Delete the old `v0-rust-release-macOS-*` entry once, after the
   merge (`gh cache delete <key>`), or it stays until it ages out.
 - When runners are the wait, build and test on other compute (strix, agentbox, the Studio, boat.dev) and merge
   on that green build plus the required checks; fix a regression on main after.
@@ -476,7 +481,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 ## `release.yml` (PK-01, PK-02; 0.1)
 
 On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull requests that change the release scripts, `release.yml`, `packaging/` or the app version run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
-`selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
+`selftest` feature (`rust-cache` keys `release-<os>`, except macOS, which restores CI's `ci-macOS` and saves nothing; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
 | Job | Runner | Output (staged by `ci/github/release-stage.sh` as `dash-wallet-<version>-<suffix>`) | Measured (cold cache, rel6) |

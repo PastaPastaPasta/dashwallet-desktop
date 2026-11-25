@@ -47,7 +47,7 @@ on:
     branches: [main]
     # A docs-only merge runs nothing, as a docs-only pull request does (the `changes` job): docs/ and *.md,
     # except the docs that tests read (and Vendor/, whose PATCHES.md the Swift repo checks read). The 02:47
-    # UTC run still runs everything. GitHub matches only a push's first 300 changed files.
+    # UTC run still runs everything. On a very large push GitHub matches only part of the changed files.
     paths:
       - "**"
       - "!docs/**"
@@ -81,9 +81,11 @@ defaults:
 
 # A new push cancels its ref's running CI, main included: the newest main commit's run covers the merges
 # before it, so a burst of merges no longer queues behind a superseded ~100-minute run. The event is in the
-# group, so a merge never cancels the 02:47 UTC run or a dispatch.
+# group, so a merge never cancels the 02:47 UTC run or a dispatch. A re-run (attempt 2+) gets its own group,
+# so re-running an older commit never cancels the newest commit's run. main-result.yml reports a cancelled
+# main run that already had a failed job as red.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.run_attempt > 1 && format('-rerun-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:

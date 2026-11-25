@@ -59,9 +59,11 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -218,9 +220,11 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -250,9 +254,11 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -290,8 +296,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-          shared-key: ci-${{ runner.os }}
-          save-if: false
       - uses: ./.github/actions/pinned-sources
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -326,9 +330,11 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target

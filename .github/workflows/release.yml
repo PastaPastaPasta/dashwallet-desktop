@@ -171,7 +171,7 @@ jobs:
       - name: Rust toolchain (rust-toolchain.toml) and both macOS targets
         working-directory: rust
         run: |
-          rustup toolchain install
+          ../ci/github/rust-toolchain-only.sh
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
