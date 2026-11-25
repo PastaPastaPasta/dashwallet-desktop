@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 
 // "Move mixed coins" (IOS-057) on the fixture backend: the card on the CoinJoin
 // page; to the wallet, the plan with its fully and not fully mixed amounts, Stop Mixing when mixing
@@ -19,6 +20,11 @@ async function openSheet(page: Page, scenario: string, theme: Theme = "light", b
 }
 
 const body = (page: Page) => page.getByTestId("move-mixed-body");
+
+async function openCoinJoin(page: Page) {
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+}
 
 for (const theme of THEMES) {
   test(`IOS-057 move mixed coins ${theme}: plan, grant, outcome; 0 serious axe issues`, async ({ page }) => {
@@ -188,4 +194,35 @@ test("IOS-057 no move card for a wallet that holds no mixing coins", async ({ pa
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
   await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
   await expect(page.getByTestId("coinjoin-move")).toHaveCount(0);
+});
+
+// MG: Move to Shielded waits as Add does, names the cause and offers the unlock that lets it run.
+for (const [scenario, why, unlock] of [
+  ["coinjoin-move-shielded-locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.", "Unlock"],
+  ["coinjoin-move-shielded-mixing-only", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.", "Unlock fully"],
+  ["coinjoin-move-shielded-watch-only", "Shielded isn't available in a watch-only wallet.", null],
+] as const) {
+  test(`MIX-SHIELD the card's Move to Shielded waits and names why: ${scenario}`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl(scenario, "light"));
+    await openCoinJoin(page);
+    const shield = page.getByTestId("coinjoin-move-shield");
+    await expect(shield).toBeDisabled();
+    await expect(page.locator(".dash-button-why", { hasText: why })).toBeVisible();
+    if (unlock === null) await expect(page.getByTestId("coinjoin-move-unlock")).toHaveCount(0);
+    else await expect(page.getByTestId("coinjoin-move-unlock")).toHaveText(unlock);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("MIX-SHIELD Unlock fully on the card lets Shielded sync, and the card waits on the sync alone", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("coinjoin-move-shielded-mixing-only", "light"));
+  await openCoinJoin(page);
+  await page.getByTestId("coinjoin-move-unlock").click();
+  await page.getByTestId("unlock-sheet-field").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("unlock-sheet-submit").click();
+  await expect(page.getByTestId("coinjoin-move-unlock")).toHaveCount(0);
+  await expect(page.locator(".dash-button-why", { hasText: "Shielded is still syncing. Try again when it finishes." })).toBeVisible();
+  expect(errors).toEqual([]);
 });

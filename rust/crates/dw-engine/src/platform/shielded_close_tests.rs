@@ -1242,8 +1242,13 @@ fn failed_open_relaunch_child() {
     std::process::exit(0);
 }
 
-/// Every file under `dir`: its path, size and SHA-256.
-fn files_under(dir: &Path) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
+/// Every file under `dir`: its path, size and SHA-256. The `held` files,
+/// each of which must exist, give their size alone: a live holder's
+/// exclusive lock makes Windows refuse to read them (os error 33).
+fn files_under(dir: &Path, held: &[&Path]) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
+    for path in held {
+        assert!(path.is_file(), "{} is held", path.display());
+    }
     let mut files = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(d) = dirs.pop() {
@@ -1251,6 +1256,9 @@ fn files_under(dir: &Path) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 dirs.push(path);
+            } else if held.contains(&path.as_path()) {
+                let len = std::fs::metadata(&path).unwrap().len();
+                files.push((path, len, [0; 32]));
             } else {
                 let bytes = std::fs::read(&path).unwrap();
                 files.push((path, bytes.len() as u64, Sha256::digest(&bytes).into()));
@@ -1299,7 +1307,11 @@ fn failed_open_and_retry_child() {
     );
     std::fs::write(root.join("failed"), "ok").unwrap();
 
-    let before = files_under(&root.join("data"));
+    // The engine's instance lock and the shielded store's owner lock.
+    let instance_lock = root.join("data").join(dw_fs::instance::InstanceLock::FILE);
+    let store_lock = data_dir.join(format!("{}.lock", pool::SHIELDED_DB_FILE));
+    let held = [instance_lock.as_path(), store_lock.as_path()];
+    let before = files_under(&root.join("data"), &held);
     let retry = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
     let refused = retry.err().expect("the retry is refused");
     assert!(
@@ -1315,7 +1327,7 @@ fn failed_open_and_retry_child() {
         )
     );
     assert_eq!(
-        files_under(&root.join("data")),
+        files_under(&root.join("data"), &held),
         before,
         "the refusal writes nothing"
     );
@@ -1979,6 +1991,9 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
 
 #[path = "shielded_disposition_tests.rs"]
 mod disposition_tests;
+
+#[path = "shielded_status_lock_tests.rs"]
+mod status_lock_tests;
 
 /// #178: a periodic pass skips the library's note scan while Platform's
 /// proved note count shows the pool unchanged (`shielded_pool::guarded_pass`).
