@@ -2610,8 +2610,10 @@ fn on_mainnet_a_new_create_is_refused_and_a_named_one_settles() {
     );
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
-    let mut lib = super::FakeShielded::default();
-    lib.network = dpp::dashcore::Network::Mainnet;
+    let lib = super::FakeShielded {
+        network: dpp::dashcore::Network::Mainnet,
+        ..Default::default()
+    };
     assert_eq!(
         h.evidence_with(named, &id, &ev, &lib),
         ShieldedOutcome::Fallback(id)

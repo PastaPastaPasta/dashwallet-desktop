@@ -1686,10 +1686,10 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     if paid == PaidFrom::Platform {
         registration_platform::refuse_on_mainnet(&lib.network())?;
     }
-    if let Ok((phase, Funding::Shielded { identity: None, .. })) = flow::interpret(&row) {
-        if phase.unfunded() {
-            registration_shielded::refuse_on_mainnet(&lib.network())?;
-        }
+    if let Ok((phase, Funding::Shielded { identity: None, .. })) = flow::interpret(&row)
+        && phase.unfunded()
+    {
+        registration_shielded::refuse_on_mainnet(&lib.network())?;
     }
     if let (
         Ok((
