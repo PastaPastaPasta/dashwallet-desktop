@@ -619,6 +619,15 @@ pub enum CreditsError {
     /// a consolidation, a drain).
     #[error("another move of the wallet's coins is running")]
     MoveRunning,
+    /// Platform's structure check refused the move, send or top-up before
+    /// anything was signed, recorded or redeemed: the planner and
+    /// Platform's rules disagree. The check's error is logged, not carried.
+    #[error("Platform's structure check refused the transfer before signing")]
+    PreflightRefused,
+    /// As [`Self::PreflightRefused`], while the proved network protocol
+    /// version is above every version this build plans at.
+    #[error("Platform's rules are newer than this build: refused before signing")]
+    RulesUnsupported,
     /// A move between the Platform addresses and Shielded refused by the
     /// pool's side (its gate, its key state), with the pool's code.
     #[error(transparent)]
@@ -656,6 +665,8 @@ impl CreditsError {
             Self::CoinsChanged => "credits.coins_changed",
             Self::MixingActive => "credits.mixing_active",
             Self::MoveRunning => "credits.move_running",
+            Self::PreflightRefused => "credits.preflight_refused",
+            Self::RulesUnsupported => "credits.rules_unsupported",
             Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }

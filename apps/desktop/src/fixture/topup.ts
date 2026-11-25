@@ -25,7 +25,7 @@ import { fundable } from "./registration";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
-import type { PlatformWorld } from "./pending";
+import { preCheck, type PlatformWorld } from "./pending";
 import { isHeldOp } from "../platform/move";
 import { TOP_UP_FROM_PLATFORM } from "../dashpay/topupSource";
 
@@ -292,6 +292,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       // As the engine: the fee source and its claim Confirm showed, or nothing (before the grant).
       if (feeInput && (inputs[0]?.address !== feeInput.address || inputs[0]?.credits !== feeInput.credits))
         throw fail("credits.quote_changed", "the fee input changed since this top-up was quoted");
+      preCheck(p);
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");

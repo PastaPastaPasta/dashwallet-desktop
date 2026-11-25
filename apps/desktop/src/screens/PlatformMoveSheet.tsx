@@ -138,7 +138,7 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
       {step === "refused" && (
         <>
           <p className="form-problem" role="alert" data-testid="platform-move-refusal">
-            {moveErrorText(flow.error, credits, activity.data)}
+            {moveErrorText(flow.error, credits, activity.data, flow.exitOf)}
           </p>
           <div className="sheet-actions">
             {moveCanRetry(flow.error) && (
