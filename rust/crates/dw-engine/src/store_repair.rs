@@ -1,8 +1,9 @@
 //! The open's repair of stored unsigned pending claims (#739, Q112).
 //!
 //! A peer's unconfirmed transaction that spends one of the wallet's coins
-//! without its owner's signature is recorded by key-wallet, and the store
-//! keeps it with the coin marked spent. Before the persister opens
+//! without its owner's signature was recorded by the key-wallet of earlier
+//! builds, and the store kept it with the coin marked spent (key-wallet
+//! now ignores such a spend of a coin it holds). Before the persister opens
 //! `wallet.sqlite`, each such claim is dropped from the store and its coin
 //! given back; what it was is recorded in the app database (never in the
 //! wallet store, whose schema belongs to platform-wallet-storage), where the
@@ -52,9 +53,10 @@ use crate::{EngineError, WalletId};
 /// The `wallet.sqlite` schema versions (refinery's highest applied
 /// migration) whose tables this repair was checked against:
 /// platform-wallet-storage V024, the stores of the builds before key-wallet
-/// refused unsigned spends, and V026 at the platform pin (V025 adds
-/// [`BLOCK_SPENDS`], V026 `core_dismissed_txids`, which the repair leaves
-/// alone).
+/// refused unsigned spends, and V026 at the platform pin. V025 adds
+/// [`BLOCK_SPENDS`] and `core_block_spends_migrated` (the wallets whose
+/// block spends from before the table were recovered by a rescan), V026
+/// `core_dismissed_txids`; the repair reads only the first.
 pub(crate) const KNOWN_SCHEMA: &[i64] = &[24, 26];
 
 /// The refinery version of the published fork builds' stores. Before the
@@ -68,7 +70,9 @@ const FORK_SCHEMA: i64 = 18;
 const INPUT_INDEX: &str = "core_transaction_inputs";
 
 /// The wallet's coins a processed block spent, whatever spent them (V025):
-/// a coin with a row is never given back, and counts as spent since.
+/// a coin with a row is never given back, counts as spent since, and its
+/// spender settles. A wallet whose rescan is still owed may lack rows of
+/// older blocks; the other checks stand without them.
 const BLOCK_SPENDS: &str = "core_block_spends";
 
 /// The tables of [`COLUMNS`] a later migration adds, with its version.
@@ -516,8 +520,9 @@ fn known_schema(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(i64, bo
 }
 
 /// What [`plan`] reads of the whole file: which transactions are settled
-/// or may be (mined, any lock row, a sweep's named winner), what spends
-/// each transaction's outputs, and the pending claims.
+/// or may be (mined, any lock row, a sweep's named winner, a block's
+/// spender and the transaction whose output it spent), what spends each
+/// transaction's outputs, and the pending claims.
 #[derive(Default)]
 struct Graph {
     settled: HashSet<Txid>,
@@ -527,14 +532,25 @@ struct Graph {
     pending: Vec<([u8; 32], TransactionRecord)>,
 }
 
-/// Reads every wallet's transactions and InstantSend locks; `None` when the
-/// walk could not complete (a row that doesn't decode, a key of the wrong
-/// size, or more than `max_rows` rows), logged.
-fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Option<Graph>> {
+/// Reads every wallet's transactions and InstantSend locks, and with
+/// `block_spends` the coins blocks spent; `None` when the walk could not
+/// complete (a row that doesn't decode, a key of the wrong size, or more
+/// than `max_rows` rows), logged.
+fn read_graph(
+    tx: &rusqlite::Transaction<'_>,
+    max_rows: usize,
+    block_spends: bool,
+) -> rusqlite::Result<Option<Graph>> {
     let limit = crate::history_ops::lock_size_limit();
     let rows: i64 = tx.query_row(
-        "SELECT (SELECT count(*) FROM core_transactions) + (SELECT count(*) FROM core_instant_locks) \
-         + (SELECT count(*) FROM core_utxos WHERE spent_in_txid IS NOT NULL)",
+        &format!(
+            "SELECT (SELECT count(*) FROM core_transactions) + (SELECT count(*) FROM core_instant_locks) \
+             + (SELECT count(*) FROM core_utxos WHERE spent_in_txid IS NOT NULL){}",
+            match block_spends {
+                true => format!(" + (SELECT count(*) FROM {BLOCK_SPENDS})"),
+                false => String::new(),
+            }
+        ),
         [],
         |r| r.get(0),
     )?;
@@ -635,6 +651,26 @@ fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Resu
             return incomplete("a sweep's winner");
         };
         graph.settled.insert(winner);
+    }
+    drop(q);
+    if !block_spends {
+        return Ok(Some(graph));
+    }
+    // A block spent the coin: its spender is mined, and so is the
+    // transaction that made it.
+    let mut stmt = tx.prepare(&format!(
+        "SELECT outpoint, spender_txid FROM {BLOCK_SPENDS}"
+    ))?;
+    let mut q = stmt.query([])?;
+    while let Some(r) = q.next()? {
+        let (outpoint, spender): (Vec<u8>, Vec<u8>) = (r.get(0)?, r.get(1)?);
+        let (Some(outpoint), Ok(spender)) =
+            (decode_outpoint(&outpoint), Txid::from_slice(&spender))
+        else {
+            return incomplete("a block's spend");
+        };
+        graph.settled.extend([spender, outpoint.txid]);
+        (graph.children.entry(outpoint.txid).or_default()).push(spender);
     }
     Ok(Some(graph))
 }
@@ -751,7 +787,7 @@ fn plan(
     max_rows: usize,
     block_spends: bool,
 ) -> rusqlite::Result<Option<Vec<Planned>>> {
-    let Some(graph) = read_graph(tx, max_rows)? else {
+    let Some(graph) = read_graph(tx, max_rows, block_spends)? else {
         return Ok(None);
     };
     let mut claims: Vec<([u8; 32], &TransactionRecord, Cause)> = Vec::new();
@@ -1018,7 +1054,7 @@ fn recheck(
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    let mut graph = read_graph(tx, max_rows)?;
+    let mut graph = read_graph(tx, max_rows, block_spends)?;
     let claims: Vec<Claim> = (rows.into_iter())
         .map(|((wallet, txid), legacy_rows)| {
             let decoded = legacy_rows.iter().find_map(|row| {
