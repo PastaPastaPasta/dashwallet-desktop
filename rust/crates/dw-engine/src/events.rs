@@ -557,6 +557,9 @@ pub(crate) struct SessionHub {
     /// InstantSend lock no event of theirs named, and stores the lock for
     /// them ([`Self::fan_out_lock`]); unset in hub-only tests.
     lock_rerun: OnceLock<Box<LockRerun>>,
+    /// The InstantSend locks a wallet learned of without an event of its
+    /// own whose store failed, run again at the next lock heard.
+    unstored_locks: Mutex<HashMap<(WalletId, Txid), InstantLock>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -848,6 +851,7 @@ impl SessionHub {
             peers_up: OnceLock::new(),
             balance_reread: OnceLock::new(),
             lock_rerun: OnceLock::new(),
+            unstored_locks: Mutex::new(HashMap::new()),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -965,14 +969,31 @@ impl SessionHub {
         std::mem::take(&mut *self.lock_reruns.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
+    fn unstored_locks(&self) -> std::sync::MutexGuard<'_, HashMap<(WalletId, Txid), InstantLock>> {
+        self.unstored_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Keeps `lock` of `txid` for `wallet` until its store takes it.
+    pub(crate) fn note_unstored_lock(&self, wallet: WalletId, txid: Txid, lock: InstantLock) {
+        self.unstored_locks().insert((wallet, txid), lock);
+    }
+
+    /// The locks whose store failed so far, taken to be written again.
+    pub(crate) fn take_unstored_locks(&self) -> HashMap<(WalletId, Txid), InstantLock> {
+        std::mem::take(&mut *self.unstored_locks())
+    }
+
     /// A verified InstantSend lock of `txid`: each loaded wallet but those
     /// `unloaded` whose history holds it out of a block without a lock
     /// shows it locked, and its spend claims are chosen again as at its
     /// load. key-wallet tells only the wallets holding the transaction's
     /// record or coins, and no wallet when it pays none of them (#828).
+    /// The locks whose store failed before are written again.
     fn fan_out_lock(&self, txid: Txid, lock: &InstantLock, unloaded: &HashSet<WalletId>) {
         let wallets = self.history.note_instant_lock(&txid, unloaded);
-        if wallets.is_empty() {
+        if wallets.is_empty() && self.unstored_locks().is_empty() {
             return;
         }
         for id in &wallets {

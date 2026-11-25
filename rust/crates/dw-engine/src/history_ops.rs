@@ -440,16 +440,22 @@ fn revived_marks(
 }
 
 /// Stores `lock` for `wallet` when its store holds `txid`'s record out of a
-/// block: the history load reads that record locked.
+/// block, or holds none and `recordless` (the payment the history holds
+/// from its sent mark alone): the history load reads that record, or the
+/// mark's entry, locked. False when the store failed.
 async fn store_lock(
-    persister: Arc<platform_wallet_storage::SqlitePersister>,
+    live: &crate::session::Live,
     wallet: WalletId,
     txid: Txid,
     lock: InstantLock,
-) {
+    recordless: bool,
+) -> bool {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (persister, store) = (Arc::clone(&live.persister), Arc::clone(&live.store));
     let stored = tokio::task::spawn_blocking(move || {
         match persister.get_core_tx_record(wallet.0, &txid)? {
             Some(record) if record.block_info().is_none() => {}
+            None if recordless => {}
             _ => return Ok(false),
         }
         let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
@@ -459,14 +465,16 @@ async fn store_lock(
             }),
             ..Default::default()
         };
-        persister.store(wallet.0, changeset)?;
-        persister.flush(wallet.0)?;
+        store.store(wallet.0, changeset)?;
+        store.flush(wallet.0)?;
         Ok::<_, platform_wallet::changeset::PersistenceError>(true)
     })
     .await;
-    if !matches!(stored, Ok(Ok(_))) {
+    let ok = matches!(stored, Ok(Ok(_)));
+    if !ok {
         tracing::warn!(%wallet, %txid, ?stored, "could not store an InstantSend lock no event named");
     }
+    ok
 }
 
 /// A wallet's stored history and the payments this app sent, read before
@@ -873,13 +881,25 @@ impl NetworkSession {
     /// and its unlocked descendants out of a block) as its last load would
     /// have with the lock known, from that load's sent marks still held and
     /// not dropped since, and stores the lock for the next load. A wallet whose
-    /// last load restored no claim chooses none.
+    /// last load restored no claim chooses none. A lock whose store failed
+    /// runs again at the next lock heard while the history still shows it;
+    /// the session's end or the wallet's unload drops it.
     async fn rerun_locked_claims(&self, txid: Txid, lock: InstantLock, wallets: Vec<WalletId>) {
         let Ok(live) = self.live() else {
             return;
         };
         let history = &self.hub.history;
-        for wallet in wallets {
+        let mut runs = self.hub.take_unstored_locks();
+        runs.retain(|(wallet, txid), _| {
+            history.read_wallet(wallet, |h| {
+                h.loaded
+                    && (h.txs.get(txid)).is_some_and(|e| {
+                        e.context.block_info().is_none() && crate::history::instant_locked(e)
+                    })
+            })
+        });
+        runs.extend(wallets.into_iter().map(|w| ((w, txid), lock.clone())));
+        for ((wallet, txid), lock) in runs {
             let current = self
                 .appdb_op(move |db| Ok(crate::tx_actions::read_sent(db, wallet)))
                 .await;
@@ -893,20 +913,30 @@ impl NetworkSession {
                 }
             };
             let current = current.as_ref();
+            let mut claimants = BTreeSet::new();
             if history.read_wallet(&wallet, |h| revived_marks(h, txid, current).is_some()) {
-                self.apply_spend_claims(&live.manager, wallet, |_, chainlock| {
-                    history.with_wallet(wallet, |h| match revived_marks(h, txid, current) {
-                        Some((sent, revived)) => {
-                            let (mut claims, locked) = claim_choice(h, &sent, chainlock);
-                            claims.retain(|(_, spender)| revived.contains(spender));
-                            (claims, locked)
-                        }
-                        None => (Vec::new(), HashSet::new()),
+                claimants = self
+                    .apply_spend_claims(&live.manager, wallet, |_, chainlock| {
+                        history.with_wallet(wallet, |h| match revived_marks(h, txid, current) {
+                            Some((sent, revived)) => {
+                                let (mut claims, locked) = claim_choice(h, &sent, chainlock);
+                                claims.retain(|(_, spender)| revived.contains(spender));
+                                (claims, locked)
+                            }
+                            None => (Vec::new(), HashSet::new()),
+                        })
                     })
-                })
-                .await;
+                    .await;
             }
-            store_lock(Arc::clone(&live.persister), wallet, txid, lock.clone()).await;
+            // With no record, the lock is stored only for a payment it
+            // gave a claim to, one that isn't abandoned (#832).
+            let recordless = claimants.contains(&txid)
+                && history.read_wallet(&wallet, |h| {
+                    (h.txs.get(&txid)).is_some_and(|e| !e.abandoned)
+                });
+            if !store_lock(&live, wallet, txid, lock.clone(), recordless).await {
+                self.hub.note_unstored_lock(wallet, txid, lock);
+            }
         }
     }
 
@@ -959,7 +989,8 @@ impl NetworkSession {
     /// sent: it leaves the funds accounts, is stored as spent and the
     /// balance is announced. The coins dead transactions' drops hold for
     /// good, as the wallet's open read them (`tx_actions::dropped_holds`),
-    /// are claimed with no claimant, as the drops left them.
+    /// are claimed with no claimant, as the drops left them. Returns the
+    /// payments given a claim.
     pub(crate) async fn apply_spend_claims(
         &self,
         manager: &Manager,
@@ -968,9 +999,9 @@ impl NetworkSession {
             &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
             Option<u32>,
         ) -> (Vec<(OutPoint, Txid)>, HashSet<Txid>),
-    ) {
+    ) -> BTreeSet<Txid> {
         let Ok(live) = self.live() else {
-            return;
+            return BTreeSet::new();
         };
         let holds = self.hub.dropped_holds(wallet);
         #[cfg(test)]
@@ -990,13 +1021,13 @@ impl NetworkSession {
             .max(self.hub.tracker().chainlock_height())
             .max(self.hub.best_chainlock().map(|(h, _)| h));
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
-            return;
+            return BTreeSet::new();
         };
         let core = &mut info.core_wallet;
         let (claims, locked) = select(core, chainlock);
         let claims = claims.as_slice();
         if claims.is_empty() && holds.is_empty() {
-            return;
+            return BTreeSet::new();
         }
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed_at_load.extend(claims.iter().map(|c| c.1))
@@ -1018,13 +1049,14 @@ impl NetworkSession {
             .map(|(o, t)| (*o, Some(*t)))
             .chain(holds.iter().map(|o| (*o, None)))
             .collect();
+        let restored: BTreeSet<Txid> = restore.iter().filter_map(|(_, t)| *t).collect();
         let held = core.restore_spent_outpoints(&restore);
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed
                 .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
         });
         if held.is_empty() {
-            return;
+            return restored;
         }
         let mut removed: Vec<key_wallet::Utxo> = Vec::new();
         for account in core.accounts.all_funding_accounts_mut() {
@@ -1042,7 +1074,7 @@ impl NetworkSession {
                 "dropped a coin an unmined own transaction spends");
         }
         if removed.is_empty() {
-            return;
+            return restored;
         }
         // Stored under the lock that dropped them, so no write of a later
         // change to the same coins lands before this one.
@@ -1063,6 +1095,7 @@ impl NetworkSession {
         if !matches!(stored, Ok(Ok(()))) {
             tracing::warn!(%wallet, ?stored, "could not store the dropped coins as spent");
         }
+        restored
     }
 
     /// The stored history of `wallet` and the payments this app sent, read

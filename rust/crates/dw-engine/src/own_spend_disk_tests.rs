@@ -5541,6 +5541,141 @@ fn a_lock_arriving_after_the_load_keeps_a_locked_payments_claims_after_a_restart
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// Whether the wallet's store holds a verified InstantSend lock of `txid`.
+fn stored_lock(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    session.live().unwrap().persister.flush(id.0).unwrap();
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.query_row(
+        "SELECT count(*) FROM core_instant_locks WHERE wallet_id = ?1 AND txid = ?2 \
+         AND verified = 1",
+        rusqlite::params![&id.0[..], AsRef::<[u8]>::as_ref(&txid)],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap()
+        > 0
+}
+
+/// The same payment with its record lost before the load, so the history
+/// holds it from its sent mark alone, its lock arriving after the load,
+/// then a restart: the sender's store keeps the lock with no record, so the
+/// next load reads the payment locked and keeps A claimed when the funding
+/// block is scanned again.
+#[test]
+fn a_lock_arriving_after_the_load_of_a_payment_with_no_record_keeps_its_claims_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let to = startup_recipient(&engine, &session);
+    let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    delete_stored_record(&session, id, payment.txid());
+    let session = reopen(&engine, session);
+    assert!(
+        session.hub.history.get(&id, &payment.txid()).is_some(),
+        "the history holds the payment from its mark"
+    );
+
+    instant_lock(&engine, &session, id, &payment);
+    lock_reruns_done(&engine, &session);
+    assert!(
+        !stored_record(&session, id, payment.txid()),
+        "the sender stores no record"
+    );
+    assert!(
+        stored_lock(&session, id, payment.txid()),
+        "the sender stores the lock"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        history_shows_locked(&session, id, payment.txid()),
+        "the load reads the lock"
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
+/// The same payment with no record, the winner's block ChainLocked before
+/// its lock arrives after the load: the lock claims nothing, so no lock is
+/// stored without a record, and after a restart the funding block credits
+/// A.
+#[test]
+fn a_lock_of_a_payment_with_no_record_a_chainlock_beat_is_not_stored() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let to = startup_recipient(&engine, &session);
+    let (session, payment, winner) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    delete_stored_record(&session, id, payment.txid());
+    let session = reopen(&engine, session);
+    chain_lock(&engine, &session, id, TIP + 1, block_hash(&[winner]));
+
+    instant_lock(&engine, &session, id, &payment);
+    lock_reruns_done(&engine, &session);
+    assert!(
+        !stored_lock(&session, id, payment.txid()),
+        "no lock stored without a record"
+    );
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+}
+
+/// The lock of a payment to an address of no loaded wallet heard after the
+/// load while the sender's store fails, then another transaction's lock
+/// once it works, then a restart: the lock is kept until it is stored, so
+/// the next load keeps A claimed when the funding block is scanned again.
+#[test]
+fn a_lock_whose_store_failed_is_stored_at_the_next_lock_heard() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let (session, payment, _) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, FOREIGN);
+    let txid = payment.txid();
+    let heard = |txid| dash_spv::sync::SyncEvent::InstantLockReceived {
+        instant_lock: InstantLock {
+            txid,
+            ..InstantLock::default()
+        },
+        validated: true,
+    };
+    let fail = |fails: bool| {
+        *session.live().unwrap().store.fail_store.lock().unwrap() = fails.then(|| {
+            Box::new(
+                move |cs: &platform_wallet::changeset::PlatformWalletChangeSet| {
+                    (cs.core.as_ref())
+                        .is_some_and(|c| c.instant_locks_for_non_final_records.contains_key(&txid))
+                },
+            ) as crate::store::StoreFailure
+        });
+    };
+
+    fail(true);
+    session.hub.on_sync_event(&heard(txid));
+    lock_reruns_done(&engine, &session);
+    assert!(
+        history_shows_locked(&session, id, txid),
+        "the history shows the lock"
+    );
+    assert!(!stored_lock(&session, id, txid), "the store failed");
+    fail(false);
+    session
+        .hub
+        .on_sync_event(&heard(Txid::from_byte_array([9; 32])));
+    lock_reruns_done(&engine, &session);
+    assert!(
+        stored_lock(&session, id, txid),
+        "stored once a lock is heard again"
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        history_shows_locked(&session, id, txid),
+        "the load reads the lock"
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
 /// The winner's block ChainLocked before the payment's lock arrives after
 /// the load: only a ChainLocked block beats a locked payment, and this one
 /// does, so the lock claims nothing and the funding block credits A.
