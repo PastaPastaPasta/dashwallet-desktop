@@ -1361,7 +1361,7 @@ struct DropPlan {
 /// the winner is a block's spend the wallet does not know
 /// ([`unknown_block`]), the header chain's hash at that block's height and
 /// the coins of the roots key-wallet held as spent, each at its block's
-/// height.
+/// height, and key-wallet's processed height then.
 #[derive(Debug, Clone)]
 pub(crate) struct Recheck {
     truncations: u64,
@@ -1442,9 +1442,10 @@ fn spend_forgotten_as_final(
     {
         return BTreeMap::new();
     }
-    // A coin of `root` another block spent, seen at the detection or in a
-    // block processed since, is evidence this proof can't carry: no drop,
-    // as when nothing beat it (#818).
+    // A coin of `root` the detection saw spent at another height, or any
+    // move of key-wallet's processed height since the detection, may hide a
+    // spend this proof can't carry: no drop, as when nothing beat it (#818).
+    // A block processed again at or below that height does not move it.
     if core.last_processed_height() != detected.processed
         || (coins.iter()).any(|o| detected.spent.get(o).is_some_and(|h| *h != at))
     {
