@@ -264,12 +264,6 @@ impl From<WalletStorageError> for EngineError {
             } => EngineError::StorageTooNew(format!(
                 "schema version {found}, this build supports up to {max_supported}"
             )),
-            WalletStorageError::ForkSchemaVersionUnsupported {
-                found,
-                max_supported,
-            } => EngineError::StorageTooNew(format!(
-                "fork schema version {found}, this build supports up to {max_supported}"
-            )),
             other => EngineError::Storage(other.to_string()),
         }
     }
