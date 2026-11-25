@@ -89,7 +89,7 @@ fn stuck_on(
             &lease,
             "create_funded_asset_lock_proof",
             1_000_000,
-            step.clone().into(),
+            step.clone(),
             key,
             fence,
         ))
