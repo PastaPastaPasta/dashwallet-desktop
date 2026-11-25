@@ -1872,6 +1872,40 @@ fn a_beaten_payment_kept_to_recheck_stays_when_a_chainlock_names_another_block()
     t.assert_kept(&session, "a restart");
 }
 
+/// #818, Q99 K3: a drop takes the payment kept to recheck while the
+/// header at its block's height is still its block. Before the recheck
+/// reads the proof, another block takes that height and the wallet applies
+/// a ChainLock there, which finds nothing kept. The recheck finds the block
+/// unproven again, and the payment is void, not kept again with that
+/// ChainLock read, where nothing would recheck it: nothing goes.
+#[test]
+fn a_beaten_payment_kept_to_recheck_is_void_when_another_block_takes_its_height_during_its_recheck() {
+    let t = beaten_payment_with_a_child();
+    let block = [t.winner.clone(), t.elsewhere_spend.clone()];
+    t.kept_to_recheck(&block);
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *t.session.hub.pause_drop_recheck.lock().unwrap() = Some(Arc::clone(&pause));
+    t.session.hub.schedule_reconcile(t.id);
+    assert!(
+        pause.wait_reached(std::time::Duration::from_secs(20)),
+        "a drop rechecks the kept payment"
+    );
+    assert!(
+        t.session.hub.carried_drop_roots(t.id).is_empty(),
+        "the drop took the kept payment"
+    );
+    let other = block_hash(&[foreign()]);
+    header_chain(&t.session, &[(TIP + 1, other)]);
+    chain_lock(&t.engine, &t.session, t.id, TIP + 1, other);
+    pause.release.notify_one();
+    t.settle();
+    assert!(
+        t.session.hub.carried_drop_roots(t.id).is_empty(),
+        "the kept payment is void"
+    );
+    t.assert_kept(&t.session, "after the ChainLock");
+}
+
 /// #818, Q99 T4: a payment kept to recheck is this session's only: after
 /// a restart nothing is kept, and the block's ChainLock applied then drops
 /// nothing on evidence from before it.

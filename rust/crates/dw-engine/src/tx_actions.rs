@@ -2331,6 +2331,10 @@ impl NetworkSession {
                     Some(r) => match unknown_block(winner) {
                         // Kept, with the detection's evidence, for a drop an
                         // applied ChainLock at the block starts (Q99).
+                        // One a fork or another header voided meanwhile is not.
+                        Some(at) if self.carried_void(&r, at, self.hub.truncations()).await => {
+                            tracing::info!(%wallet, roots = ?out.retry, ?winner, "beaten payments whose block's proof is missing are void");
+                        }
                         Some(at) => {
                             tracing::info!(%wallet, roots = ?out.retry, ?winner, "beaten payments wait for their block's proof");
                             let r = Recheck { tries: 0, ..r };
@@ -2363,19 +2367,23 @@ impl NetworkSession {
         if carried.is_empty() {
             return Vec::new();
         }
-        let heights = carried.iter().map(|(_, (.., at, _))| *at).collect();
-        let headers = self.hub.header_hashes(heights).await;
-        (carried.into_iter())
-            .filter(|(t, (_, r, at, _))| {
-                let void = r.truncations != truncations
-                    || headers.get(at).is_some_and(|h| r.block != Some(*h));
-                if void {
-                    tracing::info!(%wallet, root = %t, "a beaten payment kept to recheck is void");
-                }
-                !void
-            })
-            .map(|(t, (winner, r, ..))| (vec![t], winner, BTreeSet::new(), Some(r)))
-            .collect()
+        let mut work = Vec::new();
+        for (t, (winner, r, at, _)) in carried {
+            if self.carried_void(&r, at, truncations).await {
+                tracing::info!(%wallet, root = %t, "a beaten payment kept to recheck is void");
+                continue;
+            }
+            work.push((vec![t], winner, BTreeSet::new(), Some(r)));
+        }
+        work
+    }
+
+    /// Whether a truncation since `r`'s detection, or a header at its
+    /// block's height `at` that is another block, voids a beaten payment
+    /// kept to recheck (Q99 K3).
+    async fn carried_void(&self, r: &Recheck, at: u32, truncations: u64) -> bool {
+        r.truncations != truncations
+            || (self.hub.header_hash(at).await).is_some_and(|h| r.block != Some(h))
     }
 
     /// The height of the wallet's applied ChainLock.
