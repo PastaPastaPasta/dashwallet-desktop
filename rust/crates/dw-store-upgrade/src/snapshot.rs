@@ -657,7 +657,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
         let mut others = Vec::new();
         for dir in list(BEFORE_PREFIX)?.iter().rev() {
             match inspect(dir, live) {
-                Ok(Found::Reusable(info)) => return Ok(info),
+                Ok(Found::Reusable(info)) => return Ok(*info),
                 Ok(Found::Other { marked }) => {
                     state = MissingSnapshot::Mismatch;
                     if !marked {
@@ -683,7 +683,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
             for dir in list(UNRESTORABLE_PREFIX)?.iter().rev() {
                 if let Ok(Found::Reusable(mut info)) = inspect(dir, live) {
                     info.missing = Some(state);
-                    return Ok(info);
+                    return Ok(*info);
                 }
             }
             tracing::warn!(
@@ -767,7 +767,7 @@ pub fn take_snapshot(network_dir: &Path, now: SystemTime) -> Result<SnapshotInfo
 /// What a snapshot directory is to the live stores.
 enum Found {
     /// Verified, and this upgrade's ([`reusable`]).
-    Reusable(SnapshotInfo),
+    Reusable(Box<SnapshotInfo>),
     /// Verified, and of other data or not a file a released build opens;
     /// or already marked [`NOT_THIS_WALLET`].
     Other { marked: bool },
@@ -792,7 +792,7 @@ fn inspect(dir: &Path, live: &LiveState) -> Result<Found> {
     let reused = reusable(&info, live)
         .map_err(StoreUpgradeError::sqlite("read an upgrade snapshot", true))?;
     Ok(if reused {
-        Found::Reusable(info)
+        Found::Reusable(Box::new(info))
     } else {
         Found::Other { marked: false }
     })

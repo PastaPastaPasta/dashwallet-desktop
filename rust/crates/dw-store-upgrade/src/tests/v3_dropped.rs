@@ -223,7 +223,7 @@ fn records_survive(f: &Fixture) {
     );
     assert!(coins.iter().all(|c| c.3 == 0), "released coins are unspent");
 
-    upgrade_with_a_persist_cycle(&f);
+    upgrade_with_a_persist_cycle(f);
 
     assert_eq!(dump(&f.wallet()), before);
     assert_eq!(released(&f.wallet()), coins, "still unspent");
@@ -269,7 +269,7 @@ fn removing_wallet_a_deletes_only_its_v3_records() {
 }
 
 fn removing_a_keeps_b(f: &Fixture) {
-    upgrade_with_a_persist_cycle(&f);
+    upgrade_with_a_persist_cycle(f);
     let before = dump(&f.wallet());
     let wallet = |row: &Vec<Value>| match &row[1] {
         Value::Blob(b) => b.clone(),
