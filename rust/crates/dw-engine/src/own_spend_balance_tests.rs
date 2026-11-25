@@ -602,7 +602,8 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
 /// The store holds the coin X a pending payment this app sent spends as
 /// unspent beside the payment's change (a block credited it before the
 /// claims were set). The load drops X (the payment claims it), stores it
-/// spent, and abandoning the payment gives it back.
+/// spent, and abandoning the payment gives it back once the abandon's
+/// rescan is back (#818).
 #[test]
 fn a_store_holding_a_claimed_coin_unspent_loads_it_once() {
     let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
@@ -640,8 +641,11 @@ fn a_store_holding_a_claimed_coin_unspent_loads_it_once() {
     assert_eq!(synced(&engine, &session, id), FUNDED_AT - 1);
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     let all: BTreeSet<OutPoint> = before.iter().map(|c| c.0).collect();
+    let waiting = BTreeSet::from([x]);
+    assert_holds_waiting(&engine, &session, id, &all, &waiting, "abandoned");
+    mined(&engine, &session, id, TIP, vec![foreign()]);
     assert_eq!(
-        assert_holds(&engine, &session, id, &all, "abandoned").total,
+        assert_holds(&engine, &session, id, &all, "the rescan is back").total,
         12 * COIN
     );
     let session = reopen(&engine, session);
@@ -1090,6 +1094,32 @@ fn abandoning_a_payment_whose_winners_spend_was_forgotten_holds_its_coins_until_
     assert!(spendable(&engine, &session, id, b), "B is offered");
 }
 
+/// #818 (Q100 E2): a height event queued before the abandon's rewind and
+/// applied after it raises the hub's synced height back to the rescan's
+/// target. Nothing is released by it: A, B and the change stay out until
+/// key-wallet's own scan is back.
+#[test]
+fn a_stale_height_event_after_the_abandons_rewind_releases_nothing() {
+    let (_dir, engine, session, id, (a, b), paid, p, w) =
+        beaten_after_its_winners_spend_was_forgotten();
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    let all = COINS as u64 * COIN;
+    let held = [(a, "A"), (b, "B"), (change, "the change")];
+    abandon(&engine, &session, id, p.txid());
+    (session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: id.0,
+        height: TIP + 1,
+    });
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "a stale height event");
+    assert_eq!(session.hub.rescan_held(&id), BTreeSet::from([a, b]));
+
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+    mined(&engine, &session, id, TIP + 1, vec![w]);
+    kept_out(&engine, &session, id, &held[..1], all - COIN, "the rescan is back");
+    assert!(spendable(&engine, &session, id, b), "B is offered");
+}
+
 /// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend
 /// of B, paying the wallet change, is mined at `TIP + 2`. The drop of P it
 /// starts knows that winner's inputs and frees A, which no evidence holds
@@ -1119,9 +1149,13 @@ fn a_drop_after_a_forgotten_spend_holds_the_coin_until_its_rescan_passes_the_spe
     let session = reopen(&engine, session);
     kept_out(&engine, &session, id, &held, total, "restarted in the rescan");
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
-    kept_out(&engine, &session, id, &held, total, "the resumed rescan at the coins' block");
+    // B, which the stored rival spends in a block above, is no give-back: it
+    // comes back with its block until the rival's block spends it again.
+    let resumed = [held[0], held[2]];
+    kept_out(&engine, &session, id, &resumed, total + COIN, "the resumed rescan at the coins' block");
     mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
     assert!(in_history(&session, id, w.txid()), "the rescan records W");
+    kept_out(&engine, &session, id, &resumed, total + COIN, "the rescan past W");
     mined(&engine, &session, id, TIP + 2, vec![rival]);
     kept_out(&engine, &session, id, &held, total, "the rescan is back");
 }

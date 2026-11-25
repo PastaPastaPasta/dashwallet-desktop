@@ -7,7 +7,8 @@
 //! The rescan the give-back rewinds for records that block's spend again
 //! once it reaches the block. Until it is back above the height it was at
 //! when the coin was given back, the coin is held: neither counted nor
-//! offered.
+//! offered. A hold goes only once key-wallet's own synced height, read
+//! under the manager's lock, is back too.
 //!
 //! Each hold is stored as a [`RESCAN_HOLD_PREFIX`] mark in the same write
 //! as the abandon's marks, after the rewind's replay record
@@ -136,14 +137,16 @@ pub(crate) fn load_for_open(
     Ok(BTreeMap::new())
 }
 
-/// The coins of `holds` still held.
-pub(crate) fn held(
+/// The coins of `holds` whose rescan is back, as the hub's `state` and
+/// `rescanning` show and, when given, key-wallet's own `synced` height.
+pub(crate) fn back(
     holds: &BTreeMap<OutPoint, RescanHold>,
     state: Option<&WalletState>,
     rescanning: bool,
+    synced: Option<u32>,
 ) -> BTreeSet<OutPoint> {
     (holds.iter())
-        .filter(|(_, h)| h.holds(state, rescanning))
+        .filter(|(_, h)| !h.holds(state, rescanning) && synced.is_none_or(|s| s >= h.target))
         .map(|(o, _)| *o)
         .collect()
 }

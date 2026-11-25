@@ -904,9 +904,10 @@ impl NetworkSession {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
         self.hub.detect_truncation(id, core);
+        let synced = core.synced_height();
         let read = WalletState {
             birth_height: core.birth_height(),
-            synced_height: core.synced_height(),
+            synced_height: synced,
             processed_height: core.last_processed_height(),
             balance: core.balance(),
             accounts: core.account_balances(),
@@ -915,7 +916,7 @@ impl NetworkSession {
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
         drop(wm);
-        self.hub.settle_rescan_holds(id);
+        self.hub.settle_rescan_holds(id, Some(synced));
     }
 
     pub fn network(&self) -> &DashNetwork {

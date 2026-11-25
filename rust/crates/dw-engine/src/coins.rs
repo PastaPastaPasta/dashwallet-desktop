@@ -969,10 +969,14 @@ impl NetworkSession {
         let Ok(manager) = self.manager() else { return };
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
-        if let Some(info) = wm.get_wallet_info(&id.0) {
-            let core = &info.core_wallet;
-            (self.hub).apply_balance_read(id, core);
-        }
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return;
+        };
+        let core = &info.core_wallet;
+        (self.hub).apply_balance_read(id, core);
+        let synced = core.synced_height();
+        drop(wm);
+        self.hub.settle_rescan_holds(id, Some(synced));
     }
 
     /// Hands the hub what reads a wallet's balances again

@@ -476,6 +476,10 @@ fn b_scanned_again(
     id: WalletId,
     b_funding: &Transaction,
 ) {
+    // The rescan's blocks come after the drop's rewind (#818).
+    super::own_spend_disk_tests::eventually("the abandon batch is done", || {
+        !session.hub.abandon_batch_pending(&id)
+    });
     mined(engine, session, id, BIRTH - 40, vec![b_funding.clone()]);
     mined(
         engine,
@@ -739,6 +743,18 @@ fn a_coin_a_mined_transaction_spends_stays_spent_when_the_payment_goes() {
     );
     mined(&engine, &session, id, BIRTH - 30, vec![other]);
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    assert_eq!(
+        balances(&session, id).total,
+        0,
+        "the claimed coin waits until the rescan is back"
+    );
+    mined(
+        &engine,
+        &session,
+        id,
+        BIRTH + 1,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
     assert!(!spendable(&engine, &session, id, b), "b stays spent, rescanned");
     assert_eq!(balances(&session, id).total, PAID, "b doesn't count");
     let session = reopen(&engine, session);

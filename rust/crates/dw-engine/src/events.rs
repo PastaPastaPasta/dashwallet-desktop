@@ -1488,35 +1488,47 @@ impl SessionHub {
         if !txids.is_empty() {
             self.pump.mark_history(id, Some(&txids));
         }
-        self.settle_rescan_holds(id);
+        self.settle_rescan_holds(id, None);
     }
 
     /// The coins of wallet `id` given back that still wait for their
     /// rescan (`crate::rescan_hold`): neither counted nor offered.
     pub(crate) fn rescan_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
-        let holds = self.history.read_wallet(id, |h| h.rescan_holds.clone());
-        if holds.is_empty() {
-            return BTreeSet::new();
-        }
-        let state = self.wallet_state(id);
-        let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(id));
-        crate::rescan_hold::held(&holds, state.as_ref(), rescanning)
+        (self.history).read_wallet(id, |h| h.rescan_holds.keys().copied().collect())
     }
 
     /// Lets go of wallet `id`'s holds whose rescan is back, and reads its
-    /// balances again when one went. Their marks go at the next open that
-    /// finds no replay record (`crate::rescan_hold`).
-    pub(crate) fn settle_rescan_holds(&self, id: WalletId) {
-        if self.history.read_wallet(&id, |h| h.rescan_holds.is_empty()) {
+    /// balances again when one went. `synced` is key-wallet's synced
+    /// height, read under the manager's lock: the hub's can be raised past
+    /// a rewind by a height event queued before it. Without it, a hold the
+    /// hub's state shows back asks for the balance reread, which reads it.
+    /// Their marks go at the next
+    /// open that finds no replay record (`crate::rescan_hold`).
+    pub(crate) fn settle_rescan_holds(&self, id: WalletId, synced: Option<u32>) {
+        let holds = self.history.read_wallet(&id, |h| h.rescan_holds.clone());
+        if holds.is_empty() {
             return;
         }
-        let held = self.rescan_held(&id);
+        let state = self.wallet_state(&id);
+        let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(&id));
+        let back = crate::rescan_hold::back(&holds, state.as_ref(), rescanning, synced);
+        if back.is_empty() {
+            return;
+        }
+        if synced.is_none() {
+            if let Some(reread) = self.balance_reread.get() {
+                reread(id);
+            }
+            return;
+        }
         let released: BTreeSet<dashcore::OutPoint> = self.history.with_wallet(id, |h| {
-            let gone = (h.rescan_holds.keys())
-                .filter(|o| !held.contains(*o))
-                .copied()
-                .collect();
-            h.rescan_holds.retain(|o, _| held.contains(o));
+            let mut gone = BTreeSet::new();
+            for o in back {
+                if h.rescan_holds.get(&o).is_some() && h.rescan_holds.get(&o) == holds.get(&o) {
+                    h.rescan_holds.remove(&o);
+                    gone.insert(o);
+                }
+            }
             gone
         });
         if !released.is_empty() {
