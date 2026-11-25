@@ -116,6 +116,8 @@ class Paths(unittest.TestCase):
             "Package.resolved",
             "Apps/macOS/project.yml",
             "Apps/macOS/DashWallet/DashWalletApp.swift",
+            "Vendor/PATCHES.md",
+            "Vendor/swift-cross-ui/Package.swift",
             "Sources/PlatformServicesMac/MacBiometricKeyStore.swift",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
