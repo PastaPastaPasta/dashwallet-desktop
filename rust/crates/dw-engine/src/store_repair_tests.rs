@@ -46,9 +46,11 @@ pub(super) fn edited_claim_on_a_held_coin(
 /// its twin with each input signed for the address of `owners` at its
 /// index (a repeated input once) goes through the mempool and is stored,
 /// then the closed store's rows of the twin become the claim's, its record
-/// holding the claim.
-/// Returns the session reopened on that store with the repair skipped, as
-/// a build without it opened it.
+/// holding the claim. The record keeps the twin's input details, so with
+/// a repeated input their indices are the twin's; the repair reads only
+/// the transaction. Returns the session reopened on that store with the
+/// repair skipped, as a build without it opened it
+/// ([`a_seeded_claim_is_stored_as_a_relayed_one`]).
 pub(super) fn seed_claim(
     engine: &Engine,
     session: Arc<NetworkSession>,
@@ -56,6 +58,7 @@ pub(super) fn seed_claim(
     claim: &Transaction,
     owners: &[Address],
 ) -> Arc<NetworkSession> {
+    assert_eq!(owners.len(), claim.input.len(), "an owner for each input");
     let mut seen = std::collections::HashSet::new();
     let (input, owners): (Vec<TxIn>, Vec<Address>) = (claim.input.iter().zip(owners))
         .filter(|(i, _)| seen.insert(i.previous_output))
@@ -538,6 +541,7 @@ fn an_unsigned_input_after_structural_ones_makes_the_drop_sure() {
         ..Default::default()
     });
     let session = seed_claim(&engine, session, id, &claim, &[to_a.clone(), to_a, to_b]);
+    assert!(!spendable(&engine, &session, id, a) && !spendable(&engine, &session, id, b));
     let session = reopen(&engine, session);
     assert!(!stored(session.data_dir(), id, claim.txid()), "dropped");
     let raw = setting(
@@ -657,6 +661,145 @@ fn a_store_of_an_unknown_schema_is_not_repaired() {
         assert_eq!(outcome, crate::store_repair::Outcome::default(), "{later}");
         assert!(stored(&dir, id, claim.txid()), "{later}: nothing repaired");
     }
+}
+
+/// Every row of the closed store in `dir`, by table, but for the schema
+/// history, times, flush counts (`meta_data_versions.seq` counts the
+/// persister's flushes, which batch writes by timing) and the store's
+/// random generation token.
+fn dump(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT IN ('refinery_schema_history', 'sqlite_sequence', 'meta_store_generation') \
+                 ORDER BY name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let mut all = Vec::new();
+    for table in tables {
+        let columns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info(?1)")
+                .unwrap();
+            stmt.query_map([&table], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let kept: Vec<String> = (columns.into_iter())
+            .filter(|c| !c.ends_with("_at") && !c.ends_with("_time") && c != "time")
+            .filter(|c| table != "meta_data_versions" || c != "seq")
+            .map(|c| format!("quote(\"{c}\")"))
+            .collect();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {} FROM \"{table}\"",
+                kept.join(" || '|' || ")
+            ))
+            .unwrap();
+        let mut rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        rows.sort();
+        all.push((table, rows));
+    }
+    all
+}
+
+/// What [`seed_claim`] leaves is what the store keeps of the same claim
+/// relayed through the mempool, compared row by row ([`dump`]): a
+/// claim whose input script isn't push-only, which key-wallet still
+/// records, after the same opens.
+#[test]
+fn a_seeded_claim_is_stored_as_a_relayed_one() {
+    let script = [0x61, 0x01, 0x01];
+    let (relayed, relayed_rows) = {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+        claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script.to_vec());
+        mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+        mempool(&engine, &session, id, &claim);
+        eventually("the claim is stored", || {
+            stored(session.data_dir(), id, claim.txid())
+        });
+        let dir = close(&engine, session);
+        arm(&dir, Stop::Skip);
+        let dir = close(&engine, open(&engine));
+        (claim.txid(), dump(&dir))
+    };
+    let (seeded, seeded_rows) = {
+        let (_dir, engine, session, id) = engine_wallet();
+        let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &script);
+        let dir = close(&engine, session);
+        (claim.txid(), dump(&dir))
+    };
+    assert_eq!(relayed, seeded, "the same claim");
+    for ((table, relayed), (_, seeded)) in relayed_rows.iter().zip(&seeded_rows) {
+        assert_eq!(relayed, seeded, "{table}");
+    }
+    assert_eq!(relayed_rows, seeded_rows);
+}
+
+/// The persister keys a block's spend of a coin as the store keys the
+/// coin, which the repair's block-spend checks rely on.
+#[test]
+fn a_block_spend_is_keyed_as_its_coin() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to, funding, spend) = funding_and_spend(&engine, &session, id);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let spend = signed_by_wallet(&engine, &session, id, &to, spend);
+    mined(&engine, &session, id, BIRTH - 10, vec![spend.clone()]);
+    let dir = close(&engine, session);
+    let conn = rusqlite::Connection::open(dir.join(WALLET_DB_FILE)).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT outpoint, spender_txid FROM core_block_spends WHERE wallet_id = ?1")
+        .unwrap();
+    let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+        .query_map([id.0.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![(
+            crate::store_repair::encode_outpoint(&OutPoint::new(funding.txid(), 0)),
+            spend.txid().as_byte_array().to_vec(),
+        )]
+    );
+}
+
+/// S2 from a block's spend (V025): an output of the claim a block spent
+/// makes the claim mined, so it is kept, whatever the coin row says.
+#[test]
+fn a_claim_whose_output_a_block_spent_is_kept() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (session, _, claim) = claim_on_a_held_coin(&engine, session, id, &[]);
+    let dir = close(&engine, session);
+    on_store(
+        &dir,
+        "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            id.0.as_slice(),
+            crate::store_repair::encode_outpoint(&OutPoint::new(claim.txid(), 1)),
+            BIRTH - 10,
+            [7u8; 32],
+            [9u8; 32]
+        ],
+    );
+    let outcome = repair_closed(&dir);
+    assert_eq!(outcome.schema, Some(26));
+    assert!(outcome.dropped.is_empty(), "{outcome:?}");
+    assert!(stored(&dir, id, claim.txid()));
 }
 
 /// The store as a build at V024 left it: the tables of the later

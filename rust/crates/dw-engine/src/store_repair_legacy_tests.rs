@@ -186,6 +186,21 @@ pub(super) fn fork_drop(dir: &std::path::Path, id: WalletId, claim: &Transaction
     tx.commit().unwrap();
 }
 
+/// A copy of the closed network `dir`, repaired: what the repair itself
+/// writes, before a session loads it (the original stays for the open's
+/// own repair).
+fn repaired_copy(dir: &std::path::Path) -> tempfile::TempDir {
+    let copy = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.is_file() {
+            std::fs::copy(&p, copy.path().join(p.file_name().unwrap())).unwrap();
+        }
+    }
+    repair_closed(copy.path());
+    copy
+}
+
 /// How many fork rows the closed or open store in `dir` holds for `txid`.
 fn fork_rows(dir: &std::path::Path, id: WalletId, txid: Txid) -> i64 {
     let conn = rusqlite::Connection::open_with_flags(
@@ -292,6 +307,54 @@ fn an_output_a_block_spent_since_comes_back_spent() {
             1,
             "{pin:?}: its change comes back spent"
         );
+    }
+}
+
+/// L4 with a block's spend of the claim's coin A (V025): spent by another
+/// transaction, A isn't held again and the claim's outputs stay out; spent
+/// by the claim itself, A is held.
+#[test]
+fn a_coin_a_block_spent_is_held_again_only_for_its_spender() {
+    for pin in PINS {
+        for by_claim in [false, true] {
+            let (_dir, _engine, id, funding, claim, network) =
+                non_push_only_claim_the_fork_dropped(pin);
+            let a = encode_outpoint(&OutPoint::new(funding.txid(), 0));
+            let spender = match by_claim {
+                true => claim.txid().to_byte_array(),
+                false => [9u8; 32],
+            };
+            on_store(
+                &network,
+                "INSERT INTO core_block_spends (wallet_id, outpoint, height, block_hash, spender_txid) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id.0.as_slice(), a, BIRTH - 10, [7u8; 32], spender],
+            );
+            repair_closed(&network);
+            assert!(
+                stored(&network, id, claim.txid()),
+                "{pin:?} {by_claim}: put back"
+            );
+            assert_eq!(
+                coin_spent(&network, id, &a).0,
+                i64::from(by_claim),
+                "{pin:?} {by_claim}: A is held only for its spender"
+            );
+            let change = encode_outpoint(&OutPoint::new(claim.txid(), 1));
+            let conn = rusqlite::Connection::open(network.join(WALLET_DB_FILE)).unwrap();
+            let outputs: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+                    rusqlite::params![id.0.as_slice(), change],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                outputs,
+                i64::from(by_claim),
+                "{pin:?} {by_claim}: its change comes back only when A is held"
+            );
+        }
     }
 }
 
@@ -618,9 +681,9 @@ fn a_lock_in_a_fork_dropped_childs_row_keeps_its_fork_dropped_parent() {
             [child.txid().as_byte_array().as_slice()],
         );
 
-        repair_closed(&network);
+        let copy = repaired_copy(&network);
         assert_eq!(
-            coin_spent(&network, id, &encode_outpoint(&change)).0,
+            coin_spent(copy.path(), id, &encode_outpoint(&change)).0,
             1,
             "{pin:?}: the repair puts X's change back spent by Y"
         );
@@ -664,10 +727,10 @@ fn a_fork_dropped_claim_the_store_holds_again_has_its_coin_held() {
                 ),
                 [],
             );
-            repair_closed(&network);
+            let copy = repaired_copy(&network);
             let a = encode_outpoint(&OutPoint::new(funding.txid(), 0));
             assert_eq!(
-                coin_spent(&network, id, &a).0,
+                coin_spent(copy.path(), id, &a).0,
                 1,
                 "{pin:?} {with_record}: the repair holds A"
             );
