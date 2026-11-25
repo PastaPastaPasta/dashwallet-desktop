@@ -91,17 +91,28 @@ fn check_snapshot(
         dir: snapshot.dir().to_path_buf(),
         detail,
     };
-    let root = snapshot::backups_dir(network_dir)
-        .canonicalize()
-        .map_err(|e| invalid(format!("{}: {e}", snapshot::UPGRADE_BACKUPS_DIR)))?;
-    let dir = snapshot
-        .dir()
-        .canonicalize()
-        .map_err(|e| invalid(e.to_string()))?;
+    let resolve = |path: &Path, what: &str| {
+        path.canonicalize().map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                invalid(format!("{what}: {e}"))
+            }
+            _ => StoreUpgradeError::io("resolve the upgrade snapshot", true)(e),
+        })
+    };
+    let root = resolve(
+        &snapshot::backups_dir(network_dir),
+        snapshot::UPGRADE_BACKUPS_DIR,
+    )?;
+    let dir = resolve(snapshot.dir(), "the snapshot")?;
     if dir.parent() != Some(root.as_path()) {
         return Err(invalid("not in this directory's upgrade-backups".into()));
     }
-    let on_disk = snapshot::read_snapshot(&dir, true).map_err(invalid)?;
+    let on_disk = snapshot::check_snapshot(&dir, true).map_err(|f| match f {
+        snapshot::SnapshotFault::Io(e) => {
+            StoreUpgradeError::io("verify the upgrade snapshot", true)(e)
+        }
+        snapshot::SnapshotFault::Defect(detail) => invalid(detail),
+    })?;
     if on_disk.manifest_sha256() != snapshot.manifest_sha256() {
         return Err(invalid("marker differs from the snapshot handed in".into()));
     }

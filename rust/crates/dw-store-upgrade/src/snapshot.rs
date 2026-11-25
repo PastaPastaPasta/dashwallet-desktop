@@ -214,7 +214,7 @@ pub(crate) fn read_snapshot(
 }
 
 /// Why a snapshot directory doesn't check out.
-enum SnapshotFault {
+pub(crate) enum SnapshotFault {
     /// Reading it failed (`EIO`, `EMFILE`, `EACCES`): retried, never taken
     /// for a defect of the copy.
     Io(io::Error),
@@ -233,7 +233,7 @@ fn snapshot_fault(what: impl std::fmt::Display) -> impl FnOnce(io::Error) -> Sna
     }
 }
 
-fn check_snapshot(
+pub(crate) fn check_snapshot(
     dir: &Path,
     verify_hashes: bool,
 ) -> std::result::Result<SnapshotInfo, SnapshotFault> {

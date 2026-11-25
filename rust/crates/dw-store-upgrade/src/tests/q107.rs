@@ -279,3 +279,35 @@ fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
     assert_eq!(tree(s.dir()), before);
     assert!(journal.exists());
 }
+
+/// A fault reading the snapshot under R1's lock, once upgraded, is retried
+/// with its screen: never a refusal, never the snapshot called invalid.
+#[test]
+fn a_fault_rereading_the_snapshot_under_the_lock_is_retried() {
+    let (f, _) = failed_open();
+    let part = start(&f, later(60)).unwrap().snapshot.unwrap();
+    crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| {
+        *h.borrow_mut() = Some((
+            part.dir().to_path_buf(),
+            std::io::ErrorKind::PermissionDenied,
+        ))
+    });
+    let err = reconcile_fork_store(&config(&f.net), &part, build()).unwrap_err();
+    crate::snapshot::SNAPSHOT_READ_FOR_TEST.with(|h| *h.borrow_mut() = None);
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::Io {
+                unchanged: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_refusal() && RefusedCause::of(&err).is_none());
+    assert!(crate::copy::retry_copy_for(&err).is_some());
+    assert!(matches!(
+        reconcile_fork_store(&config(&f.net), &part, build()).unwrap(),
+        Outcome::Pending { .. }
+    ));
+}
