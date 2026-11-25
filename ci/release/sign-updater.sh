@@ -42,6 +42,7 @@ done
 
 die() { echo "sign-updater: $*" >&2; exit 1; }
 
+[[ "$version" != *-rc.* ]] || die "a release candidate publishes no updater feed; skip this step (docs/release/RC-SIGNING.md)"
 [[ -n "$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version must be X.Y.Z"
 [[ -d "$dist_dir" && -d "$feed_dir" ]] || die "--dist-dir and --feed-dir must exist"
 [[ -n "$sigs_dir" ]] || die "--sigs-dir is required"
