@@ -251,7 +251,7 @@ ends a cold run with 71 GB free and a 16 GB `rust/target`; its last step reports
 A pull request that changes a funds path merges only with two records for its **exact head commit**: a
 funds-reviewer verdict and an Opus code review, both approving. The funds paths are listed in one file,
 `ci/funds-paths.txt`. All of dw-engine counts, except the files its `!` lines name as not funds (for example rates,
-CSV export, profile display, avatars and governance voting; the file has the full list), so a
+CSV export, avatars, banners and governance voting; the file has the full list), so a
 new engine file is gated from the start. So do the keys, vault, PSBT, ProTx, CoinJoin and units crates, the
 CLI wallet, the wallet files, app.sqlite's hold and barrier records, the bridges that carry these to the UI
 (Tauri commands and capabilities, the Swift engine bridge), the renderer's amount and send logic and the
@@ -260,7 +260,8 @@ screen view-models that build money requests, the dependency pins, and the gate 
 
 A record is an HTML comment in a top-level pull request comment (the Conversation tab; a review body or an
 inline review comment does not count) by the repository's owner, a member or a collaborator (bots never
-count). `funds-gate.py record` posts it in the right place:
+count). The record must sit on a line of its own, outside a `>` quote or a code block, so quoting a verdict
+never casts one. `funds-gate.py record` posts it in the right place and refuses a note that contains a record:
 
     <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
     <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
@@ -279,12 +280,16 @@ is never a reviewer. Rules:
 `funds-gate.yml` runs on `pull_request_target` (opened, pushed, reopened, ready for review, edited: a base
 change alters the file list), on a pull
 request comment that adds, edits or deletes a record, and on a dispatch (`gh workflow run funds-gate.yml -f
-pr=<N>`). It posts the commit status **Funds review gate** on the head: success or failure. It runs the
+pr=<N>`). For a pull request into `main` it posts the commit status **Funds review gate** on the head:
+pending while it checks, then success or failure; an error leaves it pending. A pull request into another
+branch gets no status, because a status belongs to the commit and a stacked pull request at the same commit
+must not turn it green. The gate also refuses if the head or base moves while it reads the file list. It runs the
 gate from the pull request's base branch (comment runs: the default branch), never from the pull
 request, and checks out no pull request code. The status is advisory until `main`'s branch protection
 requires the context `Funds review gate` (not the job name, whose run passes on a refusal). The PO's
 drain script runs the same `funds-gate.py check --sha <head>` from origin/main before every merge and
-refuses on anything but a pass. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
+refuses on anything but a pass. That fresh check is the authoritative one: a change to `ci/funds-paths.txt` on
+main does not re-run the status on open pull requests, but the drain reads the new list. `lint` runs `ci/github/funds-gate-test.py`, which also checks that every
 pattern in `ci/funds-paths.txt` still matches a tracked file.
 
 ## UI tests (U-07)

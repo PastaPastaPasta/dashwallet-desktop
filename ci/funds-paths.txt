@@ -42,14 +42,13 @@ rust/crates/dw-engine/**
 !rust/crates/dw-engine/src/governance/mod.rs
 !rust/crates/dw-engine/src/platform/avatar**
 !rust/crates/dw-engine/src/platform/banner*
-!rust/crates/dw-engine/src/platform/profile.rs
 !rust/crates/dw-engine/src/platform/profile_tests.rs
 !rust/crates/dw-engine/src/platform/contact_names.rs
 !rust/crates/dw-engine/src/platform/contacts_tests.rs
 !rust/crates/dw-engine/src/platform/contacts_tests/**
 !rust/crates/dw-engine/src/platform/contacts_perf_tests.rs
 !rust/crates/dw-engine/src/platform/notifications*
-!rust/crates/dw-engine/src/platform/users*
+!rust/crates/dw-engine/src/platform/users_tests.rs
 !rust/crates/dw-engine/src/platform/contest_watch*
 
 # The command-line wallet, owner-only wallet files, and the dash: links and QR codes that feed a send.
@@ -91,6 +90,7 @@ rust/crates/dw-app/src/dto/governance.rs
 rust/crates/dw-app/src/shell/links.rs
 rust/crates/dw-app/src/api/files.rs
 rust/crates/dw-app/src/shell/files.rs
+rust/crates/dw-app/src/state.rs
 rust/crates/dw-app/src/dto/masternodes*.rs
 rust/crates/dw-app/src/dto/protx.rs
 rust/crates/dw-app/capabilities/*.json
@@ -123,12 +123,15 @@ apps/desktop/src/format/feeWarning*
 apps/desktop/src/api/send*
 apps/desktop/src/api/lockGate*
 apps/desktop/src/api/pending*
+apps/desktop/src/api/tauri.ts
+apps/desktop/src/app/files.ts
 apps/desktop/src/shielded/**
 apps/desktop/src/transfer/**
 apps/desktop/src/recovery/**
 apps/desktop/src/dashpay/topup*
 apps/desktop/src/dashpay/withdraw*
 apps/desktop/src/coinjoin/move*
+apps/desktop/src/coinjoin/queries*
 apps/desktop/src/masternodes/registration*
 apps/desktop/src/masternodes/shared*
 apps/desktop/src/masternodes/changeKeys*
@@ -154,6 +157,8 @@ apps/desktop/src/onboarding/words*
 apps/desktop/src/onboarding/bip39English*
 apps/desktop/src/onboarding/passphrase*
 apps/desktop/src/onboarding/birthHeight*
+apps/desktop/src/onboarding/onboarding.ts
+apps/desktop/src/settings/security.ts
 apps/desktop/src/platform/**
 apps/desktop/src/tools/psbt*
 apps/desktop/src/tools/coins*
@@ -194,12 +199,14 @@ Sources/DashKit/Amount.swift
 Sources/DashKit/EngineModels.swift
 Sources/DashKit/EngineClient.swift
 Sources/DashKit/EngineClient+M2.swift
+Sources/DashKit/EngineClient+M3CoinJoin.swift
 Sources/WalletRuntime/M2/EngineToolAdapters.swift
 Sources/WalletRuntime/M2/QuickUnlockService.swift
 Sources/WalletRuntime/Services/ToolServices.swift
 Sources/WalletRuntime/Services/TransactionSender.swift
 Sources/WalletRuntime/Services/VaultService.swift
 Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
+Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift
 Sources/CrossUI/ToolScreens.swift
 Sources/MacUI/SignVerify/**
 Sources/WalletFeatures/Common/AmountFormatter.swift

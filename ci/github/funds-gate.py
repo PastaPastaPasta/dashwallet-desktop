@@ -7,6 +7,7 @@ for its exact head commit, a funds-reviewer verdict and an Opus code review, eac
     <!-- dwd-review kind=funds verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
     <!-- dwd-review kind=review verdict=approve sha=<40-hex head> model=claude-opus-5-5 -->
 
+Each record is a line of its own, outside quotes and code blocks, so quoting a record never casts it.
 Only comments by the repository's owner, members and collaborators count, never a bot's. A push
 moves the head, so every record for the old head stops counting. For one kind at the head, the
 latest record wins, so a later `verdict=block` withdraws an approve.
@@ -31,7 +32,8 @@ KINDS = ("funds", "review")
 LABELS = {"funds": "funds-reviewer verdict", "review": "Opus review"}
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 OPUS = re.compile(r"^claude-opus-\d")
-RECORD = re.compile(r"<!--\s*dwd-review\s+([^>]*?)\s*-->")
+RECORD = re.compile(r"^[ \t]*<!--[ \t]*dwd-review[ \t]+([^>\n]*?)[ \t]*-->[ \t]*$", re.M)
+FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.M | re.S)
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -78,7 +80,7 @@ def parse_records(comments):
         user = c.get("user") or {}
         if c.get("author_association") not in TRUSTED or user.get("type") == "Bot":
             continue
-        for m in RECORD.finditer(c.get("body") or ""):
+        for m in RECORD.finditer(FENCE.sub("", c.get("body") or "")):
             fields = dict(kv.split("=", 1) for kv in m.group(1).split() if "=" in kv)
             fields["author"] = user.get("login", "?")
             fields["url"] = c.get("html_url", "")
@@ -159,8 +161,11 @@ def gh_pages(path):
     return [item for page in json.loads(out) for item in page]
 
 
-def fetch(repo, pr):
-    info = json.loads(gh(f"repos/{repo}/pulls/{pr}"))
+def fetch_pr(repo, pr):
+    return json.loads(gh(f"repos/{repo}/pulls/{pr}"))
+
+
+def fetch(repo, pr, info):
     files = []
     listed = gh_pages(f"repos/{repo}/pulls/{pr}/files?per_page=100")
     for f in listed:
@@ -169,13 +174,17 @@ def fetch(repo, pr):
             files.append(f["previous_filename"])
     complete = len(listed) >= info.get("changed_files", 0)
     comments = gh_pages(f"repos/{repo}/issues/{pr}/comments?per_page=100")
-    return info, files, complete, comments
+    after = fetch_pr(repo, pr)
+    for side in ("head", "base"):
+        if after[side]["sha"] != info[side]["sha"]:
+            raise RuntimeError(f"#{pr} {side} moved from {info[side]['sha']} to {after[side]['sha']} during the check; run it again")
+    return files, complete, comments
 
 
-def post_status(repo, sha, passed, summary):
+def post_status(repo, sha, state, summary):
     run = os.environ.get("GITHUB_RUN_ID")
     data = {
-        "state": "success" if passed else "failure",
+        "state": state,
         "context": STATUS_CONTEXT,
         "description": summary[:140],
     }
@@ -196,14 +205,22 @@ def cmd_match(args):
 def cmd_check(args):
     rules = load_patterns(args.paths)
     try:
-        info, files, complete, comments = fetch(args.repo, args.pr)
+        info = fetch_pr(args.repo, args.pr)
+        head = info["head"]["sha"]
+        if args.sha and args.sha != head:
+            print(f"REFUSED #{args.pr}: head is {head}, expected {args.sha}.")
+            return 1
+        # The status is keyed by commit, not pull request: only a pull request into the default branch
+        # writes it, so a stacked pull request at the same commit cannot turn it green.
+        if args.status and info["base"]["ref"] != info["base"]["repo"]["default_branch"]:
+            print(f"#{args.pr} targets {info['base']['ref']}, not the default branch: no status posted.")
+            args.status = False
+        if args.status:
+            post_status(args.repo, head, "pending", "Checking funds paths and review records")
+        files, complete, comments = fetch(args.repo, args.pr, info)
     except (RuntimeError, json.JSONDecodeError, KeyError) as e:
         print(f"funds gate: {e}", file=sys.stderr)
         return 2
-    head = info["head"]["sha"]
-    if args.sha and args.sha != head:
-        print(f"REFUSED #{args.pr}: head is {head}, expected {args.sha}.")
-        return 1
     passed, funds, lines = evaluate(head, files, comments, rules, complete)
     print(f"Funds review gate, #{args.pr} at {head}:")
     print("\n".join(lines))
@@ -216,7 +233,7 @@ def cmd_check(args):
         else:
             summary = f"{len(funds)} funds path(s): needs funds verdict + Opus review at {head[:12]}"
         try:
-            post_status(args.repo, head, passed, summary)
+            post_status(args.repo, head, "success" if passed else "failure", summary)
         except RuntimeError as e:
             print(f"funds gate: {e}", file=sys.stderr)
             return 2
@@ -234,6 +251,8 @@ def cmd_record(args):
         raise SystemExit(f"refused: #{args.pr} head is now {head}, not the reviewed {args.sha}; review the new head")
     title = "Funds review" if args.kind == "funds" else "Code review"
     note = Path(args.note_file).read_text().strip() if args.note_file else (args.note or "").strip()
+    if "dwd-review" in note:
+        raise SystemExit("refused: the note quotes a dwd-review record; quote the verdict line without the marker")
     body = [f"**{title}: {args.verdict}** at `{args.sha[:12]}` ({args.model})"]
     if note:
         body += ["", note]

@@ -86,6 +86,16 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/settings/files.ts",
             "rust/crates/dw-app/src/api/files.rs",
             "rust/crates/dw-app/src/shell/files.rs",
+            "rust/crates/dw-app/src/state.rs",
+            "rust/crates/dw-engine/src/platform/profile.rs",
+            "rust/crates/dw-engine/src/platform/users.rs",
+            "apps/desktop/src/api/tauri.ts",
+            "apps/desktop/src/app/files.ts",
+            "apps/desktop/src/coinjoin/queries.ts",
+            "apps/desktop/src/onboarding/onboarding.ts",
+            "apps/desktop/src/settings/security.ts",
+            "Sources/DashKit/EngineClient+M3CoinJoin.swift",
+            "Sources/WalletFeatures/CoinJoin/CoinJoinPanelViewModel.swift",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
@@ -93,7 +103,8 @@ class Paths(unittest.TestCase):
         for f in [
             "docs/ci.md",
             "rust/crates/dw-engine/src/platform/avatar_tests/fixtures.rs",
-            "rust/crates/dw-engine/src/platform/profile.rs",
+            "rust/crates/dw-engine/src/platform/profile_tests.rs",
+            "rust/crates/dw-engine/src/platform/users_tests.rs",
             "rust/crates/dw-engine/src/platform/contacts_tests/rows.rs",
             "rust/crates/dw-engine/src/rates/service.rs",
             "rust/crates/dw-engine/src/governance/voting.rs",
@@ -140,33 +151,45 @@ class Gate(unittest.TestCase):
         self.assertFalse(self.run_gate([comment(record("review"))])[0])
 
     def test_push_after_verdict_invalidates_it(self):
-        ok, _, lines = self.run_gate([comment(record("funds", OLD) + record("review", OLD))])
+        ok, _, lines = self.run_gate([comment(record("funds", OLD) + "\n" + record("review", OLD))])
         self.assertFalse(ok)
         self.assertIn("older head", "\n".join(lines))
 
     def test_short_sha_does_not_count(self):
-        self.assertFalse(self.run_gate([comment(record("funds", HEAD[:12]) + record("review", HEAD[:12]))])[0])
+        self.assertFalse(self.run_gate([comment(record("funds", HEAD[:12]) + "\n" + record("review", HEAD[:12]))])[0])
 
     def test_sonnet_is_never_a_reviewer(self):
-        ok, _, lines = self.run_gate([comment(record("funds") + record("review", model="claude-sonnet-5-5"))])
+        ok, _, lines = self.run_gate([comment(record("funds") + "\n" + record("review", model="claude-sonnet-5-5"))])
         self.assertFalse(ok)
         self.assertIn("never a reviewer", "\n".join(lines))
 
     def test_non_opus_model_is_refused(self):
-        self.assertFalse(self.run_gate([comment(record("funds", model="gpt-6.2-astra") + record("review"))])[0])
+        self.assertFalse(self.run_gate([comment(record("funds", model="gpt-6.2-astra") + "\n" + record("review"))])[0])
 
     def test_later_block_withdraws_approve(self):
         later = comment(record("funds", verdict="block"), at="2026-11-25T06:00:00Z", cid=2)
         self.assertFalse(self.run_gate([later, comment(BOTH, cid=1)])[0])
 
     def test_later_approve_replaces_block(self):
-        first = comment(record("funds", verdict="block") + record("review"), cid=1)
+        first = comment(record("funds", verdict="block") + "\n" + record("review"), cid=1)
         self.assertTrue(self.run_gate([first, comment(record("funds"), at="2026-11-25T06:00:00Z", cid=2)])[0])
 
     def test_untrusted_and_bot_comments_do_not_count(self):
         self.assertFalse(self.run_gate([comment(BOTH, assoc="NONE")])[0])
         self.assertFalse(self.run_gate([comment(BOTH, assoc="CONTRIBUTOR")])[0])
         self.assertFalse(self.run_gate([comment(BOTH, kind="Bot")])[0])
+
+    def test_quoted_record_does_not_count(self):
+        block = comment(record("funds", verdict="block") + "\n" + record("review"), cid=1)
+        quoted = "> " + record("funds") + "\n\nAs the reviewer said above."
+        self.assertFalse(self.run_gate([block, comment(quoted, at="2026-11-25T06:00:00Z", cid=2)])[0])
+
+    def test_fenced_record_does_not_count(self):
+        fenced = "```\n" + record("review") + "\n```"
+        self.assertFalse(self.run_gate([comment(record("funds") + "\n" + fenced)])[0])
+
+    def test_inline_record_does_not_count(self):
+        self.assertFalse(self.run_gate([comment("see " + record("funds") + "\n" + record("review"))])[0])
 
     def test_truncated_file_list_is_treated_as_funds(self):
         self.assertFalse(self.run_gate([], files=["docs/ci.md"], complete=False)[0])
