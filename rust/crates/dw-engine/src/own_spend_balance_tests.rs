@@ -3699,6 +3699,17 @@ fn swept_while_another_wallet_opens(
 /// drop is taken again, it is void, and C stays.
 #[test]
 fn a_waiting_swept_child_is_void_after_a_fork_the_hub_did_not_hear() {
+    waiting_swept_child_after_an_unheard_fork(&[(TIP + 1, 21), (TIP + 2, 22)]);
+}
+
+/// #891: as above, but the fork's new chain ends at the height key-wallet
+/// had processed when C was taken: only the block at it changed.
+#[test]
+fn a_waiting_swept_child_is_void_after_a_same_height_fork_the_hub_did_not_hear() {
+    waiting_swept_child_after_an_unheard_fork(&[(TIP + 1, 25)]);
+}
+
+fn waiting_swept_child_after_an_unheard_fork(fork: &'static [(u32, u8)]) {
     swept_while_another_wallet_opens(
         |engine, session, id| {
             let heard = session.hub.truncations();
@@ -3709,7 +3720,7 @@ fn a_waiting_swept_child_is_void_after_a_fork_the_hub_did_not_hear() {
                 let wm = manager.wallet_manager_arc();
                 let mut wm = wm.write().await;
                 wm.truncate_above(TIP).unwrap();
-                for (height, n) in [(TIP + 1, 21u8), (TIP + 2, 22)] {
+                for &(height, n) in fork {
                     let block = super::block_with(vec![unrelated(n)]);
                     let wallets = BTreeSet::from([id.0]);
                     (wm.process_block_for_wallets(&block, block.block_hash(), height, &wallets))
@@ -3717,13 +3728,10 @@ fn a_waiting_swept_child_is_void_after_a_fork_the_hub_did_not_hear() {
                     wm.update_wallet_synced_height(&id.0, height);
                 }
             });
-            headers(
-                session,
-                &[
-                    (TIP + 1, vec![unrelated(21)]),
-                    (TIP + 2, vec![unrelated(22)]),
-                ],
-            );
+            let chain: Vec<_> = (fork.iter())
+                .map(|&(h, n)| (h, vec![unrelated(n)]))
+                .collect();
+            headers(session, &chain);
             assert_eq!(session.hub.truncations(), heard, "the hub heard no fork");
         },
         |engine, session, id, (c, c_change, _)| {
@@ -3731,6 +3739,10 @@ fn a_waiting_swept_child_is_void_after_a_fork_the_hub_did_not_hear() {
             assert!(
                 held(engine, session, id).contains(&c_change),
                 "C's change is not held"
+            );
+            assert!(
+                !session.hub.deferred_drop_wallets().contains(&id),
+                "the void drop still waits"
             );
         },
     );
@@ -3812,6 +3824,56 @@ fn a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load() {
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
     only_d(&session, "rescanned again");
+}
+
+/// #891 (#857's waiting drops): as above, but the load's orphan pass
+/// meets another wallet's open and the drop of C waits; a block lands on
+/// top of the chain before the open ends. The block leaves the drop's
+/// take standing: C goes when the open ends.
+#[test]
+fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_opens() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            sweeps: vec![platform_wallet::changeset::changeset::SweepBatch {
+                txids: vec![p.txid()],
+                superseded_by: winner.txid(),
+                winner_mined_height: Some(TIP + 1),
+                released_outpoints: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    );
+    crate::tx_actions::forget_sent(&session.live().unwrap().appdb, id, &[p.txid()]).unwrap();
+    let chain: Vec<_> = (FUNDED_AT..=TIP + 2)
+        .map(|h| (h, vec![unrelated(h as u8)]))
+        .collect();
+    headers(&session, &chain);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    eventually(
+        "the orphan drop of C waits for the other wallet's open",
+        || session.hub.deferred_drop_wallets().contains(&id),
+    );
+    assert!(live_in_history(&session, id, c.txid()), "C waits");
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP + 2,
+        vec![unrelated((TIP + 2) as u8)],
+    );
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    drops_done(&engine, &session);
+    eventually("C goes", || !live_in_history(&session, id, c.txid()));
+    drops_done(&engine, &session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the open");
 }
 
 /// #170 case 4: C relayed between key-wallet's sweep of P and the

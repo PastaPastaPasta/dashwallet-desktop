@@ -629,10 +629,11 @@ pub(crate) struct SessionHub {
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
     dead_children: Mutex<Vec<DeadChildren>>,
-    /// The drops that waited for another wallet's open, by wallet, each
-    /// with its detection's evidence and the truncations applied when it
-    /// began to wait: dropped when an open ends, or at the wallet's next
-    /// drop (#818, S1).
+    /// The drops that wait, by wallet: for another wallet's open (#818,
+    /// S1), or, with no recheck, for key-wallet's risen height to be read
+    /// again (#891). Each with its detection's evidence and what it was
+    /// found at: taken at the wallet's next drop, which an open's end
+    /// runs.
     deferred_drops: Mutex<Vec<(WalletId, DropTake, crate::tx_actions::DeadWork)>>,
     /// The beaten payments whose rechecks ran out while only the proof of
     /// their winner's block was missing, by wallet and root: rechecked with
@@ -1482,7 +1483,7 @@ impl SessionHub {
         mine.into_iter().map(|(_, t, w)| (t, w)).collect()
     }
 
-    /// The wallets with drops that wait for another wallet's open.
+    /// The wallets with drops that wait.
     pub(crate) fn deferred_drop_wallets(&self) -> BTreeSet<WalletId> {
         let deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         deferred.iter().map(|(w, ..)| *w).collect()

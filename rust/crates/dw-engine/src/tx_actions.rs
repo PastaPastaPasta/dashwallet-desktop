@@ -1667,6 +1667,13 @@ pub(crate) fn take_anchor(processed: u32, winner: Winner) -> u32 {
     processed.max(winner.mined.unwrap_or(0))
 }
 
+/// Key-wallet's processed height for `wallet`, if it is loaded.
+async fn processed_height(manager: &Manager, wallet: WalletId) -> Option<u32> {
+    let wm = manager.wallet_manager_arc();
+    let wm = wm.read().await;
+    (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.last_processed_height())
+}
+
 /// How often a detection's roots are rechecked with its evidence.
 const RECHECKS: u8 = 3;
 
@@ -2642,11 +2649,7 @@ impl NetworkSession {
         // Key-wallet's processed height before the take, and before
         // `carried_drops` reads anything: a fork the hub has not counted
         // yet moves it (#891).
-        let processed = {
-            let wm = manager.wallet_manager_arc();
-            let wm = wm.read().await;
-            (wm.get_wallet_info(&wallet.0)).map(|i| i.core_wallet.last_processed_height())
-        };
+        let processed = processed_height(manager, wallet).await;
         let take = (truncations, processed);
         // A sweep's children queued before a truncation may have lost their
         // winner (#891).
@@ -2676,12 +2679,19 @@ impl NetworkSession {
             }
         }
         // The blocks the header chain holds, with the take, at the heights
-        // the drops with no recheck anchor to (#891).
+        // the drops with no recheck anchor to (#891): the processed height
+        // too, for the orphans `queue_dead` finds below. Read with key-wallet
+        // where it was at the take, or none.
         let anchors = match processed {
             Some(p) => {
                 let unrechecked = (work.iter()).filter(|w| w.3.is_none());
                 let heights = unrechecked.map(|(_, winner, ..)| take_anchor(p, *winner));
-                self.hub.header_hashes(heights.collect()).await
+                let anchors = self.hub.header_hashes(heights.chain([p]).collect()).await;
+                if processed_height(manager, wallet).await == processed {
+                    anchors
+                } else {
+                    HashMap::new()
+                }
             }
             None => HashMap::new(),
         };
@@ -2779,9 +2789,10 @@ impl NetworkSession {
 
     /// Whether a drop with no recheck found at `was` may go on at `now`
     /// (#891): no truncation since, and key-wallet's processed height
-    /// either where it was or risen on top of the block the header chain
-    /// held at its anchor height then, which it still holds. A height that
-    /// fell, or a header not read, does not hold.
+    /// where it was or risen, with the header chain still holding the block
+    /// it held at the anchor height then. A height that fell, or a header
+    /// not read where one was, does not hold; with no anchor read, only an
+    /// unmoved height does.
     async fn take_holds(
         &self,
         (truncations, processed, anchor): crate::events::DropTake,
@@ -2791,14 +2802,11 @@ impl NetworkSession {
         if truncations != now.0 {
             return false;
         }
-        if processed == now.1 {
-            return true;
-        }
         match (processed, now.1, anchor) {
-            (Some(was), Some(is), Some(hash)) if is > was => {
+            (Some(was), Some(is), Some(hash)) if is >= was => {
                 self.hub.header_hash(take_anchor(was, winner)).await == Some(hash)
             }
-            _ => false,
+            _ => processed == now.1 && anchor.is_none(),
         }
     }
 
@@ -3404,9 +3412,8 @@ impl NetworkSession {
         (recheck, out): (Option<&Recheck>, &mut Rechecked),
     ) -> Result<BTreeSet<Txid>, EngineError> {
         let unrechecked = recheck.is_none();
-        let swept_children = unrechecked && !links.is_empty();
         #[cfg(test)]
-        let pause = match swept_children {
+        let pause = match unrechecked && !links.is_empty() {
             true => self.hub.pause_drop_child.lock().unwrap().take(),
             false => (recheck.is_some())
                 .then(|| self.hub.pause_drop_recheck.lock().unwrap().take())
