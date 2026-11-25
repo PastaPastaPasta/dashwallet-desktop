@@ -38,6 +38,8 @@ mod own_spend_disk_tests;
 mod removed_payment_way_out_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
+#[path = "stuck_lock_repair_tests.rs"]
+mod stuck_lock_repair_tests;
 #[path = "withheld_coin_tests.rs"]
 mod withheld_coin_tests;
 

@@ -101,6 +101,8 @@ extension L10n {
             count == 1 ? "1 transaction was removed; a rescan was scheduled."
                 : "\(count) transactions were removed; a rescan was scheduled."
         }
+        public static let stuckFundingAbandonedRetryLater =
+            "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers."
         public static let birthHeight = "Wallet birth height"
         public static let birthHeightInvalid = "Enter a block height."
         public static func rescanProgress(current: UInt32, target: UInt32) -> String {

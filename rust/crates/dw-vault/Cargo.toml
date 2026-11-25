@@ -36,6 +36,9 @@ dashcore = { workspace = true }
 # unification it also covers platform-wallet's own `aes` use.
 aes = { version = "0.8", features = ["zeroize"] }
 cbc = { version = "0.1", features = ["zeroize"] }
+# App Connect v2 response seal (`app_connect.rs`): HKDF-SHA256 and AES-256-GCM.
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+hkdf = "0.12"
 dw-compat = { workspace = true }
 dw-message = { workspace = true }
 dw-uri = { workspace = true }

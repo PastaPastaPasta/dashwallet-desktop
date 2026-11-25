@@ -153,6 +153,8 @@ export function repairErrorText(e: unknown, what?: Confirmation): string {
 
 /** Why "send all coins to yourself" was refused (E0-04 §6.5). */
 export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean): string {
+  if (r.kind === "lockAbandoned") return t("tools.repair.stuckFunding.abandonedRetryLater");
+  if (r.kind === "spendUnsettled") return t("tools.repair.stuckRefusal.spendUnsettled", { txid: r.txid });
   const text = ((): string => {
     switch (r.kind) {
       case "rowsUnknown":
@@ -165,8 +167,6 @@ export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean
         return t("tools.repair.stuckRefusal.callRunning");
       case "journalUnavailable":
         return t("tools.repair.stuckRefusal.journalUnavailable");
-      case "spendUnsettled":
-        return t("tools.repair.stuckRefusal.spendUnsettled", { txid: r.txid });
       case "lockInputsSpent":
         return t("tools.repair.stuckRefusal.lockInputsSpent", { txid: r.txid });
       case "missesSignedLock":

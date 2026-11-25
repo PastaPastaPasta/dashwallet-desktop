@@ -187,11 +187,17 @@ const IMPLEMENTED: &[&str] = &[
     // #402: recovering a partly used transfer to Shielded.
     "DashPay.recover_transfer_quote",
     "DashPay.recover_transfer",
+    // 1.0 F24: App Connect sign-ins.
+    "DashPay.app_connect_sheet",
+    "DashPay.app_connect_quote",
+    "DashPay.app_connect_approve",
+    "DashPay.app_connect_retry_send",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
 /// file there must join this list or `NOT_FACADE`.
 const FACADE: &[&str] = &[
+    "app_connect.rs",
     "contacts.rs",
     "credits.rs",
     "dashpay.rs",
@@ -236,8 +242,12 @@ const FACADE: &[&str] = &[
 /// with their tests (0.2 recovery), the input-0 planner with its tests
 /// (1.0 C1a-1), the credit transfer to an own Platform address with its
 /// tests (1.0 C6a-1), the parsers dw-fuzz drives (H-02, `fuzzing`
-/// feature), and the kill -9 rows' test folders (H-03).
+/// feature), the kill -9 rows' test folders (H-03), and App Connect's
+/// network seam, rules and tests (1.0 F24).
 const NOT_FACADE: &[&str] = &[
+    "app_connect_net.rs",
+    "app_connect_plan.rs",
+    "app_connect_tests.rs",
     "attribution.rs",
     "avatar.rs",
     "avatar_cache.rs",
@@ -1118,6 +1128,32 @@ fn error_codes_match_the_contract() {
     );
     check_domain(
         &enums,
+        "ConnectError",
+        &[
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 0,
+                available: 0,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: ConnectFailure::KeyConflict,
+            },
+        ],
+        ConnectError::code,
+    );
+    check_domain(
+        &enums,
         "InvitationError",
         &[
             InvitationError::Invalid,
@@ -1215,6 +1251,7 @@ fn error_codes_match_the_contract() {
 
     let mut checked = [
         "AvatarError",
+        "ConnectError",
         "ContactError",
         "CreditsError",
         "IdentityError",
@@ -1352,7 +1389,8 @@ as_platform_via_accessor!(
     InvitationError,
     AvatarError,
     CreditsError,
-    ShieldedError
+    ShieldedError,
+    ConnectError
 );
 
 #[derive(Default)]
@@ -1718,6 +1756,41 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .map(drop),
             dp.recover_transfer_quote(s(), 0).await.map(drop),
             dp.recover_transfer(s(), 0, s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 1.0 F24: App Connect refuses an unknown wallet.
+        let link = || dw_uri::connect::ConnectUri {
+            carrier: dw_uri::connect::Carrier::DashPayConnect,
+            network: dw_uri::connect::NetworkSel::Devnet,
+            request: dw_uri::connect::AppConnectRequest {
+                app_eph_pub: [2; 33],
+                app_id: [1; 32],
+                label: s(),
+                identity_hint: None,
+                auth_bindings: Vec::new(),
+                connection_id: None,
+                enc_bindings: Vec::new(),
+                renew: false,
+                created_at_ms: 0,
+            },
+            callback: None,
+        };
+        let choice = || ConnectChoice {
+            identity: s(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 1,
+                expires_at_ms: 0,
+            },
+        };
+        for refused in [
+            dp.app_connect_sheet(link()).await.map(drop),
+            dp.app_connect_quote(link(), choice()).await.map(drop),
+            dp.app_connect_approve(link(), choice(), s())
+                .await
+                .map(drop),
+            dp.app_connect_retry_send(link()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

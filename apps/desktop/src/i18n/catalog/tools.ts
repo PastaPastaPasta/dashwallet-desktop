@@ -224,7 +224,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm.",
     dropAction: "Remove",
     removeUnconfirmed: {
       /** Remove unconfirmed refused with `rescan_in_progress`: after a chain fork the wallet catches up for about a block. */
@@ -323,16 +323,22 @@ export const tools = {
     },
     stuckRefusal: {
       rowsUnknown: "The wallet does not know this funding's coins yet.",
-      notStuck: "This funding is not stuck.",
+      notStuck: "This transfer isn't stuck, so there's nothing to send back. If it hasn't finished yet, finish it from Tools ▸ Repair ▸ Finish transfers.",
       noMarker: "There is no record of this funding.",
       callRunning: "The funding is still being sent.",
       journalUnavailable: "The payment record cannot be read right now.",
-      spendUnsettled: "An earlier repair (transaction {txid}) is not confirmed yet.",
-      lockInputsSpent: "The funding's coins were already spent by transaction {txid}.",
+      /** Says when to try again itself, so `retryLater` adds nothing to it. */
+      spendUnsettled: "Transaction {txid}, which this transfer depends on, isn't final on the network yet. Try again once it is.",
+      lockInputsSpent: "The coins for this transfer have already been spent, so there's nothing to send back. If its payment (transaction {txid}) went through, finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
       missesSignedLock: "The signed funding transaction {txid} is missing.",
       unattributedLock: "Transaction {txid} cannot be matched to this funding.",
       noKnownLock: "No funding transaction is known for this registration.",
       retryLater: "{text} Try again later.",
+    },
+    stuckFunding: {
+      /** Resolve abandoned the funding's own payment, which never settled: its coins come back after the rescan. */
+      abandonedRetryLater:
+        "Dash Wallet abandoned the payment for this transfer, so it no longer counts it or sends it again. Its coins come back once Dash Wallet has checked that they haven't been spent elsewhere. Then try again. If the payment had already reached the network, it can still confirm. If it does, nothing is sent back, and you can finish the transfer from Tools ▸ Repair ▸ Finish transfers.",
     },
   },
   addressBook: {

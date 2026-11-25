@@ -716,6 +716,10 @@ pub(crate) struct SessionHub {
     /// transaction, before its hand-off.
     #[cfg(test)]
     pub(crate) pause_resend: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: each txid an abandon stopped dash-spv rebroadcasting, with
+    /// whether its abandon mark was already written then.
+    #[cfg(test)]
+    pub(crate) stopped_rebroadcasts: Mutex<Vec<(Txid, bool)>>,
     /// Tests: takes the bytes Activity Resend hands off, in place of the
     /// network.
     #[cfg(test)]
@@ -1032,6 +1036,8 @@ impl SessionHub {
             pause_ops_read: Mutex::new(None),
             #[cfg(test)]
             pause_resend: Mutex::new(None),
+            #[cfg(test)]
+            stopped_rebroadcasts: Mutex::new(Vec::new()),
             #[cfg(test)]
             resend_wire: Mutex::new(None),
             #[cfg(test)]
