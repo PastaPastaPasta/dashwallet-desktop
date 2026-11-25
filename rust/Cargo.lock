@@ -2576,6 +2576,7 @@ dependencies = [
  "dw-p2p",
  "dw-protx",
  "dw-psbt",
+ "dw-shielded-drain",
  "dw-store-upgrade",
  "dw-testutil",
  "dw-units",
@@ -2727,6 +2728,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "dw-shielded-drain"
+version = "0.3.0"
+dependencies = [
+ "dw-appdb",
+ "dw-store-upgrade",
+ "platform-wallet",
+ "platform-wallet-storage",
+ "rusqlite",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

@@ -5068,3 +5068,6 @@ mod core_max_tests;
 
 #[path = "core_max_lib_tests.rs"]
 mod core_max_lib_tests;
+
+#[path = "shielded_store_drain_tests.rs"]
+mod store_drain_tests;

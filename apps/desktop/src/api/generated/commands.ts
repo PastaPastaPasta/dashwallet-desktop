@@ -4872,6 +4872,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.coins_unconfirmed",
   "shielded.move_running",
   "shielded.coins_changed",
+  "shielded.store_closed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

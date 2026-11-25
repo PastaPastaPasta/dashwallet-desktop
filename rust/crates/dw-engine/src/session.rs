@@ -653,6 +653,7 @@ impl NetworkSession {
             crate::store_upgrade::open_persister(&dir, persister_config)
         })
         .await??;
+        let persister_opened = Arc::new(persister_opened);
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
         // them: with no wallet open, closed ones cannot be reached. Such a
@@ -827,8 +828,14 @@ impl NetworkSession {
             .chain(store.unloaded())
             .chain(listed)
             .collect();
-        let journal = match crate::platform::lease::session::open_journal(&data_dir, known).await {
-            Ok(journal) => journal,
+        let opened_journal = crate::platform::lease::session::open_journal(
+            &data_dir,
+            known,
+            Arc::clone(&persister_opened),
+        )
+        .await;
+        let (journal, shielded_drain) = match opened_journal {
+            Ok(opened) => opened,
             Err(e) => {
                 #[cfg(test)]
                 failed_open_probe::record(
@@ -882,7 +889,7 @@ impl NetworkSession {
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),
                 persister,
-                _persister_opened: Arc::new(persister_opened),
+                _persister_opened: persister_opened,
                 store,
                 appdb: Arc::clone(&appdb),
                 tap,
@@ -917,6 +924,8 @@ impl NetworkSession {
             flow_leases: Mutex::default(),
             governance,
         });
+        // Before anything can configure upstream's shielded store.
+        let _ = session.platform.shielded_drain.set(shielded_drain);
         session.governance.follow(&session);
         if session.governance.enabled() {
             session.governance.start(&session);

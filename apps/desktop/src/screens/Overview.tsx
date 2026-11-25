@@ -34,6 +34,7 @@ import { RestoredBanner } from "./RestoredBanner";
 import { UpgradeNoticeBanner } from "./UpgradeNoticeBanner";
 import { UpgradeReplayNotice } from "./UpgradeReplayNotice";
 import { HistoryGapNotice } from "./HistoryGapNotice";
+import { ShieldedClosedNotice } from "./ShieldedClosedNotice";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor } from "../transfer/model";
@@ -284,6 +285,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <RestoredBanner />
         <UpgradeNoticeBanner />
         <HistoryGapNotice />
+        <ShieldedClosedNotice walletId={walletId} />
         <UpgradeReplayNotice walletId={walletId} />
         <ProtocolAdvisoryBanner network={network} />
         <ExportStagingBanner />

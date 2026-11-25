@@ -544,6 +544,9 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   restart_app: (_: Record<string, never>, { world, relaunch }: Ctx) => {
     (world.appExits ??= []).push("restart");
     world.storageHeld = undefined;
+    // The start's drain finishes once the other program has let go, or after a passing failure.
+    const shielded = world.pending.shielded;
+    if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
     // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
     if (world.restoreRequested) {

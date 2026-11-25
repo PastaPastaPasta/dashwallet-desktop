@@ -850,6 +850,27 @@ const SCENARIOS = {
     w.pending.shielded!.active = false;
     return w;
   },
+  /** The upgrade's move of the old Shielded records stopped: Shielded stays closed, Home says why. */
+  "shielded-closed-in-use": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "in_use";
+    return w;
+  },
+  "shielded-closed-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "failed";
+    return w;
+  },
+  "shielded-closed-damaged": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "damaged";
+    return w;
+  },
+  "shielded-closed-no-copy": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "no_upgrade_copy";
+    return w;
+  },
   /** Platform addresses holding only what is too small to move: Home counts none of it. */
   "platform-dust": (t) => {
     const w = base(t);

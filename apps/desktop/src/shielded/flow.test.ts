@@ -237,6 +237,16 @@ describe("shielded refusal copy", () => {
     expect(text("platform.unavailable")).toBe("Dash Platform did not answer. Try again.");
   });
 
+  it("says why Shielded stays closed, by the engine's reason", () => {
+    expect(text("shielded.store_closed", { kind: "reason", reason: "in_use" })).toMatch(/^Another program, possibly another copy of Dash Wallet, is using your Shielded data/);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "damaged" })).toMatch(/^Dash Wallet couldn't read your Shielded data from before the upgrade/);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "no_upgrade_copy" })).toMatch(/^Dash Wallet has no backup of your Shielded data/);
+    const failed = text("shielded.store_closed", { kind: "reason", reason: "failed" });
+    expect(failed).toMatch(/^Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded\. /);
+    expect(text("shielded.store_closed", { kind: "reason", reason: "later" })).toBe(failed);
+    expect(text("shielded.store_closed")).toBe(failed);
+  });
+
   it("sends an add to Shielded that may be out to Tools ▸ Repair, and a spend to Activity", () => {
     const unknown = appError("platform.broadcast_unknown", { kind: "artifact", artifact: "shield/0/funding" });
     expect(shieldedErrorText(unknown, credits, duffs, "add")).toBe(SHIELDED_COPY.fundingUnknown);
