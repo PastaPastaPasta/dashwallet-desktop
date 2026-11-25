@@ -4217,10 +4217,13 @@ async fn pass(
             }
         }
         let _passes = session.platform.shielded_passes.write().await;
-        if open && runs(session) && fence.refusal().is_none() && fence.drains() == drains {
-            if let Err(e) = release_drained_spends(session, &coordinator, evidence).await {
-                tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
-            }
+        if open
+            && runs(session)
+            && fence.refusal().is_none()
+            && fence.drains() == drains
+            && let Err(e) = release_drained_spends(session, &coordinator, evidence).await
+        {
+            tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
         }
     }
     true
