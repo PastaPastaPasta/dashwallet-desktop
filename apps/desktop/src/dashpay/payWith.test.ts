@@ -112,6 +112,19 @@ describe("Shielded readiness reasons (F16, F17)", () => {
   it("notes not rested with no time read (clock unknown, first scan running) say syncing", () => {
     expect(reason(readiness("rested", null))).toBe(PAY_WITH_COPY.syncing);
   });
+
+  it("an unsettled spend that is a hold says so and offers no Try again", () => {
+    const held = shieldedReason(readiness("noUnsettledSpend"), amount, clock, true);
+    expect(held).toBe(PAY_WITH_COPY.held);
+    expect(held).toBe("An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.");
+    expect(held).not.toMatch(/try again/i);
+    // The row says the same once Shielded is offered, and only for that check.
+    const live = new Set<PaySource>(["core", "shielded"]);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: true, live })).shielded).toBe(PAY_WITH_COPY.held);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: false, live })).shielded).toBe(PAY_WITH_COPY.unsettled);
+    expect(reasons(inputs({ readiness: readiness("synced"), shieldedHeld: true, live })).shielded).toBe(PAY_WITH_COPY.syncing);
+    expect(reasons(inputs({ readiness: readiness("noUnsettledSpend"), shieldedHeld: true })).shielded).toBe(PAY_WITH_COPY.notOffered);
+  });
 });
 
 describe("the fixture's Shielded quote", () => {
@@ -131,6 +144,7 @@ describe("the fixture's Shielded quote", () => {
     expect(failed(world({ restingUntil: secs(FIXTURE_NOW) - 1 }))).toBeNull();
     expect(failed(world({ active: false }))).toBe("poolActive");
     expect(failed(world({ unrecorded: [{} as UnrecordedSpend] }))).toBe("noUnsettledSpend");
+    expect(failed(world({ held: [{ activityId: "sh-held-1", transition: "00", credits: "0" }] }))).toBe("noUnsettledSpend");
   });
 
   it("asks nothing in duffs and a grant for the denomination and the name", () => {

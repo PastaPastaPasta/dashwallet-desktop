@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedReading } from "./queries";
+import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedHold, shieldedReading, shieldedSpendHeld } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -69,5 +69,25 @@ describe("the wallet balance the screens read", () => {
     expect(settledBalance({ ...known, catchingUp: true })).toBeNull();
     expect(settledBalance(known)).toBe(known);
     expect(settledBalance(null)).toBeNull();
+  });
+});
+
+describe("what payments that may still go through hold of Shielded", () => {
+  const status = (held: string, credits: string[], active = true) =>
+    ({ active, held, heldSpends: credits.map((c, i) => ({ activityId: `h${i}`, transition: "00", credits: c })) }) as unknown as ShieldedStatus;
+
+  it("counts the spends that still hold notes, with the held total", () => {
+    expect(shieldedHold(status("60000000000", ["30000000000", "30000000000"]))).toEqual({ count: 2, credits: "60000000000", duffs: 60_000_000 });
+    expect(shieldedHold(status("30000000000", ["30000000000", "0"]))).toEqual({ count: 1, credits: "30000000000", duffs: 30_000_000 });
+  });
+
+  it("shows no hold when nothing is held, even while a spend is listed; the gate still reads it", () => {
+    expect(shieldedHold(status("0", ["0"]))).toBeNull();
+    expect(shieldedSpendHeld(status("0", ["0"]))).toBe(true);
+    expect(shieldedHold(status("0", []))).toBeNull();
+    expect(shieldedSpendHeld(status("0", []))).toBe(false);
+    expect(shieldedHold(status("30000000000", ["30000000000"], false))).toBeNull();
+    expect(shieldedSpendHeld(status("30000000000", ["30000000000"], false))).toBe(false);
+    expect(shieldedHold(null)).toBeNull();
   });
 });

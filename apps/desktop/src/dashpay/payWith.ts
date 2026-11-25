@@ -19,7 +19,7 @@ export type PaySource = "core" | "platform" | "shielded";
 export const LIVE_SOURCES: ReadonlySet<PaySource> = new Set<PaySource>(["core", "platform"]);
 
 export const PAY_WITH_COPY = withTable(
-  messageTable("dashpay.registration.payWith", ["link", "title", "core", "platform", "shielded", "notOffered", "movePending", "unsettled", "syncing"]),
+  messageTable("dashpay.registration.payWith", ["link", "title", "core", "platform", "shielded", "notOffered", "movePending", "unsettled", "held", "syncing"]),
   {
     short: (amount: string) => t("dashpay.registration.payWith.short", { amount }),
     resting: (time: string) => t("dashpay.registration.payWith.resting", { time }),
@@ -36,6 +36,8 @@ export interface PayWithInputs {
   shieldedDuffs: number | null;
   /** The Shielded quote's readiness (C4b-1). */
   readiness: ShieldedReadiness | null;
+  /** A payment that may still go through holds part of the Shielded balance. */
+  shieldedHeld?: boolean;
   /** Duffs with the unit. */
   amount: (duffs: number) => string;
   /** Unix seconds as a clock time. */
@@ -57,8 +59,10 @@ export interface PaySourceRow {
 /** The pool is not offered here: the start refuses `platform.feature_off` for these. */
 const NOT_OFFERED: readonly ShieldedCheckName[] = ["poolActive", "featureOn", "denomination"];
 
-/** The first readiness check that fails, in the engine's order, as the step says it (F16). */
-export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duffs: number) => string, clock: (secs: number) => string): string | null {
+/** The first readiness check that fails, in the engine's order, as the step says it (F16). An
+ * unsettled spend that is a hold (`held`) offers no "Try again": it lasts until the network shows
+ * the payment can no longer go through. */
+export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duffs: number) => string, clock: (secs: number) => string, held = false): string | null {
   if (readiness === null) return null;
   const failed = readiness.checks.find((c) => !c.ready)?.check;
   if (failed === undefined) return null;
@@ -67,7 +71,7 @@ export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duf
     case "balance":
       return readiness.denomination === null ? PAY_WITH_COPY.notOffered : PAY_WITH_COPY.short(amount(creditsToDuffs(readiness.denomination)));
     case "noUnsettledSpend":
-      return PAY_WITH_COPY.unsettled;
+      return held ? PAY_WITH_COPY.held : PAY_WITH_COPY.unsettled;
     case "rested":
       return readiness.readyAt === null ? PAY_WITH_COPY.syncing : PAY_WITH_COPY.resting(clock(readiness.readyAt));
     default:
@@ -99,7 +103,7 @@ export function payWithRows(i: PayWithInputs): PaySourceRow[] {
       source: "shielded",
       label: PAY_WITH_COPY.shielded,
       balance: shown(i.shieldedDuffs),
-      reason: live.has("shielded") ? shieldedReason(i.readiness, i.amount, i.clock) : PAY_WITH_COPY.notOffered,
+      reason: live.has("shielded") ? shieldedReason(i.readiness, i.amount, i.clock, i.shieldedHeld) : PAY_WITH_COPY.notOffered,
     },
   ];
 }

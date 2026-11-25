@@ -454,6 +454,7 @@ function PayWithStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
     platform,
     shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
     readiness,
+    shieldedHeld: pools.shieldedSpendHeld,
     amount: inputs.amount,
     clock: (secs) => timeText(secs, b.locale),
     discreet: inputs.discreet,

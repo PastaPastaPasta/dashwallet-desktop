@@ -13,6 +13,7 @@ import type { LockResolutionName } from "../../api/generated/LockResolutionName"
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { PaymentSourceName } from "../../api/generated/PaymentSourceName";
 import type { PlatformActivity } from "../../api/generated/PlatformActivity";
+import type { ShieldedHold } from "../../api/queries";
 import type { PoolReading } from "../../format/homeBalance";
 import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
@@ -41,6 +42,8 @@ export interface FromInputs {
   discreet: boolean;
   /** Review accepts the payee's request too: that payment is the Dash wallet's. */
   acceptsToo: boolean;
+  /** What payments that may still go through hold of the Shielded balance. */
+  shieldedHold?: ShieldedHold | null;
   live?: ReadonlySet<PaySource>;
 }
 
@@ -73,7 +76,8 @@ export function fromRows(i: FromInputs): FromRow[] {
   const shown = (duffs: number | undefined) => (duffs === undefined || i.discreet ? null : i.amount(duffs));
   const pool = (source: "shielded" | "platform", reading: PoolReading): FromRow => {
     const duffs = typeof reading === "number" ? reading : reading === "absent" ? 0 : undefined;
-    const reason = !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? t("pay.contact.from.empty") : null;
+    const empty = source === "shielded" && i.shieldedHold ? t("pay.contact.from.shieldedHeld") : t("pay.contact.from.empty");
+    const reason = !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? empty : null;
     return { source, label: LABEL[source], balance: shown(duffs), reason };
   };
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];
@@ -90,10 +94,19 @@ export function totalText(quote: ContactPayQuoteInfo, contact: string, credit: (
   return t("pay.contact.from.total", { total: credit(total), source: sourceLabel(quote.source), amount: credit(quote.credits), contact, fee: credit(quote.feeCredits) });
 }
 
-/** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked. */
-export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string): string {
+/** Whether a Shielded refusal for too little is the hold's: what is held would cover the shortfall. */
+const heldShort = (e: { data?: unknown }, hold: ShieldedHold | null): boolean => {
+  const d = e.data as { kind?: string; needed?: string; available?: string } | undefined;
+  return hold !== null && d?.kind === "credits" && d.needed !== undefined && d.available !== undefined && BigInt(d.needed) <= BigInt(d.available) + BigInt(hold.credits);
+};
+
+/** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked;
+ * `hold` what payments that may still go through hold of the Shielded balance. */
+export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string, hold: ShieldedHold | null = null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
+    case "shielded.insufficient_funds":
+      return heldShort(e, hold) ? t("pay.contact.from.shieldedHeld") : moveErrorText(e, amount);
     case "credits.withdrawal_out_of_range":
       if (e.data?.kind === "creditRange" && credits !== null && BigInt(credits) < BigInt(e.data.min)) return t("pay.contact.from.belowMinimum", { min: amount(e.data.min) });
       return moveErrorText(e, amount);

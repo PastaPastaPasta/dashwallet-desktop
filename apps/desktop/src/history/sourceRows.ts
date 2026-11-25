@@ -8,6 +8,7 @@
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { creditsToDuffs } from "../api/pending";
 import { t } from "../i18n";
 
@@ -118,13 +119,17 @@ export function platformRow(a: PlatformActivity): TxRow {
 
 /** A shielded activity row as a history row. Adding to the pool and a withdrawal to the Dash wallet
  * are internal moves (no sign); an `unshield` pays a Platform address (E1's contract), so it is
- * a payment out unless the engine says it is a self-transfer; the rest are received or paid. */
-export function shieldedRow(a: ShieldedActivity): TxRow {
+ * a payment out unless the engine says it is a self-transfer; the rest are received or paid. A
+ * spend whose notes are held (`held`, the status's `heldSpends`) may still go through: unconfirmed,
+ * never a problem. */
+export function shieldedRow(a: ShieldedActivity, held?: ReadonlySet<string>): TxRow {
   const internal = a.kind === "shield" || a.kind === "shieldFromCore" || a.kind === "withdrawal" || a.direction === "selfTransfer";
   const amount = creditsToDuffs(a.credits);
   const received = a.direction === "in";
+  const mayLand = a.status !== "confirmed" && !!held?.has(a.id);
+  const kind = a.status === "confirmed" ? "confirmed" : a.status === "failed" && !mayLand ? "notAccepted" : "unconfirmed";
   return {
-    ...base(`shielded:${a.kind}:${a.id}`, statusOf(a.status === "confirmed" ? "confirmed" : a.status === "failed" ? "notAccepted" : "unconfirmed"), a.createdAt, a.direction === "out" ? -amount : amount),
+    ...base(`shielded:${a.kind}:${a.id}${mayLand ? MAY_LAND : ""}`, statusOf(kind), a.createdAt, a.direction === "out" ? -amount : amount),
     blockHeight: a.blockHeight,
     txType: internal ? "platformTransfer" : received ? "recvWithAddress" : "sendToAddress",
     category: internal ? "platform" : received ? "received" : "sent",
@@ -132,6 +137,9 @@ export function shieldedRow(a: ShieldedActivity): TxRow {
     label: a.memo,
   };
 }
+
+/** The history ids of the Shielded spends whose notes are held. */
+export const heldActivities = (status: ShieldedStatus | null | undefined): ReadonlySet<string> => new Set(status?.heldSpends.map((h) => h.activityId));
 
 export type SourceRecord =
   | { source: "platform"; row: TxRow; record: PlatformActivity }
@@ -142,8 +150,8 @@ export type SourceRecord =
 const recordKey = (txid: string) => txid.replace(/:(replaced|mayland|unknown)$/, "");
 
 /** The activity record a synthetic row was made from, by its txid; `null` for a Core txid or a
- * record no longer in the read. */
-export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined): SourceRecord | null {
+ * record no longer in the read. `held`: the Shielded spends whose notes are held. */
+export function findSourceRecord(txid: string, platform: readonly PlatformActivity[] | null | undefined, shielded: readonly ShieldedActivity[] | null | undefined, held?: ReadonlySet<string>): SourceRecord | null {
   const key = recordKey(txid);
   const source = rowSource({ txid });
   if (source === "platform") {
@@ -152,7 +160,7 @@ export function findSourceRecord(txid: string, platform: readonly PlatformActivi
   }
   if (source === "shielded") {
     const record = shielded?.find((a) => shieldedRow(a).txid === key);
-    return record ? { source, row: shieldedRow(record), record } : null;
+    return record ? { source, row: shieldedRow(record, held), record } : null;
   }
   return null;
 }

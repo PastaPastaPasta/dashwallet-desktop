@@ -244,7 +244,7 @@ export function shieldedReadiness(s: ShieldedWorld | null | undefined): Shielded
     ["featureOn", true],
     ["denomination", active],
     ["balance", active && BigInt(s.balance) >= SHIELDED_DENOMINATION],
-    ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0],
+    ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0 && (s.held ?? []).length === 0],
     ["synced", synced],
     ["rested", synced && resting === null],
   ];
