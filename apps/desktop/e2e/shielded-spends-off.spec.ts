@@ -139,6 +139,7 @@ test.describe("Shielded spends off", () => {
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "shielded" } } as never);
     });
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" }));
+    await expect(page.getByText("Whether these moves' payment reached the network is unknown. Repair settles each with a payment back to your own wallet; you confirm its coins and its fee first.", { exact: true })).toBeVisible();
     const priced = page.getByTestId("repair-stuck-shield/0/funding");
     await expect(priced).toContainText(/Repair sends the move's 3 mixed coins/);
     await expect(priced).not.toContainText("into Shielded again");

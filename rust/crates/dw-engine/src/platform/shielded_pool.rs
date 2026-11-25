@@ -3043,14 +3043,17 @@ pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
     info
 }
 
-/// The one switch for spends from the pool's key set: the library's answer
-/// for [`ShieldedLib::keyset_spends`], [`ShieldedSyncInfo`] and the receive
-/// address (`DashPay::shielded_receive_address`).
+/// [`session_keyset_spends`] for the wallet's Platform handle: the
+/// library's answer for [`ShieldedLib::keyset_spends`],
+/// [`ShieldedSyncInfo`] and the receive address
+/// (`DashPay::shielded_receive_address`).
 pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
     session_keyset_spends(&pw.session)
 }
 
-/// [`keyset_spends`] from the session alone, read before any pool opens.
+/// The one switch for spends from the pool's key set. Every reading goes
+/// through it, including the refusals [`on_pool_keyset`] makes before any
+/// pool opens; a build that turns spends off changes this body only.
 pub(crate) fn session_keyset_spends(session: &NetworkSession) -> bool {
     #[cfg(test)]
     if (session.keyset_spends_off).load(Ordering::SeqCst) {
