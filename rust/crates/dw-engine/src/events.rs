@@ -633,7 +633,7 @@ pub(crate) struct SessionHub {
     /// with its detection's evidence and the truncations applied when it
     /// began to wait: dropped when an open ends, or at the wallet's next
     /// drop (#818, S1).
-    deferred_drops: Mutex<Vec<(WalletId, u64, crate::tx_actions::DeadWork)>>,
+    deferred_drops: Mutex<Vec<(WalletId, DropTake, crate::tx_actions::DeadWork)>>,
     /// The beaten payments whose rechecks ran out while only the proof of
     /// their winner's block was missing, by wallet and root: rechecked with
     /// their detection's evidence at the wallet's next drop, which an
@@ -1444,27 +1444,13 @@ impl SessionHub {
         (mine.into_iter()).map(|(_, t, set)| (t, set)).collect()
     }
 
-    /// Queues again the children of a swept payment whose drop blocks on
-    /// top of the chain it was taken on put off, with their truncation
-    /// stamp (#891): the next drop takes them, and a fork counted meanwhile
-    /// voids them. None outlives an unload.
-    pub(crate) fn requeue_dead_children(&self, id: WalletId, truncations: u64, set: DeadSet) {
-        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
-        if unloaded.contains(&id) {
-            return;
-        }
-        let mut queued = (self.dead_children.lock()).unwrap_or_else(|p| p.into_inner());
-        queued.push((id, truncations, set));
-    }
-
     /// Keeps `work`, drops of wallet `id` that wait for another wallet's
-    /// open, found with `truncations` applied; one already waiting is kept
-    /// once.
+    /// open or for the chain to be read again, each with the take it was
+    /// found at; one already waiting is kept once.
     pub(crate) fn defer_drops(
         &self,
         id: WalletId,
-        truncations: u64,
-        work: impl IntoIterator<Item = crate::tx_actions::DeadWork>,
+        work: impl IntoIterator<Item = (DropTake, crate::tx_actions::DeadWork)>,
     ) {
         // Under the lock an unload forgets them under: none outlives it.
         let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
@@ -1472,22 +1458,22 @@ impl SessionHub {
             return;
         }
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
-        for w in work {
-            let waiting = |(d, t, waiting): &(WalletId, u64, crate::tx_actions::DeadWork)| {
-                (*d, *t) == (id, truncations) && *waiting == w
+        for (take, w) in work {
+            let waiting = |(d, t, waiting): &(WalletId, DropTake, crate::tx_actions::DeadWork)| {
+                (*d, *t) == (id, take) && *waiting == w
             };
             if !deferred.iter().any(waiting) {
-                deferred.push((id, truncations, w));
+                deferred.push((id, take, w));
             }
         }
     }
 
-    /// The drops of wallet `id` that waited for another wallet's open, each
-    /// with the truncations applied when it began to wait.
+    /// The drops of wallet `id` that waited, each with the take it was
+    /// found at.
     pub(crate) fn take_deferred_drops(
         &self,
         id: WalletId,
-    ) -> Vec<(u64, crate::tx_actions::DeadWork)> {
+    ) -> Vec<(DropTake, crate::tx_actions::DeadWork)> {
         let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
         let (mine, others) = std::mem::take(&mut *deferred)
             .into_iter()
@@ -2681,6 +2667,11 @@ pub(crate) type CarriedDrop = (
 
 /// Chooses the spend claims of `wallets` again after `txid`'s lock.
 pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;
+
+/// What a drop with no recheck was found at (#891): the truncations
+/// applied, key-wallet's processed height, and the header chain's block at
+/// its anchor height ([`crate::tx_actions::take_anchor`]).
+pub(crate) type DropTake = (u64, Option<u32>, Option<dashcore::BlockHash>);
 
 /// Children of swept payments queued for a drop, with their wallet and
 /// the truncations applied when they were queued.

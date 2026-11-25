@@ -3663,6 +3663,100 @@ fn a_swept_payments_child_stays_when_a_fork_replaces_its_winners_block_above_the
     block_after_its_take(Some(winner_at), (&tip, &after), kept_after_the_block);
 }
 
+/// #891: key-wallet sweeps P while another wallet is part-way through its
+/// open, so the drop of C waits; then `meanwhile` happens to the chain
+/// before the open ends. Returns once the drain and the reconciles are
+/// done.
+fn swept_while_another_wallet_opens(
+    meanwhile: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId),
+    check: impl FnOnce(&Engine, &Arc<NetworkSession>, WalletId, (&Transaction, OutPoint, OutPoint)),
+) {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    headers(&session, &[(TIP + 1, vec![foreign()])]);
+    reconciles_done(&engine, &session);
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session.hub.apply_wallet_event(&swept(id, &p, &winner));
+    reconciled(&engine, &session, id);
+    eventually("the drop of C waits for the other wallet's open", || {
+        session.hub.deferred_drop_wallets().contains(&id)
+    });
+    assert!(live_in_history(&session, id, c.txid()), "C waits");
+    meanwhile(&engine, &session, id);
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    drops_done(&engine, &session);
+    check(&engine, &session, id, (&c, c_change, d));
+}
+
+/// #891 (#857's waiting drops): while the drop of C waits for another
+/// wallet's open, key-wallet processes a fork the hub does not hear
+/// (dash-spv truncates with its event monitor stopped), whose new chain
+/// passes the hub's height and replaces the block C was taken on. The
+/// hub counts no truncation, but the sweep's winner may be gone: when C's
+/// drop is taken again, it is void, and C stays.
+#[test]
+fn a_waiting_swept_child_is_void_after_a_fork_the_hub_did_not_hear() {
+    swept_while_another_wallet_opens(
+        |engine, session, id| {
+            let heard = session.hub.truncations();
+            let manager = session.manager().unwrap();
+            // Straight to key-wallet, not through `deliver`: the hub hears
+            // nothing.
+            engine.block_on(async move {
+                let wm = manager.wallet_manager_arc();
+                let mut wm = wm.write().await;
+                wm.truncate_above(TIP).unwrap();
+                for (height, n) in [(TIP + 1, 21u8), (TIP + 2, 22)] {
+                    let block = super::block_with(vec![unrelated(n)]);
+                    let wallets = BTreeSet::from([id.0]);
+                    (wm.process_block_for_wallets(&block, block.block_hash(), height, &wallets))
+                        .await;
+                    wm.update_wallet_synced_height(&id.0, height);
+                }
+            });
+            headers(
+                session,
+                &[
+                    (TIP + 1, vec![unrelated(21)]),
+                    (TIP + 2, vec![unrelated(22)]),
+                ],
+            );
+            assert_eq!(session.hub.truncations(), heard, "the hub heard no fork");
+        },
+        |engine, session, id, (c, c_change, _)| {
+            assert!(live_in_history(session, id, c.txid()), "C is dropped");
+            assert!(
+                held(engine, session, id).contains(&c_change),
+                "C's change is not held"
+            );
+        },
+    );
+}
+
+/// #891 (#857's waiting drops): while the drop of C waits for another
+/// wallet's open, a block without P lands on top of the block C was taken
+/// on: the winner stands, and C goes when the open ends.
+#[test]
+fn a_waiting_swept_child_goes_after_a_block_on_top_of_its_take() {
+    swept_while_another_wallet_opens(
+        |engine, session, id| {
+            headers(
+                session,
+                &[(TIP + 1, vec![foreign()]), (TIP + 2, vec![unrelated(23)])],
+            );
+            mined(engine, session, id, TIP + 2, vec![unrelated(23)]);
+        },
+        |engine, session, id, (c, c_change, d)| {
+            eventually("C goes", || !live_in_history(session, id, c.txid()));
+            drops_done(engine, session);
+            assert_child_dropped(engine, session, id, (c, c_change, d), "after the open");
+        },
+    );
+}
+
 /// #891: with no fork the hub counts, a block after the drop took C mines
 /// P.
 #[test]
