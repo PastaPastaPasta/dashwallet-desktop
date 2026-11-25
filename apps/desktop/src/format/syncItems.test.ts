@@ -154,14 +154,23 @@ describe("a sync whose status is not read", () => {
 describe("a sync the bar does not wait on", () => {
   // MG: Synced with a locked or watch-only Shielded only while Sync progress says why.
   it("is Synced in the bar and Unlock to sync in Sync progress while the first bind needs an unlock", () => {
-    for (const account of ["locked", "mixingOnly"] as const) {
-      const s = shielded({ established: false, account });
-      expect(bar(platform(), s).button).toBe("synced");
-      expect(row(shieldedItem(s))).toBe("Unlock to sync");
-    }
+    const s = shielded({ established: false, account: "locked" });
+    expect(bar(platform(), s).button).toBe("synced");
+    expect(row(shieldedItem(s))).toBe("Unlock to sync");
     const p = platform({ startup: "identityUnsettled" });
     expect(bar(p, shielded()).button).toBe("synced");
     expect(row(platformItem(p))).toBe("Unlock to sync");
+    expect(row(platformItem(p, false, "locked"))).toBe("Unlock to sync");
+  });
+
+  // MG: a wallet unlocked for mixing only needs the full unlock, and both rows say so.
+  it("says Unlock fully to sync on both rows while the wallet is unlocked for mixing only", () => {
+    const s = shielded({ established: false, account: "mixingOnly" });
+    expect(bar(platform(), s).button).toBe("synced");
+    expect(row(shieldedItem(s))).toBe("Unlock fully to sync");
+    const p = platform({ startup: "identityUnsettled" });
+    expect(row(platformItem(p, false, "unlockedMixingOnly"))).toBe("Unlock fully to sync");
+    expect(barSync(caughtUp, [coreItem(caughtUp), platformItem(p, false, "unlockedMixingOnly"), shieldedItem(s)]).button).toBe("synced");
   });
 
   it("is Synced in the bar and the watch-only line in Sync progress for a watch-only wallet", () => {

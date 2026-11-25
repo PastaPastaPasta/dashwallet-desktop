@@ -7,8 +7,8 @@ import { useId, useRef, useState } from "react";
 import type { CoinJoinStatus } from "../../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useLockStatus, useShieldedStatus } from "../../api/queries";
-import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
-import { navigate, useUi } from "../../app/ui";
+import { MOVE_COPY, moveMixedFor, moveShieldWait, showsMoveCard } from "../../coinjoin/move";
+import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { Sheet } from "../../components/sheet";
@@ -109,7 +109,7 @@ function CoinJoinExplainer({ onClose, returnFocus }: { onClose: () => void; retu
 /** "Move mixed coins" (IOS-057) to the wallet, or into Shielded where the network has it: the sheet
  * reads the plan and asks for the grant. */
 function MoveMixedCard({ walletId, network, status }: { walletId: string; network: NetworkInfo; status: CoinJoinStatus }) {
-  useT();
+  const t = useT();
   const b = useBackend();
   const flow = moveMixedFor(b, walletId);
   useModel(flow);
@@ -117,6 +117,7 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
   const shieldedStatus = useShieldedStatus(walletId);
   const shielded = shieldedStatus.data?.active === true;
   const spendsOff = shieldedSpendsOff(shieldedStatus.data);
+  const wait = moveShieldWait(shieldedStatus.data);
   // The plan itself says what there is to move.
   if (!showsMoveCard(status, flow)) return null;
   return (
@@ -135,8 +136,13 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
           {MOVE_COPY.card.open}
         </DashButton>
         {shielded && (
-          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff} why={spendsOff ? SHIELDED_SPENDS_COPY.unavailable : null} onClick={() => flow.begin("shielded")}>
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-shield" disabled={spendsOff || wait !== null} why={spendsOff ? SHIELDED_SPENDS_COPY.unavailable : wait?.why} onClick={() => flow.begin("shielded")}>
             {MOVE_COPY.card.shield}
+          </DashButton>
+        )}
+        {shielded && !spendsOff && wait?.unlock && (
+          <DashButton variant="tintedBlue" data-testid="coinjoin-move-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
+            {wait.unlock === "unlock" ? t("transfer.shielded.receive.unlock") : t("shell.status.unlockFully")}
           </DashButton>
         )}
       </div>

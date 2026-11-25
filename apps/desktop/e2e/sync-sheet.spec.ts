@@ -86,3 +86,11 @@ test("a Shielded sync status that cannot be read is never Synced", async ({ page
   await page.getByTestId("status-sync").click();
   await expect(page.getByTestId("sync-item-shielded")).toContainText("Couldn't check this sync. It tries again shortly.");
 });
+
+test("a wallet unlocked for mixing only is Synced in the bar and asks for the full unlock in Sync progress", async ({ page }) => {
+  await page.goto(fixtureUrl("shielded-mixing-only", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("status-state")).toHaveText("Up to date");
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-item-shielded")).toContainText("Unlock fully to sync");
+});
