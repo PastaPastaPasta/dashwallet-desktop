@@ -15,6 +15,7 @@ import {
   homeBalance,
   newHeroWatch,
   POOL_ROWS,
+  shieldedSubtitle,
   watchHero,
   type HeroReading,
   type HeroSync,
@@ -56,6 +57,12 @@ describe("Home's balance", () => {
     expect(coreSubtitle({ ...held, immature: 0, locked: 0 }, fmt, "Dash wallet")).toBe("Dash wallet");
   });
 
+  it("names under the Shielded row what payments that may still go through hold, and how many", () => {
+    expect(shieldedSubtitle({ count: 1, credits: "30000000000", duffs: 3 * COIN / 10 }, fmt, "Private balance")).toBe("0.30 held for a payment");
+    expect(shieldedSubtitle({ count: 2, credits: "60000000000", duffs: 6 * COIN / 10 }, fmt, "Private balance")).toBe("0.60 held for 2 payments");
+    expect(shieldedSubtitle(null, fmt, "Private balance")).toBe("Private balance");
+  });
+
   it("always lists Core, Shielded and Platform, in that order", () => {
     expect(POOL_ROWS.map((r) => r.pool)).toEqual(["core", "shielded", "platform"]);
   });
@@ -76,6 +83,13 @@ describe("Home's breakdown rows", () => {
     expect(rows(0, "failed")).toEqual(["core", "platform"]);
     expect(rows("loading", "failed")).toEqual(["core", "shielded", "platform"]);
     expect(rows("absent", "loading")).toEqual(["core", "platform"]);
+  });
+
+  it("keeps an empty Shielded row while a payment holds part of it", () => {
+    const held = (shielded: PoolReading, platform: PoolReading) => breakdownRows(homeBalance(core, shielded, platform).pools, false, true);
+    expect(held(0, 0)).toEqual(["core", "shielded"]);
+    expect(held(0, COIN)).toEqual(["core", "shielded", "platform"]);
+    expect(held("absent", 0)).toEqual([]);
   });
 
   it("has no breakdown when Core alone would repeat the hero", () => {

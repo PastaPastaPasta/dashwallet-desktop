@@ -1045,7 +1045,7 @@ impl NetworkSession {
         self.context.is_ready()
     }
 
-    fn not_open(&self) -> EngineError {
+    pub(crate) fn not_open(&self) -> EngineError {
         EngineError::NetworkNotOpen(self.network.to_string())
     }
 

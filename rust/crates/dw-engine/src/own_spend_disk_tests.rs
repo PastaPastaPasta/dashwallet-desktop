@@ -772,6 +772,45 @@ fn a_wallet_opened_later_stores_no_coin_its_payment_spent_unspent() {
     assert_holds(&engine, &session, id, &want, "after a restart");
 }
 
+/// A wallet opened later in the session restores its pending payment's
+/// claims through the one helper, so platform-wallet's claim mirror sees
+/// them before the wallet processes a block.
+#[test]
+fn a_wallet_opened_later_restores_its_claims_through_the_helper() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let funded = funding(0x3e, &to, COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![funded.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let a = OutPoint::new(funded.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let restored =
+        || (crate::history_ops::claims_restored().lock()).unwrap_or_else(|e| e.into_inner());
+    restored().remove(&a);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(
+        restored().contains(&a),
+        "the load claims P's coin through the helper"
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "P's claim holds A"
+    );
+}
+
 /// A coin stored unspent stays so when a later batch hands it to the
 /// store again with a verdict that the wallet does not hold it: the store
 /// only declines to write it (a known gap: an existing row is not marked

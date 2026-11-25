@@ -4550,7 +4550,7 @@ impl Fixture {
             .block_on(session.on_runtime(async move {
                 let wallet = inner.wallet(&id).await?;
                 let mut state = wallet.state_mut().await;
-                state.core_wallet.restore_spent_outpoints(&claims);
+                crate::history_ops::restore_spent_claims(&mut state, &claims);
                 Ok(())
             }))
             .unwrap();

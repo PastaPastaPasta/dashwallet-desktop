@@ -57,6 +57,31 @@ describe("the From step (C-funding P16)", () => {
   });
 });
 
+describe("a Shielded payment waiting on a hold", () => {
+  const HELD = "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.";
+  const live = new Set(["core", "shielded", "platform"] as const);
+  const hold = { count: 1, credits: "300000000000", duffs: 3e8 };
+  const short = (needed: string, available: string) => appError("shielded.insufficient_funds", { kind: "credits", needed, available });
+
+  it("an empty Shielded balance a hold took says so, not that there is nothing to pay with", () => {
+    const shielded = (i: Partial<FromInputs>) => fromRows({ ...base, live, ...i }).find((r) => r.source === "shielded")?.reason;
+    expect(shielded({ shielded: 0, shieldedHold: hold })).toBe(HELD);
+    expect(shielded({ shielded: 0 })).toBe("No balance to pay with.");
+    expect(shielded({ shieldedHold: hold })).toBeNull();
+    expect(shielded({ shielded: 0, shieldedHold: hold, acceptsToo: true })).toBe("Accept and pay can only use your Dash wallet balance.");
+    expect(fromRows({ ...base, live, platform: 0, shieldedHold: hold }).find((r) => r.source === "platform")?.reason).toBe("No balance to pay with.");
+  });
+
+  it("a shortfall the held amount would cover is the hold's, with no Try again", () => {
+    const text = fromErrorText(short("400000000000", "200000000000"), "400000000000", credits, hold);
+    expect(text).toBe(HELD);
+    expect(text).not.toMatch(/try again/i);
+    // More than the balance and the hold together, or no hold: the plain shortfall.
+    expect(fromErrorText(short("600000000000", "200000000000"), "600000000000", credits, hold)).not.toBe(HELD);
+    expect(fromErrorText(short("400000000000", "200000000000"), "400000000000", credits)).not.toBe(HELD);
+  });
+});
+
 describe("a payment from a balance's copy (D-C5 Copy)", () => {
   it("says the outcome", () => {
     expect(outcomeText("sent", "@bob").text).toBe("Payment sent. It arrives in @bob’s wallet once the Dash network processes it. This can take a while.");
