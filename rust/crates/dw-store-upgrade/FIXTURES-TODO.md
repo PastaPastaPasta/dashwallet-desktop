@@ -13,11 +13,21 @@ copies only and records the fork rev and each file's sha256.
   (`tests::add_retired_row`).
 - **Stamped contact:** a contact whose `external_account_reference` is
   non-NULL, to show R1's drop loses nothing a later build reads.
-- **Fork V3 with rows:** `core_dropped_unsigned_spends` holding records,
-  kept unadopted until P8 (fork V3 rule, pending its ruling).
 - **Fork V4 / V5 dev files:** `{1,2,3,4}`, `{1,2,3,5}` and `{1,2,3,4,5}`.
   These stay refused until their adopting migrations and exact shapes are
   compiled in.
 - **Hot WAL fork file:** a released-build file whose fork history row lives
   only in `wallet.sqlite-wal`, to replace the hand-built one in
   `refuses_a_wal_only_fork_v4_row_through_the_locked_check`.
+
+## Done
+
+- **Fork V3 with rows:** `data/fork-v3-dropped/wallet.sqlite`, a copy of
+  the released v0.3.0 store into which the fork's own
+  `drop_unauthorized_pending_spends` at c5917e6bd5 wrote three records
+  (PROVENANCE.md). `tests::v3_dropped` runs it through the whole upgrade, a
+  Strict open and a stored changeset with `core_dropped_unsigned_spends`
+  byte-equal, its released coins unspent and loaded, and wallet removal
+  deleting only that wallet's rows (Q93 T3 a–d). The table stays unadopted
+  until P8. `data/fork-v3-no-accounts` (no account registrations) is kept
+  only to show such a store is refused at the rehearsal.

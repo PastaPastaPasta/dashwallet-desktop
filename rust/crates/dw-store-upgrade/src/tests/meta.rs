@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::copy::{self, CantOpenCause};
+use crate::copy;
 
 #[test]
 fn published_pins_give_the_accepted_sets() {
@@ -123,43 +123,6 @@ fn crate_source_never_writes_the_v3_table() {
 }
 
 #[test]
-fn cant_open_renders_for_both_causes_with_and_without_a_backup() {
-    let folder = "/home/u/.local/share/Dash Wallet/regtest";
-    for cause in [
-        CantOpenCause::RetiredPoolWithoutP9a,
-        CantOpenCause::P9aBroken,
-    ] {
-        let with = copy::cant_open(cause, true);
-        let shown = with.render(folder);
-        assert!(shown.starts_with("Dash Wallet can't open this wallet data\n"));
-        assert!(shown.contains(&format!(
-            "the wallet data in {folder}. Nothing in it was changed, and"
-        )));
-        assert!(shown.contains(&format!("upgrade-backups folder inside {folder}.")));
-        assert!(shown.ends_with("[Quit]"));
-        assert_eq!(with.text_key, "storeUpgrade.cantOpen.text");
-        let without = copy::cant_open(cause, false);
-        assert_eq!(without.text_key, "storeUpgrade.cantOpen.textWithoutBackup");
-        assert!(!without.render(folder).contains("upgrade-backups"));
-        assert!(
-            without
-                .render(folder)
-                .contains("Nothing in it was changed. Your funds")
-        );
-    }
-    let err = crate::StoreUpgradeError::RetiredPoolWithoutAdopter { rows: 1 };
-    assert_eq!(
-        CantOpenCause::of(&err),
-        Some(CantOpenCause::RetiredPoolWithoutP9a)
-    );
-    let err = crate::StoreUpgradeError::P9aBroken { detail: "x".into() };
-    assert_eq!(
-        copy::screen_for(&err, true),
-        Some(copy::cant_open(CantOpenCause::P9aBroken, true))
-    );
-}
-
-#[test]
 fn backup_sentence_follows_snapshot_presence() {
     let f = fixture("v0.1.0");
     assert!(!crate::snapshot::snapshot_present(&f.net).unwrap());
@@ -172,9 +135,9 @@ fn backup_sentence_follows_snapshot_presence() {
 #[test]
 fn copy_names_the_folder_the_snapshot_writes() {
     assert_eq!(copy::COPY_FOLDER_NAME, "upgrade-backups");
-    let text = copy::cant_open(CantOpenCause::P9aBroken, true).text;
+    let text = copy::restore_foreign::KEEP_MEANING.text;
     assert!(text.contains(&format!(
-        "the {} folder inside {{folder}}",
+        "stay in the {} folder.",
         crate::snapshot::UPGRADE_BACKUPS_DIR
     )));
 }

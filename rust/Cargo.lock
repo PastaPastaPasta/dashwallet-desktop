@@ -2740,6 +2740,7 @@ dependencies = [
  "platform-wallet-storage",
  "refinery",
  "rusqlite",
+ "rustix 1.1.6",
  "serde",
  "sha2 0.10.9",
  "tempfile",
