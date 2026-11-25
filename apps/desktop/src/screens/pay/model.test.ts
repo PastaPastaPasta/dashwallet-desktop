@@ -16,6 +16,8 @@ import {
   confirmActions,
   contactConfirmActions,
   contactDataText,
+  contactsUpdatingNotice,
+  estimateRefusal,
   failureText,
   paysWithUnmixed,
   PAY_CHECKING,
@@ -239,6 +241,33 @@ describe("a contact payment's refusals over the contact's data (H-09)", () => {
     expect(failureText(err("platform.trust_mismatch"), "test", "DASH", true)).toBe(MISMATCH);
     expect(failureText(err("platform.context_unavailable"), "test")).toBe("platform.context_unavailable");
     expect(failureText(err("platform.unavailable"), "test", "DASH", true)).toBe("Could not reach Dash Platform. Try again.");
+  });
+});
+
+describe("a contact payment waiting for the contacts to be re-checked after a launch (H-09)", () => {
+  const NOTICE = "Dash Wallet is still checking your contacts' payment details after the restart, so nothing was sent. You can pay this contact once it has finished.";
+  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
+
+  it("is a notice with Try again, not an error", () => {
+    const notice = { kind: "updating", text: NOTICE };
+    expect(contactsUpdatingNotice(err("platform.context_unavailable"), true)).toEqual(notice);
+    expect(estimateRefusal(err("platform.context_unavailable"), true, null)).toEqual({ general: null, notice });
+    // An accept that went through first is said first.
+    expect(contactsUpdatingNotice(err("platform.context_unavailable"), true, "You and Erin are now contacts.")).toEqual({ kind: "updating", text: `You and Erin are now contacts. ${NOTICE}` });
+  });
+
+  it("keeps a mismatch an error", () => {
+    expect(contactsUpdatingNotice(err("platform.trust_mismatch"), true)).toBeNull();
+    expect(estimateRefusal(err("platform.trust_mismatch"), true, null)).toEqual({ general: MISMATCH, notice: null });
+    expect(failureText(err("platform.trust_mismatch"), "test", "DASH", true)).toBe(MISMATCH);
+  });
+
+  it("leaves a payment to an address, and every other refusal, its own words", () => {
+    expect(contactsUpdatingNotice(err("platform.context_unavailable"), false)).toBeNull();
+    expect(estimateRefusal(err("platform.context_unavailable"), false, null)).toEqual({ general: "platform.context_unavailable", notice: null });
+    expect(failureText(err("platform.context_unavailable"), "test")).toBe("platform.context_unavailable");
+    expect(contactsUpdatingNotice(err("platform.unavailable"), true)).toBeNull();
+    expect(estimateRefusal(err("send.dust_amount"), true, "Too small.")).toEqual({ general: "Too small.", notice: null });
   });
 });
 

@@ -23,6 +23,7 @@ import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } f
 import { payNote } from "../../contacts/pane";
 import { messageTable, t } from "../../i18n";
 import { en } from "../../i18n/en";
+import type { PayNotice } from "./model";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
 
@@ -197,7 +198,8 @@ export function foundLine(name: string, relation: UserRelation, eligibility: { d
 
 // ---------------------------------------------------------------- the banner (D6)
 
-/** Why the payee cannot be paid now, and what to do; `note` does not hold the payment back. */
+/** Why the payee cannot be paid now, and what to do; `note` does not hold the payment back. A
+ * `PayNotice` comes from a refused payment, never from `payBanner`. */
 export type Banner =
   | { kind: "loading" }
   | { kind: "readFailed"; text: string }
@@ -207,7 +209,8 @@ export type Banner =
   | { kind: "paymentLock"; text: string; txid: string; source: PaymentSourceName }
   | { kind: "broken"; text: string }
   | { kind: "mixingOnly"; text: string }
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: string }
+  | PayNotice;
 
 export interface BannerInput {
   /** The payee's detail: `undefined` while unread, `null` when the engine has no such contact. */
