@@ -244,7 +244,11 @@ fn a_request_while_a_restore_is_replacing_files_is_the_incomplete_screen() {
 fn a_request_while_a_restore_is_replacing_files_beside_a_torn_snapshot_is_incomplete() {
     let f = upgraded();
     let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
-    std::fs::write(snapshot.dir().join(dw_store_upgrade::STORE_FILES[0]), b"torn").unwrap();
+    std::fs::write(
+        snapshot.dir().join(dw_store_upgrade::STORE_FILES[0]),
+        b"torn",
+    )
+    .unwrap();
     std::fs::write(
         backups(&f).join(dw_store_upgrade::RESTORE_JOURNAL),
         b"journal",
