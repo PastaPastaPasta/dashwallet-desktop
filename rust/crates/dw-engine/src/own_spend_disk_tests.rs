@@ -989,7 +989,7 @@ fn block_hash(txs: &[Transaction]) -> dashcore::BlockHash {
 
 /// Installs the SPV client Abandon and Remove Unconfirmed need for their
 /// rescan, as the Platform bring-up would, without its run loop.
-fn start_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+pub(super) fn start_spv(engine: &Engine, session: &Arc<NetworkSession>) {
     let s = Arc::clone(session);
     engine
         .block_on(session.on_runtime(async move {

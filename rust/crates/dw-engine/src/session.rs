@@ -184,9 +184,8 @@ async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
     released(persister).await
 }
 
-/// Data directories whose failed open left their wallet database held,
-/// with that database: through upstream's reference cycle (see `close`), a
-/// wallet left loaded holds it until the process exits.
+/// Data directories whose failed open left their wallet database held past
+/// the release wait, with that database.
 static KEPT_AFTER_FAILED_OPEN: Mutex<Vec<(PathBuf, Weak<SqlitePersister>)>> =
     Mutex::new(Vec::new());
 
@@ -213,18 +212,20 @@ fn held_after_failed_open(data_dir: &Path) -> bool {
 }
 
 /// The end of an open that failed once its wallet database was open, after
-/// everything holding it was dropped (Q104 104-F1, below the
-/// persister-release pin): no wallet is unloaded, as `remove_wallet` can
-/// delete a wallet's stored rows. A wallet left loaded holds the database
-/// until the process exits, so it is recorded at once; with none loaded,
-/// the release is waited for. While it is held, the directory's next open
-/// in this process is refused with [`KEPT_AFTER_FAILED_OPEN_REFUSAL`].
+/// everything holding it was dropped (Q104 104-F1): no wallet is unloaded,
+/// as `remove_wallet` can delete a wallet's stored rows. The release is
+/// waited for, with wallets left loaded or not, since the pinned manager no
+/// longer keeps the database alive once dropped; only a database still held
+/// after the wait is recorded, and while it is held the directory's next
+/// open in this process is refused with [`KEPT_AFTER_FAILED_OPEN_REFUSAL`].
 pub(crate) async fn release_after_failed_open(
     data_dir: &Path,
     persister: Weak<SqlitePersister>,
-    left_loaded: bool,
+    #[cfg_attr(not(test), allow(unused_variables))] left_loaded: bool,
 ) {
-    if !left_loaded && persister_released(&persister).await {
+    #[cfg(test)]
+    failed_open_probe::record_end(data_dir, left_loaded);
+    if persister_released(&persister).await {
         return;
     }
     tracing::warn!("the wallet database stays held after a failed open until the app restarts");
@@ -278,8 +279,10 @@ pub(crate) static FAIL_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 #[cfg(test)]
 pub(crate) static FAIL_HISTORY_LOAD_IN: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-/// Tests: for each failed journal open of a data directory, whether its
-/// manager had a shielded coordinator, and how many wallets it kept loaded.
+/// Tests: what the failed opens of a data directory left. For each failed
+/// journal open, whether its manager had a shielded coordinator and how
+/// many wallets it kept loaded (`seen`); for each failed open, whether it
+/// ended with a wallet loaded (`ended`).
 #[cfg(test)]
 pub(crate) mod failed_open_probe {
     use std::path::{Path, PathBuf};
@@ -299,6 +302,22 @@ pub(crate) mod failed_open_probe {
         (SEEN.lock().unwrap_or_else(|p| p.into_inner()).iter())
             .filter(|(d, ..)| d == data_dir)
             .map(|(_, c, n)| (*c, *n))
+            .collect()
+    }
+
+    /// For each failed open of a data directory that ended, whether it
+    /// dropped its manager with a wallet still loaded.
+    static ENDED: Mutex<Vec<(PathBuf, bool)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn record_end(data_dir: &Path, left_loaded: bool) {
+        (ENDED.lock().unwrap_or_else(|p| p.into_inner()))
+            .push((data_dir.to_path_buf(), left_loaded));
+    }
+
+    pub(crate) fn ended(data_dir: &Path) -> Vec<bool> {
+        (ENDED.lock().unwrap_or_else(|p| p.into_inner()).iter())
+            .filter(|(d, _)| d == data_dir)
+            .map(|(_, loaded)| *loaded)
             .collect()
     }
 }
@@ -496,6 +515,7 @@ impl NetworkSession {
         {
             let (dir, config) = (data_dir.clone(), persister_config.clone());
             tokio::task::spawn_blocking(move || {
+                crate::fsutil::refuse_insecure_root(&dir)?;
                 crate::store_upgrade::prepare_and_reconcile(&dir, &config)
             })
             .await??;
@@ -881,6 +901,7 @@ impl NetworkSession {
                     .load_journal_with(None, Vec::new(), Vec::new(), Default::default())
             }
         }
+        crate::platform::shielded_pool::import_fork_holds(&session).await;
         session.leases.start_reaper();
         session.masternodes.follow(&session);
         // MG-13 P8: undecided masternode withdrawals are rechecked from the
@@ -1360,11 +1381,11 @@ impl NetworkSession {
         // closed: every `store` commits inline (the persister's default
         // `Immediate` mode, WAL), and a flush here retries any left by a
         // transient failure (a failed flush is logged, not returned). The
-        // library wrote the spend's record to the shielded store before the
-        // spend returned, best-effort (`arm_redrive_record`,
-        // operations.rs:2983: a failed write is logged, and that spend has
-        // no record to keep; its reservations live in memory only,
-        // file_store.rs:572, and end with the session). The connections stay open until the process
+        // library wrote the spend's record to the shielded store before its
+        // first broadcast (`arm_redrive_before_broadcast`,
+        // operations.rs:4445-4515: a failed write sends nothing; its
+        // reservations live in memory only, file_store.rs:1126-1132, and end
+        // with the session). The connections stay open until the process
         // exits, so their last WAL checkpoint does not run; the WAL replays
         // at the next open, and the rows rehydrate as pending. The cost:
         // the Arc cycle above keeps the persister's open-path claim, so the

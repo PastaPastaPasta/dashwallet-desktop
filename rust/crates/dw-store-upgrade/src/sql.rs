@@ -121,35 +121,40 @@ pub(crate) fn count_rows(conn: &Connection, table: &str) -> rusqlite::Result<u64
 }
 
 /// A `file:` URI for `path` with `query`, percent-encoding what SQLite's URI
-/// parser would read as syntax.
+/// parser would read as syntax. On Unix the path's raw bytes are encoded, so
+/// a directory name that is not UTF-8 still names the same file.
 fn file_uri(path: &Path, query: &str) -> String {
-    format!(
-        "file:{}?{query}",
-        uri_path(&path.to_string_lossy(), cfg!(windows))
-    )
+    #[cfg(unix)]
+    let raw = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
+    #[cfg(not(unix))]
+    let lossy = path.to_string_lossy();
+    #[cfg(not(unix))]
+    let raw = lossy.as_bytes();
+    format!("file:{}?{query}", uri_path(raw, cfg!(windows)))
 }
 
 /// The URI path part for `raw`. On Windows the authority is always empty:
 /// `\\?\` is stripped, `\\?\UNC\server\share` and `\\server\share` become
 /// `////server/share`, and a drive or rooted path gets `///`.
-fn uri_path(raw: &str, windows: bool) -> String {
-    let path = if windows {
+fn uri_path(raw: &[u8], windows: bool) -> String {
+    let path: Vec<u8> = if windows {
+        let raw = String::from_utf8_lossy(raw);
         let unprefixed = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
             format!(r"\\{unc}")
         } else {
-            raw.strip_prefix(r"\\?\").unwrap_or(raw).to_string()
+            raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
         };
         let slashed = unprefixed.replace('\\', "/");
         if slashed.starts_with('/') {
-            format!("//{slashed}")
+            format!("//{slashed}").into_bytes()
         } else {
-            format!("///{slashed}")
+            format!("///{slashed}").into_bytes()
         }
     } else {
-        raw.to_string()
+        raw.to_vec()
     };
     let mut s = String::with_capacity(path.len());
-    for b in path.bytes() {
+    for &b in &path {
         let c = b as char;
         if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | ':') {
             s.push(c);
@@ -295,6 +300,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn file_uri_keeps_bytes_that_are_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"/w-\xff/x"));
+        assert_eq!(file_uri(path, "immutable=1"), "file:/w-%FF/x?immutable=1");
+    }
+
+    #[test]
     #[cfg(windows)]
     fn file_uri_escapes_uri_syntax() {
         let uri = file_uri(Path::new(r"C:\a b\c#d.sqlite"), "immutable=1");
@@ -313,8 +326,8 @@ mod tests {
             ),
             (r"\a b\w.sqlite", "///a%20b/w.sqlite"),
         ] {
-            assert_eq!(uri_path(raw, true), want, "{raw}");
+            assert_eq!(uri_path(raw.as_bytes(), true), want, "{raw}");
         }
-        assert_eq!(uri_path("/a b/c?d", false), "/a%20b/c%3Fd");
+        assert_eq!(uri_path(b"/a b/c?d", false), "/a%20b/c%3Fd");
     }
 }

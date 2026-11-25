@@ -34,9 +34,9 @@ use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin}
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
-    ArtifactSettled, ArtifactStatus, CallRows, NewShieldedArtifact, Resolution, SelfSpendConflict,
-    SelfSpendProvenance, ShieldedArtifact, StoredFundingKey, StoredOutPoint, TopUpSettled,
-    UnrecordedSpend,
+    ArtifactSettled, ArtifactStatus, CallRows, ForkHold, NewShieldedArtifact, Resolution,
+    SelfSpendConflict, SelfSpendProvenance, ShieldedArtifact, StoredFundingKey, StoredOutPoint,
+    TopUpSettled, UnrecordedSpend,
 };
 
 /// A shielded spend on record: `(activity, transition)`, the library's
@@ -185,6 +185,10 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         _anchor: &[u8; 32],
         _nullifiers: &[[u8; 32]],
     ) -> Result<(), String> {
+        Err("this journal keeps no shielded spend markers".into())
+    }
+    /// Marks each of `holds` once; the number marked now.
+    fn import_fork_holds(&self, _holds: &[ForkHold]) -> Result<usize, String> {
         Err("this journal keeps no shielded spend markers".into())
     }
     /// The marked shielded spends of `wallet`; none in a journal that keeps
@@ -424,6 +428,10 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         (self.record_unrecorded_spend(wallet, activity, anchor, nullifiers, now))
             .map(drop)
             .map_err(|e| e.to_string())
+    }
+
+    fn import_fork_holds(&self, holds: &[ForkHold]) -> Result<usize, String> {
+        (self.import_fork_holds(holds, crate::events::unix_now())).map_err(|e| e.to_string())
     }
 
     fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>, String> {

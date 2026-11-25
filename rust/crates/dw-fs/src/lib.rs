@@ -200,6 +200,24 @@ pub fn create_owned_file(base: &Path, owned: &Path) -> io::Result<()> {
     }
 }
 
+/// The first directory from `dir` up to `/`, on its own path and on its
+/// resolved one, in which someone other than the current user or root could
+/// replace entries: one group- or other-writable without the sticky bit, or
+/// one another user owns. Returns a sentence naming it and the fix. The
+/// storage used to refuse a wallet below one; it now only warns, and a root
+/// the user chose is not the engine's to change. Windows: always `None`.
+pub fn insecure_ancestor(dir: &Path) -> io::Result<Option<String>> {
+    #[cfg(unix)]
+    {
+        unix::insecure_ancestor(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(None)
+    }
+}
+
 /// Renames `from` to `to` unless something is at `to`, atomically: an
 /// existing `to` (a symlink too) is never replaced, and the error's kind is
 /// `AlreadyExists`. Linux `renameat2(RENAME_NOREPLACE)`, macOS
@@ -599,6 +617,39 @@ mod unix {
         walk.set_mode(&file, wanted, created).map(drop)
     }
 
+    pub(super) fn insecure_ancestor(dir: &Path) -> io::Result<Option<String>> {
+        use std::os::unix::fs::MetadataExt;
+        let euid = rustix::process::geteuid().as_raw();
+        let root_uid = std::fs::metadata("/")
+            .map_err(|e| io_at(Path::new("/"), e))?
+            .uid();
+        let absolute = std::path::absolute(dir).map_err(|e| io_at(dir, e))?;
+        let resolved = std::fs::canonicalize(&absolute).map_err(|e| io_at(&absolute, e))?;
+        let lexical = absolute
+            .ancestors()
+            .map(|a| (a, std::fs::symlink_metadata(a)));
+        let real = resolved.ancestors().map(|a| (a, std::fs::metadata(a)));
+        for (path, meta) in lexical.chain(real) {
+            let meta = meta.map_err(|e| io_at(path, e))?;
+            let mode = meta.mode() & 0o7777;
+            let owner = meta.uid();
+            let path = path.display();
+            if !meta.file_type().is_symlink() && mode & 0o022 != 0 && mode & STICKY == 0 {
+                return Ok(Some(format!(
+                    "{path} is group/other-writable (mode {mode:04o}) and not sticky; \
+                     run `chmod go-w {path}`"
+                )));
+            }
+            if owner != euid && owner != 0 && owner != root_uid {
+                return Ok(Some(format!(
+                    "{path} is owned by uid {owner}, neither the current user ({euid}) nor root; \
+                     run `chown {euid} {path}`"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
     /// Puts the components of `path` on top of `steps`, first one last.
     fn push_steps(steps: &mut Vec<Step>, path: &Path, part: Part) {
         steps.extend(
@@ -614,7 +665,10 @@ mod unix {
     }
 
     fn at(path: &Path, e: Errno) -> io::Error {
-        let e = io::Error::from(e);
+        io_at(path, io::Error::from(e))
+    }
+
+    fn io_at(path: &Path, e: io::Error) -> io::Error {
         io::Error::new(e.kind(), format!("{}: {e}", path.display()))
     }
 
@@ -891,6 +945,37 @@ mod tests {
         chmod(&shared, 0o1777);
         create_owned_dir(&root, Path::new("regtest")).unwrap();
         assert_eq!(mode(&net), 0o700);
+    }
+
+    #[test]
+    fn an_ancestor_others_can_write_is_named() {
+        let tmp = private_tempdir();
+        let shared = mkdir(&tmp.path().join("shared"), 0o700);
+        let root = mkdir(&shared.join("root"), 0o700);
+        let link = tmp.path().join("link");
+        symlink(&root, &link).unwrap();
+        let named = |dir: &Path| {
+            insecure_ancestor(dir)
+                .unwrap()
+                .filter(|m| m.contains(&shared.display().to_string()))
+        };
+        assert_eq!(named(&root), None);
+        chmod(&shared, 0o775);
+        for dir in [&root, &link] {
+            let m = named(dir).expect("a group-writable ancestor is named");
+            assert!(
+                m.contains("group/other-writable") && m.contains("0775"),
+                "{m}"
+            );
+        }
+        chmod(&shared, 0o1777);
+        assert_eq!(named(&root), None, "sticky");
+        assert_eq!(named(&link), None, "sticky");
+        chmod(&shared, 0o700);
+        chmod(&root, 0o770);
+        let m = named(&link).expect("a symlink's group-writable target is named");
+        assert!(m.contains(&root.display().to_string()), "{m}");
+        chmod(&root, 0o700);
     }
 
     /// A parent the user may search but not read, as `/home` at 0711 on

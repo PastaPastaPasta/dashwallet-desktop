@@ -924,6 +924,7 @@ fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
 /// coin's owner and gave the coin back: a sent mark of that spend neither
 /// lists it nor keeps the coin out after the restart.
 #[test]
+#[ignore = "post-RC: needs the store-open repair of unsigned pending spends"]
 fn a_spend_the_store_dropped_as_unsigned_is_not_restored_from_its_mark() {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{

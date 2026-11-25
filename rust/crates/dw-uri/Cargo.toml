@@ -10,7 +10,7 @@ description = "dash: URI parsing/writing (dash-qt exact and iOS superset), deep-
 [dependencies]
 # Same git source and revision that the platform pin (rust/Cargo.toml) pins, so the
 # workspace resolves one copy whether or not it declares the dependency.
-dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "22b5bb2c27589dc9408cf0255c1382becdfd9e01", default-features = false }
+dashcore = { git = "https://github.com/dashpay/rust-dashcore", rev = "aa0642e539a0863ea6047e32c1a45fcfa8539548", default-features = false }
 dw-units = { path = "../dw-units" }
 bech32 = { version = "0.11.1", default-features = false, features = ["alloc"] }
 zeroize = "1.8"

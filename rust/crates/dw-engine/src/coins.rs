@@ -351,8 +351,8 @@ type CoreBalances = (
     std::collections::BTreeMap<key_wallet::account::AccountType, WalletCoreBalance>,
 );
 
-/// Takes `outpoints` out of wallet `wallet_id`'s lock set; returns the
-/// balances recomputed when one was in it.
+/// Takes `outpoints` out of wallet `wallet_id`'s lock set, held or spent
+/// since; returns the balances recomputed when one was in it.
 fn unlock_temp_utxos(
     wm: &mut platform_wallet::key_wallet_manager::WalletManager<
         platform_wallet::PlatformWalletInfo,
@@ -421,10 +421,10 @@ impl CoinFence {
     }
 
     fn add_temp_locks(&self, locks: TempUtxoLocks) {
-        let mut held = self.temp_locks.lock().unwrap_or_else(|p| p.into_inner());
-        match held.as_mut() {
+        let mut slot = self.temp_locks.lock().unwrap_or_else(|p| p.into_inner());
+        match slot.as_mut() {
             Some(held) => held.outpoints.extend(locks.outpoints),
-            None => *held = Some(locks),
+            None => *slot = Some(locks),
         }
     }
 }
@@ -1002,18 +1002,16 @@ impl NetworkSession {
             .map(|c| c.utxo.outpoint)
             .collect();
         let wm = self.manager()?.wallet_manager_arc();
-        let mut locked = Vec::new();
-        {
+        let locked: Vec<OutPoint> = {
             let mut guard = wm.write().await;
             let info = guard
                 .get_wallet_info_mut(&fence.wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(fence.wallet.to_string()))?;
-            for op in &denoms {
-                if info.core_wallet.lock_outpoint(*op) {
-                    locked.push(*op);
-                }
-            }
-        }
+            denoms
+                .into_iter()
+                .filter(|op| info.core_wallet.lock_outpoint(*op))
+                .collect()
+        };
         if !locked.is_empty() {
             fence.add_temp_locks(TempUtxoLocks {
                 wm,
@@ -1553,9 +1551,9 @@ mod tests {
 
     /// A denomination another wallet on the seed spent while a funding held
     /// it locked, given back after the fence dropped (a reorg, a dropped
-    /// transaction), comes back free: the release took its outpoint out of
-    /// the lock set though the wallet no longer held the coin. The next
-    /// funding leaves it free too.
+    /// transaction), comes back unlocked: the release takes it out of the
+    /// wallet's lock set though the coin was gone, and the next funding
+    /// locks and releases it again.
     #[test]
     fn a_denomination_spent_and_given_back_around_a_fence_ends_unlocked() {
         let f = crate::platform::lease::session_tests::fixture(false);
@@ -1563,7 +1561,7 @@ mod tests {
         let denom = f.credit(2, DENOMINATION);
         let (s, w) = (Arc::clone(&f.session), f.wallet);
         let inner = Arc::clone(&s);
-        let (returned_locked, after, balance) = f
+        let (kept_in_lock_set, returned_locked, relocked, after, balance) = f
             .engine
             .block_on(s.on_runtime(async move {
                 wallet_event(&inner, w).await;
@@ -1578,6 +1576,11 @@ mod tests {
                     account.utxos.remove(&denom).unwrap()
                 };
                 drop(fence);
+                let kept_in_lock_set = {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let state = wallet.state().await;
+                    state.core_wallet.is_outpoint_locked(&denom)
+                };
                 {
                     let wallet = inner.wallet(&w).await.unwrap();
                     let mut state = wallet.state_mut().await;
@@ -1588,14 +1591,61 @@ mod tests {
                 }
                 wallet_event(&inner, w).await;
                 let returned_locked = locked(&inner, w, denom).await;
-                drop(funding_fence(&inner, w).await);
+                let second = funding_fence(&inner, w).await;
+                let relocked = locked(&inner, w, denom).await;
+                drop(second);
                 let after = locked(&inner, w, denom).await;
-                Ok((returned_locked, after, (before, confirmed(&inner, w))))
+                Ok((
+                    kept_in_lock_set,
+                    returned_locked,
+                    relocked,
+                    after,
+                    (before, confirmed(&inner, w)),
+                ))
             }))
             .unwrap();
+        assert!(!kept_in_lock_set);
         assert_eq!(returned_locked, Some(false));
+        assert_eq!(relocked, Some(true));
         assert_eq!(after, Some(false));
         assert_eq!(balance.1, balance.0);
+    }
+
+    /// A denomination the wallet's lock set already held before a funding
+    /// (a lock the library or the user made) stays locked when the
+    /// funding's fence drops: the fence releases only its own locks.
+    #[test]
+    fn a_funding_fence_leaves_a_lock_it_did_not_make() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let kept = f.credit(2, DENOMINATION);
+        let other = f.credit(3, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (other_held, kept_locked, other_locked) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let mut state = wallet.state_mut().await;
+                    assert!(state.core_wallet.lock_outpoint(kept));
+                }
+                let fence = funding_fence(&inner, w).await;
+                let other_held = locked(&inner, w, other).await;
+                drop(fence);
+                wallet_event(&inner, w).await;
+                let wallet = inner.wallet(&w).await.unwrap();
+                let state = wallet.state().await;
+                Ok((
+                    other_held,
+                    state.core_wallet.is_outpoint_locked(&kept),
+                    state.core_wallet.is_outpoint_locked(&other),
+                ))
+            }))
+            .unwrap();
+        assert_eq!(other_held, Some(true));
+        assert!(kept_locked);
+        assert!(!other_locked);
     }
 
     /// A denomination taken out of the wallet and given back while a
