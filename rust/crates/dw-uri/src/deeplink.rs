@@ -599,6 +599,11 @@ mod tests {
             assert_eq!(normalize_invitation(link), None, "{link}");
             assert_eq!(classify_link(link), DeepLink::Unknown, "{link}");
         }
+        // The first payload decides: an http applink before an https one
+        // is malformed, not skipped.
+        let both = "https://dashpay.onelink.me/abc?af_dp=http%3A%2F%2Finvitations.dashpay.io%2Fapplink%3Fdu%3Da&deep_link_value=https%3A%2F%2Finvitations.dashpay.io%2Fapplink%3Fdu%3Da";
+        assert_eq!(normalize_invitation(both), None);
+        assert_eq!(classify_link(both), DeepLink::Unknown);
     }
 
     #[test]
