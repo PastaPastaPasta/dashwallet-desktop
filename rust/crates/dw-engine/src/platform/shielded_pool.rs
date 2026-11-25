@@ -3602,9 +3602,12 @@ pub(crate) async fn settle_outcomes(
         let Some(st_hash) = artifact.st_hash else {
             continue;
         };
-        let outcome = {
+        let outcome = if imported(&artifact) {
             let mut store = coordinator.store().write().await;
             spend_outcome(&mut *store, subwallet, &artifact)
+        } else {
+            let store = coordinator.store().read().await;
+            read_outcome(&*store, subwallet, &artifact)
         };
         let (status, disposition) = match outcome {
             Ok(Some(outcome)) => outcome,
@@ -3637,15 +3640,17 @@ pub(super) type SpendOutcome = (ArtifactStatus, Option<(&'static str, Option<&'s
 /// - `Failed` (refused before delivery, the hook's refusal included, or
 ///   released by the prune once its anchor is proven pruned, so it can never
 ///   execute), with no record or reserved note of it left: `not_executed`;
-/// - `Pending`, no row, or a row that cannot be read: `None`, it waits.
+/// - `Pending`, `Unknown`, no row, or a row that cannot be read: `None`, it
+///   waits.
 ///
 /// A spend the 0.1 build stored reports on the pending row
 /// [`keep_import_row`] saved, which the release fails as any other. The
-/// scan's drop of its record on its notes' spends confirms no row, so that
-/// row is confirmed here (no height: none is known), once the library
-/// holds nothing of it and the store reads every note it took spent. Once
-/// failed it stays failed, whatever its notes read later: they were free
-/// to pay with again.
+/// scan's drop of its record on its notes' spends confirms no row, so once
+/// the library holds nothing of it that row is read here, the first time
+/// only: confirmed (no height: none is known) when the store reads every
+/// note it took spent, or else `Unknown`, which is never confirmed after:
+/// its notes are free, and a later payment that spends them proves nothing
+/// of this one. Once failed it stays failed, whatever its notes read later.
 pub(super) fn spend_outcome<S: ShieldedStore>(
     store: &mut S,
     subwallet: SubwalletId,
@@ -3656,19 +3661,41 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
         Some(entry)
             if imported(artifact)
                 && entry.status == Status::Pending
-                && matches!(held, Ok(false))
-                && all_spent(&*store, subwallet, &entry.spent_nullifiers)? =>
+                && matches!(held, Ok(false)) =>
         {
-            let done = ShieldedActivityEntry {
-                status: Status::Confirmed,
-                ..entry
+            let status = if all_spent(&*store, subwallet, &entry.spent_nullifiers)? {
+                Status::Confirmed
+            } else {
+                Status::Unknown
             };
-            store.save_activity(subwallet, &done)?;
-            Some(done)
+            let read = ShieldedActivityEntry { status, ..entry };
+            store.save_activity(subwallet, &read)?;
+            Some(read)
         }
         row => row,
     };
-    Ok(match row {
+    Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// [`spend_outcome`] of a spend the engine dispatched, which reads its row
+/// and writes nothing.
+fn read_outcome<S: ShieldedStore>(
+    store: &S,
+    subwallet: SubwalletId,
+    artifact: &dw_appdb::dispatch::ShieldedArtifact,
+) -> Result<Option<SpendOutcome>, S::Error> {
+    let held = holds_activity(store, subwallet, &artifact.activity);
+    let row = store.get_activity_by_entry_id(subwallet, &artifact.activity)?;
+    Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// The outcome a spend's history `row` reports, `held` whether the library
+/// still holds a record or a note of it.
+fn outcome_of<E>(
+    row: Option<&ShieldedActivityEntry>,
+    held: &Result<bool, E>,
+) -> Option<SpendOutcome> {
+    match row {
         Some(entry) if entry.status == Status::Confirmed => {
             Some((ArtifactStatus::Executed, Some(("executed", None))))
         }
@@ -3678,7 +3705,7 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
             Some((ArtifactStatus::NotExecuted, None))
         }
         _ => None,
-    })
+    }
 }
 
 /// Whether the store holds every note of `nullifiers`, at least one, spent.
@@ -3719,12 +3746,24 @@ pub(crate) async fn keep_import_rows(
             return;
         }
     };
-    if !artifacts.iter().any(imported) {
+    let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
+    let rowless: Vec<_> = {
+        let store = coordinator.store().read().await;
+        (artifacts.iter())
+            .filter(|a| import_row_status(a).is_some())
+            .filter(|a| {
+                !matches!(
+                    store.get_activity_by_entry_id(subwallet, &a.activity),
+                    Ok(Some(_))
+                )
+            })
+            .collect()
+    };
+    if rowless.is_empty() {
         return;
     }
-    let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
     let mut store = coordinator.store().write().await;
-    for artifact in artifacts.iter().filter(|a| imported(a)) {
+    for artifact in rowless {
         if let Err(e) = keep_import_row(&mut *store, subwallet, artifact) {
             tracing::warn!(
                 wallet_id = %wallet,
@@ -3736,26 +3775,44 @@ pub(crate) async fn keep_import_rows(
     }
 }
 
-/// Saves a pending history row for the spend of `artifact` the 0.1 build
-/// stored, under its activity, while the journal has it open and the
-/// library holds its record of a note spend (the same transition), if the
-/// store has no row of it. The library keeps its rows in memory only, so after the upgrade
-/// the spend has none: its release would fail nothing ([`spend_outcome`]
-/// reads none) and its payment would leave the history. A spend the
-/// journal settled, or whose record the library no longer holds, gets
-/// none. `true` when one was saved.
+/// The status of the history row the engine keeps for `artifact`, a spend
+/// the 0.1 build stored with its transition: pending while the journal has
+/// it open, failed once settled `not_executed`, confirmed once settled
+/// `executed`. `None` for any other artifact, an archived one included
+/// (never shown).
+fn import_row_status(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> Option<Status> {
+    if imported(artifact) {
+        return Some(Status::Pending);
+    }
+    if artifact.origin != ArtifactOrigin::ImportedRedrive || artifact.st_hash.is_none() {
+        return None;
+    }
+    match artifact.status {
+        ArtifactStatus::NotExecuted => Some(Status::Failed),
+        ArtifactStatus::Executed => Some(Status::Confirmed),
+        _ => None,
+    }
+}
+
+/// Saves a history row for the spend of `artifact` the 0.1 build stored,
+/// under its activity, if the store has no row of it. The library keeps
+/// its rows in memory only, so after the upgrade and after each restart the
+/// spend has none.
+///
+/// While the journal has it open, the row is pending, saved only while the
+/// library holds its record of a note spend (the same transition): without
+/// it the release would fail nothing ([`spend_outcome`] reads none) and its
+/// payment would leave the history. Once the journal settled it, the row
+/// reads that settlement, failed or confirmed, saved only while the library
+/// holds nothing of it; it settles nothing again (the journal reads the
+/// outcomes of open artifacts only, [`settle_outcomes`]). `true` when one
+/// was saved.
 pub(super) fn keep_import_row<S: ShieldedStore>(
     store: &mut S,
     subwallet: SubwalletId,
     artifact: &dw_appdb::dispatch::ShieldedArtifact,
 ) -> Result<bool, S::Error> {
-    if !imported(artifact) {
-        return Ok(false);
-    }
-    let record = (store.pending_redrives(subwallet)?.into_iter()).find(|r| {
-        r.activity_id == artifact.activity && Some(transition_hash(&r.st_bytes)) == artifact.st_hash
-    });
-    let Some(record) = record.filter(|r| !r.nullifiers.is_empty()) else {
+    let Some(status) = import_row_status(artifact) else {
         return Ok(false);
     };
     if store
@@ -3764,6 +3821,21 @@ pub(super) fn keep_import_row<S: ShieldedStore>(
     {
         return Ok(false);
     }
+    let nullifiers = if status == Status::Pending {
+        let record = (store.pending_redrives(subwallet)?.into_iter()).find(|r| {
+            r.activity_id == artifact.activity
+                && Some(transition_hash(&r.st_bytes)) == artifact.st_hash
+        });
+        let Some(record) = record.filter(|r| !r.nullifiers.is_empty()) else {
+            return Ok(false);
+        };
+        record.nullifiers
+    } else {
+        if holds_activity(&*store, subwallet, &artifact.activity)? {
+            return Ok(false);
+        }
+        artifact.selected.iter().map(|(n, _)| *n).collect()
+    };
     let row = ShieldedActivityEntry {
         id: artifact.activity,
         kind: Kind::ShieldedSpend,
@@ -3773,11 +3845,11 @@ pub(super) fn keep_import_row<S: ShieldedStore>(
         counterparty: None,
         memo: None,
         block_height: None,
-        status: Status::Pending,
+        status,
         created_at_ms: artifact.at.saturating_mul(1000),
         min_note_position: None,
         note_cmxs: Vec::new(),
-        spent_nullifiers: record.nullifiers,
+        spent_nullifiers: nullifiers,
     };
     store.save_activity(subwallet, &row)?;
     Ok(true)
@@ -3852,9 +3924,11 @@ fn holds_activity<S: ShieldedStore>(
 }
 
 /// Whether the library reports an outcome of one of `wallet`'s open
-/// artifacts that [`settle_outcomes`] has not read into the journal yet;
-/// `None` when the journal is not ready, or the artifacts or a history row
-/// cannot be read.
+/// artifacts that [`settle_outcomes`] has not read into the journal yet,
+/// a pending row of an imported spend the library holds nothing of
+/// included ([`spend_outcome`] reads it); `None` when the journal is not
+/// ready, or the artifacts, a history row or what the library holds cannot
+/// be read.
 async fn reported_outcome(
     leases: &super::lease::LeaseTable,
     coordinator: &NetworkShieldedCoordinator,
@@ -3870,7 +3944,14 @@ async fn reported_outcome(
         let row = store
             .get_activity_by_entry_id(subwallet, &artifact.activity)
             .ok()?;
-        if row.is_some_and(|e| matches!(e.status, Status::Confirmed | Status::Failed)) {
+        let reported = match row.map(|e| e.status) {
+            Some(Status::Confirmed | Status::Failed) => true,
+            Some(Status::Pending) if imported(artifact) => {
+                !holds_activity(&*store, subwallet, &artifact.activity).ok()?
+            }
+            _ => false,
+        };
+        if reported {
             return Some(true);
         }
     }

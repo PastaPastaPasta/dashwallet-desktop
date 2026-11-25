@@ -821,6 +821,116 @@ fn a_pass_keeps_an_imported_spends_row_for_its_release() {
     engine.block_on(session.unload_wallet(wallet)).unwrap();
 }
 
+/// The history rows of `wallet`'s spend `activity` (all of its account's
+/// with that id), by status, the shielded store opened as the engine opens
+/// it if it is not yet.
+fn import_rows(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    activity: [u8; 32],
+) -> Vec<ShieldedActivityStatus> {
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let store = coordinator.store().read().await;
+        (store
+            .get_activity(subwallet(wallet), 0, usize::MAX)
+            .unwrap()
+            .into_iter())
+        .filter(|e| e.id == activity)
+        .map(|e| e.status)
+        .collect()
+    })
+}
+
+/// A launch over a spend the 0.1 build stored (its record with no anchor
+/// height, its artifact imported and classified) saves its pending history
+/// row at the shielded store's open, before any pass. Once the release
+/// fails it and a pass settles it `not_executed`, each later launch saves
+/// its failed row again at the open, exactly one, and settles nothing again.
+#[test]
+fn an_imported_spends_row_is_kept_at_the_stores_open() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let spend = PendingRedrive {
+        anchor_height: None,
+        ..spends().remove(0)
+    };
+    let st_hash: [u8; 32] = Sha256::digest(&spend.st_bytes).into();
+    let r = spend.clone();
+    let session = reopen_with(&engine, session, move |path| {
+        let mut store =
+            platform_wallet::wallet::shielded::FileBackedShieldedStore::open_path(path, 100)
+                .unwrap();
+        reserve_and_record(&mut store, subwallet(wallet), r.clone());
+        drop(store);
+        let journal = path.with_file_name(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        let inserted = rusqlite::Connection::open(journal)
+            .unwrap()
+            .execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at) \
+                 VALUES (?1, ?2, 'imported_redrive', ?3, 'unresolved', 1)",
+                rusqlite::params![&wallet.0[..], &r.activity_id[..], &st_hash[..]],
+            )
+            .unwrap();
+        assert_eq!(inserted, 1);
+    });
+    engine.block_on(session.load_wallet(wallet)).unwrap();
+    assert!(
+        (session.manager().unwrap().list_wallet_ids_blocking()).contains(&wallet.0),
+        "the wallet is loaded"
+    );
+    let open = ArtifactStatus::Unresolved { unrecorded: false };
+    assert_eq!(settlement(&engine, &session, wallet, 1).0, open);
+    let activity = spend.activity_id;
+    assert_eq!(
+        import_rows(&engine, &session, wallet, activity),
+        [ShieldedActivityStatus::Pending]
+    );
+
+    let (s, m, r) = (Arc::clone(&session), session.manager().unwrap(), spend);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        {
+            let mut store = coordinator.store().write().await;
+            let id = subwallet(wallet);
+            for nullifier in &r.nullifiers {
+                assert!(store.clear_pending(id, nullifier).unwrap());
+            }
+            let mut entry = (store.get_activity_by_entry_id(id, &r.activity_id))
+                .unwrap()
+                .unwrap();
+            entry.status = ShieldedActivityStatus::Failed;
+            store.save_activity(id, &entry).unwrap();
+        }
+        s.ensure_background().await;
+    });
+    pass(&engine, &session);
+    let settled = (ArtifactStatus::NotExecuted, None, false);
+    assert_eq!(settlement(&engine, &session, wallet, 1), settled);
+
+    let mut session = session;
+    for _ in 0..2 {
+        session = reopen_with(&engine, session, |_| {});
+        engine.block_on(session.load_wallet(wallet)).unwrap();
+        assert_eq!(
+            import_rows(&engine, &session, wallet, activity),
+            [ShieldedActivityStatus::Failed]
+        );
+        assert_eq!(settlement(&engine, &session, wallet, 1).0, settled.0);
+    }
+    engine.block_on(session.ensure_background());
+    pass(&engine, &session);
+    assert_eq!(
+        import_rows(&engine, &session, wallet, activity),
+        [ShieldedActivityStatus::Failed]
+    );
+    assert_eq!(settlement(&engine, &session, wallet, 1).0, settled.0);
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+}
+
 /// The fork's tests, against its dispositions (`resolve_redrive`,
 /// `spend_dispositions`, `ack_spend_disposition`), which upstream does not
 /// have.
