@@ -2942,6 +2942,9 @@ impl NetworkSession {
                 SweepNews::Beaten { txids, winner, at } => {
                     write_beaten(&appdb, &scope, txids, winner, at)
                 }
+                SweepNews::Dropped { dead, released } => {
+                    retire_dropped(&appdb, &scope, dead, released)
+                }
             };
             written
                 .inspect_err(
@@ -3685,6 +3688,14 @@ pub(crate) enum SweepNews<'a> {
     },
     /// A fork replaced the blocks above `height` (`ChainTruncated`).
     Truncated { height: u32 },
+    /// key-wallet dropped `dead`, a peer's unsigned claims on a new
+    /// transaction's outputs and what is built on them, and gave back
+    /// `released` (`TransactionsSwept`, rust-dashcore#1523). Nothing beat
+    /// them.
+    Dropped {
+        dead: &'a BTreeSet<Txid>,
+        released: &'a [OutPoint],
+    },
 }
 
 /// Gives each of `txids` that has a sweep record in `scope` a beaten row
@@ -3711,6 +3722,38 @@ pub(crate) fn write_beaten(
     let writes: Vec<(&str, Option<&str>)> = (writes.iter())
         .map(|(k, v)| (k.as_str(), Some(v.as_str())))
         .collect();
+    db.set_settings_durable(scope, &writes)?;
+    Ok(true)
+}
+
+/// Deletes the sweep record of each of `dead` whose every input is an
+/// output of one of `dead` or in `released`, with its beaten row, durably:
+/// it can never confirm, and key-wallet gave back what it spent. One with
+/// any other input keeps holding them all, and is sent again until a rival
+/// of that input settles it. Whether any was deleted.
+pub(crate) fn retire_dropped(
+    db: &AppDb,
+    scope: &str,
+    dead: &BTreeSet<Txid>,
+    released: &[OutPoint],
+) -> Result<bool, AppDbError> {
+    let mut gone = Vec::new();
+    for t in dead {
+        let key = format!("{SWEEP_OUT_PREFIX}{t}");
+        let Some(o) = (db.setting(scope, &key)?).and_then(|v| SweepOut::decode(&key, &v)) else {
+            continue;
+        };
+        if o.inputs()
+            .all(|i| dead.contains(&i.txid) || released.contains(&i))
+        {
+            gone.push(key);
+            gone.push(format!("{SWEEP_BEATEN_PREFIX}{t}"));
+        }
+    }
+    if gone.is_empty() {
+        return Ok(false);
+    }
+    let writes: Vec<(&str, Option<&str>)> = gone.iter().map(|k| (k.as_str(), None)).collect();
     db.set_settings_durable(scope, &writes)?;
     Ok(true)
 }
