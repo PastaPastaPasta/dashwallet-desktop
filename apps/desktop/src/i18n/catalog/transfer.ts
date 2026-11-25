@@ -23,7 +23,7 @@ export const transfer = {
   /** Under a transfer's progress once its call has run for a second (it may wait for the wallet's start-up). */
   preparing: "Preparing the transfer…",
   /** A network switch refused while a transfer waits for its wallet's start-up. */
-  preparingBlocksClose: "A transfer is still being prepared. Try again when it's done.",
+  preparingBlocksClose: "A transfer in one of your wallets is still being prepared. Try again when it's done.",
   feeOnNextStep: "Fee shown on the next step",
   invalidAmount: "Enter an amount.",
   notEnoughSpendable: "Not enough spendable Dash: {amount} available.",
