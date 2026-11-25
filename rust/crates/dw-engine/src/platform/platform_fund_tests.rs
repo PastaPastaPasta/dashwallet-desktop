@@ -349,7 +349,10 @@ impl FundLib for FakeFund {
 
     fn funding_hold(&self) -> Option<RegistrationWait> {
         if self.startup_held.load(Ordering::SeqCst) {
-            let startup = self.session.dashpay_startup(&self.wallet).unwrap();
+            // As the library's: a closed session holds.
+            let Ok(startup) = self.session.dashpay_startup(&self.wallet) else {
+                return Some(RegistrationWait::Sync);
+            };
             if let Some(wait) = super::registration_flow::startup_hold(startup.startup) {
                 return Some(wait);
             }
@@ -3279,6 +3282,8 @@ fn a_resume_waiting_on_the_rerun_refuses_a_close_and_ends_with_the_session() {
         "{:?}",
         started.elapsed()
     );
+    // A press reading its hold after the close is still held.
+    assert_eq!(lib.funding_hold(), Some(RegistrationWait::Sync));
     let resumed = fx
         .engine
         .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await })
