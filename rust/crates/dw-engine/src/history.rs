@@ -289,7 +289,8 @@ pub(crate) fn row_state(held: bool, coins: impl IntoIterator<Item = DropState>) 
 /// The state of each of `drops` whose transaction `txs` holds abandoned.
 /// The coins a drop waits for are its inputs that pay an `owned` script of
 /// a transaction the history holds, counts (not abandoned) and did not
-/// drop: what a dropped or never-valid parent paid never comes back. A coin
+/// drop, or that settled (a block or an InstantSend lock) since its drop:
+/// what an unsettled dropped or never-valid parent paid never comes back. A coin
 /// is back when it is unspent, spent by a block, or spent by another
 /// transaction of the history that is not abandoned. One pass over the
 /// history's inputs only when some coin is not found otherwise.
@@ -303,12 +304,14 @@ pub(crate) fn drop_states(
         (e.tx.input.iter())
             .map(|i| i.previous_output)
             .filter(|o| {
-                !drops.contains_key(&o.txid)
-                    && (txs.get(&o.txid)).is_some_and(|f| {
-                        !f.is_abandoned()
-                            && (f.tx.output.get(o.vout as usize))
-                                .is_some_and(|out| owned.contains_key(&out.script_pubkey))
-                    })
+                (txs.get(&o.txid)).is_some_and(|f| {
+                    !(drops.contains_key(&o.txid)
+                        && f.context.block_info().is_none()
+                        && !instant_locked(f))
+                        && !f.is_abandoned()
+                        && (f.tx.output.get(o.vout as usize))
+                            .is_some_and(|out| owned.contains_key(&out.script_pubkey))
+                })
             })
             .collect()
     };
@@ -4138,6 +4141,19 @@ mod tests {
                 .map(|d| d.state),
             Some(DropState::Held)
         );
+        f.history.get_mut(&claim).unwrap().context = in_block(165, 1);
+        let mined_claim = |unspent: &dyn Fn(&OutPoint) -> bool| {
+            let facts = super::tests::facts(unspent, None, false, 100);
+            (drop_states(&f.history, &drops, &f.owned, &facts).get(&s)).map(|d| d.state)
+        };
+        assert_eq!(
+            mined_claim(&back),
+            Some(DropState::RescanNeeded),
+            "a dropped parent mined since is waited for: its coin isn't back"
+        );
+        let claim0 = OutPoint::new(claim, 0);
+        let all_back = |o: &OutPoint| *o == a0 || *o == b0 || *o == claim0;
+        assert_eq!(mined_claim(&all_back), Some(DropState::Released));
     }
 
     /// A dropped row's status names its drop; a user's abandon, or a row

@@ -3242,7 +3242,8 @@ fn an_empty_dropped_key_does_not_erase_a_drops_holds() {
         });
     reconciled(&engine, &session, id);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "dropped");
-    let dead = crate::tx_actions::Dead::from([(c.txid(), crate::history::DropCause::InvalidSource)]);
+    let dead =
+        crate::tx_actions::Dead::from([(c.txid(), crate::history::DropCause::InvalidSource)]);
     crate::tx_actions::forget_swept(&session.live().unwrap().appdb, id, &[], &dead, &[], &[])
         .unwrap();
 

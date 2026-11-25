@@ -1947,9 +1947,12 @@ impl NetworkSession {
             // the load's walk, never live (#739).
             if let Some(d) = dead_drop {
                 for t in planned.iter().chain(&d.dead) {
-                    let own = (self.hub.history.get(&wallet, t))
-                        .map(|e| e.own_inputs)
-                        .unwrap_or_default();
+                    let own = (self.hub.history).read_wallet(&wallet, |h| {
+                        (h.txs.get(t).map(|e| e.own_inputs.clone()))
+                            .filter(|own| !own.is_empty())
+                            .or_else(|| h.drop_inputs.get(t).cloned())
+                            .unwrap_or_default()
+                    });
                     marks.push((
                         format!("{DROPPED_PREFIX}{t}"),
                         Some(drop_mark(d.cause_of(t), &own)),
@@ -3335,6 +3338,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
             if txids.is_empty() {
                 return Ok(());
             }

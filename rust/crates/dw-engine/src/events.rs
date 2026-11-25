@@ -1750,7 +1750,10 @@ impl SessionHub {
                     (self.history).read_wallet(&id, |h| {
                         (txids.iter())
                             .filter_map(|t| {
-                                h.txs.get(t).map(|e| (e.tx.clone(), e.own_inputs.clone()))
+                                h.txs.get(t).map(|e| {
+                                    let locked = crate::history::instant_locked(e);
+                                    (e.tx.clone(), (e.own_inputs.clone(), locked))
+                                })
                             })
                             .unzip()
                     });
@@ -1764,10 +1767,12 @@ impl SessionHub {
                 // the other drops of what is built on a claim do (#766).
                 let kept: Vec<(Txid, Transaction, crate::tx_actions::OwnInputs)> = (swept.iter())
                     .zip(own)
-                    .map(|(tx, own)| (tx.txid(), tx.clone(), own))
-                    .filter(|(t, ..)| {
-                        dead.get(t) == Some(&crate::history::DropCause::InvalidSource)
+                    .filter(|(tx, (_, locked))| {
+                        !locked
+                            && dead.get(&tx.txid())
+                                == Some(&crate::history::DropCause::InvalidSource)
                     })
+                    .map(|(tx, (own, _))| (tx.txid(), tx.clone(), own))
                     .collect();
                 // Upstream deleted these records (provably beaten spends);
                 // the history drops them too, and their sent marks go. Their
