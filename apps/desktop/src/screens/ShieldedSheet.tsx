@@ -423,6 +423,12 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
   useShieldedBind(walletId, status, enabled);
   const settled = infoRead.data !== undefined || infoRead.isError;
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled: enabled && settled && gate === "address" });
+  // An address read that failed before the key was bound is read again once it is.
+  const bound = status?.account === "bound";
+  const { isError: addressFailed, refetch: rereadAddress } = address;
+  useEffect(() => {
+    if (enabled && bound && addressFailed) void rereadAddress();
+  }, [enabled, bound, addressFailed, rereadAddress]);
   const firstScan = !!status?.active && !status.established;
   const percent = firstScan ? scanShare(status?.scan) : null;
   const scanning = firstScan && (gate === "address" || gate === "binding");

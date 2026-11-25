@@ -129,7 +129,7 @@ function status(s: ShieldedWorld): ShieldedStatus {
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
   const account = s.account ?? "bound";
   const established = s.ready && account === "bound";
-  const syncing = account === "bound" && (!established || !!s.scanning);
+  const syncing = account === "bound" && (s.scanning ?? (!established && !s.lastPassFailed));
   return { active: true, protocolVersion: 13, activationVersion: 12, ready: established, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: established ? 4096 : null, lastSyncAt: established ? (s.lastSyncAt ?? NOW - 20) : null, syncing, proverReady: s.proverReady, account, scan: syncing ? (s.scan ?? null) : null, lastPassFailed: !!s.lastPassFailed };
 }
 
