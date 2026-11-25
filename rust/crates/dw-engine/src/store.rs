@@ -147,6 +147,8 @@ fn drop_uncredited(changeset: &mut PlatformWalletChangeSet) {
     let verdicts = &core.utxo_credit_verdicts;
     core.new_utxos
         .retain(|u| !verdicts.contains_key(&u.outpoint));
+    core.rescan_utxos
+        .retain(|u| !verdicts.contains_key(&u.outpoint));
 }
 
 impl PlatformWalletPersistence for WalletStore {

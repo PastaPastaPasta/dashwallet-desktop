@@ -1372,7 +1372,7 @@ fn deliver(
     use key_wallet::wallet::balance::WalletCoreBalance;
     use std::collections::BTreeMap;
     let mirrors = Arc::new(Default::default());
-    let handler = platform_wallet::wallet::core::BalanceUpdateHandler::new(Arc::clone(&mirrors));
+    let handler = platform_wallet::wallet::core::BalanceUpdateHandler::new(&mirrors);
     mirrors.store(Arc::new(BTreeMap::from([(id.0, Arc::clone(pw))])));
     let event = platform_wallet::events::WalletEvent::BlockProcessed {
         locked_outpoints: Vec::new(),
