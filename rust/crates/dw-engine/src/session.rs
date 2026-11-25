@@ -543,6 +543,19 @@ impl NetworkSession {
         let dir = data_dir.clone();
         let (appdb, names) = tokio::task::spawn_blocking(move || open_app_db(&dir)).await??;
         let appdb = Arc::new(appdb);
+        // Before the persister holds wallet.sqlite and once app.sqlite,
+        // where its records go, is open: no other writer can touch the
+        // store, and the load reads what was dropped (#739, Q112).
+        {
+            let (dir, db) = (data_dir.clone(), Arc::clone(&appdb));
+            let repaired =
+                tokio::task::spawn_blocking(move || crate::store_repair::repair(&dir, &db)).await;
+            match repaired {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "store repair: stopped"),
+                Err(e) => tracing::warn!(error = %e, "store repair: panicked"),
+            }
+        }
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
             tokio::task::spawn_blocking(move || {

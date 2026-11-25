@@ -85,7 +85,6 @@ fn assert_payment_kept(
 /// store drops the claim as unsigned (#73): the payment from its change is
 /// dropped with it, and stays dropped.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): post-RC, needs the store-open repair of unsigned pending spends"]
 fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
@@ -707,7 +706,6 @@ fn skip_unsigned_check(session: &Arc<NetworkSession>) {
 /// S also spent, is released through the load's abandon and counts once
 /// when scanned again.
 #[test]
-#[ignore = "Q112 port (Q-R9 C2): post-RC, needs the store-open repair of unsigned pending spends"]
 fn a_coin_a_payment_on_a_claim_the_store_dropped_spent_is_offered_again() {
     let (_dir, engine, session, id) = engine_wallet();
     let (b_funding, funding, claim, payment) =
