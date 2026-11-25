@@ -591,15 +591,10 @@ thread_local! {
 
 /// Retire a verified before-upgrade snapshot that is not of this wallet:
 /// [`NOT_THIS_WALLET`] written atomically into its directory, which is never
-/// deleted. Never while a restore journal exists: the restore owns
-/// `upgrade-backups/` until it is done.
+/// deleted. Never while a restore is requested or part-done: the restore
+/// owns `upgrade-backups/` until it is done, and may name this snapshot.
 fn mark_not_this_wallet(network_dir: &Path, dir: &Path, now: SystemTime) -> Result<()> {
-    if fs::symlink_metadata(backups_dir(network_dir).join(crate::restore::RESTORE_JOURNAL)).is_ok()
-    {
-        return Err(StoreUpgradeError::RestorePending {
-            dir: network_dir.to_path_buf(),
-        });
-    }
+    crate::restore::refuse_if_restore_pending(network_dir)?;
     let text = format!(
         "dw-store-upgrade not this wallet\nformat 1\nretired {}\n",
         fsx::utc_stamp(now)

@@ -285,6 +285,24 @@ fn a_restore_journal_keeps_a_snapshot_of_other_data_unmarked() {
     assert!(journal.exists());
 }
 
+#[test]
+fn a_restore_request_keeps_a_snapshot_of_other_data_unmarked() {
+    let (f, s) = failed_open();
+    crate::restore::request_restore(&f.net, &s).unwrap();
+    exec(
+        &f.wallet(),
+        "UPDATE core_utxos SET value = value + 1 WHERE rowid = (SELECT MIN(rowid) FROM core_utxos)",
+    );
+    let before = tree(s.dir());
+    let err = crate::snapshot::take_snapshot(&f.net, later(60)).unwrap_err();
+    assert!(
+        matches!(err, StoreUpgradeError::RestorePending { .. }),
+        "{err:?}"
+    );
+    assert!(!s.dir().join(NOT_THIS_WALLET).exists());
+    assert_eq!(tree(s.dir()), before);
+}
+
 /// A fault reading the snapshot under R1's lock, once upgraded, is retried
 /// with its screen: never a refusal, never the snapshot called invalid.
 #[test]
