@@ -48,9 +48,12 @@ pub enum CoinExclusion {
     /// Its payment, or one it was built on, may never confirm: shown as
     /// pending until it does.
     PendingUnproven,
+    /// An abandon or a drop gave it back and the rescan that checks it is
+    /// not back yet. Such a coin is not listed, so no row carries it.
+    RescanHold,
 }
 
-mirror_enum!(EngineExclusion => CoinExclusion { PendingUnproven });
+mirror_enum!(EngineExclusion => CoinExclusion { PendingUnproven, RescanHold });
 
 impl From<CoinInfo> for Utxo {
     fn from(c: CoinInfo) -> Self {

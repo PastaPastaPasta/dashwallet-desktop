@@ -999,11 +999,13 @@ impl NetworkSession {
         fence: &CoinFence,
         snapshot: &CoinSnapshot,
     ) -> Result<(), EngineError> {
+        // A coin waiting for its rescan is not in the snapshot at all.
         let denoms: Vec<OutPoint> = snapshot
             .coins
             .iter()
             .filter(|c| c.send_account && (c.counted_denomination || c.excluded.is_some()))
             .map(|c| c.utxo.outpoint)
+            .chain(self.hub.rescan_held(&fence.wallet))
             .collect();
         let wm = self.manager()?.wallet_manager_arc();
         let mut locked = Vec::new();

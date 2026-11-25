@@ -105,6 +105,9 @@ pub struct TxDetailExtras {
     /// while it, or one it was built on, may never confirm (Q100 E1,
     /// `crate::withhold`): shown as pending.
     pub withheld_outputs: Vec<OutPoint>,
+    /// It is abandoned and a coin it spent, given back, still waits for
+    /// the rescan that checks it (Q100 E2, `crate::rescan_hold`).
+    pub checking_spent_coins: bool,
     pub last_announced_at: Option<u64>,
 }
 
@@ -1753,6 +1756,10 @@ impl NetworkSession {
                 can_resend: f.resend_refusal().is_none(),
                 dust_locked_outputs,
                 withheld_outputs,
+                checking_spent_coins: f.abandoned && {
+                    let held = this.hub.rescan_held(&wallet);
+                    (entry.tx.input.iter()).any(|i| held.contains(&i.previous_output))
+                },
                 last_announced_at: this.hub.announced_at(&txid),
             })
         })

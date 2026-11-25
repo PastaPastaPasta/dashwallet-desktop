@@ -31,6 +31,10 @@ pub enum ExclusionReason {
     /// An output of a payment that may never confirm, or of a transaction
     /// built on one ([`pending_unproven`]): shown as pending.
     PendingUnproven,
+    /// A coin an abandon or a drop gave back with no evidence that it is
+    /// unspent, waiting for that rewind's rescan (`crate::rescan_hold`):
+    /// not listed at all.
+    RescanHold,
 }
 
 impl ExclusionReason {
@@ -39,6 +43,7 @@ impl ExclusionReason {
     pub(crate) fn listed(self) -> bool {
         match self {
             Self::PendingUnproven => true,
+            Self::RescanHold => false,
         }
     }
 }
@@ -117,9 +122,13 @@ impl SessionHub {
     /// offers coins reads this map and nothing else.
     pub(crate) fn excluded_coins(&self, wallet: WalletId, core: &ManagedWalletInfo) -> Exclusions {
         let withheld = (self.history).read_wallet(&wallet, |h| pending_unproven(core, h));
-        (withheld.into_iter())
+        let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
-            .collect()
+            .collect();
+        out.extend(
+            (self.rescan_held(&wallet).into_iter()).map(|o| (o, ExclusionReason::RescanHold)),
+        );
+        out
     }
 
     /// The share of wallet `wallet`'s excluded coins in `core`'s balances.
@@ -134,7 +143,10 @@ impl SessionHub {
     /// snapshot comes without them).
     pub(crate) fn may_withhold(&self, id: &WalletId) -> bool {
         let excluded = (self.wallet_state(id)).is_some_and(|s| s.excluded.total() > 0);
-        excluded || (self.history).read(id, |txs| txs.values().any(withholding_candidate))
+        excluded
+            || (self.history).read_wallet(id, |h| {
+                !h.rescan_holds.is_empty() || h.txs.values().any(withholding_candidate)
+            })
     }
 }
 
