@@ -900,6 +900,53 @@ fn seed_earlier_restore(u: &Upgraded) {
     }
 }
 
+/// M1 via Keep: after "Keep the current files" keeps another migrated
+/// wallet (here the after file with one more wallet), the before-upgrade
+/// snapshot is no backup of what is live, so a new request is refused and
+/// nothing reports it Verified.
+#[test]
+fn a_foreign_keep_withdraws_the_restore_offer() {
+    let u = upgraded();
+    u.stop_at_s4();
+    let after = fs::read_dir(u.root())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| file_name(p).starts_with("after-upgrade-"))
+        .unwrap();
+    fs::copy(after.join("wallet.sqlite"), u.wallet()).unwrap();
+    exec(
+        &u.wallet(),
+        "CREATE TEMP TABLE w AS SELECT * FROM wallets LIMIT 1; \
+         UPDATE w SET wallet_id = \
+         x'00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'; \
+         INSERT INTO wallets SELECT * FROM w;",
+    );
+    fold_logs(&u.net);
+    let err = u.run(later(60)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                cause: IncompleteCause::S4OtherLineage,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    let info = keep_current_files(&u.net, later(120))
+        .unwrap()
+        .expect("kept");
+    assert!(info.kept_live);
+    assert!(
+        !matches!(snapshot_state(&u.net).unwrap(), SnapshotState::Verified(_)),
+        "the before-upgrade snapshot is no backup of the kept wallet"
+    );
+    let before = tree(&u.net);
+    assert!(request_restore(&u.net, &u.snapshot).is_err());
+    assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+    assert!(matches!(u.run(later(180)), Ok(None)));
+}
+
 /// Q102 102-1: a record that can't be removed stops the run with the journal
 /// still there, wherever a run removes it after the journal (finish, a
 /// resume's stale record, keep); the next start finishes and leaves no record
