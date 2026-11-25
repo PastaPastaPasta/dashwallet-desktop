@@ -3648,14 +3648,20 @@ pub(super) type SpendOutcome = (ArtifactStatus, Option<(&'static str, Option<&'s
 /// scan's drop of its record on its notes' spends confirms no row, so once
 /// the library holds nothing of it that row is read here, the first time
 /// only: confirmed (no height: none is known) when the store reads every
-/// note it took spent, or else `Unknown`, which is never confirmed after:
-/// its notes are free, and a later payment that spends them proves nothing
-/// of this one. Once failed it stays failed, whatever its notes read later.
+/// note it took spent, or else `Unknown`: its notes are free, and a later
+/// payment that spends them proves nothing of this one. An `Unknown` row
+/// settles the artifact [`FREED_UNKNOWN`], again at each pass until the
+/// journal holds it, and the artifact reads nothing after
+/// ([`freed_unknown`]), a restart's returning record included. Once failed
+/// it stays failed, whatever its notes read later.
 pub(super) fn spend_outcome<S: ShieldedStore>(
     store: &mut S,
     subwallet: SubwalletId,
     artifact: &dw_appdb::dispatch::ShieldedArtifact,
 ) -> Result<Option<SpendOutcome>, S::Error> {
+    if freed_unknown(artifact) {
+        return Ok(None);
+    }
     let held = holds_activity(&*store, subwallet, &artifact.activity);
     let row = match store.get_activity_by_entry_id(subwallet, &artifact.activity)? {
         Some(entry)
@@ -3674,7 +3680,25 @@ pub(super) fn spend_outcome<S: ShieldedStore>(
         }
         row => row,
     };
+    if imported(artifact) && row.as_ref().is_some_and(|e| e.status == Status::Unknown) {
+        return Ok(Some(FREED_UNKNOWN));
+    }
     Ok(outcome_of(row.as_ref(), &held))
+}
+
+/// The journal's settlement of an imported spend whose notes came free with
+/// nothing proving its outcome ([`spend_outcome`]): still unresolved, under
+/// the library's `Unattributable` disposition strings. It holds as any open
+/// artifact, and is never read executed or not executed, nor re-sent.
+const FREED_UNKNOWN: SpendOutcome = (
+    ArtifactStatus::Unresolved { unrecorded: false },
+    Some(("unresolved", Some("unattributable"))),
+);
+
+/// Whether open imported `artifact` carries a disposition, which only
+/// [`FREED_UNKNOWN`] writes on one: its outcome is unknown for good.
+fn freed_unknown(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
+    imported(artifact) && artifact.disposition.is_some()
 }
 
 /// [`spend_outcome`] of a spend the engine dispatched, which reads its row
@@ -3788,14 +3812,15 @@ pub(crate) async fn keep_import_rows(
 /// store has no row of it. The library keeps its rows in memory only, so
 /// after the upgrade and after each restart the spend has none: its release
 /// would fail nothing ([`spend_outcome`] reads none) and its payment would
-/// leave the history. A spend the journal settled, or whose record the
-/// library no longer holds, gets none. `true` when one was saved.
+/// leave the history. A spend the journal settled or marked
+/// [`FREED_UNKNOWN`], or whose record the library no longer holds, gets
+/// none. `true` when one was saved.
 pub(super) fn keep_import_row<S: ShieldedStore>(
     store: &mut S,
     subwallet: SubwalletId,
     artifact: &dw_appdb::dispatch::ShieldedArtifact,
 ) -> Result<bool, S::Error> {
-    if !imported(artifact) {
+    if !imported(artifact) || freed_unknown(artifact) {
         return Ok(false);
     }
     let record = (store.pending_redrives(subwallet)?.into_iter()).find(|r| {
@@ -3956,11 +3981,12 @@ fn holds_activity<S: ShieldedStore>(
 
 /// Whether the library reports an outcome of one of `wallet`'s open
 /// artifacts that [`settle_outcomes`] has not read into the journal yet,
-/// a pending row of an imported spend the library holds nothing of
-/// included ([`spend_outcome`] reads it); `None` when the journal is not
-/// ready, or the artifacts, a history row or what the library holds cannot
-/// be read.
-async fn reported_outcome(
+/// a pending row of an imported spend the library holds nothing of and an
+/// unknown one not yet marked [`FREED_UNKNOWN`] included ([`spend_outcome`]
+/// reads both); never one so marked, which reads nothing. `None` when the
+/// journal is not ready, or the artifacts, a history row or what the
+/// library holds cannot be read.
+pub(super) async fn reported_outcome(
     leases: &super::lease::LeaseTable,
     coordinator: &NetworkShieldedCoordinator,
     wallet: WalletId,
@@ -3976,10 +4002,12 @@ async fn reported_outcome(
             .get_activity_by_entry_id(subwallet, &artifact.activity)
             .ok()?;
         let reported = match row.map(|e| e.status) {
+            _ if freed_unknown(artifact) => false,
             Some(Status::Confirmed | Status::Failed) => true,
             Some(Status::Pending) if imported(artifact) => {
                 !holds_activity(&*store, subwallet, &artifact.activity).ok()?
             }
+            Some(Status::Unknown) => imported(artifact),
             _ => false,
         };
         if reported {
