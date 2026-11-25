@@ -48,7 +48,9 @@ pub enum PlatformError {
     },
     /// A signed artifact was handed off and its outcome is unknown: it may
     /// already be out (E0-04 `MaybeSent`). Never retried blindly.
-    #[error("broadcast outcome unknown for {artifact}")]
+    /// `artifact` is empty when the SDK named none (an unconfirmed
+    /// transition the engine did not build an artifact for).
+    #[error("broadcast outcome unknown{}", for_artifact(artifact))]
     BroadcastUnknown { artifact: String },
     /// The artifact is committed and the engine will send it again, for
     /// example when the network is back. Never retried.
@@ -807,6 +809,14 @@ impl ShieldedError {
 // code and falls back to `Internal{detail}`; later tasks extend these in
 // place rather than mapping on their own.
 
+fn for_artifact(artifact: &str) -> String {
+    if artifact.is_empty() {
+        String::new()
+    } else {
+        format!(" for {artifact}")
+    }
+}
+
 fn internal(e: impl std::fmt::Display) -> PlatformError {
     PlatformError::Internal {
         detail: e.to_string(),
@@ -1269,6 +1279,11 @@ mod mapping_tests {
             .map(|(path, got)| format!("{path}: {got:?}"))
             .collect();
         assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
+        assert_eq!(unknown.to_string(), "broadcast outcome unknown");
+        let named = PlatformError::BroadcastUnknown {
+            artifact: "st".into(),
+        };
+        assert_eq!(named.to_string(), "broadcast outcome unknown for st");
     }
 
     #[test]
