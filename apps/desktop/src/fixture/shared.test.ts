@@ -91,7 +91,7 @@ describe("fixture shared masternodes", () => {
     await cmd.mnSharedMessage(W, s.id);
     const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
     const after = await cmd.mnSharedAbandon(W, s.id, await cap(s.abandonCharge!));
-    expect(after).toMatchObject({ next: "nothing", abandonSpend: { state: "in_history", code: null }, resendAbandonCharge: s.abandonCharge });
+    expect(after).toMatchObject({ next: "nothing", abandonSpend: { state: "in_history", code: null }, resendAbandonCharge: s.abandonCharge, activityAbandonTxids: ["a8".repeat(32)] });
     await expect(cmd.mnSharedMessage(W, s.id)).rejects.toMatchObject({ code: "masternodes.shared_stage", data: { stage: "abandoning" } });
   });
 
@@ -101,10 +101,10 @@ describe("fixture shared masternodes", () => {
     const fee = s.abandonCharge!;
     const cap = async (max: number) => (await cmd.authorize({ kind: "masternodeOp", maxDuffs: max }, W, PASS)).id;
     const after = await cmd.mnSharedAbandon(W, s.id, await cap(fee));
-    expect(after).toMatchObject({ abandonSpend: { state: "uncertain" }, abandonCharge: null, resendAbandonCharge: fee });
+    expect(after).toMatchObject({ abandonSpend: { state: "uncertain" }, abandonCharge: null, resendAbandonCharge: fee, activityAbandonTxids: [] });
     await expect(cmd.mnSharedAbandon(W, s.id, await cap(fee)), "no new spend while it may be out").rejects.toMatchObject({ data: { stage: "abandoning" } });
     await expect(cmd.mnSharedResendAbandon(W, s.id, await cap(fee - 1))).rejects.toMatchObject({ code: "send.grant_exceeded" });
-    expect(await cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" } });
+    expect(await cmd.mnSharedResendAbandon(W, s.id, await cap(fee))).toMatchObject({ abandonSpend: { state: "in_history" }, activityAbandonTxids: ["a8".repeat(32)] });
   });
 
   it("a refused spend back offers a new spend of the same coins, and no Send again", async () => {

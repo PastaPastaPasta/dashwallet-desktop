@@ -11,6 +11,7 @@ import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import { creditBalance, creditsModel, estimateText, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_COPY, requestModel, tallyRows, type CreditsInputs } from "./profile";
 import { homeCard, joinModel, type StatusInputs } from "./status";
 import { outcomeText } from "./topup";
+import { INSTANT_COPY, registrationOffered, VOTE_COPY, type InstantInputs } from "./instantOffer";
 
 const COSTS: CostTable = {
   protocolVersion: 10,
@@ -194,6 +195,13 @@ const contest = (patch: Partial<ContestStatus> = {}): ContestStatus => ({
   ...patch,
 });
 
+/** The voting card's inputs for `wallet`, through the Join page's gate. */
+const KEYED_MAINNET = { watchOnly: false, network: "mainnet" };
+const WATCH_ONLY = { watchOnly: true, network: "mainnet" };
+const gated = (wallet: { watchOnly: boolean }): InstantInputs => ({ offered: registrationOffered(wallet), nameCredits: "2000000000", asked: null });
+const ON = gated(KEYED_MAINNET);
+const OFF = gated(WATCH_ONLY);
+
 describe("the request card (IOS-068, AND-071)", () => {
   const date = (secs: number) => `day ${secs}`;
   it("D11: the tally; unknown counts read —", () => {
@@ -207,14 +215,14 @@ describe("the request card (IOS-068, AND-071)", () => {
   });
 
   it("R1, R2: open, the end or a notice, and the temporary name or an instant one (D13)", () => {
-    const open = requestModel("al", 5, contest({ temporaryName: "al2025" }), false, alice(), date);
+    const open = requestModel("al", 5, contest({ temporaryName: "al2025" }), false, alice(), date, ON);
     expect(open).toMatchObject({ state: "open", title: "Voting – @al", temporary: "al2025", instant: false, readFailed: false });
     expect(open.lines).toEqual([PROFILE_COPY.request.deciding, "Results on day 1900000000.", "Until then you are @al2025."]);
-    const noEnd = requestModel("al", null, undefined, false, alice({ mainName: null, names: [] }), date);
+    const noEnd = requestModel("al", null, undefined, false, alice({ mainName: null, names: [] }), date, ON);
     expect(noEnd).toMatchObject({ tally: null, temporary: null, instant: true });
     expect(noEnd.lines).toEqual([PROFILE_COPY.request.deciding, PROFILE_COPY.request.notify]);
     // The main name stands in for a temporary one the contest did not read.
-    expect(requestModel("al", null, undefined, false, alice(), date).temporary).toBe("alice");
+    expect(requestModel("al", null, undefined, false, alice(), date, ON)).toMatchObject({ temporary: "alice", instant: false });
   });
 
   it("R3–R5: the result read before the status moved", () => {
@@ -222,6 +230,56 @@ describe("the request card (IOS-068, AND-071)", () => {
     expect(requestModel("al", 5, contest({ state: { kind: "lost", winner: "M" } }), false, alice(), date)).toMatchObject({ state: "lost", title: "@al went to another user" });
     expect(requestModel("al", 5, contest({ state: { kind: "lost", winner: null } }), false, alice(), date).title).toBe("Voting on @al ended with no winner");
     expect(requestModel("al", 5, contest({ state: { kind: "locked" } }), false, alice(), date)).toMatchObject({ state: "locked", title: "@al was blocked" });
+  });
+
+  it("D4 reversed: the instant offer's gate, Top up when credits fall short, and a temporary name that failed", () => {
+    const none = alice({ mainName: null, names: [] });
+    expect(requestModel("al", 5, undefined, false, none, date, OFF)).toMatchObject({ instant: false, short: false, failed: null });
+    expect(requestModel("al", 5, undefined, false, none, date)).toMatchObject({ instant: false });
+    const short = requestModel("al", 5, undefined, false, alice({ mainName: null, names: [], balance: "5" }), date, ON);
+    expect(short).toMatchObject({ instant: false, short: true });
+    expect(short.lines.at(-1)).toBe("Not enough credits for an instant username.");
+    const failed = requestModel("al", 5, undefined, false, none, date, { ...ON, asked: { label: "al2", outcome: "failed" } });
+    expect(failed).toMatchObject({ instant: false, failed: "al2" });
+    expect(failed.lines.at(-1)).toBe(INSTANT_COPY.failure("al2"));
+    const failedShort = requestModel("al", 5, undefined, false, alice({ mainName: null, names: [], balance: "5" }), date, { ...ON, asked: { label: "al2", outcome: "failed" } });
+    expect(failedShort).toMatchObject({ instant: false, short: true, failed: null });
+    expect(failedShort.lines.slice(-2)).toEqual([INSTANT_COPY.failure("al2"), "Not enough credits for an instant username."]);
+    // Registrations not read yet: nothing offered.
+    expect(requestModel("al", 5, undefined, false, none, date, { ...ON, asked: undefined })).toMatchObject({ instant: false, short: false, failed: null });
+    const owned = requestModel("al", 5, contest({ temporaryName: "al2" }), false, alice({ mainName: "al2", names: ["al2"] }), date, { ...ON, asked: { label: "al2", outcome: "owned" } });
+    expect(owned.lines.at(-1)).toBe(INSTANT_COPY.success("al2", "al"));
+  });
+
+  it("gate (a): a watch-only wallet hides the offer, the card action and the won line; a keyed mainnet wallet shows them", () => {
+    const none = alice({ mainName: null, names: [] });
+    const card = (instant: InstantInputs) =>
+      homeCard(statusInputs({ status: { kind: "contestPending", identity: "AliceId", label: "al", endsAt: 5 }, main: none, instant }));
+    const won = (instant: InstantInputs) => requestModel("al", 5, contest({ state: { kind: "won" }, temporaryName: "al2" }), false, alice(), date, instant).lines;
+
+    expect(requestModel("al", 5, undefined, false, none, date, ON).instant).toBe(true);
+    expect(card(ON)).toMatchObject({ action: { kind: "instantName" }, secondary: { kind: "votingInfo" } });
+    expect(won(ON)).toEqual([VOTE_COPY.wonMain("al", "al2")]);
+
+    expect(requestModel("al", 5, undefined, false, none, date, OFF).instant).toBe(false);
+    expect(card(OFF)).toMatchObject({ action: { kind: "votingInfo" }, secondary: null });
+    expect(won(OFF)).toEqual([PROFILE_COPY.request.won.text]);
+  });
+
+  it("vote won: the main name switches, said only on the engine's proved result, never a tally", () => {
+    const won = requestModel("al", 5, contest({ state: { kind: "won" }, temporaryName: "al2" }), false, alice(), date, ON);
+    expect(won.lines).toEqual(["“al” is now your main username. Your instant username “al2” stays yours too."]);
+    // An open contest whose tally leads says nothing of winning.
+    const leading = requestModel("al", 5, contest({ temporaryName: "al2", contenders: [{ identity: "AliceId", votes: 99, isSelf: true }] }), false, alice(), date, ON);
+    expect(leading.state).toBe("open");
+    expect(leading.lines.join(" ")).not.toContain("now your main username");
+    // Without a temporary name, or where registration is not offered, the plain line.
+    expect(requestModel("al", 5, contest({ state: { kind: "won" } }), false, alice(), date, ON).lines).toEqual([PROFILE_COPY.request.won.text]);
+    expect(requestModel("al", 5, contest({ state: { kind: "won" }, temporaryName: "al2" }), false, alice(), date, OFF).lines).toEqual([
+      PROFILE_COPY.request.won.text,
+    ]);
+    // Lost: the instant name stays main; no prompt and no won line.
+    expect(requestModel("al", 5, contest({ state: { kind: "lost", winner: "M" }, temporaryName: "al2" }), false, alice(), date, ON).lines).toEqual([]);
   });
 
   it("R6: a failed read keeps the status's card and says so; another label's read is not used", () => {

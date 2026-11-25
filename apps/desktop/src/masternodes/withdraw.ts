@@ -5,7 +5,7 @@ import { hasCode } from "../api/backend";
 import { t } from "../i18n";
 
 /** Why a destination still reads `checking` (MG-13 `WithdrawalCheckingReason`). */
-export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "payout_change_unconfirmed" | "owner_payout_p2sh" | "unverified" | "spv_unsynced";
+export type WithdrawCheckingReason = "platform_behind" | "payout_change_pending" | "payout_change_abandoned" | "payout_change_unconfirmed" | "owner_payout_p2sh" | "unverified" | "spv_unsynced";
 
 /** Where a withdrawal by one key pays (MG-13 `WithdrawalDestinationCheck`), as the quote's
  * `owner_destination` and `payout_destination` carry it. */
@@ -17,11 +17,13 @@ export function withdrawDestinationText(d: WithdrawDestination): string {
 }
 
 /** What the sheet says under a destination that still checks; `null` for one that is fixed or
- * checks for a reason other than unverified data, an unconfirmed payout change or a P2SH payout. */
+ * checks for a reason other than unverified data, an unconfirmed payout change, an abandoned one
+ * that may still confirm, or a P2SH payout. */
 export function destinationNote(d: WithdrawDestination | null | undefined): string | null {
   if (d?.kind !== "checking") return null;
   if (d.reason === "unverified") return t("masternodes.withdraw.unverified");
   if (d.reason === "payout_change_unconfirmed") return t("masternodes.withdraw.payoutUnconfirmed");
+  if (d.reason === "payout_change_abandoned") return t("masternodes.withdraw.heldAbandonedChange");
   if (d.reason === "owner_payout_p2sh") return t("masternodes.withdraw.ownerPayoutP2sh");
   return null;
 }

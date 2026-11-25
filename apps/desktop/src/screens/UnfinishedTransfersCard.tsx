@@ -35,6 +35,7 @@ import {
 import { SHIELDED_COPY as S, shieldedErrorText, shieldedFor } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY, shieldedSyncing } from "../shielded/syncing";
 import { shieldedRoute, transferFor } from "../transfer/model";
+import { preparingText } from "../transfer/preparing";
 import { usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedSheet, useFormats } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
@@ -103,6 +104,11 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
             {view && (
               <p className={view.kind === "failed" ? "form-problem" : "platform-card-text"} role={view.kind === "failed" ? "alert" : "status"} data-testid="unfinished-text">
                 {view.text}
+              </p>
+            )}
+            {view?.kind === "running" && model.preparing.shown && (
+              <p className="platform-card-text" role="status" data-testid="transfer-preparing">
+                {preparingText()}
               </p>
             )}
             {shields.map((p) => (
@@ -273,6 +279,11 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
           );
         })}
       </dl>
+      {model.running && model.preparing.shown && (
+        <p className="field-hint" role="status" data-testid="transfer-preparing">
+          {preparingText()}
+        </p>
+      )}
       {failed !== null && rows.every((r) => r.result?.kind !== "notApplied") && (
         <p className="form-problem" role="alert" data-testid="unfinished-sheet-error">
           {errorText(failed)}

@@ -63,6 +63,7 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { EvonodeCredits } from "./EvonodeCredits";
@@ -1107,6 +1108,21 @@ export function txNotices(walletId: string, txids: Array<string>): Promise<Array
 }
 
 /**
+ * The notices of payments Dash Wallet dropped because what they spent
+ * came from a transaction that was never valid, not yet dismissed.
+ */
+export function droppedNotices(walletId: string): Promise<Array<DroppedNoticeRow>> {
+  return invoke<Array<DroppedNoticeRow>>("dropped_notices", { walletId });
+}
+
+/**
+ * Dismisses the notices of the dropped payments `txids` for good.
+ */
+export function dismissDroppedNotices(walletId: string, txids: Array<string>): Promise<null> {
+  return invoke<null>("dismiss_dropped_notices", { walletId, txids });
+}
+
+/**
  * Whether a record type is a CoinJoin mixing, denomination or
  * collateral transaction, whose popup dash-qt hides unless "show
  * CoinJoin popups" is on.
@@ -1703,8 +1719,9 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
- * An invitation claim row's resume grant: no duffs, and the credits
- * of the steps it has left, from the row (DP5-03 D20).
+ * An invitation claim row's or a Platform-funded row's resume grant:
+ * no duffs, and the credits of the steps it has left, from the row
+ * (DP5-03 D20).
  */
 export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
   return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });
@@ -3498,6 +3515,8 @@ export type CommandArgs = {
   drop_unconfirmed: { walletId: string | null };
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
+  dropped_notices: { walletId: string };
+  dismiss_dropped_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
   open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
@@ -3879,6 +3898,8 @@ export type CommandResults = {
   drop_unconfirmed: number;
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
+  dropped_notices: Array<DroppedNoticeRow>;
+  dismiss_dropped_notices: null;
   is_coinjoin_internal: boolean;
   open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
@@ -4262,6 +4283,8 @@ export const COMMANDS: Record<CommandName, string> = {
   drop_unconfirmed: "history",
   export_history_csv: "history",
   tx_notices: "history",
+  dropped_notices: "history",
+  dismiss_dropped_notices: "history",
   is_coinjoin_internal: "history",
   open_tx_in_explorer: "history",
   backup_wallet: "backup",
@@ -4761,6 +4784,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_unknown_recent",
   "registration.shielded_not_ready",
   "registration.quote_changed",
+  "registration.refunded",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4851,6 +4875,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.no_owner_key",
   "masternodes.update_pending",
   "masternodes.update_superseded",
+  "masternodes.update_abandoned_pending",
   "masternodes.shared_session_not_found",
   "masternodes.shared_stage",
   "masternodes.shared_message",

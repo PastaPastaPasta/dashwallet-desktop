@@ -94,12 +94,14 @@ describe("chips and icons", () => {
     expect(txChip(status({ kind: "unconfirmed", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
     expect(txChip(status({ kind: "confirming", instantLocked: true, chainLocked: false }))).toBe("InstantSend");
     expect(txChip(status({ kind: "abandoned" }))).toBe("Abandoned");
+    expect(txChip(status({ kind: "abandoned", dropped: { cause: "invalidSource", state: { kind: "releasing" } } }))).toBe("Dropped");
   });
 
   it("marks failures with the error icon", () => {
     expect(txIcon("sendToAddress", status({ kind: "conflicted" }), -5)).toBe("error");
     expect(txIcon("sendToSelf", status(), 0)).toBe("internalTransfer");
     expect(txIcon("recvWithAddress", status(), 5)).toBe("received");
+    expect(txIcon("sendToAddress", status(), 0)).toBe("sent");
   });
 
   it("shows a self-send fee as money that left", () => {

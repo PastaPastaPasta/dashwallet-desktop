@@ -17,6 +17,7 @@ import type { StartupStatus } from "../api/generated/StartupStatus";
 import { RESCAN_TEXT } from "../app/rescan";
 import { oneDecimal } from "../format/sync";
 import { messageTable, t } from "../i18n";
+import { INSTANT_COPY, instantOffer, VOTE_COPY, type AskedTemporary, type InstantInputs } from "./instantOffer";
 
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
@@ -34,13 +35,27 @@ export type CardState =
   | "creatingUnlock"
   | "creatingPaused"
   | "creatingRepair"
+  | "creatingHeld"
   | "voting"
   | "noUsername"
   | "lowCredits"
   | "emptyCredits";
 
 /** What a card's button does: the screen maps each to its navigation or call. */
-export type CardActionKind = "join" | "retry" | "unlock" | "continue" | "repair" | "votingInfo" | "chooseName" | "buyCredits";
+export type CardActionKind =
+  | "join"
+  | "retry"
+  | "unlock"
+  | "continue"
+  | "moveToCore"
+  | "repair"
+  | "votingInfo"
+  | "chooseName"
+  | "buyCredits"
+  /** D13's instant username from the identity's credits; `instantRetry` prefilled with the
+   * temporary name its registration could not register (`CardModel.retryLabel`). */
+  | "instantName"
+  | "instantRetry";
 
 export interface CardAction {
   kind: CardActionKind;
@@ -70,6 +85,10 @@ export interface CardModel {
   /** The pill under the card (iOS "Available after sync finishes"). */
   note: string | null;
   action: CardAction | null;
+  /** A second button beside `action` (a held Platform payment's Move to Dash wallet). */
+  secondary: CardAction | null;
+  /** The temporary name `instantRetry` tries again. */
+  retryLabel?: string;
 }
 
 export interface StatusInputs {
@@ -89,6 +108,8 @@ export interface StatusInputs {
   amount: (duffs: number) => string;
   /** Discreet mode: the card leaves out the wallet's balance. */
   discreet: boolean;
+  /** While the own contest is open: what the instant username's offer reads (D4 reversed). */
+  instant?: InstantInputs;
 }
 
 /** `table` with `rest`'s members, its getters kept (a spread would read them once). */
@@ -139,6 +160,9 @@ export const COPY = {
   get continue() {
     return t("dashpay.card.continue");
   },
+  get moveToCore() {
+    return t("dashpay.card.moveToCore");
+  },
 };
 
 /** D4: the step a phase is in. `failed` counts as the phase it stopped in. An invitation's claim
@@ -186,10 +210,22 @@ export const WAITS = {
   get authorize() {
     return t("dashpay.wait.authorize");
   },
+  get paymentUnknown() {
+    return t("dashpay.wait.paymentUnknown");
+  },
+  get paymentHeld() {
+    return t("dashpay.wait.paymentHeld");
+  },
   // These two have their own card (S14).
   fundingUnknown: null,
   needsFinish: null,
 } satisfies Record<RegistrationWaitName, string | null>;
+
+/** A held Platform payment's line where Continue and Move to Dash wallet are both offered: it
+ * names them, so nothing else shows it. */
+export function heldWithBoth() {
+  return t("dashpay.wait.paymentHeldActions");
+}
 
 /** DP1-09 D21/D26: the row waits for Continue's grant. It says `authorize`, or nothing runs it
  * (`running`) and it waits for a proof or the network: the engine reports an idle row's first
@@ -216,8 +252,14 @@ export const CLAIM_REFUSAL = {
 };
 
 /** D5: why a registration stopped, by its failure's code. */
-export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false): string {
+export function failureText(failure: RegistrationFailure, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
   switch (failure.code) {
+    // C-funding F10: a create that executed as a paid failure, from the Platform balance.
+    case "registration.refunded":
+      return fromPlatform ? t("dashpay.failure.refundedPlatform") : t("dashpay.failure.stoppedWith", { code: failure.code });
+    // A run that stopped when its Platform plan changed: a re-plan refused, or an exit to the Dash wallet.
+    case "registration.quote_changed":
+      return t("dashpay.failure.quoteChanged");
     case "registration.funding_insufficient":
       if (failure.needed === null) return t("dashpay.failure.fundingShort");
       // What the wallet holds stays hidden in discreet mode.
@@ -262,6 +304,7 @@ const card = (state: CardState, tone: CardTone, title: string, lines: string[] =
   busy: false,
   note: null,
   action: null,
+  secondary: null,
   ...rest,
 });
 
@@ -304,13 +347,27 @@ function registeringCard(r: RegistrationStatus | undefined, i: StatusInputs): Ca
     const what = r.waiting === "fundingUnknown" ? COPY.repair.unknown : COPY.repair.finish;
     return card("creatingRepair", "problem", title, [what, COPY.repair.message], { step, action: action("repair", COPY.repair.action) });
   }
+  // F22: a Platform payment that may still go through: Continue retries it, Move to Dash
+  // wallet frees the balance instead.
+  if (r.waiting === "paymentHeld" && !r.failure)
+    return card("creatingHeld", "problem", title, [heldWithBoth()], {
+      step,
+      action: action("continue", COPY.continue),
+      secondary: action("moveToCore", COPY.moveToCore),
+    });
   if (r.failure || awaitsContinue(r)) {
-    const why = r.failure ? failureText(r.failure, i.amount, i.discreet) : WAITS.authorize;
+    const why = r.failure ? failureText(r.failure, i.amount, i.discreet, r.fromPlatform) : WAITS.authorize;
     return card("creatingPaused", "problem", title, [COPY.paused, why], { step, action: action("continue", COPY.continue) });
   }
   if (r.waiting === "unlock") return card("creatingUnlock", "problem", title, [WAITS.unlock], { step, action: unlockAction(i.lock) });
   const wait = r.waiting ? WAITS[r.waiting] : null;
   return card("creating", "pending", title, wait ? [wait] : [], { step, busy: true });
+}
+
+/** The temporary name's line while the vote runs: iOS's success line when it is the one the
+ * registration asked for and a names read says it is owned, else "Until then you are". */
+export function temporaryLine(temporary: string, requested: string, asked: AskedTemporary | null | undefined): string {
+  return asked?.outcome === "owned" && asked.label === temporary ? INSTANT_COPY.success(temporary, requested) : COPY.voting.temporary(temporary);
 }
 
 /** What the main identity's names say (D23): it has a name; they are not known yet (unread, a
@@ -352,8 +409,30 @@ export function homeCard(i: StatusInputs): CardModel | null {
       const lines: string[] = [COPY.voting.deciding, s.endsAt === null ? COPY.voting.notify : COPY.voting.endsOn(i.date(s.endsAt))];
       // The temporary name shows on a live read only (DASHPAY F5).
       const temporary = i.main && !i.main.namesUpdating && i.main.mainName !== s.label ? i.main.mainName : null;
-      if (temporary) lines.push(COPY.voting.temporary(temporary));
-      return card("voting", "pending", COPY.voting.title(s.label), lines, { action: action("votingInfo", COPY.voting.action) });
+      if (temporary) lines.push(temporaryLine(temporary, s.label, i.instant?.asked));
+      const title = COPY.voting.title(s.label);
+      const info = action("votingInfo", COPY.voting.action);
+      const offer = instantOffer(i.main, temporary, i.instant);
+      switch (offer?.kind) {
+        case "create":
+          return card("voting", "pending", title, [...lines, VOTE_COPY.instantHint(s.label)], { action: action("instantName", VOTE_COPY.instantAction), secondary: info });
+        case "short":
+          return card("voting", "pending", title, [...lines, VOTE_COPY.instantShort], { action: action("buyCredits", VOTE_COPY.topUp), secondary: info });
+        case "failed":
+          // Credits short of the name: Top up first, as for a new one.
+          if (offer.short)
+            return card("voting", "problem", title, [...lines, INSTANT_COPY.failure(offer.label), VOTE_COPY.instantShort], {
+              action: action("buyCredits", VOTE_COPY.topUp),
+              secondary: info,
+            });
+          return card("voting", "problem", title, [...lines, INSTANT_COPY.failure(offer.label)], {
+            action: action("instantRetry", INSTANT_COPY.retry),
+            secondary: info,
+            retryLabel: offer.label,
+          });
+        default:
+          return card("voting", "pending", title, lines, { action: info });
+      }
     }
     case "ready": {
       const names = namesState(i.main);

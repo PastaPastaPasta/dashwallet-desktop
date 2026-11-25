@@ -75,6 +75,7 @@ import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
 import type { TxNoticeRow } from "./generated/TxNoticeRow";
+import type { DroppedNoticeRow } from "./generated/DroppedNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -340,6 +341,10 @@ export interface Backend {
   exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
   /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
   txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
+  /** The notices of payments Dash Wallet dropped because the Dash they used came from a transaction
+   * that was never valid: once their coins are back, until dismissed. */
+  droppedNotices(walletId: string): Promise<DroppedNoticeRow[]>;
+  dismissDroppedNotices(walletId: string, txids: string[]): Promise<null>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
@@ -568,7 +573,7 @@ export interface Backend {
   /** Open wallets whose history starts before the stored block data; `null`: none, or no data yet. */
   historyGap(): Promise<WalletHistoryGap | null>;
   setBirthHeight(walletId: string, height: number): Promise<null>;
-  /** Abandons the unconfirmed transactions the network does not have (`null`: every wallet) and
+  /** Abandons the unconfirmed transactions that aren't InstantSend-locked (`null`: every wallet) and
    * schedules a rescan; returns how many. */
   dropUnconfirmed(walletId: string | null): Promise<number>;
   registrations(walletId: string): Promise<RegistrationStatus[]>;

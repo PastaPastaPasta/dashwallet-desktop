@@ -321,7 +321,7 @@ async fn plan(
     let fee = fee_credits(rules);
     let min = minimum_duffs(rules);
     if duffs < min {
-        return Err(CreditsError::BelowMinimum { min });
+        return Err(CreditsError::BelowMinimum { min, max: None });
     }
     no_open_fund(session, wallet, lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -423,6 +423,7 @@ pub(crate) async fn quote(
     lib: &impl FundLib,
     amount: FundAmount,
 ) -> Result<PlatformFundQuote, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
     match amount {
         FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
         FundAmount::All => {
@@ -503,6 +504,10 @@ pub(crate) async fn fund(
     amount: FundAmount,
     grant: &str,
 ) -> Result<PlatformFundOutcome, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);
@@ -594,7 +599,7 @@ pub(crate) async fn fund(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => CreditsError::CoinsLocked,
             Err(FundError::CoinsChanged) => CreditsError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => CreditsError::TooManyInputs {
                 inputs: max + 1,

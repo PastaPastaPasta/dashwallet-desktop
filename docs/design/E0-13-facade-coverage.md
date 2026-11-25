@@ -244,7 +244,9 @@ or excluded with a reason (`rust/crates/dw-app/src/coverage.rs`).
 | `NetworkSession::data_dir` | dw-engine/src/session.rs | excluded (network): internal: a path the engine owns |
 | `NetworkSession::delete_address_book_entry` | dw-engine/src/labels.rs | `delete_address_book_entry` |
 | `NetworkSession::delete_receive_request` | dw-engine/src/receive.rs | `delete_receive_request` |
+| `NetworkSession::dismiss_dropped_notices` | dw-engine/src/tx_actions.rs | `dismiss_dropped_notices` |
 | `NetworkSession::drop_unconfirmed` | dw-engine/src/tx_actions.rs | `drop_unconfirmed` |
+| `NetworkSession::dropped_notices` | dw-engine/src/tx_actions.rs | `dropped_notices` |
 | `NetworkSession::dust_protection` | dw-engine/src/coins.rs | `dust_protection` |
 | `NetworkSession::encrypt_vault` | dw-engine/src/keys.rs | `encrypt_vault` |
 | `NetworkSession::end_flow` | dw-engine/src/platform/flows.rs | `end_flow` |

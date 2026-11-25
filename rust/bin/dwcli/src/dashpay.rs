@@ -925,7 +925,8 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::FundingCancelled
         | R::NotSynced
         | R::CoinsLocked
-        | R::QuoteChanged => json!({}),
+        | R::QuoteChanged
+        | R::Refunded => json!({}),
         R::ShieldedNotReady { reason, ready_at } => {
             json!({"reason": reason, "ready_at": ready_at})
         }
@@ -979,7 +980,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::BelowMinimum { min, .. } => json!({"min": min}),
         CreditsError::CoinsLocked
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
@@ -1020,7 +1021,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::BelowMinimum { min, .. } => json!({"min": min}),
         ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
@@ -2727,7 +2728,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true,"sends_off":null}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -3974,7 +3975,10 @@ mod tests {
         }));
         assert_eq!(e["code"], "platform.will_be_sent");
         assert_eq!(e["params"], json!({"artifact": "topup/1/funding"}));
-        let e = error_json(CreditsError::BelowMinimum { min: 100 });
+        let e = error_json(CreditsError::BelowMinimum {
+            min: 100,
+            max: None,
+        });
         assert_eq!(
             (e["code"].clone(), e["params"].clone()),
             (json!("credits.below_minimum"), json!({"min": 100}))

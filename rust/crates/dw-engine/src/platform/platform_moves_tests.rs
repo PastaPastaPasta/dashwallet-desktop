@@ -176,6 +176,7 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: None,
     }
 }
@@ -468,6 +469,11 @@ pub(crate) struct FakeMoves {
     effects: Mutex<Vec<Effect>>,
     /// The withdrawal documents executed withdrawals created.
     documents: Mutex<BTreeSet<Identifier>>,
+    /// The identities registrations created.
+    pub(crate) identities: Mutex<BTreeSet<Identifier>>,
+    /// An executed create makes no identity: it fails inside its block,
+    /// taking its nonces and its fee.
+    pub(crate) create_fails: AtomicBool,
     /// Reads of a withdrawal document fail.
     documents_down: AtomicBool,
     /// What executed top-ups added to the identity.
@@ -480,6 +486,8 @@ pub(crate) struct FakeMoves {
     pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
     /// The withdrawal document reads made so far.
     withdrawal_reads: AtomicUsize,
+    /// The `MoveNet` calls made so far.
+    calls: AtomicUsize,
 }
 
 impl FakeMoves {
@@ -502,6 +510,8 @@ impl FakeMoves {
             block_read: AtomicBool::new(false),
             effects: Mutex::default(),
             documents: Mutex::default(),
+            identities: Mutex::default(),
+            create_fails: AtomicBool::new(false),
             documents_down: AtomicBool::new(false),
             topped_up: AtomicU64::new(0),
             read_entered: tokio::sync::Notify::new(),
@@ -509,7 +519,13 @@ impl FakeMoves {
             document_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
         })
+    }
+
+    /// The `MoveNet` calls made so far.
+    pub(crate) fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 
     /// The withdrawal document reads made so far: none without a payout.
@@ -652,6 +668,11 @@ impl FakeMoves {
                 let claims: u64 = inputs.values().map(|(_, c)| *c).sum();
                 self.topped_up.fetch_add(claims, Ordering::SeqCst);
             }
+            Effect::Register(id) => {
+                if !self.create_fails.load(Ordering::SeqCst) {
+                    self.identities.lock().unwrap().insert(*id);
+                }
+            }
         }
         self.tick();
         true
@@ -780,10 +801,12 @@ impl FakeMoves {
 
 impl MoveNet for FakeMoves {
     fn version(&self) -> &'static PlatformVersion {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         *self.version.lock().unwrap()
     }
 
     async fn read(&self, addresses: BTreeSet<PlatformAddress>) -> Result<Proved, PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.stop_in_read.swap(false, Ordering::SeqCst) {
             panic!("the process stops");
         }
@@ -812,6 +835,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let effect = Effect::Withdrawal(script.as_bytes().to_vec());
         (self
             .broadcast(inputs, None, (fee_strategy, effect), signer)
@@ -820,6 +844,7 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.withdrawal_reads.fetch_add(1, Ordering::SeqCst);
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let height = self.height.load(Ordering::SeqCst);
@@ -835,6 +860,7 @@ impl MoveNet for FakeMoves {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<(), PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         (self
             .broadcast(inputs, Some(to), (fee_strategy, Effect::Moves), signer)
             .await)
@@ -847,6 +873,7 @@ impl MoveNet for FakeMoves {
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
         signer: &VaultPlatformAddressSigner,
     ) -> Result<u64, PlatformWalletError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         // dpp's constructor fixes the fee on input 0.
         let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
         (self
@@ -857,11 +884,39 @@ impl MoveNet for FakeMoves {
     }
 
     async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if self.documents_down.load(Ordering::SeqCst) {
             return Err(PlatformError::Unavailable);
         }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let present = self.documents.lock().unwrap().contains(&id);
+        Ok((present, self.height.load(Ordering::SeqCst)))
+    }
+
+    async fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        _index: u32,
+        (_, signer): (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> Result<Identifier, PlatformWalletError> {
+        let id = dpp::state_transition::identity_id_from_input_addresses(&inputs)
+            .map_err(|e| PlatformWalletError::Sdk(e.into()))?;
+        assert_eq!(identity.id(), id, "the identity its inputs give");
+        let strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
+        (self
+            .broadcast(inputs, None, (strategy, Effect::Register(id)), signer)
+            .await)
+            .map_err(|e| *e)?;
+        Ok(id)
+    }
+
+    async fn identity_exists(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        if self.documents_down.load(Ordering::SeqCst) {
+            return Err(PlatformError::Unavailable);
+        }
+        trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        let present = self.identities.lock().unwrap().contains(&id);
         Ok((present, self.height.load(Ordering::SeqCst)))
     }
 }
@@ -875,6 +930,8 @@ pub(crate) enum Effect {
     Withdrawal(Vec<u8>),
     /// A top-up of the identity by its claims.
     TopUp,
+    /// A registration's create of the identity with this id.
+    Register(Identifier),
 }
 
 /// A session with a wallet, its Platform payment addresses and `net`.
@@ -887,7 +944,15 @@ pub(in crate::platform) struct World {
 
 impl World {
     pub(crate) fn new() -> Self {
-        let f = Fixture::new(0);
+        Self::over(Fixture::new(0))
+    }
+
+    /// [`Self::new`] with the session on `network`.
+    pub(crate) fn on(network: crate::DashNetwork) -> Self {
+        Self::over(Fixture::on(network, 0))
+    }
+
+    fn over(f: Fixture) -> Self {
         let net = FakeMoves::new();
         let mut w = Self {
             f,
@@ -1434,6 +1499,35 @@ fn differing_terms_settle_as_a_group() {
     assert_eq!(
         (row.credits, row.expected_duffs, row.fee_credits),
         (600, None, None)
+    );
+    // Nothing says which of them executed: every row says so, the newest too.
+    assert!(
+        moves
+            .iter()
+            .all(|m| m.unattributed && m.activity().unattributed)
+    );
+}
+
+/// Moves of one key with equal terms leave the same history whichever
+/// executed: the group names its winner, and no row is unattributed.
+#[test]
+fn equal_terms_settle_attributed() {
+    let mut f = record("f", 1, &[("a", 4)]);
+    f.state = PlatformActivityState::Failed;
+    f.seen_at = Some(5);
+    let mut r = record("r", 2, &[("a", 4)]);
+    (r.answered, r.seen_at) = (true, Some(15));
+    let mut moves = vec![f, r];
+    let landed = Seen {
+        height: 20,
+        at: [("a".into(), Some((4, 300)))].into(),
+    };
+    settle(&mut moves, &landed);
+    assert_eq!(moves[1].state, PlatformActivityState::Done);
+    assert!(
+        moves
+            .iter()
+            .all(|m| !m.unattributed && !m.activity().unattributed)
     );
 }
 
@@ -2086,6 +2180,29 @@ fn a_0_1_move_record_reads_as_to_core() {
     let row = read.activity();
     assert_eq!(row.kind, PlatformActivityKind::MoveToCore);
     assert_eq!(row.expected_duffs, Some(0));
+}
+
+/// A group's outcome stored before records carried `unattributed` still
+/// shows no named winner; a record with no group outcome stays named.
+#[test]
+fn a_group_outcome_from_before_the_mark_names_no_winner() {
+    let read = |group: bool| {
+        let mut json = serde_json::to_value(record("m", 1, &[("x", 1)])).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("unattributed");
+        if group {
+            let outcome = GroupOutcome {
+                debit: Some(DASH),
+                to: None,
+            };
+            fields.insert("group".into(), serde_json::to_value(outcome).unwrap());
+        }
+        let read: MoveRecord = serde_json::from_value(json).unwrap();
+        assert!(!read.unattributed);
+        read.activity().unattributed
+    };
+    assert!(read(true));
+    assert!(!read(false));
 }
 
 impl World {
@@ -3670,3 +3787,6 @@ mod top_up;
 
 #[path = "platform_register_tests.rs"]
 mod register;
+
+#[path = "platform_mainnet_flag_tests.rs"]
+mod mainnet_flag;

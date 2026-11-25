@@ -9,6 +9,7 @@
 //! `platform()` finds it again.
 
 use super::contacts::Eligibility;
+use super::credits::CoreMaxShort;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
@@ -259,6 +260,12 @@ pub enum RegistrationError {
     /// nothing was written or signed; quote again.
     #[error("the cost changed since the quote")]
     QuoteChanged,
+    /// A row's failure, never returned by a call: its create from the
+    /// Platform addresses failed inside a block (C-funding F10), which took
+    /// their nonces and a penalty and made no identity. What is left stays
+    /// on the addresses; nothing retries.
+    #[error("the registration's payment was taken without an identity")]
+    Refunded,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -286,6 +293,7 @@ impl RegistrationError {
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
+            Self::Refunded => "registration.refunded",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Credits(e) => e.code(),
@@ -541,9 +549,9 @@ impl AvatarError {
 pub enum CreditsError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
-    /// Below `CostTable.top_up_min_duffs`.
+    /// Below `CostTable.top_up_min_duffs`; `max` is a Core Max's figures.
     #[error("below the minimum of {min} duffs")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding accounts hold back (a user's lock, the dust
     /// protection, a send's reservation) would be selected: the pinned
     /// asset-lock builder cannot exclude it (as `registration.coins_locked`).
@@ -694,9 +702,9 @@ pub enum ShieldedError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
     /// The amount does not clear Platform's fee: at least `min` (duffs for a
-    /// shield, credits for a spend).
+    /// shield, credits for a spend); `max` is a Core Max's figures.
     #[error("below the minimum of {min}")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding account holds back would be selected (as
     /// `credits.coins_locked`).
     #[error("a locked coin of the funding accounts blocks the asset lock")]
