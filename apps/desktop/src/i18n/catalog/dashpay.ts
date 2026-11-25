@@ -245,6 +245,8 @@ export const dashpay = {
       /** `time` is a clock time, HH:MM. */
       resting: "Your shielded funds arrived less than 3 hours ago. For your privacy, you can use them from {time}.",
       unsettled: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      /** `unsettled` while what holds the payment back is a hold: no "Try again". */
+      held: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
       syncing: "Your shielded balance is still syncing.",
     },
     /** The name's checklist. */

@@ -66,6 +66,8 @@ export const SHIELDED_COPY = {
     },
     unfinished: (amount: string) => t("transfer.shielded.card.unfinished", { amount }),
   },
+  /** What payments that may still go through hold of the balance. */
+  held: (amount: string, count: number) => t("transfer.shielded.held", { amount, count }),
   titles: {
     get add() {
       return t("transfer.shielded.titles.add");

@@ -106,6 +106,9 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  /** The wallet is catching up after a chain fork: Abandon and Remove Unconfirmed are refused with
+   * `rescan_in_progress`. */
+  catchingUp: boolean;
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -122,6 +125,7 @@ export const newSendWorld = (): SendWorld => ({
   settledChildHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  catchingUp: false,
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -870,6 +874,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
+      if (ctx.world.send.catchingUp) throw fail("rescan_in_progress", "a rescan is in progress");
       if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
       if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");

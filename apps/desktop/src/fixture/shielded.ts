@@ -14,6 +14,7 @@ import type { ShieldedSpendState } from "../api/generated/ShieldedSpendState";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import type { UnresolvedSpend } from "../api/generated/UnresolvedSpend";
+import type { HeldSpend } from "../api/generated/HeldSpend";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import type { FundAmount } from "../api/generated/FundAmount";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
@@ -65,6 +66,10 @@ export interface ShieldedWorld {
   unresolved: UnresolvedSpend[];
   /** Spends of unknown result whose record was lost (DEC-1057). */
   unrecorded: UnrecordedSpend[];
+  /** Spends that may still go through, whose notes are held (out of `balance`). */
+  held?: HeldSpend[];
+  /** Credits the `held` spends hold. */
+  heldCredits?: string;
   /** How a shield ends: applied, the lock waiting for its proof, proved with its apply unknown
    * (`checking`), or locked and refused by Platform (`notApplied`). */
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
@@ -100,6 +105,15 @@ export const newShieldedWorld = (): ShieldedWorld => ({
   poolTooSmall: false,
 });
 
+/** `n` payments that may still go through hold notes of `s`: 0.3 DASH each, sent an hour apart. */
+export function holdShielded(s: ShieldedWorld, n: number): void {
+  const held = Array.from({ length: n }, (_, i) => ({ activityId: `sh-held-${i + 1}`, transition: String(i + 1).repeat(64), credits: "30000000000" }));
+  s.held = held;
+  s.heldCredits = String(30_000_000_000n * BigInt(n));
+  const rows: ShieldedActivity[] = held.map((h, i) => ({ id: h.activityId, kind: "sent", direction: "out", credits: "29980000000", feeCredits: "20000000", counterparty: "tdash1zxyz", memo: null, blockHeight: null, status: i === 0 ? "failed" : "unknown", createdAt: NOW - 3600 * (i + 1) }));
+  s.activity = [...rows, ...s.activity];
+}
+
 const raise = (code: string, message: string, data: unknown = null): never => {
   throw { code, message, data } as unknown as AppError;
 };
@@ -114,9 +128,9 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 }
 
 function status(s: ShieldedWorld): ShieldedStatus {
-  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
+  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, heldSpends: s.held ?? [], held: s.heldCredits ?? "0", unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
 }
 
 const ready = (s: ShieldedWorld) => {
