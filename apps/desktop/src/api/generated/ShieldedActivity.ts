@@ -2,6 +2,7 @@
 import type { ShieldedActivityKind } from "./ShieldedActivityKind";
 import type { ShieldedActivityStatus } from "./ShieldedActivityStatus";
 import type { ShieldedDirection } from "./ShieldedDirection";
+import type { ShieldedRefusal } from "./ShieldedRefusal";
 import type { TxCounterparty } from "./TxCounterparty";
 
 /**
@@ -12,4 +13,8 @@ export type ShieldedActivity = { id: string, kind: ShieldedActivityKind, directi
  * The DashPay contact a withdrawal paid, when it was a contact
  * payment.
  */
-contact?: TxCounterparty, };
+contact?: TxCounterparty,
+/**
+ * Set on a spend whose outcome is held open, or a refusal released.
+ */
+refusal?: ShieldedRefusal, };

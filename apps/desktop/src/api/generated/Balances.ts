@@ -22,4 +22,18 @@ withheld: number,
  * scanned: a wallet born long ago is still behind the tip while the
  * sync status says so.
  */
-catchingUp: boolean, };
+catchingUp: boolean,
+/**
+ * The coins held while what beat a payment that can never confirm is
+ * unfinished, summed: in no bucket above.
+ */
+heldUnfinished: number,
+/**
+ * The held coins whose value is unknown, not in `heldUnfinished`.
+ */
+heldUnvalued: number,
+/**
+ * A held coin awaits a transaction that isn't final yet: no way out
+ * is offered until it is.
+ */
+heldAwaiting: boolean, };

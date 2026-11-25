@@ -1370,6 +1370,11 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_un
         ),
         "A held by the payment's claim: {refused:?}"
     );
+    // The reconcile after the block drops it, apart from this thread: a
+    // Drop unconfirmed run before it would take the payment itself.
+    eventually("the other payment goes when its spend is mined", || {
+        abandoned(&engine, &session, id, other.txid())
+    });
     assert_eq!(
         engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
         0,
@@ -4170,6 +4175,31 @@ fn abandoning_a_locked_payment_a_chainlock_beat_leaves_an_unrelated_unheard_spen
     );
 }
 
+/// Waits up to 20 s for wallet.sqlite to hold `outpoint` as `want` (spent,
+/// unspent, or no row): key-wallet's changes reach the store through the
+/// persister's own event task, so a row read right after an event can still
+/// be the one before it.
+fn wait_stored_row(
+    session: &NetworkSession,
+    id: WalletId,
+    outpoint: OutPoint,
+    want: Option<bool>,
+    what: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let row = stored_row(session, id, outpoint).map(|r| r.0);
+        if row == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: stored {row:?}, want {want:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// What wallet.sqlite holds for `outpoint` of `id`: whether it is spent,
 /// and whether it is a sweep's placeholder claim. The store keys a coin by
 /// its outpoint in bincode varint: the txid's length, the txid, then the
@@ -6813,6 +6843,7 @@ fn a_lock_arriving_after_the_funding_block_leaves_the_coin_spent() {
         "the lock claims A"
     );
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    store_settled(&engine, &session, id);
     assert_eq!(
         stored_row(&session, id, a).map(|r| r.0),
         Some(true),
@@ -7123,7 +7154,7 @@ fn mined_below_a_chainlock(
 }
 
 /// Wallet `id` closed and opened again with `chain` as the header chain.
-fn reload_with_headers(
+pub(super) fn reload_with_headers(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
@@ -7450,6 +7481,53 @@ fn a_wallet_closed_through_a_reset_of_chain_data_rescans_from_its_birth_when_ope
     );
 }
 
+/// #749 (Q81b S3): Reset chain data deletes the header chain the drops'
+/// spend notes are proven against, so every `drop_spent:` row of every
+/// wallet goes, open or closed; the drops' holds and origins stay.
+#[test]
+fn reset_chain_data_deletes_the_spend_notes_of_open_and_closed_wallets() {
+    let (_dir, engine, session, open) = engine_wallet();
+    let closed = second_wallet(&engine, &session);
+    let note = crate::history::SpendNote {
+        height: TIP,
+        block: dashcore::BlockHash::from_byte_array([4; 32]),
+        spender: None,
+    }
+    .encode();
+    let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 1);
+    let dropped = Txid::from_byte_array([9; 32]);
+    let kept = [
+        (format!("drop_holds:{dropped}"), coin(1).to_string()),
+        (format!("drop_winner:{dropped}"), "||".to_owned()),
+    ];
+    let rows = |wallet: WalletId| {
+        (session.live().unwrap().appdb)
+            .settings_with_prefix_lossy(&wallet.to_string(), "drop_")
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, v.unwrap()))
+            .collect::<BTreeSet<_>>()
+    };
+    for wallet in [open, closed] {
+        let spent = [
+            (format!("drop_spent:{}", coin(1)), note.clone()),
+            (format!("drop_spent:{}", coin(2)), note.clone()),
+        ];
+        let writes: Vec<(&str, Option<&str>)> = (kept.iter().chain(&spent))
+            .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+            .collect();
+        (session.live().unwrap().appdb)
+            .set_settings_durable(&wallet.to_string(), &writes)
+            .unwrap();
+        assert_eq!(rows(wallet).len(), 4);
+    }
+    engine.block_on(session.unload_wallet(closed)).unwrap();
+    engine.block_on(session.reset_chain_data()).unwrap();
+    for wallet in [open, closed] {
+        assert_eq!(rows(wallet), kept.iter().cloned().collect(), "{wallet}");
+    }
+}
+
 /// A payment to another loaded wallet abandoned after the load, its lock
 /// arriving afterwards: the lock outranks the abandon, as at a load that
 /// reads it, so the payment claims A again and keeps its sent mark.
@@ -7523,6 +7601,7 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         held(&engine, &session, id).contains(&c),
         "nothing claims C again"
     );
+    store_settled(&engine, &session, id);
     assert_eq!(
         stored_row(&session, id, c).map(|r| r.0),
         Some(false),
@@ -7655,30 +7734,45 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
         held(&engine, &session, id).contains(&change),
         "P2's change is counted before the lock"
     );
+    wait_stored_row(&session, id, change, Some(false), "P2's change is stored");
 
     instant_lock(&engine, &session, id, &payment);
     lock_reruns_done(&engine, &session);
-    let gone = |session: &Arc<NetworkSession>, state: &str| {
+    // Right after the lock the persister's event task may still be applying
+    // its events; after a restart it has.
+    let gone = |session: &Arc<NetworkSession>, state: &str, settle: bool| {
         assert_holds(&engine, session, id, &want, state);
         assert!(
             !spendable_for(&engine, session, id, change, COIN / 10),
             "{state}: P2's change is not offered"
         );
+        assert!(
+            session.hub.history.get(&id, &p2.txid()).is_none(),
+            "{state}: the history drops P2"
+        );
+        if settle {
+            wait_stored_row(
+                session,
+                id,
+                change,
+                None,
+                &format!("{state}: P2's change is not stored"),
+            );
+            eventually(&format!("{state}: P2's record leaves the store"), || {
+                !stored_record(session, id, p2.txid())
+            });
+        }
         assert_eq!(
             stored_row(session, id, change),
             None,
             "{state}: P2's change is not stored"
         );
         assert!(
-            session.hub.history.get(&id, &p2.txid()).is_none(),
-            "{state}: the history drops P2"
-        );
-        assert!(
             !stored_record(session, id, p2.txid()),
             "{state}: the store drops P2"
         );
     };
-    gone(&session, "the lock");
+    gone(&session, "the lock", true);
     assert!(
         !abandoned(&engine, &session, id, payment.txid()),
         "the lock outranks the abandon"
@@ -7686,7 +7780,7 @@ fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spen
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 
     let session = reopen(&engine, session);
-    gone(&session, "a restart");
+    gone(&session, "a restart", false);
     mined(&engine, &session, id, TIP, vec![paid]);
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert!(

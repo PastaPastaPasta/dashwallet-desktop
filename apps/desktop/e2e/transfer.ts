@@ -118,6 +118,53 @@ async function maxBelowMinimum(page: Page, route: "coreToShielded" | "coreToPlat
   expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
 }
 
+/** Max from the Dash wallet with nothing to move (`text`): its coins still arriving, every coin one Max
+ * leaves out, or, with neither, nothing to move at all. The refusal never says 0.00000000 or the
+ * smallest amount, and no line of what stays shows beside it. */
+async function maxZero(page: Page, route: "coreToShielded" | "coreToPlatform", text: string) {
+  await openTransfer(page, route);
+  await maxRefused(page, text);
+  await expect(page.getByTestId("transfer-fee")).not.toContainText(/0\.00000000|Too small/);
+  await expect(page.getByTestId("transfer-sheet").getByText(/stays in your Dash wallet|Enter an amount instead/)).toHaveCount(0);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(1);
+}
+
+/** Dash wallet → Platform with only a payment still arriving: an amount typed first is more than can
+ * be spent, then Max's refusal says why it moved nothing, ahead of that, until the amount is edited.
+ * Continue stays off throughout. */
+async function maxAfterTyped(page: Page) {
+  await openTransfer(page, "coreToPlatform");
+  await page.getByTestId("transfer-amount").fill("0.001");
+  await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough spendable Dash: /);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-fee")).toHaveText(MAX_ALL_ARRIVING);
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/form-problem/);
+  await expect(page.getByTestId("transfer-amount")).toHaveValue("0.001");
+  await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+  await page.getByTestId("transfer-amount").fill("0.002");
+  await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough spendable Dash: /);
+  await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+}
+
+const MAX_ALL_ARRIVING = "Your Dash wallet's coins are still arriving (0.00200000 tDASH). Max can move them once they've confirmed.";
+const MAX_ARRIVING_TOO_SMALL = "Your Dash wallet's coins are still arriving (0.00005000 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.";
+const MAX_NOTHING = "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.";
+const MAX_EMPTY = "There's nothing in your Dash wallet to move.";
+const NO_CORE_BALANCE = "Nothing in your Dash wallet to move yet.";
+
+/** No coin a Max could take in the Dash wallet: Max is disabled, the line under the amount (not beside
+ * Max, where it squeezed the field) says there is nothing to move, nothing is quoted, no refusal. */
+async function maxNone(page: Page, route: "coreToShielded" | "coreToPlatform") {
+  await openTransfer(page, route);
+  await expect(page.getByTestId("transfer-max")).toBeDisabled();
+  await expect(page.getByTestId("transfer-sheet").locator(".transfer-amount-row .dash-button-why")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+  await expect(page.getByTestId("transfer-amount")).toBeEnabled();
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/field-hint/);
+  await expect(page.getByTestId("transfer-fee")).toHaveText(NO_CORE_BALANCE);
+  expect(await callsOf(page, route === "coreToShielded" ? "shield_quote" : "platform_fund_quote")).toBe(0);
+}
+
 /** Max refused: the refusal shown, the field left as it was. */
 async function maxRefused(page: Page, text: RegExp | string) {
   await page.getByTestId("transfer-max").click();
@@ -196,6 +243,14 @@ export const TRANSFER_STATES: TransferState[] = [
   },
   { id: "coreToShielded-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", false) },
   { id: "coreToShielded-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", true) },
+  { id: "coreToShielded-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToShielded", MAX_ARRIVING_TOO_SMALL) },
+  { id: "coreToShielded-max-incoming", scenario: "transfer-max-incoming", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-mixed-only", scenario: "transfer-max-mixed-only", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
+  { id: "coreToShielded-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
+  { id: "coreToShielded-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToShielded", MAX_EMPTY) },
+  { id: "coreToShielded-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToShielded") },
+  { id: "coreToShielded-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToShielded") },
   {
     id: "coreToShielded-confirm",
     scenario: "funded",
@@ -288,6 +343,15 @@ export const TRANSFER_STATES: TransferState[] = [
   },
   { id: "coreToPlatform-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", false) },
   { id: "coreToPlatform-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", true) },
+  { id: "coreToPlatform-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToPlatform", MAX_ARRIVING_TOO_SMALL) },
+  { id: "coreToPlatform-max-incoming", scenario: "transfer-max-incoming", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-incoming-typed", scenario: "transfer-max-incoming", go: (page) => maxAfterTyped(page) },
+  { id: "coreToPlatform-max-mixed-only", scenario: "transfer-max-mixed-only", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
+  { id: "coreToPlatform-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
+  { id: "coreToPlatform-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToPlatform", MAX_EMPTY) },
+  { id: "coreToPlatform-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToPlatform") },
+  { id: "coreToPlatform-max-locked-only", scenario: "transfer-max-locked-only", go: (page) => maxNone(page, "coreToPlatform") },
   {
     id: "coreToPlatform-confirm",
     scenario: "funded",

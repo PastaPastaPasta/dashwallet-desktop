@@ -43,6 +43,10 @@ pub struct WalletInfo {
     pub watch_only: bool,
     /// The vault holds the wallet's recovery phrase.
     pub has_mnemonic: bool,
+    /// The wallet was imported from a Dash Core wallet.dat with legacy
+    /// issued address ranges, which a recovery phrase doesn't restore. A
+    /// failed read counts as `true`.
+    pub legacy_issued: bool,
     /// Every platform-wallet wallet is an HD wallet.
     pub hd: bool,
     pub birth_height: Option<u32>,
@@ -86,6 +90,11 @@ impl NetworkSession {
             watch_only: !has_secret,
             // A wallet imported from a raw seed has keys but no phrase.
             has_mnemonic: self.vault.has_wallet_mnemonic(&id.0),
+            legacy_issued: self.live().map_or(true, |live| {
+                (live.appdb)
+                    .setting(&id.to_string(), crate::compat::ISSUED_SETTING)
+                    .map_or(true, |v| v.is_some())
+            }),
             hd: true,
             birth_height: state.as_ref().map(|s| s.birth_height),
             created_at: name.and_then(|n| n.created_at),
@@ -94,7 +103,8 @@ impl NetworkSession {
     }
 
     /// Every registered wallet, in the order they were added (wallets
-    /// without a stored name last, by id). In-memory read.
+    /// without a stored name last, by id). In-memory but for one settings
+    /// read per wallet.
     pub fn wallet_infos(&self) -> Result<Vec<WalletInfo>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
