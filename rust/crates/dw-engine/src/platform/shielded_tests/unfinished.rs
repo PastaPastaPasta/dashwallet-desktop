@@ -791,7 +791,7 @@ fn a_lock_below_the_fee_is_too_small_and_keeps_the_grant() {
     assert_eq!(
         refused,
         LockFinish::NotApplied {
-            error: ShieldedError::BelowMinimum { min }.code().into()
+            error: ShieldedError::BelowMinimum { min, max: None }.code().into()
         }
     );
     assert!(!begun.load(Ordering::SeqCst), "the grant is not redeemed");

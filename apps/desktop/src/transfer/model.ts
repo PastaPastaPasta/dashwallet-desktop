@@ -4,6 +4,8 @@
 // what the sheet adds: the From and To picks, the fee line read while typing, and Max.
 
 import { isAppError, type Backend } from "../api/backend";
+import type { CoreMax } from "../api/generated/CoreMax";
+import type { FundAmount } from "../api/generated/FundAmount";
 import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
@@ -332,7 +334,8 @@ const settle = <Q>(p: Promise<Q>): Promise<Settled<Q>> =>
     (error: unknown) => ({ ok: false as const, error }),
   );
 
-export type LineState<Q> = { kind: "idle" } | { kind: "quoting" } | { kind: "quoted"; amount: number; quote: Q } | { kind: "refused"; amount: number; error: unknown };
+/** `whole`: the refusal of a quote of the whole source (a Core Max). */
+export type LineState<Q> = { kind: "idle" } | { kind: "quoting" } | { kind: "quoted"; amount: number; quote: Q } | { kind: "refused"; amount: number; error: unknown; whole?: boolean };
 
 export interface Timers {
   set(f: () => void, ms: number): unknown;
@@ -424,7 +427,54 @@ export class QuoteLine<Q> extends Model {
    * `null` when a quote refused (the line shows that refusal) or the amount changed meanwhile. `derive`
    * returns `probe` itself when the first quote already took it. */
   async max(probe: number, derive: (answer: Settled<Q>, amount: number) => number | null, quotes = 2): Promise<number | null> {
-    if (this.maxing) return null;
+    return this.maxing ? null : this.maxRun(probe, async (live) => {
+      const first = await this.exclusive(() => this.run(probe));
+      if (!live()) return null;
+      const derived = derive(first, probe);
+      if (derived === null) {
+        this.state = first.ok ? { kind: "quoted", amount: probe, quote: first.quote } : { kind: "refused", amount: probe, error: first.error };
+        return null;
+      }
+      // A probe that took the whole balance is already a quote of that amount (Confirm quotes again).
+      let amount = derived;
+      let last = amount === probe && first.ok ? first : await this.exclusive(() => this.run(amount));
+      for (let n = 2; !last.ok; n++) {
+        if (!live()) return null;
+        const next = n < quotes ? derive(last, amount) : null;
+        if (next === null || next >= amount) {
+          this.state = { kind: "refused", amount, error: last.error };
+          return null;
+        }
+        amount = next;
+        last = await this.exclusive(() => this.run(amount));
+      }
+      if (!live()) return null;
+      this.target = amount;
+      this.state = { kind: "quoted", amount, quote: last.quote };
+      return amount;
+    });
+  }
+
+  /** Max as one quote of the whole source (`whole`, the engine's Core Max, the fee out of it): the
+   * amount it moves (`amountOf`), or `null` when it refused (the line shows that refusal) or the amount
+   * changed meanwhile. */
+  async maxWhole(probe: number, whole: () => Promise<Q>, amountOf: (quote: Q) => number): Promise<number | null> {
+    return this.maxing ? null : this.maxRun(probe, async (live) => {
+      const got = await this.exclusive(() => settle(whole()));
+      if (!live()) return null;
+      if (!got.ok) {
+        this.state = { kind: "refused", amount: probe, error: got.error, whole: true };
+        return null;
+      }
+      const amount = amountOf(got.quote);
+      this.target = amount;
+      this.state = { kind: "quoted", amount, quote: got.quote };
+      return amount;
+    });
+  }
+
+  /** Runs one Max: the quotes after any out, its answer dropped once the amount changes under it. */
+  private async maxRun(probe: number, body: (live: () => boolean) => Promise<number | null>): Promise<number | null> {
     this.basis = probe;
     const gen = ++this.maxGen;
     this.timers.clear(this.timer);
@@ -437,30 +487,7 @@ export class QuoteLine<Q> extends Model {
     try {
       while (this.inflight) await this.inflight;
       if (!live()) return null;
-      const first = await this.exclusive(probe);
-      if (!live()) return null;
-      const derived = derive(first, probe);
-      if (derived === null) {
-        this.state = first.ok ? { kind: "quoted", amount: probe, quote: first.quote } : { kind: "refused", amount: probe, error: first.error };
-        return null;
-      }
-      // A probe that took the whole balance is already a quote of that amount (Confirm quotes again).
-      let amount = derived;
-      let last = amount === probe && first.ok ? first : await this.exclusive(amount);
-      for (let n = 2; !last.ok; n++) {
-        if (!live()) return null;
-        const next = n < quotes ? derive(last, amount) : null;
-        if (next === null || next >= amount) {
-          this.state = { kind: "refused", amount, error: last.error };
-          return null;
-        }
-        amount = next;
-        last = await this.exclusive(amount);
-      }
-      if (!live()) return null;
-      this.target = amount;
-      this.state = { kind: "quoted", amount, quote: last.quote };
-      return amount;
+      return await body(live);
     } finally {
       if (live()) {
         this.maxing = false;
@@ -470,8 +497,8 @@ export class QuoteLine<Q> extends Model {
   }
 
   /** One quote while nothing else is out. */
-  private async exclusive(duffs: number): Promise<Settled<Q>> {
-    const p = this.run(duffs);
+  private async exclusive(quote: () => Promise<Settled<Q>>): Promise<Settled<Q>> {
+    const p = quote();
     this.inflight = p;
     try {
       return await p;
@@ -488,26 +515,6 @@ export class QuoteLine<Q> extends Model {
     this.maxGen++;
     this.target = null;
   }
-}
-
-/** The figures of a `{needed, available}` refusal of `code` in duffs, else `null`. */
-function duffsShortfall(e: unknown, code: string): { needed: number; available: number } | null {
-  if (!isAppError(e) || e.code !== code) return null;
-  const d = e.data;
-  return d?.kind === "duffs" && d.needed !== null ? { needed: d.needed, available: d.available } : null;
-}
-
-/** Max of a route funded from the Dash wallet: the quote of the whole balance takes it, or its
- * `funding_insufficient` names what is needed with the fee and what is available, so the most is
- * `available − (needed − amount)`. */
-export function coreFundedMax(code: string) {
-  return (first: Settled<unknown>, probe: number): number | null => {
-    if (first.ok) return probe;
-    const s = duffsShortfall(first.error, code);
-    if (!s) return null;
-    const most = s.available - (s.needed - probe);
-    return most > 0 ? most : null;
-  };
 }
 
 /** Max of a spend from Shielded: the amount less the quoted fee, or from `insufficient_funds`'s
@@ -531,11 +538,24 @@ export function shieldedSpendMax(first: Settled<ShieldedSpendQuote>, probe: numb
 export const SHIELDED_MAX_QUOTES = 4;
 
 export const MAX_DERIVE = {
-  coreToShielded: coreFundedMax(SHIELDED_CODES.fundingInsufficient),
-  coreToPlatform: coreFundedMax("credits.funding_insufficient"),
   shieldedToCore: shieldedSpendMax,
   shieldedToPlatform: shieldedSpendMax,
 } as const;
+
+/** The routes funded from the Dash wallet: their Max is the engine's Core Max (`{kind: "all"}`), one
+ * lock of every coin in the wallet's account 0 with the fee out of it, so no change stays behind. */
+export type CoreRouteId = "coreToShielded" | "coreToPlatform";
+
+export const isCoreRoute = (route: RouteId): route is CoreRouteId => route === "coreToShielded" || route === "coreToPlatform";
+
+/** What a Core Max leaves in the Dash wallet, each with its amount: the other accounts' coins, and the
+ * coins still arriving. */
+export function coreMaxNotes(max: CoreMax | null | undefined, fmt: (d: number) => string): string[] {
+  const notes: string[] = [];
+  if (max && max.leftDuffs > 0) notes.push(t("transfer.maxLeft", { left: fmt(max.leftDuffs) }));
+  if (max && max.arrivingDuffs > 0) notes.push(t("transfer.maxArriving", { arriving: fmt(max.arrivingDuffs) }));
+  return notes;
+}
 
 /** What the fee line says for a quote of the amount (`null`: nothing yet; a refusal says its own). */
 export function feeText(route: Exclude<RouteId, "platformToCore">, state: LineState<unknown>, fmt: (d: number) => string): string | null {
@@ -597,12 +617,34 @@ export class TransferModel extends Model {
   ) {
     super();
     this.lines = {
-      coreToShielded: new QuoteLine((d) => api.shieldQuote(walletId, { kind: "duffs", duffs: d }), timers),
-      coreToPlatform: new QuoteLine((d) => api.platformFundQuote(walletId, { kind: "duffs", duffs: d }), timers),
+      coreToShielded: new QuoteLine((d) => api.shieldQuote(walletId, this.amountOf("coreToShielded", d)), timers),
+      coreToPlatform: new QuoteLine((d) => api.platformFundQuote(walletId, this.amountOf("coreToPlatform", d)), timers),
       shieldedToCore: new QuoteLine((d) => api.unshieldQuote(walletId, String(BigInt(d) * CREDITS_PER_DUFF), null), timers),
       shieldedToPlatform: new QuoteLine((d) => api.unshieldToPlatformQuote(walletId, String(BigInt(d) * CREDITS_PER_DUFF), null), timers),
     };
+    this.wholeQuote = { coreToShielded: () => api.shieldQuote(walletId, { kind: "all" }), coreToPlatform: () => api.platformFundQuote(walletId, { kind: "all" }) };
     for (const f of [flows.shielded, flows.fund, flows.move]) f.subscribe(() => this.onFlow());
+  }
+
+  private readonly wholeQuote: Record<CoreRouteId, () => Promise<ShieldQuote | PlatformFundQuote>>;
+  /** What each Core Max filled, in duffs, and the source balance it read. */
+  private readonly maxAt: Partial<Record<CoreRouteId, { duffs: number; basis: number }>> = {};
+
+  /** The field of `route` still holds the amount its Max filled: Continue sends a Core Max. */
+  isMax(route: CoreRouteId): boolean {
+    const filled = this.maxText[route];
+    return filled !== undefined && filled === this.flowOf(route).text;
+  }
+
+  /** The amount typed on `route`: what Max filled stays a Core Max until it is edited. */
+  private amountOf(route: CoreRouteId, duffs: number): FundAmount {
+    return this.isMax(route) ? { kind: "all" } : { kind: "duffs", duffs };
+  }
+
+  /** The amount on `route` was edited: it is no longer Max's. */
+  edited(route: Exclude<RouteId, "platformToCore">) {
+    delete this.maxText[route];
+    if (isCoreRoute(route)) delete this.maxAt[route];
   }
 
   /** The route whose flow the sheet opened (its form edits that flow's amount). */
@@ -803,6 +845,10 @@ export class TransferModel extends Model {
    * typing only clears what Max left. */
   typed(route: Exclude<RouteId, "platformToCore">, amount: number | null, basis?: number | null) {
     const line = this.lineOf(route);
+    // A Core Max is the field's figure only for the balance it read: another amount or another
+    // balance makes the figure an amount of its own.
+    const at = isCoreRoute(route) ? this.maxAt[route] : undefined;
+    if (at && amount !== null && (amount !== at.duffs || basis !== at.basis)) this.edited(route);
     if (QUOTE_ON_CONTINUE.has(route) && line.quotedAt(amount, basis)) return;
     line.set(QUOTE_ON_CONTINUE.has(route) ? null : amount, basis);
   }
@@ -811,9 +857,10 @@ export class TransferModel extends Model {
    * amount in duffs) only from the last quote that took it; `text` is how the field shows that amount. */
   async max(route: Exclude<RouteId, "platformToCore">, probe: number, fill: (duffs: number) => void, text?: (duffs: number) => string): Promise<void> {
     const line = this.lineOf(route);
-    const got = await line.max(probe, MAX_DERIVE[route] as (answer: Settled<unknown>, amount: number) => number | null, route === "shieldedToCore" || route === "shieldedToPlatform" ? SHIELDED_MAX_QUOTES : 2);
+    const got = isCoreRoute(route) ? await line.maxWhole(probe, this.wholeQuote[route], (q) => (q as ShieldQuote | PlatformFundQuote).duffs) : await line.max(probe, MAX_DERIVE[route] as (answer: Settled<unknown>, amount: number) => number | null, SHIELDED_MAX_QUOTES);
     if (got === null) return;
     if (text) this.maxText[route] = text(got);
+    if (isCoreRoute(route)) this.maxAt[route] = { duffs: got, basis: probe };
     fill(got);
   }
 }

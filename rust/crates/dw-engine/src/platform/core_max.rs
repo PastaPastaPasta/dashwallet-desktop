@@ -26,7 +26,7 @@ use key_wallet::bip32::DerivationPath;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
 
-use super::credits::CoreMax;
+use super::credits::{CoreMax, CoreMaxShort};
 use super::errors::{CreditsError, PlatformError, ShieldedError};
 use super::lease::{CallPermit, FundingKey};
 use super::registration_flow::{FundError, PwLib};
@@ -63,7 +63,7 @@ pub(crate) enum MaxRefusal {
     MoveRunning,
     CoinsLocked,
     TooManyInputs { inputs: u64, max: u64 },
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: CoreMaxShort },
 }
 
 impl From<MaxRefusal> for ShieldedError {
@@ -73,7 +73,10 @@ impl From<MaxRefusal> for ShieldedError {
             MaxRefusal::MoveRunning => Self::MoveRunning,
             MaxRefusal::CoinsLocked => Self::CoinsLocked,
             MaxRefusal::TooManyInputs { inputs, max } => Self::TooManyInputs { inputs, max },
-            MaxRefusal::BelowMinimum { min } => Self::BelowMinimum { min },
+            MaxRefusal::BelowMinimum { min, max } => Self::BelowMinimum {
+                min,
+                max: Some(max),
+            },
         }
     }
 }
@@ -85,7 +88,10 @@ impl From<MaxRefusal> for CreditsError {
             MaxRefusal::MoveRunning => Self::MoveRunning,
             MaxRefusal::CoinsLocked => Self::CoinsLocked,
             MaxRefusal::TooManyInputs { inputs, max } => Self::TooManyInputs { inputs, max },
-            MaxRefusal::BelowMinimum { min } => Self::BelowMinimum { min },
+            MaxRefusal::BelowMinimum { min, max } => Self::BelowMinimum {
+                min,
+                max: Some(max),
+            },
         }
     }
 }
@@ -117,7 +123,13 @@ pub(crate) fn plan(read: CoreCoins, floor: u64) -> Result<MaxPlan, MaxRefusal> {
     let fee_duffs = crate::fees::asset_lock_fee_bound(inputs);
     let duffs = total_duffs.saturating_sub(fee_duffs);
     if duffs < floor {
-        return Err(MaxRefusal::BelowMinimum { min: floor });
+        return Err(MaxRefusal::BelowMinimum {
+            min: floor,
+            max: CoreMaxShort {
+                duffs,
+                left_duffs: read.left_duffs,
+            },
+        });
     }
     Ok(MaxPlan {
         coins: read.coins,
