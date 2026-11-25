@@ -677,7 +677,11 @@ fn a_prepared_tx_releases_only_its_own_claim() {
     drop(p);
     assert_eq!(f.reserved(), vec![a]);
     f.session.spends.release(&f.wallet, other);
-    assert!(f.reserved().is_empty());
+    // The dropped payment's claim goes after key-wallet's, in the task the
+    // drop spawned (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.reserved().is_empty()
+    });
 }
 
 #[test]
@@ -706,8 +710,11 @@ fn broadcast_needs_spv_and_drop_releases() {
         .unwrap();
     assert_eq!(f.reserved(), vec![a]);
     drop(p);
-    assert!(f.reserved().is_empty());
-    // key-wallet's reservation is released by a task the drop spawned.
+    // Both reservations are released by a task the drop spawned, the
+    // engine's after key-wallet's (#745).
+    eventually("the dropped payment's claim goes", || {
+        f.reserved().is_empty()
+    });
     let mut ok = false;
     for _ in 0..50 {
         let d = f.draft(vec![pay(FOREIGN, 10_000_000)]);

@@ -675,6 +675,10 @@ pub(crate) struct SessionHub {
     /// its sweep.
     #[cfg(test)]
     pub(crate) pause_abandon_sweep: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next dropped payment's release of key-wallet's
+    /// reservation, before it runs.
+    #[cfg(test)]
+    pub(crate) pause_release: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: the next abandon's write of its abandoned marks fails.
     #[cfg(test)]
     pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
@@ -905,6 +909,8 @@ impl SessionHub {
             last_abandon_hold: Mutex::new(None),
             #[cfg(test)]
             pause_abandon_sweep: Mutex::new(None),
+            #[cfg(test)]
+            pause_release: Mutex::new(None),
             #[cfg(test)]
             fail_abandon_mark: Default::default(),
             #[cfg(test)]
