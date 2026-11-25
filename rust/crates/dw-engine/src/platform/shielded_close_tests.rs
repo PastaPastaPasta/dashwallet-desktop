@@ -260,7 +260,11 @@ fn store_spends_as(
                         st_hash: Some(Sha256::digest(&r.st_bytes).into()),
                         kind: Some(kind),
                         anchor: Some(r.anchor),
-                        identity_id: None,
+                        identity_id: matches!(
+                            kind,
+                            ArtifactKind::IdentityTopUp | ArtifactKind::IdentityCreate
+                        )
+                        .then_some([0x42; 32]),
                         selected: r.nullifiers.clone(),
                         published: r.nullifiers.clone(),
                     },
