@@ -40,6 +40,9 @@ function maxCoins(w: World, coins: Array<Partial<Utxo> & { amount: number }>, ot
 const dustCoins = (w: World, mixed: boolean) =>
   maxCoins(w, [{ amount: 5_000 }, ...(mixed ? [{ amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: w.coinjoin.settings.rounds }] : [])]);
 
+/** A coin of the wallet's own change, not confirmed or InstantSend-locked yet. */
+const ARRIVING: Partial<Utxo> = { confirmations: 0, blockHeight: null, instantLocked: false, chainLocked: false, isChange: true };
+
 export function transferScenarios(base: Base) {
   return {
     /** A main balance of 60 coins of 0.1 DASH: Max needs more coins than one lock takes. */
@@ -49,7 +52,10 @@ export function transferScenarios(base: Base) {
     /** As "transfer-max-dust", with a mixed coin Max leaves in the Dash wallet. */
     "transfer-max-dust-left": (t: ThemeName | null) => dustCoins(base(t), true),
     /** Max from the Dash wallet has nothing final to move: its one coin, 0.002 DASH of its own change, is still arriving. */
-    "transfer-max-arriving": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 200_000, confirmations: 0, blockHeight: null, instantLocked: false, chainLocked: false, isChange: true }]),
+    "transfer-max-arriving": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 200_000 }]),
+    /** As "transfer-max-arriving", the coin being 0.00005 DASH: too little for either route's smallest amount even
+     * once it has confirmed. */
+    "transfer-max-arriving-small": (t: ThemeName | null) => maxCoins(base(t), [{ ...ARRIVING, amount: 5_000 }]),
     /** Max from the Dash wallet has nothing to move: its one coin of 0.002 DASH is another account's. */
     "transfer-max-nothing": (t: ThemeName | null) => maxCoins(base(t), [{ amount: 200_000 }], [0]),
     /** Max from the Dash wallet moves nothing, its one coin of 500 duffs being less than the fee, and

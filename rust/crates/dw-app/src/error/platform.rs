@@ -196,6 +196,7 @@ impl From<ShieldedError> for AppError {
                         duffs: m.duffs,
                         left_duffs: m.left_duffs,
                         arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
                     },
                     None => ErrorData::Number { value: min },
                 }),
@@ -497,6 +498,7 @@ impl From<CreditsError> for AppError {
                         duffs: m.duffs,
                         left_duffs: m.left_duffs,
                         arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
                     },
                     None => ErrorData::Limit { duffs: min },
                 }),
@@ -873,10 +875,11 @@ mod tests {
             duffs: 1_200,
             left_duffs: 40_000,
             arriving_duffs: 5_000,
+            arriving_clears: true,
         });
         let max = serde_json::json!({
             "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000,
-            "arrivingDuffs": 5_000
+            "arrivingDuffs": 5_000, "arrivingClears": true
         });
         let below = [
             (

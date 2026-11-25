@@ -130,6 +130,7 @@ async function maxZero(page: Page, route: "coreToShielded" | "coreToPlatform", t
 }
 
 const MAX_ALL_ARRIVING = "Your Dash wallet's coins are still arriving (0.00200000 tDASH). Max can move them once they've confirmed.";
+const MAX_ARRIVING_TOO_SMALL = "Your Dash wallet's coins are still arriving (0.00005000 tDASH), but even once they've confirmed, that's less than the smallest amount this transfer can move.";
 const MAX_NOTHING = "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.";
 const MAX_EMPTY = "There's nothing in your Dash wallet to move.";
 
@@ -225,6 +226,7 @@ export const TRANSFER_STATES: TransferState[] = [
   { id: "coreToShielded-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", false) },
   { id: "coreToShielded-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToShielded", "0.00010001", true) },
   { id: "coreToShielded-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToShielded", MAX_ALL_ARRIVING) },
+  { id: "coreToShielded-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToShielded", MAX_ARRIVING_TOO_SMALL) },
   { id: "coreToShielded-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToShielded", MAX_NOTHING) },
   { id: "coreToShielded-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToShielded", MAX_EMPTY) },
   { id: "coreToShielded-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToShielded") },
@@ -321,6 +323,7 @@ export const TRANSFER_STATES: TransferState[] = [
   { id: "coreToPlatform-max-below-minimum", scenario: "transfer-max-dust", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", false) },
   { id: "coreToPlatform-max-below-minimum-left", scenario: "transfer-max-dust-left", go: (page) => maxBelowMinimum(page, "coreToPlatform", "0.00056001", true) },
   { id: "coreToPlatform-max-all-arriving", scenario: "transfer-max-arriving", go: (page) => maxZero(page, "coreToPlatform", MAX_ALL_ARRIVING) },
+  { id: "coreToPlatform-max-arriving-too-small", scenario: "transfer-max-arriving-small", go: (page) => maxZero(page, "coreToPlatform", MAX_ARRIVING_TOO_SMALL) },
   { id: "coreToPlatform-max-nothing", scenario: "transfer-max-nothing", go: (page) => maxZero(page, "coreToPlatform", MAX_NOTHING) },
   { id: "coreToPlatform-max-empty", scenario: "transfer-max-tiny", go: (page) => maxZero(page, "coreToPlatform", MAX_EMPTY) },
   { id: "coreToPlatform-max-none", scenario: "transfer-max-none", go: (page) => maxNone(page, "coreToPlatform") },

@@ -42,7 +42,7 @@ export function coreMaxRefusal(e: unknown, max: boolean, duffs: (d: number) => s
     case "below_minimum":
       if (!max || data?.kind !== "maxMinimum") return null;
       if (data.duffs > 0) return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
-      if (data.arrivingDuffs > 0) return t("transfer.maxAllArriving", { arriving: duffs(data.arrivingDuffs) });
+      if (data.arrivingDuffs > 0) return t(data.arrivingClears ? "transfer.maxAllArriving" : "transfer.maxArrivingTooSmall", { arriving: duffs(data.arrivingDuffs) });
       return t(data.leftDuffs > 0 ? "transfer.maxNothing" : "transfer.maxEmpty");
     default:
       return null;

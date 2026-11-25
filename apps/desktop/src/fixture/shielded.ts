@@ -174,7 +174,8 @@ const drainFee = (inputs: number) => 1_000 + 148 * Math.min(inputs, SHIELD_LOCK_
  * a CoinJoin coin), the fee out of it, no change. The other accounts' coins stay (`leftDuffs`), as do
  * the main coins not final yet (`arrivingDuffs`). Refused as the engine refuses, each code under
  * `domain` (the shield's `shielded.*`, the fund's `credits.*`); below `floor` it names what Max would
- * move, what stays in the other accounts and what is still arriving. */
+ * move, what stays in the other accounts, what is still arriving and whether that plan of the final and arriving
+ * coins together, every arriving coin taken as final, would clear `floor` (`arrivingClears`). */
 export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shielded" | "credits", floor: number) {
   if (mixerBusy(world, walletId)) raise(`${domain}.mixing_active`, "stop mixing first");
   const w = wallet(world, walletId);
@@ -186,8 +187,13 @@ export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shie
   const feeDuffs = drainFee(final.length);
   const duffs = Math.max(0, totalDuffs - feeDuffs);
   const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
-  const arrivingDuffs = main.filter((u) => !final.includes(u)).reduce((n, u) => n + u.amount, 0);
-  if (duffs < floor) raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs, arrivingDuffs });
+  const arriving = main.filter((u) => !final.includes(u));
+  const arrivingDuffs = arriving.reduce((n, u) => n + u.amount, 0);
+  if (duffs < floor) {
+    const all = [...final, ...arriving];
+    const arrivingClears = arriving.length > 0 && !all.some((u) => u.userLocked || u.reserved) && all.length <= SHIELD_LOCK_INPUTS && totalDuffs + arrivingDuffs - drainFee(all.length) >= floor;
+    raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs, arrivingDuffs, arrivingClears });
+  }
   return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
 }
 
