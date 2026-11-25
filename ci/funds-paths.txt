@@ -130,10 +130,18 @@ apps/desktop/src/dashpay/withdraw*
 apps/desktop/src/coinjoin/move*
 apps/desktop/src/masternodes/registration*
 apps/desktop/src/masternodes/shared*
+apps/desktop/src/masternodes/changeKeys*
+apps/desktop/src/masternodes/operations*
+apps/desktop/src/screens/masternodes/CreateProposalSheet.tsx
 
-# Swift app: amounts, send, PSBT, coin control and signing.
+# Swift app: amounts, send, PSBT, coin control, mixed-coin sweep, vault and signing.
 Sources/DashKit/Amount.swift
 Sources/WalletRuntime/Services/ToolServices.swift
+Sources/WalletRuntime/Services/TransactionSender.swift
+Sources/WalletRuntime/Services/VaultService.swift
+Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift
+Sources/CrossUI/ToolScreens.swift
+Sources/MacUI/SignVerify/**
 Sources/WalletFeatures/Common/AmountFormatter.swift
 Sources/WalletFeatures/Common/InputValidation.swift
 Sources/WalletFeatures/SignVerify/SignVerifyViewModel.swift

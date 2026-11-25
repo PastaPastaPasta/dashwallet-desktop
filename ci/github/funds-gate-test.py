@@ -52,6 +52,9 @@ class Paths(unittest.TestCase):
             "apps/desktop/src/coinjoin/move.ts",
             "Sources/MacUI/PSBT/PSBTView.swift",
             "Sources/CrossUI/CoinSelectionScreen.swift",
+            "Sources/WalletRuntime/Services/TransactionSender.swift",
+            "Sources/WalletFeatures/CoinJoin/MixedCoinsViewModel.swift",
+            "apps/desktop/src/masternodes/changeKeys.ts",
         ]:
             self.assertTrue(gate.is_funds(f, RULES), f)
 
