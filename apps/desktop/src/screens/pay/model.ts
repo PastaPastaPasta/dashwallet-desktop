@@ -20,7 +20,6 @@ import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
 import type { Utxo } from "../../api/generated/Utxo";
-import { pendingUnproven } from "../../api/restoreHolds";
 import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
 import { t } from "../../i18n";
 import { en } from "../../i18n/en";
@@ -85,7 +84,7 @@ export function outpointOf(key: string): OutPoint {
 /** Why a coin cannot be chosen, or `null` when it can (Pay's coin control and Tools ▸ Coin
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
-  if (pendingUnproven(u)) return t("components.coins.pendingUnproven.short");
+  if (u.pendingUnproven) return t("components.coins.pendingUnproven.short");
   if (u.spendable) return null;
   if (u.reserved) return t("pay.notSelectable.reserved");
   if (u.userLocked) return t("pay.notSelectable.locked");

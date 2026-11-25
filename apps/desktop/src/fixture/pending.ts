@@ -38,7 +38,7 @@ import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 import { restoreFailure, storeRestoreError } from "./errors";
-import type { RestoreStatus } from "../api/restoreHolds";
+import type { HeldRestoreStatus } from "../api/platformHold";
 import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
@@ -241,7 +241,7 @@ export function switchedWorld(): World | null {
 
 /** What RESTORED waits for (`restore_status`), as the engine counts it: with Platform off its first
  * check is satisfied. */
-function restoreStatusOf(world: World): RestoreStatus {
+function restoreStatusOf(world: World): HeldRestoreStatus {
   const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false };
   return { ...s, waiting: world.noPlatform ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
 }
@@ -605,7 +605,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
   // B addendum 1: what RESTORED waits for; Try again, which writes a clear that failed before; and
   // Finish without Dash Platform, which closes the network unless busy and opens it without Platform
   // (as usual if that fails), under one lock as `switch_network` does.
-  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored ? restoreStatusOf(world) : null),
+  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored || world.restoreStatus?.platformOnly ? restoreStatusOf(world) : null),
   restore_retry: (_: Record<string, never>, { world }: Ctx) => {
     (world.restoreCalls ??= []).push("restoreRetry");
     if (world.restored && world.restoreStatus?.clearFailed) {
@@ -615,20 +615,33 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     return null;
   },
   finish_without_platform: (_: Record<string, never>, { world }: Ctx) => {
+    // Nothing unless Platform's first check is what RESTORED waits for.
+    if (!world.restored || !restoreStatusOf(world).waiting.includes("platformPass")) return openedNetwork(world, restoredNetwork(world));
     const knob = world.finishWithoutPlatform;
-    if (knob === "busy")
-      throw fail("app.network_busy", "closing the network would cut what runs", { kind: "networkBusy", flows: ["registration"], mixing: false, broadcast: false, stalled: false, draining: false });
+    if (knob === "busy" || knob === "draining")
+      throw fail("app.network_busy", "closing the network would cut what runs", {
+        kind: "networkBusy",
+        flows: knob === "busy" ? ["registration"] : [],
+        mixing: false,
+        broadcast: false,
+        stalled: false,
+        draining: knob === "draining",
+      });
     restarted(world);
     if (knob === "rolledBack") {
       world.finishWithoutPlatform = undefined;
-      throw fail("app.network_switch_failed", `fixture: opening ${world.launch.network.dirName} without Dash Platform failed`, {
+      throw fail("app.network_switch_failed", `${world.launch.network.dirName} did not open without Platform: fixture`, {
         kind: "networkSwitch",
         network: world.launch.network,
         rolledBack: true,
       });
     }
     world.noPlatform = true;
-    if (world.restored) settleRestored(world);
+    const left = restoreStatusOf(world);
+    if (left.waiting.length === 0 && left.historyWallets.length === 0 && !left.clearFailed) {
+      world.restored = false;
+      world.restoreStatus = { ...left, platformOnly: true };
+    }
     keepWorlds(world);
     return openedNetwork(world, restoredNetwork(world));
   },

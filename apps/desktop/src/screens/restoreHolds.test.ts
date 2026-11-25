@@ -14,7 +14,6 @@ import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { Utxo } from "../api/generated/Utxo";
 import { BackendContext, keys } from "../api/queries";
 import { setRestoreFinishing } from "../api/restoreGate";
-import { pendingUnproven, restoreHeld, type HeldTxExtras, type HeldUtxo } from "../api/restoreHolds";
 import { isRestored } from "../api/storeOpen";
 import { CoinTable } from "../components/coins";
 import { display } from "../format/display";
@@ -53,7 +52,7 @@ describe("a coin a restored payment still holds (H1)", () => {
     const coins = await coinsOf();
     const held = coins.find((u) => u.outpoint.txid === P);
     expect(held).toBeDefined();
-    expect(pendingUnproven(held!)).toBe(true);
+    expect(held!.pendingUnproven).toBe(true);
     expect(notSelectable(held!)).toBe("Pending");
     const DETAIL = { sort: { column: "amount" as const, ascending: false }, onSort: () => {}, groups: null, onToggleGroup: () => {}, actions: () => null };
     for (const detail of [undefined, DETAIL]) {
@@ -82,7 +81,7 @@ describe("a coin a restored payment still holds (H1)", () => {
     const held = await heldCoin();
     const key = outpointKey(held.outpoint);
     const model = new CoinSelectionModel({ lockOutpoints: async () => null, unlockOutpoints: async () => null, coinSelectionSummary: async () => { throw new Error("no summary"); } } as never, W, coinsOf);
-    model.setCoins([...(await coinsOf()).filter((u) => u !== held), { ...held, spendable: true } satisfies HeldUtxo]);
+    model.setCoins([...(await coinsOf()).filter((u) => u !== held), { ...held, spendable: true } satisfies Utxo]);
     model.toggle(key);
     expect(model.selected).not.toContain(key);
     model.toggleAll();
@@ -104,10 +103,10 @@ describe("a coin a restored payment still holds (H1)", () => {
     expect(coreSubtitle(b, (d) => String(d), "Dash wallet")).toBe(t("home.core.pending", { amount: String(before.unconfirmed + held.amount) }));
   });
 
-  it("a coin without the flag reads as no hold", () => {
-    const plain = { spendable: true, reserved: false, userLocked: false, isCoinbase: false } as Utxo;
-    expect(pendingUnproven(plain)).toBe(false);
+  it("a coin the engine doesn't hold is offered", () => {
+    const plain = { spendable: true, reserved: false, userLocked: false, isCoinbase: false, pendingUnproven: false } as Utxo;
     expect(notSelectable(plain)).toBeNull();
+    expect(notSelectable({ ...plain, pendingUnproven: true })).toBe(t("components.coins.pendingUnproven.short"));
   });
 
   it("goes with the hold when the payment is abandoned", async () => {
@@ -116,13 +115,13 @@ describe("a coin a restored payment still holds (H1)", () => {
     clearMocks();
     installFixture({ scenario: "restore-holds" });
     await cmd.abandonTransaction(W, P);
-    expect((await coinsOf()).filter(pendingUnproven)).toEqual([]);
+    expect((await coinsOf()).filter((u) => u.pendingUnproven)).toEqual([]);
     expect(await cmd.balance(W)).toMatchObject({ confirmed: funded.confirmed, unconfirmed: funded.unconfirmed, total: funded.total });
   });
 });
 
 describe("the abandon confirm of a payment from before a restore (H2)", () => {
-  const extras = (over: Partial<HeldTxExtras>): HeldTxExtras => ({ canAbandon: true, totalDebit: 1, inputsUnresolved: false, ...over }) as HeldTxExtras;
+  const extras = (over: Partial<TxDetailExtrasInfo>): TxDetailExtrasInfo => ({ canAbandon: true, totalDebit: 1, inputsUnresolved: false, restoreHeld: false, ...over }) as TxDetailExtrasInfo;
 
   it("starts with MG's restoredHint only while the payment holds its hold", () => {
     expect(abandonHint(extras({ restoreHeld: true }))).toBe(RESTORED_HINT);
@@ -133,12 +132,12 @@ describe("the abandon confirm of a payment from before a restore (H2)", () => {
   it("is told by the engine which payment holds it, and the hold ends with the abandon", async () => {
     installFixture({ scenario: "restore-holds" });
     const x = await cmd.txDetailExtras(W, P);
-    expect(restoreHeld(x)).toBe(true);
+    expect(x.restoreHeld).toBe(true);
     expect(abandonHint(x)).toBe(RESTORED_HINT);
     const other = (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 5 })).rows.find((r) => r.txid !== P)!;
     expect(abandonHint(await cmd.txDetailExtras(W, other.txid))).toBeNull();
     await cmd.abandonTransaction(W, P);
-    expect(restoreHeld(await cmd.txDetailExtras(W, P))).toBe(false);
+    expect((await cmd.txDetailExtras(W, P)).restoreHeld).toBe(false);
   });
 });
 
@@ -169,7 +168,7 @@ describe("the RESTORED money gate", () => {
     expect(refusal).toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "restored" } });
     expect(actionProblem(refusal)).toBe(t("activity.abandon.restoredGate"));
     await expect(cmd.resendTransaction(W, P)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "restored" } });
-    expect((await coinsOf()).some(pendingUnproven)).toBe(true);
+    expect((await coinsOf()).some((u) => u.pendingUnproven)).toBe(true);
   });
 
   it("offers Abandon once RESTORED is cleared, the hold still there", async () => {

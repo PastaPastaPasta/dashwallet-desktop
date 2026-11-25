@@ -29,6 +29,33 @@ export const listed = (items: string[]) => {
 /** What a refused switch waits for: the payment being sent, or a flow. */
 export type BusyItem = "payment" | FlowKindName;
 
+/** A busy refusal's lines: waiting for flows, with mixing or with what a lock stops, or mixing alone. */
+export type BusyLines = {
+  wait(flows: string): string;
+  waitOrStopMixing(flows: string): string;
+  waitLockStops(flows: string, stops: string): string;
+  waitOrStopMixingLockStops(flows: string, stops: string): string;
+  stopMixing(): string;
+};
+
+const SWITCH_BUSY: BusyLines = {
+  wait: (flows) => t("network.waitBeforeSwitching", { flows }),
+  waitOrStopMixing: (flows) => t("network.waitOrStopMixing", { flows }),
+  waitLockStops: (flows, stops) => t("network.waitBeforeSwitchingLockStops", { flows, stops }),
+  waitOrStopMixingLockStops: (flows, stops) => t("network.waitOrStopMixingLockStops", { flows, stops }),
+  stopMixing: () => t("network.stopMixing"),
+};
+
+/** A refused close's line in `lines`: what it waits for (`network.busyItem`), and what a lock stops. */
+export function busyLine(lines: BusyLines, waits: BusyItem[], mixing: boolean, lockStops: FlowKindName[] = []): string {
+  const named = (items: BusyItem[]) => listed(items.map((w) => t(`network.busyItem.${w}`)));
+  if (waits.length === 0) return lines.stopMixing();
+  const flows = named(waits);
+  if (lockStops.length === 0) return mixing ? lines.waitOrStopMixing(flows) : lines.wait(flows);
+  const stops = named(lockStops);
+  return mixing ? lines.waitOrStopMixingLockStops(flows, stops) : lines.waitLockStops(flows, stops);
+}
+
 export const NetworkText = {
   get title() {
     return t("network.title");
@@ -65,14 +92,7 @@ export const NetworkText = {
   },
   /** Refused: closing the network would cut what runs on it. `lockStops`: flows waiting for a
    * proof or a grant, whose leases a lock ends; each of `waits`. */
-  busy: (waits: BusyItem[], mixing: boolean, lockStops: FlowKindName[] = []) => {
-    const named = (items: BusyItem[]) => listed(items.map((w) => t(`network.busyItem.${w}`)));
-    if (waits.length === 0) return t("network.stopMixing");
-    const flows = named(waits);
-    if (lockStops.length === 0) return mixing ? t("network.waitOrStopMixing", { flows }) : t("network.waitBeforeSwitching", { flows });
-    const stops = named(lockStops);
-    return mixing ? t("network.waitOrStopMixingLockStops", { flows, stops }) : t("network.waitBeforeSwitchingLockStops", { flows, stops });
-  },
+  busy: (waits: BusyItem[], mixing: boolean, lockStops: FlowKindName[] = []) => busyLine(SWITCH_BUSY, waits, mixing, lockStops),
   /** Refused: the network's work in progress did not finish in time. */
   get busyDraining() {
     return t("network.busyDraining");

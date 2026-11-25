@@ -19,6 +19,7 @@ import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { platformHoldText } from "../api/platformHold";
 
 export type ShieldedApi = Pick<
   Backend,
@@ -329,6 +330,8 @@ export function shieldedClosedReason(e: unknown): ShieldedClosedReason | null {
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
 export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;

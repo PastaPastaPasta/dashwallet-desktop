@@ -254,16 +254,20 @@ test.describe("what RESTORED waits for", () => {
   });
 
   for (const theme of THEMES)
-    test(`Finish without Dash Platform reopens without it, and the banner goes (${theme})`, async ({ page }) => {
+    test(`Finish without Dash Platform reopens without it: the banner goes, Platform and Shielded funds stay held (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
       await page.goto(fixtureUrl("restored-waiting-platform", theme));
       await expect(page.getByTestId("restored-finish-meaning")).toHaveText(
-        "Dash Wallet reopens without Dash Platform. Dash Platform and Shielded come back the next time you start Dash Wallet.",
+        "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
       );
       await page.getByTestId("restored-finish-without-platform").click();
       await unlockIfLocked(page);
       await expect(page.getByTestId("restored-banner")).toHaveCount(0);
-      await expect(page.getByTestId("restored-state")).toHaveCount(0);
+      await expect(page.getByTestId("restored-platform-only")).toBeVisible();
+      await expect(page.getByTestId("restored-waiting-platformPass")).toHaveCount(0);
+      await expect(page.getByTestId("restored-retry")).toHaveCount(0);
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await expect(page.getByTestId("restored-report")).toBeEnabled();
       const after = await world(page);
       expect(after.noPlatform).toBe(true);
       expect(after.restored).toBe(false);
@@ -277,7 +281,7 @@ test.describe("what RESTORED waits for", () => {
       await page.getByTestId("restored-finish-without-platform").click();
       await unlockIfLocked(page);
       await expect(page.getByTestId("restored-state-problem")).toHaveText(
-        "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: fixture: opening testnet without Dash Platform failed",
+        "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: testnet did not open without Platform: fixture",
       );
       await expect(page.getByTestId("restored-banner")).toBeVisible();
       await expect(page.getByTestId("restored-waiting-platformPass")).toBeVisible();
@@ -288,11 +292,28 @@ test.describe("what RESTORED waits for", () => {
       expect(errors).toEqual([]);
     });
 
+  for (const theme of THEMES)
+    test(`Core funds free, Platform and Shielded funds held: the panel without the banner, and no Finish (${theme})`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.goto(fixtureUrl("restored-platform-only", theme));
+      await expect(page.getByTestId("restored-state")).toBeVisible();
+      await expect(page.getByTestId("restored-banner")).toHaveCount(0);
+      await expect(page.getByTestId("restored-platform-only")).toHaveText(
+        "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+      );
+      await expect(page.getByTestId("restored-waiting-platformPass")).toHaveText("Waiting for Dash Wallet's first check with Dash Platform.");
+      await expect(page.getByTestId("restored-retry")).toBeEnabled();
+      await expect(page.getByTestId("restored-report")).toBeEnabled();
+      await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
+      await expect(page.getByTestId("restored-finish-meaning")).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
   test("a busy network refuses Finish without Dash Platform and changes nothing", async ({ page }) => {
     const errors = trackPageErrors(page);
     await page.goto(fixtureUrl("restored-finish-busy", "light"));
     await page.getByTestId("restored-finish-without-platform").click();
-    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before switching networks.");
+    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before Dash Wallet can reopen without Dash Platform.");
     await expect(page.getByTestId("restored-banner")).toBeVisible();
     await expect(page.getByTestId("lock-screen")).toHaveCount(0);
     await expect(page.getByTestId("restored-finish-without-platform")).toBeEnabled();

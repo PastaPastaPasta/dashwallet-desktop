@@ -9,7 +9,6 @@ import type { AddressPurposeName } from "./generated/AddressPurposeName";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { FeeMode } from "./generated/FeeMode";
 import type { OutPoint } from "./generated/OutPoint";
-import type { RestoreStatus } from "./restoreHolds";
 import type { JsonValue } from "./generated/serde_json/JsonValue";
 
 // Read once, when the module loads: the fixture backend's mock IPC installs its own
@@ -178,9 +177,9 @@ export class IpcBackend implements Backend {
   requestRestore = () => absentAsUnavailable(invoke<null>("request_restore", { network: null }));
   keepCurrentFiles = () => absentAsUnavailable(invoke<unknown>("keep_current_files", { network: null }));
   cancelRestore = () => absentAsUnavailable(invoke<null>("cancel_restore", { network: null }));
-  restoreStatus = () => orAbsent(invoke<RestoreStatus | null>("restore_status"));
-  restoreRetry = () => absentAsUnavailable(invoke<null>("restore_retry"));
-  finishWithoutPlatform = () => absentAsUnavailable(invoke<unknown>("finish_without_platform"));
+  restoreStatus = () => cmd.restoreStatus();
+  restoreRetry = () => cmd.restoreRetry();
+  finishWithoutPlatform = () => cmd.finishWithoutPlatform();
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

@@ -22,10 +22,10 @@ import type { QrMatrix } from "../api/generated/QrMatrix";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
 import type { Recipient } from "../api/generated/Recipient";
 import type { TxActionRefusalName } from "../api/generated/TxActionRefusalName";
+import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxEstimate } from "../api/generated/TxEstimate";
 import type { TxRow } from "../api/generated/TxRow";
 import type { Utxo } from "../api/generated/Utxo";
-import { pendingUnproven, type HeldTxActionRefusalName, type HeldTxExtras } from "../api/restoreHolds";
 import type { LockResolutionName } from "../api/generated/LockResolutionName";
 import type { PaymentLockInfo } from "../api/generated/PaymentLockInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
@@ -176,6 +176,7 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: confirmations > 0,
+    pendingUnproven: false,
     ...extra,
   });
   return [
@@ -451,14 +452,14 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
 /** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst and
  * recordUnreadable steps are marked as the fixture's, so only the renderer's catalog text can show
  * them unmarked. */
-const refusalMessage = (refusal: HeldTxActionRefusalName) =>
+const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
     ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
     : refusal === "recordUnreadable"
       ? "[fixture engine] A saved transaction of an open wallet can't be read."
       : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
-export const refused = (refusal: HeldTxActionRefusalName, walletId: string | null = null) =>
-  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal: refusal as TxActionRefusalName, walletId });
+export const refused = (refusal: TxActionRefusalName, walletId: string | null = null) =>
+  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal, walletId });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -620,6 +621,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         label: null,
         isChange: true,
         spendable: true,
+        pendingUnproven: false,
       });
     const row: TxRow = {
       txid: s.txid,
@@ -853,7 +855,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     tx_detail_extras: ({ walletId, txid }, { world }) => {
       const row = rowOf(wallet(world, walletId), txid);
       const d = txDetails(row);
-      const extras: HeldTxExtras = {
+      const extras: TxDetailExtrasInfo = {
         txid,
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
@@ -885,7 +887,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       if (mine) {
         const isChange = (u: Utxo) => !!mine.change && sameOutpoint(u.outpoint, mine.change);
         // A held change was counted as pending, not confirmed.
-        for (const u of w.coins.filter((c) => isChange(c) && pendingUnproven(c))) {
+        for (const u of w.coins.filter((c) => isChange(c) && c.pendingUnproven)) {
           moveBalance(w, -u.amount, "unconfirmed");
           moveBalance(w, u.amount);
         }

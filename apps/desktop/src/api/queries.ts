@@ -197,10 +197,10 @@ export function useDismissUpgradeNotice() {
   return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
 }
 
-/** What RESTORED still waits for (`restore_status`), while `restored` is. */
-export function useRestoreStatus(restored: boolean) {
+/** What RESTORED still waits for (`restore_status`), once `restored` is known: `null` with nothing held. */
+export function useRestoreStatus(enabled: boolean) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled: restored });
+  return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled });
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

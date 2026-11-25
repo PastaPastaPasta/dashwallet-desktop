@@ -15,7 +15,6 @@ import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { useRestoredGate } from "../api/restoreGate";
-import { isRestoredRefusal, restoreHeld } from "../api/restoreHolds";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
@@ -176,7 +175,7 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
 
 /** MG's line above the abandon confirm while the payment still holds its hold from before a restore
  * (Q92 H2); abandoning ends the hold, so a later confirm shows none. */
-export const abandonHint = (x: TxDetailExtrasInfo): string | null => (restoreHeld(x) ? t("activity.abandon.restoredHint") : null);
+export const abandonHint = (x: TxDetailExtrasInfo): string | null => (x.restoreHeld ? t("activity.abandon.restoredHint") : null);
 
 /** What the sheet offers for one action the engine says applies: the action, nothing, the action
  * disabled while RESTORED is not known yet (`undefined`), or, while the restored wallet data is still
@@ -196,7 +195,7 @@ export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = []
   if (isAppError(e) && e.data?.kind === "txAction") {
     if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
     if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
-    if (isRestoredRefusal(e.data.refusal)) return t("activity.abandon.restoredGate");
+    if (e.data.refusal === "restored") return t("activity.abandon.restoredGate");
   }
   return errorMessage(e);
 }

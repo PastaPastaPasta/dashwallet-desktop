@@ -16,6 +16,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { moveErrorText, onMoveSettledNotify } from "./move";
+import { platformHoldText } from "../api/platformHold";
 
 export type PlatformFundApi = Pick<Backend, "platformFund" | "resumePlatformFund" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -230,6 +231,8 @@ export function endedBeforeApply(error: string, amount: string | null): string |
 /** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff
  * figure; `ctx` is the request it answers. */
 export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, ctx: FundContext = { request: null }): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
   if (APPROVAL_ENDED.includes(e.code)) {

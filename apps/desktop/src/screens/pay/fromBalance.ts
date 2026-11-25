@@ -18,6 +18,7 @@ import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
 import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
+import { platformHoldText } from "../../api/platformHold";
 
 export type PaySource = PaymentSourceName;
 
@@ -92,6 +93,8 @@ export function totalText(quote: ContactPayQuoteInfo, contact: string, credit: (
 
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked. */
 export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.withdrawal_out_of_range":

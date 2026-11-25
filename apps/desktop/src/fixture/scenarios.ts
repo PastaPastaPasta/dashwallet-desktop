@@ -34,7 +34,7 @@ import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashP
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
-import type { HeldUtxo, RestoreStatus } from "../api/restoreHolds";
+import type { HeldRestoreStatus } from "../api/platformHold";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -61,7 +61,7 @@ export const SECOND_WALLET_ID = "b2".repeat(32);
 export interface FixtureWallet {
   summary: WalletSummary;
   rows: TxRow[];
-  coins: HeldUtxo[];
+  coins: Utxo[];
   receive: ReceiveWorld;
   /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
   scanHeight?: number | null;
@@ -109,12 +109,12 @@ export interface World {
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
   /** What RESTORED waits for (`restore_status`); nothing when unset. */
-  restoreStatus?: RestoreStatus;
+  restoreStatus?: HeldRestoreStatus;
   /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
   noPlatform?: boolean;
-  /** What `finish_without_platform` does instead of finishing: refuse as a busy network does, or fail
-   * to open without Platform and open as usual (`rolledBack`). */
-  finishWithoutPlatform?: "busy" | "rolledBack";
+  /** What `finish_without_platform` does instead of finishing: refuse as a busy or draining network
+   * does, or fail to open without Platform and open as usual (`rolledBack`). */
+  finishWithoutPlatform?: "busy" | "draining" | "rolledBack";
   /** The restore commands called, in order. */
   restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "restoreRetry")[];
   launch: LaunchInfo;
@@ -522,7 +522,7 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
     status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
   };
   const spent = wallet.coins.find((u) => u.amount === 750_000_000)!;
-  const change: HeldUtxo = {
+  const change: Utxo = {
     ...spent,
     outpoint: { txid: RESTORE_HELD_TXID, vout: 1 },
     amount: spent.amount + row.amount,
@@ -550,7 +550,7 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
 }
 
 /** RESTORED set, waiting as `status` says (`restore_status`). */
-function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
+function withRestoreStatus(w: World, status: Partial<HeldRestoreStatus>): World {
   w.restored = true;
   w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, ...status };
   return w;
@@ -923,6 +923,12 @@ const SCENARIOS = {
   "restored-finish-busy": (t) => withFinish(base(t), "busy"),
   /** As `restored-waiting-platform`, but the open without Platform fails and the network opens as usual. */
   "restored-finish-rolled-back": (t) => withFinish(base(t), "rolledBack"),
+  /** C6: the Core gate open (RESTORED clear) while Platform and Shielded funds wait for Platform's check. */
+  "restored-platform-only": (t) => {
+    const w = withRestoreStatus(base(t), { waiting: ["platformPass"], platformOnly: true });
+    w.restored = false;
+    return w;
+  },
   /** RESTORED set while a wallet's history loads. */
   "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
   /** The wallet's history couldn't load: named, with Report a problem only. */

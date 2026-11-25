@@ -4,29 +4,62 @@ import { errorMessage, isAppError, type Backend } from "../api/backend";
 import type { LockStatus } from "../api/generated/LockStatus";
 import { keys, useBackend, useRestored, useRestoreStatus, useWallets } from "../api/queries";
 import { setRestoreFinishing } from "../api/restoreGate";
-import type { RestoreStatus, RestoreWait } from "../api/restoreHolds";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
+import type { RestoreWait } from "../api/generated/RestoreWait";
+import { platformOnly } from "../api/platformHold";
 import { DashButton } from "../components/basics";
 import { t, useT } from "../i18n";
-import { bootAgain, closeRefusal } from "../network/switch";
+import { busyLine, type BusyLines } from "../network/choice";
+import { bootAgain, closeRefusal, type CloseRefusalText } from "../network/switch";
 import { Model, useModel } from "../onboarding/model";
 import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
+
+/** "wallet" (no wallet restored yet) comes with the engine's next bindings; it has no line, as the
+ * panel can't be reached without a wallet. */
+type Wait = RestoreWait | "wallet";
 
 const WAITING = {
   coreSync: "storeUpgrade.restore.waiting.core",
   platformPass: "storeUpgrade.restore.waiting.platform",
   historyLoad: "storeUpgrade.restore.waiting.history",
-} as const satisfies Record<RestoreWait, string>;
+  wallet: null,
+} as const satisfies Record<Wait, string | null>;
+
+const saidWaits = (s: RestoreStatus) =>
+  (s.waiting as readonly Wait[]).flatMap((wait) => {
+    const line = WAITING[wait];
+    return line === null ? [] : [{ wait, line }];
+  });
 
 /** Try again while the engine waits on something or couldn't write the clear; a history that failed
  * to load offers Report a problem only. */
-export const offersRetry = (s: RestoreStatus) => s.waiting.length > 0 || s.clearFailed;
+export const offersRetry = (s: RestoreStatus) => saidWaits(s).length > 0 || s.clearFailed;
 
 /** Only while Platform's first check is what it waits for (with Platform off it never is), and no
  * history failed to load: RESTORED can't clear without it, with or without Platform. */
-export const offersFinishWithoutPlatform = (s: RestoreStatus) => s.waiting.includes("platformPass") && s.historyWallets.length === 0;
+export const offersFinishWithoutPlatform = (s: RestoreStatus) => s.waiting.includes("platformPass") && s.historyWallets.length === 0 && !platformOnly(s);
 
-const saysSomething = (s: RestoreStatus) => s.waiting.length > 0 || s.historyWallets.length > 0 || s.clearFailed;
+const FINISH_BUSY: BusyLines = {
+  wait: (flows) => t("storeUpgrade.restore.finishBusy.waitBefore", { flows }),
+  waitOrStopMixing: (flows) => t("storeUpgrade.restore.finishBusy.waitOrStopMixing", { flows }),
+  waitLockStops: (flows, stops) => t("storeUpgrade.restore.finishBusy.waitBeforeLockStops", { flows, stops }),
+  waitOrStopMixingLockStops: (flows, stops) => t("storeUpgrade.restore.finishBusy.waitOrStopMixingLockStops", { flows, stops }),
+  stopMixing: () => t("storeUpgrade.restore.finishBusy.stopMixing"),
+};
+
+/** Finish without Dash Platform's refusals, as the switch's but in its own words; a refused close
+ * says the engine's error (MG). */
+const FINISH_REFUSAL: CloseRefusalText = {
+  busy: (waits, mixing, lockStops) => busyLine(FINISH_BUSY, waits, mixing, lockStops),
+  get busyDraining() {
+    return t("storeUpgrade.restore.finishBusy.busyDraining");
+  },
+  walletOpening: null,
+  shieldedUnresolved: null,
+};
+
+const saysSomething = (s: RestoreStatus) => saidWaits(s).length > 0 || s.historyWallets.length > 0 || s.clearFailed || platformOnly(s);
 
 /** The panel's actions through dw-app, with the latest failure. Finish without Dash Platform is one
  * engine call: a close refused while the network is busy changes nothing and says why here; an open
@@ -66,7 +99,7 @@ export class RestoredStateActions extends Model {
       if (failed && !failed.rolledBack) return void (await this.boot(null));
       if (failed) await this.#readAgain();
       const canLock = this.client.getQueryData<LockStatus>(keys.lockStatus)?.encrypted === true;
-      this.problem = failed ? t("storeUpgrade.restore.finishFailed", { error: errorMessage(e) }) : (closeRefusal(e, canLock) ?? errorMessage(e));
+      this.problem = failed ? t("storeUpgrade.restore.finishFailed", { error: errorMessage(e) }) : (closeRefusal(e, canLock, FINISH_REFUSAL) ?? errorMessage(e));
       this.running = false;
       this.finishing = null;
       setRestoreFinishing(false);
@@ -126,15 +159,18 @@ export function restoredStateActions(api: Backend, client: QueryClient): Restore
   return actions;
 }
 
-/** Under the restored banner while RESTORED is set: what the engine still waits for, Try again, Finish
- * without Dash Platform while Platform's first check is the wait, and Report a problem. Read again on
- * each sync (events.ts), never on a timer. */
+/** Under the restored banner while `restore_status` says something (RESTORED set, or only Platform and
+ * Shielded funds held): what the engine still waits for, Try again, Finish without Dash Platform while
+ * Platform's first check holds the Core funds too, and Report a problem. Read again on each sync
+ * (events.ts), never on a timer; nothing while RESTORED is not known. */
 export function RestoredStatePanel() {
-  const restored = useRestored().data === true;
-  const status = useRestoreStatus(restored);
-  const wallets = useWallets(restored);
+  const restored = useRestored().data;
+  const known = restored !== undefined;
+  const status = useRestoreStatus(known);
+  const wallets = useWallets(known);
   const actions = useModel(restoredStateActions(useBackend(), useQueryClient()));
-  const shown = actions.finishing ?? (restored ? status.data : null);
+  const held = restored === true || (restored === false && status.data != null && platformOnly(status.data));
+  const shown = actions.finishing ?? (held ? status.data : null);
   if (!shown) return null;
   const names = new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]));
   return <RestoredStateView status={shown} nameOf={(id) => names.get(id) ?? `${id.slice(0, 8)}…`} actions={actions} />;
@@ -156,9 +192,14 @@ export function RestoredStateView({
   return (
     <section className="restored-state-panel card-l1" data-testid="restored-state" aria-busy={actions.running}>
       <div className="protocol-advisory-body" role="status">
-        {status.waiting.map((wait) => (
+        {platformOnly(status) && (
+          <p className="protocol-advisory-text" data-testid="restored-platform-only">
+            {tr("storeUpgrade.restore.platformOnly")}
+          </p>
+        )}
+        {saidWaits(status).map(({ wait, line }) => (
           <p key={wait} className="protocol-advisory-text" data-testid={`restored-waiting-${wait}`}>
-            {tr(WAITING[wait])}
+            {tr(line)}
           </p>
         ))}
         {status.historyWallets.map((walletId) => (

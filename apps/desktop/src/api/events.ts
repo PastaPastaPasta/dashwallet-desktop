@@ -290,6 +290,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
           // Only a list that was partial is read again: sync events arrive up to 4 times a second.
           void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as UnfinishedTransfers | null | undefined)?.complete === false });
         else if (queryKey === keys.restored) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data === true });
+        else if (queryKey === keys.restoreStatus) void client.invalidateQueries({ queryKey, predicate: (q) => q.state.data !== null });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();

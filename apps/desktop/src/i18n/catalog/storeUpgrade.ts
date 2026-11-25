@@ -90,7 +90,21 @@ export const storeUpgrade = {
     },
     retry: "Try again",
     finishWithoutPlatform: "Finish without Dash Platform",
-    finishWithoutPlatformMeaning: "Dash Wallet reopens without Dash Platform. Dash Platform and Shielded come back the next time you start Dash Wallet.",
+    finishWithoutPlatformMeaning:
+      "Dash Wallet reopens without Dash Platform, so your Dash wallet funds can be used again. Dash Platform features and Shielded syncing are off until you next start Dash Wallet, and your Platform and Shielded funds stay paused until Dash Wallet has checked them with Dash Platform.",
+    platformOnly:
+      "Your Dash wallet funds can be used again. Your Platform and Shielded funds stay paused until Dash Wallet has finished checking this wallet with Dash Platform. That check runs while Dash Platform is on.",
+    platformRestored:
+      "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.",
+    platformOff: "Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.",
+    finishBusy: {
+      waitBefore: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform.",
+      waitOrStopMixing: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform.",
+      waitBeforeLockStops: "Wait for {flows} to finish before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      waitOrStopMixingLockStops: "Wait for {flows} to finish, or stop mixing, before Dash Wallet can reopen without Dash Platform. Locking the wallet stops {stops}.",
+      stopMixing: "Stop mixing before Dash Wallet can reopen without Dash Platform.",
+      busyDraining: "Dash Wallet is still finishing a request. Choose Finish without Dash Platform again once it's done.",
+    },
     finishFailed: "Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: {error}",
     historyFailed: "Dash Wallet couldn't load the history of {wallet}, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
     clearFailed:

@@ -5,7 +5,6 @@
 import { useId, type ReactNode } from "react";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
-import { pendingUnproven } from "../api/restoreHolds";
 import type { Display } from "../format/display";
 import { shortAddress } from "../format/tx";
 import { t as tNow, useT } from "../i18n";
@@ -63,7 +62,7 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
   const party = u.label || shortAddress(u.address);
   const on = selected.has(key);
   const heldId = useId();
-  const held = pendingUnproven(u) ? t("components.coins.pendingUnproven.text") : null;
+  const held = u.pendingUnproven ? t("components.coins.pendingUnproven.text") : null;
   return (
     <tr data-testid={`coin-${u.outpoint.txid.slice(0, 8)}-${u.outpoint.vout}`} className={detail?.groups ? "coin-child" : undefined}>
       <td>

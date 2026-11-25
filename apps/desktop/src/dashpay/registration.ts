@@ -19,6 +19,7 @@ import { waitText } from "../onboarding/model";
 import { formatLocale, messageTable, t } from "../i18n";
 import { listed } from "../network/choice";
 import { awaitsContinue, COPY, failureText, heldWithBoth, stepOf, WAITS, withTable, type CardStep } from "./status";
+import { platformHoldText } from "../api/platformHold";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -370,6 +371,8 @@ export function isRunning(row: RegistrationStatus | undefined): boolean {
 
 /** Why a start, resume or name registration was refused, as the wizard says it. */
 export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (hasCode(e, "registration.funding_insufficient") && e.data?.kind === "duffs") {
     const { needed, available } = e.data;
     if (needed === null) return t("dashpay.failure.fundingShort");

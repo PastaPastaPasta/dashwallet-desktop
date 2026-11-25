@@ -48,18 +48,21 @@ export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNet
   return { problem: NetworkText.notSwitchedBecause(errorMessage(e)) };
 }
 
-/** Why closing the network was refused (what runs on it, a wallet opening, a shielded spend); null
- * for any other failure. */
-export function closeRefusal(e: unknown, canLock = false): string | null {
+/** A close refusal's lines; a reason without one says the engine's error. */
+export type CloseRefusalText = Pick<typeof NetworkText, "busy" | "busyDraining"> & { walletOpening: string | null; shieldedUnresolved: string | null };
+
+/** Why closing the network was refused (what runs on it, a wallet opening, a shielded spend), in
+ * `text`; null for any other failure. */
+export function closeRefusal(e: unknown, canLock = false, text: CloseRefusalText = NetworkText): string | null {
   if (!isAppError(e)) return null;
   const data = e.data;
   if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
-    if (data.draining) return NetworkText.busyDraining;
+    if (data.draining) return text.busyDraining;
     const waits: BusyItem[] = [...(data.broadcast ? (["payment"] as const) : []), ...data.flows];
-    if (waits.length > 0 || data.mixing) return NetworkText.busy(waits, data.mixing, data.stalled && canLock ? data.flows : []);
+    if (waits.length > 0 || data.mixing) return text.busy(waits, data.mixing, data.stalled && canLock ? data.flows : []);
   }
-  if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return NetworkText.walletOpening;
-  if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return NetworkText.shieldedUnresolved;
+  if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return text.walletOpening;
+  if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return text.shieldedUnresolved;
   return null;
 }
 

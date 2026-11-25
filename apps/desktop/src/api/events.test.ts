@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -310,6 +310,24 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(false);
     emit({ kind: "sync", network: "testnet", status: {} as never });
     expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(true);
+    client.setQueryData(keys.restoreStatus, null);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    expect(client.getQueryState(keys.restoreStatus)?.isInvalidated).toBe(false);
+  });
+
+  it("sync reads what RESTORED waits for again after a first read that failed", async () => {
+    const client = new QueryClient();
+    let reads = 0;
+    const observer = new QueryObserver(client, { queryKey: keys.restoreStatus, retry: false, queryFn: () => (++reads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(null)) });
+    const stop = observer.subscribe(() => undefined);
+    await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true));
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined), syncStatus: () => new Promise(() => undefined) } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(reads).toBe(1);
+    emit({ kind: "sync", network: "testnet", status: {} as never });
+    await vi.waitFor(() => expect(reads).toBe(2));
+    stop();
   });
 
   // Row 74: after a network switch the page is the new network's; what a command still running
