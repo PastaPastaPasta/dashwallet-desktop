@@ -2596,19 +2596,21 @@ impl NetworkSession {
         }
         let truncations = self.hub.truncations();
         // A sweep's children go on it only while no fork has happened since
-        // they were taken and no swept payment is mined (#891): a fork may
-        // have undone the sweep's winner, and the new chain mined them.
+        // they were taken and every swept payment is still swept (#891): a
+        // fork may have undone the sweep's winner, and a swept payment that
+        // is mined, or that the history holds again and no longer abandons
+        // (the sweep abandoned or forgot it), may confirm.
         if swept_children {
             let core = &info.core_wallet;
-            let mined = |t: &Txid| {
+            let held = |t: &Txid| {
                 (core.accounts.all_accounts().into_iter()).any(|a| {
                     (a.transactions().get(t)).is_some_and(|r| r.context.block_info().is_some())
                 }) || (self.hub.history.get(&wallet, t))
-                    .is_some_and(|e| e.context.block_info().is_some())
+                    .is_some_and(|e| !e.is_abandoned() || e.context.block_info().is_some())
             };
-            let mined_again: Vec<Txid> = links.iter().copied().filter(|t| mined(t)).collect();
-            if truncations != since || !mined_again.is_empty() {
-                tracing::warn!(%wallet, ?roots, ?mined_again, "a swept payment's children are not dropped: a fork since may have undone its sweep");
+            let held_again: Vec<Txid> = links.iter().copied().filter(|t| held(t)).collect();
+            if truncations != since || !held_again.is_empty() {
+                tracing::warn!(%wallet, ?roots, ?held_again, "a swept payment's children are not dropped: a fork or block since their take may have made them valid");
                 return Ok(BTreeSet::new());
             }
         }
