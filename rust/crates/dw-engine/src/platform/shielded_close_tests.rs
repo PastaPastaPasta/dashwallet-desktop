@@ -1105,6 +1105,252 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
 
+/// The rows of `shielded_pending_spends` for `wallet`, read from the file.
+fn pending_rows(data_dir: &Path, wallet: WalletId) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let db = data_dir.join(pool::SHIELDED_DB_FILE);
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT activity_id, st_bytes FROM shielded_pending_spends \
+             WHERE wallet_id = ?1 ORDER BY activity_id",
+        )
+        .unwrap();
+    stmt.query_map([wallet.0.as_slice()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// [`pending_rows`] as [`stash_spends`] writes them.
+fn stashed_rows() -> Vec<(Vec<u8>, Vec<u8>)> {
+    (spends().into_iter())
+        .map(|r| (r.activity_id.to_vec(), r.st_bytes))
+        .collect()
+}
+
+/// A failed journal open unloads its wallets with no Refuse gate, safe only
+/// because shielded is not configured until the session exists. Were it
+/// configured first (built here: the session's own manager, its store
+/// open and the spends stored), the unload keeps every wallet and the
+/// stored spends' rows stay as they were.
+#[test]
+fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    let before = pending_rows(session.data_dir(), wallet);
+    assert_eq!(before, stashed_rows());
+
+    let manager = session.manager().unwrap();
+    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    engine.block_on(crate::session::unload_after_failed_open(&manager));
+
+    assert_eq!(pending_rows(session.data_dir(), wallet), before);
+    assert!(
+        manager.list_wallet_ids_blocking().contains(&wallet.0),
+        "still loaded"
+    );
+}
+
+/// Where the failed-open test's child processes keep their data root.
+const FAILED_OPEN_ROOT: &str = "DW_Q86_FAILED_OPEN_ROOT";
+
+/// Runs `test`, one of this file's ignored child tests, over `root`.
+fn run_child(test: &str, root: &Path) {
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            &format!("platform::shielded_close_tests::{test}"),
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(FAILED_OPEN_ROOT, root)
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "{test} failed: {}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+}
+
+fn core_balance(session: &NetworkSession, wallet: WalletId) -> u64 {
+    (session.balances(&wallet).unwrap())
+        .expect("the wallet's state is read at its load")
+        .total
+}
+
+/// The first launch of the next test, in a child process: a paid wallet
+/// with [`spends`] stored, then a quit.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_first_launch_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let engine = engine_at(root);
+    let (session, wallet) = first_launch(&engine);
+    let paid = crate::mempool_sync_tests::paid_and_stored(&engine, &session, wallet);
+    assert_eq!(core_balance(&session, wallet), paid);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    std::fs::write(root.join("wallet"), wallet.to_string()).unwrap();
+    std::fs::write(root.join("balance"), paid.to_string()).unwrap();
+    std::fs::write(
+        root.join("data_dir"),
+        session.data_dir().as_os_str().as_encoded_bytes(),
+    )
+    .unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    std::process::exit(0);
+}
+
+/// The relaunch of the next test, in a child process: the open succeeds,
+/// with the wallet loaded, its balance and its stored spends as they were.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_relaunch_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let read = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
+    let wallet: WalletId = read("wallet").parse().unwrap();
+    let engine = engine_at(root);
+    let session = open(&engine);
+    assert!(session.require_wallet(&wallet).is_ok(), "loaded");
+    assert_eq!(core_balance(&session, wallet).to_string(), read("balance"));
+    engine
+        .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
+        .unwrap();
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    let mut stored = engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let store = coordinator.store().read().await;
+        store.pending_redrives(subwallet(wallet)).unwrap()
+    });
+    stored.sort_by_key(|r| r.activity_id);
+    assert_eq!(stored, spends());
+    std::fs::write(root.join("relaunched"), "ok").unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+    std::process::exit(0);
+}
+
+/// Every file under `dir`: its path, size and SHA-256.
+fn files_under(dir: &Path) -> Vec<(std::path::PathBuf, u64, [u8; 32])> {
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                files.push((path, bytes.len() as u64, Sha256::digest(&bytes).into()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The second launch of the next test, in a child process: shielded is
+/// configured before the journal is read (built here; no open does it) and
+/// the journal's read fails once. The open returns that error with every
+/// wallet kept loaded, and a retry in this process is refused with the
+/// restart message, not the persister's "already open" and not an empty or
+/// missing wallet, and writes nothing under the data root. Then the
+/// process exits.
+#[test]
+#[ignore = "a child process of a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact"]
+fn failed_open_and_retry_child() {
+    let Some(root) = std::env::var_os(FAILED_OPEN_ROOT) else {
+        return;
+    };
+    let root = Path::new(&root);
+    let data_dir =
+        std::path::PathBuf::from(std::fs::read_to_string(root.join("data_dir")).unwrap());
+    // An imported row to classify, whose classification fails once.
+    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    rusqlite::Connection::open(&journal)
+        .unwrap()
+        .execute(
+            "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at) \
+             VALUES (?1, ?2, 'imported_redrive', ?3, 'unclassified', 1)",
+            rusqlite::params![[0x5a_u8; 32], [0x77_u8; 32], [0x88_u8; 32]],
+        )
+        .unwrap();
+    dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
+    (crate::session::SHIELDED_BEFORE_JOURNAL.lock().unwrap()).push(data_dir.clone());
+
+    let engine = engine_at(root);
+    let failed = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(&failed, Err(EngineError::Storage(e)) if e.contains("imported shielded spends")),
+        "{:?}",
+        failed.err()
+    );
+    std::fs::write(root.join("failed"), "ok").unwrap();
+
+    let before = files_under(&root.join("data"));
+    let retry = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+    let refused = retry.err().expect("the retry is refused");
+    assert!(
+        matches!(&refused, EngineError::StorageInUse(_)),
+        "{refused:?}"
+    );
+    assert_eq!(refused.code(), "storage_in_use");
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "wallet storage in use: {}",
+            crate::session::KEPT_AFTER_FAILED_OPEN_REFUSAL
+        )
+    );
+    assert_eq!(
+        files_under(&root.join("data")),
+        before,
+        "the refusal writes nothing"
+    );
+    std::fs::write(root.join("retried"), "ok").unwrap();
+    std::process::exit(0);
+}
+
+/// The failed open's release skip, end to end, each launch its own process:
+/// the first stores a paid wallet's spends and quits; the second's open
+/// fails with shielded configured before the journal read, which keeps
+/// every wallet loaded, and its retry is refused until a restart; the
+/// third opens with the wallet, its balance and its stored spends intact.
+/// The stored spends' rows stay as they were throughout.
+#[test]
+fn a_failed_open_with_the_store_configured_refuses_the_retry_and_relaunches_intact() {
+    let dir = dw_testutil::private_tempdir();
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+    run_child("failed_open_first_launch_child", dir.path());
+    let wallet: WalletId = read("wallet").parse().unwrap();
+    let data_dir = std::path::PathBuf::from(read("data_dir"));
+    let before = pending_rows(&data_dir, wallet);
+    assert_eq!(before, stashed_rows());
+
+    run_child("failed_open_and_retry_child", dir.path());
+    assert_eq!(
+        (read("failed"), read("retried")),
+        ("ok".into(), "ok".into())
+    );
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+
+    run_child("failed_open_relaunch_child", dir.path());
+    assert_eq!(read("relaunched"), "ok");
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+}
+
 /// Row 74 r1: a network switch's close holds the load fence while it
 /// drains, and may still be refused. A shielded store's first open meanwhile
 /// waits for the decision instead of failing, and opens once the close is
