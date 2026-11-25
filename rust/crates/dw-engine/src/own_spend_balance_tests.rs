@@ -3826,12 +3826,12 @@ fn a_child_orphaned_by_a_sweep_before_a_restart_goes_at_the_load() {
     only_d(&session, "rescanned again");
 }
 
-/// #891 (#857's waiting drops): as above, but the load's orphan pass
-/// meets another wallet's open and the drop of C waits; a block lands on
-/// top of the chain before the open ends. The block leaves the drop's
-/// take standing: C goes when the open ends.
+/// #891 (#857's waiting drops): as above, but the orphan pass of a load
+/// meets another wallet whose history is not whole, and the drop of C
+/// waits; a block lands on top of the chain before that wallet is closed.
+/// The block leaves the drop's take standing: C goes at the close.
 #[test]
-fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_opens() {
+fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_waits() {
     let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
         payment_and_child_after_a_restart();
     let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
@@ -3853,11 +3853,12 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_opens() {
         .map(|h| (h, vec![unrelated(h as u8)]))
         .collect();
     headers(&session, &chain);
+    let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
+    (session.hub.history).with_wallet(other, |h| h.load_incomplete = true);
     engine.block_on(session.unload_wallet(id)).unwrap();
-    let (pause, opening) = another_wallet_opening(&engine, &session);
     engine.block_on(session.load_wallet(id)).unwrap();
     eventually(
-        "the orphan drop of C waits for the other wallet's open",
+        "the orphan drop of C waits for the other wallet's history",
         || session.hub.deferred_drop_wallets().contains(&id),
     );
     assert!(live_in_history(&session, id, c.txid()), "C waits");
@@ -3868,12 +3869,10 @@ fn a_child_orphaned_by_a_sweep_goes_after_a_block_while_another_wallet_opens() {
         TIP + 2,
         vec![unrelated((TIP + 2) as u8)],
     );
-    pause.release.notify_one();
-    engine.block_on(opening).unwrap().unwrap();
-    drops_done(&engine, &session);
+    engine.block_on(session.unload_wallet(other)).unwrap();
     eventually("C goes", || !live_in_history(&session, id, c.txid()));
     drops_done(&engine, &session);
-    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the open");
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "after the close");
 }
 
 /// #170 case 4: C relayed between key-wallet's sweep of P and the
