@@ -21,7 +21,8 @@
 //! or the engine confirms once the scan finds its notes spent; the journal
 //! reads the outcome from it (`shielded_pool::spend_outcome`). Once the
 //! journal settled it, the engine saves the row its settlement reads after
-//! each restart.
+//! each restart (`shielded_pool::keep_settled_import_row`), never a pending
+//! one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ use platform_wallet::wallet::shielded::{ShieldedActivityEntry, ShieldedActivityS
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
-use super::shielded_pool::{SpendOutcome, keep_import_row, spend_outcome};
+use super::shielded_pool::{SpendOutcome, keep_import_row, keep_settled_import_row, spend_outcome};
 
 /// The commitment tree the 0.1 build held: its spend's anchor is a root of
 /// it, so no larger.
@@ -337,10 +338,21 @@ fn artifact(status: ArtifactStatus) -> ShieldedArtifact {
 /// Classified, as the session's load leaves an imported spend.
 const OPEN: ArtifactStatus = ArtifactStatus::Unresolved { unrecorded: false };
 
-/// Whether the engine saved the imported spend a row for `artifact`.
+/// Whether the engine saved the imported spend a pending row for open
+/// `artifact`.
 async fn keep(coordinator: &NetworkShieldedCoordinator, artifact: &ShieldedArtifact) -> bool {
     let mut store = coordinator.store().write().await;
     keep_import_row(&mut *store, subwallet(), artifact).unwrap()
+}
+
+/// Whether the engine saved the imported spend the row its settlement in
+/// `artifact` reads.
+async fn keep_settled(
+    coordinator: &NetworkShieldedCoordinator,
+    artifact: &ShieldedArtifact,
+) -> bool {
+    let mut store = coordinator.store().write().await;
+    keep_settled_import_row(&mut *store, subwallet(), artifact).unwrap()
 }
 
 /// The engine's reading of the open artifact at a pass's end: the spend's
@@ -421,6 +433,7 @@ async fn a_released_import_reads_failed_and_settles_not_executed() {
         assert!(after.spendable && !after.spent);
         let settled = artifact(ArtifactStatus::NotExecuted);
         assert!(!keep(&coordinator, &settled).await);
+        assert!(!keep_settled(&coordinator, &settled).await);
         assert!(!keep(&coordinator, &artifact(OPEN)).await);
         assert_eq!(
             read(&coordinator).await.0,
@@ -452,7 +465,9 @@ async fn an_executed_import_reads_done_and_settles_executed() {
     assert!(after.spent && !after.spendable);
     assert_eq!(read(&coordinator).await, done);
     assert!(!keep(&coordinator, &artifact(OPEN)).await);
-    assert!(!keep(&coordinator, &artifact(ArtifactStatus::Executed)).await);
+    let settled = artifact(ArtifactStatus::Executed);
+    assert!(!keep(&coordinator, &settled).await);
+    assert!(!keep_settled(&coordinator, &settled).await);
     assert_eq!(read(&coordinator).await, done);
 }
 
@@ -475,6 +490,10 @@ async fn a_restart_before_the_outcome_keeps_one_row() {
     assert_eq!(read(&coordinator).await, (Vec::new(), None));
     for settled in [ArtifactStatus::NotExecuted, ArtifactStatus::Executed] {
         assert!(!keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+        assert!(
+            !keep_settled(&coordinator, &artifact(settled)).await,
+            "{settled:?}"
+        );
     }
     let dispatched = ShieldedArtifact {
         origin: ArtifactOrigin::Dispatched,
@@ -637,16 +656,60 @@ async fn a_settled_imports_row_is_kept_after_a_restart() {
             let after = held(&coordinator, &path).await;
             assert!(!after.record && after.reservation.is_none() && !after.row);
             assert!(rows(&coordinator).await.is_empty(), "{settled:?} {restart}");
-            for other in [OPEN, ArtifactStatus::Unclassified, ArtifactStatus::Archived] {
-                assert!(!keep(&coordinator, &artifact(other)).await, "{other:?}");
-            }
-            assert!(keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+            assert!(!keep(&coordinator, &artifact(OPEN)).await);
             assert!(!keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+            for other in [OPEN, ArtifactStatus::Unclassified, ArtifactStatus::Archived] {
+                let other = artifact(other);
+                assert!(!keep_settled(&coordinator, &other).await, "{other:?}");
+            }
+            let dispatched = ShieldedArtifact {
+                origin: ArtifactOrigin::Dispatched,
+                ..artifact(settled)
+            };
+            assert!(!keep_settled(&coordinator, &dispatched).await);
+            assert!(rows(&coordinator).await.is_empty(), "{settled:?}");
+            assert!(keep_settled(&coordinator, &artifact(settled)).await);
+            assert!(!keep_settled(&coordinator, &artifact(settled)).await);
             assert_eq!(
                 rows(&coordinator).await,
                 [settled_row(status)],
                 "{settled:?} {restart}"
             );
         }
+    }
+}
+
+/// A spend the journal settled never gets a pending row, whatever the
+/// library holds of it: while it holds the record (a journal settled ahead
+/// of the library) it gets no row at all, and once it holds nothing the
+/// row reads the settlement, failed or confirmed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_settled_import_never_gets_a_pending_row() {
+    let cases = [
+        (ArtifactStatus::NotExecuted, ShieldedActivityStatus::Failed),
+        (ArtifactStatus::Executed, ShieldedActivityStatus::Confirmed),
+    ];
+    for (settled, status) in cases {
+        let dir = dw_testutil::private_tempdir();
+        let path = dir.path().join("shielded.sqlite");
+        zero_one_store(&path);
+        let coordinator = open(path.clone(), network(TREE - 1, &[]).await).await;
+        assert_eq!(held(&coordinator, &path).await, IMPORTED);
+        assert!(!keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+        assert!(
+            !keep_settled(&coordinator, &artifact(settled)).await,
+            "{settled:?}"
+        );
+        assert!(rows(&coordinator).await.is_empty(), "{settled:?}");
+
+        assert!(
+            (coordinator.store().write().await)
+                .clear_pending(subwallet(), &NULLIFIER)
+                .unwrap()
+        );
+        assert!(!keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+        assert!(keep_settled(&coordinator, &artifact(settled)).await);
+        assert!(!keep(&coordinator, &artifact(settled)).await, "{settled:?}");
+        assert_eq!(rows(&coordinator).await, [settled_row(status)]);
     }
 }
