@@ -11,8 +11,10 @@ export const storeUpgrade = {
     intro: "This version of Dash Wallet can't safely open the wallet data in {folder}",
     unchanged:
       "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    // Pending MG: draft copy until MG writes the final (copy.rs PENDING_MG).
     changedByUpgrade:
       "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    // Pending MG: draft copy until MG writes the final (copy.rs PENDING_MG).
     keep: "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
     quit: "Quit",
     report: "Report a problem",
@@ -26,6 +28,7 @@ export const storeUpgrade = {
       tooNew: "it was written by a newer version of Dash Wallet.",
       historyMismatch:
         "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+      // Pending MG: draft copy until MG writes the final (copy.rs PENDING_MG).
       snapshotMissing:
         "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
       contactsTable: "it holds contact data that this version can't read yet.",
