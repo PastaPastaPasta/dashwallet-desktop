@@ -458,7 +458,9 @@ fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
         .map(|e| ListedMasternode {
             pro_tx_hash: e.pro_tx_hash,
             // Domain, Tor and I2P entries have no socket form, so they drop
-            // out of this preflight; Core still refuses their duplicates.
+            // out of this preflight (and the shared flow's, which reads this
+            // list); requests are IP services only, and Core still refuses
+            // any duplicate on submission.
             net_info: e
                 .service_addresses
                 .iter()
