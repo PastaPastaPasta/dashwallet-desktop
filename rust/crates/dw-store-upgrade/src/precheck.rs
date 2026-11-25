@@ -210,6 +210,15 @@ fn refuse_unopenable_file(network_dir: &Path) -> Result<Option<Precheck>> {
     Ok(None)
 }
 
+/// [`refuse_unopenable_file`] as an error: repeated under the write lock,
+/// right before R1's drop or the retire.
+pub(crate) fn require_openable_file(network_dir: &Path) -> Result<()> {
+    match refuse_unopenable_file(network_dir)? {
+        Some(Precheck::Refuse { reason }) => Err(reason),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(unix)]
 fn unsupported(meta: &fs::Metadata) -> Option<String> {
     if meta.file_type().is_symlink() {

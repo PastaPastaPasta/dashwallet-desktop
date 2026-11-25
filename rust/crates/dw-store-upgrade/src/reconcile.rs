@@ -114,8 +114,9 @@ fn ensure_backup_dir(dir: &Path) -> Result<()> {
 /// the upgrade is rehearsed on a private copy with its settings, and the open
 /// refuses any other. Every refusal is decided by a read that writes nothing;
 /// the writes (R1's drop, the retire) run in one transaction after the
-/// snapshot is checked to be of the data held under that transaction's lock,
-/// so a crash leaves the file as before or as after. Never opens with
+/// file is checked again to be one upstream opens (not a symbolic link, not
+/// another user's) and the snapshot to be of the data held under that
+/// transaction's lock, so a crash leaves the file as before or as after. Never opens with
 /// `LoadPolicy::Recovery`.
 pub fn reconcile_fork_store(
     config: &SqlitePersisterConfig,
@@ -139,14 +140,20 @@ pub fn reconcile_fork_store(
         open_existing(wallet_db).map_err(StoreUpgradeError::sqlite("open wallet.sqlite", true))?;
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(StoreUpgradeError::sqlite("lock wallet.sqlite", true))?;
-    let written = snapshot::require_reusable(snapshot, &conn, network_dir).and_then(|()| {
-        write_in_transaction(
-            &conn,
-            adopters,
-            &versions,
-            config.auto_backup_dir.as_deref(),
-        )
-    });
+    #[cfg(test)]
+    if let Some(hook) = LOCKED_FOR_TEST.with(|h| h.take()) {
+        hook(network_dir);
+    }
+    let written = crate::precheck::require_openable_file(network_dir)
+        .and_then(|()| snapshot::require_reusable(snapshot, &conn, network_dir))
+        .and_then(|()| {
+            write_in_transaction(
+                &conn,
+                adopters,
+                &versions,
+                config.auto_backup_dir.as_deref(),
+            )
+        });
     match written {
         Ok(outcome) => {
             conn.execute_batch("COMMIT")
@@ -160,6 +167,13 @@ pub fn reconcile_fork_store(
             Err(e)
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once on the network directory right after `BEGIN IMMEDIATE`.
+    pub(crate) static LOCKED_FOR_TEST: std::cell::Cell<Option<fn(&Path)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The writes under the lock. `backup_dir` is checked only when upstream

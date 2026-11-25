@@ -1,7 +1,10 @@
 //! The re-review of ffbc69cf: a snapshot whose marker was lost after R1's
 //! drop (M-A), snapshots of an upgraded file (M-B), a fault reading a
-//! snapshot (L-1) and the wallet file's side files (L-5).
+//! snapshot (L-1), the wallet file's side files (L-5) and the file checked
+//! again under the write lock (L-4).
 
+#[cfg(unix)]
+use super::review_fixes::column_present;
 #[cfg(unix)]
 use super::review_fixes_3::assert_file_refused;
 use super::review_fixes_3::{assert_missing, between};
@@ -208,4 +211,32 @@ fn a_symlinked_log_or_shared_memory_file_is_refused_before_the_drop() {
     fs::rename(&wal, &real).unwrap();
     std::os::unix::fs::symlink(&real, &wal).unwrap();
     assert_file_refused(&f, "wallet.sqlite-wal is a symbolic link");
+}
+
+#[cfg(unix)]
+fn swap_for_a_symlink(net: &std::path::Path) {
+    let wallet = net.join("wallet.sqlite");
+    let real = net.parent().unwrap().join("swapped.sqlite");
+    fs::rename(&wallet, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &wallet).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_wallet_file_swapped_for_a_symlink_under_the_lock_is_refused() {
+    let f = fixture("v0.1.0");
+    let snapshot = crate::prepare_with(&f.net, build(), now())
+        .unwrap()
+        .snapshot
+        .unwrap();
+    crate::reconcile::LOCKED_FOR_TEST.with(|h| h.set(Some(swap_for_a_symlink)));
+    let got = reconcile_fork_store(&config(&f.net), &snapshot, build());
+    crate::reconcile::LOCKED_FOR_TEST.with(|h| h.set(None));
+    let err = got.unwrap_err();
+    assert!(
+        matches!(&err, StoreUpgradeError::WalletFileUnsupported { detail } if detail.contains("symbolic link")),
+        "{err:?}"
+    );
+    assert!(err.file_unchanged());
+    assert!(column_present(&f), "the drop was rolled back");
 }
