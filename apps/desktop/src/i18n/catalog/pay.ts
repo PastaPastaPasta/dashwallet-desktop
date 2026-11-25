@@ -78,9 +78,10 @@ export const pay = {
   },
   /** Notices on the Pay form: the payment waits on the wallet, nothing went wrong. */
   notice: {
-    /** A contact payment refused until the first DashPay pass after a launch re-checks the contact
-     * (H-09). Nothing is ever sent to an unchecked contact. */
-    contactsUpdating: "Dash Wallet is still checking your contacts' payment details after the restart, so nothing was sent. You can pay this contact once it has finished.",
+    /** A contact payment refused while the contact's payment details aren't checked yet: after a
+     * launch until the first DashPay pass, or while the check can't finish (H-09). Nothing is ever
+     * sent to an unchecked contact. */
+    contactsUpdating: "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.",
     /** Runs the estimate again and reopens the review, where Send runs the check again. */
     tryAgain: "Try again",
   },

@@ -8,7 +8,7 @@ import { PAYEE } from "./wallet";
 // a notice with Try again, and when the data doesn't match it is refused; Accept and Send Contact
 // Request warn and stay on; the row keeps "Unverified".
 
-const UPDATING = "Dash Wallet is still checking your contacts' payment details after the restart, so nothing was sent. You can pay this contact once it has finished.";
+const UPDATING = "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
 const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 const ACCEPT = "Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.";
 const SEND = "Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.";

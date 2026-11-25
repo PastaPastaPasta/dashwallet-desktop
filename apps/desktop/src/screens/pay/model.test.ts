@@ -245,7 +245,7 @@ describe("a contact payment's refusals over the contact's data (H-09)", () => {
 });
 
 describe("a contact payment waiting for the contacts to be re-checked after a launch (H-09)", () => {
-  const NOTICE = "Dash Wallet is still checking your contacts' payment details after the restart, so nothing was sent. You can pay this contact once it has finished.";
+  const NOTICE = "Dash Wallet hasn't finished checking this contact's payment details, so nothing was sent. You can pay this contact once it has.";
   const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 
   it("is a notice with Try again, not an error", () => {
