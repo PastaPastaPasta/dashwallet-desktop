@@ -836,7 +836,8 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
             v.contract_bounds = Some(ContractBounds::SingleContract { id: id(77) });
         }
     }
-    let cases: [(&str, EncPurpose, fn(&mut Identity)); 3] = [
+    type Edit = fn(&mut Identity);
+    let cases: [(&str, EncPurpose, Edit); 3] = [
         ("no DECRYPTION key", EncPurpose::Decryption, |me| {
             me.public_keys_mut()
                 .retain(|_, k| k.purpose() != Purpose::DECRYPTION);
@@ -862,6 +863,7 @@ fn an_app_key_never_stands_in_for_a_dashpay_key() {
     ];
     for (case, purpose, edit) in cases {
         let f = Fixture::new();
+        (f.net.contracts.lock().unwrap().get_mut(&app()).unwrap()).decryption_requirement = Some(2);
         edit(f.net.identities.lock().unwrap().get_mut(&id(ME)).unwrap());
         let mut r = request();
         r.enc_bindings = vec![EncBinding {
