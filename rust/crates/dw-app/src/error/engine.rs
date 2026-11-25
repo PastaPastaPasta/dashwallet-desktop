@@ -17,6 +17,7 @@ codes! {
         StorageInUse = "storage_in_use",
         Storage = "storage",
         StorageTooNew = "storage_too_new",
+        StorageRefused = "storage_refused",
         WalletNotFound = "wallet_not_found",
         InvalidMnemonic = "invalid_mnemonic",
         WalletAlreadyExists = "wallet_already_exists",
@@ -141,9 +142,29 @@ impl From<EngineError> for AppError {
             E::InvalidConfig(_) => (EngineCode::InvalidConfig.into(), None),
             E::InvalidArgument(_) => (EngineCode::InvalidArgument.into(), None),
             E::NetworkNotOpen(_) => (EngineCode::NetworkNotOpen.into(), None),
-            E::StorageInUse(_) => (EngineCode::StorageInUse.into(), None),
+            E::StorageInUse(_) => (
+                EngineCode::StorageInUse.into(),
+                Some(ErrorData::StorageInUse {
+                    retryable: dw_engine::store_upgrade::STORAGE_IN_USE_RETRYABLE,
+                }),
+            ),
             E::Storage(_) => (EngineCode::Storage.into(), None),
             E::StorageTooNew(_) => (EngineCode::StorageTooNew.into(), None),
+            E::StoreRefused(r) => {
+                let folder = r.folder.display().to_string();
+                (
+                    EngineCode::StorageRefused.into(),
+                    Some(ErrorData::StoreRefused {
+                        screen: super::StoreScreen::new(&r.screen, &folder),
+                        folder,
+                        cause: r.cause.into(),
+                    }),
+                )
+            }
+            E::RetryableIo(_) => (
+                EngineCode::Io.into(),
+                Some(ErrorData::Io { retryable: true }),
+            ),
             E::WalletNotFound(_) => (EngineCode::WalletNotFound.into(), None),
             E::InvalidMnemonic(_) => (EngineCode::InvalidMnemonic.into(), None),
             E::WalletAlreadyExists(_) => (EngineCode::WalletAlreadyExists.into(), None),
@@ -245,6 +266,81 @@ mod tests {
 
     use super::*;
 
+    fn refusal() -> dw_engine::store_upgrade::StoreRefusal {
+        dw_engine::store_upgrade::StoreRefusal {
+            screen: dw_engine::store_upgrade::copy::cant_open(
+                dw_engine::store_upgrade::copy::CantOpenCause::RetiredPoolWithoutP9a,
+                true,
+            ),
+            folder: std::path::PathBuf::from("/data/regtest"),
+            cause: "RetiredPoolWithoutAdopter",
+            stage: dw_engine::store_upgrade::StoreUpgradeStage::Prepare,
+            detail: "1 retired contact-pool rows and this build has no P9a".into(),
+        }
+    }
+
+    /// A store refusal rides in data as the store upgrade's own screen,
+    /// `{folder}` filled in, with the folder and the cause's name.
+    #[test]
+    fn a_store_refusal_rides_in_data_as_its_screen() {
+        let e = serde_json::to_value(AppError::from(EngineError::StoreRefused(refusal()))).unwrap();
+        assert_eq!(e["code"], "storage_refused");
+        let screen = dw_engine::store_upgrade::copy::cant_open(
+            dw_engine::store_upgrade::copy::CantOpenCause::RetiredPoolWithoutP9a,
+            true,
+        );
+        assert_eq!(
+            e["data"],
+            serde_json::json!({
+                "kind": "storeRefused",
+                "screen": {
+                    "titleKey": "storeUpgrade.cantOpen.title",
+                    "title": screen.title,
+                    "textKey": "storeUpgrade.cantOpen.text",
+                    "text": screen.text.replace("{folder}", "/data/regtest"),
+                    "buttons": [{
+                        "key": "storeUpgrade.cantOpen.quit",
+                        "label": "Quit",
+                        "destructive": false,
+                        "defaultFocus": false,
+                    }],
+                    "hint": null,
+                },
+                "folder": "/data/regtest",
+                "cause": "RetiredPoolWithoutAdopter",
+            })
+        );
+        assert!(
+            !e["data"]["screen"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("{folder}")
+        );
+    }
+
+    /// `storage_in_use` says whether a retry in this process may succeed
+    /// (the engine's pinned value); the store upgrade's machine failures
+    /// are `io`, retryable, never a refusal.
+    #[test]
+    fn storage_in_use_and_retryable_io_ride_in_data() {
+        let e =
+            serde_json::to_value(AppError::from(EngineError::StorageInUse("x".into()))).unwrap();
+        assert_eq!(
+            e["data"],
+            serde_json::json!({
+                "kind": "storageInUse",
+                "retryable": dw_engine::store_upgrade::STORAGE_IN_USE_RETRYABLE,
+            })
+        );
+        let e = serde_json::to_value(AppError::from(EngineError::RetryableIo("disk full".into())))
+            .unwrap();
+        assert_eq!(e["code"], "io");
+        assert_eq!(
+            e["data"],
+            serde_json::json!({ "kind": "io", "retryable": true })
+        );
+    }
+
     /// Every `EngineError` variant maps to the code string its `code()`
     /// names; a nested domain (`vault`, `signer`, `send`, …) maps to a code
     /// inside that domain's namespace.
@@ -259,6 +355,8 @@ mod tests {
             E::StorageInUse(s()),
             E::Storage(s()),
             E::StorageTooNew(s()),
+            E::StoreRefused(refusal()),
+            E::RetryableIo(s()),
             E::WalletNotFound(s()),
             E::InvalidMnemonic(s()),
             E::WalletAlreadyExists(s()),

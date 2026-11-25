@@ -322,6 +322,23 @@ export function openProjectLink(link: ProjectLinkName): Promise<null> {
 }
 
 /**
+ * Quits the app through its normal exit path: the engine flushes and
+ * closes, as the menu's Quit does. A refused open's screen offers it.
+ */
+export function quitApp(): Promise<null> {
+  return invoke<null>("quit_app");
+}
+
+/**
+ * Quits through the normal exit path, as `quit_app`, and starts the
+ * app again: the restart `storage_in_use` asks for when the wallet
+ * store is held until the process ends.
+ */
+export function restartApp(): Promise<null> {
+  return invoke<null>("restart_app");
+}
+
+/**
  * Registered but granted by no capability: the U6 probe that the ACL
  * refuses an unlisted command (`api::UNGRANTED`).
  */
@@ -3389,6 +3406,8 @@ export type CommandArgs = {
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
   open_project_link: { link: ProjectLinkName };
+  quit_app: {  };
+  restart_app: {  };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -3768,6 +3787,8 @@ export type CommandResults = {
   set_ui_settings: UiSettings;
   open_releases_page: null;
   open_project_link: null;
+  quit_app: null;
+  restart_app: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -4149,6 +4170,8 @@ export const COMMANDS: Record<CommandName, string> = {
   set_ui_settings: "app",
   open_releases_page: "app",
   open_project_link: "app",
+  quit_app: "app",
+  restart_app: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -4560,6 +4583,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "storage_in_use",
   "storage",
   "storage_too_new",
+  "storage_refused",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",

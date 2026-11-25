@@ -107,8 +107,12 @@ pub struct AppState {
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
-    /// Ends the app (`AppHandle::exit`); `selftest_report` calls it.
+    /// Ends the app (`AppHandle::exit`); `selftest_report` and `quit_app`
+    /// call it.
     exit: Box<dyn Fn(i32) + Send + Sync>,
+    /// Ends the app and starts it again (`AppHandle::request_restart`);
+    /// `restart_app` calls it.
+    restart: Box<dyn Fn() + Send + Sync>,
     /// The drafts and prepared transactions of the active session.
     pub sends: SendHandles,
     /// What an overflow cannot lose: the recent notices (`recentNotices`)
@@ -596,6 +600,7 @@ impl AppState {
             Engine::new(config.clone(), sink).map_err(AppError::from)
         });
         let handle = app.clone();
+        let restarting = app.clone();
         let window = app.clone();
         let titled = app.clone();
         let window_network = StdMutex::new(launch.network.clone());
@@ -628,6 +633,7 @@ impl AppState {
             broadcasts_taken: AtomicUsize::new(0),
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
+            restart: Box::new(move || restarting.request_restart()),
             sends: SendHandles::default(),
             memory,
             payment_policy: Arc::default(),
@@ -862,6 +868,11 @@ impl AppState {
 
     pub fn exit(&self, code: i32) {
         (self.exit)(code)
+    }
+
+    /// Ends the app through its normal exit path and starts it again.
+    pub fn restart(&self) {
+        (self.restart)()
     }
 
     /// The network the window shows ([`AppState::window_network`]).
