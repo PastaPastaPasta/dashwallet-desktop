@@ -3751,8 +3751,8 @@ fn a_held_coin_a_chainlocked_block_spent_stays_out_once_key_wallet_forgets_the_s
 /// #749 (Q81b S3): a block above the ChainLock spends D, held, and its
 /// reconcile notes the spend. The app closes; a reorg replaces that block.
 /// The open finds the header chain naming another block at the note's
-/// height, with no truncation heard, and the note goes. Once key-wallet
-/// truncates its block, D is back in the held total, and awaits.
+/// height, with no truncation heard: the note goes, and D is back in the
+/// held total, and awaits.
 #[test]
 fn a_spend_note_a_reorg_replaced_while_closed_goes_at_the_open() {
     let (_dir, engine, session, id, d, paid) = child_dropped_holding_d();
@@ -3769,26 +3769,14 @@ fn a_spend_note_a_reorg_replaced_while_closed_goes_at_the_open() {
     assert_eq!(held_total(&session, id), (0, 0), "observed");
 
     let session = reopen(&engine, session);
+    assert_eq!(spend_note(&session, id, d), Some(note), "no header chain yet");
     let other = super::block_with(vec![funding(5, &[], 0)]).block_hash();
     assert_ne!(other, block);
     let reorged = [(TIP, tip), (TIP + 1, other)];
     engine.block_on(session.unload_wallet(id)).unwrap();
     header_chain(&session, &reorged);
     engine.block_on(session.load_wallet(id)).unwrap();
-    assert_eq!(
-        spend_note(&session, id, d).filter(|n| n.block == block),
-        None,
-        "the note the header chain contradicts goes"
-    );
-
-    super::deliver(&engine, &session, id, move |wm| {
-        Box::pin(async move {
-            wm.truncate_above(TIP).unwrap();
-        })
-    });
-    reconciled(&engine, &session, id);
-    assert_eq!(observed(&engine, &session, id).get(&d), None, "truncated");
-    assert_eq!(spend_note(&session, id, d), None, "no note");
+    assert_eq!(spend_note(&session, id, d), None, "the note goes");
     assert_eq!(held_report(&session, id), (x, 0, true), "D is back");
 }
 
