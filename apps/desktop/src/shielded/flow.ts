@@ -17,7 +17,7 @@ import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
-import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
+import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
 
@@ -293,11 +293,23 @@ export const SHIELDED_COPY = {
     get copy() {
       return t("transfer.shielded.receive.copy");
     },
-    get notSynced() {
-      return SHIELDED_SYNC_COPY.syncing;
-    },
     get loading() {
       return t("transfer.shielded.receive.loading");
+    },
+    get early() {
+      return t("transfer.shielded.receive.early");
+    },
+    get locked() {
+      return t("transfer.shielded.receive.locked");
+    },
+    get unlock() {
+      return t("transfer.shielded.receive.unlock");
+    },
+    get mixingOnly() {
+      return t("transfer.shielded.receive.mixingOnly");
+    },
+    get watchOnly() {
+      return t("transfer.shielded.receive.watchOnly");
     },
   },
 };
@@ -314,11 +326,11 @@ export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code 
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
  * the refusal of a Core Max. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false, max = false): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
-  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
+  if (syncingRefusal(err.code, wait !== false && wait !== null)) return SHIELDED_SYNC_COPY.wait(typeof wait === "string" ? wait : "syncing");
   const maxText = coreMaxRefusal(err, max, duffs);
   if (maxText) return maxText;
   switch (err.code) {

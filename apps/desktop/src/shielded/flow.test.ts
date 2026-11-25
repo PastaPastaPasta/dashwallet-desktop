@@ -330,7 +330,7 @@ describe("shielded refusal copy", () => {
 
   it("DEC1058_syncingNeverReadsAsPlatformDown", () => {
     const syncing = (code: string, on: boolean) => shieldedErrorText(appError(code as never, null as never), credits, duffs, "add", on);
-    const SAID = "Shielded is still syncing; try again when it finishes.";
+    const SAID = "Shielded is still syncing. Try again when it finishes.";
     expect(syncing("shielded.not_synced", false)).toBe(SAID);
     for (const code of ["platform.unavailable", "platform.timeout", "platform.context_unavailable"]) expect(syncing(code, true)).toBe(SAID);
     // Not syncing: a real Platform outage keeps its own words.

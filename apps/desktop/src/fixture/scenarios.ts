@@ -1159,11 +1159,59 @@ const SCENARIOS = {
     w.sync = syncing();
     return w;
   },
-  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  /** Shielded is on and its account is not established yet: its actions wait and say why, the
+   * status bar says so with the first scan's progress, and Receive shows the address already. */
   "shielded-syncing": (t) => {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
+    w.pending.shielded!.scan = { checked: 42_000, total: 100_000 };
+    return w;
+  },
+  /** Shielded's first bind needs an unlock: Receive says so and shows no address; the bar is Synced,
+   * Sync progress says "Unlock to sync"; Send, Add and Transfer name the unlock. The vault itself reads
+   * unlocked here: the app shows the lock screen while it is locked, so this shows the engine's
+   * answer alone. */
+  "shielded-locked": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "locked";
+    return w;
+  },
+  /** The same while the wallet is unlocked for mixing only: a full unlock binds it. */
+  "shielded-mixing-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "mixingOnly";
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** A watch-only wallet has no viewing key to bind. */
+  "shielded-watch-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "watchOnly";
+    return w;
+  },
+  /** The wallet's last Platform-address pass failed: the bar says Platform did not finish. */
+  "platform-addresses-failed": (t) => {
+    const w = base(t);
+    w.dashpay.addresses = "failed";
+    return w;
+  },
+  /** Shielded's sync status cannot be read: the bar says so, never Synced. */
+  "shielded-sync-unread": (t) => {
+    const w = base(t);
+    w.pending.shielded!.syncInfoFails = true;
+    return w;
+  },
+  /** Shielded is established and its last pass failed: the bar says it did not finish. */
+  "shielded-pass-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastPassFailed = true;
     return w;
   },
   /** Shielded is not ready and an earlier shield is waiting to be finished. */
