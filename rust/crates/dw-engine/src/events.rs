@@ -562,6 +562,10 @@ pub(crate) struct SessionHub {
     reconcile: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The wallets with a reconcile started and not yet running.
     reconcile_pending: Mutex<HashSet<WalletId>>,
+    /// Drains the drops that waited for another wallet's open once a wallet
+    /// is unloaded or forgotten (`tx_actions`, #818 S1); unset in hub-only
+    /// tests.
+    drain_drops: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Drops what the history built on a sweep's transactions
     /// (`tx_actions`, #739); unset in hub-only tests.
     swept_dead: OnceLock<Box<SweptDead>>,
@@ -625,6 +629,17 @@ pub(crate) struct SessionHub {
     /// holds no record of, by wallet, each set with its winner and the
     /// swept payments: dropped at the next reconcile (#170 case 4).
     dead_children: Mutex<Vec<DeadChildren>>,
+    /// The drops that waited for another wallet's open, by wallet, each
+    /// with its detection's evidence and the truncations applied when it
+    /// began to wait: dropped when an open ends, or at the wallet's next
+    /// drop (#818, S1).
+    deferred_drops: Mutex<Vec<(WalletId, u64, crate::tx_actions::DeadWork)>>,
+    /// The beaten payments whose rechecks ran out while only the proof of
+    /// their winner's block was missing, by wallet and root: rechecked with
+    /// their detection's evidence at the wallet's next drop, which an
+    /// applied ChainLock reaching the block starts (#818, Q99). This
+    /// session's only.
+    carried_drops: Mutex<BTreeMap<(WalletId, Txid), CarriedDrop>>,
     /// The coins each wallet's drops hold for good, as its open read them
     /// (`tx_actions::finish_marked_abandons`): claimed at its load.
     dropped_holds: Mutex<crate::tx_actions::DroppedHolds>,
@@ -642,6 +657,9 @@ pub(crate) struct SessionHub {
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Tests: the reconciles started, to wait for.
+    #[cfg(test)]
+    pub(crate) reconciles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Tests: the claim choices a lock started again, to wait for.
     #[cfg(test)]
     pub(crate) lock_reruns: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -653,6 +671,9 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next wallet close just before the hub lets it go.
+    #[cfg(test)]
+    pub(crate) pause_unload: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: runs once, when a load or watch-only import has published a
     /// wallet and before it widens the wallet's pools.
     #[cfg(test)]
@@ -767,6 +788,17 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next rescan's publication, after its rewind.
     #[cfg(test)]
     pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of beaten payments between their
+    /// detection and its recheck under the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_recheck: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next drop of beaten payments after it read its
+    /// block's proof, before the write lock.
+    #[cfg(test)]
+    pub(crate) pause_drop_proven: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: as [`Self::pause_drop_proven`], at a payment's last recheck.
+    #[cfg(test)]
+    pub(crate) pause_drop_proven_last: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next truncation between its heights and the rest.
     #[cfg(test)]
     pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -778,6 +810,11 @@ pub(crate) struct SessionHub {
     /// Rescans cancelled in this session: a caller that started one tells
     /// from it that its rescan was cancelled, even when another replaced it.
     pub(crate) rescan_cancels: std::sync::atomic::AtomicU64,
+    /// How many fork truncations the hub applied, to any wallet, this
+    /// session; never lowered. A beaten payment's drop reads it at its
+    /// detection and again under the write lock
+    /// (`NetworkSession::drop_dead_unmined`).
+    truncations: std::sync::atomic::AtomicU64,
     /// The wallets unloaded or removed, and not added again: an event of
     /// one is stale, from before. Held through each event's application
     /// and through a wallet's unload, removal and admission, so an event
@@ -942,6 +979,7 @@ impl SessionHub {
             leases: std::sync::OnceLock::new(),
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
+            drain_drops: OnceLock::new(),
             swept_dead: OnceLock::new(),
             funded: OnceLock::new(),
             peers_up: OnceLock::new(),
@@ -963,6 +1001,8 @@ impl SessionHub {
             shielded_ready: Mutex::new(HashSet::new()),
             platform_addresses: Mutex::new(HashMap::new()),
             dead_children: Mutex::new(Vec::new()),
+            deferred_drops: Mutex::new(Vec::new()),
+            carried_drops: Mutex::new(BTreeMap::new()),
             dropped_holds: Mutex::new(HashMap::new()),
             held_locks: Mutex::new(HashMap::new()),
             held_forks: Mutex::new(HashMap::new()),
@@ -970,12 +1010,16 @@ impl SessionHub {
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             #[cfg(test)]
+            reconciles: Mutex::new(Vec::new()),
+            #[cfg(test)]
             lock_reruns: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
             #[cfg(test)]
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_unload: Mutex::new(None),
             #[cfg(test)]
             on_published: Mutex::new(None),
             #[cfg(test)]
@@ -1045,9 +1089,16 @@ impl SessionHub {
             #[cfg(test)]
             pause_publish: Mutex::new(None),
             #[cfg(test)]
+            pause_drop_recheck: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_proven: Mutex::new(None),
+            #[cfg(test)]
+            pause_drop_proven_last: Mutex::new(None),
+            #[cfg(test)]
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             rescan_cancels: std::sync::atomic::AtomicU64::new(0),
+            truncations: std::sync::atomic::AtomicU64::new(0),
             unloaded: Mutex::new(HashSet::new()),
             abandon_batches: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -1301,6 +1352,20 @@ impl SessionHub {
         let _ = self.reconcile.set(start);
     }
 
+    /// Sets what drains the drops that waited for another wallet's open
+    /// (once).
+    pub(crate) fn attach_drain_drops(&self, start: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.drain_drops.set(start);
+    }
+
+    /// The drops that waited for a wallet the hub no longer holds go: it
+    /// was all that kept them, and no open of it ends to drain them.
+    fn drain_drops(&self) {
+        if let Some(start) = self.drain_drops.get() {
+            start();
+        }
+    }
+
     /// Sets what drops the history's transactions built on swept ones
     /// (once).
     pub(crate) fn attach_swept_dead(&self, start: Box<SweptDead>) {
@@ -1341,7 +1406,7 @@ impl SessionHub {
 
     /// Starts wallet `id`'s reconcile unless one is started and not yet
     /// running: events during a run start the next one.
-    fn schedule_reconcile(&self, id: WalletId) {
+    pub(crate) fn schedule_reconcile(&self, id: WalletId) {
         let Some(start) = self.reconcile.get() else {
             return;
         };
@@ -1370,6 +1435,94 @@ impl SessionHub {
             .partition(|(w, ..)| *w == id);
         *queued = others;
         (mine.into_iter()).map(|(_, set)| set).collect()
+    }
+
+    /// Keeps `work`, drops of wallet `id` that wait for another wallet's
+    /// open, found with `truncations` applied; one already waiting is kept
+    /// once.
+    pub(crate) fn defer_drops(
+        &self,
+        id: WalletId,
+        truncations: u64,
+        work: impl IntoIterator<Item = crate::tx_actions::DeadWork>,
+    ) {
+        // Under the lock an unload forgets them under: none outlives it.
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
+        let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        for w in work {
+            let waiting = |(d, t, waiting): &(WalletId, u64, crate::tx_actions::DeadWork)| {
+                (*d, *t) == (id, truncations) && *waiting == w
+            };
+            if !deferred.iter().any(waiting) {
+                deferred.push((id, truncations, w));
+            }
+        }
+    }
+
+    /// The drops of wallet `id` that waited for another wallet's open, each
+    /// with the truncations applied when it began to wait.
+    pub(crate) fn take_deferred_drops(
+        &self,
+        id: WalletId,
+    ) -> Vec<(u64, crate::tx_actions::DeadWork)> {
+        let mut deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others) = std::mem::take(&mut *deferred)
+            .into_iter()
+            .partition(|(w, ..)| *w == id);
+        *deferred = others;
+        mine.into_iter().map(|(_, t, w)| (t, w)).collect()
+    }
+
+    /// The wallets with drops that wait for another wallet's open.
+    pub(crate) fn deferred_drop_wallets(&self) -> BTreeSet<WalletId> {
+        let deferred = (self.deferred_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        deferred.iter().map(|(w, ..)| *w).collect()
+    }
+
+    /// Keeps `roots` of wallet `id`, beaten payments whose rechecks ran out
+    /// while only their proof was missing, with `drop`; a root kept already
+    /// is kept once, with the later detection.
+    pub(crate) fn carry_drops(&self, id: WalletId, roots: &[Txid], drop: CarriedDrop) {
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
+        let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        for t in roots {
+            carried.insert((id, *t), drop.clone());
+        }
+    }
+
+    /// The beaten payments of wallet `id` kept to recheck, by root.
+    pub(crate) fn take_carried_drops(&self, id: WalletId) -> Vec<(Txid, CarriedDrop)> {
+        let mut carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        let (mine, others): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut *carried)
+            .into_iter()
+            .partition(|((w, _), _)| *w == id);
+        *carried = others;
+        mine.into_iter().map(|((_, t), d)| (t, d)).collect()
+    }
+
+    /// The roots wallet `id` keeps to recheck (tests only).
+    #[cfg(test)]
+    pub(crate) fn carried_drop_roots(&self, id: WalletId) -> BTreeSet<Txid> {
+        let carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        (carried.keys())
+            .filter(|(w, _)| *w == id)
+            .map(|(_, t)| *t)
+            .collect()
+    }
+
+    /// Whether wallet `id`'s ChainLock applied at `height` reaches the block
+    /// of a payment it keeps to recheck, above what that recheck read.
+    fn carried_due(&self, id: WalletId, height: u32) -> bool {
+        let carried = (self.carried_drops.lock()).unwrap_or_else(|p| p.into_inner());
+        (carried.iter()).any(|((w, _), (.., at, seen))| {
+            *w == id && *at <= height && seen.is_none_or(|s| height > s)
+        })
     }
 
     /// Keeps the drops' holds an open read, by wallet.
@@ -1492,6 +1645,12 @@ impl SessionHub {
         self.tracker.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// How many fork truncations the hub applied to any wallet this
+    /// session ([`Self::truncations`]).
+    pub(crate) fn truncations(&self) -> u64 {
+        self.truncations.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn wallet_state(&self, id: &WalletId) -> Option<WalletState> {
         self.wallets
             .read()
@@ -1580,7 +1739,20 @@ impl SessionHub {
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
+        self.forget_drops(id);
         self.forget_shielded_passes(id);
+        drop(unloaded);
+        self.drain_drops();
+    }
+
+    /// Forgets the drops wallet `id` waits with or keeps to recheck.
+    fn forget_drops(&self, id: &WalletId) {
+        (self
+            .deferred_drops
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()))
+        .retain(|(w, ..)| w != id);
+        (self.carried_drops.lock().unwrap_or_else(|p| p.into_inner())).retain(|(w, _), _| w != id);
     }
 
     /// Tests' passes fail for want of Platform: those that pin the rules
@@ -1664,11 +1836,14 @@ impl SessionHub {
             .unwrap_or_else(|p| p.into_inner())
             .remove(id);
         self.history.remove_wallet(id);
+        self.forget_drops(id);
         // Its notes go with its rows: a wallet restored under the same id
         // holds nothing of them.
         (self.dropped_holds.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
         (self.held_forks.lock().unwrap_or_else(|p| p.into_inner())).remove(id);
         self.forget_shielded_passes(id);
+        drop(unloaded);
+        self.drain_drops();
     }
 
     pub(crate) fn set_spv_running(&self, running: bool) {
@@ -1950,6 +2125,7 @@ impl SessionHub {
         let Some((from, flipped, checkpoint_lowered)) = lowered else {
             return false;
         };
+        (self.truncations).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         #[cfg(test)]
         if let Some((reached, release)) = self.pause_truncation.lock().unwrap().take() {
             reached.wait();
@@ -2424,6 +2600,9 @@ impl SessionHub {
                 ..
             } => {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
+                if self.carried_due(id, chain_lock.block_height) {
+                    self.schedule_reconcile(id);
+                }
                 let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
                     // key-wallet promotes by height; only a record whose own
                     // block the lock names is final for its sent mark. This
@@ -2466,6 +2645,16 @@ impl SessionHub {
         }
     }
 }
+
+/// A beaten payment kept to recheck: its winner, its detection's evidence,
+/// the winner's block height, and the wallet's applied ChainLock its last
+/// recheck read.
+pub(crate) type CarriedDrop = (
+    crate::history::Winner,
+    crate::tx_actions::Recheck,
+    u32,
+    Option<u32>,
+);
 
 /// Chooses the spend claims of `wallets` again after `txid`'s lock.
 pub(crate) type LockRerun = dyn Fn(Txid, InstantLock, Vec<WalletId>) + Send + Sync;

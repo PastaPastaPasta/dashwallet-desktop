@@ -513,6 +513,27 @@ pub struct ShieldedActivity {
     /// contact payout's row, else by the destination address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact: Option<Counterparty>,
+    /// A spend whose outcome the wallet holds open (#444): held while it
+    /// cannot rule out that the spend executes (a refusal at its broadcast,
+    /// a sent spend whose outcome the journal does not hold yet, or one it
+    /// cannot read; status pending), released once a refusal is proved
+    /// never to go through (status failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ShieldedRefusal>,
+}
+
+/// Whether a spend's outcome is held open (`Held`: the wallet cannot rule
+/// out that it executes) or a refusal was released (`Released`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedRefusal {
+    /// The wallet cannot rule out that it executes (not necessarily a
+    /// refusal Platform answered): its notes stay held, and nothing invites
+    /// sending it again.
+    Held,
+    /// Proved never to go through: the wallet stops holding its notes,
+    /// and those no other spend has spent are spendable again.
+    Released,
 }
 
 impl DashPay {
@@ -790,6 +811,7 @@ impl DashPay {
         let wallet = self.wallet_id;
         on_pool(&self.session, wallet, move |session, lib| async move {
             let mut rows = pool::history(&lib, offset, limit).await?;
+            super::shielded_release::mark_refused(&session, wallet, &mut rows).await;
             session.name_shielded_payouts(wallet, &mut rows).await;
             Ok(rows)
         })

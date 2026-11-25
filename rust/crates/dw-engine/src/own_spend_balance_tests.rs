@@ -12,10 +12,11 @@ use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, assert_holds_waiting, chain_lock,
-    change_of, coins, eventually, foreign, fresh_address, funding, header_chain, own_scripts,
-    reload_with_headers, rival, second_wallet, send, sent_marks, spendable, start_offline_spv,
-    store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
+    COIN, COINS, FUNDED_AT, TIP, abandon, another_wallet_opening, assert_holds,
+    assert_holds_waiting, chain_lock, change_of, coins, eventually, foreign, fresh_address,
+    funding, header_chain, own_scripts, reload_with_headers, rival, second_wallet, send,
+    sent_marks, spendable, start_offline_spv, store_raw, synced, utxo, wait_stored,
+    wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -2865,6 +2866,19 @@ pub(super) fn reconciled(engine: &Engine, session: &NetworkSession, id: WalletId
     engine.block_on(session.reconcile_duplicate_coins(id));
 }
 
+/// Waits for every reconcile the session's events started.
+fn reconciles_done(engine: &Engine, session: &NetworkSession) {
+    loop {
+        let started = std::mem::take(&mut *session.hub.reconciles.lock().unwrap());
+        if started.is_empty() {
+            return;
+        }
+        for reconcile in started {
+            engine.block_on(reconcile).unwrap();
+        }
+    }
+}
+
 /// Whether the history shows `txid`, not abandoned.
 pub(super) fn live_in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned())
@@ -3215,6 +3229,81 @@ fn a_child_of_a_payment_an_unknown_locked_winner_swept_keeps_its_coin_out() {
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
     mined(&engine, &session, id, FUNDED_AT, vec![paid]);
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "rescanned again");
+}
+
+/// #170 case 4, S1: key-wallet sweeps P while another wallet is part-way
+/// through its open, so the drop of C waits for that open. C goes when the
+/// open ends, with no other reconcile, and D stays out, also after a
+/// restart.
+#[test]
+fn a_child_of_a_payment_swept_while_another_wallet_opens_goes_when_the_open_ends() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, c_change)) =
+        payment_and_child_after_a_restart();
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    assert!(
+        live_in_history(&session, id, c.txid()),
+        "C waits for the other wallet's open"
+    );
+    eventually("the drop of C waits for the other wallet's open", || {
+        session.hub.deferred_drop_wallets().contains(&id)
+    });
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "the open ended");
+    let session = reopen(&engine, session);
+    assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
+}
+
+/// #170 case 4, S1: as above, but a fork the hub hears truncates the chain
+/// while the drop of C waits: the sweep's winner may be gone, so C is not
+/// dropped on it when the open ends.
+#[test]
+fn a_child_of_a_payment_swept_while_another_wallet_opens_stays_after_a_fork() {
+    let (_dir, engine, session, id, (a, d), paid, (p, c, _)) = payment_and_child_after_a_restart();
+    let (pause, opening) = another_wallet_opening(&engine, &session);
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    let winner = foreign_winner(&engine, &session, id, &paid, &[a, d]);
+    session
+        .hub
+        .apply_wallet_event(&platform_wallet::events::WalletEvent::TransactionsSwept {
+            wallet_id: id.0,
+            txids: vec![p.txid()],
+            superseded_by: winner.txid(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: Default::default(),
+            account_balances: Default::default(),
+        });
+    reconciled(&engine, &session, id);
+    eventually("the drop of C waits for the other wallet's open", || {
+        session.hub.deferred_drop_wallets().contains(&id)
+    });
+    let heard = session.hub.truncations();
+    super::deliver(&engine, &session, id, |wm| {
+        Box::pin(async move {
+            wm.truncate_above(TIP).unwrap();
+        })
+    });
+    assert!(session.hub.truncations() > heard, "the hub heard the fork");
+    pause.release.notify_one();
+    engine.block_on(opening).unwrap().unwrap();
+    assert!(
+        live_in_history(&session, id, c.txid()),
+        "C is not dropped on a sweep a fork may have undone"
+    );
 }
 
 /// #170 case 4: the app stops after key-wallet's sweep of P is stored and
@@ -3662,6 +3751,138 @@ fn nothing_is_dropped_while_another_wallet_loaded_incomplete() {
     reconciled(&engine, &session, id);
     assert!(!live_in_history(&session, id, p.txid()), "the payment goes");
     assert!(!held(&engine, &session, id).contains(&change));
+}
+
+/// #818, S1: a beaten payment's drop waits while another wallet's history
+/// loaded incomplete; that wallet is then closed, or removed, and no block
+/// follows. The drop goes with it: the payment and its change go, and A,
+/// which the winner spent, is not freed.
+#[test]
+fn a_drop_waiting_for_another_wallet_goes_when_that_wallet_is_closed_or_removed() {
+    for removed in [false, true] {
+        let case = if removed { "removed" } else { "closed" };
+        let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+        let a = OutPoint::new(paid.txid(), 0);
+        let p = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![a]),
+            COIN / 2,
+            false,
+        );
+        mempool(&engine, &session, id, &p);
+        let change = change_of(&p, &own_scripts(&engine, &session, id));
+        wait_stored(&session, id, &[p.txid()]);
+        let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
+
+        let session = reopen(&engine, session);
+        (session.hub.history).with_wallet(other, |h| h.load_incomplete = true);
+        let winner = rival(&engine, &session, id, &paid, 0);
+        mined(&engine, &session, id, TIP + 1, vec![winner]);
+        reconciled(&engine, &session, id);
+        reconciles_done(&engine, &session);
+        assert!(
+            live_in_history(&session, id, p.txid()),
+            "{case}: the payment stays"
+        );
+        assert!(
+            session.hub.deferred_drop_wallets().contains(&id),
+            "{case}: the drop waits for the other wallet"
+        );
+        if removed {
+            let wipe = session
+                .vault()
+                .authorize(
+                    dw_vault::GrantPurpose::Wipe,
+                    Some(&other.0),
+                    dw_vault::Credential::None,
+                )
+                .unwrap()
+                .id;
+            engine.block_on(session.remove_wallet(other, wipe)).unwrap();
+        } else {
+            engine.block_on(session.unload_wallet(other)).unwrap();
+        }
+        eventually(&format!("{case}: the drop goes"), || {
+            !live_in_history(&session, id, p.txid())
+        });
+        let held_now = held(&engine, &session, id);
+        assert!(!held_now.contains(&change), "{case}: the change is held");
+        assert!(!held_now.contains(&a), "{case}: A is freed");
+        assert!(!spendable(&engine, &session, id, a), "{case}: A is offered");
+    }
+}
+
+/// #818, S1: a beaten payment's drop waits for another wallet whose
+/// history loaded incomplete, and a quit seals the session while that
+/// wallet's close is in flight. The close lets the wallet go after the
+/// seal, so the drain it starts is refused; the quit runs the drop before
+/// the stores close.
+#[test]
+fn a_drop_another_wallet_held_up_goes_when_a_quit_meets_that_wallets_close() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    wait_stored(&session, id, &[p.txid()]);
+    let other = super::own_spend_disk_tests::second_wallet(&engine, &session);
+
+    let session = reopen(&engine, session);
+    (session.hub.history).with_wallet(other, |h| h.load_incomplete = true);
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    reconciled(&engine, &session, id);
+    reconciles_done(&engine, &session);
+    assert!(
+        session.hub.deferred_drop_wallets().contains(&id),
+        "the drop waits for the other wallet"
+    );
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_unload.lock().unwrap() = Some(Arc::clone(&pause));
+    let unload = {
+        let s = Arc::clone(&session);
+        session
+            .rt
+            .spawn(async move { s.unload_wallet(other).await })
+    };
+    eventually("the close's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    std::thread::scope(|scope| {
+        let quit =
+            scope.spawn(|| engine.block_on(engine.close_network(crate::DashNetwork::Regtest)));
+        eventually("the quit seals the session", || session.gate.is_closed());
+        pause.release.notify_one();
+        assert!(quit.join().unwrap().unwrap());
+    });
+    engine.block_on(unload).unwrap().unwrap();
+    assert!(
+        !live_in_history(&session, id, p.txid()),
+        "the drop goes before the stores close"
+    );
+    drop(session);
+    let session = super::open(&engine);
+    assert!(
+        !live_in_history(&session, id, p.txid()),
+        "the payment stays gone"
+    );
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&change), "the change is held");
+    assert!(
+        !spendable(&engine, &session, id, change),
+        "the change is offered"
+    );
+    assert!(!held_now.contains(&a), "A is freed");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
 }
 
 /// #611 with another wallet part-way through its open: its history is not

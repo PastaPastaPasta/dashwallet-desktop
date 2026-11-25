@@ -1892,6 +1892,13 @@ input[type="radio"]:disabled {
   color: var(--dw-role-danger);
 }
 
+.tx-detail-note {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
 /* Why Dash Wallet dropped the transaction itself, and where its coins are. */
 .tx-detail-dropped {
   max-width: 34rem;

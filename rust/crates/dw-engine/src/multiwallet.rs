@@ -374,6 +374,15 @@ impl NetworkSession {
                 this.spawn_ensure_background();
                 return Err(e);
             }
+            #[cfg(test)]
+            let pause = this.hub.pause_unload.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
             this.hub.unload_wallet(&id);
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
@@ -505,6 +514,8 @@ impl NetworkSession {
                 (this.hub.history).with_wallet(id, |h| h.load_incomplete = true);
             }
             this.hub.update_wallet_state(id, |s| s.loading = false);
+            // The drops that waited for this open go now (#818, S1).
+            this.drain_deferred_drops(&live.manager).await;
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;

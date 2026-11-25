@@ -293,7 +293,8 @@ impl NetworkSession {
     /// transition is `st_hash` (P6, P7, P9): no artifact, never sent, but
     /// only while the hook never recorded its dispatch (else the journal is
     /// lost or older: unknown); executed by the library's own disposition,
-    /// sent; not executed, not sent with its address consumed (P5).
+    /// or by the release's proof of a refused first send that published a
+    /// padding nullifier, sent; not executed, not sent with its address consumed (P5).
     /// Anything else, a read failure and an execution the library could not
     /// attribute included, is unknown.
     pub(crate) async fn shielded_payout_evidence(
@@ -305,12 +306,7 @@ impl NetworkSession {
         let Ok(artifacts) = self.leases.shielded_artifacts(wallet).await else {
             return PayoutEvidence::Unknown;
         };
-        let executed = |a: &dw_appdb::dispatch::ShieldedArtifact| {
-            a.status == ArtifactStatus::Executed
-                && a.disposition
-                    .as_ref()
-                    .is_some_and(|(kind, _)| kind == "executed")
-        };
+        let executed = super::shielded_release::proves_execution;
         match artifacts.iter().find(|a| a.st_hash == Some(st_hash)) {
             None => {
                 let scope = dw_appdb::local_scope(&wallet.to_string());
