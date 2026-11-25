@@ -81,7 +81,7 @@ function expectStyledClasses(html: string) {
 }
 
 /** Every catalog key and English text a screen carries. */
-const texts = (s: StoreScreen): [string, string][] => [[s.titleKey, s.title], [s.textKey, s.text], ...s.buttons.map((b): [string, string] => [b.key, b.label]), ...(s.hint ? [[s.hint.key, s.hint.text] as [string, string]] : [])];
+const texts = (s: StoreScreen): [string, string][] => [[s.titleKey, s.title], ...s.lines.map((l): [string, string] => [l.key, l.text]), ...s.buttons.map((b): [string, string] => [b.key, b.label]), ...(s.hint ? [[s.hint.key, s.hint.text] as [string, string]] : [])];
 
 const FIXTURES = STORE_SCREEN_NAMES.map((name) => [name, STORE_SCREENS[name](FOLDER)] as const);
 
@@ -121,8 +121,6 @@ describe("the store refusal screen", () => {
   it("carries the engine's English for each key, so the catalog's text is the DTO's", () => {
     for (const [, { screen, folder }] of FIXTURES)
       for (const [key, english] of texts(screen)) {
-        // The refusal family's keys (`storeUpgrade.refused.*`) come with its catalog; until then the screen shows the DTO's.
-        if (key.startsWith("storeUpgrade.refused.")) continue;
         expect(ENGLISH.has(key), key).toBe(true);
         expect((t as unknown as (k: string, v: object) => string)(key, { folder }), key).toBe(english);
       }
@@ -137,6 +135,22 @@ describe("the store refusal screen", () => {
     }
     expect(rust).toContain('button("settings.about.links.issues", "Report a problem")');
     expect(rust).not.toContain("storeUpgrade.cantOpen.");
+  });
+
+  it("has every refusal line and button copy.rs names in its catalog, verbatim", () => {
+    const rust = readFileSync(resolve(import.meta.dirname, "../../../../rust/crates/dw-store-upgrade/src/copy.rs"), "utf8");
+    const named = new Map([...rust.matchAll(/(?:line|button)\(\s*"(storeUpgrade\.refused\.[\w.]+)",\s*"((?:[^"\\]|\\.)*)",?\s*\)/g)].map((m) => [m[1], m[2]]));
+    const catalog = [...ENGLISH.keys()].filter((k) => k.startsWith("storeUpgrade.refused."));
+    expect(named.size).toBeGreaterThan(20);
+    expect(catalog.sort()).toEqual([...named.keys()].sort());
+    for (const [key, english] of named) expect(ENGLISH.get(key), key).toBe(english);
+  });
+
+  it("joins the text's lines as the engine does", () => {
+    for (const [, { screen }] of FIXTURES) {
+      const [intro, ...rest] = screen.lines.map((l) => l.text);
+      expect(`${intro}: ${rest.join(" ")}`).toBe(screen.text);
+    }
   });
 
   it("has the engine's restore copy in its catalog verbatim, the keys copy.rs names included", () => {
@@ -160,7 +174,11 @@ describe("the store refusal screen", () => {
         titleKey: "storeUpgrade.later.title",
         title: "A later title",
         textKey: "storeUpgrade.later.text",
-        text: `A later text about ${FOLDER}.`,
+        text: `A later intro: a later text about ${FOLDER}.`,
+        lines: [
+          { key: "storeUpgrade.later.intro", text: "A later intro" },
+          { key: "storeUpgrade.later.text", text: `a later text about ${FOLDER}.` },
+        ],
         buttons: [
           { key: "storeUpgrade.later.report", label: "A later button", destructive: false, defaultFocus: true },
           { key: "storeUpgrade.later.quit", label: "Leave", destructive: true, defaultFocus: false },
@@ -170,7 +188,7 @@ describe("the store refusal screen", () => {
     };
     const html = renderRefusal(refusal);
     expect(html).toContain(">A later title</h1>");
-    expect(html).toContain(`data-testid="store-refused-text">A later text about ${FOLDER}.</p>`);
+    expect(html).toContain(`data-testid="store-refused-text">A later intro: a later text about ${FOLDER}.</p>`);
     const later = button(html, "store-refused-button-storeUpgrade.later.report");
     expect(later?.label).toBe("A later button");
     expect(later?.tag).toContain("dash-button-filledBlue");
@@ -193,6 +211,7 @@ describe("the store refusal screen", () => {
       screen: { ...refusal.screen, titleKey: "storeUpgrade.restore.foreign.title", title: en.storeUpgrade.restore.foreign.title, hint: { key: "storeUpgrade.later.hint", text: "A later hint." } },
     });
     expect(html).not.toContain(escaped(refusal.screen.title));
+    for (const line of refusal.screen.lines) expect(html).not.toContain(escaped(line.text));
     expect(html).toContain(FOLDER);
     expect(html).toContain('data-testid="store-refused-hint">A later hint.</p>');
   });

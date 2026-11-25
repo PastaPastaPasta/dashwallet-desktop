@@ -309,6 +309,7 @@ mod tests {
         let r = refusal();
         let screen = r.screen.clone();
         let button = |key: &str, label: &str| serde_json::json!({ "key": key, "label": label, "destructive": false, "defaultFocus": false });
+        let line = |key: &str, text: &str| serde_json::json!({ "key": key, "text": text.replace("{folder}", "/data/regtest") });
         let data = refused_json(r);
         assert_eq!(
             data,
@@ -319,6 +320,12 @@ mod tests {
                     "title": "Dash Wallet can't open this wallet data safely",
                     "textKey": "storeUpgrade.refused.wayOut.restore",
                     "text": screen.text("/data/regtest"),
+                    "lines": [
+                        line("storeUpgrade.refused.intro", screen.intro.text),
+                        line("storeUpgrade.refused.detail.devBuild", screen.detail.text),
+                        line("storeUpgrade.refused.unchanged", screen.unchanged.text),
+                        line("storeUpgrade.refused.wayOut.restore", screen.way_out_line.text),
+                    ],
                     "buttons": [
                         button("storeUpgrade.refused.restore", "Restore earlier data"),
                         button("storeUpgrade.refused.report", "Report a problem"),
@@ -338,6 +345,14 @@ mod tests {
             "This version of Dash Wallet can't safely open the wallet data in /data/regtest: "
         ));
         assert!(!text.contains("{folder}"));
+        let lines: Vec<&str> = (data["screen"]["lines"].as_array().unwrap().iter())
+            .map(|l| l["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            format!("{}: {}", lines[0], lines[1..].join(" ")),
+            text,
+            "the text is its lines joined"
+        );
     }
 
     /// A restore that stopped the open rides as `storage_restore` with its

@@ -1,11 +1,55 @@
 import type { Tree } from "../core";
 
 /** The screens the engine gives for a refused open, by their keys; each value is the engine's English
- * (dw-store-upgrade's copy). The screen shows the engine's own text for a key missing here. `folder` is
- * the network's data folder. `restore` and `restored` are the restore flow's (MG's restore copy): the
- * renderer's own screens for `storage_restore`, its confirm and banner, and the foreign screen's keys,
- * which come in the engine's screen. */
+ * (dw-store-upgrade's copy), `refused` the refusal screen's lines and buttons. The screen shows the
+ * engine's own text for a key missing here. `folder` is the network's data folder. `restore` and
+ * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
+ * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. */
 export const storeUpgrade = {
+  refused: {
+    title: "Dash Wallet can't open this wallet data safely",
+    intro: "This version of Dash Wallet can't safely open the wallet data in {folder}",
+    unchanged:
+      "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    changedByUpgrade:
+      "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    keep: "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+    quit: "Quit",
+    report: "Report a problem",
+    restore: "Restore earlier data",
+    detail: {
+      forkUnsupported: "it was written by a version of Dash Wallet that this one can't upgrade from.",
+      shapeMismatch:
+        "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
+      rehearsalFailed: "a trial upgrade on a copy of it failed, so Dash Wallet left the real data as it was.",
+      devBuild: "it was written by a development build of Dash Wallet.",
+      tooNew: "it was written by a newer version of Dash Wallet.",
+      historyMismatch:
+        "its upgrade history doesn't match any released version of Dash Wallet, so this version can't tell what it contains.",
+      snapshotMissing:
+        "an upgrade of it was interrupted and the copy taken before it is missing or doesn't check out.",
+      contactsTable: "it holds contact data that this version can't read yet.",
+      selfCheck: "a check Dash Wallet runs on itself before it opens any wallet data didn't pass.",
+      unexpected: "it's in a state this version doesn't expect.",
+    },
+    wayOut: {
+      previous:
+        "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+      newer:
+        "Install that version of Dash Wallet, or a later one, to open it. Don't open it with an earlier version.",
+      restore:
+        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+      unverified:
+        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. A backup from before the upgrade exists, but it doesn't check out, so Dash Wallet won't restore from it. Choose Report a problem.",
+      support: "Choose Report a problem.",
+      supportMigrated:
+        "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. Choose Report a problem.",
+      selfCheck:
+        "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet. Until then, don't open this wallet data with an earlier version.",
+      selfCheckNotMigrated:
+        "Quit Dash Wallet and open it again. If you see this again, free up some disk space and try once more. If it still happens, install the latest version of Dash Wallet, or keep using the version you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+    },
+  },
   restored: {
     text: "Dash Wallet is using your wallet data from before the upgrade, so anything that happened since the upgrade is missing. Until the wallet has finished syncing, coins and Shielded notes you've already spent may show as unspent, so anything that moves your funds is paused until then.",
   },

@@ -6,7 +6,7 @@
 
 import { useId, useState, type ReactNode } from "react";
 import type { Backend } from "../api/backend";
-import { storeRestore, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
+import { storeRestore, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData, type StoreScreen } from "../api/storeOpen";
 import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -26,6 +26,13 @@ type LooseTranslate = (key: string, values?: Record<string, string>) => string;
  * catalog lacks, the engine's English: never other copy. */
 function textFor(tr: Translate, key: string, english: string, folder: string): string {
   return key.startsWith("storeUpgrade.") && ENGLISH.has(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
+}
+
+/** A refusal's text in the language: its lines by their keys, joined as the engine joins them; the
+ * engine's text when it sends no lines. */
+function screenText(tr: Translate, screen: StoreScreen, folder: string): string {
+  const [intro, ...rest] = screen.lines.map((l) => textFor(tr, l.key, l.text, folder));
+  return intro === undefined ? textFor(tr, screen.textKey, screen.text, folder) : `${intro}: ${rest.join(" ")}`;
 }
 
 export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore";
@@ -257,7 +264,7 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
   // Report a problem always has the issues warning under it (MG); a screen whose one hint is another line gets it too.
   const warn = buttons.some((b) => b.action === "report") && screen.hint?.key !== ISSUES_HINT;
   return (
-    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={textFor(tr, screen.textKey, screen.text, folder)} problem={problem} failedLink={failedLink}>
+    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={screenText(tr, screen, folder)} problem={problem} failedLink={failedLink}>
       <Buttons id={id} testId="store-refused" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {warn && (
         <p className="field-hint" data-testid="store-refused-issues-hint">

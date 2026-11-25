@@ -550,8 +550,8 @@ impl From<dw_engine::store_upgrade::RestoreState> for RestoreStateName {
 
 /// A store refusal's screen, as `dw_engine::store_upgrade::copy::screen_for`
 /// gives it: catalog keys with their English, `{folder}` filled in. Its
-/// text is the refusal's four lines joined (`RefusedScreen::text`);
-/// `text_key` is its way out's.
+/// text is `lines` joined as "{intro}: {detail} {unchanged} {wayOut}"
+/// (`RefusedScreen::text`); `text_key` is its way out's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StoreScreen {
@@ -559,6 +559,9 @@ pub struct StoreScreen {
     pub title: String,
     pub text_key: String,
     pub text: String,
+    /// The text's lines by their keys, so a language can show each its own
+    /// way: intro, detail, unchanged, way out.
+    pub lines: Vec<StoreLine>,
     pub buttons: Vec<StoreButton>,
     /// A line under the buttons.
     pub hint: Option<StoreHint>,
@@ -572,6 +575,14 @@ pub struct StoreButton {
     pub label: String,
     pub destructive: bool,
     pub default_focus: bool,
+}
+
+/// One keyed line of a [`StoreScreen`]'s text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreLine {
+    pub key: String,
+    pub text: String,
 }
 
 /// The line under a [`StoreScreen`]'s buttons.
@@ -589,6 +600,17 @@ impl StoreScreen {
             title: screen.title.text.into(),
             text_key: screen.way_out_line.key.into(),
             text: screen.text(folder),
+            lines: [
+                &screen.intro,
+                &screen.detail,
+                &screen.unchanged,
+                &screen.way_out_line,
+            ]
+            .map(|l| StoreLine {
+                key: l.key.into(),
+                text: l.text.replace("{folder}", folder),
+            })
+            .into(),
             buttons: (screen.buttons.iter())
                 .map(|b| StoreButton {
                     key: b.key.into(),

@@ -55,7 +55,7 @@ const isHint = (h: unknown): h is StoreHint => object(h) && isText((h as StoreHi
 function isScreen(s: unknown): s is StoreScreen {
   if (!object(s)) return false;
   const v = s as Partial<StoreScreen>;
-  return isText(v.titleKey) && isText(v.title) && isText(v.textKey) && isText(v.text) && Array.isArray(v.buttons) && v.buttons.every(isButton) && (v.hint === null || isHint(v.hint));
+  return isText(v.titleKey) && isText(v.title) && isText(v.textKey) && isText(v.text) && Array.isArray(v.lines) && v.lines.every(isHint) && Array.isArray(v.buttons) && v.buttons.every(isButton) && (v.hint === null || isHint(v.hint));
 }
 
 /** The refusal `e` carries, when it is `storage_refused` with a whole screen; a malformed one is `null`. */

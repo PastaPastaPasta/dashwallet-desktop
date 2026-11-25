@@ -110,6 +110,18 @@ const SAMPLES: Samples = {
         title: "Dash Wallet can't open this wallet data safely",
         textKey: "storeUpgrade.refused.wayOut.previous",
         text: "This version of Dash Wallet can't safely open the wallet data in /data/testnet: it holds contact data that this version can't read yet. Dash Wallet didn't change anything in it. Keep /data/testnet as it is: it may hold the only record of recent payments, and support may need it. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+        lines: [
+          { key: "storeUpgrade.refused.intro", text: "This version of Dash Wallet can't safely open the wallet data in /data/testnet" },
+          { key: "storeUpgrade.refused.detail.contactsTable", text: "it holds contact data that this version can't read yet." },
+          {
+            key: "storeUpgrade.refused.unchanged",
+            text: "Dash Wallet didn't change anything in it. Keep /data/testnet as it is: it may hold the only record of recent payments, and support may need it.",
+          },
+          {
+            key: "storeUpgrade.refused.wayOut.previous",
+            text: "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+          },
+        ],
         buttons: [{ key: "storeUpgrade.refused.quit", label: "Quit", destructive: false, defaultFocus: false }],
         hint: null,
       },
@@ -179,7 +191,9 @@ type WayOut = "previous" | "support" | "restore";
  * hint with Report a problem. Its text key is its way out's. */
 const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: WayOut): StoreRefusedData => {
   const line = (key: CopyKey) => STORE_COPY[key];
-  const text = `${line("storeUpgrade.refused.intro")}: ${line(`storeUpgrade.refused.detail.${detail}`)} ${line("storeUpgrade.refused.unchanged")} ${line(`storeUpgrade.refused.wayOut.${wayOut}`)}`;
+  const keys = ["storeUpgrade.refused.intro", `storeUpgrade.refused.detail.${detail}`, "storeUpgrade.refused.unchanged", `storeUpgrade.refused.wayOut.${wayOut}`] as const;
+  const lines = keys.map((key) => ({ key, text: line(key).replaceAll("{folder}", folder) }));
+  const text = `${line(keys[0])}: ${keys.slice(1).map(line).join(" ")}`;
   const reports = wayOut !== "previous";
   return {
     kind: "storeRefused",
@@ -190,6 +204,7 @@ const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: Wa
       title: line("storeUpgrade.refused.title"),
       textKey: `storeUpgrade.refused.wayOut.${wayOut}`,
       text: text.replaceAll("{folder}", folder),
+      lines,
       buttons: [
         ...(wayOut === "restore" ? [button("storeUpgrade.refused.restore")] : []),
         ...(reports ? [button("storeUpgrade.refused.report")] : []),
