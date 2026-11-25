@@ -852,3 +852,69 @@ fn no_spend_of_this_build_is_fed_or_released() {
     assert_eq!(o.artifact_status(9), ("unresolved".into(), None));
     o.close();
 }
+
+/// Q110 110-3 (E4): the shielded store's open asks for the pass evidence,
+/// before any pass, while a drained spend may be released, and not
+/// otherwise.
+#[test]
+fn the_open_asks_for_evidence_only_while_a_drained_spend_may_be_released() {
+    use std::sync::atomic::Ordering::SeqCst;
+    for anchored in [false, true] {
+        let root = Root::new(&[unresolved(1, &[1])]).with_tree(TREE);
+        let o = root.open();
+        if anchored {
+            o.artifact(1, ANCHOR, "unresolved");
+        }
+        let c = o.bound();
+        assert_eq!(o.session.platform.passes_run.load(SeqCst), 0, "no pass ran");
+        assert_eq!(
+            o.session.platform.evidence_wanted.load(SeqCst),
+            anchored,
+            "anchored {anchored}"
+        );
+        drop(c);
+        o.close();
+    }
+}
+
+/// Q110 110-3 (E3): a pass's drained spends settle only while no drain of
+/// the passes (a lock's or the close's) began since the pass ended. One
+/// between the pass and its settle leaves the spend held, and the next
+/// pass releases it.
+#[test]
+fn a_drain_between_a_pass_and_its_settle_releases_nothing() {
+    let root = Root::new(&[unresolved(1, &[1, 2])]).with_tree(TREE);
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    o.artifact(1, ANCHOR, "unresolved");
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2, 3]);
+    let (s, m) = (Arc::clone(&o.session), o.session.manager().unwrap());
+    o.engine.block_on(async move {
+        let (reached_tx, reached) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *s.platform.settle_pause.lock().unwrap() = Some(pool::PassPause {
+            reached: reached_tx,
+            resume: resume_rx,
+        });
+        let pass = {
+            let s = Arc::clone(&s);
+            tokio::spawn(async move { pool::guarded_pass(&s, &m, true).await })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(60), reached)
+            .await
+            .expect("the pass reached its settle")
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(60), s.drain_shielded_pass())
+            .await
+            .expect("the drain ends while the pass waits to settle");
+        resume.send(()).unwrap();
+        assert!(pass.await.unwrap(), "the pass ran");
+    });
+    assert_eq!(o.release_row(1), None, "a drain since the pass holds it");
+    assert_eq!(o.holds(), vec![(0, nf(1)), (0, nf(2))]);
+    assert!(o.pass());
+    assert_eq!(o.release_row(1), Some((None, true)));
+    assert_eq!(o.holds(), vec![]);
+    drop(c);
+    o.close();
+}

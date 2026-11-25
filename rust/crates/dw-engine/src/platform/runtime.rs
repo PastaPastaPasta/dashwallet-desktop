@@ -161,6 +161,14 @@ pub(crate) struct PlatformRuntime {
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's pause of the next settle of drained spends, between the
+    /// pass lock's read and its write (`shielded_pool::pass`).
+    #[cfg(test)]
+    pub(crate) settle_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// The last evidence wish given to the coordinator
+    /// (`shielded_pool::want_drained_evidence`).
+    #[cfg(test)]
+    pub(crate) evidence_wanted: std::sync::atomic::AtomicBool,
     /// A test's proved note count for the periodic pass's check
     /// (`Some(None)`: the read fails); the network's while `None`.
     #[cfg(test)]
@@ -524,6 +532,10 @@ impl PlatformRuntime {
             shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            settle_pause: Mutex::new(None),
+            #[cfg(test)]
+            evidence_wanted: Default::default(),
             #[cfg(test)]
             notes_count: Mutex::new(None),
             #[cfg(test)]

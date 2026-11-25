@@ -444,12 +444,13 @@ impl DispatchJournal {
 }
 
 /// Whether the journal reads a note of `wallet`'s drained spend `st_hash`
-/// spent (its drained holds, or any artifact's notes), or an artifact of
-/// that transition executed.
+/// spent (its drained holds, or any artifact's notes), an artifact of that
+/// transition executed, or a drained hold of it that is not unresolved or
+/// unreadable: a release lifts every hold of the transition.
 fn flags_spent(conn: &rusqlite::Connection, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM shielded_drained_hold WHERE wallet = ?1 AND st_hash = ?2 \
-         AND spent = 1) OR EXISTS (SELECT 1 FROM shielded_artifact WHERE wallet = ?1 \
+         AND (spent = 1 OR origin NOT IN ('unresolved', 'unreadable'))) OR EXISTS (SELECT 1 FROM shielded_artifact WHERE wallet = ?1 \
          AND st_hash = ?2 AND status = 'executed') OR EXISTS (SELECT 1 FROM \
          shielded_artifact_note n JOIN shielded_drained_hold h ON n.wallet = h.wallet \
          AND n.nullifier = h.nullifier WHERE h.wallet = ?1 AND h.st_hash = ?2 AND n.spent = 1)",
@@ -771,10 +772,19 @@ mod tests {
             vec![
                 disposition(2, DrainedOutcome::Unresolved("purged".into()), &[10]),
                 other,
+                disposition(5, DrainedOutcome::Executed, &[13]),
+                disposition(5, DrainedOutcome::Unresolved("cancelled".into()), &[14]),
             ],
         );
         j.finish_shielded_drain("s").unwrap();
-        assert!(candidates(&j)[0].flagged);
+        let found = candidates(&j);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|c| c.flagged), "{found:?}");
+        assert!(
+            !j.release_drained_spend(&W, &[5; 32], 1, 100).unwrap(),
+            "a transition a drained executed disposition holds is never released"
+        );
+        assert_eq!(j.shielded_drained_holds(&W).unwrap().len(), 4);
     }
 
     /// The first recorded height stands; a release frees the spend's notes,

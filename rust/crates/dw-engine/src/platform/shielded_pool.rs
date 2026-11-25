@@ -115,7 +115,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
@@ -2582,6 +2582,8 @@ async fn want_drained_evidence(session: &NetworkSession, coordinator: &NetworkSh
         Err(_) => true,
     };
     coordinator.set_pass_evidence_wanted(wanted);
+    #[cfg(test)]
+    (session.platform.evidence_wanted).store(wanted, Ordering::SeqCst);
 }
 
 /// Before a pass: asks it for its evidence ([`want_drained_evidence`]),
@@ -2749,6 +2751,7 @@ fn refused(reason: impl Into<String>) -> DispatchRefused {
 pub(crate) struct HookFence {
     closing: AtomicBool,
     draining: AtomicUsize,
+    drains: AtomicU64,
 }
 
 impl HookFence {
@@ -2764,6 +2767,11 @@ impl HookFence {
         } else {
             None
         }
+    }
+
+    /// How many drains of the shielded passes have begun.
+    pub(crate) fn drains(&self) -> u64 {
+        self.drains.load(Ordering::SeqCst)
     }
 }
 
@@ -3999,6 +4007,7 @@ pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 /// The dispatch hook refuses meanwhile ([`HookFence`]).
 pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>, fence: &HookFence) {
     fence.draining.fetch_add(1, Ordering::SeqCst);
+    fence.drains.fetch_add(1, Ordering::SeqCst);
     let _draining = Draining(&fence.draining);
     // One acquire, kept across the log: its place in the lock's queue too.
     let write = passes.write();
@@ -4190,11 +4199,28 @@ async fn pass(
         }
     }
     if let Some(evidence) = &summary.evidence {
-        // Settled with no pass running (Q110 110-3, E3).
+        // Settled with no pass running (Q110 110-3, E3), and only while no
+        // lock or close has drained the passes since this one: a drain
+        // that took the write first has ended this pass for its caller.
+        let fence = &session.platform.hook_fence;
+        let drains = fence.drains();
+        let open = fence.refusal().is_none();
         drop(_pass);
+        #[cfg(test)]
+        {
+            let pause = (session.platform.settle_pause.lock())
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(pause) = pause {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.await;
+            }
+        }
         let _passes = session.platform.shielded_passes.write().await;
-        if let Err(e) = release_drained_spends(session, &coordinator, evidence).await {
-            tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
+        if open && runs(session) && fence.refusal().is_none() && fence.drains() == drains {
+            if let Err(e) = release_drained_spends(session, &coordinator, evidence).await {
+                tracing::warn!(error = %e, "the drained shielded spends were not settled after the pass");
+            }
         }
     }
     true
