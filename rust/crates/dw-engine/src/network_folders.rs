@@ -6,10 +6,12 @@
 //! it. The refused folder is left as it is.
 //!
 //! A missing record means every network uses its default folder. A record
-//! that can't be read, doesn't parse, or names anything but a
-//! `<dir name>-recovered-<n>` folder fails closed: the network's folder is
-//! an error, never the default one. A write replaces the record atomically
-//! and durably.
+//! that can't be read, doesn't parse, names anything but a
+//! `<dir name>-recovered-<n>` folder, or names one that isn't there fails
+//! closed: the network's folder is an error, never the default one. So does
+//! a network whose default folder is another network's recorded one (a
+//! devnet named like a recovery folder). A write replaces the record
+//! atomically and durably, after the new folder is durable.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -68,7 +70,21 @@ fn read(root: &Path) -> Result<Folders, EngineError> {
 pub(crate) fn resolve(root: &Path, network: &DashNetwork) -> Result<PathBuf, EngineError> {
     let name = network.dir_name();
     let folders = read(root)?;
-    Ok(root.join(folders.get(&name).unwrap_or(&name)))
+    let Some(folder) = folders.get(&name) else {
+        if folders.values().any(|folder| *folder == name) {
+            return Err(damaged(format!("{name:?} is another network's folder")));
+        }
+        return Ok(root.join(name));
+    };
+    let path = root.join(folder);
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() => Ok(path),
+        Ok(_) => Err(damaged(format!("{folder:?} isn't a folder"))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(damaged(format!("{folder:?} is missing")))
+        }
+        Err(e) => Err(damaged(e)),
+    }
 }
 
 /// Every redirected network's dir name with its folder's name.
@@ -108,7 +124,9 @@ pub(crate) fn recover(root: &Path, network: &DashNetwork) -> Result<PathBuf, Eng
         )));
     };
     folders.insert(name, folder);
-    let written = write_restored_mark(&path, &left).and_then(|()| write(root, &folders));
+    let written = write_restored_mark(&path, &left)
+        .and_then(|()| sync_dir(root))
+        .and_then(|()| write(root, &folders));
     if let Err(e) = written {
         let backups = path.join(dw_store_upgrade::UPGRADE_BACKUPS_DIR);
         let _ = std::fs::remove_file(backups.join(RESTORED_MARK));
@@ -116,7 +134,18 @@ pub(crate) fn recover(root: &Path, network: &DashNetwork) -> Result<PathBuf, Eng
         let _ = std::fs::remove_dir(&path);
         return Err(e);
     }
+    if let Err(e) = sync_dir(root) {
+        tracing::warn!(error = %e, "network-folders.json renamed but its folder not synced");
+    }
     Ok(path)
+}
+
+fn sync_dir(dir: &Path) -> Result<(), EngineError> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// dw-store-upgrade's money-gate mark (`RESTORED_MARK`), in its
@@ -170,8 +199,8 @@ thread_local! {
 }
 
 /// Replaces the record: a temporary file of this write's own in `root`,
-/// synced, renamed over the record, and the directory synced. A failed write
-/// leaves the record as it was and no temporary file.
+/// synced and renamed over the record; the caller syncs `root`. A failed
+/// write leaves the record as it was and no temporary file.
 fn write(root: &Path, folders: &Folders) -> Result<(), EngineError> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -204,10 +233,7 @@ fn write(root: &Path, folders: &Folders) -> Result<(), EngineError> {
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    written?;
-    #[cfg(unix)]
-    std::fs::File::open(root)?.sync_all()?;
-    Ok(())
+    written.map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -331,6 +357,37 @@ mod tests {
             );
         }
         assert_eq!(names(root.path()), [NETWORK_FOLDERS_FILE]);
+    }
+
+    #[test]
+    fn a_recorded_folder_that_is_gone_fails_closed() {
+        let root = dw_testutil::private_tempdir();
+        let dir = recover(root.path(), &DashNetwork::Testnet).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let e = resolve(root.path(), &DashNetwork::Testnet).unwrap_err();
+        assert!(matches!(e, EngineError::Storage(_)), "{e:?}");
+        std::fs::write(&dir, b"not a folder").unwrap();
+        let e = resolve(root.path(), &DashNetwork::Testnet).unwrap_err();
+        assert!(matches!(e, EngineError::Storage(_)), "{e:?}");
+        assert_eq!(
+            resolve(root.path(), &DashNetwork::Mainnet).unwrap(),
+            root.path().join("mainnet")
+        );
+    }
+
+    #[test]
+    fn a_devnet_named_like_a_recovery_folder_fails_closed() {
+        let root = dw_testutil::private_tempdir();
+        let a = DashNetwork::Devnet { name: "a".into() };
+        let dir = recover(root.path(), &a).unwrap();
+        assert_eq!(dir, root.path().join("devnet-a-recovered-1"));
+        let twin = DashNetwork::Devnet {
+            name: "a-recovered-1".into(),
+        };
+        assert_eq!(twin.dir_name(), "devnet-a-recovered-1");
+        let e = resolve(root.path(), &twin).unwrap_err();
+        assert!(matches!(e, EngineError::Storage(_)), "{e:?}");
+        assert_eq!(resolve(root.path(), &a).unwrap(), dir);
     }
 
     #[test]
