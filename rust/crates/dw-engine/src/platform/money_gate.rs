@@ -353,11 +353,12 @@ fn names_another_party(m: &ManagedIdentity, contact: &Identifier) -> bool {
 /// rebuilds it at the reservation's drain; after it nothing does, as a
 /// drain may leave the op queued and derive from the old account.
 ///
-/// No stamp is staleness too, in every mode (D28): the store keeps the
-/// stamp, so an account is unstamped only before its first rebuild after
-/// the upgrade, after a crash between its re-key and its rebuild (the old
-/// account), or when its stamp's write was lost; the next DashPay pass
-/// rebuilds and stamps each.
+/// No stamp is staleness too, in every mode (D28). The store keeps no
+/// stamp: every account opens unstamped after a restart, so a contact
+/// payment is refused until the first DashPay pass after the start
+/// rebuilds and stamps it (about 2 s on a normal network). An account is
+/// also unstamped after a crash between its re-key and its rebuild (the
+/// old account); the next pass rebuilds and stamps it too.
 fn paying_account_stale(m: &ManagedIdentity, contact: &Identifier, reserved: bool) -> bool {
     let dp = m.dashpay();
     let Some(c) = dp.established_contacts().get(contact) else {
