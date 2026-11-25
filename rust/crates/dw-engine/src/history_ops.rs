@@ -410,6 +410,8 @@ struct LoadedHistory {
     abandoned: Vec<(Txid, dashcore::Transaction)>,
     /// [`crate::tx_actions::load_drop_inputs`].
     drop_inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+    /// [`crate::rescan_hold::load_for_open`].
+    rescan_holds: BTreeMap<OutPoint, crate::rescan_hold::RescanHold>,
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
     /// Every stored record was listed and read, and so were the abandoned
@@ -512,6 +514,14 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let drop_inputs = crate::tx_actions::load_drop_inputs(&appdb, wallet, network);
+                    let (rescan_holds, holds_read) =
+                        match crate::rescan_hold::load_for_open(&appdb, wallet) {
+                            Ok(holds) => (holds, true),
+                            Err(e) => {
+                                tracing::warn!(%wallet, error = %e, "could not read the coins waiting for a rescan");
+                                (BTreeMap::new(), false)
+                            }
+                        };
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
                     let (dropped_here, dropped_read) = match fail_dropped {
                         true => (crate::tx_actions::Dead::new(), false),
@@ -546,8 +556,10 @@ impl NetworkSession {
                         seen,
                         abandoned,
                         drop_inputs,
+                        rescan_holds,
                         sent,
                         complete: clean
+                            && holds_read
                             && dropped_read
                             && !persisted.locks_unread
                             && claims_read
@@ -597,6 +609,7 @@ impl NetworkSession {
             seen,
             abandoned,
             drop_inputs,
+            rescan_holds,
             sent,
             complete,
             claims,
@@ -646,6 +659,9 @@ impl NetworkSession {
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
                 h.fill_dropped_inputs(&drop_inputs);
+                for (coin, hold) in rescan_holds {
+                    h.rescan_holds.entry(coin).or_insert(hold);
+                }
                 for (t, cause) in &dropped {
                     (h.drops).insert(*t, crate::history::DropInfo::new(*cause));
                 }
@@ -1078,7 +1094,10 @@ impl NetworkSession {
         }
         let core = &info.core_wallet;
         let funding = core.accounts.all_funding_accounts();
-        let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
+        // A coin given back that waits for its rescan is not back yet.
+        let held = self.hub.rescan_held(wallet);
+        let unspent =
+            |o: &OutPoint| !held.contains(o) && funding.iter().any(|a| a.utxos.contains_key(o));
         let spent = core.observed_spent_outpoints();
         let block_spent = |o: &OutPoint| spent.contains_key(o);
         let state = self.hub.wallet_state(wallet);

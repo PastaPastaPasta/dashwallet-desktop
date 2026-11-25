@@ -929,6 +929,177 @@ fn a_beaten_payment_without_change_keeps_its_other_coin_out_until_it_is_abandone
     assert!(!spendable(&engine, &session, id, b), "B is not");
 }
 
+/// The coins the engine lists for coin control, locked ones too.
+fn listed_coins(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> BTreeSet<OutPoint> {
+    let filter = crate::CoinFilter {
+        include_locked: true,
+        fully_mixed_only: false,
+        min_confirmations: None,
+    };
+    (engine.block_on(session.utxos(id, filter)).unwrap().into_iter())
+        .map(|c| c.outpoint)
+        .collect()
+}
+
+/// The scan reaches `height`, whose block holds `txs`, with the block's
+/// ChainLock applied in the same op: key-wallet forgets as final what the
+/// block spent before any reconcile reads it.
+fn mined_under_its_chainlock(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    height: u32,
+    txs: Vec<Transaction>,
+) {
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            let block = super::block_with(txs);
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: height,
+                block_hash: block.block_hash(),
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                height,
+                &BTreeSet::from([id.0]),
+            )
+            .await;
+            wm.update_wallet_synced_height(&id.0, height);
+        })
+    });
+}
+
+/// A payment P of A and B with change, restored at load, beaten on A by
+/// another device's spend W paying only someone else, mined at `TIP + 1`
+/// under its ChainLock in the block's own op: key-wallet forgot W's spend
+/// before any reconcile ran, so nothing drops P. Returns A, B, the funding,
+/// P and W.
+#[allow(clippy::type_complexity)]
+fn beaten_after_its_winners_spend_was_forgotten() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    (OutPoint, OutPoint),
+    Transaction,
+    Transaction,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    let session = reopen(&engine, session);
+    let w = foreign_winner(&engine, &session, id, &paid, &[a]);
+    mined_under_its_chainlock(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    reconciled(&engine, &session, id);
+    (dir, engine, session, id, (a, b), paid, p, w)
+}
+
+/// None of `coins` is listed or offered, and the balance is `total`.
+fn kept_out(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    coins: &[(OutPoint, &str)],
+    total: u64,
+    state: &str,
+) {
+    let listed = listed_coins(engine, session, id);
+    for (coin, name) in coins {
+        assert!(!listed.contains(coin), "{state}: {name} is listed: {listed:?}");
+        assert!(
+            !spendable(engine, session, id, *coin),
+            "{state}: {name} is offered"
+        );
+    }
+    let b = balances(session, id);
+    assert_eq!(b.total, total, "{state}: the total counts a held coin: {b:?}");
+    assert_eq!(
+        b.confirmed + b.unconfirmed,
+        total,
+        "{state}: the spendable buckets count a held coin: {b:?}"
+    );
+}
+
+/// #818 (Q100 E2): abandoning P after key-wallet forgot W's final spend of
+/// A takes P's change at once and gives back A and B only through the
+/// abandon's rescan. A is never listed, counted or offered while the rescan
+/// runs, also after a restart in its middle, which resumes it; the rescan
+/// records W, and B comes back once it is back, with no restart.
+#[test]
+fn abandoning_a_payment_whose_winners_spend_was_forgotten_holds_its_coins_until_the_rescan() {
+    let (_dir, engine, session, id, (a, b), paid, p, w) =
+        beaten_after_its_winners_spend_was_forgotten();
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    let all = COINS as u64 * COIN;
+    let held = [(a, "A"), (b, "B"), (change, "the change")];
+
+    abandon(&engine, &session, id, p.txid());
+    assert!(
+        synced(&engine, &session, id) < FUNDED_AT,
+        "rewound below the coins' block"
+    );
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "abandoned");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+
+    let session = reopen(&engine, session);
+    assert!(synced(&engine, &session, id) < TIP + 1, "the rescan resumes");
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "restarted in the rescan");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the resumed rescan at the coins' block");
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+
+    assert!(in_history(&session, id, w.txid()), "the rescan records W");
+    kept_out(&engine, &session, id, &held[..1], all - COIN, "the rescan is back");
+    kept_out(&engine, &session, id, &held[2..], all - COIN, "the rescan is back");
+    assert!(listed_coins(&engine, &session, id).contains(&b), "B is back");
+    assert!(spendable(&engine, &session, id, b), "B is offered");
+}
+
+/// #818 (Q100 E2), SUSPECT-1: as above, and then another device's spend
+/// of B is mined at `TIP + 2`. The drop of P it starts frees A, which no
+/// evidence holds spent any more: A is not listed, counted or offered
+/// before the drop's rescan passes W's block at `TIP + 1`, which spends it.
+#[test]
+fn a_drop_after_a_forgotten_spend_holds_the_coin_until_its_rescan_passes_the_spend() {
+    let (_dir, engine, session, id, (a, b), paid, p, w) =
+        beaten_after_its_winners_spend_was_forgotten();
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    let all = COINS as u64 * COIN;
+    let held = [(a, "A"), (b, "B"), (change, "the change")];
+    let rival = foreign_winner(&engine, &session, id, &paid, &[b]);
+    mined(&engine, &session, id, TIP + 2, vec![rival.clone()]);
+    reconciled(&engine, &session, id);
+    assert!(!live_in_history(&session, id, p.txid()), "the drop took P");
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "dropped");
+
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan at the coins' block");
+    let session = reopen(&engine, session);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "restarted in the rescan");
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![w.clone()]);
+    assert!(in_history(&session, id, w.txid()), "the rescan records W");
+    mined(&engine, &session, id, TIP + 2, vec![rival]);
+    kept_out(&engine, &session, id, &held, all - 2 * COIN, "the rescan is back");
+}
+
 /// The mark of a payment this app sent, mined in a session that ended
 /// before its ChainLock, goes at a load whose header chain holds its block
 /// and the block of the wallet's ChainLock. Before that it stays, at a load

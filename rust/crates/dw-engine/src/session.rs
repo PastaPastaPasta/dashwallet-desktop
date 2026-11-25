@@ -909,6 +909,8 @@ impl NetworkSession {
             ..WalletState::default()
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
+        drop(wm);
+        self.hub.settle_rescan_holds(id);
     }
 
     pub fn network(&self) -> &DashNetwork {

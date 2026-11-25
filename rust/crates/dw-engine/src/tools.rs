@@ -513,18 +513,18 @@ impl NetworkSession {
     }
 
     /// [`Self::record_rewind`], for a caller that holds the manager's
-    /// write lock and `wallet`'s info `info` under it.
+    /// write lock and `wallet`'s info `info` under it. Returns the
+    /// replay's target.
     pub(crate) async fn record_rewind_locked(
         &self,
         wallet: WalletId,
         info: &platform_wallet::PlatformWalletInfo,
         checkpoint: u32,
-    ) -> Result<(), EngineError> {
+    ) -> Result<u32, EngineError> {
         let replay = self.live()?.replay;
         self.hub.detect_truncation(wallet, &info.core_wallet);
         self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
             .await
-            .map(drop)
     }
 
     /// Stores the record of a rewind of `wallet`, whose info `info` the

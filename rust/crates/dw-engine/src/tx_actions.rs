@@ -33,6 +33,7 @@ use crate::history::{
     WalletHistory, Winner, amounts, beaten_unrecorded, chain_locked, chainlock_beaten, depth_of,
     filtered, orphaned_unmined, records_of, rival_heights, status_of,
 };
+use crate::rescan_hold::{RescanHold, hold_keys, hold_marks};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 use key_wallet::transaction_checking::TransactionContext;
@@ -1921,10 +1922,33 @@ impl NetworkSession {
             });
             let checkpoint =
                 self.abandon_rewind(wallet, &planned, &links, &still_spent, &info.core_wallet);
+            let mut target = None;
             if let Some(checkpoint) = checkpoint {
-                self.record_rewind_locked(wallet, info, checkpoint).await?;
+                target = Some(self.record_rewind_locked(wallet, info, checkpoint).await?);
                 *recorded = (*recorded).into_iter().chain([checkpoint]).min();
             }
+            // Read before key-wallet abandons anything (which leaves its
+            // observed spends as they are), so the coins' holds go with the
+            // marks.
+            let mut released = overridden.clone().unwrap_or_else(|| {
+                self.released(
+                    wallet,
+                    &planned,
+                    &links,
+                    &copies,
+                    info.core_wallet.observed_spent_outpoints(),
+                )
+            });
+            released.retain(|o| !still_spent.contains(o));
+            // No processed block's spend and no stored transaction is
+            // evidence the coins are unspent: each waits for the rewind's
+            // rescan (#818).
+            let holds: BTreeMap<OutPoint, RescanHold> = match (checkpoint, target) {
+                (Some(c), Some(t)) => (released.iter())
+                    .map(|o| (*o, RescanHold::new(c, t)))
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
             let txs: Vec<(Txid, Transaction)> = (planned.iter())
                 .filter_map(|t| {
                     let tx = (self.hub.history.get(&wallet, t).map(|e| e.tx))
@@ -1964,22 +1988,20 @@ impl NetworkSession {
                     }
                 }
             }
+            marks.extend(hold_marks(&holds));
             self.write_abandoned_marks(wallet, marks).await?;
+            self.hub.history.with_wallet(wallet, |h| {
+                h.rescan_holds.extend(holds.iter().map(|(o, r)| (*o, *r)));
+            });
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
-            if !abandoned.is_empty() {
+            if abandoned.is_empty() {
+                self.hub.history.with_wallet(wallet, |h| {
+                    h.rescan_holds.retain(|o, _| !holds.contains_key(o));
+                });
+            } else {
                 info.core_wallet.update_balance();
             }
-            let mut released = overridden.clone().unwrap_or_else(|| {
-                self.released(
-                    wallet,
-                    &abandoned,
-                    &links,
-                    &copies,
-                    info.core_wallet.observed_spent_outpoints(),
-                )
-            });
-            debug_assert_eq!(abandoned, planned);
-            released.retain(|o| !still_spent.contains(o));
+            debug_assert!(abandoned.is_empty() || abandoned == planned);
             (abandoned, released, overridden.is_some(), txs, links)
         };
         #[cfg(test)]
@@ -2254,6 +2276,7 @@ impl NetworkSession {
             return Ok(BTreeSet::new());
         };
         let mut checkpoint = None;
+        let mut rescan_holds = BTreeMap::new();
         if !plan.freed.is_empty() {
             checkpoint = self.abandon_rewind(
                 wallet,
@@ -2263,7 +2286,12 @@ impl NetworkSession {
                 &info.core_wallet,
             );
             if let Some(checkpoint) = checkpoint {
-                self.record_rewind_locked(wallet, info, checkpoint).await?;
+                let target = self.record_rewind_locked(wallet, info, checkpoint).await?;
+                // What the drop frees no processed block spent and no stored
+                // transaction spends: it waits for the rewind's rescan (#818).
+                rescan_holds = (plan.freed.iter())
+                    .map(|o| (*o, RescanHold::new(checkpoint, target)))
+                    .collect();
             }
         }
         let persister = Arc::clone(&self.live()?.persister);
@@ -2288,8 +2316,12 @@ impl NetworkSession {
                     (format!("{DROP_HOLDS_PREFIX}{t}"), Some(holds(tx))),
                 ]
             })
+            .chain(hold_marks(&rescan_holds))
             .collect();
         self.write_abandoned_marks(wallet, marks).await?;
+        self.hub.history.with_wallet(wallet, |h| {
+            h.rescan_holds.extend(rescan_holds.iter().map(|(o, r)| (*o, *r)));
+        });
         let mut dead = plan.dead.iter().copied();
         let root = dead.next().expect("a plan drops something");
         let rest: Vec<Txid> = dead.collect();
@@ -2298,6 +2330,9 @@ impl NetworkSession {
         if abandoned.is_empty() {
             // key-wallet refused (it settled the root meanwhile): the marks
             // go, so no hold outlives a drop that did not happen.
+            self.hub.history.with_wallet(wallet, |h| {
+                h.rescan_holds.retain(|o, _| !rescan_holds.contains_key(o));
+            });
             let keys: Vec<String> = (plan.copies.iter())
                 .flat_map(|(t, _)| {
                     [
@@ -2305,6 +2340,7 @@ impl NetworkSession {
                         format!("{DROP_HOLDS_PREFIX}{t}"),
                     ]
                 })
+                .chain(hold_keys(rescan_holds.keys()))
                 .collect();
             let scope = wallet.to_string();
             self.appdb_op(move |db| {
@@ -2493,6 +2529,14 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         if let Some(checkpoint) = checkpoint {
             self.rewind_recorded(manager, wallet, checkpoint).await?;
+            // The scan is at the checkpoint or below: the end of its replay
+            // has reprocessed each held coin's funding block since the coin
+            // came back.
+            self.hub.history.with_wallet(wallet, |h| {
+                for hold in h.rescan_holds.values_mut() {
+                    hold.armed |= hold.checkpoint >= checkpoint;
+                }
+            });
         }
         self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
@@ -3393,6 +3437,7 @@ impl NetworkSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rescan_hold::RESCAN_HOLD_PREFIX;
 
     /// The wallet-scope marks are read by prefix (the drops' holds, the
     /// claim rule's dropped records, the claims swept, the abandoned and
@@ -3408,6 +3453,8 @@ mod tests {
             SENT_PREFIX,
             SENT_TX_PREFIX,
             SENT_IN_PREFIX,
+            RESCAN_HOLD_PREFIX,
+            DROP_SEEN_PREFIX,
         ];
         for a in prefixes {
             for b in prefixes {

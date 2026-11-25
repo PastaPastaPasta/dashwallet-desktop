@@ -1449,6 +1449,41 @@ impl SessionHub {
         if !txids.is_empty() {
             self.pump.mark_history(id, Some(&txids));
         }
+        self.settle_rescan_holds(id);
+    }
+
+    /// The coins of wallet `id` given back that still wait for their
+    /// rescan (`crate::rescan_hold`): neither counted nor offered.
+    pub(crate) fn rescan_held(&self, id: &WalletId) -> BTreeSet<dashcore::OutPoint> {
+        let holds = self.history.read_wallet(id, |h| h.rescan_holds.clone());
+        if holds.is_empty() {
+            return BTreeSet::new();
+        }
+        let state = self.wallet_state(id);
+        let rescanning = (self.rescan().as_ref()).is_some_and(|r| r.replaying(id));
+        crate::rescan_hold::held(&holds, state.as_ref(), rescanning)
+    }
+
+    /// Lets go of wallet `id`'s holds whose rescan is back, and reads its
+    /// balances again when one went. Their marks go at the next open that
+    /// finds no replay record (`crate::rescan_hold`).
+    pub(crate) fn settle_rescan_holds(&self, id: WalletId) {
+        if self.history.read_wallet(&id, |h| h.rescan_holds.is_empty()) {
+            return;
+        }
+        let held = self.rescan_held(&id);
+        let released = self.history.with_wallet(id, |h| {
+            let before = h.rescan_holds.len();
+            h.rescan_holds.retain(|o, _| held.contains(o));
+            before != h.rescan_holds.len()
+        });
+        if released {
+            tracing::info!(wallet = %id, "coins given back are released: their rescan is back");
+            if let Some(reread) = self.balance_reread.get() {
+                reread(id);
+            }
+            self.pump.mark_balances(id);
+        }
     }
 
     /// Advances the wallet's scan heights. Returns whether the wallet

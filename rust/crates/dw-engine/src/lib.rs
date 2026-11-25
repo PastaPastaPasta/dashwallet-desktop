@@ -48,6 +48,7 @@ mod pump;
 pub mod rates;
 mod receive;
 mod replay_record;
+mod rescan_hold;
 mod restore;
 #[cfg(all(test, unix))]
 mod restore_order_tests;
