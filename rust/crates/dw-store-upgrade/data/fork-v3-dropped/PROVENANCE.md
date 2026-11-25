@@ -48,6 +48,16 @@ T3 (a) and (d). Tests read copies only (`tests::v3_dropped`).
   re-applies fork V2 and V3 and runs `drop_unauthorized_pending_spends`. It
   then checks the three records, their lock blobs and released coins, and
   that the Strict load returns each released coin unspent.
+- Left out: the earlier generator also gave wallet B an owner-signed
+  control claim, one the drop keeps. Its coin must pay a script whose key
+  the generator holds, and no such script is in a real wallet's pool: with
+  the earlier helper those coins weren't the wallet's and didn't load. So
+  every claim here is unsigned and dropped. That an owner-signed spend
+  survives the upgrade is covered on the v0.3.0 fixture's own spend, beside
+  hand-built V3 rows:
+  `tests::v3::an_owner_signed_spend_survives_the_upgrade_beside_v3_rows`.
+  That the fork's drop keeps an owner-signed claim is the fork's own test,
+  not this crate's.
 - sha256 of `wallet.sqlite`:
   d132793137d4fd554245fbd709bf13986225f7f2289b8a99914f1700d335fec8
   (778240 bytes, no `-wal` or `-shm`; header journal mode WAL).
