@@ -1,6 +1,7 @@
 //! The shielded holds a network directory's stores keep on disk, read
 //! without the library and without writing: what "Restore earlier data"
-//! would replace (R-1).
+//! would replace (R-1), and what a removal with no shielded store open
+//! cannot ask the library about (#925).
 //!
 //! The same holds Close and the removal gate refuse on
 //! ([`shielded_pool::holds_unresolved`], [`shielded_pool::removal_hold`]),
@@ -84,6 +85,15 @@ fn read_restore_hold(network_dir: &Path) -> Result<Option<ShieldedHold>, String>
         }
     }
     Ok(held)
+}
+
+/// What the journal at `network_dir` holds of `wallet`'s shielded spends,
+/// read only; nothing with no journal.
+pub(crate) fn journal_holds(network_dir: &Path, wallet: WalletId) -> Result<JournalHolds, String> {
+    match open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
+        Some(db) => journal_holds_in(&db, Some(wallet)),
+        None => Ok(JournalHolds::default()),
+    }
 }
 
 /// `path` opened read only, or `None` when there is no such file. With no
