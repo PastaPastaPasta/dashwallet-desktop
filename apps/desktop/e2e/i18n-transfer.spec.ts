@@ -64,6 +64,7 @@ async function maxBelow(page: Page, route: "coreToShielded" | "coreToPlatform", 
   await openTransfer(page, route);
   await page.getByTestId("transfer-max").click();
   await expect(page.getByTestId("transfer-fee")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/form-problem/);
   if (figure) await expect(page.getByTestId("transfer-fee")).toContainText(/\p{Nd}/u);
   else await expect(page.getByTestId("transfer-fee")).not.toBeEmpty();
   await expect(page.getByTestId("transfer-amount")).toHaveValue("");

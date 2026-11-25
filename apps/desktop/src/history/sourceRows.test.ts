@@ -4,6 +4,7 @@ import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { filterExtra, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, SourceRowText, sourceRowTitle } from "./sourceRows";
+import { creditsToDuffs } from "../api/pending";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -217,6 +218,20 @@ describe("shielded activity rows", () => {
     expect(shieldedRow(shield("n", { createdAt: null })).timestamp).toBeNull();
   });
 
+  it("shows a refused spend whose funds stay held as one that may still go through, never as not accepted", () => {
+    const held = shieldedRow(shield("h", { kind: "withdrawal", direction: "out", credits: "10000000000", status: "pending", refusal: "held" }));
+    expect(held).toMatchObject({ txid: "shielded:withdrawal:h:mayland", status: { kind: "unconfirmed" } });
+    expect(isMayLandRow(held)).toBe(true);
+    expect(held.amount).toBe(-creditsToDuffs("10000000000"));
+    // A held refusal is never "not accepted", whatever status reaches the renderer.
+    expect(shieldedRow(shield("h2", { status: "failed", refusal: "held" })).status.kind).toBe("unconfirmed");
+    const released = shieldedRow(shield("r", { kind: "sent", direction: "out", status: "failed", refusal: "released" }));
+    expect([released.txid, released.status.kind, isMayLandRow(released)]).toEqual(["shielded:sent:r", "notAccepted", false]);
+    // Its details find the record and keep the state.
+    const found = findSourceRecord("shielded:withdrawal:h:mayland", [], [shield("h", { kind: "withdrawal", direction: "out", status: "pending", refusal: "held" })]);
+    expect(found?.row.txid).toBe("shielded:withdrawal:h:mayland");
+  });
+
   it("shows a held payment as one that may still go through, never as not accepted", () => {
     const held = heldActivities({ heldSpends: [{ activityId: "h", transition: "00", credits: "1" }] } as ShieldedStatus);
     const sent = { kind: "sent", direction: "out", credits: "29980000000" } as const;
@@ -230,6 +245,12 @@ describe("shielded activity rows", () => {
     expect(isMayLandRow(shieldedRow(shield("h", { ...sent, status: "confirmed" }), held))).toBe(false);
     expect(shieldedRow(shield("x", { ...sent, status: "failed" }), held).status.kind).toBe("notAccepted");
     expect(heldActivities(null).size).toBe(0);
+    // The engine's refusal outranks the status's list, which may be older: a release is final, and a
+    // held refusal stays held whatever the list says.
+    const released = shieldedRow(shield("h", { ...sent, status: "failed", refusal: "released" }), held);
+    expect([released.txid, released.status.kind, isMayLandRow(released)]).toEqual(["shielded:sent:h", "notAccepted", false]);
+    const stillHeld = shieldedRow(shield("y", { ...sent, status: "pending", refusal: "held" }), held);
+    expect([stillHeld.status.kind, isMayLandRow(stillHeld)]).toEqual(["unconfirmed", true]);
     // Its details find the record and keep the state.
     const found = findSourceRecord("shielded:sent:h:mayland", [], [shield("h", { ...sent, status: "unknown" })], held);
     expect(found?.row.txid).toBe("shielded:sent:h:mayland");
@@ -287,6 +308,15 @@ describe("findSourceRecord", () => {
     expect(findSourceRecord("platform:moveToCore:pm-1:mayland", platform, shielded)?.record).toBe(platform[1]);
     const replaced = [act("pm-1", { kind: "moveToCore", state: "replaced", address: null })];
     expect(findSourceRecord("platform:moveToCore:pm-1:mayland", replaced, shielded)?.record).toBe(replaced[0]);
+  });
+
+  it("keeps a refused Shielded spend whose hold ended while its details are open", () => {
+    const held = [shield("sh-3", { kind: "sent", direction: "out", status: "pending", refusal: "held" })];
+    const txid = shieldedRow(held[0]).txid;
+    expect(txid).toBe("shielded:sent:sh-3:mayland");
+    expect(findSourceRecord(txid, platform, held)?.record).toBe(held[0]);
+    const released = [{ ...held[0], status: "failed" as const, refusal: "released" as const }];
+    expect(findSourceRecord(txid, platform, released)?.record).toBe(released[0]);
   });
 
   it("finds nothing for a Core txid, another source, or a record the read no longer has", () => {
