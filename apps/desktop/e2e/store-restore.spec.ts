@@ -95,6 +95,17 @@ test.describe("the foreign lineage", () => {
       expect((await world(page)).restoreCalls).toEqual(["keepCurrentFiles"]);
       expect(errors).toEqual([]);
     });
+
+  test("Quit quits through its own key, keeping nothing", async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light", "&openRefused=restoreForeign"));
+    await expect(page.getByTestId("store-refused-button-storeUpgrade.cantOpen.quit")).toHaveCount(0);
+    const quit = page.getByTestId("store-refused-button-storeUpgrade.restore.foreign.quit");
+    await expect(quit).toHaveText("Quit");
+    await quit.click();
+    await expect.poll(async () => (await world(page)).appExits).toEqual(["quit"]);
+    expect((await world(page)).restoreCalls).toBeUndefined();
+    await expectNoWallet(page);
+  });
 });
 
 test.describe("Restore earlier data", () => {
