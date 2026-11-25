@@ -66,6 +66,7 @@ dw-psbt = { workspace = true }
 dw-units = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
+getrandom = "=0.2.17"
 hex = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

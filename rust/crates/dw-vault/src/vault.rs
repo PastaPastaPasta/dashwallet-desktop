@@ -1937,7 +1937,7 @@ impl Vault {
         )
     }
 
-    /// Redeems a `PlatformOp` grant for `wallet` only while the vault holds
+    /// Redeems a `PlatformOp` (or `AppConnect`) grant for `wallet` only while the vault holds
     /// one of `candidates` (identity key paths and on-chain key data, as
     /// [`Self::grant_identity_key_matches`] asks): the check and the
     /// redemption are one section under the guard of the vault's record
@@ -1959,12 +1959,11 @@ impl Vault {
             Err(VaultError::NoSecret) => return Ok(None),
             signer => signer?,
         };
+        let (kind, _) = self.identity_grant(grant_id, wallet)?;
         for (path, key_data) in candidates {
             match Self::key_held(&signer, path, key_data) {
                 Ok(true) => {
-                    return self
-                        .redeem_grant(grant_id, GrantKind::PlatformOp, Some(wallet))
-                        .map(Some);
+                    return self.redeem_grant(grant_id, kind, Some(wallet)).map(Some);
                 }
                 Ok(false) | Err(VaultError::NoSecret) => {}
                 Err(e) => return Err(e),
@@ -1973,7 +1972,32 @@ impl Vault {
         Ok(None)
     }
 
-    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` grant,
+    /// The kind and credit cap of a grant that issues a `PlatformIdentity`
+    /// signer: a `PlatformOp` or an `AppConnect` grant of `wallet`.
+    fn identity_grant(
+        &self,
+        grant_id: &str,
+        wallet: &WalletId,
+    ) -> Result<(GrantKind, u64), VaultError> {
+        let purpose = match self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet)) {
+            Err(VaultError::GrantPurposeMismatch) => {
+                self.grant_purpose(grant_id, GrantKind::AppConnect, Some(wallet))?
+            }
+            purpose => purpose?,
+        };
+        match purpose {
+            GrantPurpose::PlatformOp { max_credits, .. } => {
+                Ok((GrantKind::PlatformOp, max_credits))
+            }
+            GrantPurpose::AppConnect { max_credits, .. } => {
+                Ok((GrantKind::AppConnect, max_credits))
+            }
+            _ => Err(VaultError::GrantPurposeMismatch),
+        }
+    }
+
+    /// A `PlatformIdentity` signer under an unredeemed `PlatformOp` or
+    /// `AppConnect` grant,
     /// for the yes-or-no questions above (no token is issued, so it cannot
     /// reach a lease).
     fn grant_identity_signer(
@@ -1981,11 +2005,7 @@ impl Vault {
         grant_id: &str,
         wallet: &WalletId,
     ) -> Result<VaultSigner, VaultError> {
-        let GrantPurpose::PlatformOp { max_credits, .. } =
-            self.grant_purpose(grant_id, GrantKind::PlatformOp, Some(wallet))?
-        else {
-            return Err(VaultError::GrantPurposeMismatch);
-        };
+        let (kind, max_credits) = self.identity_grant(grant_id, wallet)?;
         if max_credits == 0 {
             return Err(VaultError::GrantPurposeMismatch);
         }
@@ -1993,7 +2013,7 @@ impl Vault {
             Self::valid_grant(
                 inner,
                 grant_id,
-                GrantKind::PlatformOp,
+                kind,
                 Some(wallet),
                 self.now(),
                 self.clock(),
@@ -2765,24 +2785,31 @@ impl Vault {
                 | SignerScope::DashPayCrypto
                 | SignerScope::PlatformFunding { .. }
                 | SignerScope::PlatformAddress
+                | SignerScope::AppConnect { .. }
         ) {
             return Err(VaultError::InvalidArgument(format!(
                 "{scope:?} is not a Platform signer scope"
             )));
         }
-        let GrantPurpose::PlatformOp {
-            max_duffs,
-            max_credits,
-        } = token.purpose
-        else {
-            return Err(VaultError::GrantPurposeMismatch);
-        };
-        let granted = match scope {
-            SignerScope::PlatformFunding { max_duffs: wanted } => {
-                max_duffs != 0 && wanted <= max_duffs
+        let granted = match (token.purpose, scope) {
+            (GrantPurpose::PlatformOp { .. }, SignerScope::AppConnect { .. }) => false,
+            (
+                GrantPurpose::PlatformOp { max_duffs, .. },
+                SignerScope::PlatformFunding { max_duffs: wanted },
+            ) => max_duffs != 0 && wanted <= max_duffs,
+            (
+                GrantPurpose::PlatformOp { max_credits, .. },
+                SignerScope::PlatformIdentity | SignerScope::PlatformAddress,
+            ) => max_credits != 0,
+            (GrantPurpose::PlatformOp { .. }, _) => true,
+            (GrantPurpose::AppConnect { max_credits, .. }, SignerScope::PlatformIdentity) => {
+                max_credits != 0
             }
-            SignerScope::PlatformIdentity | SignerScope::PlatformAddress => max_credits != 0,
-            _ => true,
+            (
+                GrantPurpose::AppConnect { request, .. },
+                SignerScope::AppConnect { request: wanted },
+            ) => request == wanted,
+            _ => false,
         };
         if !granted {
             return Err(VaultError::GrantPurposeMismatch);

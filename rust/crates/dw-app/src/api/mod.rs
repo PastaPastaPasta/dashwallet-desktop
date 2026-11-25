@@ -60,6 +60,7 @@ domains!(
     coinjoin,
     identity,
     social,
+    connect,
     console,
     units,
     shell,

@@ -29,6 +29,8 @@ const SAMPLES: Samples = {
     data: { kind: "authorize", purpose: { kind: "spend", maxDuffs: 100_000_000 }, walletId: W },
   },
   duffs: { code: "send.amount_exceeds_balance", data: { kind: "duffs", needed: 5_000_000_000, available: 3_019_698_287 } },
+  connectFailure: { code: "connect.failed", data: { kind: "connectFailure", failure: "keyConflict" } },
+  connectNetwork: { code: "connect.network", data: { kind: "connectNetwork", requested: "mainnet" } },
   credits: { code: "platform.insufficient_credits", data: { kind: "credits", needed: "120000000", available: "4000000" } },
   creditRange: { code: "credits.withdrawal_out_of_range", data: { kind: "creditRange", min: "1190000", max: "50000000000000" } },
   creditMinimum: { code: "credits.send_out_of_range", data: { kind: "creditMinimum", min: "500000" } },

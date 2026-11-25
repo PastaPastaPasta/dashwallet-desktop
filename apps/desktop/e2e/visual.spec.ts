@@ -2,6 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
+import { openConnect, quoted } from "./connect";
+import type { ConnectOutcome } from "../src/fixture/connect";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
 import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { openIdentities } from "./identities";
@@ -1191,4 +1193,33 @@ for (const theme of THEMES) {
     await expect(banner).toHaveScreenshot(`${theme}-protocol-advisory-banner.png`, SHOT);
     await shoot(page, "home-protocol-advisory", theme);
   });
+}
+
+// "Sign in to an app": the sheet with its quote, signed in, mainnet off, a send that failed, a
+// refusal, a failed approval, and keys not confirmed in time.
+const approveConnect = async (page: Page) => {
+  await quoted(page);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+};
+const CONNECT: Record<string, { outcome: ConnectOutcome; reach: (page: Page) => Promise<unknown> }> = {
+  sheet: { outcome: "ok", reach: quoted },
+  "sheet-end": { outcome: "ok", reach: async (page) => (await quoted(page), page.getByTestId("connect-approve").scrollIntoViewIfNeeded()) },
+  done: { outcome: "ok", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-done").waitFor()) },
+  "mainnet-off": { outcome: "mainnetOff", reach: (page) => page.getByTestId("connect-mainnet-off").waitFor() },
+  "send-failed": { outcome: "sendFailed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-send-failed").waitFor()) },
+  refused: { outcome: "stale", reach: (page) => page.getByTestId("connect-refusal").waitFor() },
+  failed: { outcome: "failed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-refusal").waitFor()) },
+  "not-confirmed": { outcome: "notConfirmed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-quote-error").scrollIntoViewIfNeeded()) },
+};
+
+for (const theme of THEMES) {
+  for (const [name, { outcome, reach }] of Object.entries(CONNECT)) {
+    test(`visual connect-${name} ${theme}`, async ({ page }) => {
+      await openConnect(page, outcome, theme);
+      await reach(page);
+      await page.mouse.move(0, 0);
+      await shoot(page, `connect-${name}`, theme);
+    });
+  }
 }

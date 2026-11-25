@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connect",
+  "description": "App Connect sign-ins (DASHPAY F24): the approval sheet, its quote and approval, the answer to the app and its return link. Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-app-connect-sheet",
+    "allow-app-connect-quote",
+    "allow-app-connect-approve",
+    "allow-app-connect-retry-send",
+    "allow-app-connect-deny",
+    "allow-app-connect-return",
+    "allow-app-connect-dismiss"
+  ]
+}

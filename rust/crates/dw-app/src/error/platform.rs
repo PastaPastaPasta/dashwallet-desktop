@@ -2,8 +2,8 @@
 //! the engine's `code()`s; `tests::codes_match_the_engine` holds them equal.
 
 use dw_engine::platform::{
-    AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ConnectFailure, ContactError, CreditsError, IdentityError,
+    InvitationError, NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -453,6 +453,105 @@ impl From<InvitationError> for AppError {
     }
 }
 
+codes! {
+    ConnectCode {
+        Network = "connect.network",
+        MainnetOff = "connect.mainnet_off",
+        Unsupported = "connect.unsupported",
+        Invalid = "connect.invalid",
+        Stale = "connect.stale",
+        Protocol = "connect.protocol",
+        NoIdentity = "connect.no_identity",
+        Hint = "connect.hint",
+        Owner = "connect.owner",
+        Answered = "connect.answered",
+        Credits = "connect.credits",
+        PlanChanged = "connect.plan_changed",
+        SendFailed = "connect.send_failed",
+        Failed = "connect.failed",
+    }
+}
+
+/// Why an approved App Connect login stopped (`connect.failed`), from the
+/// engine's fixed list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectFailureName {
+    KeyConflict,
+    NotConfirmed,
+    NoResponseKey,
+    NothingToSend,
+    ScopeChanged,
+}
+
+/// The network an App Connect request is for (`connect.network`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectNetworkName {
+    Mainnet,
+    Testnet,
+    Devnet,
+}
+
+impl From<dw_uri::connect::NetworkSel> for ConnectNetworkName {
+    fn from(n: dw_uri::connect::NetworkSel) -> Self {
+        match n {
+            dw_uri::connect::NetworkSel::Mainnet => Self::Mainnet,
+            dw_uri::connect::NetworkSel::Testnet => Self::Testnet,
+            dw_uri::connect::NetworkSel::Devnet => Self::Devnet,
+        }
+    }
+}
+
+impl From<ConnectFailure> for ConnectFailureName {
+    fn from(f: ConnectFailure) -> Self {
+        match f {
+            ConnectFailure::KeyConflict => Self::KeyConflict,
+            ConnectFailure::NotConfirmed => Self::NotConfirmed,
+            ConnectFailure::NoResponseKey => Self::NoResponseKey,
+            ConnectFailure::NothingToSend => Self::NothingToSend,
+            ConnectFailure::ScopeChanged => Self::ScopeChanged,
+        }
+    }
+}
+
+impl From<ConnectError> for AppError {
+    fn from(e: ConnectError) -> Self {
+        use ConnectError as C;
+        let message = e.code().to_owned();
+        let (code, data) = match e {
+            C::Network => (ConnectCode::Network, None),
+            C::MainnetOff => (ConnectCode::MainnetOff, None),
+            C::Unsupported => (ConnectCode::Unsupported, None),
+            C::Invalid => (ConnectCode::Invalid, None),
+            C::Stale => (ConnectCode::Stale, None),
+            C::Protocol => (ConnectCode::Protocol, None),
+            C::NoIdentity => (ConnectCode::NoIdentity, None),
+            C::Hint => (ConnectCode::Hint, None),
+            C::Owner => (ConnectCode::Owner, None),
+            C::Answered => (ConnectCode::Answered, None),
+            C::Credits { needed, available } => (
+                ConnectCode::Credits,
+                Some(ErrorData::Credits { needed, available }),
+            ),
+            C::PlanChanged => (ConnectCode::PlanChanged, None),
+            C::SendFailed => (ConnectCode::SendFailed, None),
+            C::Failed { failure } => (
+                ConnectCode::Failed,
+                Some(ErrorData::ConnectFailure {
+                    failure: failure.into(),
+                }),
+            ),
+            C::Platform(e) => return e.into(),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
+    }
+}
+
 impl From<AvatarError> for AppError {
     fn from(e: AvatarError) -> Self {
         use AvatarError as A;
@@ -756,6 +855,36 @@ mod tests {
         for e in shielded {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
+        let connect = [
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 2,
+                available: 1,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: dw_engine::platform::ConnectFailure::KeyConflict,
+            },
+        ];
+        assert_eq!(connect.len(), ConnectCode::ALL.len());
+        for e in connect {
+            let code = e.code();
+            assert_eq!(AppError::from(e).code_str(), code);
+        }
+        assert_eq!(
+            AppError::from(ConnectError::Platform(PlatformError::Timeout)).code_str(),
+            "platform.timeout"
+        );
     }
 
     #[test]

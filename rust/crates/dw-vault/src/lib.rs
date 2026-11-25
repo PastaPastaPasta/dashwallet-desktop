@@ -44,6 +44,7 @@
 //! `SecretKey`, and opened contactInfo plaintext as the library's
 //! `ContactInfoOpened` (a plain `Vec`).
 
+pub mod app_connect;
 mod crypto;
 mod dip15;
 mod error;

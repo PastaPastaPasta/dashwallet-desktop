@@ -38,8 +38,9 @@ pub use nested::{
     SendCode, SignerCode, UriCode,
 };
 pub use platform::{
-    AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode, ShieldedCode,
+    AvatarCode, ConnectCode, ConnectFailureName, ConnectNetworkName, ContactCode, CreditsCode,
+    IdentityCode, InvitationCode, NameCode, PlatformCode, ProfileCode, RegistrationCode,
+    ShieldedCode,
 };
 pub use rates::RatesCode;
 
@@ -79,6 +80,7 @@ pub enum ErrorCode {
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),
@@ -288,6 +290,10 @@ pub enum ErrorData {
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
     /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
+    /// `connect.failed`: where an approved login stopped.
+    ConnectFailure { failure: ConnectFailureName },
+    /// `connect.network`: the network the request is for.
+    ConnectNetwork { requested: ConnectNetworkName },
     /// `platform.insufficient_credits`: a credit shortfall.
     Credits {
         #[ts(type = "string")]
@@ -667,6 +673,7 @@ into_code!(
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),

@@ -181,7 +181,14 @@ fn child(dir: &Path) {
         assert_eq!(routes.len(), queued);
         // The same links typed into Open URI.
         for link in &links {
-            dw_app::shell::links::intake(Some(Arc::clone(&session)), "regtest", link)
+            shell
+                .inbox
+                .intake(
+                    Some(Arc::clone(&session)),
+                    "regtest",
+                    link,
+                    dw_app::shell::links::LinkOrigin::Entered,
+                )
                 .await
                 .unwrap();
         }

@@ -142,6 +142,19 @@ pub enum GrantPurpose {
         max_credits: u64,
         destination: Option<WithdrawalDestination>,
     },
+    /// One App Connect login (DashPay Connect): the request whose ephemeral
+    /// key hashes to `request` (`hash160`), on the terms whose digest is
+    /// `plan`, spending at most `max_credits` of the identity's credits on
+    /// the identity update and the response. Yields a
+    /// [`crate::SignerScope::PlatformIdentity`] signer and a
+    /// [`crate::SignerScope::AppConnect`] one bound to `request`, which
+    /// alone derives and seals that request's application keys. Always
+    /// needs a credential: the keys leave the wallet, sealed to the app.
+    AppConnect {
+        max_credits: u64,
+        request: [u8; 20],
+        plan: [u8; 32],
+    },
 }
 
 /// [`GrantPurpose`] without its payload; what a call expects.
@@ -157,6 +170,7 @@ pub enum GrantKind {
     Governance,
     MasternodeOp,
     MasternodeWithdraw,
+    AppConnect,
 }
 
 /// Platform's fixed rate: credits per duff.
@@ -175,6 +189,7 @@ impl GrantPurpose {
             GrantPurpose::Governance => GrantKind::Governance,
             GrantPurpose::MasternodeOp { .. } => GrantKind::MasternodeOp,
             GrantPurpose::MasternodeWithdraw { .. } => GrantKind::MasternodeWithdraw,
+            GrantPurpose::AppConnect { .. } => GrantKind::AppConnect,
         }
     }
 
@@ -188,7 +203,8 @@ impl GrantPurpose {
     /// in M2) whenever the vault has a passphrase slot, even while it is
     /// unlocked or inside the signing window: revealing the phrase, wiping a
     /// wallet, changing a credential, a vote, and a masternode owner
-    /// operation (which can move every future reward for a fee).
+    /// operation (which can move every future reward for a fee), and an App
+    /// Connect login (which hands keys to an app).
     pub fn requires_credential(&self) -> bool {
         matches!(
             self,
@@ -197,6 +213,7 @@ impl GrantPurpose {
                 | GrantPurpose::ChangeCredential
                 | GrantPurpose::Governance
                 | GrantPurpose::MasternodeOp { .. }
+                | GrantPurpose::AppConnect { .. }
         )
     }
 
@@ -228,7 +245,8 @@ impl GrantPurpose {
                 max_duffs,
                 max_credits,
             } => Some(max_duffs.saturating_add(max_credits.div_ceil(CREDITS_PER_DUFF))),
-            GrantPurpose::MasternodeWithdraw { max_credits, .. } => {
+            GrantPurpose::MasternodeWithdraw { max_credits, .. }
+            | GrantPurpose::AppConnect { max_credits, .. } => {
                 Some(max_credits.div_ceil(CREDITS_PER_DUFF))
             }
             GrantPurpose::SignMessage | GrantPurpose::Governance => Some(0),

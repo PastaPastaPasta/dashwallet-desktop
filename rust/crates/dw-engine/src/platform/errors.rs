@@ -503,6 +503,116 @@ impl InvitationError {
     }
 }
 
+/// Why an App Connect login stopped after it was approved, from a fixed
+/// list: the host shows its own words for each, never Platform's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectFailure {
+    /// A key this login derives is on the identity with other limits.
+    KeyConflict,
+    /// Platform did not show every added key in time. The request stays
+    /// open: approving it again re-reads the identity, reusing what landed.
+    NotConfirmed,
+    /// The identity has no key the wallet holds that may sign the response.
+    NoResponseKey,
+    /// No unsent response of this request is kept (a lock ended it).
+    NothingToSend,
+    /// A group or encryption key changed after the keys were added: the
+    /// response is not sent.
+    ScopeChanged,
+}
+
+/// App Connect (DASHPAY F24): a refusal before anything is signed, or how
+/// an approved login stopped.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectError {
+    #[error("the request is for another network")]
+    Network,
+    #[error("app connect is off on mainnet")]
+    MainnetOff,
+    #[error("the request asks for what this wallet does not support")]
+    Unsupported,
+    #[error("the request breaks the protocol's rules")]
+    Invalid,
+    #[error("the request is too old or from the future")]
+    Stale,
+    #[error("the network's protocol is older than app connect")]
+    Protocol,
+    #[error("no identity with a username")]
+    NoIdentity,
+    #[error("the request names an identity this wallet does not hold")]
+    Hint,
+    #[error("the request names contracts its app's owner does not own")]
+    Owner,
+    #[error("the request was answered already")]
+    Answered,
+    #[error("insufficient credits: {needed} needed, {available} available")]
+    Credits { needed: u64, available: u64 },
+    /// What the grant was quoted on changed: the sheet reads again.
+    #[error("the request's facts changed since the quote")]
+    PlanChanged,
+    /// The keys are on the identity; the response is not out yet.
+    #[error("the response was not sent")]
+    SendFailed,
+    #[error("app connect failed: {failure:?}")]
+    Failed { failure: ConnectFailure },
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ConnectError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Network => "connect.network",
+            Self::MainnetOff => "connect.mainnet_off",
+            Self::Unsupported => "connect.unsupported",
+            Self::Invalid => "connect.invalid",
+            Self::Stale => "connect.stale",
+            Self::Protocol => "connect.protocol",
+            Self::NoIdentity => "connect.no_identity",
+            Self::Hint => "connect.hint",
+            Self::Owner => "connect.owner",
+            Self::Answered => "connect.answered",
+            Self::Credits { .. } => "connect.credits",
+            Self::PlanChanged => "connect.plan_changed",
+            Self::SendFailed => "connect.send_failed",
+            Self::Failed { .. } => "connect.failed",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The status the app's return link carries for this refusal (DIP
+    /// "Status Codes"), for a refusal of the request itself or a login that
+    /// cannot finish; `None` for what the user can still fix or retry
+    /// (`plan_changed`, `credits`, `send_failed`, `not_confirmed`, which a
+    /// new approval re-reads the identity for, a Platform error) and for
+    /// `answered`, which Platform already holds.
+    pub fn status(&self) -> Option<dw_uri::connect::Status> {
+        use dw_uri::connect::Status;
+        Some(match self {
+            Self::Unsupported | Self::Protocol | Self::MainnetOff => Status::Unsupported,
+            Self::Invalid | Self::Owner => Status::Invalid,
+            Self::Stale => Status::Stale,
+            Self::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }
+            | Self::PlanChanged
+            | Self::Credits { .. }
+            | Self::SendFailed
+            | Self::Answered
+            | Self::Platform(_) => return None,
+            Self::Network | Self::NoIdentity | Self::Hint | Self::Failed { .. } => Status::Failed,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AvatarError {
     #[error("avatar too large")]
