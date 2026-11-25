@@ -151,6 +151,10 @@ pub struct SessionOptions {
     /// toggle ignored).
     #[cfg(test)]
     pub as_release_build: bool,
+    /// Tests: the SDK the session uses in place of one built from
+    /// `dapi_addresses`, a mock whose answers the test set.
+    #[cfg(test)]
+    pub sdk: Option<dash_sdk::Sdk>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -1600,6 +1604,10 @@ fn build_sdk(
     context: SharedContext,
     observer: Option<dash_sdk::sdk::ProtocolVersionObserver>,
 ) -> Result<dash_sdk::Sdk, EngineError> {
+    #[cfg(test)]
+    if let Some(sdk) = &opts.sdk {
+        return Ok(sdk.clone());
+    }
     let builder = if opts.dapi_addresses.is_empty() {
         match network {
             DashNetwork::Mainnet => SdkBuilder::new_mainnet(),

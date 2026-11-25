@@ -40,6 +40,15 @@ CREATE TABLE IF NOT EXISTS shielded_drain (
   store TEXT PRIMARY KEY,
   progress TEXT NOT NULL CHECK (progress IN ('journaled', 'done'))
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS shielded_drained_release (
+  wallet        BLOB NOT NULL CHECK (length(wallet) = 32),
+  st_hash       BLOB NOT NULL CHECK (length(st_hash) = 32),
+  recorded_at   INTEGER CHECK (recorded_at IS NULL OR recorded_at >= 0),
+  released_pass INTEGER,
+  released_at   INTEGER,
+  CHECK ((released_pass IS NULL) = (released_at IS NULL)),
+  PRIMARY KEY (wallet, st_hash)
+) WITHOUT ROWID;
 ";
 
 /// Version 11 → 12: the tables only.
@@ -88,6 +97,26 @@ pub struct NeverSentSpend {
     pub activity: [u8; 32],
     /// The hash of its stored transition.
     pub st_hash: [u8; 32],
+}
+
+/// A drained unresolved or unreadable spend a completed pass may prove can
+/// never execute (Q110 110-3), as the journal reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrainedReleaseCandidate {
+    pub wallet: [u8; 32],
+    pub account: u32,
+    pub st_hash: [u8; 32],
+    /// The anchor of the journal's artifacts of its transition; `None` when
+    /// none names one, or they name more than one.
+    pub anchor: Option<[u8; 32]>,
+    /// The height a completed pass recorded its anchor at
+    /// ([`DispatchJournal::record_drained_anchor_height`]).
+    pub recorded_at: Option<u64>,
+    /// Every note it held.
+    pub nullifiers: Vec<[u8; 32]>,
+    /// The journal reads one of its notes spent, its transition executed,
+    /// or its holds under more than one account.
+    pub flagged: bool,
 }
 
 /// Everything one drain writes to the journal.
@@ -243,12 +272,14 @@ impl DispatchJournal {
     }
 
     /// The nullifiers `wallet`'s drained holds keep out of selection: those
-    /// not yet read spent, by account.
+    /// not yet read spent, of a spend not released, by account.
     pub fn shielded_drained_holds(&self, wallet: &[u8; 32]) -> Result<Vec<(u32, [u8; 32])>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT account, nullifier FROM shielded_drained_hold \
-             WHERE wallet = ?1 AND spent = 0 ORDER BY account, nullifier",
+            "SELECT DISTINCT account, nullifier FROM shielded_drained_hold h \
+             WHERE wallet = ?1 AND spent = 0 AND NOT EXISTS (SELECT 1 FROM \
+             shielded_drained_release r WHERE r.wallet = h.wallet AND r.st_hash = h.st_hash \
+             AND r.released_at IS NOT NULL) ORDER BY account, nullifier",
         )?;
         stmt.query_map(params![&wallet[..]], |r| {
             Ok((r.get::<_, u32>(0)?, r.get::<_, Vec<u8>>(1)?))
@@ -263,6 +294,142 @@ impl DispatchJournal {
         .collect()
     }
 
+    /// The drained unresolved and unreadable spends not yet released, once
+    /// `store`'s drain is done: only the drain writes them, before
+    /// upstream's store first opens, so no spend of this build is one.
+    pub fn shielded_drained_release_candidates(
+        &self,
+        store: &str,
+    ) -> Result<Vec<DrainedReleaseCandidate>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT h.wallet, h.st_hash, h.account, h.nullifier, h.spent FROM \
+             shielded_drained_hold h WHERE h.origin IN ('unresolved', 'unreadable') \
+             AND EXISTS (SELECT 1 FROM shielded_drain WHERE store = ?1 AND progress = 'done') \
+             AND NOT EXISTS (SELECT 1 FROM shielded_drained_release r WHERE \
+             r.wallet = h.wallet AND r.st_hash = h.st_hash AND r.released_at IS NOT NULL) \
+             ORDER BY h.wallet, h.st_hash, h.nullifier",
+        )?;
+        let rows = stmt
+            .query_map(params![store], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, u32>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, bool>(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut out: Vec<DrainedReleaseCandidate> = Vec::new();
+        for (wallet, st_hash, account, nullifier, spent) in rows {
+            let wallet = super::fixed(wallet, "shielded_drained_hold.wallet")?;
+            let st_hash = super::fixed(st_hash, "shielded_drained_hold.st_hash")?;
+            let nullifier = super::fixed(nullifier, "shielded_drained_hold.nullifier")?;
+            match out.last_mut() {
+                Some(c) if c.wallet == wallet && c.st_hash == st_hash => {
+                    c.flagged |= spent || c.account != account;
+                    c.nullifiers.push(nullifier);
+                }
+                _ => out.push(DrainedReleaseCandidate {
+                    wallet,
+                    account,
+                    st_hash,
+                    anchor: None,
+                    recorded_at: None,
+                    nullifiers: vec![nullifier],
+                    flagged: spent,
+                }),
+            }
+        }
+        for c in &mut out {
+            let anchors: Vec<Vec<u8>> = conn
+                .prepare(
+                    "SELECT DISTINCT anchor FROM shielded_artifact WHERE wallet = ?1 \
+                     AND st_hash = ?2 AND anchor IS NOT NULL",
+                )?
+                .query_map(params![&c.wallet[..], &c.st_hash[..]], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            if let [anchor] = &anchors[..] {
+                c.anchor = Some(super::fixed(anchor.clone(), "shielded_artifact.anchor")?);
+            }
+            c.flagged |= flags_spent(&conn, &c.wallet, &c.st_hash)?;
+            c.recorded_at = conn
+                .query_row(
+                    "SELECT recorded_at FROM shielded_drained_release WHERE wallet = ?1 \
+                     AND st_hash = ?2",
+                    params![&c.wallet[..], &c.st_hash[..]],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()?
+                .flatten()
+                .map(|h| {
+                    u64::try_from(h).map_err(|_| {
+                        AppDbError::Corrupt(format!("shielded_drained_release.recorded_at {h}"))
+                    })
+                })
+                .transpose()?;
+        }
+        Ok(out)
+    }
+
+    /// Keeps the height a completed pass recorded `wallet`'s drained spend
+    /// `st_hash`'s anchor at (Q110 110-3, E1). The first height kept stands.
+    pub fn record_drained_anchor_height(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        height: u64,
+    ) -> Result<()> {
+        let height = i64::try_from(height)
+            .map_err(|_| AppDbError::Corrupt(format!("an anchor height {height}")))?;
+        self.conn().execute(
+            "INSERT INTO shielded_drained_release (wallet, st_hash, recorded_at) \
+             VALUES (?1, ?2, ?3) ON CONFLICT (wallet, st_hash) DO UPDATE SET \
+             recorded_at = excluded.recorded_at WHERE recorded_at IS NULL",
+            params![&wallet[..], &st_hash[..], height],
+        )?;
+        Ok(())
+    }
+
+    /// Releases `wallet`'s drained spend `st_hash`, which `pass` proved can
+    /// never execute (Q110 110-3, E3): its holds no longer keep its notes,
+    /// and its artifacts settle `not_executed`/`pruned` from any open
+    /// status. In one transaction, and only while the journal still flags
+    /// none of it; `false` when it flags one (nothing is written).
+    pub fn release_drained_spend(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        pass: u64,
+        now: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if flags_spent(&tx, wallet, st_hash)? {
+            return Ok(false);
+        }
+        let pass =
+            i64::try_from(pass).map_err(|_| AppDbError::Corrupt(format!("a pass id {pass}")))?;
+        let now = i64::try_from(now).map_err(|_| AppDbError::Corrupt(format!("a time {now}")))?;
+        tx.execute(
+            "INSERT INTO shielded_drained_release (wallet, st_hash, released_pass, released_at) \
+             VALUES (?1, ?2, ?3, ?4) ON CONFLICT (wallet, st_hash) DO UPDATE SET \
+             released_pass = excluded.released_pass, released_at = excluded.released_at \
+             WHERE released_at IS NULL",
+            params![&wallet[..], &st_hash[..], pass, now],
+        )?;
+        tx.execute(
+            "UPDATE shielded_artifact SET status = 'not_executed', status_reason = NULL, \
+             disposition_kind = 'not_executed', disposition_reason = 'pruned' \
+             WHERE wallet = ?1 AND st_hash = ?2 \
+             AND status IN ('unclassified', 'registered', 'unresolved')",
+            params![&wallet[..], &st_hash[..]],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Whether a drained hold or an unreadable drained disposition names
     /// `wallet`'s transition `st_hash`: such a transition is never admitted
     /// for a re-send.
@@ -274,6 +441,21 @@ impl DispatchJournal {
             |r| r.get(0),
         )?)
     }
+}
+
+/// Whether the journal reads a note of `wallet`'s drained spend `st_hash`
+/// spent (its drained holds, or any artifact's notes), or an artifact of
+/// that transition executed.
+fn flags_spent(conn: &rusqlite::Connection, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM shielded_drained_hold WHERE wallet = ?1 AND st_hash = ?2 \
+         AND spent = 1) OR EXISTS (SELECT 1 FROM shielded_artifact WHERE wallet = ?1 \
+         AND st_hash = ?2 AND status = 'executed') OR EXISTS (SELECT 1 FROM \
+         shielded_artifact_note n JOIN shielded_drained_hold h ON n.wallet = h.wallet \
+         AND n.nullifier = h.nullifier WHERE h.wallet = ?1 AND h.st_hash = ?2 AND n.spent = 1)",
+        params![&wallet[..], &st_hash[..]],
+        |r| r.get(0),
+    )?)
 }
 
 #[cfg(test)]
@@ -346,7 +528,8 @@ mod tests {
             j.conn()
                 .execute_batch(
                     "DROP TABLE shielded_drained_hold; DROP TABLE shielded_drained_unreadable;
-                     DROP TABLE shielded_drain; UPDATE meta SET v = 11 WHERE k = 'schema';",
+                     DROP TABLE shielded_drain; DROP TABLE shielded_drained_release;
+                     UPDATE meta SET v = 11 WHERE k = 'schema';",
                 )
                 .unwrap();
         }
@@ -478,6 +661,183 @@ mod tests {
             j.shielded_drained_holds(&W).unwrap(),
             vec![(0, [1; 32]), (0, [2; 32]), (0, [5; 32])],
             "every executed or unresolved held list holds, whatever its artifact says"
+        );
+    }
+
+    fn drained(j: &DispatchJournal, dispositions: Vec<DrainedDisposition>) {
+        let plan = ShieldedDrainPlan {
+            dispositions,
+            never_sent: Vec::new(),
+        };
+        j.record_shielded_drain("s", &plan).unwrap();
+    }
+
+    fn candidates(j: &DispatchJournal) -> Vec<DrainedReleaseCandidate> {
+        j.shielded_drained_release_candidates("s").unwrap()
+    }
+
+    /// A journal made at 12 before the release table gains it at its next
+    /// open, and keeps its holds.
+    #[test]
+    fn should_add_the_release_table_to_a_v12_journal_made_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path);
+            drained(
+                &j,
+                vec![disposition(
+                    2,
+                    DrainedOutcome::Unresolved("purged".into()),
+                    &[10],
+                )],
+            );
+            j.conn()
+                .execute_batch("DROP TABLE shielded_drained_release")
+                .unwrap();
+        }
+        let j = ready(&path);
+        assert_eq!(j.shielded_drained_holds(&W).unwrap(), vec![(0, [10; 32])]);
+        j.record_drained_anchor_height(&W, &[2; 32], 7).unwrap();
+    }
+
+    /// Only a done drain's unresolved and unreadable spends are candidates,
+    /// each with every note it held, its artifact's one anchor, and a flag
+    /// when the journal reads it spent or executed.
+    #[test]
+    fn should_offer_only_a_done_drains_unresolved_and_unreadable_spends() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = ready(&dir.path().join(DISPATCH_DB_FILE));
+        artifact(&j, 1, 2, "registered");
+        artifact(&j, 3, 4, "registered");
+        artifact(&j, 5, 6, "registered");
+        artifact(&j, 7, 6, "registered");
+        j.conn()
+            .execute(
+                "UPDATE shielded_artifact SET anchor = ?1 WHERE activity = ?2",
+                params![&[8u8; 32][..], &[7u8; 32][..]],
+            )
+            .unwrap();
+        drained(
+            &j,
+            vec![
+                disposition(2, DrainedOutcome::Unresolved("purged".into()), &[11, 10]),
+                disposition(4, DrainedOutcome::Unreadable, &[12]),
+                disposition(6, DrainedOutcome::Unresolved("cancelled".into()), &[13]),
+                disposition(14, DrainedOutcome::Unresolved("purged".into()), &[14]),
+                disposition(15, DrainedOutcome::Executed, &[15]),
+            ],
+        );
+        assert_eq!(
+            candidates(&j),
+            vec![],
+            "no candidate before the drain is done"
+        );
+        j.finish_shielded_drain("s").unwrap();
+        let c = candidates(&j);
+        let keys: Vec<_> = c
+            .iter()
+            .map(|c| (c.st_hash[0], c.anchor.map(|a| a[0])))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![(2, Some(9)), (4, Some(9)), (6, None), (14, None)],
+            "executed is not one; two anchors or none name no anchor"
+        );
+        assert_eq!(c[0].nullifiers, vec![[10; 32], [11; 32]]);
+        assert!(c.iter().all(|c| !c.flagged && c.recorded_at.is_none()));
+
+        j.note_spent_nullifiers(&W, &[[10; 32]]).unwrap();
+        assert!(candidates(&j)[0].flagged, "a note read spent flags it");
+        j.conn()
+            .execute(
+                "UPDATE shielded_artifact SET status = 'executed' WHERE activity = ?1",
+                params![&[3u8; 32][..]],
+            )
+            .unwrap();
+        assert!(candidates(&j)[1].flagged, "an executed artifact flags it");
+    }
+
+    /// Held under two accounts, a spend is flagged.
+    #[test]
+    fn should_flag_a_spend_held_under_two_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = ready(&dir.path().join(DISPATCH_DB_FILE));
+        artifact(&j, 1, 2, "registered");
+        let mut other = disposition(2, DrainedOutcome::Unresolved("purged".into()), &[11]);
+        other.account = 1;
+        drained(
+            &j,
+            vec![
+                disposition(2, DrainedOutcome::Unresolved("purged".into()), &[10]),
+                other,
+            ],
+        );
+        j.finish_shielded_drain("s").unwrap();
+        assert!(candidates(&j)[0].flagged);
+    }
+
+    /// The first recorded height stands; a release frees the spend's notes,
+    /// settles its artifact `not_executed`/`pruned`, and is kept; a spend
+    /// the journal flags is not released.
+    #[test]
+    fn should_release_a_drained_spend_durably_unless_the_journal_flags_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path);
+            artifact(&j, 1, 2, "unresolved");
+            artifact(&j, 3, 4, "unresolved");
+            drained(
+                &j,
+                vec![
+                    disposition(2, DrainedOutcome::Unresolved("purged".into()), &[10, 11]),
+                    disposition(4, DrainedOutcome::Unresolved("purged".into()), &[12]),
+                ],
+            );
+            j.finish_shielded_drain("s").unwrap();
+            j.record_drained_anchor_height(&W, &[2; 32], 40).unwrap();
+            j.record_drained_anchor_height(&W, &[2; 32], 41).unwrap();
+            assert_eq!(
+                candidates(&j)[0].recorded_at,
+                Some(40),
+                "the first height stands"
+            );
+
+            j.note_spent_nullifiers(&W, &[[12; 32]]).unwrap();
+            assert!(!j.release_drained_spend(&W, &[4; 32], 5, 100).unwrap());
+            assert!(j.release_drained_spend(&W, &[2; 32], 5, 100).unwrap());
+        }
+        let j = ready(&path);
+        assert_eq!(
+            j.shielded_drained_holds(&W).unwrap(),
+            vec![],
+            "10 and 11 are free, 12 is spent"
+        );
+        assert_eq!(
+            candidates(&j)
+                .iter()
+                .map(|c| c.st_hash[0])
+                .collect::<Vec<_>>(),
+            vec![4],
+            "a released spend is no candidate"
+        );
+        assert_eq!(
+            status(&j, 1),
+            (
+                "not_executed".into(),
+                Some("not_executed".into()),
+                Some("pruned".into())
+            )
+        );
+        assert_eq!(
+            status(&j, 3).0,
+            "unresolved",
+            "a flagged spend's artifact stays"
+        );
+        assert!(
+            j.shielded_drain_names(&W, &[2; 32]).unwrap(),
+            "a released spend is still never re-sent"
         );
     }
 }

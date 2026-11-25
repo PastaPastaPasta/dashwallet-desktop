@@ -109,7 +109,8 @@ use crate::{AppDbError, Result};
 
 mod drain;
 pub use drain::{
-    DrainedDisposition, DrainedOutcome, NeverSentSpend, ShieldedDrainPlan, ShieldedDrainState,
+    DrainedDisposition, DrainedOutcome, DrainedReleaseCandidate, NeverSentSpend, ShieldedDrainPlan,
+    ShieldedDrainState,
 };
 
 /// File name of the journal inside a network directory.
@@ -1265,6 +1266,9 @@ impl DispatchJournal {
                 .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
                 .optional()?;
             match schema {
+                // Version 12's tables are `IF NOT EXISTS`; one added to
+                // them since its first build reaches a journal made then.
+                Some(12) if schema_read == 12 => tx.execute_batch(drain::SHIELDED_DRAIN)?,
                 Some(v) if v == i64::from(schema_read) => {}
                 Some(v @ 1..=11) if v < i64::from(schema_read) => {
                     if v <= 10 {

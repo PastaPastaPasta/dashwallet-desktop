@@ -16,8 +16,8 @@ use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
 use platform_wallet::wallet::shielded::{
-    DispatchedNote, NetworkShieldedCoordinator, ShieldedDispatch, ShieldedDispatchKind,
-    ShieldedDispatchPayload, ShieldedStore, SubwalletId,
+    DispatchedNote, FileBackedShieldedStore, NetworkShieldedCoordinator, ShieldedDispatch,
+    ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedStore, SubwalletId,
 };
 
 use super::super::errors::{ShieldedError, ShieldedStoreClosed};
@@ -122,6 +122,32 @@ impl Root {
 
     /// An engine over the root and its regtest session, the vault unlocked.
     fn open(&self) -> Opened {
+        self.open_as(options())
+    }
+
+    /// [`Self::open`] with a pass's Platform answers ([`pass_sdk`]).
+    fn open_answering(&self, sdk: dash_sdk::Sdk) -> Opened {
+        self.open_as(crate::SessionOptions {
+            sdk: Some(sdk),
+            ..options()
+        })
+    }
+
+    /// A shielded store whose tree held `size` commitments before this
+    /// build first opened it, as a fork build's would (the store's
+    /// `legacy_anchor_tree_bound`).
+    fn with_tree(self, size: u64) -> Self {
+        let mut store = FileBackedShieldedStore::open_path(self.net().join("shielded.sqlite"), 100)
+            .expect("the fork store opens");
+        for leaf in 0..size {
+            store
+                .append_commitment(&[leaf as u8 + 1; 32], true)
+                .unwrap();
+        }
+        self
+    }
+
+    fn open_as(&self, options: crate::SessionOptions) -> Opened {
         let engine = Engine::new(
             EngineConfig {
                 data_root: self.root.clone(),
@@ -136,7 +162,7 @@ impl Root {
         )
         .unwrap();
         let session = engine
-            .block_on(engine.open_network(DashNetwork::Regtest, options()))
+            .block_on(engine.open_network(DashNetwork::Regtest, options))
             .expect("the fixture opens");
         engine
             .block_on(session.vault_op(|v| v.unlock(PASS, UnlockScope::Full)))
@@ -236,6 +262,60 @@ impl Opened {
     fn close(self) {
         drop(self.session);
         self.engine.block_on(self.engine.shutdown()).unwrap();
+    }
+
+    fn journal(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self.session.data_dir().join(DISPATCH_DB_FILE)).unwrap()
+    }
+
+    /// The journal's artifact of the main wallet's transition `st`, built
+    /// on `anchor`.
+    fn artifact(&self, st: u8, anchor: [u8; 32], status: &str) {
+        self.journal()
+            .execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, kind, anchor, \
+                 status, at) VALUES (?1, ?2, 'dispatched', ?3, 'transfer', ?4, ?5, 1)",
+                rusqlite::params![
+                    &main_wallet().0[..],
+                    &[st; 32][..],
+                    &[st; 32][..],
+                    &anchor[..],
+                    status
+                ],
+            )
+            .unwrap();
+    }
+
+    fn artifact_status(&self, st: u8) -> (String, Option<String>) {
+        self.journal()
+            .query_row(
+                "SELECT status, disposition_reason FROM shielded_artifact WHERE st_hash = ?1",
+                [&[st; 32][..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    /// The anchor height kept for drained transition `st`, and whether it
+    /// was released.
+    fn release_row(&self, st: u8) -> Option<(Option<u64>, bool)> {
+        use rusqlite::OptionalExtension;
+        self.journal()
+            .query_row(
+                "SELECT recorded_at, released_at IS NOT NULL FROM shielded_drained_release \
+                 WHERE st_hash = ?1",
+                [&[st; 32][..]],
+                |r| Ok((r.get::<_, Option<i64>>(0)?.map(|h| h as u64), r.get(1)?)),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    /// One forced shielded pass.
+    fn pass(&self) -> bool {
+        let (s, m) = (Arc::clone(&self.session), self.session.manager().unwrap());
+        self.engine
+            .block_on(async move { pool::guarded_pass(&s, &m, true).await })
     }
 }
 
@@ -581,5 +661,194 @@ fn an_unreadable_holds_table_keeps_the_account_unbound() {
         "{refused}"
     );
     drop(journal);
+    o.close();
+}
+
+/// The tree a fork build's store held before this build first opened it.
+const TREE: u64 = 8;
+/// The height Platform's answers to a pass are proved at.
+const SET_HEIGHT: u64 = 50;
+/// The anchor the drained spends below were built on.
+const ANCHOR: [u8; 32] = [0xa1; 32];
+
+/// A pass's Platform answers: no new notes, the recorded anchor set `set`
+/// and a pool of `pool_leaves` notes, each proved at [`SET_HEIGHT`].
+fn pass_sdk(pool_leaves: u64, set: &[[u8; 32]]) -> dash_sdk::Sdk {
+    use dash_sdk::query_types::{
+        NoParamQuery, ShieldedAnchors, ShieldedEncryptedNotes, ShieldedEncryptedNotesQuery,
+        ShieldedNotesCount,
+    };
+    let set = set.to_vec();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let mut sdk = dash_sdk::Sdk::new_mock();
+        let count = 2048
+            * u32::from(
+                sdk.version()
+                    .drive_abci
+                    .query
+                    .shielded_queries
+                    .max_query_chunks,
+            );
+        for chunk in 0..16 {
+            sdk.mock()
+                .expect_fetch(
+                    ShieldedEncryptedNotesQuery {
+                        start_index: u64::from(count) * chunk,
+                        count,
+                    },
+                    Some(ShieldedEncryptedNotes {
+                        notes: Vec::new(),
+                        total_count: 0,
+                    }),
+                )
+                .await
+                .unwrap();
+        }
+        sdk.mock()
+            .expect_fetch(NoParamQuery {}, Some(ShieldedAnchors(set)))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(NoParamQuery {}, Some(ShieldedNotesCount(pool_leaves)))
+            .await
+            .unwrap();
+        sdk.mock()
+            .set_response_height_of::<ShieldedAnchors>(SET_HEIGHT)
+            .set_response_height_of::<ShieldedNotesCount>(SET_HEIGHT)
+            .set_response_height_of::<ShieldedEncryptedNotes>(SET_HEIGHT);
+        sdk
+    })
+}
+
+fn sorted(mut v: Vec<[u8; 32]>) -> Vec<[u8; 32]> {
+    v.sort();
+    v
+}
+
+/// Q110 110-3 (E3), the call-site test: a drained unresolved spend whose
+/// anchor no completed pass recorded a height for is released by the
+/// first pass whose pool proves the tree it was built on recorded and its
+/// anchor gone (pool = T), and only then; at T − 1 it stays held, and so
+/// does a spend one of whose notes the store doesn't hold. A release is
+/// the journal's, kept across a restart, with its artifact settled
+/// `not_executed`/`pruned`.
+#[test]
+fn a_pass_releases_a_drained_spend_only_once_the_pool_proves_its_anchor_pruned() {
+    for (pool_leaves, saved, released) in [
+        (TREE - 1, &[1, 2, 3][..], false),
+        (TREE, &[1, 3][..], false),
+        (TREE, &[1, 2, 3][..], true),
+    ] {
+        let root = Root::new(&[unresolved(1, &[1, 2])]).with_tree(TREE);
+        let o = root.open_answering(pass_sdk(pool_leaves, &[[0xee; 32]]));
+        o.artifact(1, ANCHOR, "unresolved");
+        let c = o.bound();
+        o.save_notes(&c, saved);
+        assert!(o.pass(), "the pass ran");
+        let case = format!("pool {pool_leaves}, notes {saved:?}");
+        if released {
+            assert_eq!(o.holds(), vec![], "{case}");
+            assert_eq!(
+                o.selectable(&c).0,
+                sorted(vec![nf(1), nf(2), nf(3)]),
+                "{case}"
+            );
+            assert_eq!(o.release_row(1), Some((None, true)), "{case}");
+            assert_eq!(
+                o.artifact_status(1),
+                ("not_executed".into(), Some("pruned".into()))
+            );
+        } else {
+            assert_eq!(o.holds(), vec![(0, nf(1)), (0, nf(2))], "{case}");
+            assert_eq!(o.selectable(&c).0, vec![nf(3)], "{case}");
+            assert_eq!(o.release_row(1), None, "{case}");
+            assert_eq!(o.artifact_status(1), ("unresolved".into(), None), "{case}");
+        }
+        drop(c);
+        o.close();
+        if released {
+            let o = root.open();
+            assert_eq!(o.holds(), vec![], "the release is kept across a restart");
+            let c = o.bound();
+            o.save_notes(&c, saved);
+            assert_eq!(
+                o.selectable(&c).0,
+                sorted(vec![nf(1), nf(2), nf(3)]),
+                "nothing holds the released notes at the next start"
+            );
+            o.close();
+        }
+    }
+}
+
+/// Q110 110-3 (E1): while the pass's set still records a drained spend's
+/// anchor, the spend stays held and the journal keeps that height, from
+/// the completed pass and from nothing else; once a later start's pass
+/// finds the anchor gone, that height alone proves it, with no tree bound
+/// (pool T − 1 would hold a heightless one).
+#[test]
+fn a_recorded_anchors_height_is_kept_and_later_proves_the_spend() {
+    let root = Root::new(&[unresolved(1, &[1])]).with_tree(TREE);
+    let o = root.open_answering(pass_sdk(TREE, &[ANCHOR, [0xee; 32]]));
+    o.artifact(1, ANCHOR, "unresolved");
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert_eq!(o.release_row(1), None, "no height before a pass");
+    assert!(o.pass());
+    assert_eq!(o.release_row(1), Some((Some(SET_HEIGHT), false)));
+    assert_eq!(o.holds(), vec![(0, nf(1))], "a recorded anchor holds");
+    drop(c);
+    o.close();
+
+    let o = root.open_answering(pass_sdk(TREE - 1, &[[0xee; 32]]));
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(o.release_row(1), Some((Some(SET_HEIGHT), true)));
+    assert_eq!(o.holds(), vec![]);
+    assert_eq!(o.selectable(&c).0, sorted(vec![nf(1), nf(2)]));
+    o.close();
+}
+
+/// Q110 110-3 (E2): only the drain's spends are fed or released, and only
+/// once its drain is done. A spend of this build on the same pruned anchor
+/// is neither: its artifact keeps its status.
+#[test]
+fn no_spend_of_this_build_is_fed_or_released() {
+    let root = Root::new(&[unresolved(1, &[1])]).with_tree(TREE);
+    let o = root.open_answering(pass_sdk(TREE, &[[0xee; 32]]));
+    o.artifact(1, ANCHOR, "unresolved");
+    o.artifact(9, ANCHOR, "unresolved");
+    let candidates = {
+        let s = Arc::clone(&o.session);
+        (o.engine).block_on(async move { pool::drained_release_candidates(&s).await })
+    };
+    assert_eq!(
+        candidates.iter().map(|c| c.st_hash[0]).collect::<Vec<_>>(),
+        vec![1],
+        "only the drained spend is a candidate"
+    );
+    o.journal()
+        .execute("UPDATE shielded_drain SET progress = 'journaled'", [])
+        .unwrap();
+    let c = o.bound();
+    o.save_notes(&c, &[1, 2]);
+    assert!(o.pass());
+    assert_eq!(
+        o.release_row(1),
+        None,
+        "nothing is released before the drain is done"
+    );
+    o.journal()
+        .execute("UPDATE shielded_drain SET progress = 'done'", [])
+        .unwrap();
+    assert!(o.pass());
+    assert_eq!(o.release_row(1), Some((None, true)));
+    assert_eq!(o.release_row(9), None);
+    assert_eq!(o.artifact_status(9), ("unresolved".into(), None));
     o.close();
 }

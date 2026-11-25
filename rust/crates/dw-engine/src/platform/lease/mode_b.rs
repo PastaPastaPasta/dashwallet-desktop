@@ -1522,6 +1522,54 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// The drained spends a completed pass may release (Q110 110-3); an
+    /// error while the journal is not open or cannot be read. On the
+    /// blocking pool.
+    pub(crate) async fn shielded_drained_release_candidates(
+        &self,
+    ) -> Result<Vec<dw_appdb::dispatch::DrainedReleaseCandidate>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.shielded_drained_release_candidates(dw_shielded_drain::SHIELDED_STORE_FILE)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Keeps the height a completed pass recorded `wallet`'s drained spend
+    /// `st_hash`'s anchor at. On the blocking pool.
+    pub(crate) async fn record_drained_anchor_height(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+        height: u64,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.record_drained_anchor_height(&wallet.0, &st_hash, height)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Releases `wallet`'s drained spend `st_hash`, which `pass` proved can
+    /// never execute; `false` when the journal flags it. On the blocking
+    /// pool.
+    pub(crate) async fn release_drained_spend(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+        pass: u64,
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.release_drained_spend(&wallet.0, &st_hash, pass))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// Whether a drained hold or an unreadable drained disposition names
     /// `wallet`'s transition `st_hash` (schema 12); an error while the
     /// journal is not open or cannot be read. On the blocking pool.
