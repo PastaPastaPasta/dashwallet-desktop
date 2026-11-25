@@ -714,6 +714,113 @@ fn unreadable_disposition_row_is_acked_by_key_and_listing_resumes() {
     panic!("GAP G2: no upstream disposition rows");
 }
 
+/// A spend the 0.1 build stored (its record with no anchor height, its
+/// artifact imported and classified): each pass saves it a pending history
+/// row before the library's pass, for the library's release to fail. Then
+/// the release, as the library's (its notes freed, which drops its record,
+/// and its row failed only if it has one), and the pass's end settles it
+/// `not_executed`; a later pass saves it no row again.
+#[test]
+fn a_pass_keeps_an_imported_spends_row_for_its_release() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let spend = PendingRedrive {
+        anchor_height: None,
+        ..spends().remove(0)
+    };
+    let st_hash: [u8; 32] = Sha256::digest(&spend.st_bytes).into();
+    let (s, m, r) = (
+        Arc::clone(&session),
+        session.manager().unwrap(),
+        spend.clone(),
+    );
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        reserve_and_record(
+            &mut *coordinator.store().write().await,
+            subwallet(wallet),
+            r.clone(),
+        );
+        let imported = NewShieldedArtifact {
+            activity: r.activity_id,
+            origin: ArtifactOrigin::ImportedRedrive,
+            st_hash: Some(st_hash),
+            kind: None,
+            anchor: Some(r.anchor),
+            identity_id: None,
+            selected: Vec::new(),
+            published: Vec::new(),
+        };
+        assert!(
+            s.leases
+                .record_shielded_artifact(wallet, imported)
+                .await
+                .unwrap()
+        );
+        s.ensure_background().await;
+    });
+    let changed = rusqlite::Connection::open(
+        session
+            .data_dir()
+            .join(dw_appdb::dispatch::DISPATCH_DB_FILE),
+    )
+    .unwrap()
+    .execute(
+        "UPDATE shielded_artifact SET status = 'unresolved' WHERE wallet = ?1 AND activity = ?2",
+        rusqlite::params![&wallet.0[..], &spend.activity_id[..]],
+    )
+    .unwrap();
+    assert_eq!(changed, 1);
+    let activity = spend.activity_id;
+    let row = |engine: &Engine| {
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let store = coordinator.store().read().await;
+            (store.get_activity_by_entry_id(subwallet(wallet), &activity))
+                .unwrap()
+                .map(|e| e.status)
+        })
+    };
+    assert_eq!(row(&engine), None);
+
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Pending));
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (
+            ArtifactStatus::Unresolved { unrecorded: false },
+            None,
+            false
+        )
+    );
+
+    let (s, m, r) = (Arc::clone(&session), session.manager().unwrap(), spend);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let id = subwallet(wallet);
+        for nullifier in &r.nullifiers {
+            assert!(store.clear_pending(id, nullifier).unwrap());
+        }
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        if let Some(mut entry) = store.get_activity_by_entry_id(id, &r.activity_id).unwrap() {
+            entry.status = ShieldedActivityStatus::Failed;
+            store.save_activity(id, &entry).unwrap();
+        }
+    });
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Failed));
+    assert_eq!(
+        settlement(&engine, &session, wallet, 1),
+        (ArtifactStatus::NotExecuted, None, false)
+    );
+    pass(&engine, &session);
+    assert_eq!(row(&engine), Some(ShieldedActivityStatus::Failed));
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+}
+
 /// The fork's tests, against its dispositions (`resolve_redrive`,
 /// `spend_dispositions`, `ack_spend_disposition`), which upstream does not
 /// have.
