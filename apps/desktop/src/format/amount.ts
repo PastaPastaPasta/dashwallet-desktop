@@ -116,3 +116,4 @@ export function full(amount: number, signed: boolean, unit: Unit = "DASH"): stri
 export function masked(digits = 2, unit: Unit = "DASH"): string {
   return floored(0, digits, unit).replace(/0/g, "#");
 }
+
