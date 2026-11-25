@@ -1,6 +1,7 @@
 // Transfer's model: which routes exist and when each can start, the route the shortcut opens, the
-// picks, the fee line's debounce and one-quote-at-a-time, Max (one re-quote, filled only from a quote
-// that took it), and the sheet following its routes' flows.
+// picks, the fee line's debounce and one-quote-at-a-time, Max (from the Dash wallet one Core Max quote;
+// from Shielded re-quotes, filled only from a quote that took it), and the sheet following its routes'
+// flows.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
@@ -16,9 +17,22 @@ import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
-import { canSwap, coreFundedMax, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
+import { canSwap, coreMaxNotes, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
+
+/** A derive for `QuoteLine.max` in these tests: the whole probe when it was taken, else what a
+ * `funding_insufficient` refusal's figures leave room for. */
+const fromShortfall = (first: Settled<unknown>, probe: number): number | null => {
+  if (first.ok) return probe;
+  const e = first.error as { code?: string; data?: { kind?: string; needed?: number | null; available?: number } };
+  if (e?.code !== "credits.funding_insufficient" || e.data?.kind !== "duffs" || e.data.needed == null) return null;
+  const most = e.data.available! - (e.data.needed - probe);
+  return most > 0 ? most : null;
+};
+
+/** A Core Max quote of `duffs` (the lock), its coins' sum `duffs + fee`, and what it leaves. */
+const coreMaxQuote = (duffs: number, left = 0, arriving = 0) => ({ duffs, feeDuffs: 1_044, totalDuffs: duffs + 1_044, credits: String(duffs * 1000), max: { inputs: 2, leftDuffs: left, arrivingDuffs: arriving } }) as never;
 
 /** Timers run by hand: `tick(ms)` fires those due. */
 function manualTimers() {
@@ -283,17 +297,93 @@ describe("the picks", () => {
 });
 
 describe("Max", () => {
-  const fundingShort = (needed: number, available: number): Settled<unknown> => ({ ok: false, error: appError("credits.funding_insufficient", { kind: "duffs", needed, available }) });
+  it.each(["coreToShielded", "coreToPlatform"] as const)("of %s is one Core Max quote ({kind: all}), filling the lock it quotes: no amount with the fee on top", async (route) => {
+    const { t, quotes, shielded, fund } = model();
+    const quote = route === "coreToShielded" ? quotes.shieldQuote : quotes.platformFundQuote;
+    quote.mockResolvedValue(coreMaxQuote(199_998_956));
+    t.start(route);
+    const flow = route === "coreToShielded" ? shielded : fund;
+    await t.max(route, 3_000_000_000, (d) => flow.setText(String(d)), String);
+    expect(quote.mock.calls).toEqual([[WALLET_A, { kind: "all" }]]);
+    expect(flow.text).toBe("199998956");
+    expect(t.isMax(route)).toBe(true);
+    expect(t.lines[route].state).toMatchObject({ kind: "quoted", amount: 199_998_956 });
+  });
 
-  it("of a Core-funded route is available less the fee, from the refusal's own figures", () => {
-    const derive = coreFundedMax("credits.funding_insufficient");
-    expect(derive(fundingShort(3_000_001_000, 2_900_000_000), 3_000_000_000)).toBe(2_899_999_000);
-    // A quote that took the whole balance already: that amount.
-    expect(derive({ ok: true, quote: {} }, 1_000)).toBe(1_000);
-    // Any other refusal, or nothing left after the fee: no Max.
-    expect(derive({ ok: false, error: appError("credits.fund_pending", { kind: "txid", txid: "t" }) }, 1_000)).toBeNull();
-    expect(derive(fundingShort(2_000, 900), 1_000)).toBeNull();
-    expect(derive({ ok: false, error: appError("credits.funding_insufficient", { kind: "duffs", needed: null, available: 5 }) }, 1_000)).toBeNull();
+  it("from the Dash wallet: Continue sends the Core Max while the field holds what Max filled; an edit sends the amount", async () => {
+    const { t, quotes, shielded, fund } = model();
+    quotes.shieldQuote.mockResolvedValue(coreMaxQuote(199_998_956));
+    quotes.platformFundQuote.mockResolvedValue(coreMaxQuote(199_998_956));
+    t.start("coreToShielded");
+    await t.max("coreToShielded", 3_000_000_000, (d) => shielded.setText(String(d)), String);
+    expect(t.isMax("coreToShielded")).toBe(true);
+    // The field typed over, even back to the same figure: an amount of its own from then on.
+    t.edited("coreToShielded");
+    shielded.setText("199998956");
+    expect(t.isMax("coreToShielded")).toBe(false);
+    t.start("coreToPlatform");
+    await t.max("coreToPlatform", 3_000_000_000, (d) => fund.setText(String(d)), String);
+    expect(t.isMax("coreToPlatform")).toBe(true);
+    fund.setText("1.5");
+    expect(t.isMax("coreToPlatform")).toBe(false);
+  });
+
+  it("from the Dash wallet: Max's figure stays a Core Max for the balance it read; another balance makes it an amount", async () => {
+    const { timers, tick } = manualTimers();
+    const shieldQuote = vi.fn(async (_w: string, a: FundAmount) => (a.kind === "all" ? coreMaxQuote(199_998_956) : ({ duffs: a.duffs } as never)));
+    const f = flows();
+    const t = new TransferModel(f, { shieldQuote, unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: vi.fn() }, WALLET_A, timers);
+    t.start("coreToShielded");
+    await t.max("coreToShielded", 3_000_000_000, (d) => f.shielded.setText(String(d)), String);
+    // The sheet reads the figure back at the balance Max read: still the Core Max, nothing quoted again.
+    t.typed("coreToShielded", 199_998_956, 3_000_000_000);
+    tick(400);
+    await flush();
+    expect(t.isMax("coreToShielded")).toBe(true);
+    expect(shieldQuote.mock.calls.map(([, a]) => a)).toEqual([{ kind: "all" }]);
+    // The source balance changed: the figure is an amount now, quoted with its fee on top.
+    t.typed("coreToShielded", 199_998_956, 2_900_000_000);
+    tick(400);
+    await flush();
+    expect(t.isMax("coreToShielded")).toBe(false);
+    expect(shieldQuote.mock.calls.at(-1)).toEqual([WALLET_A, { kind: "duffs", duffs: 199_998_956 }]);
+  });
+
+  it("from the Dash wallet: Max's text read as another amount (a unit change) is an amount, not the Core Max", async () => {
+    const { t, quotes, shielded } = model();
+    quotes.shieldQuote.mockResolvedValue(coreMaxQuote(199_998_956));
+    t.start("coreToShielded");
+    await t.max("coreToShielded", 3_000_000_000, (d) => shielded.setText(String(d)), String);
+    expect(t.isMax("coreToShielded")).toBe(true);
+    t.typed("coreToShielded", 19_999_895_600, 3_000_000_000);
+    expect(t.isMax("coreToShielded")).toBe(false);
+  });
+
+  it("from the Dash wallet: a refused Core Max fills nothing and is marked whole, after one quote", async () => {
+    const { t, quotes } = model();
+    quotes.shieldQuote.mockRejectedValue(appError(SHIELDED_CODES.tooManyInputs, { kind: "number", value: 60 }));
+    const fill = vi.fn();
+    await t.max("coreToShielded", 3_000_000_000, fill);
+    expect(fill).not.toHaveBeenCalled();
+    expect(quotes.shieldQuote).toHaveBeenCalledTimes(1);
+    expect(t.lines.coreToShielded.state).toMatchObject({ kind: "refused", whole: true, error: { code: SHIELDED_CODES.tooManyInputs } });
+  });
+
+  describe("from the Dash wallet: what a Core Max leaves is said before Confirm, with its amount, only when above 0", () => {
+    const fmt = (d: number) => `${d} duffs`;
+    const LEFT = "633 duffs stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts.";
+    const ARRIVING = "5000 duffs still arriving stays in your Dash wallet. Move it once it confirms.";
+    it.each([
+      ["nothing left or arriving", { inputs: 2, leftDuffs: 0, arrivingDuffs: 0 }, []],
+      ["coins in other accounts only", { inputs: 2, leftDuffs: 633, arrivingDuffs: 0 }, [LEFT]],
+      ["coins still arriving only", { inputs: 2, leftDuffs: 0, arrivingDuffs: 5_000 }, [ARRIVING]],
+      ["both", { inputs: 2, leftDuffs: 633, arrivingDuffs: 5_000 }, [LEFT, ARRIVING]],
+    ] as const)("%s", (_name, max, notes) => {
+      expect(coreMaxNotes(max, fmt)).toEqual(notes);
+    });
+    it("an amount's quote (no Core Max) says nothing", () => {
+      expect(coreMaxNotes(null, fmt)).toEqual([]);
+    });
   });
 
   it("of Shielded → Dash wallet is the balance less the fee, in whole duffs", () => {
@@ -339,7 +429,7 @@ describe("Max", () => {
       return { duffs: d };
     });
     const line = new QuoteLine(fetch, timers);
-    const got = await line.max(3_000_000_000, coreFundedMax("credits.funding_insufficient"));
+    const got = await line.max(3_000_000_000, fromShortfall);
     expect(got).toBe(2_899_999_000);
     expect(fetch.mock.calls.map(([d]) => d)).toEqual([3_000_000_000, 2_899_999_000]);
     expect(line.state).toEqual({ kind: "quoted", amount: 2_899_999_000, quote: { duffs: 2_899_999_000 } });
@@ -383,28 +473,13 @@ describe("Max", () => {
     expect(quotes.platformFundQuote).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the re-quote's refusal (too many coins) and fills nothing, with no third quote", async () => {
-    const { timers } = manualTimers();
-    const fetch = vi.fn(async (_wallet: string, a: FundAmount): Promise<never> => {
-      const d = duffsOf(a);
-      if (d === 600_000_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 600_000_000 });
-      throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
-    });
-    const t = new TransferModel(flows(), { shieldQuote: vi.fn(), unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote: fetch }, WALLET_A, timers);
-    const fill = vi.fn();
-    await t.max("coreToPlatform", 600_000_000, fill);
-    expect(fill).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", amount: 599_999_000, error: { code: "credits.too_many_inputs" } });
-  });
-
   it("shows the first quote's refusal when it names no shortfall (a pending lock), with no re-quote", async () => {
     const { timers } = manualTimers();
     const fetch = vi.fn(async () => {
       throw appError(SHIELDED_CODES.shieldPending, { kind: "txid", txid: "t" });
     });
     const line = new QuoteLine(fetch, timers);
-    expect(await line.max(3_000_000_000, coreFundedMax(SHIELDED_CODES.fundingInsufficient))).toBeNull();
+    expect(await line.max(3_000_000_000, fromShortfall)).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(line.state).toMatchObject({ kind: "refused", error: { code: SHIELDED_CODES.shieldPending } });
   });
@@ -528,13 +603,13 @@ describe("a refusal never outlives its inputs", () => {
 });
 
 describe("Dash wallet → Platform quotes only on Continue", () => {
-  /** A model whose Platform quote refuses the whole balance with its shortfall and takes less. */
+  /** A model whose Platform quote answers a Core Max with a lock of 2_899_998_956 and any amount it covers. */
   function fundModel() {
     const { timers, tick } = manualTimers();
     const platformFundQuote = vi.fn(async (_wallet: string, a: FundAmount) => {
-      const d = duffsOf(a);
-      if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
-      return { duffs: d } as never;
+      if (a.kind === "all") return coreMaxQuote(2_899_998_956);
+      if (a.duffs > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: a.duffs + 1_000, available: 2_900_000_000 });
+      return { duffs: a.duffs } as never;
     });
     const shieldQuote = vi.fn(async (_wallet: string, a: FundAmount) => ({ duffs: duffsOf(a) }) as never);
     const t = new TransferModel(flows(), { shieldQuote, unshieldQuote: vi.fn(), unshieldToPlatformQuote: vi.fn(), platformFundQuote }, WALLET_A, timers);
@@ -555,35 +630,32 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     expect(shieldQuote.mock.calls).toEqual([[WALLET_A, { kind: "duffs", duffs: 100_000 }]]);
   });
 
-  it("Max is a click, not typing: two calls (the whole balance, then the most it leaves room for), and typing after it quotes nothing", async () => {
+  it("Max is a click, not typing: one Core Max call, and typing after it quotes nothing", async () => {
     const { t, tick, platformFundQuote } = fundModel();
     const fill = vi.fn();
     await t.max("coreToPlatform", 3_000_000_000, fill);
-    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000]);
-    expect(fill).toHaveBeenCalledWith(2_899_999_000);
-    t.typed("coreToPlatform", 2_899_999_000);
+    expect(platformFundQuote.mock.calls).toEqual([[WALLET_A, { kind: "all" }]]);
+    expect(fill).toHaveBeenCalledWith(2_899_998_956);
+    t.typed("coreToPlatform", 2_899_998_956);
     t.typed("coreToPlatform", 1_000_000);
     tick(2_000);
     await flush();
-    expect(platformFundQuote).toHaveBeenCalledTimes(2);
+    expect(platformFundQuote).toHaveBeenCalledTimes(1);
     expect(t.lines.coreToPlatform.state).toEqual({ kind: "idle" });
   });
 
-  it("each Max click makes exactly two platform_fund_quote calls, the probe and one re-quote", async () => {
+  it("each Max click makes exactly one platform_fund_quote call, the Core Max", async () => {
     const { t, platformFundQuote } = fundModel();
     const fill = vi.fn();
     await t.max("coreToPlatform", 3_000_000_000, fill);
-    expect(platformFundQuote).toHaveBeenCalledTimes(2);
     await t.max("coreToPlatform", 3_000_000_000, fill);
-    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000, 3_000_000_000, 2_899_999_000]);
-    expect(fill.mock.calls).toEqual([[2_899_999_000], [2_899_999_000]]);
+    expect(platformFundQuote.mock.calls.map(([, a]) => a)).toEqual([{ kind: "all" }, { kind: "all" }]);
+    expect(fill.mock.calls).toEqual([[2_899_998_956], [2_899_998_956]]);
   });
 
-  it("a refused re-quote leaves the amount field unchanged and shows its refusal", async () => {
+  it("a refused Core Max leaves the amount field unchanged and shows its refusal", async () => {
     const { timers } = manualTimers();
-    const platformFundQuote = vi.fn(async (_wallet: string, a: FundAmount): Promise<never> => {
-      const d = duffsOf(a);
-      if (d > 2_899_999_000) throw appError("credits.funding_insufficient", { kind: "duffs", needed: d + 1_000, available: 2_900_000_000 });
+    const platformFundQuote = vi.fn(async (): Promise<never> => {
       throw appError("credits.too_many_inputs", { kind: "number", value: 60 });
     });
     const f = flows();
@@ -593,9 +665,9 @@ describe("Dash wallet → Platform quotes only on Continue", () => {
     f.fund.setText("0.3");
     t.typed("coreToPlatform", 30_000_000);
     await t.max("coreToPlatform", 3_000_000_000, (duffs) => f.fund.setText(String(duffs / 1e8)));
-    expect(platformFundQuote.mock.calls.map(([, a]) => duffsOf(a))).toEqual([3_000_000_000, 2_899_999_000]);
+    expect(platformFundQuote).toHaveBeenCalledTimes(1);
     expect(f.fund.text).toBe("0.3");
-    expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", amount: 2_899_999_000, error: { code: "credits.too_many_inputs" } });
+    expect(t.lines.coreToPlatform.state).toMatchObject({ kind: "refused", whole: true, error: { code: "credits.too_many_inputs" } });
   });
 
   it("a refusal Max showed stays until the amount is typed, which clears it without a quote", async () => {
@@ -723,7 +795,7 @@ describe("test gaps (review r1 §8)", () => {
   const short = (needed: number, available: number) => appError("credits.funding_insufficient", { kind: "duffs", needed, available });
 
   it("Max stops at whichever answer comes after the amount changed: the quote it waited for, its probe, or its re-quote", async () => {
-    const derive = coreFundedMax("credits.funding_insufficient");
+    const derive = fromShortfall;
 
     // 1. Typed while Max waits for a quote already out: no probe.
     {
@@ -774,7 +846,7 @@ describe("test gaps (review r1 §8)", () => {
     const { line, tick, calls, answers } = heldLine();
     line.set(5);
     tick(400);
-    const max = line.max(100, coreFundedMax("credits.funding_insufficient"));
+    const max = line.max(100, fromShortfall);
     answers[0].resolve({ duffs: 5 });
     await flush();
     expect([line.state, line.maxing]).toEqual([{ kind: "quoting" }, true]);
