@@ -40,7 +40,7 @@ impl ScreenCopy {
             out += &format!("[{}]", b.label);
         }
         if let Some((_, hint)) = self.hint {
-            out += &format!("\n{hint}");
+            out += &format!("\n{}", hint.replace("{folder}", folder));
         }
         out
     }
@@ -113,9 +113,45 @@ pub(crate) fn cant_open(_cause: CantOpenCause, backup_present: bool) -> ScreenCo
     }
 }
 
+const FOREIGN_TITLE: &str = "These wallet files don't match the restore";
+const FOREIGN_TEXT: &str = "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.";
+const FOREIGN_KEEP_MEANING: &str = "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.";
+
+/// `storeUpgrade.restore.foreign.*` (MG Q93 §1, mg-q93-keep-and-safe-to-delete.md
+/// sha256 b9fe9d5a…49ee): the S4 lineage refusal. "Keep the current files"
+/// runs [`crate::keep_current_files`] and is not the default focus; "Report a
+/// problem" shows `settings.about.links.issuesHint` beside it.
+pub fn restore_foreign() -> ScreenCopy {
+    ScreenCopy {
+        title_key: "storeUpgrade.restore.foreign.title",
+        title: FOREIGN_TITLE,
+        text_key: "storeUpgrade.restore.foreign.text",
+        text: FOREIGN_TEXT,
+        buttons: vec![
+            button(
+                "storeUpgrade.restore.foreign.keep",
+                "Keep the current files",
+            ),
+            button("settings.about.links.issues", "Report a problem"),
+            button("storeUpgrade.cantOpen.quit", "Quit"),
+        ],
+        hint: Some((
+            "storeUpgrade.restore.foreign.keepMeaning",
+            FOREIGN_KEEP_MEANING,
+        )),
+    }
+}
+
 /// The screen for an error from this crate, if it has one, worded for the
 /// network dir's [`crate::snapshot_state`].
 pub fn screen_for(e: &StoreUpgradeError, state: &SnapshotState) -> Option<ScreenCopy> {
+    if let StoreUpgradeError::RestoreIncomplete {
+        cause: crate::restore::IncompleteCause::S4OtherLineage,
+        ..
+    } = e
+    {
+        return Some(restore_foreign());
+    }
     CantOpenCause::of(e).map(|c| cant_open_for(c, state))
 }
 

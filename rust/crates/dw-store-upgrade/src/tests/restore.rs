@@ -642,6 +642,14 @@ fn s4_other_lineage_refuses_with_keep_action() {
             "{foreign}: {err}"
         );
         assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+        let state = snapshot_state(&u.net).unwrap();
+        let screen = crate::copy::screen_for(&err, &state).expect("a screen");
+        assert_eq!(screen, crate::copy::restore_foreign(), "{foreign}");
+        assert_eq!(screen.buttons[0].key, "storeUpgrade.restore.foreign.keep");
+        assert!(
+            !screen.buttons[0].default_focus,
+            "Keep is not the default focus"
+        );
         let info = keep_current_files(&u.net, later(120))
             .unwrap()
             .expect("kept");
