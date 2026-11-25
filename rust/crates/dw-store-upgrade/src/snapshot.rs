@@ -537,7 +537,10 @@ fn open_copy(path: &Path) -> rusqlite::Result<CopyRead> {
 /// ids are exactly those R1 recorded: a restore replaces every store, so a
 /// wallet added since would be lost and another wallet's file would be
 /// rolled back to this one. Ids that can't be read prove nothing. A file
-/// that can't be read is held to the record when there is one.
+/// that can't be read is held to the record when there is one. While a
+/// restore's journal exists the restore owns the stores, the live file may
+/// be any it is replacing, and it holds the snapshot to the journal's
+/// manifest: the gate is not applied.
 fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), SnapshotFault> {
     let Some(network_dir) = dir
         .parent()
@@ -546,7 +549,10 @@ fn require_lineage(dir: &Path, info: &SnapshotInfo) -> std::result::Result<(), S
     else {
         return Ok(());
     };
-    if !restorable(info) {
+    if !restorable(info)
+        || fs::symlink_metadata(backups_dir(network_dir).join(crate::restore::RESTORE_JOURNAL))
+            .is_ok()
+    {
         return Ok(());
     }
     let live = match live_wallet(network_dir) {
