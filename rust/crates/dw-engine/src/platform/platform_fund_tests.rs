@@ -149,6 +149,9 @@ struct FakeFund {
     in_fund: AtomicBool,
     /// The next funding waits for this once it is in.
     fund_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// The next proof wait holds here, as the library's does until its
+    /// proof or its bound.
+    proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The next apply, its funding call over, waits before its call
     /// permit: `(in, release)`, the first notified once it waits there.
     apply_gate: Mutex<Option<ApplyGate>>,
@@ -196,6 +199,7 @@ impl FakeFund {
             receive: PlatformAddress::P2pkh([0x42; 20]),
             in_fund: AtomicBool::new(false),
             fund_gate: Mutex::default(),
+            proof_hold: Mutex::default(),
             apply_gate: Mutex::default(),
             lock_vault_in_apply: AtomicBool::new(false),
             core: Mutex::default(),
@@ -433,6 +437,7 @@ impl FundLib for FakeFund {
     }
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
+        crate::coins::pause_at(&self.proof_hold).await;
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
@@ -3399,4 +3404,41 @@ fn finish_all_with_only_a_shielded_lock_does_not_wait_on_the_bring_up() {
     engine
         .block_on(engine.close_network(crate::DashNetwork::Regtest))
         .unwrap();
+}
+
+/// #879: a close that starts while "Check again" waits for its lock's
+/// proof (up to 30 s) does not wait for it: the wait ends unproved, so the
+/// press is "waiting for proof", with nothing applied or signed.
+#[test]
+fn a_close_ends_a_resume_proof_wait_as_waiting_for_proof() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    *lib.funding.lock().unwrap() = Script::Unproved;
+    fund_of(&fx, &lib).unwrap();
+    let outpoint = lib.outpoint(0);
+    let hold = Arc::new(crate::coins::TestPause::default());
+    *lib.proof_hold.lock().unwrap() = Some(Arc::clone(&hold));
+    let g = grant(&fx, 1, 0);
+    let press = fx.s.rt.spawn(admitted_resume(
+        Arc::clone(&fx.s),
+        fx.wallet,
+        Arc::clone(&lib),
+        outpoint,
+        g,
+    ));
+    wait_for("the proof wait", || hold.reached.load(Ordering::SeqCst));
+    let s = Arc::clone(&fx.s);
+    let closing = fx.s.rt.spawn(async move { s.close().await });
+    let resumed = fx
+        .engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await });
+    hold.release.notify_one();
+    let resumed = resumed.expect("the close ended the proof wait").unwrap();
+    fx.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    assert_eq!(resumed, Ok(PlatformFundState::ProofWaiting));
+    assert!(lib.applied().is_empty(), "no apply");
+    assert!(lib.signed.lock().unwrap().is_empty(), "no signature");
 }

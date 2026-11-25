@@ -669,7 +669,9 @@ pub(crate) async fn resume(
         state,
     };
     if pending.state == UnfinishedState::Confirming
-        && lib.wait_proof(outpoint, RESUME_PROOF_WAIT).await.is_err()
+        && !session
+            .proved_unless_closed(lib.wait_proof(outpoint, RESUME_PROOF_WAIT))
+            .await
     {
         return Ok(outcome(PlatformFundState::ProofWaiting));
     }
