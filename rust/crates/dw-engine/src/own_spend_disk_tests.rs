@@ -6411,3 +6411,74 @@ fn a_lock_after_remove_unconfirmed_leaves_a_retired_damaged_payments_coin_free()
         "C after a restart"
     );
 }
+
+/// A payment P to another loaded wallet, beaten on B by a plain block and
+/// abandoned after the load; once the rescan has credited A, P2 spends A
+/// with change, and then P's lock arrives: the locked P beats P2 on A, so
+/// P2 and its change go, and the change is never counted, offered or
+/// stored, after a restart too.
+#[test]
+fn a_lock_after_an_abandon_and_a_new_spend_of_its_coin_never_counts_the_new_spends_change() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let to = startup_recipient(&engine, &session);
+    let (session, payment, winner) = unlocked_payment_beaten_on_b(&engine, session, id, &paid, &to);
+    abandon(&engine, &session, id, payment.txid());
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    let mut want = held(&engine, &session, id);
+    assert!(want.remove(&a), "the rescan credits A");
+    let p2 = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p2);
+    wait_stored(&session, id, &[p2.txid()]);
+    let change = change_of(&p2, &own_scripts(&engine, &session, id));
+    assert!(
+        held(&engine, &session, id).contains(&change),
+        "P2's change is counted before the lock"
+    );
+
+    instant_lock(&engine, &session, id, &payment);
+    lock_reruns_done(&engine, &session);
+    let gone = |session: &Arc<NetworkSession>, state: &str| {
+        assert_holds(&engine, session, id, &want, state);
+        assert!(
+            !spendable_for(&engine, session, id, change, COIN / 10),
+            "{state}: P2's change is not offered"
+        );
+        assert_eq!(
+            stored_row(session, id, change),
+            None,
+            "{state}: P2's change is not stored"
+        );
+        assert!(
+            session.hub.history.get(&id, &p2.txid()).is_none(),
+            "{state}: the history drops P2"
+        );
+        assert!(
+            !stored_record(session, id, p2.txid()),
+            "{state}: the store drops P2"
+        );
+    };
+    gone(&session, "the lock");
+    assert!(
+        !abandoned(&engine, &session, id, payment.txid()),
+        "the lock outranks the abandon"
+    );
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+
+    let session = reopen(&engine, session);
+    gone(&session, "a restart");
+    mined(&engine, &session, id, TIP, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert!(
+        !held(&engine, &session, id).contains(&change),
+        "the funding block scanned again leaves P2's change out"
+    );
+}
