@@ -4505,9 +4505,11 @@ fn a_sweep_note_goes_once_its_transaction_is_live_again() {
 
 /// #749 (Q81d S4, S6): the app stops after key-wallet's sweep of P for W
 /// out of a block; the load drops C as orphaned. A later sweep for W names
-/// W's block: P's note takes it. A load that finds no drop naming a swept
-/// transaction, nor anything spending its outputs, deletes its note; P's,
-/// which C's drop names, stays.
+/// W's block: P's note takes it, and once that block is ChainLocked D
+/// awaits nothing, though no block of the history holds W (Q81c §2 (b)
+/// alone). A load that finds no drop naming a swept transaction, nor
+/// anything spending its outputs, deletes its note; P's, which C's drop
+/// names, stays.
 #[test]
 fn a_later_sweep_fills_the_winners_block_and_a_load_prunes_unneeded_notes() {
     use dashcore::hashes::Hash;
@@ -4539,6 +4541,20 @@ fn a_later_sweep_fills_the_winners_block_and_a_load_prunes_unneeded_notes() {
         });
     let note = swept_by_note(&session, id, p.txid()).expect("P's sweep is noted");
     assert_eq!(note.block, Some((TIP + 1, block)), "filled");
+    let x = paid.output[d.vout as usize].value;
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (x, 0, true), "W not final");
+    header_chain(&session, &[(TIP + 1, block)]);
+    chain_lock(&engine, &session, id, TIP + 1, block);
+    reconciled(&engine, &session, id);
+    let w_mined = (session.hub.history.get(&id, &winner.txid()))
+        .is_some_and(|e| e.context.block_info().is_some());
+    assert!(!w_mined, "no block of the history holds W");
+    assert_eq!(
+        held_report(&session, id),
+        (x, 0, false),
+        "W's noted block final"
+    );
 
     let lone = Transaction {
         output: foreign().output,

@@ -995,8 +995,8 @@ impl DropOrigin {
 /// origin, when its `drop_winner:` note reads.
 pub(crate) type HeldDrops = BTreeMap<Txid, (BTreeSet<OutPoint>, Option<DropOrigin>)>;
 
-/// The origin of a drop whose `drop_winner:` note is missing or doesn't
-/// read (an older drop, #749 Q81c C2): its winner unknown, and as what it
+/// The origin of a drop with no `drop_winner:` note (an older drop, #749
+/// Q81c C2): its winner unknown, and as what it
 /// contested the inputs of its roots, read from the bytes (`copy_of`) of
 /// its transaction `t` and of each dead transaction (`dead`: dropped or
 /// swept) it descends from. An input made by a dead transaction is never

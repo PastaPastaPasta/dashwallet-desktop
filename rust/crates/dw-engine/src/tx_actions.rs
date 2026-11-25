@@ -330,8 +330,9 @@ pub(crate) struct DropNotes {
 }
 
 /// [`DropNotes`] of `wallet`: a note whose key or value does not parse is
-/// left out. A drop whose origin does not read is taken as an older drop
-/// ([`crate::history::older_origin`]).
+/// left out. A drop with no origin note is taken as an older drop
+/// ([`crate::history::older_origin`]); one whose origin note doesn't read
+/// keeps no origin, and awaits.
 pub(crate) fn drop_notes(
     appdb: &AppDb,
     wallet: WalletId,
@@ -352,10 +353,14 @@ pub(crate) fn drop_notes(
             notes.drops.entry(t).or_default().0 = held.collect();
         }
     }
+    let mut unread_origin = BTreeSet::new();
     for (t, origin) in rows(DROP_WINNER_PREFIX)? {
-        let drop = txid(&t).and_then(|t| notes.drops.get_mut(&t));
-        if let (Some(drop), Some(origin)) = (drop, origin) {
-            drop.1 = crate::history::DropOrigin::decode(&origin);
+        let Some((t, drop)) = txid(&t).and_then(|t| Some(t).zip(notes.drops.get_mut(&t))) else {
+            continue;
+        };
+        drop.1 = origin.and_then(|o| crate::history::DropOrigin::decode(&o));
+        if drop.1.is_none() {
+            unread_origin.insert(t);
         }
     }
     for (coin, note) in rows(DROP_SPENT_PREFIX)? {
@@ -408,7 +413,7 @@ pub(crate) fn drop_notes(
     let copy_of = |t: &Txid| (deaths.copies.get(t)).or(deaths.swept_by.get(t).map(|s| &s.tx));
     let dead = |t: &Txid| dropped.contains(t) || deaths.swept_by.contains_key(t);
     for (t, (_, origin)) in &mut notes.drops {
-        if origin.is_none() {
+        if origin.is_none() && !unread_origin.contains(t) {
             *origin = Some(crate::history::older_origin(*t, copy_of, dead));
         }
     }
@@ -3881,8 +3886,6 @@ impl NetworkSession {
         }
     }
 
-    /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
-    /// [`Self::abandon_unsigned_claims`] to its new transactions.
     /// Hooks the held reports of the wallets with holds to the locks the
     /// hub hears (Q81c C1): each one notes a lock that may spend a held
     /// coin before a restart forgets it.
@@ -3900,6 +3903,7 @@ impl NetworkSession {
                 let Ok(manager) = session.manager() else {
                     return;
                 };
+                let _lifecycle = session.wallet_lifecycle.hold().await;
                 let _gate = session.hub.drop_gate.lock().await;
                 for wallet in session.hub.wallets_with_holds() {
                     session.refresh_held(&manager, wallet).await;
@@ -3908,6 +3912,8 @@ impl NetworkSession {
         }));
     }
 
+    /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
+    /// [`Self::abandon_unsigned_claims`] to its new transactions.
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_swept_dead(Box::new(move |id, dead| {
@@ -4203,7 +4209,8 @@ mod tests {
     /// The drops' notes read them back, with the lock notes (those that
     /// don't read set apart, by coin or astray), the strict
     /// reading of the `dropped:` marks and the abandoned copies, and take a
-    /// drop with no origin note as an older one.
+    /// drop with no origin note as an older one; one whose origin note
+    /// doesn't read keeps none.
     #[test]
     fn a_sweeps_notes_are_written_filled_and_reset() {
         use dashcore::hashes::Hash;
@@ -4287,6 +4294,13 @@ mod tests {
             Some(BTreeSet::from([OutPoint::new(t(5), 0)])),
             "C's root R's input"
         );
+        let winner_key = format!("{DROP_WINNER_PREFIX}{}", c.txid());
+        db.set_settings_durable(&scope, &[(winner_key.as_str(), Some("junk"))])
+            .unwrap();
+        let notes = drop_notes(&db, wallet).unwrap();
+        assert_eq!(notes.drops.get(&c.txid()).map(|d| &d.1), Some(&None));
+        db.set_settings_durable(&scope, &[(winner_key.as_str(), None)])
+            .unwrap();
 
         let unread: Vec<(OutPoint, String)> = vec![
             (OutPoint::new(t(10), 0), "junk".into()),
