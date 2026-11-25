@@ -398,6 +398,13 @@ fn only_a_stateless_refusal_is_final() {
     assert!(never_valid(&PlatformWalletError::Sdk(structure)));
     let lost = dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into());
     assert!(!never_valid(&PlatformWalletError::Sdk(lost)));
+    // Submitted, outcome unresolved: a structure refusal under it is a
+    // diagnostic, not the verdict.
+    let unconfirmed = PlatformWalletError::Sdk(dash_sdk::Error::StateTransitionResultUnconfirmed(
+        Box::new(TransitionNoInputsError::new().into()),
+    ));
+    assert!(!never_valid(&unconfirmed));
+    assert!(!structure_refused(&unconfirmed));
 }
 
 // ---- the move against a scripted network ----
@@ -429,6 +436,9 @@ pub(crate) enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// Signed and broadcast; the wait ends unconfirmed, a structure refusal
+    /// its diagnostic. Nothing executes.
+    Unconfirmed,
     /// Signed and broadcast; Platform answers that an input's balance is
     /// short (a state error: nothing proves it never executes).
     NotEnoughFunds,
@@ -752,6 +762,14 @@ impl FakeMoves {
                 use dpp::consensus::basic::state_transition::TransitionNoInputsError;
                 Err(PlatformWalletError::Sdk(
                     TransitionNoInputsError::new().into(),
+                ))
+            }
+            Act::Unconfirmed => {
+                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                Err(PlatformWalletError::Sdk(
+                    dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+                        TransitionNoInputsError::new().into(),
+                    )),
                 ))
             }
             Act::SignatureRefused => {
@@ -1102,6 +1120,25 @@ fn an_unknown_move_holds_its_inputs_until_settled() {
     assert_eq!(outgoing, 0);
     // Without a contact payout, settling reads no withdrawal document.
     assert_eq!(w.net.withdrawal_reads(), 0);
+}
+
+/// A move whose wait ends unconfirmed may still execute, whatever its
+/// diagnostic says: pending and able to land, its inputs held, so the next
+/// move is `credits.move_pending` and nothing is signed again.
+#[test]
+fn an_unconfirmed_move_is_pending_and_holds_its_inputs() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.net.then(Act::Unconfirmed);
+    let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    let moves = w.moves();
+    assert!(moves[0].signed && moves[0].can_land && moves[0].holds());
+    assert_eq!(
+        w.move_all(&w.f.grant(3 * DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
 }
 
 /// A move that executed but whose answer was lost is done on its nonce.

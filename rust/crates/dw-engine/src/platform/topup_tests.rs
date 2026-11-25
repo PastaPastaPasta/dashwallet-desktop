@@ -1126,6 +1126,39 @@ fn a_failed_apply_keeps_the_lock_for_resume() {
     assert_eq!(lib.counts(), (1, 2));
 }
 
+/// An apply whose wait ends unconfirmed (the SDK's
+/// `StateTransitionResultUnconfirmed`, as the library hands it back) may
+/// have executed: it reads `platform.broadcast_unknown`, not `internal`,
+/// the lock stays tracked and blocks a new top-up, and nothing applies it
+/// again on its own. Finishing it applies the same lock, which Platform
+/// takes at most once.
+#[test]
+fn an_unconfirmed_apply_is_unknown_and_keeps_the_lock() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let unconfirmed = dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+        dash_sdk::Error::TimeoutReached(Duration::from_secs(1), "wait".into()),
+    ));
+    lib.w().apply_error = Some(PlatformWalletError::Sdk(unconfirmed).into());
+    let out = f.top_up(&lib, DUFFS).unwrap();
+    assert_eq!(
+        out.state,
+        TopUpState::NotApplied {
+            error: "platform.broadcast_unknown".into()
+        }
+    );
+    assert!(f.pending(&lib)[0].proved);
+    assert!(matches!(
+        f.top_up(&lib, DUFFS),
+        Err(CreditsError::TopUpPending { .. })
+    ));
+    assert_eq!(lib.w().applies, 1, "not applied again on its own");
+    let resumed = f.resume(&lib, &out.txid).unwrap();
+    let balance = START_BALANCE + credited(DUFFS);
+    assert_eq!(resumed.state, applied(Some(credited(DUFFS)), balance));
+    assert_eq!(lib.counts(), (1, 2));
+}
+
 /// A funding whose outcome is unknown (signed, nothing tracked) is never
 /// funded again: its step reads `MaybeSent`, and every later top-up of the
 /// identity is refused on it.

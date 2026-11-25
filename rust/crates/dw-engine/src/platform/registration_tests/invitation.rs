@@ -46,6 +46,11 @@ pub(super) enum ClaimScript {
     ReleasedThenUnavailable,
     /// Platform refused the claim's keys as another identity's (F11).
     DuplicateKeys,
+    /// Signed and submitted; the library's wait ended unconfirmed, under
+    /// the SDK's retry envelope when `retried`. Nothing landed.
+    ReleasedThenUnconfirmed {
+        retried: bool,
+    },
 }
 
 /// Another identity of the same seed (another device's).
@@ -1039,6 +1044,45 @@ fn a_claim_that_may_have_landed_is_not_discarded() {
     assert!(!stashed(&f, &link_id) && !held(&f, &link_id));
 }
 
+/// A claim whose wait ends unconfirmed, alone or under the SDK's retry
+/// envelope, may have landed: the row fails `platform.broadcast_unknown`
+/// for the user to continue, claims nothing again on its own (before, the
+/// envelope read `unavailable` and a running flow claimed again), cannot
+/// be discarded, and keeps its link held. Continued, it ends with one
+/// identity.
+#[test]
+fn an_unconfirmed_claim_is_unknown_and_not_claimed_again() {
+    for retried in [false, true] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let link_id = stash(&f);
+        lib.w()
+            .claim_script
+            .push_back(invitation::ClaimScript::ReleasedThenUnconfirmed { retried });
+        let draft = f.insert(invitation_row(&link_id, Some(INVITER)));
+        f.spawn(&lib, draft, Some(claim_lease(&f)));
+        f.settle(draft);
+        let row = f.row(draft);
+        assert_eq!(
+            (phase(&row), row.error.as_deref(), row.retryable),
+            (
+                Phase::KeysPrepared,
+                Some("platform.broadcast_unknown"),
+                true
+            ),
+            "retried {retried}"
+        );
+        assert_eq!(lib.w().claims, 1, "retried {retried}: claimed once");
+        assert_eq!(discard_code(&f, &lib, draft), Err("invalid_argument"));
+        assert!(stashed(&f, &link_id) && held(&f, &link_id));
+        let grant = f.grant(0, 10 * COIN * 1000, Credential::None);
+        resume(&f, &lib, draft, Some(grant));
+        f.settle(draft);
+        done(&f, draft);
+        assert_eq!(lib.w().identity_creates, 1);
+    }
+}
+
 /// DP5-03 D11: a claim row is discarded while nothing of its claim can be
 /// on the network (killed before any signature, or refused for good), and
 /// the discard lets the link go; once its identity exists it is not.
@@ -1218,11 +1262,19 @@ fn duplicate_keys_are_recognised_in_every_shape() {
         broadcast(Some(basic.clone())),
         check_tx(state.clone()),
         check_tx(basic),
-        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(broadcast(Some(state)))),
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(broadcast(Some(state.clone())))),
     ] {
         assert!(flow::is_duplicate_keys(&e), "{e:?}");
         assert!(flow::claim_refused_for_keys(&e, &OutPoint::null()), "{e:?}");
     }
+    // An unconfirmed claim's cause is diagnostic: no refusal.
+    let unconfirmed =
+        dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(broadcast(Some(state))));
+    assert!(!flow::is_duplicate_keys(&unconfirmed));
+    assert!(!flow::claim_refused_for_keys(
+        &unconfirmed,
+        &OutPoint::null()
+    ));
     for e in [
         broadcast(None),
         broadcast(Some(other.clone())),
@@ -1320,6 +1372,9 @@ fn a_replayed_claim_is_recognised_for_its_own_lock_only() {
         dash_sdk::Error::Protocol(dpp::ProtocolError::ConsensusError(Box::new(e)))
     };
     let ours = replay(own.txid, 1);
+    let unconfirmed =
+        dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(broadcast(ours.clone())));
+    assert!(!flow::claim_refused_for_keys(&unconfirmed, &own));
     for e in [
         broadcast(ours.clone()),
         check_tx(ours.clone()),

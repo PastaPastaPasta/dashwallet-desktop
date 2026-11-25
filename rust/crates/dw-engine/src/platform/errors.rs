@@ -852,6 +852,14 @@ fn sdk_leaf(e: dash_sdk::Error) -> PlatformError {
         return wallet_leaf(promoted);
     }
     match e {
+        // Submitted, outcome unresolved: whatever it wraps is diagnostic,
+        // never a refusal nor leave to send a replacement.
+        Sdk::StateTransitionResultUnconfirmed(cause) => {
+            tracing::info!("a state transition's outcome is unconfirmed: {cause}");
+            PlatformError::BroadcastUnknown {
+                artifact: String::new(),
+            }
+        }
         Sdk::TimeoutReached(..) => PlatformError::Timeout,
         Sdk::DapiClientError(_) | Sdk::StaleNode(_) => PlatformError::Unavailable,
         // A quorum key the provider refused (§2.2): the proof was not judged.
@@ -1212,6 +1220,55 @@ mod mapping_tests {
             "wrapped errors mapped wrong:\n{}",
             wrong.join("\n")
         );
+    }
+
+    /// An unconfirmed submission may have executed: `broadcast_unknown`,
+    /// through every wrapper, whatever cause it carries. Before, it fell to
+    /// `internal`, and under a retry envelope to `platform.unavailable`.
+    #[test]
+    fn an_unconfirmed_transition_is_a_broadcast_of_unknown_outcome() {
+        use dash_sdk::Error as Sdk;
+        let unconfirmed = |cause| Sdk::StateTransitionResultUnconfirmed(Box::new(cause));
+        let retried = |last| Sdk::NoAvailableAddressesToRetry(Box::new(last));
+        let token = |source| PlatformWalletError::TokenOperationFailed {
+            operation: "purchase",
+            source,
+        };
+        let unknown = PlatformError::BroadcastUnknown {
+            artifact: String::new(),
+        };
+        let cases = [
+            ("timeout", PlatformError::from(unconfirmed(timeout()))),
+            (
+                "balance refusal",
+                PlatformError::from(unconfirmed(balance_refusal())),
+            ),
+            (
+                "generic",
+                PlatformError::from(unconfirmed(Sdk::Generic("x".into()))),
+            ),
+            (
+                "retried",
+                PlatformError::from(retried(unconfirmed(Sdk::Generic("x".into())))),
+            ),
+            (
+                "library",
+                PlatformError::from(PlatformWalletError::Sdk(unconfirmed(timeout()))),
+            ),
+            (
+                "library, retried",
+                PlatformError::from(PlatformWalletError::Sdk(retried(unconfirmed(
+                    balance_refusal(),
+                )))),
+            ),
+            ("token", PlatformError::from(token(unconfirmed(timeout())))),
+        ];
+        let wrong: Vec<String> = cases
+            .into_iter()
+            .filter(|(_, got)| *got != unknown)
+            .map(|(path, got)| format!("{path}: {got:?}"))
+            .collect();
+        assert!(wrong.is_empty(), "mapped wrong:\n{}", wrong.join("\n"));
     }
 
     #[test]

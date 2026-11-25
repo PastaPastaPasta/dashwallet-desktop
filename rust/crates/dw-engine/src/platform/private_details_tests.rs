@@ -639,6 +639,29 @@ fn a_digest_change_signals_contacts() {
     });
 }
 
+/// A write whose wait ends unconfirmed (the SDK's
+/// `StateTransitionResultUnconfirmed`) and that the read-back does not
+/// find is `platform.broadcast_unknown`, not `internal`; the edit stays
+/// `Local` until a read decides.
+#[test]
+fn an_unconfirmed_write_is_unknown() {
+    let f = published();
+    *f.net.fails.lock().unwrap() = Some(PlatformError::from(
+        platform_wallet::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+                dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "wait".into()),
+            )),
+        ),
+    ));
+    let failed = f.set(ERIN, details("Erin"), Some(f.lease()));
+    assert_eq!(Fixture::code(failed), "platform.broadcast_unknown");
+    assert_eq!(
+        (f.shown(ERIN), f.state(ERIN)),
+        (details("Erin"), PublishState::Local)
+    );
+    assert_eq!(f.net.writes(), 1);
+}
+
 /// When the read-back fails too, the edit stays, `Local`, with its error;
 /// a later read that finds it on Platform makes it `Published` without
 /// another write (Q5).

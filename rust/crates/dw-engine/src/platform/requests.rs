@@ -558,7 +558,8 @@ pub(super) async fn prepare_signer(
 /// request to `pair.contact` is on Platform after all, as names.rs reads a
 /// label again (platform-wallet flattens the SDK's errors into text). Until
 /// E0-04's fence wiring in the library (P3), a failure that did not land is
-/// the library's error, not `platform.broadcast_unknown`.
+/// the library's error: `platform.broadcast_unknown` only when its wait
+/// ended unconfirmed.
 async fn read_back(
     net: &impl RequestNet,
     wallet: &PlatformWallet,

@@ -351,6 +351,29 @@ fn no_other_error_or_timeout_reads_already_consumed() {
     }
 }
 
+/// An apply whose wait ends unconfirmed is `Unknown` after the signature,
+/// never "already consumed" nor a refusal; reported without one, it is
+/// still `platform.broadcast_unknown`, not `internal`.
+#[test]
+fn an_unconfirmed_apply_is_unknown() {
+    let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let unconfirmed = || {
+        PlatformWalletError::Sdk(dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "wait".into()),
+        )))
+    };
+    assert_eq!(
+        reply_from(Err(unconfirmed()), at, true).unwrap(),
+        ApplyReply::Unknown
+    );
+    assert_eq!(
+        reply_from(Err(unconfirmed()), at, false)
+            .unwrap_err()
+            .code(),
+        "platform.broadcast_unknown"
+    );
+}
+
 /// How the scripted apply ends (`FakeKind::ends`, else [`End::Done`]).
 type Ends = Mutex<VecDeque<End>>;
 
