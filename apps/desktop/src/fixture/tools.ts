@@ -489,6 +489,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
     // Counts the unconfirmed coins that are not InstantSend-locked; they stay listed (not modelled).
     drop_unconfirmed: ({ walletId }, { world }) => {
       if (world.send.recordUnreadable.length) throw refused("recordUnreadable", world.wallets[0].summary.walletId);
+      if (world.send.catchingUp) throw fail("rescan_in_progress", "a rescan is in progress");
       const ws = walletId === null ? world.wallets : [wallet(world, walletId)];
       const dropped = ws.flatMap((w) => w.coins).filter((u) => u.confirmations === 0 && !u.instantLocked).length;
       if (dropped && world.sync.running && !world.tools.rescan) startRescan(world, Math.min(...ws.map((w) => w.summary.birthHeight ?? 0)));

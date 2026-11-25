@@ -3021,6 +3021,33 @@ fn a_finish_waiting_on_a_rerun_ends_when_the_session_closes() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// A Finish whose wait the close cancelled goes on to its readiness, whose
+/// protocol read asks Platform under an operation guard. The close does not
+/// wait for the answer: a connect to an unreachable node took seconds on
+/// Windows and held the gate's close for as long. The read is refused.
+#[test]
+fn a_close_does_not_wait_for_a_protocol_read_in_flight() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path(), Arc::new(Platform::default()));
+    let read = Arc::new(crate::coins::TestPause::default());
+    *guard(&s.platform.protocol.hold_fetch) = Some(Arc::clone(&read));
+    let refresh = {
+        let session = Arc::clone(&s);
+        s.rt.spawn(async move { session.refresh_protocol_version().await })
+    };
+    wait_until("the read", || read.reached.load(Ordering::SeqCst));
+    let closed =
+        engine.block_on(async { tokio::time::timeout(Duration::from_secs(20), s.close()).await });
+    assert!(closed.is_ok(), "the close waited for the read");
+    let refreshed = engine.block_on(refresh).unwrap();
+    assert!(
+        matches!(refreshed, Err(PlatformError::NetworkNotOpen)),
+        "{refreshed:?}"
+    );
+    read.release.notify_one();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A network switch while a Finish waits on its wallet's rerun is refused
 /// as preparing, not as an unresolved shielded spend, and the Finish goes on.
 #[test]

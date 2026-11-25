@@ -7,7 +7,8 @@
 import { hasCode } from "../api/backend";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { ShieldedReadiness } from "../api/generated/ShieldedReadiness";
-import { creditsToDuffs, creditsToDuffsUp } from "../api/pending";
+import { creditsToDuffs, creditsToDuffsUp, CREDITS_PER_DUFF } from "../api/pending";
+import type { ShieldedHold } from "../api/queries";
 import { messageTable, t } from "../i18n";
 import { NOT_OFFERED, withTable } from "./status";
 
@@ -39,7 +40,7 @@ export const PRIVACY_COPY = withTable(
 );
 
 export const PAY_WITH_COPY = withTable(
-  messageTable("dashpay.registration.payWith", ["link", "title", "core", "platform", "shielded", "notOffered", "movePending", "unsettled", "syncing"]),
+  messageTable("dashpay.registration.payWith", ["link", "title", "core", "platform", "shielded", "notOffered", "movePending", "unsettled", "held", "syncing"]),
   {
     short: (amount: string) => t("dashpay.registration.payWith.short", { amount }),
     resting: (time: string) => t("dashpay.registration.payWith.resting", { time }),
@@ -56,6 +57,8 @@ export interface PayWithInputs {
   shieldedDuffs: number | null;
   /** The Shielded quote's readiness (C4b-1). */
   readiness: ShieldedReadiness | null;
+  /** What payments that may still go through hold of the Shielded balance. */
+  shieldedHold?: ShieldedHold | null;
   /** Duffs with the unit. */
   amount: (duffs: number) => string;
   /** Unix seconds as a clock time. */
@@ -74,17 +77,29 @@ export interface PaySourceRow {
   reason: string | null;
 }
 
-/** The first readiness check that fails, in the engine's order, as the step says it (F16). */
-export function shieldedReason(readiness: ShieldedReadiness | null, amount: (duffs: number) => string, clock: (secs: number) => string): string | null {
+/** The first readiness check that fails, in the engine's order, as the step says it (F16). When a
+ * `hold` is what blocks (the unsettled spend, or a balance its held notes would cover), the reason
+ * says so and offers no "Try again": it lasts until the network shows the payment can no longer go
+ * through. */
+export function shieldedReason(
+  readiness: ShieldedReadiness | null,
+  amount: (duffs: number) => string,
+  clock: (secs: number) => string,
+  hold: ShieldedHold | null = null,
+  balanceDuffs: number | null = null,
+): string | null {
   if (readiness === null) return null;
   const failed = readiness.checks.find((c) => !c.ready)?.check;
   if (failed === undefined) return null;
   if (NOT_OFFERED.includes(failed)) return PAY_WITH_COPY.notOffered;
   switch (failed) {
     case "balance":
-      return readiness.denomination === null ? PAY_WITH_COPY.notOffered : PAY_WITH_COPY.short(amount(creditsToDuffs(readiness.denomination)));
+      if (readiness.denomination === null) return PAY_WITH_COPY.notOffered;
+      return hold !== null && balanceDuffs !== null && BigInt(balanceDuffs) * CREDITS_PER_DUFF + BigInt(hold.credits) >= BigInt(readiness.denomination)
+        ? PAY_WITH_COPY.held
+        : PAY_WITH_COPY.short(amount(creditsToDuffs(readiness.denomination)));
     case "noUnsettledSpend":
-      return PAY_WITH_COPY.unsettled;
+      return hold !== null ? PAY_WITH_COPY.held : PAY_WITH_COPY.unsettled;
     case "rested":
       return readiness.readyAt === null ? PAY_WITH_COPY.syncing : PAY_WITH_COPY.resting(clock(readiness.readyAt));
     default:
@@ -116,7 +131,7 @@ export function payWithRows(i: PayWithInputs): PaySourceRow[] {
       source: "shielded",
       label: PAY_WITH_COPY.shielded,
       balance: shown(i.shieldedDuffs),
-      reason: live.has("shielded") ? shieldedReason(i.readiness, i.amount, i.clock) : PAY_WITH_COPY.notOffered,
+      reason: live.has("shielded") ? shieldedReason(i.readiness, i.amount, i.clock, i.shieldedHold, i.shieldedDuffs) : PAY_WITH_COPY.notOffered,
     },
   ];
 }

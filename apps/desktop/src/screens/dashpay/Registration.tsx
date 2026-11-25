@@ -510,6 +510,7 @@ function PrivacyStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
     platform,
     shieldedDuffs: known(pools.shielded) ? pools.shielded : null,
     readiness,
+    shieldedHold: pools.shieldedHold,
     amount: inputs.amount,
     clock: (secs) => timeText(secs, b.locale),
     discreet: inputs.discreet,

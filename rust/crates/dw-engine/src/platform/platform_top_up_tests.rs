@@ -1439,13 +1439,16 @@ fn seen_at(height: u64, nonce: u32) -> Seen {
 /// #773: the structure check's refusal while the network proved a version
 /// above this build's is `credits.rules_unsupported`, with nothing signed,
 /// recorded or redeemed, for a move to Core, a send and a top-up. A session
-/// without Platform reads no version: the same refusal is the generic one.
+/// without Platform reads no version, and #855: a version proved only under
+/// quorum keys SPV has not verified counts for nothing. Either way the same
+/// refusal is the generic one.
 #[test]
 fn a_refusal_past_the_known_version_says_the_rules_changed() {
     let one = WithdrawAmount::Credits { credits: DASH };
-    for (platform, expected) in [
-        (true, CreditsError::RulesUnsupported),
-        (false, CreditsError::PreflightRefused),
+    for (platform, verified, expected) in [
+        (true, true, CreditsError::RulesUnsupported),
+        (true, false, CreditsError::PreflightRefused),
+        (false, true, CreditsError::PreflightRefused),
     ] {
         let w = if platform {
             World::with_platform()
@@ -1458,19 +1461,28 @@ fn a_refusal_past_the_known_version_says_the_rules_changed() {
         let s = Arc::clone(&w.f.s);
         s.platform
             .protocol
-            .record(PlatformVersion::latest().protocol_version + 1);
+            .record(PlatformVersion::latest().protocol_version + 1, verified);
         let grants = [
             w.f.grant(3 * DASH),
             w.f.grant(20 * DASH),
             w.f.grant(10 * DASH),
         ];
         let e = w.move_to(one, &w.to.clone(), &grants[0]).unwrap_err();
-        assert_eq!(e, expected, "move, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "move, platform {platform}, verified {verified}"
+        );
         let quote = w.send_quote(one, &to).unwrap();
         let e = w.confirm(&quote.operation, &grants[1]).unwrap_err();
-        assert_eq!(e, expected, "send, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "send, platform {platform}, verified {verified}"
+        );
         let e = w.top_up_as(&me(), one, &grants[2]).unwrap_err();
-        assert_eq!(e, expected, "top-up, platform {platform}");
+        assert_eq!(
+            e, expected,
+            "top-up, platform {platform}, verified {verified}"
+        );
         assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
         assert!(w.moves().is_empty(), "nothing recorded");
         assert!(grants.iter().all(|g| w.f.unused(g)), "nothing redeemed");

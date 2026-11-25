@@ -1764,7 +1764,12 @@ impl SessionHub {
                 // the mempool: none (BL-76).
                 if let TransactionContext::InstantSend(lock) = &record.context {
                     self.note_seen(id, [record.txid]);
-                    self.fan_out_lock(record.txid, lock, &unloaded);
+                    if lock.txid == record.txid {
+                        self.fan_out_lock(record.txid, lock, &unloaded);
+                    } else {
+                        tracing::debug!(wallet = %id, txid = %record.txid, lock = %lock.txid,
+                            "a detected record's lock names another transaction: not fanned out");
+                    }
                 }
             }
             WalletEvent::TransactionInstantLocked {
