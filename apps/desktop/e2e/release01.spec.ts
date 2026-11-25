@@ -415,7 +415,7 @@ test.describe("network choice", () => {
     await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     await setKnobs(page, { closeRefused: "transfer_preparing" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();

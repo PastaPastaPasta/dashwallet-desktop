@@ -119,7 +119,7 @@ describe("switchOutcome", () => {
       problem: "A wallet is still opening. Switch networks once it is open.",
     });
     expect(switchOutcome(refused("shielded_spend_unresolved", "shieldedSpendUnresolved"), "testnet", "mainnet")).toEqual({
-      problem: "A shielded payment is still being confirmed. Switch networks once it is.",
+      problem: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
     });
     expect(switchOutcome(refused("app.transfer_preparing", "transferPreparing"), "testnet", "mainnet")).toEqual({
       problem: "A transfer in one of your wallets is still being prepared. Try again when it's done.",

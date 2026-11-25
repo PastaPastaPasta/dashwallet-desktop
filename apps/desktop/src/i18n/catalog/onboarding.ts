@@ -169,7 +169,7 @@ export const onboarding = {
     wallet_already_exists: "This wallet has already been added.",
     network_not_open: "The wallet is not open.",
     wallet_not_found: "This wallet is not open.",
-    shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
+    shielded_spend_unresolved: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
     last_startup_wallet: "At least one wallet opens at start.",
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
