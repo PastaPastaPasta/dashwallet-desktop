@@ -173,18 +173,33 @@ fn dropped(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: T
 
 /// After a restart key-wallet holds no record of the claim, so it can't
 /// drop it when the scan finds the coin: the engine finds the claim
-/// unsigned and drops it with the payment from its change, at once.
+/// unsigned and drops it with the payment from its change, at once. The
+/// coin the claim spent waits for the drop's rescan (#818), then counts.
 #[test]
 fn a_claim_found_unsigned_after_a_restart_goes_with_the_payment_on_its_change() {
     let (_dir, engine, session, id) = engine_wallet();
     let (funding, claim, payment) = payment_on_a_claims_change(&engine, &session, id);
     let session = reopen(&engine, session);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
 
     super::own_spend_disk_tests::eventually("the claim and the payment are dropped", || {
         dropped(&engine, &session, id, claim.txid())
             && dropped(&engine, &session, id, payment.txid())
     });
+    super::own_spend_disk_tests::eventually("the abandon batch is done", || {
+        !session.hub.abandon_batch_pending(&id)
+    });
+    let coin = OutPoint::new(funding.txid(), 0);
+    assert_eq!(session.hub.rescan_held(&id), std::collections::BTreeSet::from([coin]));
+    assert_eq!(balances(&session, id).total, 0, "the coin waits for the rescan");
+    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    mined(
+        &engine,
+        &session,
+        id,
+        BIRTH + 1,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
     assert_payment_dropped(&engine, &session, id, &payment);
     let session = reopen(&engine, session);
     assert!(dropped(&engine, &session, id, claim.txid()));

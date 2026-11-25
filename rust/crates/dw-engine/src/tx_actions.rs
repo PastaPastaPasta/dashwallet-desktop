@@ -1945,13 +1945,6 @@ impl NetworkSession {
                 still_spent
                     .extend(left.flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output)));
             });
-            let checkpoint =
-                self.abandon_rewind(wallet, &planned, &links, &still_spent, &info.core_wallet);
-            let mut target = None;
-            if let Some(checkpoint) = checkpoint {
-                target = Some(self.record_rewind_locked(wallet, info, checkpoint).await?);
-                *recorded = (*recorded).into_iter().chain([checkpoint]).min();
-            }
             // Read before key-wallet abandons anything (which leaves its
             // observed spends as they are), so the coins' holds go with the
             // marks.
@@ -1965,6 +1958,20 @@ impl NetworkSession {
                 )
             });
             released.retain(|o| !still_spent.contains(o));
+            // The rescan covers every coin given back too: each waits for
+            // it (#818).
+            let checkpoint = [
+                self.abandon_rewind(wallet, &planned, &links, &still_spent, &info.core_wallet),
+                self.rescan_from(wallet, &released, info),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            let mut target = None;
+            if let Some(checkpoint) = checkpoint {
+                target = Some(self.record_rewind_locked(wallet, info, checkpoint).await?);
+                *recorded = (*recorded).into_iter().chain([checkpoint]).min();
+            }
             // No processed block's spend and no stored transaction is
             // evidence the coins are unspent: each waits for the rewind's
             // rescan (#818).
@@ -2303,13 +2310,19 @@ impl NetworkSession {
         let mut checkpoint = None;
         let mut rescan_holds = BTreeMap::new();
         if !plan.freed.is_empty() {
-            checkpoint = self.abandon_rewind(
-                wallet,
-                &plan.dead,
-                &plan.links,
-                &plan.kept,
-                &info.core_wallet,
-            );
+            checkpoint = [
+                self.abandon_rewind(
+                    wallet,
+                    &plan.dead,
+                    &plan.links,
+                    &plan.kept,
+                    &info.core_wallet,
+                ),
+                self.rescan_from(wallet, &plan.freed, info),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             if let Some(checkpoint) = checkpoint {
                 let target = self.record_rewind_locked(wallet, info, checkpoint).await?;
                 // What the drop frees no processed block spent and no stored
@@ -2817,6 +2830,27 @@ impl NetworkSession {
             }
         }
         lowest.map(|h| h.saturating_sub(1))
+    }
+
+    /// The checkpoint a rescan of the wallet's coins among `coins` starts
+    /// from: below the lowest block funding one. A coin the history holds
+    /// no block of is none key-wallet can give back as processed.
+    fn rescan_from<'a>(
+        &self,
+        wallet: WalletId,
+        coins: impl IntoIterator<Item = &'a OutPoint>,
+        info: &platform_wallet::PlatformWalletInfo,
+    ) -> Option<u32> {
+        let owned = crate::history_ops::owned_scripts(info);
+        (coins.into_iter())
+            .filter_map(|o| {
+                let funding = self.hub.history.get(&wallet, &o.txid)?;
+                let out = funding.tx.output.get(o.vout as usize)?;
+                owned.contains_key(&out.script_pubkey).then_some(())?;
+                funding.context.block_info().map(|b| b.height())
+            })
+            .min()
+            .map(|h| h.saturating_sub(1))
     }
 
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
