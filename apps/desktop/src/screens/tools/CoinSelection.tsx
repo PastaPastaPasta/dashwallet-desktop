@@ -58,7 +58,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const t = useT();
   const utxos = useUtxos(walletId, true);
-  const walletRestored = useRestored().data === true;
+  const walletRestored = useRestored().data;
   const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
     rowCount: utxos.data?.length ?? 0,
@@ -182,11 +182,11 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </p>
       )}
       <div className="tool-actions">
-        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={walletRestored || model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
+        <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={walletRestored !== false || model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
           {t("tools.coins.payWithCoins")}
         </DashButton>
       </div>
-      {walletRestored && (
+      {walletRestored === true && (
         <p className="placeholder-note" role="status" data-testid="coins-restored-gate">
           {t("storeUpgrade.restore.banner")}
         </p>

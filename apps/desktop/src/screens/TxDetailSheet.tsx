@@ -177,10 +177,12 @@ export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inpu
  * (Q92 H2); abandoning ends the hold, so a later confirm shows none. */
 export const abandonHint = (x: TxDetailExtrasInfo): string | null => (restoreHeld(x) ? t("activity.abandon.restoredHint") : null);
 
-/** What the sheet offers for one action the engine says applies: the action, nothing, or, while the
- * restored wallet data is still being checked (RESTORED), the money gate's refusal in its place. */
-export function actionOffer(applies: boolean, walletRestored: boolean): "offer" | "gated" | "none" {
+/** What the sheet offers for one action the engine says applies: the action, nothing, the action
+ * disabled while RESTORED is not known yet (`undefined`), or, while the restored wallet data is still
+ * being checked, the money gate's refusal in its place. */
+export function actionOffer(applies: boolean, walletRestored: boolean | undefined): "offer" | "waiting" | "gated" | "none" {
   if (!applies) return "none";
+  if (walletRestored === undefined) return "waiting";
   return walletRestored ? "gated" : "offer";
 }
 
@@ -207,13 +209,14 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  const walletRestored = useRestored().data === true;
+  const walletRestored = useRestored().data;
   const abandon = actionOffer(!!x?.canAbandon, walletRestored);
   const resend = actionOffer(!!x?.canResend, walletRestored);
   useEffect(() => {
     if (abandon !== "offer") setConfirming(false);
   }, [abandon]);
-  const can = abandon === "offer" || resend === "offer";
+  const shown = (a: typeof abandon) => a === "offer" || a === "waiting";
+  const can = shown(abandon) || shown(resend);
   const gated = abandon === "gated" || resend === "gated";
   // After an abandon the actions go, but its note stays.
   if (!x || (!can && !gated && !note)) return null;
@@ -259,13 +262,13 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
       ) : (
         can && (
           <span className="tx-actions-row">
-            {resend === "offer" && (
-              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy} onClick={() => void run("resend")}>
+            {shown(resend) && (
+              <DashButton variant="tintedBlue" size="small" data-testid="tx-resend" disabled={busy || resend === "waiting"} onClick={() => void run("resend")}>
                 Resend
               </DashButton>
             )}
-            {abandon === "offer" && (
-              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy} onClick={() => setConfirming(true)}>
+            {shown(abandon) && (
+              <DashButton variant="plainRed" size="small" data-testid="tx-abandon" disabled={busy || abandon === "waiting"} onClick={() => setConfirming(true)}>
                 Abandon transaction
               </DashButton>
             )}

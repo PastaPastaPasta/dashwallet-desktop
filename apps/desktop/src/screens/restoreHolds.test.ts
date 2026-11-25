@@ -178,21 +178,27 @@ describe("the RESTORED money gate", () => {
     const html = actions(x, n);
     expect(html).toContain('data-testid="tx-abandon"');
     expect(html).toContain('data-testid="tx-resend"');
+    expect(html).not.toMatch(/<button[^>]*disabled=""/);
     expect(html).not.toContain("tx-restored-gate");
     await cmd.abandonTransaction(W, P);
   });
 
-  it("offers the actions while RESTORED has no answer yet, the engine's refusal standing behind them", async () => {
+  it("shows Abandon and Resend disabled, with no gate line, until RESTORED is known", async () => {
     installFixture({ scenario: "restore-holds-restored" });
-    const html = actions(await cmd.txDetailExtras(W, P), undefined);
-    expect(html).toContain('data-testid="tx-abandon"');
+    const x = await cmd.txDetailExtras(W, P);
+    expect(actionOffer(x.canAbandon, undefined)).toBe("waiting");
+    const html = actions(x, undefined);
+    expect(html).toMatch(/<button[^>]*data-testid="tx-abandon"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-abandon"/);
+    expect(html).toMatch(/<button[^>]*data-testid="tx-resend"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-resend"/);
     expect(html).not.toContain("tx-restored-gate");
+    expect(html).not.toContain("tx-action-note");
     await expect(cmd.abandonTransaction(W, P)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "restored" } });
   });
 
   it("offers nothing for an action the engine says doesn't apply", () => {
     expect(actionOffer(false, true)).toBe("none");
     expect(actionOffer(false, false)).toBe("none");
+    expect(actionOffer(false, undefined)).toBe("none");
   });
 
   it("names the funds pause for a payment that can only be resent", () => {
