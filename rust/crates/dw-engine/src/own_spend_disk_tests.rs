@@ -1284,6 +1284,11 @@ fn a_locked_payment_a_chainlock_beat_is_not_abandoned_while_its_other_coin_is_un
         ),
         "A held by the payment's claim: {refused:?}"
     );
+    // The reconcile after the block drops it, apart from this thread: a
+    // Drop unconfirmed run before it would take the payment itself.
+    eventually("the other payment goes when its spend is mined", || {
+        abandoned(&engine, &session, id, other.txid())
+    });
     assert_eq!(
         engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
         0,
