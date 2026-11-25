@@ -35,7 +35,9 @@ T3 (a) and (d). Tests read copies only (`tests::v3_dropped`).
   Result: `test result: ok. 1 passed; 0 failed`, printing
   `A dropped 2 (locked 1c18ee68…95a0, pending 3f855563…abb1), B dropped 1
   (locked 7e81e941…3e06)` and no `-wal` or `-shm` after the persister closed.
-- What the generator does, all through the fork's code: brings the copy to
+- What the generator does, through the fork's code and its tests' helpers
+  (no SQL of its own writes; it only reads the pool for receive scripts and
+  the results): brings the copy to
   the fork's schema (`migrations::run`, already at fork V3); for wallets
   A (`0FF35F24…2ADD`) and B (`DA8B3E81…CA30`) stores, through
   `core_state::apply`, a coin paying one of the wallet's own unused BIP44

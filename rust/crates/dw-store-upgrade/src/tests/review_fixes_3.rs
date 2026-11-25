@@ -52,7 +52,7 @@ fn assert_missing(f: &Fixture, want: MissingSnapshot) {
     let claimed = ProvedState {
         migrated: Some(false),
         backup: Some(BackupState::Verified),
-        unchanged: true,
+        unchanged: Some(true),
     };
     let screen = copy::screen_for(&err, claimed).unwrap();
     assert_eq!(screen.cause, RefusedCause::SnapshotMissing);

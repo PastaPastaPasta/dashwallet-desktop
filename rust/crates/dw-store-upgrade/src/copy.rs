@@ -12,8 +12,9 @@
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
 //! never offers the earlier version. "{unchanged}" says Dash Wallet changed
-//! nothing only for a file proved unchanged by this start; otherwise it is
-//! `storeUpgrade.refused.changedByUpgrade`.
+//! nothing only for a file proved unchanged by this start, says it had
+//! started upgrading only for one proved changed, and otherwise only asks to
+//! keep the folder (`storeUpgrade.refused.keep`).
 
 use std::path::Path;
 
@@ -71,6 +72,10 @@ const REFUSED_UNCHANGED: Line = line(
 const CHANGED_BY_UPGRADE: Line = line(
     "storeUpgrade.refused.changedByUpgrade",
     "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+);
+const REFUSED_KEEP: Line = line(
+    "storeUpgrade.refused.keep",
+    "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 
 const QUIT: Button = button("storeUpgrade.refused.quit", "Quit");
@@ -155,7 +160,14 @@ impl RefusedCause {
             | E::RestoreNoSpace { .. }
             | E::RestoreIncomplete { .. }
             | E::RestoreAfterOpen => return None,
-            _ => Self::Unexpected,
+            E::WalletFileUnsupported { .. }
+            | E::NonStrictOpen { .. }
+            | E::OpenConfigUnsupported { .. }
+            | E::ProbeNotRun
+            | E::SnapshotInvalid { .. }
+            | E::PersisterOpen { .. } => Self::Unexpected,
+            #[cfg(test)]
+            E::InjectedFault(_) => Self::Unexpected,
         })
     }
 
@@ -210,6 +222,7 @@ impl RefusedCause {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackupState {
     /// A completed snapshot whose files all match their sizes and sha256.
+    /// That it is of this wallet's data is checked when the restore runs.
     Verified,
     /// A completed snapshot that fails verification, and no verified one.
     Unverified,
@@ -235,14 +248,18 @@ pub struct ProvedState {
     /// part-upgraded it, so no earlier version opens it ([`migrated`]).
     pub migrated: Option<bool>,
     pub backup: Option<BackupState>,
-    /// This start wrote nothing to it and it is not part-upgraded: only then
-    /// does the screen say Dash Wallet didn't change anything.
-    pub unchanged: bool,
+    /// `Some(true)`: this start changed nothing and the file is not
+    /// part-upgraded, the only case the screen says Dash Wallet didn't
+    /// change anything. `Some(false)`: this start changed the files or an
+    /// earlier one part-upgraded it. `None`: not proved either way.
+    pub unchanged: Option<bool>,
 }
 
 impl ProvedState {
     /// The state of `network_dir` for a refusal this start, read without
-    /// writing. `wrote` is whether this start's reconcile wrote to it.
+    /// writing. `wrote` is whether this start changed its files: a restore
+    /// finished ([`crate::Prepared::restored`]) or
+    /// [`crate::reconcile_fork_store`] returned `Pending` or `Retired`.
     pub fn read(network_dir: &Path, wrote: bool) -> Self {
         let upgrade = upgrade(network_dir);
         Self {
@@ -251,7 +268,12 @@ impl ProvedState {
                 .ok()
                 .as_ref()
                 .map(BackupState::from),
-            unchanged: !wrote && matches!(upgrade, Some(Upgrade::NotStarted | Upgrade::Done)),
+            unchanged: match upgrade {
+                _ if wrote => Some(false),
+                Some(Upgrade::NotStarted | Upgrade::Done) => Some(true),
+                Some(Upgrade::Part) => Some(false),
+                None => None,
+            },
         }
     }
 }
@@ -439,8 +461,8 @@ pub struct RefusedScreen {
     pub title: Line,
     pub intro: Line,
     pub detail: Line,
-    /// `storeUpgrade.refused.unchanged` for a file proved unchanged by this
-    /// start ([`ProvedState::unchanged`]), else `changedByUpgrade`.
+    /// `storeUpgrade.refused.unchanged`, `changedByUpgrade` or `keep`, by
+    /// [`ProvedState::unchanged`].
     pub unchanged: Line,
     pub way_out_line: Line,
     pub buttons: Vec<Button>,
@@ -450,6 +472,14 @@ pub struct RefusedScreen {
 
 impl RefusedScreen {
     pub fn new(cause: RefusedCause, state: ProvedState) -> Self {
+        let state = match cause {
+            RefusedCause::SnapshotMissing => ProvedState {
+                migrated: Some(true),
+                unchanged: Some(false),
+                ..state
+            },
+            _ => state,
+        };
         let way_out = WayOut::for_cause(cause, state);
         Self {
             cause,
@@ -457,10 +487,10 @@ impl RefusedScreen {
             title: REFUSED_TITLE,
             intro: REFUSED_INTRO,
             detail: cause.detail(),
-            unchanged: if state.unchanged {
-                REFUSED_UNCHANGED
-            } else {
-                CHANGED_BY_UPGRADE
+            unchanged: match state.unchanged {
+                Some(true) => REFUSED_UNCHANGED,
+                Some(false) => CHANGED_BY_UPGRADE,
+                None => REFUSED_KEEP,
             },
             way_out_line: way_out.line(),
             buttons: way_out.buttons(),
@@ -509,7 +539,7 @@ pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedSc
 fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
     ProvedState {
         migrated: Some(true),
-        unchanged: false,
+        unchanged: Some(false),
         backup: Some(match missing {
             MissingSnapshot::Unverified => BackupState::Unverified,
             MissingSnapshot::Absent | MissingSnapshot::Mismatch => BackupState::None,
@@ -521,6 +551,7 @@ fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
 pub const PENDING_MG: &[&str] = &[
     "storeUpgrade.refused.detail.snapshotMissing",
     "storeUpgrade.refused.changedByUpgrade",
+    "storeUpgrade.refused.keep",
 ];
 
 /// A screen's copy with its catalog keys.

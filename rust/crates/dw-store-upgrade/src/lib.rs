@@ -11,9 +11,10 @@
 //!    ([`run_pending_restore`]), then the refusal check ([`precheck`],
 //!    [`precheck_locked`]),
 //!    the upgrade rehearsed on a private copy, then the snapshot
-//!    ([`take_snapshot`]) for a fork file. A refusal writes, renames and
-//!    locks nothing in `{folder}`. A restore that stops keeps every store
-//!    closed until a start finishes it.
+//!    ([`take_snapshot`]) for a fork file. The refusal check itself writes,
+//!    renames and locks nothing in `{folder}`; a restore before it may have.
+//!    A restore that stops keeps every store closed until a start finishes
+//!    it.
 //! 2. [`reconcile_fork_store`] straight after, before any store opens, with
 //!    the `SqlitePersisterConfig` step 4 will use: the upgrade is rehearsed
 //!    again with those settings, and the snapshot must fingerprint all four

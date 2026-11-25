@@ -74,7 +74,20 @@ struct Dump {
     rows: Vec<Vec<Value>>,
 }
 
+/// The immutable reads below see the main file only: no log may hold rows.
+fn no_log(path: &Path) {
+    for suffix in ["-wal", "-journal"] {
+        let log = PathBuf::from(format!("{}{suffix}", path.display()));
+        assert!(
+            fs::metadata(&log).map_or(true, |m| m.len() == 0),
+            "{} holds unread writes",
+            log.display()
+        );
+    }
+}
+
 fn dump(path: &Path) -> Dump {
+    no_log(path);
     let conn = open_immutable(path).unwrap();
     let schema = conn
         .prepare(
@@ -100,6 +113,7 @@ fn dump(path: &Path) -> Dump {
 /// Each released coin as (drop id, wallet, outpoint, spent), found in
 /// `core_utxos` through the drop's `released_coins` JSON.
 fn released(path: &Path) -> Vec<(i64, Vec<u8>, Vec<u8>, i64)> {
+    no_log(path);
     open_immutable(path)
         .unwrap()
         .prepare(&format!(

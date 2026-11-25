@@ -100,8 +100,8 @@ pub enum StoreUpgradeError {
 
     /// An upgrade that stopped after R1's drop, and no before-upgrade
     /// snapshot this upgrade can keep: none at all, none that verifies, or
-    /// none of this wallet (`storeUpgrade.snapshotMissing.*`). The file stays
-    /// as the earlier start left it; nothing more is written.
+    /// none of this wallet (`storeUpgrade.refused.detail.snapshotMissing`).
+    /// The file stays as the earlier start left it; nothing more is written.
     #[error("the upgrade is part-done and its snapshot is {state:?} in {dir}")]
     UpgradeSnapshotMissing {
         state: crate::snapshot::MissingSnapshot,
@@ -201,7 +201,7 @@ impl StoreUpgradeError {
     }
 
     /// Whether this build refuses this data as it is, leaving it unchanged.
-    /// Some refusals have a screen ([`crate::copy::screen_for`]).
+    /// Every refusal has a screen ([`crate::copy::screen_for`], Q98 98-2).
     pub fn is_refusal(&self) -> bool {
         matches!(
             self,

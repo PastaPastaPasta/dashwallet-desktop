@@ -23,6 +23,7 @@ const TITLE: &str = "Dash Wallet can't open this wallet data safely";
 const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
 const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const CHANGED: &str = "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const KEEP: &str = "Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
 const EARLIER: &str =
     "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded.";
@@ -141,7 +142,7 @@ fn states() -> Vec<ProvedState> {
             Some(BackupState::None),
             None,
         ] {
-            for unchanged in [true, false] {
+            for unchanged in [Some(true), Some(false), None] {
                 out.push(ProvedState {
                     migrated,
                     backup,
@@ -210,10 +211,14 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let (way_key, way_text) = way_out(w);
             assert_eq!(s.title.key, "storeUpgrade.refused.title");
             assert_eq!(s.intro.key, "storeUpgrade.refused.intro");
-            let (unchanged_key, unchanged_text) = if state.unchanged {
-                ("unchanged", UNCHANGED)
-            } else {
-                ("changedByUpgrade", CHANGED)
+            let shown_unchanged = match cause {
+                RefusedCause::SnapshotMissing => Some(false),
+                _ => state.unchanged,
+            };
+            let (unchanged_key, unchanged_text) = match shown_unchanged {
+                Some(true) => ("unchanged", UNCHANGED),
+                Some(false) => ("changedByUpgrade", CHANGED),
+                None => ("keep", KEEP),
             };
             assert_eq!(
                 s.unchanged.key,
@@ -597,13 +602,25 @@ fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
         ProvedState {
             migrated: Some(false),
             backup: Some(BackupState::None),
-            unchanged: true,
+            unchanged: Some(true),
         }
     );
     assert!(shown(released).contains(&unchanged));
     assert!(!shown(released).contains(&changed));
-    assert!(!read(&f, true).unchanged, "this start's reconcile wrote");
+    assert_eq!(read(&f, true).unchanged, Some(false), "this start wrote");
     assert!(shown(read(&f, true)).contains(&changed));
+
+    let hidden = fixture("v0.1.0");
+    exec(&hidden.wallet(), "PRAGMA wal_checkpoint(TRUNCATE)");
+    super::review_fixes::hot_wal(&hidden, "UPDATE core_utxos SET spent = spent");
+    let unproved = read(&hidden, false);
+    assert_eq!(
+        unproved.unchanged, None,
+        "a log the immutable read can't see"
+    );
+    let neutral = shown(unproved);
+    assert!(neutral.contains(&KEEP.replace("{folder}", FOLDER)));
+    assert!(!neutral.contains(&unchanged) && !neutral.contains(&changed));
 
     let snapshot = crate::prepare_with(&f.net, build(), now())
         .unwrap()
@@ -619,7 +636,7 @@ fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
         ProvedState {
             migrated: Some(true),
             backup: Some(BackupState::Verified),
-            unchanged: false,
+            unchanged: Some(false),
         },
         "part-upgraded by an earlier start"
     );
@@ -628,8 +645,8 @@ fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
 
     drop(open_and_load(&f.net));
     let done = read(&f, false);
-    assert_eq!((done.migrated, done.unchanged), (Some(true), true));
-    assert!(!read(&f, true).unchanged);
+    assert_eq!((done.migrated, done.unchanged), (Some(true), Some(true)));
+    assert_eq!(read(&f, true).unchanged, Some(false));
 }
 
 #[test]
@@ -661,7 +678,7 @@ fn a_migrated_file_never_offers_the_earlier_version() {
         ProvedState {
             migrated: migrated(&f.net),
             backup: Some(BackupState::None),
-            unchanged: true,
+            unchanged: Some(true),
         },
     );
     assert_eq!(contacts.way_out, WayOut::SupportMigrated);

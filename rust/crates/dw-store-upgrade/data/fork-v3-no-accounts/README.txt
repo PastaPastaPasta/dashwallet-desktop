@@ -5,8 +5,8 @@ Made by: the PastaPastaPasta/platform fork at commit
   c5917e6bd5a9ae8e4f3d6a51cbec08f7aeb68cb0
   ("feat(platform-wallet): fund platform addresses from a shielded lock's remaining value")
   crate: packages/rs-platform-wallet-storage (platform-wallet-storage), default features
-  source copied from ~/.cargo/git/checkouts/platform-fff45202c37f3b1f/c5917e6 (no .git/target)
-Built and run on boat.dev sandbox bx_99x4y6qb (type large, --no-env), toolchain 1.98.1
+  source copied from a cargo git checkout of that commit (no .git/target)
+Built and run on a cloud sandbox, toolchain 1.98.1
 from the tree's rust-toolchain.toml, PROTOC = protoc 27.3 release binary
 (Ubuntu's protoc 3.21.12 is rejected by tenderdash-proto). Generated 2026-11-25 ~02:46Z.
 
@@ -14,7 +14,7 @@ Test name (lib unit test, #[ignore]d, run explicitly):
   sqlite::schema::core_state::tests::unauthorized_pending_spends::v3fixture_gen::generate_v3_dropped_unsigned_spends_fixture
 
 Command (from the platform workspace root):
-  V3FIXTURE_OUT=/home/user/out/wallet.sqlite cargo test -p platform-wallet-storage --lib -- \
+  V3FIXTURE_OUT=<out>/wallet.sqlite cargo test -p platform-wallet-storage --lib -- \
     --ignored --exact --nocapture \
     sqlite::schema::core_state::tests::unauthorized_pending_spends::v3fixture_gen::generate_v3_dropped_unsigned_spends_fixture
   -> "test result: ok. 1 passed; 0 failed" (see generate.log, attempt 3)
@@ -23,8 +23,8 @@ Only change to the fork's source: generator.rs added as
   src/sqlite/schema/core_state/tests/unauthorized_pending_spends/v3fixture_gen.rs
 and this one-line hook in src/sqlite/schema/core_state.rs (it is a child module, so it uses
 the fork's own private test helpers via `use super::*`):
---- /work/scratch/dwrepin/m3/v3fixture/work/core_state.rs.orig	2026-11-25 02:40:31.221839805 +0000
-+++ /work/scratch/dwrepin/m3/v3fixture/work/platform/packages/rs-platform-wallet-storage/src/sqlite/schema/core_state.rs	2026-11-25 02:46:11.399815345 +0000
+--- a/packages/rs-platform-wallet-storage/src/sqlite/schema/core_state.rs	2026-11-25 02:40:31.221839805 +0000
++++ b/packages/rs-platform-wallet-storage/src/sqlite/schema/core_state.rs	2026-11-25 02:46:11.399815345 +0000
 @@ -1823,6 +1823,7 @@
  
      mod unauthorized_pending_spends {
