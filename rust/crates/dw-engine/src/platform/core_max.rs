@@ -163,7 +163,11 @@ pub(crate) fn coins_of(
             continue;
         };
         if !((utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_mature(height)) {
-            out.arriving_duffs += value;
+            // An excluded coin counts nowhere (`crate::withhold`); a final
+            // one the drain would take holds Max back below.
+            if c.excluded.is_none() {
+                out.arriving_duffs += value;
+            }
             continue;
         }
         let path = (path.clone()).filter(|p| dw_vault::paths::is_bip44_address(p, network));

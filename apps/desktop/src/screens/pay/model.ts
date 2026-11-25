@@ -85,6 +85,7 @@ export function outpointOf(key: string): OutPoint {
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
   if (u.spendable) return null;
+  if (u.excluded === "pendingUnproven") return t("coins.pendingUnproven");
   if (u.reserved) return t("pay.notSelectable.reserved");
   if (u.userLocked) return t("pay.notSelectable.locked");
   if (u.isCoinbase) return t("pay.notSelectable.immature");
