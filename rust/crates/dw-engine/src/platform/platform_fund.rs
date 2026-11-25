@@ -159,6 +159,22 @@ pub(crate) trait FundLib: Send + Sync {
     ) -> impl Future<Output = Result<Option<u64>, PlatformWalletError>> + Send
     where
         S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = SignerError> + Send + Sync;
+    /// The wallet's tracked `AssetLockShieldedAddressTopUp` locks (type 5),
+    /// as the shield kind lists them.
+    fn shield_lock_rows(&self) -> impl Future<Output = Vec<KindLock>> + Send;
+    /// The library's `fund_from_shielded_remainder_asset_lock` of the
+    /// tracked type-5 lock at `outpoint` to `to`, one of the wallet's own
+    /// addresses (the only recipient), its asset-lock proof signed through
+    /// `signer`: what [`Self::apply`] returns. On a proved apply the
+    /// library records the lock `Consumed`.
+    fn apply_remainder<S>(
+        &self,
+        outpoint: OutPoint,
+        to: PlatformAddress,
+        signer: &S,
+    ) -> impl Future<Output = Result<Option<u64>, PlatformWalletError>> + Send
+    where
+        S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = SignerError> + Send + Sync;
     /// A sync pass of the wallet's Platform addresses, so the balance takes
     /// in an apply.
     fn sync_now(&self) -> impl Future<Output = ()> + Send;
@@ -219,7 +235,7 @@ pub(crate) async fn gate(lib: &impl FundLib) -> Result<&'static PlatformVersion,
 
 /// Platform's fee estimate for an apply: dpp's minimum fee for no input and
 /// one output.
-fn fee_credits(rules: &PlatformVersion) -> u64 {
+pub(crate) fn fee_credits(rules: &PlatformVersion) -> u64 {
     calculate_address_funding_from_asset_lock_min_required_fee(0, 1, rules)
 }
 
@@ -905,6 +921,48 @@ impl FundLib for PwFund {
                 ACCOUNT,
                 BTreeMap::from([(to, None)]),
                 Vec::new(),
+                &NoInputs,
+                signer,
+                None,
+            )
+            .await?;
+        let after = (changes.addresses.iter())
+            .find(|e| PlatformAddress::P2pkh(e.address.to_bytes()) == to)
+            .map(|e| e.funds.balance);
+        Ok(after.map(|a| a.saturating_sub(before)))
+    }
+
+    async fn shield_lock_rows(&self) -> Vec<KindLock> {
+        (self
+            .pw
+            .wallet
+            .asset_locks()
+            .list_tracked_locks()
+            .await
+            .iter())
+        .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
+        .map(KindLock::of_row)
+        .collect()
+    }
+
+    async fn apply_remainder<S>(
+        &self,
+        outpoint: OutPoint,
+        to: PlatformAddress,
+        signer: &S,
+    ) -> Result<Option<u64>, PlatformWalletError>
+    where
+        S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = SignerError> + Send + Sync,
+    {
+        let platform = self.pw.wallet.platform();
+        let before = (platform.addresses_with_balances().await.into_iter())
+            .find(|(a, _)| *a == to)
+            .map_or(0, |(_, c)| c);
+        let changes = platform
+            .fund_from_shielded_remainder_asset_lock(
+                outpoint,
+                ACCOUNT,
+                BTreeMap::from([(to, None)]),
                 &NoInputs,
                 signer,
                 None,
