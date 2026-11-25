@@ -23,7 +23,7 @@ use crate::{Engine, WalletBalances, WalletId};
 
 /// A wallet holding [`COINS`] confirmed coins of one DASH each, mined at
 /// [`FUNDED_AT`] and scanned to [`TIP`], and the transaction paying them.
-fn funded_wallet_and_funding() -> (
+pub(super) fn funded_wallet_and_funding() -> (
     tempfile::TempDir,
     Engine,
     Arc<NetworkSession>,
@@ -2405,18 +2405,18 @@ fn abandon_marked(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
 
 /// Runs the wallet's reconcile to its end, as a block event starts it:
 /// what can never confirm goes (#170 cases 3 and 4).
-fn reconciled(engine: &Engine, session: &NetworkSession, id: WalletId) {
+pub(super) fn reconciled(engine: &Engine, session: &NetworkSession, id: WalletId) {
     engine.block_on(session.reconcile_duplicate_coins(id));
 }
 
 /// Whether the history shows `txid`, not abandoned.
-fn live_in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+pub(super) fn live_in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned())
 }
 
 /// Another device of the wallet spends `coins`, outputs of `paid`, paying
 /// only someone else.
-fn foreign_winner(
+pub(super) fn foreign_winner(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
