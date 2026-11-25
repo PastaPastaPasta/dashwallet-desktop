@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use dash_sdk::platform::dashpay::{InviterInfo, encode_invitation_uri};
 use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::transaction::special_transaction::TransactionPayload;
 use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
@@ -13,7 +14,6 @@ use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::{AssetLockProof, Identifier};
 use dpp::secp256k1::SecretKey;
-use platform_wallet::wallet::identity::crypto::invitation::{InviterInfo, encode_invitation_uri};
 
 use super::*;
 use crate::platform::payments::Counterparty;

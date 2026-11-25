@@ -281,6 +281,25 @@ fn row_2_a_row_with_a_proof_reads_sent_with_or_without_a_marker() {
 }
 
 #[test]
+fn a_drain_completed_lock_reads_consumed_and_proved() {
+    let drained = platform_wallet::AssetLockStatus::DrainCompleted;
+    let status = TrackedStatus::from(&drained);
+    assert_eq!(status, R::Consumed);
+    assert!(!status.pending());
+    // A proved row reads Sent even beside a self-spend and without attribution.
+    assert_eq!(
+        derive_funding(DURABLE, Some(&[status]), true, true),
+        Some(Sent)
+    );
+    let lock = crate::platform::registration_flow::lock_status(&drained);
+    assert_eq!(
+        lock,
+        crate::platform::registration_flow::LockStatus::Consumed
+    );
+    assert!(!lock.has_proof());
+}
+
+#[test]
 fn row_3_a_built_or_broadcast_row_reads_will_be_sent_with_or_without_a_marker() {
     for status in [R::Built, R::Broadcast] {
         for step in [S::None, S::Marked { durable: false }, DURABLE, S::NotSent] {

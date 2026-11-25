@@ -147,6 +147,8 @@ impl From<&AssetLockStatus> for TrackedStatus {
             AssetLockStatus::ChainLocked => Self::ChainLocked,
             AssetLockStatus::Consumed => Self::Consumed,
             AssetLockStatus::RecoveredFromChain => Self::RecoveredFromChain,
+            // Only the library's own wallet drain writes it: the lock is out and spent.
+            AssetLockStatus::DrainCompleted => Self::Consumed,
         }
     }
 }

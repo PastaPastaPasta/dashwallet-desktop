@@ -90,7 +90,8 @@ pub(in crate::governance) fn summary(
         is_valid: true,
         is_evonode: evonode,
         has_extended_net_info: false,
-        net_info: None,
+        service_addresses: Vec::new(),
+        operator_key_is_legacy: false,
     }
 }
 

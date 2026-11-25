@@ -115,6 +115,8 @@ dw-testutil = { workspace = true }
 # `test-util`: paused clocks for the event pump and gate tests. `net` and
 # `io-util`: the local JSON-RPC mock of the collateral tests.
 tokio = { workspace = true, features = ["test-util", "net", "io-util"] }
+# tests/bl187_v24_payloads.rs frames P2P messages with dashcore's codec, as dash-spv's peer does.
+tokio-util = { version = "0.7.18", features = ["codec"] }
 # tests/m4_dashpay_contract.rs renders the DashPay facade's surface from its
 # source for docs/contracts/m4-dashpay-engine.md (both already in the graph).
 syn = { version = "2", features = ["full", "printing"] }

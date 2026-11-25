@@ -1,0 +1,26 @@
+[package]
+name = "dw-shielded-drain"
+description = "Moves a fork-written shielded.sqlite's spend dispositions and never-sent records into the dispatch journal before upstream's store first opens it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The dispatch journal the drained holds and the drain's marker go to.
+dw-appdb = { workspace = true }
+# The coordinated pre-upgrade snapshot and the persister-open proof the drain
+# requires before it writes.
+dw-store-upgrade = { workspace = true }
+# The same rusqlite the journal and platform-wallet-storage link.
+rusqlite = { version = "0.41", features = ["bundled"] }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Upstream's store, opened on a drained file (its tree bound, its records).
+platform-wallet = { workspace = true }
+platform-wallet-storage = { workspace = true }
+tempfile = { workspace = true }

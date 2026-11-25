@@ -1053,8 +1053,6 @@ impl NetworkSession {
                 Err(e) => Err(EngineError::from(e)),
             })
             .await??;
-            // Its blocks are fetched again, and kept again if still needed.
-            (manager.wallet_manager_arc().write().await).clear_awaiting_chain_lock();
             *this.hub.rescan() = None;
             this.hub.tracker().reset();
             for (wallet, checkpoint) in wallets {

@@ -63,12 +63,10 @@ pub async fn create_invitation(
     phrase: &[u8],
 ) -> Result<zeroize::Zeroizing<String>, crate::platform::PlatformError> {
     use crate::platform::PlatformError;
+    use dash_sdk::platform::dashpay::{InviterInfo, encode_invitation_uri};
     use dpp::secp256k1::SecretKey;
     use key_wallet::bip32::ExtendedPrivKey;
     use platform_wallet::AssetLockFundingType;
-    use platform_wallet::wallet::identity::crypto::invitation::{
-        InviterInfo, encode_invitation_uri,
-    };
     use platform_wallet::wallet::identity::network::{MAX_INVITATION_DUFFS, MIN_INVITATION_DUFFS};
     use zeroize::Zeroize;
 
@@ -129,7 +127,9 @@ pub async fn create_invitation(
     });
     let uri = encode_invitation_uri(&voucher, network, &proof, inviter.as_ref());
     voucher.non_secure_erase();
-    Ok(zeroize::Zeroizing::new(uri?))
+    Ok(zeroize::Zeroizing::new(
+        uri.map_err(platform_wallet::PlatformWalletError::from)?,
+    ))
 }
 
 /// What [`hold_close_fence`] holds.

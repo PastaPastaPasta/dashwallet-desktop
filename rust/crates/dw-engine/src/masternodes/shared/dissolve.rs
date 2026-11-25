@@ -672,7 +672,8 @@ mod tests {
                     is_valid: true,
                     is_evonode: false,
                     has_extended_net_info: true,
-                    net_info: None,
+                    service_addresses: Vec::new(),
+                    operator_key_is_legacy: false,
                 })
                 .collect(),
         }

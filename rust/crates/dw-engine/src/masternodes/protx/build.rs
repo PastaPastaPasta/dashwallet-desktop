@@ -449,7 +449,7 @@ pub(crate) fn parse_service(text: &str, network: Network) -> Result<SocketAddr, 
     })
 }
 
-/// The list as Core's duplicate checks compare it, every net-info entry of
+/// The list as Core's duplicate checks compare it, every socket address of
 /// every purpose (MG-04b D39); the wallet's own masternodes carry their
 /// collateral (the list has none).
 fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
@@ -457,13 +457,15 @@ fn listed(list: &ListView, owned: &[OwnedMasternode]) -> Vec<ListedMasternode> {
         .iter()
         .map(|e| ListedMasternode {
             pro_tx_hash: e.pro_tx_hash,
-            // A persisted summary carries no entries (platform-wallet stores
-            // none): its primary service stands in.
-            net_info: match (&e.net_info, e.service_address) {
-                (Some(info), _) => rules::listed_net_info(info),
-                (None, Some(s)) => rules::listed_net_info(&MasternodeNetInfo::Legacy(s)),
-                (None, None) => Vec::new(),
-            },
+            // Domain, Tor and I2P entries have no socket form, so they drop
+            // out of this preflight (and the shared flow's, which reads this
+            // list); requests are IP services only, and Core still refuses
+            // any duplicate on submission.
+            net_info: e
+                .service_addresses
+                .iter()
+                .flat_map(|s| rules::listed_net_info(&MasternodeNetInfo::Legacy(*s)))
+                .collect(),
             operator_public_key: e.operator_public_key,
             voting_key_id: e.voting_key_id,
             platform_node_id: e.platform_node_id,
