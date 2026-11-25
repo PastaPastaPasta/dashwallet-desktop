@@ -2399,8 +2399,10 @@ impl NetworkSession {
             .appdb_op(move |db| {
                 let keys: Vec<String> = (settled.iter())
                     .flat_map(|t| {
-                        [DROPPED_PREFIX, crate::store_repair::STORE_DROPPED_PREFIX]
-                            .map(|p| format!("{p}{t}"))
+                        [
+                            format!("{DROPPED_PREFIX}{t}"),
+                            crate::store_repair::record_key(t),
+                        ]
                     })
                     .collect();
                 let writes: Vec<(&str, Option<&str>)> =

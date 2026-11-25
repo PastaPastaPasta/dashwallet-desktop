@@ -336,28 +336,28 @@ const LOCKS_WITHOUT_RECORD: &str = "SELECT l.wallet_id, l.txid, \
      (SELECT 1 FROM core_transactions t WHERE t.wallet_id = l.wallet_id \
      AND t.txid = l.txid AND t.record_blob IS NOT NULL)";
 
-fn lock_size_limit() -> i64 {
+pub(crate) fn lock_size_limit() -> i64 {
     i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX)
+}
+
+/// A stored blob, decoded as the store encodes it, every byte used.
+pub(crate) fn decode_stored<T: serde::de::DeserializeOwned>(blob: &[u8]) -> Option<T> {
+    let config =
+        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
+    match bincode::serde::decode_from_slice(blob, config) {
+        Ok((value, used)) if used == blob.len() => Some(value),
+        _ => None,
+    }
 }
 
 /// A stored record's blob, decoded as the store encodes it.
 pub(crate) fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
-    let config =
-        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
-    match bincode::serde::decode_from_slice(blob, config) {
-        Ok((record, used)) if used == blob.len() => Some(record),
-        _ => None,
-    }
+    decode_stored(blob)
 }
 
 /// A stored lock row's blob, decoded as the store encodes it.
 pub(crate) fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
-    let config =
-        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
-    match bincode::serde::decode_from_slice(blob, config) {
-        Ok((lock, used)) if used == blob.len() => Some(lock),
-        _ => None,
-    }
+    decode_stored(blob)
 }
 
 /// Of `txids`, those with an output of theirs stored for `wallet`, and

@@ -350,7 +350,7 @@ struct Graph {
 /// walk could not complete (a row that doesn't decode, a key of the wrong
 /// size, or more than `max_rows` rows), logged.
 fn read_graph(tx: &rusqlite::Transaction<'_>, max_rows: usize) -> rusqlite::Result<Option<Graph>> {
-    let limit = i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX);
+    let limit = crate::history_ops::lock_size_limit();
     let rows: i64 = tx.query_row(
         "SELECT (SELECT count(*) FROM core_transactions) + (SELECT count(*) FROM core_instant_locks) \
          + (SELECT count(*) FROM core_utxos WHERE spent_in_txid IS NOT NULL)",
@@ -466,12 +466,7 @@ pub(crate) fn encode_outpoint(outpoint: &OutPoint) -> Vec<u8> {
 }
 
 fn decode_outpoint(bytes: &[u8]) -> Option<OutPoint> {
-    let config =
-        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
-    match bincode::serde::decode_from_slice(bytes, config) {
-        Ok((outpoint, used)) if used == bytes.len() => Some(outpoint),
-        _ => None,
-    }
+    crate::history_ops::decode_stored(bytes)
 }
 
 /// Why input `index` of `claim` (stored for `wallet`) drops it, if it does:
@@ -777,7 +772,7 @@ fn apply(tx: &rusqlite::Transaction<'_>, drops: &[Planned]) -> rusqlite::Result<
     Ok(())
 }
 
-fn record_key(txid: &Txid) -> String {
+pub(crate) fn record_key(txid: &Txid) -> String {
     format!("{STORE_DROPPED_PREFIX}{txid}")
 }
 
@@ -785,41 +780,38 @@ fn record_key(txid: &Txid) -> String {
 /// the list of them.
 fn stage(appdb: &AppDb, drops: &[Planned]) -> Result<(), EngineError> {
     let mut staged: Vec<(String, String)> = read_staged(appdb)?;
-    staged.extend(
-        drops
-            .iter()
-            .map(|d| (hex::encode(d.wallet), d.txid.to_string())),
-    );
+    staged.extend((drops.iter()).map(|d| (WalletId(d.wallet).to_string(), d.txid.to_string())));
     let list = serde_json::to_string(&staged).map_err(storage)?;
-    let rows: Vec<(String, String, String)> = (drops.iter())
-        .map(|d| {
-            let value = serde_json::to_string(&d.record).map_err(storage)?;
-            Ok((hex::encode(d.wallet), record_key(&d.txid), value))
-        })
-        .collect::<Result<_, EngineError>>()?;
-    let mut writes: Vec<(&str, &str, Option<&str>)> = (rows.iter())
-        .map(|(s, k, v)| (s.as_str(), k.as_str(), Some(v.as_str())))
-        .collect();
-    writes.push((STAGED_SCOPE, STAGED_KEY, Some(&list)));
-    appdb.set_scoped_settings_durable(&writes).map_err(storage)
+    write_records(appdb, drops, State::Staged, Some(&list))
 }
 
 /// Marks `drops` done and empties the staged list, in one write.
 fn promote(appdb: &AppDb, drops: &[Planned]) -> Result<(), EngineError> {
+    write_records(appdb, drops, State::Done, None)
+}
+
+/// Writes `drops`' records at `state` and the staged list as `list`, in
+/// one durable write.
+fn write_records(
+    appdb: &AppDb,
+    drops: &[Planned],
+    state: State,
+    list: Option<&str>,
+) -> Result<(), EngineError> {
     let rows: Vec<(String, String, String)> = (drops.iter())
         .map(|d| {
             let record = DropRecord {
-                state: State::Done,
+                state,
                 ..d.record.clone()
             };
             let value = serde_json::to_string(&record).map_err(storage)?;
-            Ok((hex::encode(d.wallet), record_key(&d.txid), value))
+            Ok((WalletId(d.wallet).to_string(), record_key(&d.txid), value))
         })
         .collect::<Result<_, EngineError>>()?;
     let mut writes: Vec<(&str, &str, Option<&str>)> = (rows.iter())
         .map(|(s, k, v)| (s.as_str(), k.as_str(), Some(v.as_str())))
         .collect();
-    writes.push((STAGED_SCOPE, STAGED_KEY, None));
+    writes.push((STAGED_SCOPE, STAGED_KEY, list));
     appdb.set_scoped_settings_durable(&writes).map_err(storage)
 }
 
