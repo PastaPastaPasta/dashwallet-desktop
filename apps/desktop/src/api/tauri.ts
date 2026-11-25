@@ -101,6 +101,7 @@ export class IpcBackend implements Backend {
   networkChoice = () => orAbsent(cmd.getNetworkChoice());
   switchNetwork = (...a: Parameters<typeof cmd.switchNetwork>) => orUnavailable(cmd.switchNetwork(...a));
   shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedSyncInfo = (walletId: string) => orAbsent(cmd.shieldedSyncInfo(walletId));
   shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
   shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));

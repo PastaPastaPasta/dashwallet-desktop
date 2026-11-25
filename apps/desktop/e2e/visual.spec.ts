@@ -97,6 +97,86 @@ const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void
       await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
     },
   },
+  // Every sync the user waits on: the bar while Shielded's first scan runs, Sync progress then and
+  // once synced, a failed pass, and Receive's Shielded tab with its address while syncing and locked.
+  "status-shielded-syncing": { scenario: "shielded-syncing", go: (page) => expect(page.getByTestId("status-state")).toHaveText("Syncing Shielded…") },
+  "status-shielded-incomplete": { scenario: "shielded-pass-failed", go: (page) => expect(page.getByTestId("status-state")).toHaveText("Shielded sync didn't finish") },
+  "sync-items-syncing": {
+    scenario: "shielded-syncing",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("scanned");
+    },
+  },
+  "sync-items-synced": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("Done");
+    },
+  },
+  "status-platform-incomplete": { scenario: "platform-addresses-failed", go: (page) => expect(page.getByTestId("status-state")).toHaveText("Platform sync didn't finish") },
+  "sync-items-failed": {
+    scenario: "shielded-pass-failed",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("The last pass failed");
+    },
+  },
+  "sync-items-unread": {
+    scenario: "shielded-sync-unread",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("Couldn't check this sync");
+    },
+  },
+  "sync-items-watch-only": {
+    scenario: "shielded-watch-only",
+    go: async (page) => {
+      await page.getByTestId("status-sync").click();
+      await expect(page.getByTestId("sync-item-shielded")).toContainText("Not available in a watch-only wallet");
+    },
+  },
+  "receive-shielded-watch-only": {
+    scenario: "shielded-watch-only",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-watch-only").waitFor();
+    },
+  },
+  "receive-shielded-syncing": {
+    scenario: "shielded-syncing",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-scan").waitFor();
+      await page.getByTestId("shielded-receive-address").waitFor();
+    },
+  },
+  "receive-shielded-locked": {
+    scenario: "shielded-locked",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-locked").waitFor();
+    },
+  },
+  "receive-shielded-mixing-only": {
+    scenario: "shielded-mixing-only",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("shielded-receive-open").click();
+      await page.getByTestId("shielded-receive-locked").waitFor();
+    },
+  },
+  "transfer-shielded-mixing-only": {
+    scenario: "shielded-mixing-only",
+    go: async (page) => {
+      await openTransfer(page, "coreToShielded");
+      await page.getByTestId("transfer-unavailable").waitFor();
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",

@@ -58,7 +58,7 @@ struct Hooked {
 impl Hooked {
     fn new() -> Self {
         let f = topup_tests::fixture(true);
-        assert!(bound_address(&f.engine, &f.session, f.wallet).0);
+        assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
         let manager = f.session.manager().unwrap();
         let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
         let hook = Arc::new(EngineDispatch::new(&f.session, &coordinator));
@@ -1006,7 +1006,7 @@ fn the_hook_is_set_on_every_open_path() {
         .unwrap();
     assert!(hooked);
     // Bound, so the reopened session (its vault locked) binds from storage.
-    assert!(bound_address(&f.engine, &f.session, f.wallet).0);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
     assert!(f.engine.block_on(recording(&coordinator)));
     drop((coordinator, manager));
@@ -1020,7 +1020,7 @@ fn the_hook_is_set_on_every_open_path() {
         .unwrap();
     let manager = f.session.manager().unwrap();
     assert!(f.engine.block_on(manager.shielded_coordinator()).is_none());
-    assert!(bound_address(&f.engine, &f.session, f.wallet).0);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
     assert!(f.engine.block_on(recording(&coordinator)));
 

@@ -14,7 +14,7 @@ export interface TransferState {
   go: (page: Page) => Promise<void>;
 }
 
-const SYNCING = "Shielded is still syncing; try again when it finishes.";
+const SYNCING = "Shielded is still syncing. Try again when it finishes.";
 /** Dash wallet → Platform reads its quote only on Continue (and Max): its fee line while typing. */
 export const FEE_ON_NEXT_STEP = "Fee shown on the next step";
 const FEE = /^Fee about .* · You receive about /;
