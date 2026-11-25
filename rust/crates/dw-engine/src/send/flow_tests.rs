@@ -6130,7 +6130,11 @@ fn a_commit_noted_before_the_truncation_is_applied_keeps_the_record_to_the_close
     let f = f.reopen();
     let (synced, reopened) = (f.synced(), f.record());
     assert_eq!(
-        (record.map(|r| (r.target, r.reached, r.forked_from)), reopened, synced),
+        (
+            record.map(|r| (r.target, r.reached, r.forked_from)),
+            reopened,
+            synced
+        ),
         (Some((1_001, 900, 1_001)), None, 1_001)
     );
 }
