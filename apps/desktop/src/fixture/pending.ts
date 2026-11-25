@@ -153,6 +153,17 @@ export interface PlatformWorld {
   nextPayout: PayoutStateName;
   /** The next payment's reply is lost after the engine recorded it (an `internal` error). */
   loseReply?: boolean;
+  /** Platform's structure pre-check refuses every move, send and top-up from these addresses before
+   * anything is signed: `rulesUnsupported` while the network runs a newer protocol version. */
+  preCheck?: "refused" | "rulesUnsupported";
+}
+
+/** As the engine, after the holds and before the grant: the pre-check's refusal, its consensus error in
+ * the message (the log), never in the data. */
+export function preCheck(p: PlatformWorld) {
+  if (!p.preCheck) return;
+  const code = p.preCheck === "rulesUnsupported" ? "credits.rules_unsupported" : "credits.preflight_refused";
+  throw fail(code, "FeeStrategyTooManyStepsError: Fee strategy has 1 steps, maximum allowed is 0");
 }
 
 export interface PendingWorld {
@@ -703,6 +714,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       const landed = target.state === "replaced" ? p.activity.find((a) => a.state === "done" && p.terms[a.id] === p.terms[target.id]) : undefined;
       return sendOutcome(p, landed ?? target);
     }
+    preCheck(p);
     useGrant(world, grant);
     if (p.nextSend === "refused") throw fail("platform.unavailable", "the fixture refuses the send");
     const state = p.nextSend;
@@ -820,6 +832,7 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     // settles). A move that failed by height does not: the next one signs at the same inputs and frees it.
     const holding = p.activity.find((a) => isHeldOp(a) && (a.kind === "send" || a.state === "pending"));
     if (holding) throw moveHeld(holding.id);
+    preCheck(p);
     const supersedes = p.activity.filter((a) => a.kind === "moveToCore" && isHeldOp(a)).map((a) => a.id);
     const g = checkGrant(world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
