@@ -23,15 +23,14 @@ describe("Shielded spends off", () => {
     expect(shieldedSpendsOff(undefined)).toBe(false);
   });
 
-  it("reads the engine's refusal of a spend as the reason line, and only a spend's", () => {
-    for (const kind of ["send", "out", "toPlatform"] as const) {
+  it("reads the engine's refusal of a spend or a new shield as the reason line, and not a resume's", () => {
+    for (const kind of ["send", "out", "toPlatform", "add"] as const) {
       expect(spendsOffRefusal("platform.unavailable", kind, true), kind).toBe(true);
       expect(shieldedErrorText(UNAVAILABLE, credits, duffs, kind, false, false, true)).toBe(SHIELDED_SPENDS_COPY.unavailable);
     }
-    expect(spendsOffRefusal("platform.unavailable", "add", true)).toBe(false);
     expect(spendsOffRefusal("platform.unavailable", "resume", true)).toBe(false);
     expect(spendsOffRefusal("platform.timeout", "send", true)).toBe(false);
-    expect(shieldedErrorText(UNAVAILABLE, credits, duffs, "add", false, false, true)).not.toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(shieldedErrorText(UNAVAILABLE, credits, duffs, "resume", false, false, true)).not.toBe(SHIELDED_SPENDS_COPY.unavailable);
   });
 
   it("leaves every refusal as it was while spends work", () => {

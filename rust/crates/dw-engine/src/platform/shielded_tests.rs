@@ -4954,6 +4954,24 @@ fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     shield_on(&fx, &lib);
 }
 
+/// A shield already sent still finishes while the library cannot spend from
+/// the key set: only a new move into the pool is refused, so what is locked
+/// for Shielded is never stranded.
+#[test]
+fn a_shield_already_sent_finishes_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    let (outpoint, state) = shield_on(&fx, &lib);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let state = check_again(&fx, &lib, outpoint);
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    assert_eq!(*lib.applied.lock().unwrap(), vec![outpoint; 2]);
+}
+
 /// Without the dispatch hook no spend starts: a send and an unshield are
 /// refused before anything else, so nothing is quoted, no receive address
 /// is issued, the grant is kept and no key leaves the vault.
