@@ -2576,8 +2576,9 @@ impl NetworkSession {
     }
 
     /// [`Self::refresh_held`]'s report: the held total, the coins of unknown
-    /// value, and whether one awaits. `None` when the notes don't read or
-    /// the wallet is gone. On the way it keeps the sweep notes (Q81d S4-S6)
+    /// value, and whether one awaits: a held coin, or one a block not yet
+    /// final spent. When the notes don't read, the last total, awaiting.
+    /// `None` when the wallet is gone. On the way it keeps the sweep notes (Q81d S4-S6)
     /// and the lock notes (Q81c C1).
     async fn held_report(&self, manager: &Manager, wallet: WalletId) -> Option<(u64, u32, bool)> {
         use crate::history::{SpendNote, proven_final};

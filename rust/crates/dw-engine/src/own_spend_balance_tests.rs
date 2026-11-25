@@ -4825,7 +4825,9 @@ fn another_wallets_lock_is_noted_at_once_and_goes_once_its_block_is_final() {
 /// #749: a verified lock heard on the network of a payment no wallet
 /// holds, which key-wallet never hears, spends D, held: the lock is noted
 /// on D at once and D awaits, after a restart too. An unverified lock of
-/// it, and a verified lock spending no held coin, note nothing.
+/// it, and a verified lock spending no held coin, note nothing. Once the
+/// payment's block is ChainLocked, D's spend is final: its note goes and
+/// nothing awaits.
 #[test]
 fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting() {
     use dash_spv::EventHandler;
@@ -4844,7 +4846,8 @@ fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting()
         });
     };
     let elsewhere = OutPoint::new(Txid::from_byte_array([52; 32]), 0);
-    let s = Txid::from_byte_array([53; 32]);
+    let spend = foreign_winner(&engine, &session, id, &paid, &[d]);
+    let s = spend.txid();
     heard(
         &session,
         Txid::from_byte_array([51; 32]),
@@ -4867,6 +4870,16 @@ fn a_network_lock_of_an_unknown_payment_spending_a_held_coin_keeps_it_awaiting()
     reload_with_headers(&engine, &session, id, &[(TIP + 1, w_block)]);
     assert_eq!(held_report(&session, id), (x, 0, true), "restarted");
     assert_eq!(lock_rows(&session, id).len(), 1, "the note stays");
+
+    let block = super::block_with(vec![spend.clone()]).block_hash();
+    header_chain(&session, &[(TIP + 1, w_block), (TIP + 2, block)]);
+    mined(&engine, &session, id, TIP + 2, vec![spend]);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (0, 0, true), "mined, not final");
+    chain_lock(&engine, &session, id, TIP + 2, block);
+    reconciled(&engine, &session, id);
+    assert_eq!(held_report(&session, id), (0, 0, false), "final");
+    assert!(lock_rows(&session, id).is_empty(), "the note goes");
 }
 
 /// #749: a block above the ChainLock spends D, held: D is out of the held
