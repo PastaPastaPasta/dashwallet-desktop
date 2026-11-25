@@ -1795,6 +1795,9 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
 #[path = "shielded_disposition_tests.rs"]
 mod disposition_tests;
 
+#[path = "shielded_executed_tests.rs"]
+mod executed_tests;
+
 /// #178: a periodic pass skips the library's note scan while Platform's
 /// proved note count shows the pool unchanged (`shielded_pool::guarded_pass`).
 /// The count is the test's (`PlatformRuntime::notes_count`); the passes that

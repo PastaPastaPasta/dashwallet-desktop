@@ -1190,10 +1190,15 @@ pub(crate) fn spend_error(e: PlatformWalletError) -> ShieldedError {
         // Retryable: the next sync moves the tree onto a recorded anchor
         // (operations.rs:2736, "wait for the next shielded sync").
         PlatformWalletError::ShieldedNoRecordedAnchor(_) => ShieldedError::not_synced(Wait::Tree),
-        // Refused before anything was sent: by the dispatch hook, or a key
-        // set that is not the account's, refused before anything is read.
-        PlatformWalletError::ShieldedDispatchRefused { .. }
-        | PlatformWalletError::ShieldedKeysetMismatch { .. } => ShieldedError::SpendRefused,
+        // Refused by the dispatch hook before anything was sent.
+        PlatformWalletError::ShieldedDispatchRefused { .. } => ShieldedError::SpendRefused,
+        // Refused before anything is read: the key set the seed derives is
+        // not the bound account's, so the store and the vault disagree,
+        // which no user action causes.
+        PlatformWalletError::ShieldedKeysetMismatch { account } => {
+            tracing::error!(account, "the spend's key set is not the bound account's");
+            ShieldedError::SpendRefused
+        }
         PlatformWalletError::ShieldedBroadcastFailed(ref text) => match pool_notes(text) {
             Some((notes, required)) => ShieldedError::PoolTooSmall { notes, required },
             None => PlatformError::from(e).into(),
