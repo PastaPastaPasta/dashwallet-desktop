@@ -5,6 +5,7 @@
 // keeps its row ("…" or "—"), so the hero is never lower than it looks without saying why.
 
 import type { Balances } from "../api/generated/Balances";
+import type { ShieldedHold } from "../api/queries";
 import type { ListArrival } from "../components/emptyStates";
 import { messageTable, t } from "../i18n";
 
@@ -143,16 +144,22 @@ export function homeBalance(core: Balances, shielded: PoolReading, platform: Poo
 }
 
 /**
- * The Core row's subtitle: what is still arriving (already in the row's number), then what is in
+ * The Core row's subtitle: what is still arriving (already in the row's number, and the coins the
+ * engine withholds, which are not: a payment they come from may never confirm), then what is in
  * the wallet but not spendable (not in it): immature rewards and locked coins.
  */
 export function coreSubtitle(core: Balances, fmt: (duffs: number) => string, fallback: string): string {
   const parts: string[] = [];
-  if (core.unconfirmed > 0) parts.push(t("home.core.pending", { amount: fmt(core.unconfirmed) }));
+  const pending = core.unconfirmed + core.withheld;
+  if (pending > 0) parts.push(t("home.core.pending", { amount: fmt(pending) }));
   if (core.immature > 0) parts.push(t("home.core.immature", { amount: fmt(core.immature) }));
   if (core.locked > 0) parts.push(t("home.core.locked", { amount: fmt(core.locked) }));
   return parts.length > 0 ? parts.join(t("home.core.separator")) : fallback;
 }
+
+/** The Shielded row's subtitle while payments that may still go through hold part of it. */
+export const shieldedSubtitle = (hold: ShieldedHold | null, fmt: (duffs: number) => string, fallback: string): string =>
+  hold ? t("home.shielded.held", { amount: fmt(hold.duffs), count: hold.count }) : fallback;
 
 const poolRow = (pool: Pool) => ({
   pool,
@@ -171,10 +178,11 @@ export const POOL_ROWS: readonly { pool: Pool; readonly title: string; readonly 
  * pool or it is known to be empty; one still being read, or whose read failed, keeps its row. Core
  * shows with them. Alone it would only repeat the hero, so there is no breakdown, and a line under
  * the hero names what is pending, immature or locked instead (`coreSubtitle`). In discreet mode
- * the rows don't depend on what holds money: Core and every pool the wallet has.
+ * the rows don't depend on what holds money: Core and every pool the wallet has. An empty Shielded
+ * balance keeps its row while a payment holds part of it (`shieldedHeld`), to say so.
  */
-export function breakdownRows(pools: HomeBalance["pools"], discreet: boolean): Pool[] {
-  const others = (["shielded", "platform"] as const).filter((p) => pools[p] !== "absent" && (discreet || pools[p] !== 0));
+export function breakdownRows(pools: HomeBalance["pools"], discreet: boolean, shieldedHeld = false): Pool[] {
+  const others = (["shielded", "platform"] as const).filter((p) => pools[p] !== "absent" && (discreet || pools[p] !== 0 || (p === "shielded" && shieldedHeld)));
   return others.length > 0 ? ["core", ...others] : [];
 }
 

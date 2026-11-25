@@ -116,9 +116,9 @@ pub enum QuorumSource {
 /// The open network's Platform protocol compatibility (`NetworkSession::protocol_compatibility`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolCompatibility {
-    /// Active Platform protocol version from the latest proved epoch read
-    /// (or proved response metadata); `None` until Platform has answered,
-    /// or when `SessionOptions::no_platform` is set.
+    /// Highest active Platform protocol version proved by an epoch read
+    /// whose quorum keys SPV verified; `None` until such a read has
+    /// answered, or when `SessionOptions::no_platform` is set.
     pub network_version: Option<u32>,
     /// Highest Platform protocol version this build supports.
     pub supported_version: u32,
@@ -127,7 +127,7 @@ pub struct ProtocolCompatibility {
 impl NetworkSession {
     /// The open network's Platform protocol version and the highest version
     /// this build supports. In-memory read; answers offline (`network_version`
-    /// is `None` until Platform has answered).
+    /// is `None` until a read under SPV-verified quorum keys has answered).
     pub fn protocol_compatibility(&self) -> Result<ProtocolCompatibility, PlatformError> {
         let _op = self.try_enter().map_err(PlatformError::from)?;
         Ok(ProtocolCompatibility {

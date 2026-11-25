@@ -252,6 +252,12 @@ export const transfer = {
       why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
       unfinished: "{amount} was locked to add to Shielded and is not applied yet.",
     },
+    /** What payments that may still go through hold of the Shielded balance (not in it). `amount`
+     * is the held total with its unit; `count` the payments holding it. */
+    held: {
+      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+    },
     titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
     form: {
       why: { amount: "Enter an amount first.", to: "Enter a Shielded address first.", memo: "The note is too long." },

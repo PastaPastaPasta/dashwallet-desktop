@@ -159,7 +159,7 @@ use super::registration_flow::{
 use super::requests::{leased, write_permit};
 use super::shield_drain::DrainCoin;
 use super::shielded::{
-    PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
+    HeldSpend, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
     ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
     ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
     ShieldedStatus, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
@@ -194,6 +194,16 @@ pub(crate) const MAX_LOCK_INPUTS: usize = 50;
 /// past it the library answers a timeout, nothing is dropped mid-call, and
 /// the lock pends for `resume_shield`.
 const APPLY_CHAIN_LOCK_WAIT: Duration = Duration::from_secs(300);
+
+/// One of [`ShieldedLib::held_spends`], with the notes it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Hold {
+    /// Platform's hash of its transition.
+    pub(crate) transition: [u8; 32],
+    pub(crate) activity: [u8; 32],
+    /// The nullifiers of the notes it spent or may have spent.
+    pub(crate) nullifiers: Vec<[u8; 32]>,
+}
 
 /// The account's ledger as the library holds it locally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +318,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
+    /// [`Self::held_spends`] with their activity and held notes, for the
+    /// status only.
+    fn holds(&self) -> impl Future<Output = Result<Vec<Hold>, PlatformError>> + Send;
+    /// Every note of the account, spent ones too.
+    fn all_notes(&self) -> impl Future<Output = Result<Vec<ShieldedNote>, PlatformError>> + Send;
     /// The wallet's [`RestClock`], kept in `app.sqlite`.
     fn rest_clock(&self) -> impl Future<Output = Result<RestClock, PlatformError>> + Send;
     /// [`write_rest_clock`] on the wallet's `app.sqlite`.
@@ -572,6 +587,8 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
         pending: 0,
         pending_shields: Vec::new(),
         unresolved_spends: Vec::new(),
+        held_spends: Vec::new(),
+        held: 0,
         unrecorded_spends: Vec::new(),
         synced_index: None,
         last_sync_at: None,
@@ -591,6 +608,11 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
         return Ok(status);
     }
     status.unresolved_spends = lib.unresolved().await?;
+    // Shown only: a read that fails shows no hold.
+    match shown_holds(lib).await {
+        Ok((spends, held)) => (status.held_spends, status.held) = (spends, held),
+        Err(error) => tracing::warn!(?error, "the shielded holds are unreadable"),
+    }
     if let Some(ledger) = lib.ledger().await? {
         status.ready = true;
         status.balance = ledger.spendable;
@@ -601,6 +623,33 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
             .fold(0u64, u64::saturating_add);
     }
     Ok(status)
+}
+
+/// The account's holds as the status shows them, each with the credits of
+/// the unspent notes it holds, and those of all of them, each note once.
+async fn shown_holds(lib: &impl ShieldedLib) -> Result<(Vec<HeldSpend>, u64), PlatformError> {
+    let holds = lib.holds().await?;
+    if holds.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let notes = lib.all_notes().await?;
+    let spends = (holds.iter())
+        .map(|h| HeldSpend {
+            activity_id: hex::encode(h.activity),
+            transition: hex::encode(h.transition),
+            credits: held_credits(std::slice::from_ref(h), &notes),
+        })
+        .collect();
+    Ok((spends, held_credits(&holds, &notes)))
+}
+
+/// Credits of the unspent `notes` that `holds` hold, each note once.
+pub(crate) fn held_credits(holds: &[Hold], notes: &[ShieldedNote]) -> u64 {
+    let held: HashSet<&[u8; 32]> = holds.iter().flat_map(|h| &h.nullifiers).collect();
+    (notes.iter())
+        .filter(|n| !n.is_spent && held.contains(&n.nullifier))
+        .map(|n| n.value)
+        .fold(0, u64::saturating_add)
 }
 
 pub(crate) async fn sync(
@@ -3142,6 +3191,29 @@ impl ShieldedLib for PwShielded {
             })
             .map(|d| d.st_hash)
             .collect())
+    }
+
+    async fn holds(&self) -> Result<Vec<Hold>, PlatformError> {
+        let dispositions = (self.coordinator)
+            .spend_dispositions(self.pw.wallet_id.0)
+            .await
+            .map_err(store_error)?;
+        Ok((dispositions.into_iter())
+            .filter(|d| {
+                d.subwallet == self.subwallet()
+                    && matches!(d.disposition, ShieldedSpendDisposition::Unresolved(_))
+            })
+            .map(|d| Hold {
+                transition: d.st_hash,
+                activity: d.activity_id,
+                nullifiers: d.held_nullifiers,
+            })
+            .collect())
+    }
+
+    async fn all_notes(&self) -> Result<Vec<ShieldedNote>, PlatformError> {
+        let store = self.coordinator.store().read().await;
+        (store.get_all_notes(self.subwallet())).map_err(store_error)
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {

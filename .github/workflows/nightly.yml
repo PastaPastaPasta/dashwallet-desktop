@@ -59,12 +59,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
       # only; the release-check job proves it absent from a release build).
@@ -216,12 +220,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: Build the warm-up example
         working-directory: rust
@@ -246,12 +254,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: mg04b_release_check (release)
         working-directory: rust
@@ -318,12 +330,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: kill -9 rows
         working-directory: rust

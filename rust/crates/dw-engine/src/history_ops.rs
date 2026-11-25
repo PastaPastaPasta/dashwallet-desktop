@@ -26,6 +26,28 @@ use crate::platform::attribution::Payees;
 use crate::session::{Manager, WALLET_DB_FILE};
 use crate::{EngineError, NetworkSession, WalletId};
 
+/// Every spent claim the engine restores goes through this one helper, so
+/// platform-wallet's claim mirror can see each claimed outpoint: a block
+/// that later spends one is then captured as a block spend even though the
+/// wallet holds neither the coin nor its claimant's record.
+pub(crate) fn restore_spent_claims(
+    info: &mut PlatformWalletInfo,
+    claims: &[(OutPoint, Option<Txid>)],
+) -> Vec<OutPoint> {
+    #[cfg(test)]
+    (claims_restored().lock().unwrap_or_else(|p| p.into_inner()))
+        .extend(claims.iter().map(|(o, _)| *o));
+    info.core_wallet.restore_spent_outpoints(claims)
+}
+
+/// Tests: every outpoint [`restore_spent_claims`] restored a claim on.
+#[cfg(test)]
+pub(crate) fn claims_restored() -> &'static std::sync::Mutex<HashSet<OutPoint>> {
+    static RESTORED: std::sync::OnceLock<std::sync::Mutex<HashSet<OutPoint>>> =
+        std::sync::OnceLock::new();
+    RESTORED.get_or_init(Default::default)
+}
+
 /// Every script the wallet's funds accounts own: BIP44 and BIP32 accounts,
 /// DIP9 CoinJoin accounts and DashPay receiving accounts. Watch-only DashPay
 /// contact accounts are not the wallet's.
@@ -490,6 +512,8 @@ struct LoadedHistory {
     abandoned: Vec<(Txid, dashcore::Transaction)>,
     /// [`crate::tx_actions::load_drop_inputs`].
     drop_inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+    /// [`crate::rescan_hold::load_for_open`].
+    rescan_holds: BTreeMap<OutPoint, crate::rescan_hold::RescanHold>,
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
     /// Every stored record was listed and read, and so were the abandoned
@@ -592,6 +616,16 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let drop_inputs = crate::tx_actions::load_drop_inputs(&appdb, wallet, network);
+                    let (rescan_holds, holds_read) =
+                        match crate::rescan_hold::load_for_open(&appdb, wallet) {
+                            Ok(holds) => (holds, true),
+                            Err(e) => {
+                                tracing::warn!(%wallet, error = %e, "could not read the coins waiting for a rescan: every coin an abandoned payment spent waits");
+                                let spent = (abandoned.copies.iter())
+                                    .flat_map(|(_, tx)| tx.input.iter().map(|i| i.previous_output));
+                                (spent.map(|o| (o, crate::rescan_hold::RescanHold::unread())).collect(), false)
+                            }
+                        };
                     let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
                     let (dropped_here, dropped_read) = match fail_dropped {
                         true => (crate::tx_actions::Dead::new(), false),
@@ -626,8 +660,10 @@ impl NetworkSession {
                         seen,
                         abandoned,
                         drop_inputs,
+                        rescan_holds,
                         sent,
                         complete: clean
+                            && holds_read
                             && dropped_read
                             && !persisted.locks_unread
                             && claims_read
@@ -677,6 +713,7 @@ impl NetworkSession {
             seen,
             abandoned,
             drop_inputs,
+            rescan_holds,
             sent,
             complete,
             claims,
@@ -726,6 +763,9 @@ impl NetworkSession {
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
                 h.fill_dropped_inputs(&drop_inputs);
+                for (coin, hold) in rescan_holds {
+                    h.rescan_holds.entry(coin).or_insert(hold);
+                }
                 for (t, cause) in &dropped {
                     (h.drops).insert(*t, crate::history::DropInfo::new(*cause));
                 }
@@ -772,6 +812,9 @@ impl NetworkSession {
                 self.abandon_on_dead(&live.manager, wallet, &dropped, true)
                     .await;
             }
+            // The excluded coins (`crate::withhold`) read the history: the
+            // balance read before it loaded counts them.
+            self.reread_balances(wallet).await;
         }
         Ok(())
     }
@@ -1050,7 +1093,8 @@ impl NetworkSession {
             .chain(holds.iter().map(|o| (*o, None)))
             .collect();
         let restored: BTreeSet<Txid> = restore.iter().filter_map(|(_, t)| *t).collect();
-        let held = core.restore_spent_outpoints(&restore);
+        let held = restore_spent_claims(info, &restore);
+        let core = &mut info.core_wallet;
         (self.hub.history).with_wallet(wallet, |h| {
             h.claimed
                 .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
@@ -1063,8 +1107,7 @@ impl NetworkSession {
             removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
         }
         core.update_balance();
-        self.hub
-            .publish_core_balance(wallet, &core.balance(), &core.account_balances());
+        self.hub.publish_core_balance(wallet, core);
         for utxo in &removed {
             let spenders: Vec<Txid> = (claims.iter())
                 .filter(|(o, _)| *o == utxo.outpoint)
@@ -1253,7 +1296,10 @@ impl NetworkSession {
         }
         let core = &info.core_wallet;
         let funding = core.accounts.all_funding_accounts();
-        let unspent = |o: &OutPoint| funding.iter().any(|a| a.utxos.contains_key(o));
+        // A coin given back that waits for its rescan is not back yet.
+        let held = self.hub.rescan_held(wallet);
+        let unspent =
+            |o: &OutPoint| !held.contains(o) && funding.iter().any(|a| a.utxos.contains_key(o));
         let spent = core.observed_spent_outpoints();
         let block_spent = |o: &OutPoint| spent.contains_key(o);
         let state = self.hub.wallet_state(wallet);
@@ -1509,5 +1555,58 @@ mod lock_row_tests {
             assert!(out[&[wallet; 32]].lock_parents.is_empty());
             assert!(out[&[wallet; 32]].locks_unread, "wallet {wallet}");
         }
+    }
+}
+
+#[cfg(test)]
+mod claim_restore_tests {
+    use std::path::{Path, PathBuf};
+
+    fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// No engine code restores spent claims on key-wallet's wallet
+    /// directly: every caller goes through [`super::restore_spent_claims`].
+    #[test]
+    fn only_the_helper_restores_spent_claims() {
+        let call = concat!("restore_spent", "_outpoints(");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let helper = root.join("src").join("history_ops.rs");
+        let mut files = Vec::new();
+        for dir in ["src", "tests", "examples"] {
+            if root.join(dir).is_dir() {
+                sources(&root.join(dir), &mut files);
+            }
+        }
+        let (mut found, mut exempt) = (Vec::new(), 0);
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if !line.contains(call) {
+                    continue;
+                }
+                if *file == helper
+                    && line.trim()
+                        == concat!("info.core_wallet.restore_spent", "_outpoints(claims)")
+                {
+                    exempt += 1;
+                } else {
+                    found.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert_eq!(exempt, 1, "the helper's own call");
+        assert!(
+            found.is_empty(),
+            "spent claims restored past the helper: {found:#?}"
+        );
     }
 }

@@ -55,6 +55,14 @@ pub struct ShieldedStatus {
     /// Spends whose broadcast the library could not confirm
     /// ([`ShieldedSpendState::Pending`]), until a sync pass resolves each.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends the library resolved with no proof of either outcome (a
+    /// broadcast Platform refused, or re-sends that proved nothing): each
+    /// may still go through, so its notes stay held, out of `balance`,
+    /// until the network shows it can no longer go through. Read only.
+    pub held_spends: Vec<HeldSpend>,
+    /// Credits of the unspent notes `held_spends` hold, each note once:
+    /// what `balance` leaves out for them. 0 when nothing is held.
+    pub held: u64,
     /// Spends whose result is not known and whose record the library lost
     /// (DEC-1057): one may still go through, and its notes read unspent.
     /// Each stays until a proved scan shows all its notes spent, or the
@@ -252,6 +260,19 @@ pub struct UnresolvedSpend {
     pub transition: String,
     /// Re-sends so far.
     pub attempts: u32,
+}
+
+/// A spend whose notes the library holds because it may still go through
+/// ([`ShieldedStatus::held_spends`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldSpend {
+    /// The spend's history row ([`ShieldedActivity::id`]).
+    pub activity_id: String,
+    /// Platform's hash of the signed state transition (hex).
+    pub transition: String,
+    /// Credits of the unspent notes it holds; 0 once a scan saw them all
+    /// spent. Two spends that hold one note both count it.
+    pub credits: u64,
 }
 
 /// What a `shielded.not_synced` waits for (DEC-1058 #4).
