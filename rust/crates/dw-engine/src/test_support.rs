@@ -136,6 +136,9 @@ pub enum CloseFence {
     ShieldedSpend,
     /// An operation guard, as any operation in flight holds it.
     Operation,
+    /// The close preflight and an operation guard, as a fund or Finish
+    /// waiting on its wallet's start-up holds them.
+    Preparing,
 }
 
 /// A fence held by [`hold_close_fence`]. Dropping it returns once the fence
@@ -154,7 +157,8 @@ impl Drop for HeldCloseFence {
 
 /// Holds `fence` of `session` until the returned guard is dropped, so an
 /// in-app close of it is refused: `wallet` once it waited `load_wait`,
-/// `shielded_spend_unresolved`, or (a switch's close) not drained. Call it
+/// `shielded_spend_unresolved`, or (a switch's close) preparing or not
+/// drained. Call it
 /// off the engine's runtime.
 pub fn hold_close_fence(
     session: &std::sync::Arc<NetworkSession>,
@@ -169,16 +173,19 @@ pub fn hold_close_fence(
     session.rt.spawn(async move {
         let _fence = match fence {
             CloseFence::WalletLoad => Some(s.platform.wallet_loads.read().await),
-            CloseFence::ShieldedSpend => Some(s.platform.close_preflight.read().await),
+            CloseFence::ShieldedSpend | CloseFence::Preparing => {
+                Some(s.platform.close_preflight.read().await)
+            }
             CloseFence::Operation => None,
         };
+        let _waiting = matches!(fence, CloseFence::Preparing).then(|| s.platform.waiting());
         let _op = match fence {
             CloseFence::WalletLoad => None,
             _ => Some(s.enter().await.expect("the session is open")),
         };
         let _ = held_tx.send(());
         let _ = released.await;
-        drop((_fence, _op));
+        drop((_waiting, _fence, _op));
         drop(done_tx);
     });
     held.recv().expect("the fence is held");
