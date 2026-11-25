@@ -329,6 +329,9 @@ describe("fixture backend", () => {
     expect(() => fixtureOptionsFromUrl("?scenario=nope")).toThrow("unknown fixture scenario");
     expect(() => fixtureOptionsFromUrl("?scenario=error-nope")).toThrow("unknown error class");
     expect(() => fixtureOptionsFromUrl("?fail=balance")).toThrow("expected <command>:<error class>");
+    expect(fixtureOptionsFromUrl("?openRestore=notStarted:fileVanished&restoreAvailable=no&restored=yes")).toMatchObject({ openRestore: "notStarted:fileVanished", restoreAvailable: false, restored: true });
+    expect(fixtureOptionsFromUrl("?openRefused=refusedRestore&restoreAvailable=yes")).toMatchObject({ openRefused: "refusedRestore", restoreAvailable: true, restored: undefined });
+    expect(() => fixtureOptionsFromUrl("?openRestore=refused:diskFull")).toThrow("unknown openRestore=refused:diskFull");
   });
 
   it("carries the sentinel the production bundle check looks for", () => {

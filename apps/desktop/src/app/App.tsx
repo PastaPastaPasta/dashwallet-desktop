@@ -20,7 +20,7 @@ import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
 import { Overview } from "../screens/Overview";
 import { PreReleaseNotice } from "../screens/PreReleaseNotice";
-import { StorageInUseScreen, StoreRefusalScreen } from "../screens/StoreRefusal";
+import { StorageInUseScreen, StoreRefusalScreen, StoreRestoreScreen } from "../screens/StoreRefusal";
 import { ReceivePage } from "../screens/Receive";
 import { RecoveryPhraseSheet } from "../screens/RecoveryPhrase";
 import { MasternodeKeysSheet } from "../screens/masternodes/KeysSheet";
@@ -68,10 +68,12 @@ export const LaunchContext = createContext<LaunchInfo | null>(null);
 export const useLaunch = () => useContext(LaunchContext)!;
 
 /** Splash (UX-SPEC §4.2) while the engine opens the network, or its error, with a retry unless the file is from a newer
- * build (DP3-04b D35). A refused store and a store still held have their own screens instead. */
+ * build (DP3-04b D35). A refused store, a restore that stopped the open and a store still held have their own
+ * screens instead. */
 function Splash({ error, retrying, onRetry }: { error: OpenFailure | null; retrying: boolean; onRetry: () => void }) {
   const tr = useT();
-  if (error?.kind === "refused") return <StoreRefusalScreen refusal={error.refusal} />;
+  if (error?.kind === "refused") return <StoreRefusalScreen refusal={error.refusal} onReopen={onRetry} retrying={retrying} />;
+  if (error?.kind === "restore") return <StoreRestoreScreen restore={error.restore} onReopen={onRetry} retrying={retrying} />;
   if (error?.kind === "inUse") return <StorageInUseScreen retryable={error.retryable} retrying={retrying} onRetry={onRetry} />;
   return (
     <div className="splash" data-testid="splash">

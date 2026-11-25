@@ -1,50 +1,132 @@
 // The screens shown instead of the wallet when its data can't be opened: a store refusal, the screen the
-// engine gives as it gives it (it changed nothing), and StorageInUse (the session before still holds the
-// data). Each replaces the shell, so neither ever shows onboarding, an empty wallet list or a zero balance.
+// engine gives as it gives it (it changed nothing); a restore the user asked for that stopped the open,
+// by its state; and StorageInUse (the session before still holds the data). Each replaces the shell, so
+// none ever shows onboarding, an empty wallet list or a zero balance. A restore only ever runs at the
+// next start: "Restore earlier data" asks for it and restarts.
 
 import { useId, useState, type ReactNode } from "react";
 import type { Backend } from "../api/backend";
-import type { StoreRefusedData } from "../api/storeOpen";
-import { useBackend } from "../api/queries";
+import { storeRestore, type RestoreState, type StoreButton, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
+import { useBackend, useRestoreAvailable } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
+import { Sheet } from "../components/sheet";
 import { Model, useModel } from "../onboarding/model";
 import { t, useT, type Translate } from "../i18n";
 import { flatten } from "../i18n/core";
 import { en } from "../i18n/en";
+import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
 
 const ENGLISH = flatten(en);
+const ISSUES_HINT = "settings.about.links.issuesHint";
+
+type LooseTranslate = (key: string, values?: Record<string, string>) => string;
 
 /** The catalog's text for a `storeUpgrade.*` key in the language in use; for any other key, or one the
  * catalog lacks, the engine's English: never other copy. */
 function textFor(tr: Translate, key: string, english: string, folder: string): string {
-  return key.startsWith("storeUpgrade.") && ENGLISH.has(key) ? (tr as unknown as (key: string, values: Record<string, string>) => string)(key, { folder }) : english;
+  return key.startsWith("storeUpgrade.") && ENGLISH.has(key) ? (tr as unknown as LooseTranslate)(key, { folder }) : english;
 }
+
+export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore";
+
+const ACTIONS: Record<string, ButtonAction> = {
+  "storeUpgrade.restore.foreign.keep": "keep",
+  "storeUpgrade.refused.restore": "restore",
+  "storeUpgrade.restore.refused.ok": "reopen",
+  "storeUpgrade.restore.noSpace.ok": "reopen",
+  "storeUpgrade.restore.notStarted.cancel": "cancelRestore",
+  "storeUpgrade.restore.notStarted.restart": "restart",
+  "storeUpgrade.restore.incomplete.restart": "restart",
+  "storeUpgrade.restore.notStarted.report": "report",
+  "storeUpgrade.restore.incomplete.report": "report",
+  "storeUpgrade.refused.report": "report",
+  "settings.about.links.issues": "report",
+};
 
 /** What each button key does. A key not here renders disabled: its action comes with the screen that
- * adds it (Report a problem, Restore earlier data). */
-export function buttonAction(key: string): "quit" | null {
-  return key.endsWith(".quit") ? "quit" : null;
+ * adds it. */
+export function buttonAction(key: string): ButtonAction | null {
+  return Object.hasOwn(ACTIONS, key) ? ACTIONS[key] : key.endsWith(".quit") ? "quit" : null;
 }
 
-/** Quit and restart through dw-app, with the latest failure. */
+/** The buttons of a restore state's screen, by their last key segment, in order; the first has the focus. */
+export const RESTORE_BUTTONS: Record<RestoreState, readonly string[]> = {
+  refused: ["ok", "quit"],
+  noSpace: ["ok", "quit"],
+  notStarted: ["restart", "cancel", "report", "quit"],
+  incomplete: ["restart", "report", "quit"],
+};
+
+type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "openProjectLink">;
+
+/** What a failed action shows: a refused restore request in MG's words, an `Error`'s message, else the
+ * generic line. */
+function problemOf(e: unknown): string {
+  if (storeRestore(e)?.state === "refused") return t("storeUpgrade.restore.refused.text");
+  return e instanceof Error ? e.message : t("onboarding.error.generic");
+}
+
+/** The actions of the screens instead of the wallet, through dw-app, with the latest failure. A call
+ * that opens the wallet data again (Keep the current files, Cancel restore) runs `reopen` once it is
+ * done; a restore asked for restarts the app. */
 export class OpenFailureActions extends Model {
   problem: string | null = null;
+  /** The issues page a failed Report a problem names, to copy. */
+  failedLink: string | null = null;
+  running = false;
+  /** RESTORE-REQUESTED is written and the restart that runs it has not happened yet. */
+  requested = false;
 
-  constructor(private readonly api: Pick<Backend, "quitApp" | "restartApp">) {
+  constructor(private readonly api: ActionsApi) {
     super();
   }
 
   quit = () => this.#run(() => this.api.quitApp());
   restart = () => this.#run(() => this.api.restartApp());
-
-  async #run(call: () => Promise<null>) {
+  keep = (reopen: () => void) => this.#then(() => this.api.keepCurrentFiles(), reopen);
+  cancelRestore = (reopen: () => void) => this.#then(() => this.api.cancelRestore(), reopen);
+  /** The confirm's Restart and restore: the request, then the restart that runs it; after a failed
+   * restart, only the restart again. */
+  restore = async () => {
+    if (!this.requested) this.requested = await this.#run(() => this.api.requestRestore());
+    if (this.requested) await this.#run(() => this.api.restartApp());
+  };
+  /** The confirm closed: a request whose restart failed is dropped, so closing it leaves nothing asked. */
+  dismissRestore = async () => {
+    if (this.requested && (await this.#run(() => this.api.cancelRestore()))) this.requested = false;
+  };
+  /** Clears the last failure, as a new step starts. */
+  clear = () => {
     this.problem = null;
+    this.failedLink = null;
+    this.changed();
+  };
+  report = async () => {
+    this.failedLink = null;
+    await this.#run(
+      () => this.api.openProjectLink("issues"),
+      (e) => (this.failedLink = failedLinkUrl(e)) !== null,
+    );
+  };
+
+  async #then(call: () => Promise<unknown>, after: () => void) {
+    if (await this.#run(call)) after();
+  }
+
+  /** Runs `call`; `quiet` takes a failure it shows itself. */
+  async #run(call: () => Promise<unknown>, quiet?: (e: unknown) => boolean): Promise<boolean> {
+    this.problem = null;
+    this.running = true;
     this.changed();
     try {
       await call();
+      return true;
     } catch (e) {
-      this.problem = e instanceof Error ? e.message : t("onboarding.error.generic");
+      if (!quiet?.(e)) this.problem = problemOf(e);
+      return false;
+    } finally {
+      this.running = false;
       this.changed();
     }
   }
@@ -56,7 +138,32 @@ function useActions() {
   return useModel(actions);
 }
 
-function Panel({ id, testId, title, text, problem, children }: { id: string; testId: string; title: string; text: string; problem: string | null; children: ReactNode }) {
+function perform(actions: OpenFailureActions, action: ButtonAction, reopen: () => void) {
+  if (action === "quit") void actions.quit();
+  else if (action === "restart") void actions.restart();
+  else if (action === "reopen") reopen();
+  else if (action === "keep") void actions.keep(reopen);
+  else if (action === "cancelRestore") void actions.cancelRestore(reopen);
+  else if (action === "report") void actions.report();
+}
+
+function Panel({
+  id,
+  testId,
+  title,
+  text,
+  problem,
+  failedLink = null,
+  children,
+}: {
+  id: string;
+  testId: string;
+  title: string;
+  text: string;
+  problem: string | null;
+  failedLink?: string | null;
+  children: ReactNode;
+}) {
   return (
     <div className="onboarding" role="alertdialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-body`} data-testid={testId}>
       <div className="onboarding-panel">
@@ -76,57 +183,183 @@ function Panel({ id, testId, title, text, problem, children }: { id: string; tes
           </p>
           {children}
           <Problem text={problem} testId={`${testId}-problem`} />
+          {failedLink && (
+            <p className="form-problem" role="alert" data-testid={`${testId}-link-failed`}>
+              <FailedLink url={failedLink} />
+            </p>
+          )}
         </main>
       </div>
     </div>
   );
 }
 
+/** A button as a screen shows it: the engine's button and what it does (`null`: disabled). */
+type ShownButton = StoreButton & { action: ButtonAction | null };
+
+function Buttons({ id, testId, buttons, hint, busy, onAction }: { id: string; testId: string; buttons: ShownButton[]; hint: string | null; busy: boolean; onAction: (action: ButtonAction) => void }) {
+  return (
+    <>
+      <div className="onboarding-actions">
+        {buttons.map((b) => (
+          <DashButton
+            key={b.key}
+            variant={b.destructive ? "plainRed" : b.defaultFocus ? "filledBlue" : "plainBlue"}
+            size="large"
+            fill
+            autoFocus={b.defaultFocus}
+            disabled={b.action === null || (busy && b.action !== "quit")}
+            aria-describedby={hint ? `${id}-hint` : undefined}
+            data-testid={`${testId}-button-${b.key}`}
+            onClick={b.action === null ? undefined : () => onAction(b.action!)}
+          >
+            {b.label}
+          </DashButton>
+        ))}
+      </div>
+      {hint && (
+        <p id={`${id}-hint`} className="field-hint" data-testid={`${testId}-hint`}>
+          {hint}
+        </p>
+      )}
+    </>
+  );
+}
+
 export interface StoreRefusalViewProps {
   refusal: StoreRefusedData;
   problem: string | null;
-  onQuit: () => void;
+  failedLink?: string | null;
+  /** A verified snapshot is there: "Restore earlier data" shows (only then). */
+  restoreAvailable?: boolean;
+  busy?: boolean;
+  onAction: (action: ButtonAction) => void;
 }
 
-/** The engine's screen as it gives it: title, text, a button per its buttons, and its hint under them. */
-export function StoreRefusalView({ refusal, problem, onQuit }: StoreRefusalViewProps) {
+/** The engine's screen as it gives it: title, text, a button per its buttons, and its hint under them.
+ * "Restore earlier data" shows only while a verified snapshot is there. */
+export function StoreRefusalView({ refusal, problem, failedLink = null, restoreAvailable = false, busy = false, onAction }: StoreRefusalViewProps) {
   const tr = useT();
   const id = useId();
   const { screen, folder } = refusal;
+  const buttons = screen.buttons
+    .map((b) => ({ ...b, label: textFor(tr, b.key, b.label, folder), action: buttonAction(b.key) }))
+    .filter((b) => b.action !== "restore" || restoreAvailable);
+  const hint = screen.hint ? textFor(tr, screen.hint.key, screen.hint.text, folder) : null;
+  // Report a problem always has the issues warning under it (MG); a screen whose one hint is another line gets it too.
+  const warn = buttons.some((b) => b.action === "report") && screen.hint?.key !== ISSUES_HINT;
   return (
-    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={textFor(tr, screen.textKey, screen.text, folder)} problem={problem}>
-      <div className="onboarding-actions">
-        {screen.buttons.map((b) => {
-          const action = buttonAction(b.key);
-          return (
-            <DashButton
-              key={b.key}
-              variant={b.destructive ? "plainRed" : b.defaultFocus ? "filledBlue" : "plainBlue"}
-              size="large"
-              fill
-              autoFocus={b.defaultFocus}
-              disabled={action === null}
-              aria-describedby={screen.hint ? `${id}-hint` : undefined}
-              data-testid={`store-refused-button-${b.key}`}
-              onClick={action === "quit" ? onQuit : undefined}
-            >
-              {textFor(tr, b.key, b.label, folder)}
-            </DashButton>
-          );
-        })}
-      </div>
-      {screen.hint && (
-        <p id={`${id}-hint`} className="field-hint" data-testid="store-refused-hint">
-          {textFor(tr, screen.hint.key, screen.hint.text, folder)}
+    <Panel id={id} testId="store-refused" title={textFor(tr, screen.titleKey, screen.title, folder)} text={textFor(tr, screen.textKey, screen.text, folder)} problem={problem} failedLink={failedLink}>
+      <Buttons id={id} testId="store-refused" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
+      {warn && (
+        <p className="field-hint" data-testid="store-refused-issues-hint">
+          {tr(ISSUES_HINT)}
         </p>
       )}
     </Panel>
   );
 }
 
-export function StoreRefusalScreen({ refusal }: { refusal: StoreRefusedData }) {
+export interface StoreRestoreViewProps {
+  restore: StoreRestoreData;
+  problem: string | null;
+  failedLink?: string | null;
+  busy?: boolean;
+  onAction: (action: ButtonAction) => void;
+}
+
+/** A restore that stopped the open, by its state: the same screen for every cause. Report a problem
+ * has the issues warning under the buttons. */
+export function StoreRestoreView({ restore, problem, failedLink = null, busy = false, onAction }: StoreRestoreViewProps) {
+  const tr = useT();
+  const say = tr as unknown as LooseTranslate;
+  const id = useId();
+  const { state, folder } = restore;
+  const keys = RESTORE_BUTTONS[state];
+  const buttons = keys.map((k, i): ShownButton => {
+    const key = `storeUpgrade.restore.${state}.${k}`;
+    return { key, label: say(key), destructive: false, defaultFocus: i === 0, action: buttonAction(key) };
+  });
+  return (
+    <Panel id={id} testId="store-restore" title={say(`storeUpgrade.restore.${state}.title`)} text={say(`storeUpgrade.restore.${state}.text`, { folder })} problem={problem} failedLink={failedLink}>
+      <Buttons id={id} testId="store-restore" buttons={buttons} hint={keys.includes("report") ? tr(ISSUES_HINT) : null} busy={busy} onAction={onAction} />
+    </Panel>
+  );
+}
+
+export interface RestoreConfirmViewProps {
+  folder: string;
+  busy: boolean;
+  problem: string | null;
+  onConfirm: () => void;
+  onClose: () => void;
+}
+
+/** R3's confirm, the only way to a restore: Cancel has the focus and writes nothing; Restart and restore
+ * asks for the restore and restarts. */
+export function RestoreConfirmView({ folder, busy, problem, onConfirm, onClose }: RestoreConfirmViewProps) {
+  const tr = useT();
+  return (
+    <Sheet title={tr("storeUpgrade.restore.confirm.title")} width="medium" testId="restore-confirm" closable={!busy} onClose={onClose}>
+      {tr("storeUpgrade.restore.confirm.text", { folder })
+        .split("\n\n")
+        .map((paragraph, i) => (
+          <p key={i} className="sheet-text" data-testid="restore-confirm-text">
+            {paragraph}
+          </p>
+        ))}
+      <Problem text={problem} testId="restore-confirm-problem" />
+      <div className="sheet-actions">
+        <DashButton variant="tintedGray" data-autofocus disabled={busy} data-testid="restore-confirm-cancel" onClick={onClose}>
+          {tr("storeUpgrade.restore.confirm.cancel")}
+        </DashButton>
+        <DashButton variant="plainRed" disabled={busy} aria-busy={busy} data-testid="restore-confirm-confirm" onClick={onConfirm}>
+          {tr("storeUpgrade.restore.confirm.confirm")}
+        </DashButton>
+      </div>
+    </Sheet>
+  );
+}
+
+export interface OpenFailureScreenProps {
+  /** Tries the open again: after Keep the current files, Cancel restore or OK. */
+  onReopen: () => void;
+  /** That open is running: the buttons wait for it. */
+  retrying: boolean;
+}
+
+export function StoreRefusalScreen({ refusal, onReopen, retrying }: OpenFailureScreenProps & { refusal: StoreRefusedData }) {
   const exit = useActions();
-  return <StoreRefusalView refusal={refusal} problem={exit.problem} onQuit={() => void exit.quit()} />;
+  const offersRestore = refusal.screen.buttons.some((b) => buttonAction(b.key) === "restore");
+  const restoreAvailable = useRestoreAvailable(offersRestore).data === true;
+  const [confirming, setConfirming] = useState(false);
+  const busy = exit.running || retrying;
+  const confirm = () => {
+    exit.clear();
+    setConfirming(true);
+  };
+  const close = () => {
+    setConfirming(false);
+    void exit.dismissRestore();
+  };
+  return (
+    <>
+      <StoreRefusalView
+        refusal={refusal}
+        problem={confirming ? null : exit.problem}
+        failedLink={exit.failedLink}
+        restoreAvailable={restoreAvailable}
+        busy={busy}
+        onAction={(action) => (action === "restore" ? confirm() : perform(exit, action, onReopen))}
+      />
+      {confirming && <RestoreConfirmView folder={refusal.folder} busy={busy} problem={exit.problem} onConfirm={() => void exit.restore()} onClose={close} />}
+    </>
+  );
+}
+
+export function StoreRestoreScreen({ restore, onReopen, retrying }: OpenFailureScreenProps & { restore: StoreRestoreData }) {
+  const exit = useActions();
+  return <StoreRestoreView restore={restore} problem={exit.problem} failedLink={exit.failedLink} busy={exit.running || retrying} onAction={(action) => perform(exit, action, onReopen)} />;
 }
 
 export interface StorageInUseViewProps {

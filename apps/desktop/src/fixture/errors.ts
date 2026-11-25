@@ -6,7 +6,7 @@
 
 import type { AppError } from "../api/generated/AppError";
 import type { ErrorData } from "../api/generated/ErrorData";
-import type { StoreOpenError, StoreRefusedData } from "../api/storeOpen";
+import { RESTORE_CAUSES, type RestoreState, type StoreOpenError, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
 
 export type ErrorClass = ErrorData["kind"] | "none";
 
@@ -137,14 +137,28 @@ export function sampleError(cls: ErrorClass): AppError {
   return { code, message: `fixture: ${code} (${cls})`, data };
 }
 
-/** dw-store-upgrade's copy (copy.rs), verbatim: what `screen_for` gives today. */
+/** dw-store-upgrade's copy (copy.rs), verbatim: what `screen_for` gives today, and the restore lane's
+ * `copy::restore_foreign()` and wayOut.restore refusal (MG's cantOpen family, FINAL). */
 export const STORE_COPY = {
   cantOpenTitle: "Dash Wallet can't open this wallet data",
   cantOpenText:
     "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed, and the wallet data saved before the upgrade is still in the upgrade-backups folder inside {folder}. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
   cantOpenTextWithoutBackup:
     "This version of Dash Wallet can't open the wallet data in {folder}. Nothing in it was changed. Your funds are held on the network, not in this data. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
+
+  foreignTitle: "These wallet files don't match the restore",
+  foreignText:
+    "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.",
+  foreignKeep: "Keep the current files",
+  foreignKeepMeaning:
+    "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.",
+  refusedTitle: "Dash Wallet can't open this wallet data safely",
+  refusedRestoreText:
+    "This version of Dash Wallet can't safely open the wallet data in {folder}: it was written by a development build of Dash Wallet. Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it. Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
+  issuesHint: "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
 };
+
+const plain = (key: string, label: string) => ({ key, label, destructive: false, defaultFocus: false });
 
 const cantOpenScreen = (folder: string, cause: string, text: "text" | "textWithoutBackup", copy: string): StoreRefusedData => ({
   kind: "storeRefused",
@@ -155,16 +169,49 @@ const cantOpenScreen = (folder: string, cause: string, text: "text" | "textWitho
     title: STORE_COPY.cantOpenTitle,
     textKey: `storeUpgrade.cantOpen.${text}`,
     text: copy.replaceAll("{folder}", folder),
-    buttons: [{ key: "storeUpgrade.cantOpen.quit", label: "Quit", destructive: false, defaultFocus: false }],
+    buttons: [plain("storeUpgrade.cantOpen.quit", "Quit")],
     hint: null,
   },
 });
 
+/** The foreign lineage (`RestoreIncomplete { cause: S4OtherLineage }`): `copy::restore_foreign()`. */
+const foreignScreen = (folder: string): StoreRefusedData => ({
+  kind: "storeRefused",
+  cause: "RestoreIncomplete",
+  folder,
+  screen: {
+    titleKey: "storeUpgrade.restore.foreign.title",
+    title: STORE_COPY.foreignTitle,
+    textKey: "storeUpgrade.restore.foreign.text",
+    text: STORE_COPY.foreignText.replaceAll("{folder}", folder),
+    buttons: [plain("storeUpgrade.restore.foreign.keep", STORE_COPY.foreignKeep), plain("settings.about.links.issues", "Report a problem"), plain("storeUpgrade.restore.foreign.quit", "Quit")],
+    hint: { key: "storeUpgrade.restore.foreign.keepMeaning", text: STORE_COPY.foreignKeepMeaning.replaceAll("{folder}", folder) },
+  },
+});
+
+/** A refusal whose way out is `wayOut.restore` (migrated, backup Verified): Restore earlier data, Report
+ * a problem and Quit. */
+const refusedRestoreScreen = (folder: string): StoreRefusedData => ({
+  kind: "storeRefused",
+  cause: "PreHistoryFork",
+  folder,
+  screen: {
+    titleKey: "storeUpgrade.refused.title",
+    title: STORE_COPY.refusedTitle,
+    textKey: "storeUpgrade.refused.wayOut.restore",
+    text: STORE_COPY.refusedRestoreText.replaceAll("{folder}", folder),
+    buttons: [plain("storeUpgrade.refused.restore", "Restore earlier data"), plain("storeUpgrade.refused.report", "Report a problem"), plain("storeUpgrade.refused.quit", "Quit")],
+    hint: { key: "settings.about.links.issuesHint", text: STORE_COPY.issuesHint },
+  },
+});
+
 /** `screen_for`'s screens, each with the variant that gives it: `cantOpen` with a verified backup, and
- * without one. */
+ * without one; the foreign lineage's; and a refusal that offers Restore earlier data. */
 export const STORE_SCREENS = {
   cantOpen: (folder: string) => cantOpenScreen(folder, "RetiredPoolWithoutAdopter", "text", STORE_COPY.cantOpenText),
   cantOpenWithoutBackup: (folder: string) => cantOpenScreen(folder, "P9aBroken", "textWithoutBackup", STORE_COPY.cantOpenTextWithoutBackup),
+  restoreForeign: foreignScreen,
+  refusedRestore: refusedRestoreScreen,
 };
 
 export type StoreScreenName = keyof typeof STORE_SCREENS;
@@ -182,4 +229,20 @@ export const storageInUseError = (retryable: boolean, message = "fixture: the wa
   code: "storage_in_use",
   message,
   data: { kind: "storageInUse", retryable },
+});
+
+/** Every `storage_restore` the fixture can give, `<state>:<cause>`. */
+export const RESTORE_FAILURE_NAMES = (Object.keys(RESTORE_CAUSES) as RestoreState[]).flatMap((state) => RESTORE_CAUSES[state].map((cause) => `${state}:${cause}`));
+
+/** The `storage_restore` data for `<state>:<cause>`; `noSpace` names the space its copies need. */
+export function restoreFailure(name: string, folder: string): StoreRestoreData {
+  const [state, cause] = name.split(":") as [RestoreState, string];
+  return { kind: "restore", state, cause, neededBytes: state === "noSpace" ? 2_147_483_648 : null, folder };
+}
+
+/** `storage_restore` as `open_network` (or `request_restore`) rejects with it. */
+export const storeRestoreError = (data: StoreRestoreData): StoreOpenError => ({
+  code: "storage_restore",
+  message: `fixture: restoring the wallet data in ${data.folder} stopped (${data.state}, ${data.cause})`,
+  data,
 });

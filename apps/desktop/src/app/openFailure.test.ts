@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STORE_SCREENS, storageInUseError, storeRefusedError } from "../fixture/errors";
+import { restoreFailure, STORE_SCREENS, storageInUseError, storeRefusedError, storeRestoreError } from "../fixture/errors";
 import { openFailure } from "./openFailure";
 
 // DP3-04b D35: a wallet file from a newer build is its own, recoverable, refusal.
@@ -29,6 +29,21 @@ describe("the splash's open failure", () => {
     expect(openFailure(storageInUseError(true))).toEqual({ kind: "inUse", retryable: true });
     expect(openFailure(storageInUseError(false))).toEqual({ kind: "inUse", retryable: false });
     expect(openFailure({ code: "storage_in_use", message: "held", data: null })).toEqual({ kind: "inUse", retryable: false });
+  });
+
+  it("gives a restore that stopped the open its own screen, by its state", () => {
+    for (const name of ["refused:garbledMarker", "noSpace:diskFull", "notStarted:other", "incomplete:permissionDenied"]) {
+      const restore = restoreFailure(name, "/data/testnet");
+      expect(openFailure(storeRestoreError(restore))).toEqual({ kind: "restore", restore });
+    }
+  });
+
+  it("does not take a storage_restore without whole data for a restore screen, and offers no retry", () => {
+    const whole = restoreFailure("incomplete:other", "/data");
+    const broken = [null, { ...whole, kind: "storeRefused" }, { ...whole, state: "partial" }, { ...whole, cause: 3 }, { ...whole, folder: undefined }, { ...whole, neededBytes: "1" }, { ...whole, neededBytes: -1 }];
+    for (const data of broken) expect(openFailure({ code: "storage_restore", message: "stopped", data })).toEqual({ kind: "message", text: "Dash Wallet could not open the wallet: stopped", retry: false });
+    const { neededBytes: _, ...withoutBytes } = whole;
+    expect(openFailure({ code: "storage_restore", message: "stopped", data: withoutBytes })).toEqual({ kind: "restore", restore: whole });
   });
 
   it("does not take a storage_refused without its screen for a refusal", () => {
