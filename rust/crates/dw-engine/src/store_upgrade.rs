@@ -203,14 +203,13 @@ pub(crate) fn open_persister(
 }
 
 /// Whether `network_dir`'s wallet data is a restore the engine has not yet
-/// cleared (the RESTORED mark, `restored_mark_present`). A mark that can't
-/// be checked reads as set, so the holds stay on (Q102 102-3).
+/// cleared (the RESTORED mark). Unlike `restored_mark_present`, a mark that
+/// can't be checked reads as set, so the holds stay on (Q102 102-3).
 pub fn restored(network_dir: &Path) -> bool {
     let mark = network_dir
         .join(dw_store_upgrade::UPGRADE_BACKUPS_DIR)
         .join(dw_store_upgrade::RESTORED_MARK);
-    dw_store_upgrade::restored_mark_present(network_dir)
-        || std::fs::symlink_metadata(mark).is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound)
+    !matches!(std::fs::symlink_metadata(mark), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Whether `network_dir` has a verified before-upgrade snapshot to restore.
