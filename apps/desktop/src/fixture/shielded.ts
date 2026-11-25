@@ -57,6 +57,8 @@ export interface ShieldedWorld {
   proverReady: boolean;
   /** Spendable credits. */
   balance: string;
+  /** `false`: this build cannot spend from Shielded, so a send or unshield refuses `platform.unavailable`. Unset: it can. */
+  spendsAvailable?: boolean;
   address: string;
   pendingShields: PendingShield[];
   activity: ShieldedActivity[];
@@ -114,9 +116,9 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 }
 
 function status(s: ShieldedWorld): ShieldedStatus {
-  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
+  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false, spendsAvailable: s.spendsAvailable ?? true };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady, spendsAvailable: s.spendsAvailable ?? true };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -348,6 +350,11 @@ function creditPlatform(p: PlatformWorld, address: string, credits: bigint) {
   p.activity = [{ id: `unshield-${p.activity.length + 1}`, kind: "incoming", state: "done", credits: String(credits), address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: false, estimated: false }, ...p.activity];
 }
 
+/** Where this build cannot spend from Shielded, a spend is refused before anything is proved or sent. */
+function refuseSpendsOff(ctx: Ctx, walletId: string, call: string) {
+  if (shieldedOf(ctx, walletId, call).spendsAvailable === false) raise("platform.unavailable", "this build cannot spend from Shielded");
+}
+
 /** While the wallet holds an unrecorded spend, a send or unshield needs the user's confirmation (DEC-1057). */
 function gateUnrecorded(ctx: Ctx, walletId: string, call: string, confirmed: boolean): void {
   const s = shieldedOf(ctx, walletId, call);
@@ -448,6 +455,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     return sendQuote(ctx, walletId, to, credits);
   },
   shielded_send: ({ walletId, to, credits, memo, grant, confirmUnrecorded }: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseSpendsOff(ctx, walletId, "shielded_send");
     gateUnrecorded(ctx, walletId, "shielded_send", confirmUnrecorded);
     if (memo !== null && new TextEncoder().encode(memo).length > 36) raise("invalid_argument", "memo too long", { kind: "reason", reason: "memo over 36 bytes" });
     const q = sendQuote(ctx, walletId, to, credits);
@@ -458,6 +466,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   },
   unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
   unshield_to_core: ({ walletId, credits, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseSpendsOff(ctx, walletId, "unshield_to_core");
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
@@ -470,6 +479,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
   unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform_quote").quote,
   unshield_to_platform: ({ walletId, credits, to, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
     refuseOnMainnet(ctx);
+    refuseSpendsOff(ctx, walletId, "unshield_to_platform");
     gateUnrecorded(ctx, walletId, "unshield_to_platform", confirmUnrecorded);
     const { quote: q, platform: p, address } = toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform");
     const s = ctx.world.pending.shielded!;

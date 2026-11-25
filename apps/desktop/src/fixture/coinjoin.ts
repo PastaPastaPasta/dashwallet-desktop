@@ -465,6 +465,12 @@ export function coinjoinScenarios(base: Base) {
       w.pending.shielded = null;
       return w;
     },
+    /** "Move mixed coins" where this build cannot spend from Shielded: the move to Shielded says what it means. */
+    "coinjoin-move-spends-off": (t: ThemeName | null) => {
+      const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);
+      w.pending.shielded!.spendsAvailable = false;
+      return w;
+    },
     /** The only chunk's broadcast outcome is unknown. */
     "coinjoin-move-unknown": (t: ThemeName | null) => {
       const w = withMixedCoins(mixing(base(t), { state: "idle", stopReason: "userRequested", progress: PROGRESS_42 }), 3);

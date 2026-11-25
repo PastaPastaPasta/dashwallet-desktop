@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 95
+Contract-Version: 96
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -864,7 +864,7 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing` and `prover_ready`; and, active or not, `unrecorded_spends` (DEC-1057, above). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
+| `shielded_status()` | async | `ShieldedStatus`: `active`, `protocol_version`, `activation_version`, then, when active, `ready` (keys bound and the ledger restored or scanned), `balance` (spendable credits), `pending` (credits of pending activity), `pending_shields` (empty until the dispatch journal is read), `unresolved_spends`, `synced_index` (the note-tree position scanned to), `last_sync_at`, `syncing` and `prover_ready`; and, active or not, `unrecorded_spends` (DEC-1057, above) and `spends_available` (`SHIELDED_SPENDS_AVAILABLE`: false in a build whose SDK cannot spend from the pool, where `shielded_send`, both unshields and `contact_pay` from Shielded refuse `platform.unavailable` before any proof). Reads local state only: an inactive network is a status, not an error. `wallet_not_found` for a wallet the session does not hold. | `ShieldedError` |
 | `shielded_sync()` | async | Runs a pass of the wallet's notes now (bypassing the 30 s skip), then returns `shielded_status`. The gate; `platform.unavailable` while the Platform side is not running. | `ShieldedError` |
 | `shielded_receive_address()` | async | `ShieldedAddress{address, account}`: the account's default payment address, bech32m (`dash1z…`/`tdash1z…`, dpp `OrchardAddress::to_bech32m_string`), for "Receive" and its QR. The gate; `shielded.not_synced{account}` until the keys are bound. | `ShieldedError` |
 | `shield_quote(amount)` | async | `ShieldQuote` for `amount` (`FundAmount`, §2.12): the lock's fee bound and total in duffs, Platform's flat `pool_fee_credits` for the shield, the `credits` the balance gains, and the `grant` (`max_duffs` = total). The gate; `shielded.below_minimum{min}` for a lock whose credits do not clear the pool fee (`min` in duffs); `shielded.funding_insufficient{needed, available}` above the spendable Core balance; `shielded.coins_locked`; `shielded.too_many_inputs{inputs, max}` when the fewest coins that cover the lock are more than 50 ("combine coins first"); `shielded.shield_pending{txid}` while an earlier shield is not applied; `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be). `max` is `None`. **Core Max (`All`, version 72, §7 item 92):** as `platform_fund_quote(All)`'s, with the pool fee: `credits` = `duffs` × 1000 − `pool_fee_credits`, and the floor the pool's (`pool_fee_credits` / 1000 + 1 duffs); the refusals are `shielded.mixing_active`, `shielded.move_running`, `shielded.coins_locked`, `shielded.too_many_inputs{inputs, max}`, `shielded.below_minimum{min, max}` (`max` as `platform_fund_quote(All)`'s), `shielded.shield_pending{txid}` and `shielded.not_synced{journal}`. | `ShieldedError` |
@@ -978,7 +978,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 8cf3fe227e31a7711f3f9ee160b8a14a2fabf84b26e37573ee752637943e62fe version: 95 -->
+<!-- surface-sha256: f09939dd33fbf6f07fde8026347b4f91397e5ac38d3a9c5582098e8e9f6ea72a version: 96 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2393,6 +2393,7 @@ impl DashPay {
 }
 // src/platform/shielded.rs
 pub const SHIELDED_ACTIVATION_VERSION: u32;
+pub const SHIELDED_SPENDS_AVAILABLE: bool;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedStatus {
     pub active: bool,
@@ -2408,6 +2409,7 @@ pub struct ShieldedStatus {
     pub last_sync_at: Option<u64>,
     pub syncing: bool,
     pub prover_ready: bool,
+    pub spends_available: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedAddress {

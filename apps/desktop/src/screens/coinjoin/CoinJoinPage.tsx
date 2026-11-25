@@ -17,6 +17,7 @@ import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmoun
 import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
 import { AUTO_LOCK_CHOICES, SecurityText } from "../../settings/security";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { Page } from "../Routes";
 import { useViewAction, ViewFacts } from "./CoinJoinCard";
 import { MoveMixedSheet } from "./MoveMixedSheet";
@@ -138,7 +139,7 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
           </DashButton>
         )}
       </div>
-      <MoveMixedSheet flow={flow} network={network} />
+      <MoveMixedSheet flow={flow} network={network} spendsOff={shieldedSpendsOff(shieldedStatus.data)} />
     </section>
   );
 }

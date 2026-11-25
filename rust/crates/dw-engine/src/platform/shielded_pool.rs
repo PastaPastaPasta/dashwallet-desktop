@@ -159,10 +159,11 @@ use super::registration_flow::{
 use super::requests::{leased, write_permit};
 use super::shield_drain::DrainCoin;
 use super::shielded::{
-    PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote, ShieldState,
-    ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress,
-    ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedSpendState,
-    ShieldedStatus, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    PendingShield, SHIELDED_ACTIVATION_VERSION, SHIELDED_SPENDS_AVAILABLE, ShieldOutcome,
+    ShieldQuote, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
+    ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
+    ShieldedSpendState, ShieldedStatus, UnrecordedSpend, UnresolvedSpend,
+    UnshieldToPlatformOutcome,
 };
 use super::withdrawal::{Rules, expected_duffs};
 use crate::session::Manager;
@@ -577,6 +578,7 @@ pub(crate) async fn status(lib: &impl ShieldedLib) -> Result<ShieldedStatus, Shi
         last_sync_at: None,
         syncing: false,
         prover_ready: false,
+        spends_available: SHIELDED_SPENDS_AVAILABLE,
     };
     if !status.active {
         return Ok(status);

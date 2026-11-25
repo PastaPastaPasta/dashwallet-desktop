@@ -32,6 +32,25 @@ afterEach(() => {
 });
 
 describe("fixture backend", () => {
+  it("reports Shielded spends available, as main's engine does, and refuses them before anything is spent where they are off", async () => {
+    const on = backend({ scenario: "funded" }).b;
+    expect((await on.shieldedStatus(FIXTURE_WALLET_ID))?.spendsAvailable).toBe(true);
+    const { b } = backend({ scenario: "shielded-spends-off" });
+    const before = await b.shieldedStatus(FIXTURE_WALLET_ID);
+    expect(before?.spendsAvailable).toBe(false);
+    const history = await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50);
+    for (const call of [
+      () => b.shieldedSend(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000", null, "g", false),
+      () => b.unshieldToCore(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.unshieldToPlatform(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+    ]) {
+      const e = await call().catch((x: unknown) => x);
+      expect(isAppError(e) && e.code).toBe("platform.unavailable");
+    }
+    expect(await b.shieldedStatus(FIXTURE_WALLET_ID)).toEqual(before);
+    expect(await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50)).toEqual(history);
+  });
+
   // vite.config.ts fails a production build holding a module with this marker, wherever it
   // lives: a fixture module copied or renamed out of src/fixture/ keeps it. One whose marker
   // was also removed is found by its literals (scripts/check-bundle.mjs, sentinels.test.ts),

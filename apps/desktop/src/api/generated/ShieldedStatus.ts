@@ -51,4 +51,10 @@ lastSyncAt: number | null, syncing: boolean,
 /**
  * The prover is ready, so a spend proves at once.
  */
-proverReady: boolean, };
+proverReady: boolean,
+/**
+ * This build can send, unshield and pay a contact from Shielded. When
+ * false those calls refuse `platform.unavailable`; shielding, receive,
+ * sync and balance still work.
+ */
+spendsAvailable: boolean, };

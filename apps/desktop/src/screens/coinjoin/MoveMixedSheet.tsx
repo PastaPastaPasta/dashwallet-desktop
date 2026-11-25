@@ -22,6 +22,7 @@ import {
 import { useCoinJoinAmount, useMaskedAmount } from "../../coinjoin/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
+import { SHIELDED_SPENDS_COPY } from "../../shielded/spends";
 import { GrantSheet } from "../tools/common";
 
 function Row({ label, value, testId, total }: { label: string; value: string; testId: string; total?: boolean }) {
@@ -35,7 +36,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
   );
 }
 
-export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network: NetworkInfo }) {
+export function MoveMixedSheet({ flow, network, spendsOff = false }: { flow: MoveMixedFlow; network: NetworkInfo; spendsOff?: boolean }) {
   useT();
   useModel(flow);
   const plain = useCoinJoinAmount(network);
@@ -130,6 +131,11 @@ export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network
                 <Row label={MOVE_COPY.shielded.gain} value={credits(quote.credits)} testId="move-mixed-receive" total />
               </dl>
               {combinedNote(quote.fullyMixedDuffs)}
+              {spendsOff && (
+                <p className="field-hint" data-testid="move-mixed-spends-off-in">
+                  {SHIELDED_SPENDS_COPY.shieldIn}
+                </p>
+              )}
               {actions(MOVE_COPY.confirm.move, "move-mixed-confirm", () => void flow.move())}
             </>
           )}

@@ -52,7 +52,7 @@ beforeEach(() => {
   resetPlatformFunds();
   resetRecovery();
   resetTransfers();
-  reads.shielded = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true };
+  reads.shielded = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true, spendsAvailable: true };
   reads.funds = [];
   reads.activity = [];
   reads.activityRead = { isPending: false, isError: false };

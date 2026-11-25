@@ -1119,6 +1119,12 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "15000000";
     return w;
   },
+  /** This build cannot spend from Shielded: Send, the moves out and paying from it wait with one reason. */
+  "shielded-spends-off": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);

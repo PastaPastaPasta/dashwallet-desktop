@@ -17,6 +17,7 @@ import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
 import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
+import { SHIELDED_SPENDS_COPY } from "../shielded/spends";
 import { canSwap, coreMaxNotes, defaultRoute, feeText, heldExitRest, listedPools, mainnetOff, MAX_DERIVE, noRouteText, platformChip, platformToCoreOff, QuoteLine, ROUTES, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, unsupportedText, type MainnetOff, type Pools, type Settled, type Timers } from "./model";
 
 const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
@@ -188,6 +189,17 @@ describe("routes", () => {
     expect(listedPools(POOLS)).toEqual(["core", "shielded", "platform"]);
     expect(listedPools({ ...POOLS, shielded: null })).toEqual(["core", "platform"]);
     expect(listedPools({ ...POOLS, shielded: null, platform: null })).toEqual(["core"]);
+  });
+
+  it("hold the moves out of Shielded with one reason where this build cannot spend from it", () => {
+    const { shielded, fund, move } = flows();
+    const f = { shielded, fund, move };
+    const off: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: true } };
+    expect(routeWhy("shieldedToCore", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("shieldedToPlatform", off, f)).toBe(SHIELDED_SPENDS_COPY.unavailable);
+    expect(routeWhy("coreToShielded", off, f)).toBeNull();
+    const on: Pools = { ...POOLS, shielded: { active: true, syncing: false, duffs: 125_000_000, spendsOff: false } };
+    for (const r of ["coreToShielded", "shieldedToCore", "shieldedToPlatform"] as const) expect(routeWhy(r, on, f), r).toBe(routeWhy(r, POOLS, f));
   });
 
   it("each say why they can't start, with the text the Home card gave", () => {

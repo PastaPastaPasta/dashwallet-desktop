@@ -60,6 +60,10 @@ pub struct ShieldedStatus {
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
     pub prover_ready: bool,
+    /// This build can send, unshield and pay a contact from Shielded. When
+    /// false those calls refuse `platform.unavailable`; shielding, receive,
+    /// sync and balance still work.
+    pub spends_available: bool,
 }
 
 impl From<engine::ShieldedStatus> for ShieldedStatus {
@@ -78,6 +82,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
         } = s;
         ShieldedStatus {
             active,
@@ -93,6 +98,7 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
         }
     }
 }

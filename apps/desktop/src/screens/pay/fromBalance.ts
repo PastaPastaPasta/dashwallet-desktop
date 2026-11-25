@@ -17,6 +17,7 @@ import type { PoolReading } from "../../format/homeBalance";
 import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
 import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
+import { SHIELDED_SPENDS_COPY } from "../../shielded/spends";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
 
 export type PaySource = PaymentSourceName;
@@ -42,6 +43,8 @@ export interface FromInputs {
   /** Review accepts the payee's request too: that payment is the Dash wallet's. */
   acceptsToo: boolean;
   live?: ReadonlySet<PaySource>;
+  /** This build cannot spend from Shielded (shielded/spends.ts). */
+  shieldedSpendsOff?: boolean;
 }
 
 export interface FromRow {
@@ -73,7 +76,8 @@ export function fromRows(i: FromInputs): FromRow[] {
   const shown = (duffs: number | undefined) => (duffs === undefined || i.discreet ? null : i.amount(duffs));
   const pool = (source: "shielded" | "platform", reading: PoolReading): FromRow => {
     const duffs = typeof reading === "number" ? reading : reading === "absent" ? 0 : undefined;
-    const reason = !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? t("pay.contact.from.empty") : null;
+    const reason =
+      source === "shielded" && i.shieldedSpendsOff ? SHIELDED_SPENDS_COPY.source : !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? t("pay.contact.from.empty") : null;
     return { source, label: LABEL[source], balance: shown(duffs), reason };
   };
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];
