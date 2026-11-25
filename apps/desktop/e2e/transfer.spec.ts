@@ -51,6 +51,35 @@ test.describe("Transfer grants", () => {
     await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
   });
 
+  // Max from the Dash wallet: one quote of the whole account, and a grant of everything the lock spends
+  // (the fee out of it), so nothing comes back as change.
+  for (const [route, go, quote, done] of [
+    ["coreToShielded", "shielded-go", "shield_quote", "shielded-outcome-title"],
+    ["coreToPlatform", "platform-fund-go", "platform_fund_quote", "platform-fund-outcome-title"],
+  ] as const)
+    test(`Dash wallet → ${route === "coreToShielded" ? "Shielded" : "Platform"} Max: a platformOp grant of every coin it locks`, async ({ page }) => {
+      await open(page, "funded");
+      await openTransfer(page, route);
+      await page.getByTestId("transfer-max").click();
+      await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+      expect(await callsOf(page, quote)).toBe(1);
+      expect(await grantOf(page, go)).toEqual({ kind: "platformOp", maxDuffs: 3_019_698_287, maxCredits: "0" });
+      await expect(page.getByTestId(done)).toHaveText(route === "coreToShielded" ? "Added to Shielded" : "Added to Platform");
+    });
+
+  for (const [route, go, amount, maxDuffs] of [
+    ["coreToShielded", "shielded-go", "0.001", 101_000],
+    ["coreToPlatform", "platform-fund-go", "0.5", 50_001_000],
+  ] as const)
+    test(`Dash wallet → ${route === "coreToShielded" ? "Shielded" : "Platform"}: an amount edited after Max is an amount, its fee on top`, async ({ page }) => {
+      await open(page, "funded");
+      await openTransfer(page, route);
+      await page.getByTestId("transfer-max").click();
+      await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+      await page.getByTestId("transfer-amount").fill(amount);
+      expect(await grantOf(page, go)).toEqual({ kind: "platformOp", maxDuffs, maxCredits: "0" });
+    });
+
   test("Shielded → Dash wallet: a platformOp grant of the credits and the fee", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");
@@ -102,7 +131,7 @@ test.describe("Transfer quotes", () => {
     expect(await callsOf(page, "shield_quote")).toBe(1);
   });
 
-  test("Dash wallet → Platform: 0 platform_fund_quote calls while typing, 2 per Max click, 1 on Continue", async ({ page }) => {
+  test("Dash wallet → Platform: 0 platform_fund_quote calls while typing, 1 per Max click, 1 on Continue", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "coreToPlatform");
     const amount = page.getByTestId("transfer-amount");
@@ -111,30 +140,30 @@ test.describe("Transfer quotes", () => {
     // Well past the other routes' debounce: still nothing read.
     await page.waitForTimeout(1_500);
     expect(await callsOf(page, "platform_fund_quote")).toBe(0);
-    // Max: the whole balance, then one re-quote of the most it leaves room for.
+    // Max: one quote of the whole account.
     await page.getByTestId("transfer-max").click();
     await expect(amount).not.toHaveValue("0.55");
     await expect(amount).toHaveValue(/^\d+\.\d+$/);
     await page.waitForTimeout(1_500);
-    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
     await page.getByTestId("transfer-max").click();
     await expect(page.getByTestId("transfer-continue")).toBeEnabled();
     await page.waitForTimeout(1_500);
-    expect(await callsOf(page, "platform_fund_quote")).toBe(4);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
-    expect(await callsOf(page, "platform_fund_quote")).toBe(5);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(3);
   });
 
-  test("Dash wallet → Platform: Max whose re-quote is refused leaves the amount typed", async ({ page }) => {
+  test("Dash wallet → Platform: a refused Max leaves the amount typed", async ({ page }) => {
     await open(page, "transfer-many-coins");
     await openTransfer(page, "coreToPlatform");
     const amount = page.getByTestId("transfer-amount");
     await amount.fill("0.3");
     await page.getByTestId("transfer-max").click();
-    await expect(page.getByTestId("transfer-fee")).toHaveText(/Consolidate your coins first/);
+    await expect(page.getByTestId("transfer-fee")).toHaveText(/^Max needs at most 50 coins; this wallet has 60\. Enter an amount instead\.$/);
     await expect(amount).toHaveValue("0.3");
-    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
   });
 
   test("discreet mode: no amount shows in clear on any route, Max's fill and the whole balance included", async ({ page }) => {

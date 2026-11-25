@@ -29,9 +29,9 @@ use platform_wallet::changeset::{
 
 use crate::csv_export::{TX_TYPE_COUNT, write_csv};
 use crate::history::{
-    ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, WalletHistory, Winner, amounts,
-    beaten_unrecorded, chain_locked, chainlock_beaten, depth_of, filtered, orphaned_unmined,
-    records_of, rival_heights, status_of,
+    ChainView, DropCause, DropInfo, HistoryFilter, HistorySort, Labels, TxEntry, TxType,
+    WalletHistory, Winner, amounts, beaten_unrecorded, chain_locked, chainlock_beaten, depth_of,
+    filtered, orphaned_unmined, records_of, rival_heights, status_of,
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -116,6 +116,25 @@ pub struct TxNotice {
     pub coinjoin_internal: bool,
 }
 
+/// A payment this app dropped because the coin it spent came from a
+/// transaction that was never valid, once the wallet's own coins it spent
+/// are back, until it is dismissed (#766): one per payee (dash-qt record).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedNotice {
+    pub txid: String,
+    pub record_index: u32,
+    /// What it paid this payee, without the fee.
+    pub amount: u64,
+    pub timestamp: Option<u64>,
+    pub address: Option<String>,
+    pub label: Option<String>,
+    pub counterparty: Option<crate::platform::Counterparty>,
+}
+
+/// Settings key prefix (wallet scope) of a dropped payment whose notice
+/// was dismissed ([`DroppedNotice`]).
+const DROP_SEEN_PREFIX: &str = "drop_seen:";
+
 /// How long `resend_transaction` waits for dash-spv to refuse the send
 /// before it reports the transaction as handed over.
 const RESEND_HANDOFF: std::time::Duration = std::time::Duration::from_secs(2);
@@ -127,6 +146,61 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// on one (#739): a load seeds the walk of what to drop with it, and never
 /// restores it from a sent mark.
 const DROPPED_PREFIX: &str = "dropped:";
+
+/// The transactions dropped as ones that can never confirm, or built on
+/// one, each with why ([`DROPPED_PREFIX`]).
+pub(crate) type Dead = BTreeMap<Txid, DropCause>;
+
+/// A [`DROPPED_PREFIX`] mark's value: why its transaction was dropped. A
+/// mark only its key names matters to the load's walk; the value is read
+/// for what the history shows alone.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DropMark {
+    cause: DropMarkCause,
+    /// The wallet's own inputs, by index, with their values and addresses:
+    /// a load lists a payment whose record is gone as sent with them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    inputs: BTreeMap<u32, (u64, String)>,
+}
+
+/// A dropped transaction's own inputs, by index ([`DropMark::inputs`]).
+pub(crate) type OwnInputs = BTreeMap<u32, (u64, dashcore::Address)>;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum DropMarkCause {
+    InvalidSource,
+    InvalidClaim,
+    Replaced,
+}
+
+/// The value of the [`DROPPED_PREFIX`] mark of a transaction dropped for
+/// `cause`, which spent the wallet's own `inputs`.
+fn drop_mark(cause: DropCause, inputs: &OwnInputs) -> String {
+    let cause = match cause {
+        DropCause::InvalidClaim => DropMarkCause::InvalidClaim,
+        DropCause::InvalidSource => DropMarkCause::InvalidSource,
+        DropCause::Replaced => DropMarkCause::Replaced,
+    };
+    let inputs = (inputs.iter())
+        .map(|(n, (value, address))| (*n, (*value, address.to_string())))
+        .collect();
+    serde_json::to_string(&DropMark { cause, inputs }).unwrap_or_default()
+}
+
+/// Why a [`DROPPED_PREFIX`] mark's transaction was dropped: what is built
+/// on a never-valid claim for a value that is empty (a mark written before
+/// the value said), or does not parse.
+fn drop_mark_cause(value: Option<&str>) -> DropCause {
+    match value
+        .and_then(|v| serde_json::from_str::<DropMark>(v).ok())
+        .map(|m| m.cause)
+    {
+        Some(DropMarkCause::InvalidClaim) => DropCause::InvalidClaim,
+        Some(DropMarkCause::Replaced) => DropCause::Replaced,
+        _ => DropCause::InvalidSource,
+    }
+}
 
 /// Settings key prefix (wallet scope) of a transaction dropped as dead
 /// ([`NetworkSession::drop_dead_unmined`]), written with its abandoned
@@ -385,32 +459,58 @@ pub(crate) fn forget_sent(
     wallet: WalletId,
     gone: &[Txid],
 ) -> Result<(), dw_appdb::AppDbError> {
-    forget_swept(appdb, wallet, gone, &BTreeSet::new(), &[])
+    forget_swept(appdb, wallet, gone, &Dead::new(), &[], &[])
 }
 
 /// [`forget_sent`] of a sweep's `gone`, recording `dead` as dropped
 /// ([`DROPPED_PREFIX`]) and `claims`, swept as claims
 /// ([`CLAIM_SWEPT_PREFIX`]), in the same write: a load seeds its walk with
 /// the dead even when the drop of what is built on them never ran (#739),
-/// and takes no child of a claim as orphaned.
+/// and takes no child of a claim as orphaned. Each of `kept`, swept
+/// transactions the history keeps listed as dropped, is marked abandoned
+/// with its copy in it too, so a load lists it again.
 pub(crate) fn forget_swept(
     appdb: &AppDb,
     wallet: WalletId,
     gone: &[Txid],
-    dead: &BTreeSet<Txid>,
+    dead: &Dead,
     claims: &[Txid],
+    kept: &[(Txid, Transaction, OwnInputs)],
 ) -> Result<(), dw_appdb::AppDbError> {
     if gone.is_empty() && dead.is_empty() && claims.is_empty() {
         return Ok(());
     }
+    let abandoned: Vec<(String, String)> = (kept.iter())
+        .map(|(t, tx, _)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+        .collect();
+    let none = OwnInputs::new();
+    let inputs_of = |t: &Txid| {
+        (kept.iter())
+            .find(|(k, ..)| k == t)
+            .map_or(&none, |(.., i)| i)
+    };
     let keys: Vec<String> = (gone.iter())
         .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
         .collect();
-    let noted: Vec<String> = (dead.iter().map(|t| format!("{DROPPED_PREFIX}{t}")))
-        .chain(claims.iter().map(|t| format!("{CLAIM_SWEPT_PREFIX}{t}")))
+    let dropped: Vec<(String, String)> = (dead.iter())
+        .map(|(t, cause)| {
+            (
+                format!("{DROPPED_PREFIX}{t}"),
+                drop_mark(*cause, inputs_of(t)),
+            )
+        })
+        .collect();
+    let claimed: Vec<String> = (claims.iter())
+        .map(|t| format!("{CLAIM_SWEPT_PREFIX}{t}"))
         .collect();
     let writes: Vec<(&str, Option<&str>)> = (keys.iter().map(|k| (k.as_str(), None)))
-        .chain(noted.iter().map(|k| (k.as_str(), Some(""))))
+        .chain(dropped.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))))
+        .chain(claimed.iter().map(|k| (k.as_str(), Some(""))))
+        .chain(
+            abandoned
+                .iter()
+                .map(|(k, v)| (k.as_str(), Some(v.as_str()))),
+        )
         .collect();
     #[cfg(all(test, debug_assertions))]
     appdb.fault_point(FORGET_SENT_FAULT, dw_appdb::fault::Stage::Before)?;
@@ -492,15 +592,11 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
 
 /// What a sweep superseded by `by` dropped that can never confirm (#739):
 /// of the `swept` transactions the history held, the unsigned claims
-/// key-wallet dropped (each spends an output of `by`) and the swept ones
-/// that descend from them. `None` when the sweep dropped no claim the
+/// key-wallet dropped (each spends an output of `by`), and the swept ones
+/// that descend from them, as built on one. `None` when the sweep dropped no claim the
 /// history held (a plain conflict sweep), or one through an input script
 /// that isn't push-only, whose verdict may be wrong.
-pub(crate) fn swept_claims(
-    wallet: WalletId,
-    by: Txid,
-    swept: &[Transaction],
-) -> Option<BTreeSet<Txid>> {
+pub(crate) fn swept_claims(wallet: WalletId, by: Txid, swept: &[Transaction]) -> Option<Dead> {
     let spends_by = |i: &dashcore::TxIn| i.previous_output.txid == by;
     let claims: Vec<&Transaction> = (swept.iter())
         .filter(|tx| tx.input.iter().any(spends_by))
@@ -514,12 +610,14 @@ pub(crate) fn swept_claims(
         tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
         return None;
     }
-    let mut dead: BTreeSet<Txid> = claims.iter().map(|tx| tx.txid()).collect();
+    let mut dead: Dead = (claims.iter())
+        .map(|tx| (tx.txid(), DropCause::InvalidClaim))
+        .collect();
     loop {
         let before = dead.len();
         for tx in swept {
-            if (tx.input.iter()).any(|i| dead.contains(&i.previous_output.txid)) {
-                dead.insert(tx.txid());
+            if (tx.input.iter()).any(|i| dead.contains_key(&i.previous_output.txid)) {
+                dead.entry(tx.txid()).or_insert(DropCause::InvalidSource);
             }
         }
         if dead.len() == before {
@@ -529,8 +627,10 @@ pub(crate) fn swept_claims(
 }
 
 /// The transactions this app dropped as ones that can never confirm, or
-/// built on one ([`DROPPED_PREFIX`]), and whether they read.
-pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (BTreeSet<Txid>, bool) {
+/// built on one ([`DROPPED_PREFIX`]), each with why ([`drop_mark_cause`]),
+/// and whether they read. Which transactions they are comes from the keys
+/// alone: no value keeps one out.
+pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (Dead, bool) {
     match appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX) {
         // A record whose key names no transaction is left out, as a damaged
         // abandoned mark is: it can't be dropped, and an incomplete read
@@ -538,8 +638,8 @@ pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (BTreeSet<Txid>, 
         Ok(rows) => {
             let dropped = (rows.into_iter())
                 .filter_map(
-                    |(key, _)| match Txid::from_str(&key[DROPPED_PREFIX.len()..]) {
-                        Ok(txid) => Some(txid),
+                    |(key, value)| match Txid::from_str(&key[DROPPED_PREFIX.len()..]) {
+                        Ok(txid) => Some((txid, drop_mark_cause(value.as_deref()))),
                         Err(_) => {
                             tracing::warn!(%wallet, %key, "a dropped record names no transaction");
                             None
@@ -551,9 +651,34 @@ pub(crate) fn load_dropped(appdb: &AppDb, wallet: WalletId) -> (BTreeSet<Txid>, 
         }
         Err(e) => {
             tracing::warn!(%wallet, error = %e, "could not read the dropped transactions");
-            (BTreeSet::new(), false)
+            (Dead::new(), false)
         }
     }
+}
+
+/// The own inputs `wallet`'s [`DROPPED_PREFIX`] marks keep
+/// ([`DropMark::inputs`]), for a load that lists a dropped payment from its
+/// abandoned mark alone. A mark that doesn't read keeps none.
+pub(crate) fn load_drop_inputs(
+    appdb: &AppDb,
+    wallet: WalletId,
+    network: dashcore::Network,
+) -> BTreeMap<Txid, OwnInputs> {
+    let rows =
+        (appdb.settings_with_prefix_lossy(&wallet.to_string(), DROPPED_PREFIX)).unwrap_or_default();
+    (rows.into_iter())
+        .filter_map(|(key, value)| {
+            let txid = Txid::from_str(&key[DROPPED_PREFIX.len()..]).ok()?;
+            let mark = serde_json::from_str::<DropMark>(value.as_deref()?).ok()?;
+            let inputs: OwnInputs = (mark.inputs.into_iter())
+                .filter_map(|(n, (amount, address))| {
+                    let address = address.parse::<dashcore::Address<_>>().ok()?;
+                    Some((n, (amount, address.require_network(network).ok()?)))
+                })
+                .collect();
+            (!inputs.is_empty()).then_some((txid, inputs))
+        })
+        .collect()
 }
 
 /// The txids `wallet`'s abandoned marks name, each by its key (an Abandon's
@@ -808,7 +933,19 @@ fn pending(e: &TxEntry) -> bool {
 /// what must still hold, read under the lock that applies it.
 pub(crate) struct DeadDrop {
     dead: BTreeSet<Txid>,
+    /// Of what it drops and `dead`, the never-valid claims themselves;
+    /// the rest is built on one.
+    claims: BTreeSet<Txid>,
     holds: Box<DeadCheck>,
+}
+
+impl DeadDrop {
+    fn cause_of(&self, txid: &Txid) -> DropCause {
+        match self.claims.contains(txid) {
+            true => DropCause::InvalidClaim,
+            false => DropCause::InvalidSource,
+        }
+    }
 }
 
 /// What a [`DeadDrop`] checks under the lock: the history, key-wallet's
@@ -1810,7 +1947,16 @@ impl NetworkSession {
             // the load's walk, never live (#739).
             if let Some(d) = dead_drop {
                 for t in planned.iter().chain(&d.dead) {
-                    marks.push((format!("{DROPPED_PREFIX}{t}"), Some(String::new())));
+                    let own = (self.hub.history).read_wallet(&wallet, |h| {
+                        (h.txs.get(t).map(|e| e.own_inputs.clone()))
+                            .filter(|own| !own.is_empty())
+                            .or_else(|| h.drop_inputs.get(t).cloned())
+                            .unwrap_or_default()
+                    });
+                    marks.push((
+                        format!("{DROPPED_PREFIX}{t}"),
+                        Some(drop_mark(d.cause_of(t), &own)),
+                    ));
                 }
                 for t in &planned {
                     for prefix in [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX] {
@@ -1940,6 +2086,11 @@ impl NetworkSession {
                 }
             }
             h.abandoned_here.extend(abandoned.iter().copied());
+            if let Some(d) = dead_drop {
+                for t in &abandoned {
+                    h.drops.insert(*t, DropInfo::new(d.cause_of(t)));
+                }
+            }
         });
         (self.hub.history).drop_claims(&wallet, abandoned.iter().copied());
         // Each abandoned transaction's own claim (DEC-179); a coin another
@@ -2841,7 +2992,7 @@ impl NetworkSession {
         &self,
         manager: &Manager,
         wallet: WalletId,
-        dead: &BTreeSet<Txid>,
+        dead: &Dead,
         at_load: bool,
     ) {
         if at_load {
@@ -2856,17 +3007,21 @@ impl NetworkSession {
                 .filter_map(|(t, e)| {
                     let parents: BTreeSet<Txid> = (e.tx.input.iter())
                         .map(|i| i.previous_output.txid)
-                        .filter(|p| dead.contains(p))
+                        .filter(|p| dead.contains_key(p))
                         .collect();
-                    (dead.contains(t) || !parents.is_empty()).then_some((*t, parents))
+                    (dead.contains_key(t) || !parents.is_empty()).then_some((*t, parents))
                 })
                 .collect()
         });
         let drops = (children.into_iter())
             .map(|(child, parents)| {
-                let again = dead.contains(&child);
+                let again = dead.contains_key(&child);
                 let tree: Vec<Txid> = (parents.iter().copied())
                     .chain(again.then_some(child))
+                    .collect();
+                let claims = (tree.iter())
+                    .filter(|t| dead.get(*t) == Some(&DropCause::InvalidClaim))
+                    .copied()
                     .collect();
                 let spent = parents.clone();
                 let holds = move |txs: &HashMap<Txid, TxEntry>,
@@ -2891,6 +3046,7 @@ impl NetworkSession {
                 };
                 let drop = DeadDrop {
                     dead: parents,
+                    claims,
                     holds: Box::new(holds),
                 };
                 (child, drop)
@@ -2902,9 +3058,9 @@ impl NetworkSession {
     /// Forgets the `dropped:` rows of `dead` the history now holds mined or
     /// InstantSend-locked: the verdict that dropped them was wrong, and
     /// they no longer seed the load's walk.
-    async fn prune_dropped(&self, wallet: WalletId, dead: &BTreeSet<Txid>) {
+    async fn prune_dropped(&self, wallet: WalletId, dead: &Dead) {
         let settled: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
-            (dead.iter())
+            (dead.keys())
                 .filter(|t| {
                     txs.get(*t)
                         .is_some_and(|e| e.context.block_info().is_some() || locked(e))
@@ -2984,6 +3140,7 @@ impl NetworkSession {
                 };
                 let drop = DeadDrop {
                     dead: BTreeSet::new(),
+                    claims: BTreeSet::from([claim]),
                     holds: Box::new(holds),
                 };
                 (claim, drop)
@@ -3104,6 +3261,100 @@ impl NetworkSession {
         .await
     }
 
+    /// The notices of the payments of `wallet` this app dropped as built on
+    /// a transaction that was never valid ([`DroppedNotice`]): each a
+    /// payment the wallet sent, its own coins back ([`DropState::Released`])
+    /// and its notice not dismissed. Never the never-valid transaction
+    /// itself, nor a payment dropped for another reason.
+    ///
+    /// [`DropState::Released`]: crate::history::DropState::Released
+    pub async fn dropped_notices(
+        self: &Arc<Self>,
+        wallet: WalletId,
+    ) -> Result<Vec<DroppedNotice>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let live = this.live()?;
+            if (this.hub.history).read_wallet(&wallet, |h| h.drops.is_empty()) {
+                return Ok(Vec::new());
+            }
+            let labels: Labels = Self::labels(&live.appdb, wallet).await?;
+            let seen: HashSet<Txid> = this
+                .appdb_op(move |db| {
+                    db.settings_with_prefix_lossy(&wallet.to_string(), DROP_SEEN_PREFIX)
+                })
+                .await?
+                .into_iter()
+                .filter_map(|(key, _)| Txid::from_str(&key[DROP_SEEN_PREFIX.len()..]).ok())
+                .collect();
+            let mut notices = this
+                .with_view_naming_payees(&live.manager, wallet, |view| {
+                    (view.drops.states.iter())
+                        .filter(|(t, d)| {
+                            d.cause == DropCause::InvalidSource
+                                && d.state == crate::history::DropState::Released
+                                && !seen.contains(*t)
+                        })
+                        .filter_map(|(t, _)| view.history.get(t).map(|e| (t, e)))
+                        .flat_map(|(t, e)| records_of(t, e, view, &labels).0)
+                        .filter(|r| {
+                            r.category == crate::history::TxCategory::Sent
+                                && r.status.dropped.is_some()
+                        })
+                        .map(|r| {
+                            let fee = match r.record_index {
+                                0 => r.fee.unwrap_or(0),
+                                _ => 0,
+                            };
+                            DroppedNotice {
+                                amount: r.amount.unsigned_abs().saturating_sub(fee),
+                                txid: r.txid,
+                                record_index: r.record_index,
+                                timestamp: r.timestamp,
+                                address: r.address,
+                                label: r.label,
+                                counterparty: r.counterparty,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await?;
+            notices.sort_by(|a, b| {
+                (b.timestamp, &a.txid, a.record_index).cmp(&(a.timestamp, &b.txid, b.record_index))
+            });
+            Ok(notices)
+        })
+        .await
+    }
+
+    /// Dismisses the notices of the dropped payments `txids` of `wallet`
+    /// ([`Self::dropped_notices`]) for good.
+    pub async fn dismiss_dropped_notices(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        txids: Vec<Txid>,
+    ) -> Result<(), EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.require_wallet(&wallet)?;
+            if txids.is_empty() {
+                return Ok(());
+            }
+            this.appdb_op(move |db| {
+                let keys: Vec<String> = (txids.iter())
+                    .map(|t| format!("{DROP_SEEN_PREFIX}{t}"))
+                    .collect();
+                let writes: Vec<(&str, Option<&str>)> =
+                    keys.iter().map(|k| (k.as_str(), Some(""))).collect();
+                db.set_settings_durable(&wallet.to_string(), &writes)
+            })
+            .await
+        })
+        .await
+    }
+
     /// Notification rows for `txids` (a `NewTransactions` event). Unknown
     /// txids are skipped.
     pub async fn tx_notices(
@@ -3182,6 +3433,59 @@ mod tests {
             matures_in: None,
             abandon_marked: false,
         }
+    }
+
+    /// Which transactions the dropped marks name comes from their keys
+    /// alone (#790): an empty value (an earlier build's), a cause, or a
+    /// value that does not parse name the same set, and none fails the
+    /// read. The value gives only why: a never-valid claim's, else what is
+    /// built on one.
+    #[test]
+    fn the_dropped_marks_name_the_same_transactions_whatever_their_values() {
+        use dashcore::hashes::Hash;
+        let db = AppDb::open_in_memory().unwrap();
+        let wallet = WalletId([7; 32]);
+        let scope = wallet.to_string();
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let values = [
+            "",
+            r#"{"cause":"invalidSource"}"#,
+            r#"{"cause":"invalidClaim"}"#,
+            r#"{"cause":"somethingNew"}"#,
+            "not json",
+            r#"{"cause":"invalidClaim","extra":1}"#,
+        ];
+        let keys: Vec<String> = (1..=values.len() as u8)
+            .map(|n| format!("{DROPPED_PREFIX}{}", t(n)))
+            .collect();
+        let writes: Vec<(&str, Option<&str>)> = (keys.iter().zip(values))
+            .map(|(k, v)| (k.as_str(), Some(v)))
+            .collect();
+        db.set_settings_durable(&scope, &writes).unwrap();
+        let (dead, read) = load_dropped(&db, wallet);
+        assert!(read);
+        let names: BTreeSet<Txid> = dead.keys().copied().collect();
+        assert_eq!(names, (1..=values.len() as u8).map(t).collect());
+        use DropCause::*;
+        let causes: Vec<DropCause> = dead.values().copied().collect();
+        assert_eq!(
+            causes,
+            [
+                InvalidSource,
+                InvalidSource,
+                InvalidClaim,
+                InvalidSource,
+                InvalidSource,
+                InvalidClaim
+            ]
+        );
+        for cause in [InvalidSource, InvalidClaim, Replaced] {
+            assert_eq!(
+                drop_mark_cause(Some(&drop_mark(cause, &OwnInputs::new()))),
+                cause
+            );
+        }
+        assert_eq!(drop_mark_cause(None), InvalidSource);
     }
 
     /// A mark with its signed transaction stored apart (#170 case 1) reads
@@ -3454,6 +3758,7 @@ mod tests {
             chainlock_height: None,
             network: dashcore::Network::Regtest,
             payees: &payees,
+            drops: &crate::history::NO_DROPS,
         };
         assert_eq!(
             facts(&entry, &view, &ChainProof::default()).abandon_refusal(),

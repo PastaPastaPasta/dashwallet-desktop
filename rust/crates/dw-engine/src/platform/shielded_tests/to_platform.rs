@@ -66,7 +66,10 @@ fn unshield_to_platform_quote_follows_platforms_unshield_rules() {
         ]
     });
     let refused: Vec<_> = refused.into_iter().map(Result::unwrap_err).collect();
-    assert_eq!(refused[0], ShieldedError::BelowMinimum { min: 1 });
+    assert_eq!(
+        refused[0],
+        ShieldedError::BelowMinimum { min: 1, max: None }
+    );
     assert_eq!(
         refused[1],
         ShieldedError::InvalidAddress {

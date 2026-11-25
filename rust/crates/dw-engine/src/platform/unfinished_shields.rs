@@ -132,7 +132,11 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         let duffs = fee / CREDITS_PER_DUFF + 1;
         Some(Minimum {
             duffs,
-            code: ShieldedError::BelowMinimum { min: duffs }.code(),
+            code: ShieldedError::BelowMinimum {
+                min: duffs,
+                max: None,
+            }
+            .code(),
         })
     }
 
