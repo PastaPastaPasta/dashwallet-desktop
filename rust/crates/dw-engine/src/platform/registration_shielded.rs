@@ -440,10 +440,11 @@ pub(crate) async fn fund(
     if sent.is_ok() {
         lib.sync_now().await;
     }
-    let name = b58(&Identifier::new(identity));
-    if let Ok((true, _)) = net.identity(Identifier::new(identity)).await {
+    let id = Identifier::new(identity);
+    let name = b58(&id);
+    if let Ok((true, _)) = net.identity(id).await {
         if let Ok(artifacts) = session.leases.shielded_artifacts(wallet).await
-            && let Some(artifact) = create_artifact(&artifacts, &Identifier::new(identity))
+            && let Some(artifact) = create_artifact(&artifacts, &id)
         {
             proved_executed(session, wallet, artifact).await;
         }
@@ -521,8 +522,13 @@ async fn evidence(
     Ok(outcome)
 }
 
-/// Whether the library still holds `artifact`'s notes for its unresolved
-/// outcome. A read failure holds nothing.
+/// Whether `artifact` published only its own notes' nullifiers: no padding.
+fn unpadded(artifact: &ShieldedArtifact) -> bool {
+    (artifact.published.iter()).all(|n| artifact.selected.iter().any(|(s, _)| s == n))
+}
+
+/// Whether the library still lists `artifact`'s unresolved outcome
+/// unacknowledged, which holds its notes. A read failure holds nothing.
 async fn holds(lib: &impl ShieldedLib, artifact: &ShieldedArtifact) -> bool {
     match (lib.held_spends().await, artifact.st_hash) {
         (Ok(held), Some(st_hash)) => held.contains(&st_hash),
@@ -578,12 +584,15 @@ async fn by_artifact(
         _ => return Ok(present().await),
     };
     let executed_by = match net.nullifiers(&artifact.published).await {
-        // A bundle of two or more notes has no padding: its nullifiers
-        // spent are this create's only while the library held its notes
-        // throughout, which a hold read after the spent read shows (a hold
-        // once lifted never returns). Another install's spend of the same
-        // notes is not told apart.
-        Ok(NullifierRead::Spent(_)) if unresolved && !holds(lib, artifact).await => {
+        // A bundle's padding is spent by this create alone. A bundle of two
+        // or more notes has none: its nullifiers spent are this create's
+        // only while the library held its notes throughout, which a hold
+        // read after the spent read shows (a hold once lifted never
+        // returns). Another install's spend of the same notes is not told
+        // apart.
+        Ok(NullifierRead::Spent(_))
+            if unresolved && unpadded(artifact) && !holds(lib, artifact).await =>
+        {
             return Ok(present().await);
         }
         Ok(NullifierRead::Spent(at)) => at,

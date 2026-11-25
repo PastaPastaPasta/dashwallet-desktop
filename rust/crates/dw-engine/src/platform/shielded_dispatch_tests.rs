@@ -1902,11 +1902,17 @@ impl Hooked {
     /// A Shielded-funded row whose create `n` the hook accepted: its draft
     /// and the identity it named.
     fn dispatched_create(&self, n: u8) -> (i64, String) {
+        self.dispatched_create_of(n, &[n as u64])
+    }
+
+    /// [`Self::dispatched_create`] of the notes at `positions`: two or more
+    /// publish no padding.
+    fn dispatched_create_of(&self, n: u8, positions: &[u64]) -> (i64, String) {
         let draft = self.shielded_row();
         self.intend_create(draft, DENOMINATION);
-        let (bytes, id) = create_bytes(n, &[n as u64], (DENOMINATION, own_platform()), None);
+        let (bytes, id) = create_bytes(n, positions, (DENOMINATION, own_platform()), None);
         assert_eq!(
-            self.dispatch(self.staged_create(n, &[n as u64], bytes, id)),
+            self.dispatch(self.staged_create(n, positions, bytes, id)),
             Ok(())
         );
         (self.f.session.platform.registration_intents.lock().unwrap()).remove(&self.f.wallet);
@@ -2354,11 +2360,9 @@ fn a_create_signs_nothing_while_a_check_fails() {
 
 /// F12: the library resolves every failure of a create after its dispatch
 /// `unresolved` (`Cancelled`, operations.rs `settle_failed_spend`), a paid
-/// fallback included: every published nullifier proved spent while the
-/// library still holds the notes for it attributes the spend to this
-/// create, so an unresolved create settles as an executed one does. A
-/// bundle of two or more notes has no padding, so once the hold is gone
-/// another spend of the same notes could read the same: it waits.
+/// fallback included: every published nullifier proved spent, the bundle's
+/// padding included, which only this create spends, attributes the spend
+/// to it, so an unresolved create settles as an executed one does.
 #[test]
 fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     let h = Hooked::new();
@@ -2370,22 +2374,10 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     let ev = Evidence::default();
     *ev.spent.lock().unwrap() = Some(100);
     *ev.identity.lock().unwrap() = (false, 100);
-    let lib = super::FakeShielded::default();
     assert_eq!(
-        h.evidence_with(draft, &id, &ev, &lib),
-        ShieldedOutcome::Unknown,
-        "its notes no longer held: another spend of them may be what reads spent"
-    );
-    assert!(h.refunds().is_empty());
-    assert_eq!(
-        h.artifact(4).unwrap().status,
-        ArtifactStatus::Unresolved { unrecorded: false }
-    );
-    let st_hash = h.artifact(4).unwrap().st_hash.unwrap();
-    lib.held.lock().unwrap().insert(st_hash);
-    assert_eq!(
-        h.evidence_with(draft, &id, &ev, &lib),
-        ShieldedOutcome::Fallback(id.clone())
+        h.evidence(draft, &id, &ev),
+        ShieldedOutcome::Fallback(id.clone()),
+        "padded: no hold needed"
     );
     assert_eq!(h.refunds().len(), 1);
     let artifact = h.artifact(4).unwrap();
@@ -2403,6 +2395,43 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
     );
     *ev.identity.lock().unwrap() = (true, 101);
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
+}
+
+/// F12: a create of two or more notes publishes no padding, so once the
+/// library no longer holds its notes another spend of the same notes reads
+/// the same as this create executing: the row waits, nothing refunded.
+/// Held, read after the spent read, the spend is this create's.
+#[test]
+fn an_unpadded_create_spent_counts_only_while_its_notes_are_held() {
+    let h = Hooked::new();
+    let (draft, id) = h.dispatched_create_of(12, &[12, 13]);
+    h.rewrite(
+        12,
+        "status = 'unresolved', disposition_kind = 'unresolved', disposition_reason = 'cancelled'",
+    );
+    let artifact = h.artifact(12).unwrap();
+    assert_eq!(artifact.published.len(), 2, "no padding");
+    let ev = Evidence::default();
+    *ev.spent.lock().unwrap() = Some(100);
+    *ev.identity.lock().unwrap() = (false, 100);
+    let lib = super::FakeShielded::default();
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Unknown,
+        "its notes no longer held: another spend of them may be what reads spent"
+    );
+    assert!(h.refunds().is_empty());
+    assert_eq!(
+        h.artifact(12).unwrap().status,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    lib.held.lock().unwrap().insert(artifact.st_hash.unwrap());
+    assert_eq!(
+        h.evidence_with(draft, &id, &ev, &lib),
+        ShieldedOutcome::Fallback(id)
+    );
+    assert_eq!(h.refunds().len(), 1);
+    assert_eq!(h.artifact(12).unwrap().status, ArtifactStatus::Executed);
 }
 
 /// F12: an unresolved create none of whose nullifiers is spent may still

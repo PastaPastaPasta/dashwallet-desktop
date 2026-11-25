@@ -4956,9 +4956,9 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     failure after the dispatch, the pool floor's refusal included, `unresolved`) whose published nullifiers, the
     bundle's padding included, are all proved spent at height h with the identity proved absent at or above h
     adopts an identity of the seed at the row's index other than the one the create named, else fails the row
-    `registration.refunded` (not retryable), an unresolved one only while the library still holds its notes, read
-    after the spent read (a bundle of two or more notes has no padding, so another spend of the same notes reads
-    the same; another install's is not told apart); a create in flight or unresolved whose identity reads present,
+    `registration.refunded` (not retryable); an unresolved bundle of two or more notes, which has no padding, only
+    while the library still lists its outcome unacknowledged, read after the spent read (another spend of the same
+    notes reads the same; another install's is not told apart); a create in flight or unresolved whose identity reads present,
     or so proved, is settled `executed`. An unresolved one
     whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
     the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
