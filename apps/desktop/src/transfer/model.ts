@@ -196,6 +196,10 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
+  /** Every coin the Dash wallet holds that isn't locked or reserved, in duffs, incoming and mixed ones too:
+   * Max from it is offered while there is any, since the Core Max says why it can't move them. `null` while
+   * it is not read; `undefined` when the coin list can't be read, and the balance decides. */
+  coreCoins?: number | null;
   mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. `spendsOff`: this build cannot spend from it (shielded/spends.ts). */

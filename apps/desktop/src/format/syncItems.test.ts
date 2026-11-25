@@ -173,6 +173,21 @@ describe("a sync the bar does not wait on", () => {
     expect(barSync(caughtUp, [coreItem(caughtUp), platformItem(p, false, "unlockedMixingOnly"), shieldedItem(s)]).button).toBe("synced");
   });
 
+  // Review: the address pass runs without the full unlock; its outcome outranks the identity wait.
+  it("waits on a pending or failed Platform-address pass while DashPay waits for an unlock", () => {
+    for (const lock of ["locked", "unlockedMixingOnly"] as const) {
+      const pending = platform({ startup: "identityUnsettled", addresses: "pending" });
+      expect(row(platformItem(pending, false, lock))).toBe("Syncing…");
+      expect(bar(pending, shielded()).button).toBe("syncing");
+      const failed = platform({ startup: "identityUnsettled", addresses: "failed" });
+      expect(row(platformItem(failed, false, lock))).toBe("The last pass failed. It tries again shortly.");
+      expect(bar(failed, shielded())).toEqual({ text: "Platform sync didn't finish", percent: null, button: "incomplete" });
+    }
+    const done = platform({ startup: "identityUnsettled", addresses: "done" });
+    expect(row(platformItem(done, false, "unlockedMixingOnly"))).toBe("Unlock fully to sync");
+    expect(bar(done, shielded()).button).toBe("synced");
+  });
+
   it("is Synced in the bar and the watch-only line in Sync progress for a watch-only wallet", () => {
     const s = shielded({ established: false, account: "watchOnly" });
     expect(bar(platform(), s).button).toBe("synced");

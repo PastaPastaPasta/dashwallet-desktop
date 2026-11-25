@@ -40,6 +40,15 @@ pub(super) fn account() -> CoreCoins {
         ],
         left_duffs: 7_000_000,
         arriving_duffs: 1_500_000,
+        arriving: vec![late(3, 1_500_000)],
+    }
+}
+
+/// The `i`th coin of BIP44 account 0, worth `value`, not final yet.
+pub(super) fn late(i: u32, value: u64) -> DrainCoin {
+    DrainCoin {
+        confirmed: false,
+        ..bip44(i, value)
     }
 }
 
@@ -322,8 +331,8 @@ fn core_max_refuses_coins_changed_since_the_quote() {
 }
 
 /// A lock below the pool's floor, or none, is refused before signing,
-/// with what Max would move (the figure held against the floor) and what
-/// the other accounts hold.
+/// with what Max would move (the figure held against the floor), what the
+/// other accounts hold and what is still arriving.
 #[test]
 fn core_max_refuses_below_the_floor() {
     let fx = Fixture::new(0);
@@ -332,25 +341,79 @@ fn core_max_refuses_below_the_floor() {
     let one = |v: u64, left_duffs: u64| CoreCoins {
         coins: vec![bip44(0, v)],
         left_duffs,
-        arriving_duffs: 0,
+        ..CoreCoins::default()
     };
-    let below = |duffs: u64, left_duffs: u64| ShieldedError::BelowMinimum {
+    let below = |duffs: u64, left_duffs: u64, arriving_duffs: u64| ShieldedError::BelowMinimum {
         min: floor,
-        max: Some(CoreMaxShort { duffs, left_duffs }),
+        max: Some(CoreMaxShort {
+            duffs,
+            left_duffs,
+            arriving_duffs,
+            arriving_clears: false,
+        }),
     };
     assert_eq!(
         quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 0))).unwrap_err(),
-        below(floor - 1, 0)
+        below(floor - 1, 0, 0)
     );
     assert_eq!(
         quote_of(&fx, &maxer(&fx, one(floor + fee - 1, 7_000))).unwrap_err(),
-        below(floor - 1, 7_000)
+        below(floor - 1, 7_000, 0)
     );
     assert_eq!(
         quote_of(&fx, &maxer(&fx, CoreCoins::default())).unwrap_err(),
-        below(0, 0)
+        below(0, 0, 0)
+    );
+    let arriving = CoreCoins {
+        arriving_duffs: 90_000,
+        arriving: vec![late(0, 90_000)],
+        left_duffs: 7_000,
+        ..CoreCoins::default()
+    };
+    assert_eq!(
+        quote_of(&fx, &maxer(&fx, arriving)).unwrap_err(),
+        below(0, 7_000, 90_000)
     );
     quote_of(&fx, &maxer(&fx, one(floor + fee, 7_000))).unwrap();
+}
+
+/// Below the floor, the refusal says whether Max would clear it once every
+/// arriving coin is final, by the same plan over the final and arriving
+/// coins: not with nothing arriving, nor below the floor plus the fee bound
+/// of all the coins (by one duff), nor with an arriving coin the user
+/// locked, nor past 50 coins in all.
+#[test]
+fn core_max_says_whether_the_arriving_coins_would_clear() {
+    let fx = Fixture::new(0);
+    let floor = drain::drain_floor(pool_fee());
+    let clears = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
+        let read = CoreCoins {
+            coins,
+            left_duffs: 0,
+            arriving_duffs: sum(&arriving),
+            arriving,
+        };
+        match quote_of(&fx, &maxer(&fx, read)).unwrap_err() {
+            ShieldedError::BelowMinimum { max: Some(m), .. } => m.arriving_clears,
+            refused => panic!("{refused:?}"),
+        }
+    };
+    let at = |n: usize| floor + crate::fees::asset_lock_fee_bound(n);
+    assert!(!clears(vec![], vec![]));
+    assert!(!clears(vec![bip44(0, 1_000)], vec![]));
+    assert!(!clears(vec![], vec![late(0, 5_000)]));
+    assert!(clears(vec![], vec![late(0, at(1))]));
+    assert!(!clears(vec![], vec![late(0, at(1) - 1)]));
+    assert!(clears(vec![bip44(0, 1_000)], vec![late(1, at(2) - 1_000)]));
+    assert!(!clears(vec![bip44(0, 1_000)], vec![late(1, at(2) - 1_001)]));
+    let locked = DrainCoin {
+        held: true,
+        ..late(0, 10 * at(1))
+    };
+    assert!(!clears(vec![], vec![locked]));
+    let many: Vec<_> = (1..=50).map(|i| late(i, 1_000_000)).collect();
+    assert!(!clears(vec![bip44(0, 1_000)], many.clone()));
+    assert!(clears(vec![bip44(0, 1_000)], many[..49].to_vec()));
 }
 
 /// A Max whose lock was signed and is out but not applied (the process
@@ -400,7 +463,8 @@ fn kill_after_drain_lock_signed_resumes_same_outpoint() {
 /// The read of the wallet's coins: BIP44 account 0's final coins are the
 /// plan's (an InstantSend lock is final), held when locked, reserved, a
 /// denomination Dash Core counts as mixed or off its address paths; one
-/// not final yet (or an immature coinbase) is arriving; every other
+/// not final yet (or an immature coinbase) is arriving, held as a final
+/// one would be; every other
 /// account's spendable coin is left, a mixed denomination too.
 #[test]
 fn core_max_leaves_other_accounts() {
@@ -453,6 +517,13 @@ fn core_max_leaves_other_accounts() {
     denomination_other.counted_denomination = true;
     let mut locked_other = coin(12, true);
     locked_other.user_locked = true;
+    let mut pending_locked = coin(9, true);
+    pending_locked.utxo.is_confirmed = false;
+    pending_locked.user_locked = true;
+    // A withheld payment's output (`crate::withhold`): not even arriving.
+    let mut withheld = coin(15, true);
+    withheld.utxo.is_confirmed = false;
+    withheld.excluded = Some(crate::ExclusionReason::PendingUnproven);
     let snapshot = CoinSnapshot {
         height: 200,
         coins: vec![
@@ -464,6 +535,8 @@ fn core_max_leaves_other_accounts() {
             coin(6, true),
             coinbase,
             denomination,
+            pending_locked,
+            withheld,
             // Other accounts: BIP32, DashPay receiving, CoinJoin, a locked one,
             // a CoinJoin denomination.
             coin(10, true),
@@ -483,6 +556,8 @@ fn core_max_leaves_other_accounts() {
         (6, None),
         (7, path("m/44'/1'/0'/0/7")),
         (8, path("m/44'/1'/0'/0/8")),
+        (9, path("m/44'/1'/0'/0/9")),
+        (15, path("m/44'/1'/0'/0/15")),
     ]
     .into_iter()
     .map(|(n, p)| (OutPoint::new(Txid::from_byte_array([n; 32]), 0), p))
@@ -502,6 +577,14 @@ fn core_max_leaves_other_accounts() {
             (8, true)
         ]
     );
-    assert_eq!(read.arriving_duffs, 2_000 + 7_000);
+    assert!(read.coins.iter().all(|c| c.confirmed));
+    let arriving: Vec<(u8, bool, bool)> = (read.arriving.iter())
+        .map(|c| (c.outpoint.txid.to_byte_array()[0], c.held, c.confirmed))
+        .collect();
+    assert_eq!(
+        arriving,
+        [(2, false, false), (7, false, false), (9, true, false)]
+    );
+    assert_eq!(read.arriving_duffs, 2_000 + 7_000 + 9_000);
     assert_eq!(read.left_duffs, 10_000 + 11_000 + 13_000 + 14_000);
 }

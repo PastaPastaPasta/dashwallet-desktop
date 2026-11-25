@@ -94,3 +94,19 @@ test("a wallet unlocked for mixing only is Synced in the bar and asks for the fu
   await page.getByTestId("status-sync").click();
   await expect(page.getByTestId("sync-item-shielded")).toContainText("Unlock fully to sync");
 });
+
+test("a failed Platform-address pass is never Synced while DashPay waits for an unlock", async ({ page }) => {
+  await page.goto(fixtureUrl("dashpay-identity-unsettled-addresses-failed", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("status-state")).toHaveText("Platform sync didn't finish");
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-item-platform")).toContainText("The last pass failed. It tries again shortly.");
+});
+
+test("Sync progress asks for the full unlock on Platform once its address pass is done", async ({ page }) => {
+  await page.goto(fixtureUrl("dashpay-identity-unsettled", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect(page.getByTestId("status-state")).toHaveText("Up to date");
+  await page.getByTestId("status-sync").click();
+  await expect(page.getByTestId("sync-item-platform")).toContainText("Unlock fully to sync");
+});

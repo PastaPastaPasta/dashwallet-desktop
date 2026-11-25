@@ -66,6 +66,9 @@ export interface FixtureWallet {
   scanHeight?: number | null;
   /** Dropped payments whose notice was dismissed. */
   droppedSeen?: string[];
+  /** Coins ("txid:vout") of a funding account other than BIP44 account 0 (BIP32, DashPay), which a
+   * Core Max leaves out. */
+  otherAccounts?: string[];
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -1654,6 +1657,13 @@ const SCENARIOS = {
   "dashpay-identity-unsettled": (t) => {
     const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** The same while the wallet's Platform-address pass failed: the bar says Platform did not finish. */
+  "dashpay-identity-unsettled-addresses-failed": (t) => {
+    const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    w.dashpay.addresses = "failed";
     return w;
   },
   /** The bring-up could not finish its discovery. */

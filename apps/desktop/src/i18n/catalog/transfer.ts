@@ -43,6 +43,16 @@ export const transfer = {
    * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
   maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
   maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
+  /** Max from the Dash wallet can move nothing yet: its coins are still arriving (`arriving`, as `maxArriving`'s), and
+   * once they've confirmed they would clear this route's smallest amount and the fee. */
+  maxAllArriving: "Your Dash wallet's coins are still arriving ({arriving}). Max can move them once they've confirmed.",
+  /** As `maxAllArriving`, but even once they've confirmed the coins wouldn't clear this route's smallest amount and the
+   * fee. */
+  maxArrivingTooSmall: "Your Dash wallet's coins are still arriving ({arriving}), but even once they've confirmed, that's less than the smallest amount this transfer can move.",
+  /** Max from the Dash wallet can move nothing, nothing is arriving, and every coin is one Max leaves out. */
+  maxNothing: "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  /** Max from the Dash wallet can move nothing, and nothing is arriving or left out. */
+  maxEmpty: "There's nothing in your Dash wallet to move.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
