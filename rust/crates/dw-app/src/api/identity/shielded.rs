@@ -47,6 +47,14 @@ pub struct ShieldedStatus {
     /// Spends whose result is not confirmed yet (`pending`), until a sync
     /// pass resolves each. Offer no retry.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends that may still go through, whose notes stay held (out of
+    /// `balance`) until the network shows they can no longer go through.
+    /// Offer no retry.
+    pub held_spends: Vec<HeldSpend>,
+    /// Credits the `heldSpends` hold; "0" when nothing is held.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub held: u64,
     /// Spends from before a restart whose result is not known and whose
     /// record was lost: one may still go through, so every send and
     /// unshield needs `confirmUnrecorded` until a sync shows all its notes
@@ -60,6 +68,88 @@ pub struct ShieldedStatus {
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
     pub prover_ready: bool,
+    /// Whether the viewing key is bound, or what holds its first bind;
+    /// `null` while the network is not active. Once bound the receive
+    /// address reads before any scan.
+    pub account: Option<ShieldedAccount>,
+    /// The running pass's progress through the pool's note tree
+    /// (network-wide); `null` while no pass runs or before it knows the
+    /// pool's size.
+    pub scan: Option<ShieldedScanProgress>,
+    /// The last sync pass failed; cleared by the next one that succeeds.
+    pub last_pass_failed: bool,
+}
+
+/// Where the shielded account's viewing key stands. `locked` and
+/// `mixingOnly` clear with a full unlock; `watchOnly` does not clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedAccount {
+    Bound,
+    Binding,
+    Locked,
+    MixingOnly,
+    WatchOnly,
+}
+
+mirror_enum!(engine::ShieldedAccount => ShieldedAccount {
+    Bound, Binding, Locked, MixingOnly, WatchOnly
+});
+
+/// Tree positions a pass scanned of the pool's notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedScanProgress {
+    pub checked: u64,
+    pub total: u64,
+}
+
+impl From<engine::ShieldedScanProgress> for ShieldedScanProgress {
+    fn from(p: engine::ShieldedScanProgress) -> Self {
+        let engine::ShieldedScanProgress { checked, total } = p;
+        ShieldedScanProgress { checked, total }
+    }
+}
+
+/// Where the wallet's Shielded sync stands, for the status bar, Sync
+/// progress and Receive; read with no read of the note store, so it answers
+/// while a pass runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedSyncInfo {
+    /// The network takes shielded transitions and the session runs Platform.
+    pub active: bool,
+    /// `binding` for a key a status read binds next; `null` while not active.
+    pub account: Option<ShieldedAccount>,
+    /// A pass scanned the account this session, or a status read found its
+    /// ledger ready.
+    pub established: bool,
+    /// A pass is running.
+    pub syncing: bool,
+    pub scan: Option<ShieldedScanProgress>,
+    /// The wallet's last pass this session failed, until one succeeds.
+    pub last_pass_failed: bool,
+}
+
+impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
+    fn from(s: engine::ShieldedSyncInfo) -> Self {
+        let engine::ShieldedSyncInfo {
+            active,
+            account,
+            established,
+            syncing,
+            scan,
+            last_pass_failed,
+        } = s;
+        ShieldedSyncInfo {
+            active,
+            account: account.map(Into::into),
+            established,
+            syncing,
+            scan: scan.map(Into::into),
+            last_pass_failed,
+        }
+    }
 }
 
 impl From<engine::ShieldedStatus> for ShieldedStatus {
@@ -73,11 +163,16 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields,
             unresolved_spends,
+            held_spends,
+            held,
             unrecorded_spends,
             synced_index,
             last_sync_at,
             syncing,
             prover_ready,
+            account,
+            scan,
+            last_pass_failed,
         } = s;
         ShieldedStatus {
             active,
@@ -88,11 +183,16 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields: pending_shields.into_iter().map(Into::into).collect(),
             unresolved_spends: unresolved_spends.into_iter().map(Into::into).collect(),
+            held_spends: held_spends.into_iter().map(Into::into).collect(),
+            held,
             unrecorded_spends: unrecorded_spends.into_iter().map(Into::into).collect(),
             synced_index,
             last_sync_at,
             syncing,
             prover_ready,
+            account: account.map(Into::into),
+            scan: scan.map(Into::into),
+            last_pass_failed,
         }
     }
 }
@@ -616,6 +716,36 @@ impl From<engine::UnresolvedSpend> for UnresolvedSpend {
             activity_id,
             transition,
             attempts,
+        }
+    }
+}
+
+/// A spend that may still go through, whose notes are held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldSpend {
+    /// Its history row's id.
+    pub activity_id: String,
+    /// Platform's hash of its signed state transition (hex).
+    pub transition: String,
+    /// Credits of the unspent notes it holds; "0" once all are spent. Two
+    /// spends that hold one note both count it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+}
+
+impl From<engine::HeldSpend> for HeldSpend {
+    fn from(h: engine::HeldSpend) -> Self {
+        let engine::HeldSpend {
+            activity_id,
+            transition,
+            credits,
+        } = h;
+        HeldSpend {
+            activity_id,
+            transition,
+            credits,
         }
     }
 }

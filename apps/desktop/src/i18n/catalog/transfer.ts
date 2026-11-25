@@ -240,7 +240,14 @@ export const transfer = {
   shielded: {
     /** While Shielded's account is not established (shielded/syncing.ts). */
     sync: {
-      syncing: "Shielded is still syncing; try again when it finishes.",
+      syncing: "Shielded is still syncing. Try again when it finishes.",
+      /** Instead of `syncing` when the vault's lock (`locked`, `mixingOnly`) or a watch-only wallet holds
+       * the viewing key's first bind. */
+      locked: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.",
+      mixingOnly: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
+      /** Receive's line while the first scan runs; `percent` is formatted. */
+      progress: "Syncing Shielded… {percent}",
       scanning: "Scanning…",
       /** `when` is how long ago, as "5 min ago". */
       lastChecked: "Last checked {when}",
@@ -251,6 +258,12 @@ export const transfer = {
       checkAgain: "Check again",
       why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
       unfinished: "{amount} was locked to add to Shielded and is not applied yet.",
+    },
+    /** What payments that may still go through hold of the Shielded balance (not in it). `amount`
+     * is the held total with its unit; `count` the payments holding it. */
+    held: {
+      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
     },
     titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
     form: {
@@ -327,6 +340,12 @@ export const transfer = {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
       loading: "Getting your Shielded address…",
+      /** Under the address while Shielded's first scan runs. */
+      early: "You can receive now. Your Shielded balance shows when the sync finishes.",
+      locked: "Unlock the wallet to show your Shielded address.",
+      mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.",
+      unlock: "Unlock",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
       qr: "QR code of {address}",
       copyAddress: "Copy Shielded address",
     },

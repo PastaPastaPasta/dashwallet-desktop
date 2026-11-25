@@ -486,8 +486,7 @@ impl NetworkSession {
             let core = &info.core_wallet;
             self.hub.detect_truncation(id, core);
             if !has_duplicates(core) {
-                self.hub
-                    .publish_core_balance(id, &core.balance(), &core.account_balances());
+                self.hub.publish_core_balance(id, core);
                 return;
             }
         }
@@ -502,8 +501,7 @@ impl NetworkSession {
         }
         // An event computed before this took the lock but applied after it
         // starts another reconcile (the pending mark is cleared above).
-        self.hub
-            .publish_core_balance(id, &core.balance(), &core.account_balances());
+        self.hub.publish_core_balance(id, core);
     }
 
     /// Hooks [`Self::reconcile_duplicate_coins`] to the hub's block events.

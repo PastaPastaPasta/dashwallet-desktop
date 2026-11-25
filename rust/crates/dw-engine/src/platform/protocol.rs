@@ -10,12 +10,15 @@
 //! asks Platform once (a proven `getEpochsInfo`) and keeps returning the
 //! clamped SDK version so an upgraded network blocks no flow.
 //!
-//! [`ProtocolRuntime`] records the unclamped version Platform actually runs:
+//! [`ProtocolRuntime`] records the unclamped version Platform actually runs,
 //! from `ExtendedEpochInfo::fetch_current`'s proved epoch (which decodes raw
-//! `u32` bytes and verifies the quorum signature without `PlatformVersion::get`)
-//! and from `SdkBuilder::with_protocol_version_observer` when any other proved
-//! response ratchets the SDK upward. Before the first proved answer it is
-//! `None` ("unknown").
+//! `u32` bytes and verifies the quorum signature without `PlatformVersion::get`),
+//! but only when every quorum key that read's proofs used was SPV-verified
+//! (`trust::scoped`). A key the trusted service served in Degraded mode
+//! proves nothing about the network's rules, so a version seen under one, or
+//! ratcheted by any other response through
+//! `SdkBuilder::with_protocol_version_observer`, is logged and never raises it.
+//! Before the first verified answer it is `None` ("unknown").
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -29,6 +32,7 @@ use tokio::runtime::Handle;
 use tokio::task::JoinSet;
 
 use super::errors::PlatformError;
+use super::trust;
 use crate::events::SessionHub;
 use crate::session::Manager;
 use crate::{NetworkSession, PlatformChange, WalletId};
@@ -38,10 +42,13 @@ pub(crate) type TestProtocolFetch = Arc<dyn Fn() -> Result<u32, PlatformError> +
 
 type SessionReach = (Weak<Manager>, Weak<SessionHub>);
 
-/// Tracks the highest proved Platform protocol version observed in this session
-/// (`0` = unknown) and runs background epoch refreshes while SPV runs.
+/// Tracks the highest Platform protocol version proved under SPV-verified
+/// quorum keys in this session (`0` = unknown), and the highest seen only
+/// under unverified ones (for the log), and runs background epoch refreshes
+/// while SPV runs.
 pub(crate) struct ProtocolRuntime {
     observed: AtomicU32,
+    unverified: AtomicU32,
     reach: Mutex<Option<SessionReach>>,
     tasks: Mutex<Option<JoinSet<()>>>,
     pass: tokio::sync::Mutex<()>,
@@ -59,6 +66,7 @@ impl Default for ProtocolRuntime {
     fn default() -> Self {
         Self {
             observed: AtomicU32::new(0),
+            unverified: AtomicU32::new(0),
             reach: Mutex::new(None),
             tasks: Mutex::new(Some(JoinSet::new())),
             pass: tokio::sync::Mutex::new(()),
@@ -82,11 +90,27 @@ impl ProtocolRuntime {
 
     pub(crate) fn observer(self: &Arc<Self>) -> ProtocolVersionObserver {
         let this = Arc::clone(self);
-        Arc::new(move |version| this.record(version))
+        Arc::new(move |version| this.record(version, false))
     }
 
-    pub(crate) fn record(&self, version: u32) {
+    /// `verified`: every quorum key the proof used was SPV-verified. Only
+    /// then does `version` count for `protocol_compatibility` and a
+    /// pre-check's `credits.rules_unsupported`.
+    pub(crate) fn record(&self, version: u32, verified: bool) {
         if version == 0 {
+            return;
+        }
+        if !verified {
+            let previous = self.unverified.fetch_max(version, Ordering::AcqRel);
+            if previous < version && version > self.observed.load(Ordering::Acquire) {
+                tracing::debug!(
+                    target: "dash_sdk::protocol_version",
+                    version,
+                    "protocol version not attributed to SPV-verified quorum keys \
+                     (a response's metadata, or a read under a key SPV has not \
+                     verified); not used for compatibility or refusals"
+                );
+            }
             return;
         }
         let previous = self.observed.fetch_max(version, Ordering::AcqRel);
@@ -109,9 +133,9 @@ impl ProtocolRuntime {
     }
 
     pub(crate) async fn fetch(&self, sdk: &dash_sdk::Sdk) -> Option<u32> {
-        let fetched = self.read_network(sdk).await;
+        let (fetched, tally) = trust::scoped(self.read_network(sdk)).await;
         if let Some(version) = fetched {
-            self.record(version);
+            self.record(version, tally.verified());
         }
         fetched
     }
@@ -267,6 +291,20 @@ mod tests {
 
     struct Collect(Mutex<Vec<EngineEvent>>);
 
+    /// An epoch read whose proofs used the given quorum keys, verified or not.
+    fn fetch_under(keys: &'static [bool], version: u32) -> TestProtocolFetch {
+        Arc::new(move || {
+            for &verified in keys {
+                trust::note_lookup(verified);
+            }
+            Ok(version)
+        })
+    }
+
+    fn verified_fetch(version: u32) -> TestProtocolFetch {
+        fetch_under(&[true], version)
+    }
+
     impl EventSink for Collect {
         fn emit(&self, event: EngineEvent) {
             self.0.lock().unwrap().push(event);
@@ -328,10 +366,12 @@ mod tests {
             .await
             .unwrap();
 
+        // The mock answers without a quorum lookup: the version is read, but
+        // nothing SPV verified proved it, so it is not observed.
         let runtime = ProtocolRuntime::default();
         assert_eq!(runtime.observed(), None);
         assert_eq!(runtime.fetch(&sdk).await, Some(upgraded));
-        assert_eq!(runtime.observed(), Some(upgraded));
+        assert_eq!(runtime.observed(), None);
         assert!(sdk.protocol_version_number() <= supported);
     }
 
@@ -366,8 +406,7 @@ mod tests {
         );
 
         // Equal to supported: recorded, never regresses, and signals the wallet.
-        *session.platform.protocol.test_fetch.lock().unwrap() =
-            Some(Arc::new(move || Ok(supported)));
+        *session.platform.protocol.test_fetch.lock().unwrap() = Some(verified_fetch(supported));
         let clamped = engine.block_on(session.refresh_protocol_version()).unwrap();
         assert!(clamped <= supported);
         assert_eq!(
@@ -382,8 +421,7 @@ mod tests {
         // `refresh_protocol_version` stays `<= supported` so flows do not fail.
         let upgraded = supported + 1;
         *session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
-        *session.platform.protocol.test_fetch.lock().unwrap() =
-            Some(Arc::new(move || Ok(upgraded)));
+        *session.platform.protocol.test_fetch.lock().unwrap() = Some(verified_fetch(upgraded));
         let clamped_after = engine.block_on(session.refresh_protocol_version()).unwrap();
         assert!(clamped_after <= supported);
         assert_eq!(
@@ -427,14 +465,13 @@ mod tests {
         // A lower proved value, from the epoch read and from the observer,
         // does not replace a higher one. `store` in place of `fetch_max`
         // would report `supported` here.
-        *session.platform.protocol.test_fetch.lock().unwrap() =
-            Some(Arc::new(move || Ok(supported)));
+        *session.platform.protocol.test_fetch.lock().unwrap() = Some(verified_fetch(supported));
         let _ = engine.block_on(session.refresh_protocol_version()).unwrap();
         assert_eq!(
             session.protocol_compatibility().unwrap().network_version,
             Some(upgraded)
         );
-        session.platform.protocol.record(supported);
+        session.platform.protocol.record(supported, true);
         assert_eq!(
             session.protocol_compatibility().unwrap().network_version,
             Some(upgraded)
@@ -467,7 +504,7 @@ mod tests {
                 },
             ))
             .unwrap();
-        no_plat.platform.protocol.record(upgraded);
+        no_plat.platform.protocol.record(upgraded, true);
         assert_eq!(
             no_plat.protocol_compatibility().unwrap(),
             ProtocolCompatibility {
@@ -500,6 +537,7 @@ mod tests {
         let hook_calls = Arc::clone(&calls);
         *session.platform.protocol.test_fetch.lock().unwrap() = Some(Arc::new(move || {
             hook_calls.fetch_add(1, Ordering::SeqCst);
+            trust::note_lookup(true);
             Ok(upgraded)
         }));
 
@@ -523,5 +561,92 @@ mod tests {
         protocol.kick(&session.rt);
         assert_eq!(calls.load(Ordering::SeqCst), seen);
         assert_eq!(protocol.observed(), Some(upgraded));
+    }
+
+    /// #855: a version proved only under quorum keys SPV has not verified (the
+    /// trusted service's, in Degraded mode) never raises `network_version` or
+    /// marks a wallet, from the epoch read, a read mixing verified and
+    /// unverified keys, a read with no lookup, or the SDK's observer; a failed
+    /// refresh afterwards keeps the verified version, and only a verified read
+    /// of the higher version reports it.
+    #[test]
+    fn a_version_proved_only_under_unverified_keys_is_never_reported() {
+        let (_dir, engine, _sink) = test_engine();
+        let supported = PlatformVersion::latest().protocol_version;
+        let upgraded = supported + 1;
+        let session = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                SessionOptions {
+                    dapi_addresses: vec!["https://127.0.0.1:1".into()],
+                    quorum_url: Some("https://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        let _wallet = engine
+            .block_on(session.vault_op(|v| {
+                v.create(None)?;
+                Ok(())
+            }))
+            .and_then(|()| engine.block_on(session.create_wallet(12)))
+            .unwrap();
+        let reported = || session.protocol_compatibility().unwrap().network_version;
+        let set =
+            |f: TestProtocolFetch| *session.platform.protocol.test_fetch.lock().unwrap() = Some(f);
+        let refresh = || engine.block_on(session.refresh_protocol_version()).unwrap();
+        let unmarked = || {
+            !session
+                .hub
+                .pump
+                .platform_marks
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|(_, changes)| changes.contains(&PlatformChange::Startup))
+        };
+        *session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+
+        set(fetch_under(&[false], upgraded));
+        assert!(refresh() <= supported);
+        assert_eq!(reported(), None, "the fallback key alone");
+        set(fetch_under(&[], upgraded));
+        refresh();
+        assert_eq!(reported(), None, "no quorum lookup");
+        session.platform.protocol.observer()(upgraded);
+        assert_eq!(reported(), None, "the SDK's observer");
+        assert!(unmarked(), "an unverified version marked a wallet");
+
+        set(verified_fetch(supported));
+        refresh();
+        assert_eq!(reported(), Some(supported));
+        *session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+
+        let mixed: [&'static [bool]; 3] = [&[false], &[true, false], &[false, true]];
+        for keys in mixed {
+            set(fetch_under(keys, upgraded));
+            refresh();
+            assert_eq!(reported(), Some(supported), "keys {keys:?}");
+        }
+        set(Arc::new(|| Err(PlatformError::Unavailable)));
+        refresh();
+        assert_eq!(
+            reported(),
+            Some(supported),
+            "a failed refresh after the fallback's version"
+        );
+        assert!(unmarked(), "an unverified version marked a wallet");
+
+        set(fetch_under(&[true, true], upgraded));
+        refresh();
+        assert_eq!(reported(), Some(upgraded));
+        assert!(!unmarked(), "the verified upgrade marks the wallet");
+
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
     }
 }

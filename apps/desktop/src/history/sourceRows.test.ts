@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { TxRow } from "../api/generated/TxRow";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
-import { filterExtra, findSourceRecord, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, sourceRowTitle } from "./sourceRows";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
+import { filterExtra, findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, settledUnknownText, shieldedRow, SourceRowText, sourceRowTitle } from "./sourceRows";
 
 const act = (id: string, over: Partial<PlatformActivity> = {}): PlatformActivity => ({
   id,
@@ -214,6 +215,24 @@ describe("shielded activity rows", () => {
     expect(shieldedRow(shield("u", { status: "unknown" })).status.kind).toBe("unconfirmed");
     expect(shieldedRow(shield("f", { status: "failed" })).status.kind).toBe("notAccepted");
     expect(shieldedRow(shield("n", { createdAt: null })).timestamp).toBeNull();
+  });
+
+  it("shows a held payment as one that may still go through, never as not accepted", () => {
+    const held = heldActivities({ heldSpends: [{ activityId: "h", transition: "00", credits: "1" }] } as ShieldedStatus);
+    const sent = { kind: "sent", direction: "out", credits: "29980000000" } as const;
+    for (const status of ["unknown", "pending", "failed"] as const) {
+      const row = shieldedRow(shield("h", { ...sent, status }), held);
+      expect(row).toMatchObject({ txid: "shielded:sent:h:mayland", status: { kind: "unconfirmed" }, amount: -29_980_000 });
+      expect([isMayLandRow(row), sourceRowTitle(row)]).toEqual([true, "Sent from Shielded"]);
+    }
+    expect(SourceRowText.mayLand).toBe("May still go through");
+    // Confirmed, or not held: as before.
+    expect(isMayLandRow(shieldedRow(shield("h", { ...sent, status: "confirmed" }), held))).toBe(false);
+    expect(shieldedRow(shield("x", { ...sent, status: "failed" }), held).status.kind).toBe("notAccepted");
+    expect(heldActivities(null).size).toBe(0);
+    // Its details find the record and keep the state.
+    const found = findSourceRecord("shielded:sent:h:mayland", [], [shield("h", { ...sent, status: "unknown" })], held);
+    expect(found?.row.txid).toBe("shielded:sent:h:mayland");
   });
 });
 

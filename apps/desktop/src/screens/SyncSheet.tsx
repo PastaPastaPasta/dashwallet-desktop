@@ -6,10 +6,12 @@ import { useEffect, useState } from "react";
 import type { SyncPhaseStatus } from "../api/generated/SyncPhaseStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import { useBackend, useSyncStatus } from "../api/queries";
+import { useSyncItems } from "../api/syncItems";
 import { DetailRow } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { detailDate } from "../format/tx";
-import { syncState } from "../format/sync";
+import { percentText } from "../format/sync";
+import { barSync, itemText } from "../format/syncItems";
 import { useT } from "../i18n";
 
 /** A stall the sheet calls out: no progress for this long while not caught up. */
@@ -53,18 +55,37 @@ function useSecondsSince(reading: unknown): number {
   return since.reading === reading ? Math.floor((Date.now() - since.at) / 1000) : 0;
 }
 
-export function SyncSheet({ onClose }: { onClose: () => void }) {
+/** Sync progress for the open wallet (`walletId`): the syncs it waits on, then the network's phases. */
+export function SyncSheet({ walletId, onClose }: { walletId: string | null; onClose: () => void }) {
   const t = useT();
   const { locale } = useBackend();
   const sync = useSyncStatus().data;
+  const items = useSyncItems(walletId);
   const n = new Intl.NumberFormat(locale);
   const since = useSecondsSince(sync);
   const stalled = sync ? stalledMinutes(sync, since) : null;
   return (
     <Sheet title={t("shell.status.syncProgress")} width="small" testId="sync-sheet" onClose={onClose}>
       <p className="sheet-text" data-testid="sync-sheet-state">
-        {syncState(sync)}
+        {barSync(sync, items).text}
       </p>
+      {items.filter(Boolean).length > 1 && (
+        <section aria-labelledby="sync-items-title">
+          <h3 id="sync-items-title" className="mg-section-title">
+            {t("shell.sync.items.title")}
+          </h3>
+          <dl className="detail-list card-l1" data-testid="sync-items">
+            {items.map(
+              (i) =>
+                i && (
+                  <DetailRow key={i.name} label={t(`shell.sync.items.${i.name}`)} testId={`sync-item-${i.name}`}>
+                    <span data-state={i.state}>{itemText(i, (p) => percentText(p, locale))}</span>
+                  </DetailRow>
+                ),
+            )}
+          </dl>
+        </section>
+      )}
       {sync && processingBlock(sync) && (
         <p className="sheet-text mg-muted" data-testid="sync-sheet-processing">
           {t("shell.sync.processingBlock")}
