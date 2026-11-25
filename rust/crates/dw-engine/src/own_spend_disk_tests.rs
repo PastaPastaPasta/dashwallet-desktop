@@ -1701,6 +1701,38 @@ fn a_beaten_payment_goes_when_another_wallets_open_ends_after_a_chainlock_forgot
     t.assert_spend_kept_final(a);
 }
 
+/// #818 gap 2, the negative baseline: a block scanned under a ChainLock
+/// already applied at its height, as a rescan below the ChainLock or a
+/// catch-up after a restart scans it, spends A by a transaction the
+/// wallet does not know. Key-wallet forgets that spend in the scan's own
+/// step, so no reconcile can see it: only a stored record of the block's
+/// spends can stand for it.
+#[test]
+fn a_rescan_below_the_chainlock_leaves_no_observed_spend() {
+    let t = beaten_payment_with_a_child();
+    let block = super::block_with(vec![t.winner.clone(), t.elsewhere_spend.clone()]);
+    let id = t.id;
+    super::deliver(&t.engine, &t.session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: TIP + 1,
+                block_hash: block.block_hash(),
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+            let wallets = BTreeSet::from([id.0]);
+            (wm.process_block_for_wallets(&block, block.block_hash(), TIP + 1, &wallets)).await;
+            wm.update_wallet_synced_height(&id.0, TIP + 1);
+        })
+    });
+    assert_eq!(t.synced(), TIP + 1, "the block was scanned");
+    let a = OutPoint::new(t.paid.txid(), 0);
+    assert!(
+        !t.observed().contains(&a),
+        "a block scanned under its applied ChainLock leaves no observed spend of A"
+    );
+}
+
 impl Beaten {
     /// The other payment, its child and `back` went on the forgotten spend
     /// of `a`: claimed for good, not held as unknown, nothing rewound, also
