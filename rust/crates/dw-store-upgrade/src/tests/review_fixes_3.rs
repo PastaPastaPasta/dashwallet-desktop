@@ -52,9 +52,14 @@ fn assert_missing(f: &Fixture, want: MissingSnapshot) {
     let claimed = ProvedState {
         migrated: Some(false),
         backup: Some(BackupState::Verified),
+        unchanged: true,
     };
     let screen = copy::screen_for(&err, claimed).unwrap();
     assert_eq!(screen.cause, RefusedCause::SnapshotMissing);
+    assert_eq!(
+        screen.unchanged.key,
+        "storeUpgrade.refused.changedByUpgrade"
+    );
     let way_out = match want {
         MissingSnapshot::Unverified => WayOut::Unverified,
         MissingSnapshot::Absent | MissingSnapshot::Mismatch => WayOut::SupportMigrated,

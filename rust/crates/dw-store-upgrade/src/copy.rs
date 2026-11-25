@@ -11,7 +11,9 @@
 //! family, sha256 8c2c34db…0da2) is title + "{intro}: {detail} {unchanged}
 //! {wayOut}". The detail follows the refusal's cause; the way out follows
 //! the file's proved state, never the cause alone, and an unproved state
-//! never offers the earlier version.
+//! never offers the earlier version. "{unchanged}" says Dash Wallet changed
+//! nothing only for a file proved unchanged by this start; otherwise it is
+//! `storeUpgrade.refused.changedByUpgrade`.
 
 use std::path::Path;
 
@@ -65,6 +67,10 @@ const REFUSED_INTRO: Line = line(
 const REFUSED_UNCHANGED: Line = line(
     "storeUpgrade.refused.unchanged",
     "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
+);
+const CHANGED_BY_UPGRADE: Line = line(
+    "storeUpgrade.refused.changedByUpgrade",
+    "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
 );
 
 const QUIT: Button = button("storeUpgrade.refused.quit", "Quit");
@@ -229,6 +235,32 @@ pub struct ProvedState {
     /// part-upgraded it, so no earlier version opens it ([`migrated`]).
     pub migrated: Option<bool>,
     pub backup: Option<BackupState>,
+    /// This start wrote nothing to it and it is not part-upgraded: only then
+    /// does the screen say Dash Wallet didn't change anything.
+    pub unchanged: bool,
+}
+
+impl ProvedState {
+    /// The state of `network_dir` for a refusal this start, read without
+    /// writing. `wrote` is whether this start's reconcile wrote to it.
+    pub fn read(network_dir: &Path, wrote: bool) -> Self {
+        let upgrade = upgrade(network_dir);
+        Self {
+            migrated: upgrade.map(|u| u != Upgrade::NotStarted),
+            backup: crate::snapshot::snapshot_state(network_dir)
+                .ok()
+                .as_ref()
+                .map(BackupState::from),
+            unchanged: !wrote && matches!(upgrade, Some(Upgrade::NotStarted | Upgrade::Done)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Upgrade {
+    NotStarted,
+    Part,
+    Done,
 }
 
 /// Whether `network_dir`'s `wallet.sqlite` was changed past what a fork
@@ -241,6 +273,10 @@ pub struct ProvedState {
 /// unchanged-looking file with a non-empty `-wal` or `-journal` the
 /// immutable read can't see.
 pub fn migrated(network_dir: &Path) -> Option<bool> {
+    upgrade(network_dir).map(|u| u != Upgrade::NotStarted)
+}
+
+fn upgrade(network_dir: &Path) -> Option<Upgrade> {
     let path = network_dir.join(STORE_FILES[0]);
     if !path.is_file() {
         return None;
@@ -257,21 +293,21 @@ pub fn migrated(network_dir: &Path) -> Option<bool> {
         )
         .ok()??;
     if max > crate::fork::FORK_REFINERY_MAX {
-        return Some(true);
+        return Some(Upgrade::Done);
     }
     if crate::sql::has_table(&conn, crate::fork::FORK_HISTORY).ok()? {
         if !crate::sql::has_table(&conn, crate::fork::CONTACTS).ok()? {
             return None;
         }
         if !crate::sql::has_column(&conn, crate::fork::CONTACTS, crate::fork::EXTERNAL_REF).ok()? {
-            return Some(true);
+            return Some(Upgrade::Part);
         }
     }
     let logged = ["-wal", "-journal"].iter().any(|suffix| {
         std::fs::metadata(network_dir.join(format!("{}{suffix}", STORE_FILES[0])))
             .is_ok_and(|m| m.len() > 0)
     });
-    (!logged).then_some(false)
+    (!logged).then_some(Upgrade::NotStarted)
 }
 
 /// The way out the screen offers: `storeUpgrade.refused.wayOut.*`.
@@ -403,6 +439,8 @@ pub struct RefusedScreen {
     pub title: Line,
     pub intro: Line,
     pub detail: Line,
+    /// `storeUpgrade.refused.unchanged` for a file proved unchanged by this
+    /// start ([`ProvedState::unchanged`]), else `changedByUpgrade`.
     pub unchanged: Line,
     pub way_out_line: Line,
     pub buttons: Vec<Button>,
@@ -419,7 +457,11 @@ impl RefusedScreen {
             title: REFUSED_TITLE,
             intro: REFUSED_INTRO,
             detail: cause.detail(),
-            unchanged: REFUSED_UNCHANGED,
+            unchanged: if state.unchanged {
+                REFUSED_UNCHANGED
+            } else {
+                CHANGED_BY_UPGRADE
+            },
             way_out_line: way_out.line(),
             buttons: way_out.buttons(),
             hint: way_out.reports().then_some(ISSUES_HINT),
@@ -450,8 +492,7 @@ impl RefusedScreen {
 
 /// The refusal screen for an error from this crate, if it has one
 /// ([`RefusedCause::of`]), its way out chosen by `state`. The caller proves
-/// `state`: [`migrated`] for the file, the snapshot's verification for the
-/// backup.
+/// `state`, normally with [`ProvedState::read`].
 pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedScreen> {
     let cause = RefusedCause::of(e)?;
     let state = match e {
@@ -463,11 +504,12 @@ pub fn screen_for(e: &StoreUpgradeError, state: ProvedState) -> Option<RefusedSc
     Some(RefusedScreen::new(cause, state))
 }
 
-/// A part-done upgrade is migrated, and its backup is what the error found:
-/// a snapshot of other data is no backup of this wallet.
+/// A part-done upgrade is migrated and changed, and its backup is what the
+/// error found: a snapshot of other data is no backup of this wallet.
 fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
     ProvedState {
         migrated: Some(true),
+        unchanged: false,
         backup: Some(match missing {
             MissingSnapshot::Unverified => BackupState::Unverified,
             MissingSnapshot::Absent | MissingSnapshot::Mismatch => BackupState::None,
@@ -476,7 +518,10 @@ fn snapshot_missing_state(missing: MissingSnapshot) -> ProvedState {
 }
 
 /// Catalog keys whose text is a best guess until MG writes the final.
-pub const PENDING_MG: &[&str] = &["storeUpgrade.refused.detail.snapshotMissing"];
+pub const PENDING_MG: &[&str] = &[
+    "storeUpgrade.refused.detail.snapshotMissing",
+    "storeUpgrade.refused.changedByUpgrade",
+];
 
 /// A screen's copy with its catalog keys.
 #[derive(Clone, Debug, PartialEq, Eq)]

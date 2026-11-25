@@ -1024,6 +1024,7 @@ fn snapshot_state_reports_a_corrupt_snapshot_as_unverified() {
     let migrated = |backup| ProvedState {
         migrated: Some(true),
         backup: Some(backup),
+        unchanged: false,
     };
     let screen = RefusedScreen::new(RefusedCause::Unexpected, migrated(backup));
     assert_eq!(screen.way_out, WayOut::Unverified);

@@ -22,6 +22,7 @@ const FOLDER: &str = "/home/u/.local/share/Dash Wallet/regtest";
 const TITLE: &str = "Dash Wallet can't open this wallet data safely";
 const INTRO: &str = "This version of Dash Wallet can't safely open the wallet data in {folder}";
 const UNCHANGED: &str = "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
+const CHANGED: &str = "Dash Wallet had started upgrading it when it stopped. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.";
 const HINT: &str = "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.";
 const EARLIER: &str =
     "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded.";
@@ -140,7 +141,13 @@ fn states() -> Vec<ProvedState> {
             Some(BackupState::None),
             None,
         ] {
-            out.push(ProvedState { migrated, backup });
+            for unchanged in [true, false] {
+                out.push(ProvedState {
+                    migrated,
+                    backup,
+                    unchanged,
+                });
+            }
         }
     }
     out
@@ -203,7 +210,15 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             let (way_key, way_text) = way_out(w);
             assert_eq!(s.title.key, "storeUpgrade.refused.title");
             assert_eq!(s.intro.key, "storeUpgrade.refused.intro");
-            assert_eq!(s.unchanged.key, "storeUpgrade.refused.unchanged");
+            let (unchanged_key, unchanged_text) = if state.unchanged {
+                ("unchanged", UNCHANGED)
+            } else {
+                ("changedByUpgrade", CHANGED)
+            };
+            assert_eq!(
+                s.unchanged.key,
+                format!("storeUpgrade.refused.{unchanged_key}")
+            );
             assert_eq!(
                 s.detail.key,
                 format!("storeUpgrade.refused.detail.{detail_key}")
@@ -212,7 +227,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
                 s.way_out_line.key,
                 format!("storeUpgrade.refused.wayOut.{way_key}")
             );
-            let text = format!("{INTRO}: {detail_text} {UNCHANGED} {way_text}")
+            let text = format!("{INTRO}: {detail_text} {unchanged_text} {way_text}")
                 .replace("{folder}", FOLDER);
             assert_eq!(s.text(FOLDER), text, "{at}");
 
@@ -424,13 +439,7 @@ fn shows_unchanged(
 ) -> RefusedScreen {
     let before = tree(&f.root);
     let err = make(f);
-    let state = ProvedState {
-        migrated: migrated(&f.net),
-        backup: Some(match crate::snapshot::latest_snapshot(&f.net).unwrap() {
-            Some(_) => BackupState::Verified,
-            None => BackupState::None,
-        }),
-    };
+    let state = ProvedState::read(&f.net, false);
     let screen = screen_for(&err, state).unwrap_or_else(|| panic!("no screen for {err:?}"));
     assert_eq!(screen.cause, want, "{err:?}");
     assert!(err.file_unchanged(), "{err:?}");
@@ -456,6 +465,10 @@ fn every_cause_leaves_the_data_root_byte_identical() {
             exec(&f.wallet(), sql);
         }
         let s = shows_unchanged(&f, want, make);
+        assert_eq!(
+            s.unchanged.key, "storeUpgrade.refused.unchanged",
+            "{want:?}"
+        );
         if allowed(want).contains(&WayOut::Previous) {
             assert_eq!(s.way_out, WayOut::Previous, "{want:?}: a released file");
         }
@@ -555,8 +568,68 @@ fn every_cause_leaves_the_data_root_byte_identical() {
         crate::prepare_with(&f.net, build(), later(60)).unwrap_err()
     });
     assert_eq!(s.way_out, WayOut::SupportMigrated, "part-upgraded");
+    assert_eq!(s.unchanged.key, "storeUpgrade.refused.changedByUpgrade");
     seen.insert(SnapshotMissing);
     assert_eq!(seen, RefusedCause::ALL.into_iter().collect());
+}
+
+/// "Didn't change anything" only for a file this start left alone that is
+/// not part-upgraded; the state read itself writes nothing.
+#[test]
+fn the_unchanged_sentence_needs_a_file_proved_unchanged_by_this_start() {
+    let read = |f: &Fixture, wrote| {
+        let before = tree(&f.root);
+        let state = ProvedState::read(&f.net, wrote);
+        assert_eq!(tree(&f.root), before, "the read writes nothing");
+        state
+    };
+    let shown = |state| {
+        let e = StoreUpgradeError::P9aBroken { detail: "x".into() };
+        screen_for(&e, state).unwrap().text(FOLDER)
+    };
+    let unchanged = UNCHANGED.replace("{folder}", FOLDER);
+    let changed = CHANGED.replace("{folder}", FOLDER);
+
+    let f = fixture("v0.1.0");
+    let released = read(&f, false);
+    assert_eq!(
+        released,
+        ProvedState {
+            migrated: Some(false),
+            backup: Some(BackupState::None),
+            unchanged: true,
+        }
+    );
+    assert!(shown(released).contains(&unchanged));
+    assert!(!shown(released).contains(&changed));
+    assert!(!read(&f, true).unchanged, "this start's reconcile wrote");
+    assert!(shown(read(&f, true)).contains(&changed));
+
+    let snapshot = crate::prepare_with(&f.net, build(), now())
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert!(matches!(
+        crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
+        crate::reconcile::Outcome::Pending { .. }
+    ));
+    let part = read(&f, false);
+    assert_eq!(
+        part,
+        ProvedState {
+            migrated: Some(true),
+            backup: Some(BackupState::Verified),
+            unchanged: false,
+        },
+        "part-upgraded by an earlier start"
+    );
+    assert!(shown(part).contains(&changed));
+    assert!(!shown(part).contains(&unchanged));
+
+    drop(open_and_load(&f.net));
+    let done = read(&f, false);
+    assert_eq!((done.migrated, done.unchanged), (Some(true), true));
+    assert!(!read(&f, true).unchanged);
 }
 
 #[test]
@@ -588,6 +661,7 @@ fn a_migrated_file_never_offers_the_earlier_version() {
         ProvedState {
             migrated: migrated(&f.net),
             backup: Some(BackupState::None),
+            unchanged: true,
         },
     );
     assert_eq!(contacts.way_out, WayOut::SupportMigrated);
@@ -632,7 +706,10 @@ fn a_failed_self_check_offers_the_earlier_version_only_for_a_file_proved_unupgra
                 ("storeUpgrade.refused.quit", "Quit"),
             ]
         );
-        assert_eq!(s.hint.map(|h| h.key), Some("settings.about.links.issuesHint"));
+        assert_eq!(
+            s.hint.map(|h| h.key),
+            Some("settings.about.links.issuesHint")
+        );
     }
 }
 
@@ -773,6 +850,17 @@ fn every_refusal_variant_has_a_screen() {
     }
     assert_eq!(refusals, 10);
     assert_eq!(unexpected, ["WalletFileUnsupported"].into());
+    let missing = all
+        .iter()
+        .find(|e| variant(e) == "UpgradeSnapshotMissing")
+        .unwrap();
+    for state in states() {
+        let s = screen_for(missing, state).unwrap();
+        assert_eq!(
+            s.unchanged.key, "storeUpgrade.refused.changedByUpgrade",
+            "an earlier start dropped a column: {state:?}"
+        );
+    }
     for name in ["RestoreRefused", "RestoreNoSpace", "RestoreIncomplete"] {
         let e = all.iter().find(|e| variant(e) == name).unwrap();
         assert!(restore_screen_for(e).is_some(), "{name}");
