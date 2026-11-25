@@ -3186,7 +3186,8 @@ fn mg04_an_updates_service_is_not_claimed() {
     assert_eq!(update.state, ProTxOperationState::Sent);
     assert_eq!(update.terms.service, "1.2.3.4:19899");
     let mut moved = entry_of(&reg);
-    moved.service_address = Some("1.2.3.7:19899".parse().unwrap());
+    let service: std::net::SocketAddr = "1.2.3.7:19899".parse().unwrap();
+    (moved.service_address, moved.service_addresses) = (Some(service), vec![service]);
     *f.seam.list.lock().unwrap() = Some(vec![moved]);
     f.credit(3, MASTERNODE_COLLATERAL + COIN);
     f.engine
