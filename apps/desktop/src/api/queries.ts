@@ -73,6 +73,9 @@ export const keys = {
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
+  /** Outside the history's key, whose queries events.ts rewrites as pages of rows; a history
+   * change invalidates it by name. */
+  droppedNotices: (walletId: string) => ["droppedNotices", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
@@ -448,6 +451,12 @@ export function useHistory(walletId: string, filter: HistoryFilter, limit: numbe
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
   });
+}
+
+/** The notices of payments Dash Wallet dropped because what they spent was never valid. */
+export function useDroppedNotices(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.droppedNotices(walletId), queryFn: () => b.droppedNotices(walletId) });
 }
 
 export function useTxDetail(walletId: string, txid: string) {
