@@ -377,7 +377,55 @@ fn mainnet_refuses_a_shielded_registration_before_anything_is_written() {
         &named.to_string(),
         None,
     ));
+    assert_ne!(resumed, Err(off.clone()));
+    let named = f.insert(shielded_row(Some(created())));
+    let g = f.grant(0, quote.grant.max_credits, f.credential());
+    let resumed = (f.engine).block_on(registration::resume(
+        &f.session,
+        f.wallet,
+        Arc::clone(&lib),
+        &named.to_string(),
+        Some(g),
+    ));
     assert_ne!(resumed, Err(off));
+}
+
+/// On mainnet a named row still settles by its evidence, with a lease or
+/// without one; an unnamed row the library refuses as `feature_off` fails
+/// retryable and stays unnamed, its funds uncommitted.
+#[test]
+fn on_mainnet_a_named_row_settles_and_an_unnamed_one_signs_nothing() {
+    for with_lease in [false, true] {
+        let f = fixture(false);
+        let lib = f.fake();
+        lib.w().mainnet = true;
+        let id = created();
+        let draft = f.insert(shielded_row(Some(id.clone())));
+        script(&lib, [(None, Ok(ShieldedOutcome::Registered(id.clone())))]);
+        f.drive(&lib, draft, with_lease.then(|| f.lease()), false);
+        let row = f.row(draft);
+        assert_eq!(row.identity.as_deref(), Some(id.as_str()), "{with_lease}");
+        assert!(phase(&row) > Phase::IdentityRegistered, "{}", row.phase);
+        let asks = lib.w().shielded_asks.clone();
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].identity, Some(id), "evidence, not a create");
+    }
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().mainnet = true;
+    let draft = f.insert(shielded_row(None));
+    let off = PlatformError::FeatureOff {
+        feature: "shielded_registration".into(),
+    };
+    script(&lib, [(None, Err(off))]);
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(
+        (row.error.as_deref(), row.retryable, named(&row)),
+        (Some("platform.feature_off"), true, None)
+    );
+    assert_eq!(phase(&row), Phase::KeysPrepared);
+    assert!(!f.status(&lib, draft).funds_committed);
 }
 
 /// C4b-2: this build reads and runs a Shielded row, named or not.

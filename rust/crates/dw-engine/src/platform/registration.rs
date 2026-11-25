@@ -1680,14 +1680,16 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     }
     // D8 on every grant a claim is given, not only the start's; F5 on a
     // Platform- or Shielded-funded row's. A Platform-funded row, and a
-    // Shielded-funded one not yet named, are off on mainnet before any
-    // grant is redeemed; a named one still settles by evidence.
+    // Shielded-funded one not yet funded nor named, are off on mainnet
+    // before any grant is redeemed; a named one still settles by evidence.
     let paid = paid_from(&row);
     if paid == PaidFrom::Platform {
         registration_platform::refuse_on_mainnet(&lib.network())?;
     }
-    if let Ok((_, Funding::Shielded { identity: None, .. })) = flow::interpret(&row) {
-        registration_shielded::refuse_on_mainnet(&lib.network())?;
+    if let Ok((phase, Funding::Shielded { identity: None, .. })) = flow::interpret(&row) {
+        if phase.unfunded() {
+            registration_shielded::refuse_on_mainnet(&lib.network())?;
+        }
     }
     if let (
         Ok((
