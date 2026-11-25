@@ -436,6 +436,7 @@ async fn sign(
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: Some(version.protocol_version),
     };
     let paths: BTreeMap<[u8; 20], DerivationPath> = (inputs.keys())
