@@ -2063,8 +2063,9 @@ mod tests {
         let manager = s.manager().unwrap();
         (engine.block_on(s.raise_lookahead(&manager, id, CORE_COMPAT_LOOKAHEAD))).unwrap();
         let addresses = addresses_of(&engine, &s, id);
-        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
-        assert!(highest(&addresses, AddressChain::Change) >= 1 + CORE_COMPAT_LOOKAHEAD);
+        for (chain, counter) in [(AddressChain::Receiving, 1001), (AddressChain::Change, 2)] {
+            assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+        }
         engine.block_on(engine.shutdown()).unwrap();
     }
 
