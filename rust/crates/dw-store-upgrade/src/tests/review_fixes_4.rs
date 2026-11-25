@@ -20,7 +20,7 @@ use crate::error::StoreUpgradeError;
 use crate::precheck::{OPEN_FOR_TEST, Precheck};
 use crate::reconcile::{Outcome, reconcile_fork_store};
 use crate::snapshot::{
-    MARKER, MissingSnapshot, NOT_THIS_WALLET, SNAPSHOT_READ_FOR_TEST, SnapshotInfo, SnapshotState,
+    MARKER, MissingSnapshot, SNAPSHOT_READ_FOR_TEST, SnapshotInfo, SnapshotState,
     UPGRADE_BACKUPS_DIR, snapshot_present, snapshot_state, take_snapshot,
 };
 
@@ -99,14 +99,16 @@ fn a_part_upgraded_copy_renamed_after_the_migration_is_never_kept() {
         .join(UPGRADE_BACKUPS_DIR)
         .join("before-upgrade-20991231T000000Z");
     fs::rename(part.dir(), &posing).unwrap();
-    assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
+    assert!(crate::snapshot::read_snapshot(&posing, false).is_ok());
+    assert!(crate::snapshot::read_snapshot(&posing, true).is_err());
+    let untouched = tree(&posing);
     let kept = crate::prepare_with(&f.net, build(), later(180))
         .unwrap()
         .snapshot
         .unwrap();
     assert_ne!(kept.dir(), posing.as_path());
-    assert_eq!(kept.missing(), Some(MissingSnapshot::Mismatch));
-    assert!(posing.join(NOT_THIS_WALLET).is_file(), "retired");
+    assert_eq!(kept.missing(), Some(MissingSnapshot::Absent));
+    assert_eq!(tree(&posing), untouched, "never marked");
     assert!(!snapshot_present(&f.net).unwrap());
     assert_eq!(before_upgrade_dirs(&f), ["before-upgrade-20991231T000000Z"]);
     let outcome = reconcile_fork_store(&config(&f.net), &kept, build()).unwrap();
@@ -246,12 +248,14 @@ fn a_restorable_snapshot_past_v018_is_never_kept_as_the_backup() {
         let entry = entry.unwrap();
         fs::copy(entry.path(), posing.join(entry.file_name())).unwrap();
     }
-    assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
+    assert!(crate::snapshot::read_snapshot(&posing, false).is_ok());
+    assert!(crate::snapshot::read_snapshot(&posing, true).is_err());
     let copy = crate::sql::open_immutable(&posing.join("wallet.sqlite")).unwrap();
     assert!(crate::sql::has_column(&copy, "contacts", "external_account_reference").unwrap());
     drop(copy);
-    assert_goes_on(&f, MissingSnapshot::Mismatch);
-    assert!(posing.join(NOT_THIS_WALLET).is_file());
+    let untouched = tree(&posing);
+    assert_goes_on(&f, MissingSnapshot::Absent);
+    assert_eq!(tree(&posing), untouched, "never marked");
 }
 
 fn readonly_migration() -> WalletStorageError {

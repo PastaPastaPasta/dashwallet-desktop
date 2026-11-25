@@ -35,9 +35,9 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// The one-time notice this outcome carries: only a `Pending` start
-    /// whose snapshot is a `part-upgraded` copy because the before-upgrade
-    /// one doesn't check out or isn't this wallet's.
+    /// The notice this outcome carries: only a `Pending` start in the
+    /// between state whose snapshot is a `part-upgraded` copy because the
+    /// named before-upgrade one doesn't check out or isn't this wallet's.
     pub fn notice(&self) -> Option<UpgradeNotice> {
         match self {
             Self::Pending { notice, .. } => *notice,
@@ -46,9 +46,10 @@ impl Outcome {
     }
 }
 
-/// What the engine tells the user once after the upgrade opened the wallet
-/// (Q107 107-1, [`crate::copy::notice_line`]). It blocks nothing. A missing
-/// before-upgrade copy gets none.
+/// What the engine tells the user once the upgrade opened and loaded the
+/// wallet (Q107 107-1, [`crate::copy::notice_line`]). It blocks nothing. A
+/// missing before-upgrade copy gets none, and so does a start once upstream
+/// has migrated: only the between state judges the snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpgradeNotice {
     /// The before-upgrade snapshot doesn't verify.
@@ -60,6 +61,9 @@ pub enum UpgradeNotice {
 
 impl UpgradeNotice {
     fn of(snapshot: &SnapshotInfo) -> Option<Self> {
+        if !snapshot.between() {
+            return None;
+        }
         match snapshot.missing()? {
             MissingSnapshot::Absent => None,
             MissingSnapshot::Unverified => Some(Self::SnapshotDamaged),
@@ -201,6 +205,7 @@ pub fn reconcile_fork_store(
                 adopters,
                 &versions,
                 config.auto_backup_dir.as_deref(),
+                (network_dir, snapshot),
             )
         })
         .map(|outcome| match outcome {
@@ -233,12 +238,15 @@ thread_local! {
 }
 
 /// The writes under the lock. `backup_dir` is checked only when upstream
-/// will still migrate, and so back up, at the open that follows.
+/// will still migrate, and so back up, at the open that follows. Before the
+/// drop, [`snapshot::UPGRADED_FROM`] records `snapshot` as the one the file
+/// is upgraded from.
 fn write_in_transaction(
     conn: &Connection,
     adopters: &Adopters,
     versions: &BTreeSet<u32>,
     backup_dir: Option<&Path>,
+    (network_dir, snapshot): (&Path, &SnapshotInfo),
 ) -> Result<Outcome> {
     let state: ForkState = match classify(conn, adopters)? {
         Classification::Fork(state) if &state.versions == versions => state,
@@ -263,6 +271,9 @@ fn write_in_transaction(
         ensure_backup_dir(dir)?;
     }
     if state.column_present {
+        snapshot::record_lineage(network_dir, snapshot)
+            .map_err(StoreUpgradeError::io("record the upgrade snapshot", true))?;
+        fault("reconcile.after_lineage")?;
         conn.execute_batch(DROP_SQL)
             .map_err(StoreUpgradeError::sqlite(
                 "drop contacts.external_account_reference",

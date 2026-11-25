@@ -61,8 +61,8 @@ pub use restore::{
 };
 pub use snapshot::{
     MissingSnapshot, NOT_THIS_WALLET, STORE_FILES, SnapshotFile, SnapshotInfo, SnapshotState,
-    UPGRADE_BACKUPS_DIR, latest_snapshot, snapshot_present, snapshot_state, take_snapshot,
-    upgrade_copy_present,
+    UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present, snapshot_state,
+    take_snapshot, upgrade_copy_present,
 };
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 

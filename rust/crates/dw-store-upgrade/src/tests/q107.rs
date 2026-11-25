@@ -12,7 +12,7 @@ use crate::snapshot::{
     NOT_THIS_WALLET, SnapshotInfo, SnapshotState, UPGRADE_BACKUPS_DIR, snapshot_state,
 };
 
-fn refinery_max(f: &Fixture) -> i64 {
+pub(super) fn refinery_max(f: &Fixture) -> i64 {
     crate::sql::open_immutable(&f.wallet())
         .unwrap()
         .query_row(
@@ -36,7 +36,7 @@ fn named(f: &Fixture, prefix: &str) -> Vec<String> {
 }
 
 /// A new process: no store opened in it yet.
-fn start(f: &Fixture, at: SystemTime) -> crate::Result<crate::Prepared> {
+pub(super) fn start(f: &Fixture, at: SystemTime) -> crate::Result<crate::Prepared> {
     crate::token::reset_opened_for_test();
     crate::prepare_with(&f.net, build(), at)
 }
@@ -56,7 +56,7 @@ fn unblock_backups(f: &Fixture) {
 
 /// R1 commits, then the upstream open fails in its backup step: the
 /// between state, with the snapshot this start took.
-fn failed_open() -> (Fixture, SnapshotInfo) {
+pub(super) fn failed_open() -> (Fixture, SnapshotInfo) {
     let f = fixture("v0.1.0");
     let snapshot = start(&f, now()).unwrap().snapshot.unwrap();
     assert!(matches!(
@@ -92,7 +92,7 @@ fn assert_no_way_back(f: &Fixture, at: &str) {
 /// The start after the failed open: no new before-upgrade snapshot, the
 /// upstream open and load, and `notice` in the outcome. Without the true
 /// snapshot (`notice` or not `kept`), no way back before or after.
-fn start_opens(f: &Fixture, notice: Option<UpgradeNotice>, kept: bool) -> SnapshotInfo {
+pub(super) fn start_opens(f: &Fixture, notice: Option<UpgradeNotice>, kept: bool) -> SnapshotInfo {
     if !kept {
         assert_no_way_back(f, "between");
     }
@@ -111,7 +111,7 @@ fn start_opens(f: &Fixture, notice: Option<UpgradeNotice>, kept: bool) -> Snapsh
 }
 
 /// T5: the next start is a plain upgraded open.
-fn assert_plain_reopen(f: &Fixture) {
+pub(super) fn assert_plain_reopen(f: &Fixture) {
     let before = tree(&f.net.join(UPGRADE_BACKUPS_DIR));
     let snapshot = start(f, later(120)).unwrap().snapshot.unwrap();
     let outcome = reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap();

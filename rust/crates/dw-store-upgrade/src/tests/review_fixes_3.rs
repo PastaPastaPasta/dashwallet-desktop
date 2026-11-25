@@ -129,9 +129,11 @@ fn a_snapshot_of_the_dropped_column_file_is_never_kept_as_the_backup() {
         .join(UPGRADE_BACKUPS_DIR)
         .join("before-upgrade-20991231T000000Z");
     fs::rename(dropped.dir(), &posing).unwrap();
-    assert!(crate::snapshot::read_snapshot(&posing, true).is_ok());
-    assert_goes_on(&f, MissingSnapshot::Mismatch);
-    assert!(posing.join(NOT_THIS_WALLET).is_file());
+    assert!(crate::snapshot::read_snapshot(&posing, false).is_ok());
+    assert!(crate::snapshot::read_snapshot(&posing, true).is_err());
+    let kept = tree(&posing);
+    assert_goes_on(&f, MissingSnapshot::Absent);
+    assert_eq!(tree(&posing), kept, "never marked");
 }
 
 #[test]
