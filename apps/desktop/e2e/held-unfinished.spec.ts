@@ -107,8 +107,9 @@ for (const theme of THEMES) {
       "Dash Wallet stopped this payment but still holds the coins it was using, and this version can't release them on its own. A transaction that uses some of these coins isn't final on the network yet. When it is, Dash Wallet shows here how to get back any coins the payment didn't spend. Until then, don't remove or restore Main.",
     );
     await page.getByTestId("held-way-out").screenshot({ path: artifactPath(info, `${theme}-home-held-waiting.png`) });
+    await page.keyboard.press("Escape");
     await hold(page, 150_000_000, 0, {}, false);
-    await expect(text).toContainText("restore it from its recovery phrase");
+    await expect(await openWayOut(page)).toContainText("restore it from its recovery phrase");
   });
 
   test(`What can I do? keeps a wallet added from a seed without a phrase (${theme})`, async ({ page }, info) => {
