@@ -67,6 +67,9 @@ export interface FixtureWallet {
   scanHeight?: number | null;
   /** Dropped payments whose notice was dismissed. */
   droppedSeen?: string[];
+  /** Coins ("txid:vout") of a funding account other than BIP44 account 0 (BIP32, DashPay), which a
+   * Core Max leaves out. */
+  otherAccounts?: string[];
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -204,6 +207,7 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       name: variant === "xss" ? XSS_PAYLOADS.walletName : "Main",
       watchOnly: false,
       hasMnemonic: true,
+      legacyIssued: false,
       hd: true,
       birthHeight: 1_200_000,
       createdAt: null,

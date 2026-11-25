@@ -129,6 +129,8 @@ fn an_unconfirmed_coin_is_arriving_and_never_signed() {
     });
     let r = read(&w);
     assert_eq!(r.arriving_duffs, COIN);
+    let arriving: Vec<_> = r.arriving.iter().map(|c| c.outpoint).collect();
+    assert_eq!(arriving, [pending]);
     assert!(r.coins.iter().all(|c| c.outpoint != pending));
     let (result, signatures, _, _) = fund(&w, &r.coins);
     assert!(matches!(result, Err(FundError::NotSent(_))), "{result:?}");
