@@ -4588,14 +4588,14 @@ pub(crate) async fn next_receive_address(
 }
 
 /// [`next_receive_address`] with its index. Never the fallback of one of
-/// the wallet's Shielded-funded registrations (C-funding F13): published
-/// beside the identity it creates, it is marked used first
-/// ([`retire_fallbacks`]).
+/// the wallet's Shielded-funded registrations, and recorded as handed out
+/// before it is returned, so no later fallback is it (C-funding F13;
+/// [`retire_handed_out`]).
 pub(crate) async fn next_receive(
     session: &NetworkSession,
     wallet: &PlatformWallet,
 ) -> Result<(PlatformAddress, u32), PlatformError> {
-    retire_fallbacks(session, wallet).await?;
+    let handed_out = retire_handed_out(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
@@ -4611,106 +4611,155 @@ pub(crate) async fn next_receive(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the receive address is not in the payment account".into(),
         })?;
+    if handed_out.is_none_or(|h| index > h) {
+        let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+        let value = index.to_string();
+        (session.appdb_op(move |db| {
+            db.set_setting_durable(
+                &scope,
+                dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                Some(&value),
+            )
+        }))
+        .await
+        .map_err(PlatformError::from)?;
+    }
     Ok((address, index))
 }
 
-/// Marks every fallback the wallet's Shielded-funded registrations were
-/// given ([`fallback_address`]) used in the payment account, so none is
-/// handed out again. Their durable record is the wallet's local scope of
-/// `app.sqlite`, and the rows' own funding for one given before it: the
-/// account keeps such marks in memory only, so each hand-out of an address
-/// marks them again.
-async fn retire_fallbacks(
+/// Restores, in the payment account, the marks of what the wallet handed
+/// out, which the account keeps in memory only: every index below the
+/// highest receive address handed out (that one stays Receive's until it
+/// is funded) and every fallback the wallet's Shielded-funded registrations
+/// were given ([`fallback_address`]), each derived first if a reload has
+/// not yet. Their durable record is the wallet's local scope of
+/// `app.sqlite`, and the rows' own funding for a fallback given before it.
+/// Returns that highest index.
+async fn retire_handed_out(
     session: &NetworkSession,
     wallet: &PlatformWallet,
-) -> Result<(), PlatformError> {
+) -> Result<Option<u32>, PlatformError> {
     use super::registration_rows::{Decoded, Funding};
     let id = WalletId(wallet.wallet_id()).to_string();
-    let (rows, recorded) = (session.appdb_op(move |db| {
+    let (rows, recorded, handed_out) = (session.appdb_op(move |db| {
         let scope = dw_appdb::local_scope(&id);
         let recorded =
             db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?;
-        Ok((db.registration_rows(&id)?, recorded))
+        let handed_out = db.setting(&scope, dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT)?;
+        Ok((db.registration_rows(&id)?, recorded, handed_out))
     }))
     .await
     .map_err(PlatformError::from)?;
+    let handed_out = handed_out.and_then(|v| v.parse::<u32>().ok());
     let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
         Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
         _ => None,
     });
+    let deepest = (recorded.iter())
+        .filter_map(|(_, index)| index.parse::<u32>().ok())
+        .chain(handed_out)
+        .max();
     let given = (recorded.into_iter()).filter_map(|(key, _)| {
         key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)
             .map(str::to_owned)
     });
-    let fallbacks: Vec<PlatformAddress> = named.chain(given).filter_map(|a| parse(&a)).collect();
-    if fallbacks.is_empty() {
-        return Ok(());
+    let fallbacks: BTreeSet<PlatformAddress> =
+        named.chain(given).filter_map(|a| parse(&a)).collect();
+    if deepest.is_none() && fallbacks.is_empty() {
+        return Ok(None);
     }
-    let paths = pool(wallet).await?;
-    let indices: Vec<u32> = (fallbacks.iter())
-        .filter_map(|a| paths.get(a)?.as_ref().last().copied())
-        .map(u32::from)
-        .collect();
+    with_payment_pool(wallet, |pool, source| {
+        if let Some(deepest) = deepest {
+            (pool.generate_up_to(deepest, source)).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        }
+        let given: Vec<u32> = (pool.addresses.iter())
+            .filter(|(_, info)| {
+                PlatformP2PKHAddress::from_address(&info.address)
+                    .is_ok_and(|p| fallbacks.contains(&PlatformAddress::P2pkh(p.to_bytes())))
+            })
+            .map(|(index, _)| *index)
+            .collect();
+        for index in (0..handed_out.unwrap_or(0)).chain(given) {
+            pool.mark_index_used(index);
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(handed_out)
+}
+
+/// `f` on the payment account's address pool and its public key source,
+/// under one write lock of the wallet.
+async fn with_payment_pool<T>(
+    wallet: &PlatformWallet,
+    f: impl FnOnce(
+        &mut key_wallet::managed_account::address_pool::AddressPool,
+        &key_wallet::KeySource,
+    ) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+    let internal = |detail: &str| PlatformError::Internal {
+        detail: detail.into(),
+    };
     let mut wm = wallet.wallet_manager().write().await;
-    let info = wm
-        .get_wallet_info_mut(&wallet.wallet_id())
+    let (core, info) = wm
+        .get_wallet_mut_and_info_mut(&wallet.wallet_id())
         .ok_or(PlatformError::WalletNotFound)?;
-    let account = info
-        .core_wallet
+    let key = PlatformPaymentAccountKey {
+        account: ACCOUNT,
+        key_class: 0,
+    };
+    let xpub = (core.accounts.platform_payment_accounts.get(&key))
+        .map(|a| a.account_xpub)
+        .ok_or_else(|| internal("the wallet has no Platform payment key"))?;
+    let account = (info.core_wallet)
         .platform_payment_managed_account_at_index_mut(ACCOUNT)
-        .ok_or_else(|| PlatformError::Internal {
-            detail: "the wallet has no Platform payment account".into(),
-        })?;
-    for index in indices {
-        account.addresses.mark_index_used(index);
-    }
-    Ok(())
+        .ok_or_else(|| internal("the wallet has no Platform payment account"))?;
+    f(&mut account.addresses, &key_wallet::KeySource::Public(xpub))
 }
 
 /// A new registration's fallback (C-funding F13), published beside the
-/// identity it creates, so never an address handed out before: under one
-/// lock of the account, its lowest unused address (the one Receive may be
-/// showing) and the next are marked used, and the next is the fallback. It
-/// is recorded durably before it is returned.
+/// identity it creates, so never an address handed out before: once the
+/// account's marks of what was handed out are restored, under one lock of
+/// the account its lowest unused address (the one Receive may be showing,
+/// at or above the highest handed out) and the next are marked used, and
+/// the next is the fallback. It is recorded durably, with its index,
+/// before it is returned.
 pub(crate) async fn fallback_address(
     session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<String, PlatformError> {
-    use key_wallet::KeySource;
-    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
-    retire_fallbacks(session, wallet).await?;
-    let internal = |detail: String| PlatformError::Internal { detail };
-    let fallback = {
-        let mut wm = wallet.wallet_manager().write().await;
-        let (core, info) = wm
-            .get_wallet_mut_and_info_mut(&wallet.wallet_id())
-            .ok_or(PlatformError::WalletNotFound)?;
-        let key = PlatformPaymentAccountKey {
-            account: ACCOUNT,
-            key_class: 0,
-        };
-        let xpub = (core.accounts.platform_payment_accounts.get(&key))
-            .map(|a| a.account_xpub)
-            .ok_or_else(|| internal("the wallet has no Platform payment key".into()))?;
-        let source = KeySource::Public(xpub);
-        let account = (info.core_wallet)
-            .platform_payment_managed_account_at_index_mut(ACCOUNT)
-            .ok_or_else(|| internal("the wallet has no Platform payment account".into()))?;
+    retire_handed_out(session, wallet).await?;
+    let (fallback, index) = with_payment_pool(wallet, |pool, source| {
         let mut take = || -> Result<_, PlatformError> {
-            let next = (account.addresses.next_unused_with_info(&source, true))
-                .map_err(|e| internal(e.to_string()))?;
-            account.addresses.mark_index_used(next.index);
-            Ok(next.address)
+            let next = (pool.next_unused_with_info(source, true)).map_err(|e| {
+                PlatformError::Internal {
+                    detail: e.to_string(),
+                }
+            })?;
+            pool.mark_index_used(next.index);
+            Ok(next)
         };
         take()?;
-        PlatformAddress::try_from(take()?).map_err(|e| internal(e.to_string()))?
-    };
+        let next = take()?;
+        let fallback =
+            PlatformAddress::try_from(next.address).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        Ok((fallback, next.index))
+    })
+    .await?;
     let address = bech32m(&fallback, network);
     let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
-    let key = dw_appdb::dp_registration_fallback(&address);
+    let (key, value) = (
+        dw_appdb::dp_registration_fallback(&address),
+        index.to_string(),
+    );
     (session
-        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(&value)))
         .await)
         .map_err(PlatformError::from)?;
     Ok(address)

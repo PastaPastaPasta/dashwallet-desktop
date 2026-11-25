@@ -499,6 +499,8 @@ struct World {
     )>,
     /// Each Shielded pass's ask.
     shielded_asks: Vec<super::registration_shielded::ShieldedAsk>,
+    /// The fallbacks the starts took.
+    fallbacks_taken: usize,
     /// A naming pass also records the identity it named at the row's
     /// index, as the library does on an `Ok` whatever Platform proved.
     shielded_records_named: bool,
@@ -1282,6 +1284,7 @@ impl RegistrationLib for Fake {
     }
 
     async fn fallback_address(&self) -> Result<String, PlatformError> {
+        self.w().fallbacks_taken += 1;
         Ok(FALLBACK.to_owned())
     }
 

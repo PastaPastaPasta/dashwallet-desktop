@@ -1972,6 +1972,42 @@ fn a_registration_fallback_is_never_the_receive_address() {
     assert_eq!(w.receive_address(), next, "stable");
 }
 
+/// The account's index of `address`.
+fn index_of(w: &World, address: String) -> Option<u32> {
+    w.call(move |_, _, wallet, _| async move {
+        let target = parse(&address).unwrap();
+        Ok(pool(&wallet)
+            .await?
+            .get(&target)
+            .map(|p| u32::from(*p.as_ref().last().unwrap())))
+    })
+    .unwrap()
+}
+
+fn new_fallback(w: &World) -> String {
+    w.call(|_, s, wallet, _| async move {
+        Ok(fallback_address(&s, &wallet, s.vault.network()).await?)
+    })
+    .unwrap()
+}
+
+/// The account's in-memory marks of `indices` lost, as at a restart.
+fn forget_marks(w: &World, indices: std::ops::RangeInclusive<u32>) {
+    w.call(move |_, _, wallet, _| async move {
+        use key_wallet::managed_account::address_pool::AddressState;
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
+        let account = (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap();
+        for i in indices {
+            account.addresses.addresses.get_mut(&i).unwrap().state = AddressState::Available;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
 /// C-funding F13: a new fallback is never the address Receive may be
 /// showing: that one and the fallback after it are marked used. Its
 /// durable record outlives the account's in-memory mark (a restart) and
@@ -1982,40 +2018,41 @@ fn a_new_fallback_is_never_an_address_handed_out_before_or_after() {
     let w = World::new();
     let shown = w.receive_address();
     assert_eq!(shown.index, 0);
-    let fallback = w
-        .call(|_, s, wallet, _| async move {
-            Ok(fallback_address(&s, &wallet, s.vault.network()).await?)
-        })
-        .unwrap();
-    let index_of = |address: String| {
-        w.call(move |_, _, wallet, _| async move {
-            let target = parse(&address).unwrap();
-            Ok(pool(&wallet)
-                .await?
-                .get(&target)
-                .map(|p| u32::from(*p.as_ref().last().unwrap())))
-        })
-        .unwrap()
-    };
-    assert_eq!(index_of(fallback.clone()), Some(1), "not the shown address");
+    let fallback = new_fallback(&w);
+    assert_eq!(
+        index_of(&w, fallback.clone()),
+        Some(1),
+        "not the shown address"
+    );
     assert_eq!(w.receive_address().index, 2);
-    // The account's marks of 1 and 2 lost, as at a restart.
-    w.call(|_, _, wallet, _| async move {
-        use key_wallet::managed_account::address_pool::AddressState;
-        let mut wm = wallet.wallet_manager().write().await;
-        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
-        let account = (info.core_wallet)
-            .platform_payment_managed_account_at_index_mut(0)
-            .unwrap();
-        for i in [1, 2] {
-            account.addresses.addresses.get_mut(&i).unwrap().state = AddressState::Available;
-        }
-        Ok(())
-    })
-    .unwrap();
+    forget_marks(&w, 1..=2);
     let next = w.receive_address();
     assert_eq!(next.index, 2, "{next:?}");
     assert_ne!(next.address, fallback);
+}
+
+/// C-funding F13 across a restart: every mark the account kept in memory
+/// is lost, yet the next fallback is above every address handed out before
+/// it (the highest is recorded durably), and Receive keeps showing the
+/// address it showed. Mutants: no mark below the highest handed out; no
+/// record of it.
+#[test]
+fn a_fallback_after_a_restart_is_above_every_address_handed_out() {
+    let w = World::new();
+    assert_eq!(w.receive_address().index, 0);
+    let first = new_fallback(&w);
+    assert_eq!(index_of(&w, first.clone()), Some(1));
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 2);
+    forget_marks(&w, 0..=2);
+    assert_eq!(w.receive_address(), shown, "Receive's address stays");
+    let second = new_fallback(&w);
+    assert_eq!(index_of(&w, second.clone()), Some(3), "above the shown 2");
+    assert_ne!(second, first);
+    let after = w.receive_address();
+    assert_eq!(after.index, 4, "{after:?}");
+    forget_marks(&w, 0..=4);
+    assert_eq!(w.receive_address(), after, "stable after a second restart");
 }
 
 /// Q3: a P2SH Platform address of this network is a recipient, as a

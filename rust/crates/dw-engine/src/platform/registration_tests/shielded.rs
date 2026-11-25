@@ -174,6 +174,9 @@ fn a_ready_start_checks_the_quoted_denomination_and_writes_nothing() {
         RegistrationError::Platform(PlatformError::GrantInvalid)
     );
     assert!(f.rows().is_empty());
+    // Each fallback is kept from every later hand-out, so a refused start
+    // takes none (C-funding F13).
+    assert_eq!(lib.w().fallbacks_taken, 0);
     // The quote ignores the request's denomination.
     let again = (f.engine.block_on(registration::quote(&*lib, &shielded(7)))).unwrap();
     assert_eq!(again.readiness.unwrap().denomination, Some(denomination));

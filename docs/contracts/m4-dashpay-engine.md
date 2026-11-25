@@ -5048,13 +5048,18 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     plan. The arriving coins are never planned or signed. dw-app's `maxMinimum` data gains `arrivingDuffs` and
     `arrivingClears`. As item 108, they are set only on a Core Max refused below the floor, before any lease, grant
     or signature; nothing else changes.
+
 111. **Registration from the Shielded balance: the funding step (C4b-2; F11–F13, F16; version 100).** A
     `start_registration` with `Shielded` that passes item 94's checks writes the row (funding `shielded`, `fallback`
-    one of the wallet's own Platform addresses never handed out: under one lock of the payment account its lowest
-    unused address, which Receive may be showing, and the next are marked used and the next is the fallback, recorded
-    durably in the wallet's local scope (`dp_registration_fallback/<address>`) before it is named; every later hand-out
-    of a Platform address, Receive's included, first marks the recorded fallbacks and those the wallet's rows name
-    used, so none is offered again, across restarts and after its row is discarded) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
+    one of the wallet's own Platform addresses never handed out, taken only once nothing refuses the start: each
+    receive address handed out raises a durable record of the highest index handed out
+    (`dp_platform_receive_handed_out`) before it is returned; every hand-out, and every fallback, first marks used
+    each index below that record and each recorded fallback, derived first if a reload has not yet; then, under one
+    lock of the payment account, its lowest unused address, which Receive may be showing, and the next are marked
+    used and the next is the fallback, recorded durably in the wallet's local scope
+    (`dp_registration_fallback/<address>`, valued its index) before it is named, with the fallbacks the wallet's
+    rows name, so none is offered again and no fallback is an address handed out before it, across restarts and
+    after its row is discarded) and runs it; `ShieldedCheck` gains `pool_size`, checked last:
     Platform's pool must hold at least `ShieldedReadiness.pool_required` notes (250, the protocol's floor for an
     outgoing spend) before an identity create, and `pool_notes` is the count the engine read (a proved count read at
     most 5 minutes ago, else read again within 5 s; an unknown count passes, and Platform's own refusal then decides).

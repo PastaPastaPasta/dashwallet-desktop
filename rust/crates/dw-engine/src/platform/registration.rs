@@ -1234,11 +1234,6 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     if let Some(readiness) = &plan.readiness {
         shielded_start(readiness, &req.funding)?;
     }
-    // F13: the fallback is the wallet's own Platform receive address, fixed
-    // at Draft; never the caller's.
-    if let Funding::Shielded { fallback, .. } = &mut plan.funding {
-        *fallback = lib.fallback_address().await?;
-    }
     if let Some(quote) = &plan.platform {
         platform_start(quote, &req.funding)?;
     }
@@ -1301,6 +1296,12 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
         return Err(PlatformError::GrantInvalid.into());
     }
     let lease = authority(session, wallet, &grant, paid).await?;
+    // F13: the fallback is the wallet's own Platform address, fixed at Draft
+    // and never the caller's; taken only once nothing refuses the start, as
+    // each is kept from every later hand-out.
+    if let Funding::Shielded { fallback, .. } = &mut plan.funding {
+        *fallback = lib.fallback_address().await?;
+    }
     let row = NewRegistration {
         identity_index: None,
         identity: plan.identity,
