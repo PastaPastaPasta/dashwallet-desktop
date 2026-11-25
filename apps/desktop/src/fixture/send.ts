@@ -106,6 +106,9 @@ export interface SendWorld {
   /** Payments of this wallet seen by their change before the coins they spent are known: the
    * engine reports their debit as unknown (`totalDebit: null`). */
   debitUnknown: string[];
+  /** Abandoned payments a coin of which the engine's rescan is still checking before giving it
+   * back (`checkingSpentCoins`). */
+  checkingSpentCoins: string[];
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -122,6 +125,7 @@ export const newSendWorld = (): SendWorld => ({
   settledChildHidden: [],
   recordUnreadable: [],
   debitUnknown: [],
+  checkingSpentCoins: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -865,6 +869,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         withheldOutputs: wallet(world, walletId).coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven").map((u) => u.outpoint),
+        checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
       return extras;

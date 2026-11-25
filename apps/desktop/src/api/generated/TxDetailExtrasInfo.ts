@@ -43,6 +43,11 @@ dustLockedOutputs: Array<OutPoint>,
  */
 withheldOutputs: Array<OutPoint>,
 /**
+ * Abandoned, with a coin it spent still being checked by a rescan
+ * before it comes back.
+ */
+checkingSpentCoins: boolean,
+/**
  * UNIX seconds the engine last announced it (send or resend).
  */
 lastAnnouncedAt: number | null, };
