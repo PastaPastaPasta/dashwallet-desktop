@@ -107,6 +107,11 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::{AppDbError, Result};
 
+mod drain;
+pub use drain::{
+    DrainedDisposition, DrainedOutcome, NeverSentSpend, ShieldedDrainPlan, ShieldedDrainState,
+};
+
 /// File name of the journal inside a network directory.
 pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 
@@ -115,8 +120,9 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 /// so are version 2 (no Mode B tables), 3 (no `signed_lock`), 4 (no
 /// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
 /// `funding_release`); every migration only adds, except that 6 → 7 clears
-/// the flags schema 6 set.
-pub const DISPATCH_SCHEMA: u32 = 11;
+/// the flags schema 6 set. Version 12 adds the tables a fork-written
+/// shielded store drains into (the `drain` module).
+pub const DISPATCH_SCHEMA: u32 = 12;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -1260,46 +1266,12 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(schema_read) => {}
-                Some(v @ 1..=10) => {
-                    if v == 1 {
-                        tx.execute_batch(STEP_LOG)?;
-                        tx.execute_batch(MIGRATE_V1)?;
+                Some(v @ 1..=11) if v < i64::from(schema_read) => {
+                    if v <= 10 {
+                        migrate_to_11(&tx, v)?;
                     }
-                    if v <= 2 {
-                        tx.execute_batch(MODE_B)?;
-                        tx.execute_batch(MIGRATE_V2)?;
-                    }
-                    if v <= 3 {
-                        tx.execute_batch(SIGNED_LOCK)?;
-                        tx.execute_batch(MIGRATE_V3)?;
-                    }
-                    if v <= 4 {
-                        tx.execute_batch(SELF_SPEND_PROVENANCE)?;
-                        tx.execute_batch(MIGRATE_V4)?;
-                    }
-                    if v <= 5 {
-                        tx.execute_batch(DURABLE_RECORD)?;
-                        tx.execute_batch(TOMBSTONE)?;
-                        tx.execute_batch(MIGRATE_V5)?;
-                    }
-                    if v <= 6 {
-                        tx.execute_batch(RELEASE)?;
-                        tx.execute_batch(MIGRATE_V6)?;
-                    }
-                    if v <= 7 {
-                        tx.execute_batch(TOP_UP_SETTLED)?;
-                        tx.execute_batch(MIGRATE_V7)?;
-                    }
-                    if v <= 8 {
-                        tx.execute_batch(SHIELDED_REDRIVE)?;
-                        tx.execute_batch(MIGRATE_V8)?;
-                    }
-                    if v <= 9 {
-                        tx.execute_batch(SHIELDED_UNRECORDED)?;
-                        tx.execute_batch(MIGRATE_V9)?;
-                    }
-                    tx.execute_batch(SHIELDED_ARTIFACT)?;
-                    tx.execute_batch(MIGRATE_V10)?;
+                    tx.execute_batch(drain::SHIELDED_DRAIN)?;
+                    tx.execute_batch(drain::MIGRATE_V11)?;
                 }
                 Some(v) if v > i64::from(schema_read) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -1325,6 +1297,7 @@ impl DispatchJournal {
             tx.execute_batch(SHIELDED_REDRIVE)?;
             tx.execute_batch(SHIELDED_UNRECORDED)?;
             tx.execute_batch(SHIELDED_ARTIFACT)?;
+            tx.execute_batch(drain::SHIELDED_DRAIN)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -1336,7 +1309,53 @@ impl DispatchJournal {
             conn: Mutex::new(conn),
         }))
     }
+}
 
+/// Schema `v` (1 to 10) → 11, in the open's transaction.
+fn migrate_to_11(tx: &rusqlite::Transaction<'_>, v: i64) -> Result<()> {
+    if v == 1 {
+        tx.execute_batch(STEP_LOG)?;
+        tx.execute_batch(MIGRATE_V1)?;
+    }
+    if v <= 2 {
+        tx.execute_batch(MODE_B)?;
+        tx.execute_batch(MIGRATE_V2)?;
+    }
+    if v <= 3 {
+        tx.execute_batch(SIGNED_LOCK)?;
+        tx.execute_batch(MIGRATE_V3)?;
+    }
+    if v <= 4 {
+        tx.execute_batch(SELF_SPEND_PROVENANCE)?;
+        tx.execute_batch(MIGRATE_V4)?;
+    }
+    if v <= 5 {
+        tx.execute_batch(DURABLE_RECORD)?;
+        tx.execute_batch(TOMBSTONE)?;
+        tx.execute_batch(MIGRATE_V5)?;
+    }
+    if v <= 6 {
+        tx.execute_batch(RELEASE)?;
+        tx.execute_batch(MIGRATE_V6)?;
+    }
+    if v <= 7 {
+        tx.execute_batch(TOP_UP_SETTLED)?;
+        tx.execute_batch(MIGRATE_V7)?;
+    }
+    if v <= 8 {
+        tx.execute_batch(SHIELDED_REDRIVE)?;
+        tx.execute_batch(MIGRATE_V8)?;
+    }
+    if v <= 9 {
+        tx.execute_batch(SHIELDED_UNRECORDED)?;
+        tx.execute_batch(MIGRATE_V9)?;
+    }
+    tx.execute_batch(SHIELDED_ARTIFACT)?;
+    tx.execute_batch(MIGRATE_V10)?;
+    Ok(())
+}
+
+impl DispatchJournal {
     fn conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -1788,6 +1807,12 @@ impl DispatchJournal {
             // the marker's delete below; nothing else of them changes.
             mirrored += tx.execute(
                 "UPDATE shielded_artifact_note SET spent = 1 \
+                 WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
+                params![&wallet[..], &nullifier[..]],
+            )?;
+            // A drained fork hold lifts on the same flag (schema 12).
+            mirrored += tx.execute(
+                "UPDATE shielded_drained_hold SET spent = 1 \
                  WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
                 params![&wallet[..], &nullifier[..]],
             )?;
@@ -3018,8 +3043,8 @@ mod tests {
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            schema, 11,
-            "through versions 2, 3, 4, 5, 6, 7, 8, 9 and 10 to 11"
+            schema, 12,
+            "through versions 2, 3, 4, 5, 6, 7, 8, 9, 10 and 11 to 12"
         );
         let old: bool = j
             .conn()
@@ -3100,7 +3125,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -3150,7 +3175,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
@@ -3221,7 +3246,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         let rows = j.load_calls().unwrap();
         assert_eq!(
             (rows.funding.len(), rows.signed_locks.len()),
@@ -3262,7 +3287,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.funding.len(), 1);
@@ -3308,7 +3333,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert!(
@@ -3399,7 +3424,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.load_calls().unwrap().funding[0].seq, marker);
         assert!(j.top_ups_settled(&W).unwrap().is_empty());
         j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 4)
@@ -3430,7 +3455,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
         assert!(j.shielded_redrives(&W).unwrap().is_empty());
 
@@ -3483,7 +3508,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(j.shielded_redrives(&W).unwrap().len(), 1);
         assert!(j.unrecorded_spends(&W).unwrap().is_empty());
         assert_eq!(j.pragmas().unwrap().synchronous, 2, "written FULL");
@@ -4294,7 +4319,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 11);
+        assert_eq!(schema, 12);
         assert_eq!(v10_rows(&j), before, "the 0.1 tables are unchanged");
         assert_eq!(
             j.load().unwrap().1.len(),
@@ -4552,10 +4577,10 @@ mod tests {
         );
     }
 
-    /// A build of schema 10 reads a schema 11 journal as newer and leaves
-    /// it as it was.
+    /// A build of schema 10 reads a newer journal as newer and leaves it
+    /// as it was.
     #[test]
-    fn a_v11_journal_reads_newer_schema_in_a_v10_reader() {
+    fn a_newer_journal_reads_newer_schema_in_a_v10_reader() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DISPATCH_DB_FILE);
         {
@@ -4569,8 +4594,8 @@ mod tests {
             (v10_rows(&j), all_artifact_rows(&j))
         };
         match DispatchJournal::open_as_schema(&path, 4, 10).unwrap() {
-            JournalOpen::NewerSchema(v) => assert_eq!(v, 11),
-            JournalOpen::Ready(_) => panic!("a schema 10 build opened schema 11"),
+            JournalOpen::NewerSchema(v) => assert_eq!(v, DISPATCH_SCHEMA),
+            JournalOpen::Ready(_) => panic!("a schema 10 build opened a newer journal"),
         }
         let j = ready(&path, 5);
         assert_eq!(artifact_count(&j), [1, 0, 0]);
