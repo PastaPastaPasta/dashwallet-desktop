@@ -410,8 +410,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     ready(s);
     return { address: s.address, account: 0 };
   },
-  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuoteOf(ctx, walletId, amount),
+  // A new move into the pool is the engine's `keyset_closed` refusal where this build cannot spend from it; `resume_shield` is not.
+  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "shield_quote");
+    return shieldQuoteOf(ctx, walletId, amount);
+  },
   shield_from_core: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): ShieldOutcome => {
+    refuseSpendsOff(ctx, walletId, "shield_from_core");
     const q = shieldQuoteOf(ctx, walletId, amount);
     const duffs = q.duffs;
     const s = ctx.world.pending.shielded!;
@@ -436,9 +441,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     s.shield = "applied";
     return shieldEnd(s, txid, pending.duffs);
   },
-  shield_mixed_quote: ({ walletId }: { walletId: string }, ctx: Ctx): MixedShieldQuote => drainQuote(ctx, walletId, "shield_mixed_quote").quote,
+  shield_mixed_quote: ({ walletId }: { walletId: string }, ctx: Ctx): MixedShieldQuote => {
+    refuseSpendsOff(ctx, walletId, "shield_mixed_quote");
+    return drainQuote(ctx, walletId, "shield_mixed_quote").quote;
+  },
   // The lock spends every coin of the CoinJoin account under a `spend` grant of their sum.
   shield_mixed_coins: ({ walletId, grant }: { walletId: string; grant: string }, ctx: Ctx): ShieldOutcome => {
+    refuseSpendsOff(ctx, walletId, "shield_mixed_coins");
     const { quote, coins } = drainQuote(ctx, walletId, "shield_mixed_coins");
     const unknown = () => raise("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: DRAIN_STEP });
     if (ctx.world.coinjoin.drainUnknown === "stuck") unknown();

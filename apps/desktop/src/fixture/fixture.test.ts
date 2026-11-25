@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe("fixture backend", () => {
-  it("reports Shielded spends available, as main's engine does, and refuses them before anything is spent where they are off", async () => {
+  it("reports Shielded spends available, as main's engine does, and refuses them and new shields before anything moves where they are off", async () => {
     const on = backend({ scenario: "funded" }).b;
     expect((await on.shieldedStatus(FIXTURE_WALLET_ID))?.spendsAvailable).toBe(true);
     const { b } = backend({ scenario: "shielded-spends-off" });
@@ -43,6 +43,10 @@ describe("fixture backend", () => {
       () => b.shieldedSend(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000", null, "g", false),
       () => b.unshieldToCore(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
       () => b.unshieldToPlatform(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.shieldQuote(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }),
+      () => b.shieldFromCore(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }, "g"),
+      () => b.shieldMixedQuote(FIXTURE_WALLET_ID),
+      () => b.shieldMixedCoins(FIXTURE_WALLET_ID, "g"),
     ]) {
       const e = await call().catch((x: unknown) => x);
       expect(isAppError(e) && e.code).toBe("platform.unavailable");

@@ -233,14 +233,15 @@ export function listedPools(pools: Pools): Pool[] {
   return ["core", ...(pools.shielded ? (["shielded"] as const) : []), ...(pools.platform ? (["platform"] as const) : [])];
 }
 
-/** The route the shortcut opens: to Shielded, or to Platform when Shielded is not active. `null`:
+/** The route the shortcut opens: to Shielded, or to Platform when Shielded is not active or this
+ * build cannot spend from it (then to Shielded, held, only when Platform is not there). `null`:
  * neither is there, and `noRouteText` says why; `undefined`: not known until the pools are read. */
 export function defaultRoute(pools: Pools): RouteId | null | undefined {
-  if (pools.shielded?.active) return "coreToShielded";
+  if (pools.shielded?.active && !pools.shielded.spendsOff) return "coreToShielded";
   if (pools.shielded === undefined) return undefined;
   if (pools.platform) return "coreToPlatform";
   if (pools.platform === undefined) return undefined;
-  return null;
+  return pools.shielded?.active ? "coreToShielded" : null;
 }
 
 export function noRouteText(pools: Pools): string {
@@ -250,7 +251,7 @@ export function noRouteText(pools: Pools): string {
 /** The other end after a pick made both ends `pool`: the Dash wallet, or from it the default pool. */
 export function defaultEnd(pool: Pool, pools: Pools): Pool {
   if (pool !== "core") return "core";
-  return pools.shielded?.active || !pools.platform ? "shielded" : "platform";
+  return (pools.shielded?.active && !pools.shielded.spendsOff) || !pools.platform ? "shielded" : "platform";
 }
 
 /** Whether the ends can swap: the reverse is a route with a command. */

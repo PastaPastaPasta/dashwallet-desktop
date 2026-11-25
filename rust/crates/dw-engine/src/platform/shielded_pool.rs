@@ -1676,6 +1676,18 @@ pub(super) async fn send_armed(
 /// hook, when the library would send what the engine never accepted. `send`
 /// and `unshield` ask before anything else, so the refusal quotes nothing,
 /// issues no address and keeps the grant.
+/// Refuses a new move into the pool while the library cannot spend from the
+/// key set: what goes in could not come out in this build. Asked before
+/// anything else, so nothing is quoted, locked or granted. Finishing a shield
+/// already sent (`resume`) is not refused.
+pub(crate) fn keyset_closed(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
+    if lib.keyset_spends() {
+        Ok(())
+    } else {
+        Err(PlatformError::Unavailable.into())
+    }
+}
+
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if !lib.keyset_spends() || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
@@ -1978,6 +1990,7 @@ pub(crate) async fn shield_quote(
     lib: &impl ShieldedLib,
     duffs: u64,
 ) -> Result<ShieldQuote, ShieldedError> {
+    keyset_closed(lib)?;
     shield_plan(session, lib, duffs).await
 }
 
@@ -1988,6 +2001,7 @@ pub(crate) async fn shield_max_quote(
     wallet: WalletId,
     lib: &impl ShieldedLib,
 ) -> Result<ShieldQuote, ShieldedError> {
+    keyset_closed(lib)?;
     let pool_fee = shield_max_gate(session, lib).await?;
     let _claim = core_max::claim(session, wallet)?;
     let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
@@ -2052,6 +2066,7 @@ pub(crate) async fn shield(
     amount: FundAmount,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
+    keyset_closed(lib)?;
     open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;

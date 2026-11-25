@@ -4587,6 +4587,45 @@ fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
     assert_eq!(sent.unwrap().state, ShieldedSpendState::Done);
 }
 
+/// A library that cannot spend from the key set refuses a new move into the
+/// pool before anything else: no quote, no lock, the grant kept. When it can
+/// again, the same shield runs.
+#[test]
+fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let quoted = run(&fx, &lib, |s, lib| async move {
+        code(pool::shield_quote(&s, &*lib, 1_000_000).await)
+    });
+    assert_eq!(quoted, "platform.unavailable");
+    let mixed = run(&fx, &lib, move |s, lib| async move {
+        code(super::shield_drain::quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(mixed, "platform.unavailable");
+    let grant = shield_grant(&fx, 2_000_000);
+    let g = grant.clone();
+    let shielded = run(&fx, &lib, move |s, lib| async move {
+        code(
+            pool::shield(
+                &s,
+                wallet,
+                &*lib,
+                FundAmount::Duffs { duffs: 1_000_000 },
+                &g,
+            )
+            .await,
+        )
+    });
+    assert_eq!(shielded, "platform.unavailable");
+    assert!(fx.unused(&grant), "the refusal keeps the grant");
+    assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    assert!(shield_with(&fx, &lib).is_ok());
+}
+
 /// Without the dispatch hook no spend starts: a send and an unshield are
 /// refused before anything else, so nothing is quoted, no receive address
 /// is issued, the grant is kept and no key leaves the vault.

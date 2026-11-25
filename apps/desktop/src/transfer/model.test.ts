@@ -282,6 +282,13 @@ describe("the default route", () => {
     expect(defaultRoute({ ...POOLS, shielded: null })).toBe("coreToPlatform");
   });
 
+  it("is → Platform where this build cannot spend from Shielded, and → Shielded, held, without Platform", () => {
+    const off = { active: true, syncing: false, duffs: 125_000_000, spendsOff: true };
+    expect(defaultRoute({ ...POOLS, shielded: off })).toBe("coreToPlatform");
+    expect(defaultRoute({ ...POOLS, shielded: off, platform: null })).toBe("coreToShielded");
+    expect(defaultRoute({ ...POOLS, shielded: off, platform: undefined })).toBeUndefined();
+  });
+
   it("is none when neither is there, and the sheet says why", () => {
     expect(defaultRoute({ ...POOLS, shielded: { active: false, syncing: false, duffs: null }, platform: null })).toBeNull();
     expect(noRouteText({ ...POOLS, shielded: { active: false, syncing: false, duffs: null }, platform: null })).toBe(TRANSFER_COPY.none.inactive);

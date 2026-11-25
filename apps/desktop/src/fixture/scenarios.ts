@@ -1157,6 +1157,13 @@ const SCENARIOS = {
     w.pending.shielded!.spendsAvailable = false;
     return w;
   },
+  /** As `shielded-spends-off`, with a shield lock sent and not applied yet: Finish stays open. */
+  "shielded-spends-off-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);

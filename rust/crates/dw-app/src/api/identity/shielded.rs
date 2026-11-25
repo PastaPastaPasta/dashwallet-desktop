@@ -69,7 +69,8 @@ pub struct ShieldedStatus {
     /// The prover is ready, so a spend proves at once.
     pub prover_ready: bool,
     /// This build can send, unshield and pay a contact from Shielded. When
-    /// false those calls refuse `platform.unavailable`; shielding, receive,
+    /// false those calls, and a new shield into the pool, refuse
+    /// `platform.unavailable`; finishing a shield already sent, receive,
     /// sync and balance still work.
     pub spends_available: bool,
 }

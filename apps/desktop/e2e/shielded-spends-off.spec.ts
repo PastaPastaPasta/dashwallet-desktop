@@ -136,6 +136,16 @@ test.describe("Shielded spends off", () => {
     expect(errors).toEqual([]);
   });
 
+  test("a shield already sent can still be finished", async ({ page }) => {
+    const errors = await open(page, "shielded-spends-off-pending", "light");
+    await expect(page.getByTestId("shielded-finish")).toBeEnabled();
+    await page.getByTestId("shielded-finish").click();
+    await authorize(page);
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+    expect(await callsOf(page, "resume_shield")).toBe(1);
+    expect(await spendCalls(page)).toBe(0);
+    expect(errors).toEqual([]);
+  });
 
   test("with spends on, as main's engine says, nothing waits for this reason", async ({ page }) => {
     const errors = await open(page, "funded", "light");

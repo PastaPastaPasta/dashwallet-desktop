@@ -83,9 +83,10 @@ pub struct ShieldedStatus {
     /// starts on an active network).
     pub prover_ready: bool,
     /// The library can spend from the pool's key set: send, unshield to Core
-    /// or Platform, and pay a contact from Shielded. While false those refuse
-    /// `platform.unavailable` before anything else; shielding, receive, sync
-    /// and the balance keep working. Read on an inactive network too.
+    /// or Platform, and pay a contact from Shielded. While false those, and a
+    /// new move into the pool, refuse `platform.unavailable` before anything
+    /// else; finishing a shield already sent, receive, sync and the balance
+    /// keep working. Read on an inactive network too.
     pub spends_available: bool,
 }
 
