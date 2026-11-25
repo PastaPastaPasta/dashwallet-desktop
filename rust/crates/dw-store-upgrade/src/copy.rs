@@ -189,17 +189,21 @@ pub enum BackupState {
 /// not proved, which never offers the earlier version (MG (A)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvedState {
-    /// Refinery's `MAX(version)` is past V018: a new build migrated it, so
-    /// no earlier version opens it ([`migrated`]).
+    /// A new build migrated it (refinery's `MAX(version)` past V018) or
+    /// part-upgraded it, so no earlier version opens it ([`migrated`]).
     pub migrated: Option<bool>,
     pub backup: Option<BackupState>,
 }
 
-/// Whether `network_dir`'s `wallet.sqlite` was migrated past the last
-/// version a fork build wrote (refinery `MAX(version)` > 18), read with
-/// `immutable=1`. `None` when that can't be proved: no file, no refinery
-/// history, a read error, or a version at or below 18 with a non-empty
-/// `-wal` or `-journal` the immutable read can't see.
+/// Whether `network_dir`'s `wallet.sqlite` was changed past what a fork
+/// build opens, read with `immutable=1`: migrated past the last version a
+/// fork build wrote (refinery `MAX(version)` > 18), or part-upgraded (fork
+/// history present and R1's drop of `contacts.external_account_reference`
+/// committed; every published fork version set adds that column, and no
+/// released build opens the file without it). `None` when that can't be
+/// proved: no file, no refinery history or `contacts`, a read error, or an
+/// unchanged-looking file with a non-empty `-wal` or `-journal` the
+/// immutable read can't see.
 pub fn migrated(network_dir: &Path) -> Option<bool> {
     let path = network_dir.join(STORE_FILES[0]);
     if !path.is_file() {
@@ -218,6 +222,14 @@ pub fn migrated(network_dir: &Path) -> Option<bool> {
         .ok()??;
     if max > crate::fork::FORK_REFINERY_MAX {
         return Some(true);
+    }
+    if crate::sql::has_table(&conn, crate::fork::FORK_HISTORY).ok()? {
+        if !crate::sql::has_table(&conn, crate::fork::CONTACTS).ok()? {
+            return None;
+        }
+        if !crate::sql::has_column(&conn, crate::fork::CONTACTS, crate::fork::EXTERNAL_REF).ok()? {
+            return Some(true);
+        }
     }
     let logged = ["-wal", "-journal"].iter().any(|suffix| {
         std::fs::metadata(network_dir.join(format!("{}{suffix}", STORE_FILES[0])))

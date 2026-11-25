@@ -373,10 +373,9 @@ fn shows_unchanged(
     let err = make(f);
     let state = ProvedState {
         migrated: migrated(&f.net),
-        backup: Some(if crate::snapshot::snapshot_present(&f.net).unwrap() {
-            BackupState::Verified
-        } else {
-            BackupState::None
+        backup: Some(match crate::snapshot::latest_snapshot(&f.net).unwrap() {
+            Some(_) => BackupState::Verified,
+            None => BackupState::None,
         }),
     };
     let screen = screen_for(&err, state).unwrap_or_else(|| panic!("no screen for {err:?}"));
@@ -569,9 +568,10 @@ fn a_failed_self_check_offers_the_earlier_version_only_for_a_file_proved_unupgra
     }
 }
 
-/// One value of every [`StoreUpgradeError`] variant. [`variant`] matches
-/// with no wildcard arm, so a new variant fails to compile until it is
-/// listed here (Q98 98-2).
+/// One value of every [`StoreUpgradeError`] variant (Q98 98-2). [`variant`]
+/// matches with no wildcard arm, so a new variant fails to compile until it
+/// has an arm there; the count in [`every_refusal_variant_has_a_screen`]
+/// must then be raised with a value added here.
 fn every_variant() -> Vec<StoreUpgradeError> {
     use StoreUpgradeError as E;
     vec![
@@ -695,4 +695,49 @@ fn migrated_is_unproved_without_a_readable_history_or_with_a_hidden_log() {
     let g = fixture("v0.1.0");
     exec(&g.wallet(), "DROP TABLE refinery_schema_history");
     assert_eq!(migrated(&g.net), None);
+}
+
+/// R1's drop committed, upstream not migrated yet: no released build opens
+/// the file, so no refusal may send the user back to one.
+#[test]
+fn a_part_upgraded_file_never_offers_the_earlier_version() {
+    use crate::adopters::{P4_NAME, P9aStatus};
+    let part_upgraded = || {
+        let f = fixture("v0.3.0");
+        let snapshot = crate::prepare_with(&f.net, build(), now())
+            .unwrap()
+            .snapshot
+            .unwrap();
+        assert!(matches!(
+            crate::reconcile::reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap(),
+            crate::reconcile::Outcome::Pending { .. }
+        ));
+        assert_eq!(migrated(&f.net), Some(true), "part-upgraded");
+        f
+    };
+
+    let f = part_upgraded();
+    let broken = build().with_p9a(P9aStatus::Broken {
+        detail: "test".into(),
+    });
+    let s = shows_unchanged(&f, RefusedCause::SelfCheck, |f| {
+        precheck_refusal(f, &broken)
+    });
+    assert_eq!(s.way_out, WayOut::SelfCheck);
+
+    let f = part_upgraded();
+    add_retired_row(&f.wallet());
+    let absent = build().with_p9a(P9aStatus::Absent);
+    let s = shows_unchanged(&f, RefusedCause::ContactsTable, |f| {
+        precheck_refusal(f, &absent)
+    });
+    assert_eq!(s.way_out, WayOut::Restore, "backup verified");
+
+    let f = part_upgraded();
+    let mut without_p4 = build().clone();
+    without_p4.embedded.retain(|m| m.name != P4_NAME);
+    let s = shows_unchanged(&f, RefusedCause::ForkUnsupported, |f| {
+        precheck_refusal(f, &without_p4)
+    });
+    assert_eq!(s.way_out, WayOut::SupportMigrated);
 }

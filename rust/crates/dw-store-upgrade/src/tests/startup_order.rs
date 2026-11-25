@@ -104,7 +104,12 @@ fn the_sweep_removes_a_crashed_probe_dir_only_under_the_lock() {
     assert!(!probe.exists());
     assert!(unrelated.is_dir() && root.join("regtest").is_dir());
 
-    drop(crate::adopters::Adopters::probe(root));
+    let probed = crate::adopters::Adopters::probe(root);
+    assert!(
+        !probed.observations().is_empty(),
+        "the probe ran in its directory: {:?}",
+        probed.p9a_status()
+    );
     assert_eq!(
         crate::sweep_stale_scratch(root).unwrap(),
         0,
