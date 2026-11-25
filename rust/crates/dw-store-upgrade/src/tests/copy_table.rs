@@ -229,7 +229,7 @@ fn every_cause_and_proved_state_gives_an_allowed_way_out_with_exact_text() {
             assert!(s.buttons.iter().all(|b| !b.destructive), "{at}");
             assert_eq!(
                 s.hint.map(|h| (h.key, h.text)),
-                reports.then_some(("settings.links.issuesHint", HINT)),
+                reports.then_some(("settings.about.links.issuesHint", HINT)),
                 "{at}"
             );
 
@@ -617,7 +617,7 @@ fn a_failed_self_check_offers_the_earlier_version_only_for_a_file_proved_unupgra
                 ("storeUpgrade.refused.quit", "Quit"),
             ]
         );
-        assert_eq!(s.hint.map(|h| h.key), Some("settings.links.issuesHint"));
+        assert_eq!(s.hint.map(|h| h.key), Some("settings.about.links.issuesHint"));
     }
 }
 

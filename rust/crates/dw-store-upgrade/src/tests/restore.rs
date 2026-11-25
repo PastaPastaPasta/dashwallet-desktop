@@ -1101,7 +1101,7 @@ fn restore_incomplete_copy_renders_for_each_cause() {
         };
         let screen = copy::restore_screen_for(&err).unwrap();
         assert_eq!(screen.title_key, "storeUpgrade.restore.incomplete.title");
-        assert_eq!(screen.hint.unwrap().0, "settings.links.issuesHint");
+        assert_eq!(screen.hint.unwrap().0, "settings.about.links.issuesHint");
         let shown = screen.render(FOLDER);
         assert!(shown.contains(&format!("hasn't opened the wallet data in {FOLDER}.")));
         assert!(shown.contains("don't delete anything there"));

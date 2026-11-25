@@ -48,9 +48,9 @@ const fn line(key: &'static str, text: &'static str) -> Line {
     Line { key, text }
 }
 
-/// `settings.links.issuesHint`, shown under every "Report a problem".
+/// `settings.about.links.issuesHint`, shown under every "Report a problem".
 pub const ISSUES_HINT: Line = line(
-    "settings.links.issuesHint",
+    "settings.about.links.issuesHint",
     "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
 );
 
@@ -402,7 +402,7 @@ pub struct RefusedScreen {
     pub unchanged: Line,
     pub way_out_line: Line,
     pub buttons: Vec<Button>,
-    /// `settings.links.issuesHint`, under the buttons with Report a problem.
+    /// [`ISSUES_HINT`], under the buttons with Report a problem.
     pub hint: Option<Line>,
 }
 
