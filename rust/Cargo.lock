@@ -2729,6 +2729,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dw-shielded-drain"
+version = "0.3.0"
+dependencies = [
+ "dw-appdb",
+ "dw-store-upgrade",
+ "platform-wallet",
+ "platform-wallet-storage",
+ "rusqlite",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "dw-store-upgrade"
 version = "0.3.0"
 dependencies = [
@@ -2740,6 +2755,7 @@ dependencies = [
  "platform-wallet-storage",
  "refinery",
  "rusqlite",
+ "rustix 1.1.6",
  "serde",
  "sha2 0.10.9",
  "tempfile",

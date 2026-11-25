@@ -8,8 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# `Adopters::cache_with_p9a_for_test` for other crates' tests (debug builds
-# only): a test binary's open path meets a chosen P9a outcome.
+# For other crates' tests, never enabled by the app: `test_support`, a real
+# between-state store; `Adopters::cache_with_p9a_for_test` (debug builds
+# only), so a test binary's open path meets a chosen P9a outcome.
 test-support = []
 
 [dependencies]
@@ -30,6 +31,10 @@ sha2 = "0.10"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# The effective uid, to refuse a wallet.sqlite another user owns.
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 # The fork migrations' recorded checksums, recomputed from the copied SQL.

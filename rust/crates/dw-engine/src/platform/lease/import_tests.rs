@@ -163,7 +163,7 @@ fn artifacts_at(data_dir: &Path) -> Vec<ArtifactRow> {
     let schema: i64 = conn
         .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(schema, 11);
+    assert_eq!(schema, 12);
     let mut stmt = conn
         .prepare(
             "SELECT wallet, activity, origin, st_hash, status, status_reason \

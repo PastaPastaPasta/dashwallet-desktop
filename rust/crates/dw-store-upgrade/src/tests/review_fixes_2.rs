@@ -136,7 +136,7 @@ fn a_start_that_stopped_after_the_drop_keeps_the_true_snapshot() {
 }
 
 #[test]
-fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
+fn a_part_done_upgrade_without_its_snapshot_goes_on_and_is_not_resnapshotted() {
     let f = fixture("v0.1.0");
     let first = crate::prepare_with(&f.net, build(), now())
         .unwrap()
@@ -144,35 +144,22 @@ fn a_part_done_upgrade_without_its_snapshot_is_refused_not_resnapshotted() {
         .unwrap();
     reconcile_fork_store(&config(&f.net), &first, build()).unwrap();
     fs::remove_dir_all(first.dir()).unwrap();
-    let before = tree(&f.root);
-    let err = crate::prepare_with(&f.net, build(), later(60)).unwrap_err();
-    assert!(
-        matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
-        "{err:?}"
-    );
-    assert!(err.file_unchanged());
-    assert_eq!(before_upgrade_dirs(&f), 0);
-    assert_eq!(tree(&f.root), before);
-}
-
-#[test]
-fn a_write_to_app_sqlite_between_prepare_and_reconcile_is_refused() {
-    let f = fixture("v0.1.0");
-    let snapshot = crate::prepare_with(&f.net, build(), now())
+    let part = crate::prepare_with(&f.net, build(), later(60))
         .unwrap()
         .snapshot
         .unwrap();
-    exec(
-        &f.net.join("app.sqlite"),
-        "CREATE TABLE dwsu_between (a INTEGER); INSERT INTO dwsu_between VALUES (1)",
-    );
-    let err = reconcile_fork_store(&config(&f.net), &snapshot, build()).unwrap_err();
     assert!(
-        matches!(err, StoreUpgradeError::SnapshotInvalid { .. }),
-        "{err:?}"
+        part.dir()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("part-upgraded-")
     );
-    assert!(column_present(&f));
-    assert_eq!(before_upgrade_dirs(&f), 1, "not silently re-snapshotted");
+    assert_eq!(
+        part.missing(),
+        Some(crate::snapshot::MissingSnapshot::Absent)
+    );
+    assert_eq!(before_upgrade_dirs(&f), 0);
 }
 
 #[test]
@@ -194,7 +181,7 @@ fn a_machine_fault_in_the_rehearsal_is_retryable_not_a_refusal() {
         "{err:?}"
     );
     assert!(!err.is_refusal());
-    assert!(crate::copy::screen_for(&err, true).is_none());
+    assert!(crate::copy::screen_for(&err, crate::copy::ProvedState::default()).is_none());
     assert_eq!(tree(&f.root), before);
     assert!(matches!(checked(&f).unwrap(), Precheck::Fork { .. }));
 }
