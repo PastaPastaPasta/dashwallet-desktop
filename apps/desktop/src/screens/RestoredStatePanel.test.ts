@@ -3,15 +3,16 @@
 // failed to load named with Report a problem only, and a clear that couldn't be written with Try again
 // and Report a problem. Read again on sync, never on a timer.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { clearMocks } from "@tauri-apps/api/mocks";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "../api/backend";
 import { LOCKED_COMMANDS } from "../api/lockGate";
+import { setRestoreFinishing, useRestoredGate } from "../api/restoreGate";
 import { BackendContext, keys } from "../api/queries";
 import type { RestoreStatus } from "../api/restoreHolds";
 import { isRestored } from "../api/storeOpen";
@@ -76,7 +77,16 @@ function panel(restored: boolean | undefined, s: RestoreStatus | null | undefine
   return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(BackendContext.Provider, { value: backend }, createElement(RestoredStatePanel))));
 }
 
-afterEach(() => ui.set({ theme: null, prefs: DEFAULT_PREFS }));
+/** Home's panel on `client`'s reads, with the app's actions for that client. */
+function panelOn(client: QueryClient) {
+  const backend = { kind: "fixture", activeNetwork: () => new Promise(noop), restoreStatus: () => new Promise(noop), listWallets: () => new Promise(noop) } as unknown as Backend;
+  return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(BackendContext.Provider, { value: backend }, createElement(RestoredStatePanel))));
+}
+
+afterEach(() => {
+  ui.set({ theme: null, prefs: DEFAULT_PREFS });
+  setRestoreFinishing(false);
+});
 
 describe("the restored state panel", () => {
   for (const theme of THEMES)
@@ -141,8 +151,9 @@ describe("the restored state panel", () => {
     expect(button(html, "restored-report")?.label).toBe(COPY.report);
   });
 
-  it("is passed by the lock gate while closing and opening without Platform, as openNetwork is", () => {
-    for (const command of ["openNetwork", "closeNetwork", "openNetworkWithoutPlatform"]) expect(LOCKED_COMMANDS.has(command), command).toBe(true);
+  it("is passed by the lock gate, as openNetwork is: closing and opening without Platform is one call", () => {
+    for (const command of ["openNetwork", "finishWithoutPlatform"]) expect(LOCKED_COMMANDS.has(command), command).toBe(true);
+    for (const command of ["closeNetwork", "openNetworkWithoutPlatform"]) expect(LOCKED_COMMANDS.has(command), command).toBe(false);
   });
 
   it("names the wallet from the wallet list, and a wallet it doesn't list by its id's start", () => {
@@ -191,17 +202,17 @@ describe("the restored state panel", () => {
 
 describe("the panel's actions", () => {
   type Api = ConstructorParameters<typeof RestoredStateActions>[0];
-  const LOCK = { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
-  const OPENED = { network: { kind: "testnet", dirName: "testnet", unitName: "tDASH", restored: true }, lock: LOCK };
+  const WAITING_PLATFORM = status({ waiting: ["platformPass"] });
+  const busy = { code: "app.network_busy", message: "closing the network would cut what runs", data: { kind: "networkBusy", flows: ["registration"], mixing: false, broadcast: false, stalled: false, draining: false } };
+  const switchFailed = (rolledBack: boolean) => ({ code: "app.network_switch_failed", message: "storage in use", data: { kind: "networkSwitch", network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" }, rolledBack } });
   function fake(overrides: Partial<Record<keyof Api, () => Promise<unknown>>> = {}) {
     const calls: string[] = [];
-    const answers: Record<keyof Api, unknown> = { restoreRetry: null, closeNetwork: true, openNetworkWithoutPlatform: OPENED, openNetwork: OPENED, openProjectLink: null };
     const api = Object.fromEntries(
-      (Object.keys(answers) as (keyof Api)[]).map((name) => [
+      (["restoreRetry", "finishWithoutPlatform", "openProjectLink"] as const).map((name) => [
         name,
         (...args: unknown[]) => {
           calls.push(args.length ? `${name}(${args.join(",")})` : name);
-          return overrides[name]?.() ?? Promise.resolve(answers[name]);
+          return overrides[name]?.() ?? Promise.resolve(null);
         },
       ]),
     ) as unknown as Api;
@@ -211,11 +222,18 @@ describe("the panel's actions", () => {
   function client() {
     const c = new QueryClient();
     c.setQueryData(keys.restored, true);
-    c.setQueryData(keys.restoreStatus, status({ waiting: ["platformPass"] }));
+    c.setQueryData(keys.restoreStatus, WAITING_PLATFORM);
     c.setQueryData(keys.wallets, []);
     return c;
   }
   const stale = (c: QueryClient, key: readonly unknown[]) => c.getQueryState(key)?.isInvalidated;
+
+  /** The money gate's reading of RESTORED, as TxDetailSheet and Coin Selection take it. */
+  function gate(c: QueryClient): string {
+    const Probe = () => createElement("i", null, String(useRestoredGate()));
+    const backend = { activeNetwork: () => new Promise(noop) } as unknown as Backend;
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: c }, createElement(BackendContext.Provider, { value: backend }, createElement(Probe))));
+  }
 
   it("Try again calls restore_retry and reads the status and RESTORED again", async () => {
     const { api, calls } = fake();
@@ -239,59 +257,123 @@ describe("the panel's actions", () => {
     expect(actions.problem).toBe("disk full");
   });
 
-  it("Finish without Dash Platform closes the network, then opens it without Platform, then boots the page again", async () => {
+  it("Finish without Dash Platform is one finish_without_platform call, then the page boots again", async () => {
     const { api, calls } = fake();
     const boots: (string | null)[] = [];
     const actions = new RestoredStateActions(api, client(), (note) => {
       calls.push("boot");
       boots.push(note);
     });
-    await actions.finishWithoutPlatform();
-    expect(calls).toEqual(["closeNetwork", "openNetworkWithoutPlatform", "boot"]);
+    await actions.finishWithoutPlatform(WAITING_PLATFORM);
+    expect(calls).toEqual(["finishWithoutPlatform", "boot"]);
     expect(boots).toEqual([null]);
     expect(actions.running).toBe(true);
   });
 
-  it("a refused close changes nothing: no open, no boot, the refusal said in place", async () => {
-    const { api, calls } = fake({ closeNetwork: () => Promise.reject(new Error("a payment is being sent")) });
-    const boot = vi.fn();
-    const actions = new RestoredStateActions(api, client(), boot);
-    await actions.finishWithoutPlatform();
-    expect(calls).toEqual(["closeNetwork"]);
-    expect(boot).not.toHaveBeenCalled();
-    expect(actions.problem).toBe("a payment is being sent");
-    expect(actions.running).toBe(false);
+  it("while it runs, the panel stays busy and the gate reads RESTORED as unknown, even if the closed session reads clear", async () => {
+    let answer: (v: unknown) => void = noop;
+    const { api } = fake({ finishWithoutPlatform: () => new Promise((_, refuse) => (answer = refuse)) });
+    const c = client();
+    const actions = restoredStateActions(api as Backend, c);
+    expect(gate(c)).toBe("<i>true</i>");
+    const finishing = actions.finishWithoutPlatform(WAITING_PLATFORM);
+    // The session-closed blip: `restored` reads the closed network as not restored.
+    c.setQueryData(keys.restored, false);
+    c.setQueryData(keys.restoreStatus, null);
+    expect(gate(c)).toBe("<i>undefined</i>");
+    expect(actions.running).toBe(true);
+    expect(actions.finishing).toEqual(WAITING_PLATFORM);
+    const html = panelOn(c);
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain('data-testid="restored-waiting-platformPass"');
+    for (const id of ["restored-retry", "restored-finish-without-platform", "restored-report"]) expect(button(html, id)?.tag).toContain('disabled=""');
+    answer(busy);
+    await finishing;
+    expect(gate(c)).toBe("<i>false</i>");
   });
 
-  it("an open without Platform that fails opens the network as usual, and the panel stays with MG's line", async () => {
-    const { api, calls } = fake({ openNetworkWithoutPlatform: () => Promise.reject(new Error("storage in use")) });
-    const c = client();
+  it("a busy network refuses it: nothing changes, no boot, and the switch's busy refusal is said in place", async () => {
+    const { api, calls } = fake({ finishWithoutPlatform: () => Promise.reject(busy) });
     const boot = vi.fn();
+    const c = client();
     const actions = new RestoredStateActions(api, c, boot);
-    await actions.finishWithoutPlatform();
-    expect(calls).toEqual(["closeNetwork", "openNetworkWithoutPlatform", "openNetwork"]);
+    await actions.finishWithoutPlatform(WAITING_PLATFORM);
+    expect(calls).toEqual(["finishWithoutPlatform"]);
     expect(boot).not.toHaveBeenCalled();
+    expect(actions.problem).toBe("Wait for username registration to finish before switching networks.");
+    expect(actions.running).toBe(false);
+    expect(actions.finishing).toBeNull();
+    expect(gate(c)).toBe("<i>true</i>");
+    expect(stale(c, keys.wallets)).toBe(false);
+  });
+
+  it("rolled back: it opened as usual, every read is read again, and the panel stays with MG's line", async () => {
+    const { api, calls } = fake({ finishWithoutPlatform: () => Promise.reject(switchFailed(true)) });
+    const c = client();
+    const actions = restoredStateActions(api as Backend, c);
+    await actions.finishWithoutPlatform(WAITING_PLATFORM);
+    expect(calls).toEqual(["finishWithoutPlatform"]);
     expect(actions.problem).toBe("Dash Wallet couldn't reopen without Dash Platform, so it opened as usual. You can try again from here. Details: storage in use");
     expect(actions.running).toBe(false);
-    // The new session's reads: RESTORED from its open, the vault's lock, everything else read again.
-    expect(c.getQueryData(keys.restored)).toBe(true);
-    expect(c.getQueryData(keys.lockStatus)).toEqual(LOCK);
+    expect(actions.finishing).toBeNull();
+    expect(stale(c, keys.restored)).toBe(true);
     expect(stale(c, keys.restoreStatus)).toBe(true);
     expect(stale(c, keys.wallets)).toBe(true);
-    // The panel stays, its buttons offered, with the line under them.
-    const html = view(status({ waiting: ["platformPass"] }), actions);
+    const html = panelOn(c);
     for (const id of ["restored-retry", "restored-finish-without-platform", "restored-report"]) expect(button(html, id)?.tag).not.toContain("disabled");
     expect(html).toContain(`data-testid="restored-state-problem">${escaped(actions.problem!)}</p>`);
   });
 
-  it("when the usual open fails too, the page boots again and its own open says why", async () => {
-    const fail = () => Promise.reject(new Error("storage in use"));
-    const { api, calls } = fake({ openNetworkWithoutPlatform: fail, openNetwork: fail });
+  it("every money gate reads RESTORED through the gate: only the banner, this panel and the gate read restored itself", () => {
+    const src = resolve(import.meta.dirname, "..");
+    const readers = readdirSync(src, { recursive: true, encoding: "utf8" })
+      .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+      .filter((f) => /(?<!function )useRestored\(\)/.test(readFileSync(resolve(src, f), "utf8")));
+    expect(readers.sort()).toEqual(["api/restoreGate.ts", "screens/RestoredBanner.tsx", "screens/RestoredStatePanel.tsx"]);
+    for (const file of ["screens/TxDetailSheet.tsx", "screens/tools/CoinSelection.tsx"]) expect(readFileSync(resolve(src, file), "utf8"), file).toContain("useRestoredGate()");
+  });
+
+  it("any other failure is said in place and the gate reads RESTORED again", async () => {
+    const { api } = fake({ finishWithoutPlatform: () => Promise.reject(new Error("This build of Dash Wallet can't do that yet.")) });
+    const c = client();
+    const actions = new RestoredStateActions(api, c, vi.fn());
+    await actions.finishWithoutPlatform(WAITING_PLATFORM);
+    expect(actions.problem).toBe("This build of Dash Wallet can't do that yet.");
+    expect(actions.finishing).toBeNull();
+    expect(actions.running).toBe(false);
+    expect(gate(c)).toBe("<i>true</i>");
+  });
+
+  it("rolled back: the gate stays unknown until RESTORED is read on the new session, and unknown if that read fails", async () => {
+    for (const read of ["ok", "fails"] as const) {
+      let answer: (v: boolean) => void = noop;
+      let refuse: (e: Error) => void = noop;
+      const c = client();
+      const observer = new QueryObserver(c, { queryKey: keys.restored, queryFn: () => new Promise<boolean>((r, f) => ((answer = r), (refuse = f))), retry: false });
+      const stop = observer.subscribe(noop);
+      const { api } = fake({ finishWithoutPlatform: () => Promise.reject(switchFailed(true)) });
+      const actions = new RestoredStateActions(api, c, vi.fn());
+      const finishing = actions.finishWithoutPlatform(WAITING_PLATFORM);
+      await vi.waitFor(() => expect(c.getQueryState(keys.restored)?.fetchStatus).toBe("fetching"));
+      expect(gate(c)).toBe("<i>undefined</i>");
+      if (read === "ok") answer(true);
+      else refuse(new Error("no network"));
+      await finishing;
+      expect(actions.finishing).toBeNull();
+      expect(gate(c)).toBe(read === "ok" ? "<i>true</i>" : "<i>undefined</i>");
+      stop();
+    }
+  });
+
+  it("not rolled back: no network is open, so the page boots again and its own open says why", async () => {
+    const { api } = fake({ finishWithoutPlatform: () => Promise.reject(switchFailed(false)) });
     const boots: (string | null)[] = [];
-    const actions = new RestoredStateActions(api, client(), (note) => void boots.push(note));
-    await actions.finishWithoutPlatform();
-    expect(calls).toEqual(["closeNetwork", "openNetworkWithoutPlatform", "openNetwork"]);
+    const c = client();
+    const actions = new RestoredStateActions(api, c, (note) => void boots.push(note));
+    await actions.finishWithoutPlatform(WAITING_PLATFORM);
     expect(boots).toEqual([null]);
+    expect(actions.problem).toBeNull();
+    expect(gate(c)).toBe("<i>undefined</i>");
   });
 
   it("is one per app, so the line outlives the panel (a reopen may bring the lock screen)", () => {
@@ -347,26 +429,36 @@ describe("the fixture's restore status", () => {
     expect(await backend.restoreStatus()).toBeNull();
   });
 
-  it("Finish without Dash Platform: close, then an open with noPlatform, and RESTORED clears", async () => {
+  it("Finish without Dash Platform: one finish_without_platform, and RESTORED clears on the session it opened", async () => {
     const fixture = installFixture({ scenario: "restored-waiting-platform" });
     const boot = vi.fn();
     const actions = new RestoredStateActions(backend, new QueryClient(), boot);
-    await actions.finishWithoutPlatform();
-    expect(fixture.calls.slice(-2)).toEqual(["close_network", "open_network"]);
+    await actions.finishWithoutPlatform(status({ waiting: ["platformPass"] }));
+    expect(fixture.calls.at(-1)).toBe("finish_without_platform");
+    expect(fixture.calls).not.toContain("close_network");
     expect(fixture.world.noPlatform).toBe(true);
     expect(boot).toHaveBeenCalledWith(null);
     expect(isRestored(await backend.activeNetwork())).toBe(false);
     expect(await backend.restoreStatus()).toBeNull();
     // The page boots again on the same session: the world it carries has RESTORED clear.
-    expect(JSON.parse(sessionStorage.getItem("dw-fixture-relaunch")!).restored).toBe(false);
+    expect(JSON.parse(sessionStorage.getItem("dw-fixture-switch")!).active.restored).toBe(false);
   });
 
-  it("an open without Platform that fails: the network opens as usual, RESTORED still set and Platform's check still the wait", async () => {
-    const fixture = installFixture({ scenario: "restored-finish-fails" });
+  it("busy: refused, nothing changed, RESTORED still set and Platform's check still the wait", async () => {
+    const fixture = installFixture({ scenario: "restored-finish-busy" });
+    const actions = new RestoredStateActions(backend, new QueryClient(), vi.fn());
+    await actions.finishWithoutPlatform(status({ waiting: ["platformPass"] }));
+    expect(actions.problem).toBe("Wait for username registration to finish before switching networks.");
+    expect(fixture.world.lock.state).toBe("unlocked");
+    expect(fixture.world.noPlatform).toBeUndefined();
+    expect(isRestored(await backend.activeNetwork())).toBe(true);
+  });
+
+  it("rolled back: the network opens as usual, RESTORED still set and Platform's check still the wait", async () => {
+    const fixture = installFixture({ scenario: "restored-finish-rolled-back" });
     const boot = vi.fn();
     const actions = new RestoredStateActions(backend, new QueryClient(), boot);
-    await actions.finishWithoutPlatform();
-    expect(fixture.calls.slice(-3)).toEqual(["close_network", "open_network", "open_network"]);
+    await actions.finishWithoutPlatform(status({ waiting: ["platformPass"] }));
     expect(boot).not.toHaveBeenCalled();
     expect(actions.problem).toContain("Details: fixture: opening testnet without Dash Platform failed");
     expect(fixture.world.noPlatform).toBeUndefined();

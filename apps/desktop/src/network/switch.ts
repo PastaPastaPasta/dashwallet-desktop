@@ -37,20 +37,30 @@ function leaveSwitchNote(note: string) {
  * or a failure after the close, which boots the page again with its note. `canLock`: the vault is
  * encrypted, so the user can lock it (which ends a flow's lease). */
 export function switchOutcome(e: unknown, target: ChosenNetwork, from: ChosenNetwork, canLock = false): { problem: string } | { reboot: string } {
+  const refused = closeRefusal(e, canLock);
+  if (refused !== null) return { problem: refused };
   if (isAppError(e)) {
     const data = e.data;
-    if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
-      if (data.draining) return { problem: NetworkText.busyDraining };
-      const waits: BusyItem[] = [...(data.broadcast ? (["payment"] as const) : []), ...data.flows];
-      if (waits.length > 0 || data.mixing) return { problem: NetworkText.busy(waits, data.mixing, data.stalled && canLock ? data.flows : []) };
-    }
-    if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return { problem: NetworkText.walletOpening };
-    if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return { problem: NetworkText.shieldedUnresolved };
     if (e.code === "app.network_switch_failed" && data?.kind === "networkSwitch")
       return { reboot: data.rolledBack ? NetworkText.backOn(target, from) : NetworkText.noneOpen(target, from) };
     return { problem: NetworkText.notSwitchedBecause(errorMessage(e), e.code) };
   }
   return { problem: NetworkText.notSwitchedBecause(errorMessage(e)) };
+}
+
+/** Why closing the network was refused (what runs on it, a wallet opening, a shielded spend); null
+ * for any other failure. */
+export function closeRefusal(e: unknown, canLock = false): string | null {
+  if (!isAppError(e)) return null;
+  const data = e.data;
+  if (e.code === "app.network_busy" && data?.kind === "networkBusy") {
+    if (data.draining) return NetworkText.busyDraining;
+    const waits: BusyItem[] = [...(data.broadcast ? (["payment"] as const) : []), ...data.flows];
+    if (waits.length > 0 || data.mixing) return NetworkText.busy(waits, data.mixing, data.stalled && canLock ? data.flows : []);
+  }
+  if (data?.kind === "networkCloseRefused" && data.reason === "walletOpening") return NetworkText.walletOpening;
+  if (data?.kind === "networkCloseRefused" && data.reason === "shieldedSpendUnresolved") return NetworkText.shieldedUnresolved;
+  return null;
 }
 
 /** Boots the page again on the window's network: after the settings write in flight, with every

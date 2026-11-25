@@ -48,7 +48,7 @@ import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, restarted, shieldedQuote } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -60,7 +60,6 @@ import { identitiesHandlers } from "./identities";
 import { FIXTURE_DATA_DIR, isClosed, settingsHandlers } from "./settings";
 import { storageInUseError, storeNotPrivateError, storeRefusedError, storeRestoreError, storeRetryError } from "./errors";
 import type { RestoredNetworkInfo } from "../api/storeOpen";
-import type { RestoreStatus } from "../api/restoreHolds";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
@@ -70,8 +69,6 @@ export interface Ctx {
   emit(event: AppEvent): void;
   /** Quits and relaunches the page as `FixtureHandle.relaunch` does (absent outside a page). */
   relaunch?(): void;
-  /** Leaves the world for the next page load, which the renderer starts itself (absent outside a page). */
-  carry?(): void;
 }
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
@@ -752,29 +749,13 @@ const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, c
 /** A held top-up from Platform executed in its exit's place (platform_move_to_core's `lost`). */
 export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
 
-/** What RESTORED waits for (`restore_status`), as the engine counts it: with Platform off its first
- * check is satisfied. */
-export function restoreStatusOf(world: World): RestoreStatus {
-  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false };
-  return { ...s, waiting: world.noPlatform ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
-}
-
-/** Clears RESTORED once nothing holds it. */
-export function settleRestored(world: World) {
-  const s = restoreStatusOf(world);
-  if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
-    world.restored = false;
-    world.restoreStatus = undefined;
-  }
-}
-
 /** The window's network with its `restored` (DTO contract v3). */
 /** `open_network`'s answer for `world` on `network`: its lock and the store upgrade's notice. */
 export function openedNetwork(world: World, network: NetworkInfo): OpenedNetwork {
   return { network, lock: world.lock, notice: world.upgradeNotice ?? null };
 }
 
-function restoredNetwork(world: World): RestoredNetworkInfo {
+export function restoredNetwork(world: World): RestoredNetworkInfo {
   return { ...world.launch.network, restored: world.restored === true };
 }
 
@@ -816,7 +797,7 @@ export const HANDLERS: Handlers = {
     return null;
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
-  open_network: ({ settings }, { world, carry }) => {
+  open_network: (_, { world }) => {
     // A data folder others can change is refused before anything below it is read or written.
     if (world.openNotPrivate) throw storeNotPrivateError(world.openNotPrivate);
     // A pending restore runs before the stores are checked, and any failure of it stops the open.
@@ -835,20 +816,9 @@ export const HANDLERS: Handlers = {
       if (retryable) world.storageHeld = undefined;
       throw storageInUseError(retryable);
     }
-    // Finish without Dash Platform: the page boots again on this session, so the world goes with it.
-    if (settings?.noPlatform) {
-      if (world.noPlatformOpenFails) throw storageInUseError(false, `fixture: opening ${world.launch.network.dirName} without Dash Platform failed`);
-      world.noPlatform = true;
-      if (world.restored) settleRestored(world);
-      carry?.();
-    }
     return openedNetwork(world, restoredNetwork(world));
   },
   active_network: (_, { world }) => restoredNetwork(world),
-  close_network: (_, { world }) => {
-    restarted(world);
-    return true;
-  },
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one

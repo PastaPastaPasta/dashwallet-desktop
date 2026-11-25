@@ -28,3 +28,4 @@ export type RestoreWait = "coreSync" | "platformPass" | "historyLoad";
 /** `restore_status`: `null` while RESTORED isn't set. `historyWallets`: the wallets whose history
  * failed to load; `clearFailed`: the check finished but its clear couldn't be written. */
 export type RestoreStatus = { waiting: RestoreWait[]; historyWallets: string[]; clearFailed: boolean };
+

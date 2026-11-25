@@ -13,7 +13,8 @@ import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
-import { keys, useBackend, useRestored, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
+import { useRestoredGate } from "../api/restoreGate";
 import { isRestoredRefusal, restoreHeld } from "../api/restoreHolds";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
@@ -209,7 +210,7 @@ export function Actions({ walletId, txid }: { walletId: string; txid: string }) 
   const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const x = extras.data;
-  const walletRestored = useRestored().data;
+  const walletRestored = useRestoredGate();
   const abandon = actionOffer(!!x?.canAbandon, walletRestored);
   const resend = actionOffer(!!x?.canResend, walletRestored);
   useEffect(() => {

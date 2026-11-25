@@ -112,8 +112,9 @@ export interface World {
   restoreStatus?: RestoreStatus;
   /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
   noPlatform?: boolean;
-  /** `open_network` with `noPlatform` fails; the usual open still works. */
-  noPlatformOpenFails?: boolean;
+  /** What `finish_without_platform` does instead of finishing: refuse as a busy network does, or fail
+   * to open without Platform and open as usual (`rolledBack`). */
+  finishWithoutPlatform?: "busy" | "rolledBack";
   /** The restore commands called, in order. */
   restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "restoreRetry")[];
   launch: LaunchInfo;
@@ -555,6 +556,12 @@ function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
   return w;
 }
 
+function withFinish(w: World, finish: World["finishWithoutPlatform"]): World {
+  withRestoreStatus(w, { waiting: ["platformPass"] });
+  w.finishWithoutPlatform = finish;
+  return w;
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -912,12 +919,10 @@ const SCENARIOS = {
   /** RESTORED set while Platform's first check is what it waits for: Finish without Dash Platform shows,
    * and after it RESTORED clears. */
   "restored-waiting-platform": (t) => withRestoreStatus(base(t), { waiting: ["platformPass"] }),
-  /** As `restored-waiting-platform`, but the open without Platform fails: the network opens as usual. */
-  "restored-finish-fails": (t) => {
-    const w = withRestoreStatus(base(t), { waiting: ["platformPass"] });
-    w.noPlatformOpenFails = true;
-    return w;
-  },
+  /** As `restored-waiting-platform`, but Finish without Dash Platform is refused: username registration runs. */
+  "restored-finish-busy": (t) => withFinish(base(t), "busy"),
+  /** As `restored-waiting-platform`, but the open without Platform fails and the network opens as usual. */
+  "restored-finish-rolled-back": (t) => withFinish(base(t), "rolledBack"),
   /** RESTORED set while a wallet's history loads. */
   "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
   /** The wallet's history couldn't load: named, with Report a problem only. */

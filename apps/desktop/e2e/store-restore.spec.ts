@@ -273,7 +273,7 @@ test.describe("what RESTORED waits for", () => {
   for (const theme of THEMES)
     test(`an open without Dash Platform that fails opens as usual, and the panel says so (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
-      await page.goto(fixtureUrl("restored-finish-fails", theme));
+      await page.goto(fixtureUrl("restored-finish-rolled-back", theme));
       await page.getByTestId("restored-finish-without-platform").click();
       await unlockIfLocked(page);
       await expect(page.getByTestId("restored-state-problem")).toHaveText(
@@ -287,6 +287,18 @@ test.describe("what RESTORED waits for", () => {
       expect(after.restored).toBe(true);
       expect(errors).toEqual([]);
     });
+
+  test("a busy network refuses Finish without Dash Platform and changes nothing", async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("restored-finish-busy", "light"));
+    await page.getByTestId("restored-finish-without-platform").click();
+    await expect(page.getByTestId("restored-state-problem")).toHaveText("Wait for username registration to finish before switching networks.");
+    await expect(page.getByTestId("restored-banner")).toBeVisible();
+    await expect(page.getByTestId("lock-screen")).toHaveCount(0);
+    await expect(page.getByTestId("restored-finish-without-platform")).toBeEnabled();
+    expect((await world(page)).noPlatform).toBeUndefined();
+    expect(errors).toEqual([]);
+  });
 
   for (const theme of THEMES)
     test(`a history that failed to load names the wallet, with Report a problem only (${theme})`, async ({ page }) => {

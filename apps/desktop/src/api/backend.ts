@@ -426,10 +426,10 @@ export interface Backend {
   restoreStatus(): Promise<RestoreStatus | null>;
   /** Try again (`restore_retry`): the engine checks what RESTORED waits for again now. */
   restoreRetry(): Promise<null>;
-  /** Closes the active network (`close_network`); `false` when none was open. */
-  closeNetwork(): Promise<boolean>;
-  /** Opens the window's network without Dash Platform, for this session only (`no_platform`). */
-  openNetworkWithoutPlatform(): Promise<OpenedNetwork>;
+  /** Finish without Dash Platform (`finish_without_platform`): closes the network unless busy
+   * (`app.network_busy`, nothing changed) and opens it without Platform for this session. If that open
+   * fails it opens as usual: `app.network_switch_failed` with `rolledBack`. */
+  finishWithoutPlatform(): Promise<unknown>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.

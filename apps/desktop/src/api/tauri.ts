@@ -180,8 +180,7 @@ export class IpcBackend implements Backend {
   cancelRestore = () => absentAsUnavailable(invoke<null>("cancel_restore", { network: null }));
   restoreStatus = () => orAbsent(invoke<RestoreStatus | null>("restore_status"));
   restoreRetry = () => absentAsUnavailable(invoke<null>("restore_retry"));
-  closeNetwork = () => cmd.closeNetwork();
-  openNetworkWithoutPlatform = () => cmd.openNetwork(null, { dapiAddresses: [], quorumUrl: null, spvPeers: [], caCertPath: null, initialProtocolVersion: null, noPlatform: true });
+  finishWithoutPlatform = () => absentAsUnavailable(invoke<unknown>("finish_without_platform"));
   openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();

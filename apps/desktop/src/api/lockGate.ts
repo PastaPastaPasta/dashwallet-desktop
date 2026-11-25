@@ -245,8 +245,7 @@ export const LOCKED_COMMANDS: ReadonlySet<string> = new Set<keyof IpcBackend>([
   "requestRestore",
   "keepCurrentFiles",
   "cancelRestore",
-  "closeNetwork",
-  "openNetworkWithoutPlatform",
+  "finishWithoutPlatform",
 ]);
 
 /** The backend's own members that ask the engine nothing. */

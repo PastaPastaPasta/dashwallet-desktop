@@ -13,6 +13,7 @@ import * as cmd from "../api/generated/commands";
 import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { Utxo } from "../api/generated/Utxo";
 import { BackendContext, keys } from "../api/queries";
+import { setRestoreFinishing } from "../api/restoreGate";
 import { pendingUnproven, restoreHeld, type HeldTxExtras, type HeldUtxo } from "../api/restoreHolds";
 import { isRestored } from "../api/storeOpen";
 import { CoinTable } from "../components/coins";
@@ -193,6 +194,21 @@ describe("the RESTORED money gate", () => {
     expect(html).not.toContain("tx-restored-gate");
     expect(html).not.toContain("tx-action-note");
     await expect(cmd.abandonTransaction(W, P)).rejects.toMatchObject({ data: { kind: "txAction", refusal: "restored" } });
+  });
+
+  it("keeps Abandon and Resend disabled while Finish without Dash Platform runs, though the closed session reads clear", async () => {
+    installFixture({ scenario: "restore-holds" });
+    const x = await cmd.txDetailExtras(W, P);
+    setRestoreFinishing(true);
+    try {
+      const html = actions(x, false);
+      expect(html).toMatch(/<button[^>]*data-testid="tx-abandon"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-abandon"/);
+      expect(html).toMatch(/<button[^>]*data-testid="tx-resend"[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-testid="tx-resend"/);
+      expect(html).not.toContain("tx-restored-gate");
+    } finally {
+      setRestoreFinishing(false);
+    }
+    expect(actions(x, false)).not.toMatch(/<button[^>]*disabled=""/);
   });
 
   it("offers nothing for an action the engine says doesn't apply", () => {

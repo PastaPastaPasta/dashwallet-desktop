@@ -1,14 +1,13 @@
 import { useId } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { errorMessage, type Backend } from "../api/backend";
-import type { OpenedNetwork } from "../api/generated/OpenedNetwork";
-import { lockGeneration, seedLockStatus } from "../api/lockGate";
+import { errorMessage, isAppError, type Backend } from "../api/backend";
+import type { LockStatus } from "../api/generated/LockStatus";
 import { keys, useBackend, useRestored, useRestoreStatus, useWallets } from "../api/queries";
+import { setRestoreFinishing } from "../api/restoreGate";
 import type { RestoreStatus, RestoreWait } from "../api/restoreHolds";
-import { isRestored } from "../api/storeOpen";
 import { DashButton } from "../components/basics";
 import { t, useT } from "../i18n";
-import { bootAgain } from "../network/switch";
+import { bootAgain, closeRefusal } from "../network/switch";
 import { Model, useModel } from "../onboarding/model";
 import { FailedLink, failedLinkUrl } from "./settings/About";
 import { Problem } from "./settings/parts";
@@ -29,17 +28,19 @@ export const offersFinishWithoutPlatform = (s: RestoreStatus) => s.waiting.inclu
 
 const saysSomething = (s: RestoreStatus) => s.waiting.length > 0 || s.historyWallets.length > 0 || s.clearFailed;
 
-/** The panel's actions through dw-app, with the latest failure. Finish without Dash Platform closes
- * the network, opens it again with `no_platform` and boots the page again on that session. A close
- * that is refused changes nothing and says why here; an open without Platform that fails opens the
- * network as usual, and the panel says so. */
+/** The panel's actions through dw-app, with the latest failure. Finish without Dash Platform is one
+ * engine call: a close refused while the network is busy changes nothing and says why here; an open
+ * without Platform that fails opens the network as usual, and the panel says so; otherwise the page
+ * boots again on the new session. While it runs, the money gate reads RESTORED as unknown. */
 export class RestoredStateActions extends Model {
   running = false;
   problem: string | null = null;
   failedLink: string | null = null;
+  /** What the panel showed when Finish without Dash Platform started: shown until it ends. */
+  finishing: RestoreStatus | null = null;
 
   constructor(
-    private readonly api: Pick<Backend, "restoreRetry" | "closeNetwork" | "openNetworkWithoutPlatform" | "openNetwork" | "openProjectLink">,
+    private readonly api: Pick<Backend, "restoreRetry" | "finishWithoutPlatform" | "openProjectLink">,
     private readonly client: QueryClient,
     private readonly boot: (note: string | null) => unknown = bootAgain,
   ) {
@@ -52,65 +53,71 @@ export class RestoredStateActions extends Model {
     void this.client.invalidateQueries({ queryKey: keys.restored });
   };
 
-  finishWithoutPlatform = async () => {
-    if (!(await this.#run(() => this.api.closeNetwork(), true))) return;
+  finishWithoutPlatform = async (shown: RestoreStatus) => {
+    if (this.running) return;
+    this.#start();
+    this.finishing = shown;
+    setRestoreFinishing(true);
+    this.changed();
     try {
-      await this.api.openNetworkWithoutPlatform();
+      await this.api.finishWithoutPlatform();
     } catch (e) {
-      return this.#reopen(e);
+      const failed = isAppError(e) && e.code === "app.network_switch_failed" && e.data?.kind === "networkSwitch" ? e.data : null;
+      if (failed && !failed.rolledBack) return void (await this.boot(null));
+      if (failed) await this.#readAgain();
+      const canLock = this.client.getQueryData<LockStatus>(keys.lockStatus)?.encrypted === true;
+      this.problem = failed ? t("storeUpgrade.restore.finishFailed", { error: errorMessage(e) }) : (closeRefusal(e, canLock) ?? errorMessage(e));
+      this.running = false;
+      this.finishing = null;
+      setRestoreFinishing(false);
+      this.changed();
+      return;
     }
     await this.boot(null);
   };
 
-  /** Opens the network as usual after the open without Platform failed: a new session, so every read
-   * is read again. When that fails too, the page boots again and its own open says why. */
-  async #reopen(failure: unknown) {
-    const since = lockGeneration();
-    let opened: OpenedNetwork;
-    try {
-      opened = await this.api.openNetwork();
-    } catch {
-      return void (await this.boot(null));
-    }
-    seedLockStatus(this.client, opened.lock, since);
-    this.client.setQueryData(keys.restored, isRestored(opened.network));
-    void this.client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] && q.queryKey[0] !== keys.lockStatus[0] });
-    this.problem = t("storeUpgrade.restore.finishFailed", { error: errorMessage(failure) });
-    this.running = false;
-    this.changed();
+  /** Opened as usual: a new session, so every read is read again. RESTORED, what it waits for and the
+   * lock are read before the gate trusts RESTORED again; a RESTORED that can't be read is not known. */
+  async #readAgain() {
+    const first = [keys.restored, keys.restoreStatus, keys.lockStatus];
+    const heads: unknown[] = [keys.network[0], ...first.map((k) => k[0])];
+    void this.client.invalidateQueries({ predicate: (q) => !heads.includes(q.queryKey[0]) });
+    await Promise.all(first.map((queryKey) => this.client.invalidateQueries({ queryKey })));
+    if (this.client.getQueryState(keys.restored)?.status === "error") this.client.removeQueries({ queryKey: keys.restored });
   }
 
   report = async () => {
     await this.#run(
       () => this.api.openProjectLink("issues"),
-      false,
       (e) => (this.failedLink = failedLinkUrl(e)) !== null,
     );
   };
 
-  /** Runs `call`; `keepRunning` leaves the buttons disabled after it worked (the page boots again);
-   * `quiet` takes a failure it shows itself. */
-  async #run(call: () => Promise<unknown>, keepRunning = false, quiet?: (e: unknown) => boolean): Promise<boolean> {
+  #start() {
     this.problem = null;
     this.failedLink = null;
     this.running = true;
+  }
+
+  /** Runs `call`; `quiet` takes a failure it shows itself. */
+  async #run(call: () => Promise<unknown>, quiet?: (e: unknown) => boolean): Promise<boolean> {
+    this.#start();
     this.changed();
     try {
       await call();
-      this.running = keepRunning;
       return true;
     } catch (e) {
       if (!quiet?.(e)) this.problem = errorMessage(e);
-      this.running = false;
       return false;
     } finally {
+      this.running = false;
       this.changed();
     }
   }
 }
 
 /** One per app: what the panel says outlives the panel, so a failed finish is still said after the
- * lock screen a reopen may bring. */
+ * lock screen a reopen may bring, and the panel stays while the session closes under it. */
 const shared = new WeakMap<QueryClient, RestoredStateActions>();
 
 export function restoredStateActions(api: Backend, client: QueryClient): RestoredStateActions {
@@ -127,9 +134,10 @@ export function RestoredStatePanel() {
   const status = useRestoreStatus(restored);
   const wallets = useWallets(restored);
   const actions = useModel(restoredStateActions(useBackend(), useQueryClient()));
-  if (!restored || !status.data) return null;
+  const shown = actions.finishing ?? (restored ? status.data : null);
+  if (!shown) return null;
   const names = new Map((wallets.data ?? []).map((w) => [w.walletId, w.name]));
-  return <RestoredStateView status={status.data} nameOf={(id) => names.get(id) ?? `${id.slice(0, 8)}…`} actions={actions} />;
+  return <RestoredStateView status={shown} nameOf={(id) => names.get(id) ?? `${id.slice(0, 8)}…`} actions={actions} />;
 }
 
 export function RestoredStateView({
@@ -146,7 +154,7 @@ export function RestoredStateView({
   if (!saysSomething(status)) return null;
   const finish = offersFinishWithoutPlatform(status);
   return (
-    <section className="restored-state-panel card-l1" data-testid="restored-state">
+    <section className="restored-state-panel card-l1" data-testid="restored-state" aria-busy={actions.running}>
       <div className="protocol-advisory-body" role="status">
         {status.waiting.map((wait) => (
           <p key={wait} className="protocol-advisory-text" data-testid={`restored-waiting-${wait}`}>
@@ -177,7 +185,7 @@ export function RestoredStateView({
             data-testid="restored-finish-without-platform"
             aria-describedby={meaningId}
             disabled={actions.running}
-            onClick={() => void actions.finishWithoutPlatform()}
+            onClick={() => void actions.finishWithoutPlatform(status)}
           >
             {tr("storeUpgrade.restore.finishWithoutPlatform")}
           </DashButton>
