@@ -69,6 +69,7 @@ import type { Lease } from "./generated/Lease";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockStatus } from "./generated/LockStatus";
 import type { MnemonicCheck } from "./generated/MnemonicCheck";
+import type { NetworkInfo } from "./generated/NetworkInfo";
 import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
@@ -227,6 +228,8 @@ export interface Backend {
   readonly kind: "tauri" | "fixture";
   /** Opens the launch network (or returns it when it is already the active one). */
   openNetwork(): Promise<OpenedNetwork>;
+  /** The active network, `null` before `openNetwork`; its `restored` is read again from it (storeOpen.ts). */
+  activeNetwork(): Promise<NetworkInfo | null>;
   listWallets(): Promise<WalletSummary[]>;
   lockStatus(): Promise<LockStatus>;
   /** The engine's latest notices, oldest first: those sent before the renderer listened too. */
@@ -408,6 +411,16 @@ export interface Backend {
   quitApp(): Promise<null>;
   /** Quits through the normal exit path and starts again (`restart_app`): the open runs anew. */
   restartApp(): Promise<null>;
+  // The restore of the wallet data from before the upgrade (DTO contract v3), for the window's network.
+  // Each runs before the network opens; none restores in this process.
+  /** Whether a verified snapshot is there to restore (`restore_available`); `null` when dw-app has no such command. */
+  restoreAvailable(): Promise<boolean | null>;
+  /** Asks for the restore at the next start (`request_restore`); a restart runs it. */
+  requestRestore(): Promise<null>;
+  /** The foreign screen's Keep the current files (`keep_current_files`); the open is then tried again. */
+  keepCurrentFiles(): Promise<unknown>;
+  /** The couldn't-start screen's Cancel restore (`cancel_restore`): drops the request; the open is then tried again. */
+  cancelRestore(): Promise<null>;
   /** Opens the page of the release on offer, on this repository. */
   openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.

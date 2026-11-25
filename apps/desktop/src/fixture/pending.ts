@@ -37,6 +37,8 @@ import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } f
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
+import { restoreFailure, storeRestoreError } from "./errors";
+import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
@@ -543,7 +545,40 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     (world.appExits ??= []).push("restart");
     world.storageHeld = undefined;
     if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
+    if (world.restoreRequested) {
+      world.restoreRequested = false;
+      world.openRefusal = undefined;
+      world.restored = true;
+    }
     relaunch?.();
+    return null;
+  },
+  // App::restore_available, request_restore, keep_current_files and cancel_restore (DTO contract v3),
+  // for the window's network, before it opens.
+  restore_available: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreAvailable");
+    return world.restoreAvailable === true;
+  },
+  request_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("requestRestore");
+    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`));
+    world.restoreRequested = true;
+    return null;
+  },
+  // Keep runs KeepLive: the request and the journal go, RESTORED stays.
+  keep_current_files: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("keepCurrentFiles");
+    if (world.openRefusal?.screen.titleKey === "storeUpgrade.restore.foreign.title") {
+      world.openRefusal = undefined;
+      world.restored = true;
+    }
+    return null;
+  },
+  // Only the request goes; nothing was changed, so the current data opens.
+  cancel_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("cancelRestore");
+    if (world.openRestore?.state === "notStarted") world.openRestore = undefined;
     return null;
   },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,

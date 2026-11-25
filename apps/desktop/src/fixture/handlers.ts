@@ -56,7 +56,8 @@ import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
-import { storageInUseError, storeRefusedError } from "./errors";
+import { storageInUseError, storeRefusedError, storeRestoreError } from "./errors";
+import type { RestoredNetworkInfo } from "../api/storeOpen";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
 import { checkPhrase, CREATED_12, CREATED_24, throttleWaitSecs, walletIdOf } from "./vault";
 import { BASE58, FIXTURE_NOW, historyCsv, historyPage, secs, txDetails } from "./wallet";
@@ -746,6 +747,11 @@ const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, c
 /** A held top-up from Platform executed in its exit's place (platform_move_to_core's `lost`). */
 export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
 
+/** The window's network with its `restored` (DTO contract v3). */
+function restoredNetwork(world: World): RestoredNetworkInfo {
+  return { ...world.launch.network, restored: world.restored === true };
+}
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
   ...sendHandlers(sendDeps),
@@ -785,6 +791,12 @@ export const HANDLERS: Handlers = {
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
+    // A pending restore runs before the stores are checked, and any failure of it stops the open.
+    const restore = world.openRestore;
+    if (restore) {
+      if (restore.state === "refused" || restore.state === "noSpace") world.openRestore = undefined;
+      throw storeRestoreError(restore);
+    }
     if (world.openRefusal) throw storeRefusedError(world.openRefusal);
     // Row 74: the network a failed switch left did not reopen; at this pin the store stays held until a
     // restart (`storageInUse=retry` is the build where trying again frees it).
@@ -794,9 +806,9 @@ export const HANDLERS: Handlers = {
       if (retryable) world.storageHeld = undefined;
       throw storageInUseError(retryable);
     }
-    return { network: world.launch.network, lock: world.lock };
+    return { network: restoredNetwork(world), lock: world.lock };
   },
-  active_network: (_, { world }) => world.launch.network,
+  active_network: (_, { world }) => restoredNetwork(world),
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)
   // The vault's status counts its wait down (dw-vault `retry_after`) when a scenario sets one

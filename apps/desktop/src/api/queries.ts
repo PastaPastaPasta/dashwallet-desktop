@@ -12,6 +12,7 @@ import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
 import { creditsToDuffs } from "./pending";
+import { isRestored } from "./storeOpen";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -40,6 +41,10 @@ export function useBackend(): Backend {
 
 export const keys = {
   network: ["network"] as const,
+  /** The network's `restored` (storeOpen.ts): seeded by the open, read again while it is `true`. */
+  restored: ["restored"] as const,
+  /** Whether a verified snapshot is there to restore, read by a screen shown instead of the wallet. */
+  restoreAvailable: ["restoreAvailable"] as const,
   lockStatus: ["lockStatus"] as const,
   lastLockReport: ["lastLockReport"] as const,
   /** Reads `leases`, `dispatchStatus` and `lockStatus` (lockReport.ts). */
@@ -135,11 +140,24 @@ export function useOpenNetwork() {
     queryKey: keys.network,
     queryFn: async () => {
       const since = lockGeneration();
-      const { lock } = await b.openNetwork();
+      const { network, lock } = await b.openNetwork();
       seedLockStatus(client, lock, since);
+      client.setQueryData(keys.restored, isRestored(network));
       return lock;
     },
   });
+}
+
+/** Whether the network's wallet data was restored and RESTORED is still set: the banner shows while it is. */
+export function useRestored() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restored, queryFn: async () => isRestored(await b.activeNetwork()) });
+}
+
+/** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */
+export function useRestoreAvailable(enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.restoreAvailable, queryFn: async () => (await b.restoreAvailable()) === true, enabled, retry: false });
 }
 
 export function useLockStatus(enabled = true) {

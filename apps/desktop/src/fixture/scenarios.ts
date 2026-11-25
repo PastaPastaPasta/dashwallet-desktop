@@ -16,7 +16,7 @@ import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
-import type { StoreRefusedData } from "../api/storeOpen";
+import type { StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
@@ -90,6 +90,17 @@ export interface World {
   storageHeld?: { retryable: boolean };
   /** `quit_app` and `restart_app` calls, in order (the fixture quits nothing). */
   appExits?: ("quit" | "restart")[];
+  /** `open_network` stops at a restore the user asked for: `refused` and `noSpace` once (the request is
+   * cleared), the others until it is cancelled. */
+  openRestore?: StoreRestoreData;
+  /** A verified snapshot is there (`restore_available`); `request_restore` refuses without one. */
+  restoreAvailable?: boolean;
+  /** `request_restore` asked for a restore: the next `restart_app` runs it. */
+  restoreRequested?: boolean;
+  /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
+  restored?: boolean;
+  /** The restore commands called, in order. */
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
