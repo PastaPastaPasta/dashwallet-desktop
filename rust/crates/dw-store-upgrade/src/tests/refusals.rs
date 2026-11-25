@@ -236,3 +236,18 @@ fn a_damaged_store_stops_the_snapshot_with_a_refusal() {
         assert_eq!(screen.cause, crate::copy::RefusedCause::Unexpected);
     }
 }
+
+/// A copy that fails its integrity check while its source is sound is the
+/// machine's fault: retried, never a refusal.
+#[test]
+fn a_copy_that_fails_its_check_beside_a_sound_store_is_retried() {
+    let f = fixture("v0.1.0");
+    crate::fsx::arm_fault("copy.integrity", 0);
+    let err = crate::prepare_with(&f.net, build(), now()).unwrap_err();
+    crate::fsx::disarm_fault();
+    assert!(
+        matches!(err, StoreUpgradeError::SnapshotFailed { .. }),
+        "{err:?}"
+    );
+    assert!(crate::copy::retry_copy_for(&err).is_some());
+}

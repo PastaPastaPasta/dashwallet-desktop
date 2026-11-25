@@ -417,3 +417,105 @@ fn a_part_upgraded_copy_copied_in_is_never_kept_or_counted() {
     assert!(upgrade_copy_present(&f.net, "shielded.sqlite").unwrap());
     assert_eq!(tree(&foreign), untouched);
 }
+
+/// A fault reading the live file for the gate that may pass is retried,
+/// never read as a damaged snapshot: no refusal, no notice, no extra copy.
+#[test]
+fn a_fault_reading_the_live_file_for_the_gate_is_retried() {
+    let (f, s) = failed_open();
+    arm_fault("snapshot.open_copy", 0);
+    let err = reconcile_fork_store(&config(&f.net), &s, build()).unwrap_err();
+    disarm_fault();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::Io {
+                unchanged: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(!err.is_refusal() && crate::copy::retry_copy_for(&err).is_some());
+    arm_fault("snapshot.open_copy", 0);
+    let started = start(&f, later(60));
+    disarm_fault();
+    assert!(
+        matches!(started, Err(StoreUpgradeError::Io { .. })),
+        "{started:?}"
+    );
+    assert!(part_dirs(&f).is_empty(), "no part-upgraded copy");
+    let kept = start(&f, later(90)).unwrap().snapshot.unwrap();
+    assert_eq!(kept.dir(), s.dir());
+    assert!(matches!(
+        reconcile_fork_store(&config(&f.net), &kept, build()).unwrap(),
+        Outcome::Pending { notice: None, .. }
+    ));
+}
+
+/// A restore's journal lifts the gate for the snapshot it names only.
+#[test]
+fn a_restore_journal_lifts_the_gate_for_its_own_snapshot_only() {
+    let (f, s) = migrated();
+    let foreign = drop_in_foreign(&f);
+    let journal = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join(crate::restore::RESTORE_JOURNAL);
+    fs::write(
+        &journal,
+        format!(
+            "snapshot {}\nmanifest {}\n",
+            s.dir().file_name().unwrap().to_string_lossy(),
+            s.manifest_sha256()
+        ),
+    )
+    .unwrap();
+    exec(&f.wallet(), NEW_WALLET);
+    assert!(read_snapshot(s.dir(), true).is_ok(), "the journal's own");
+    assert!(read_snapshot(&foreign, true).is_err(), "any other");
+    fs::remove_file(&journal).unwrap();
+    assert!(read_snapshot(s.dir(), true).is_err(), "gated again");
+}
+
+/// With a record and no `wallet.sqlite`, only the named snapshot verifies.
+#[test]
+fn a_missing_wallet_file_is_held_to_the_named_snapshot() {
+    let (f, s) = migrated();
+    let foreign = drop_in_foreign(&f);
+    for side in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(f.net.join(format!("wallet.sqlite{side}")));
+    }
+    assert!(read_snapshot(s.dir(), true).is_ok());
+    assert!(read_snapshot(&foreign, true).is_err());
+}
+
+/// R1 naming a new before-upgrade snapshot ends an earlier upgrade's
+/// part-upgraded copy record, which then never counts.
+#[test]
+fn r1_ends_an_earlier_part_upgraded_copy_record() {
+    let f = fixture("v0.1.0");
+    let s = start(&f, now()).unwrap().snapshot.unwrap();
+    let stale = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join("part-upgraded-20991231T000000Z");
+    fs::create_dir(&stale).unwrap();
+    for entry in fs::read_dir(s.dir()).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), stale.join(entry.file_name())).unwrap();
+    }
+    crate::snapshot::record_part(&f.net, &read_snapshot(&stale, false).unwrap()).unwrap();
+    let record = f
+        .net
+        .join(UPGRADE_BACKUPS_DIR)
+        .join(crate::snapshot::PART_UPGRADED_BY);
+    assert!(record.is_file());
+    reconcile_fork_store(&config(&f.net), &s, build()).unwrap();
+    assert!(!record.exists());
+    let app = s.dir().join("app.sqlite");
+    let mut bytes = fs::read(&app).unwrap();
+    bytes[100] ^= 1;
+    fs::write(&app, bytes).unwrap();
+    assert!(!upgrade_copy_present(&f.net, "shielded.sqlite").unwrap());
+}

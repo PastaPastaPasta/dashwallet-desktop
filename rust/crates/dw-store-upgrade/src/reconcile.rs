@@ -64,7 +64,8 @@ pub enum UpgradeNotice {
     /// The before-upgrade snapshot doesn't verify.
     SnapshotDamaged,
     /// The before-upgrade snapshot verifies but is of other data; it is now
-    /// marked [`crate::NOT_THIS_WALLET`].
+    /// marked [`crate::NOT_THIS_WALLET`], or, when it can't be, no longer
+    /// named in [`crate::UPGRADED_FROM`].
     SnapshotOther,
 }
 
