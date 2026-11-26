@@ -24,8 +24,8 @@ import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
 
 export type PaySource = PaymentSourceName;
 
-/** The sources this build's engine pays a contact from. Shielded reads "Not available on this
- * network yet." until its slice lands. */
+/** The sources this build's engine pays a contact from. Shielded reads "Not available in this
+ * version" while it is not a live source for contact payments. */
 export const LIVE_SOURCES: ReadonlySet<PaySource> = new Set<PaySource>(["core", "platform"]);
 
 const CORE_ONLY: ReadonlySet<PaySource> = new Set<PaySource>(["core"]);
@@ -82,7 +82,15 @@ export function fromRows(i: FromInputs): FromRow[] {
     const duffs = typeof reading === "number" ? reading : reading === "absent" ? 0 : undefined;
     const empty = source === "shielded" && i.shieldedHold ? t("pay.contact.from.shieldedHeld") : t("pay.contact.from.empty");
     const reason =
-      source === "shielded" && i.shieldedSpendsOff ? SHIELDED_SPENDS_COPY.source : !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? empty : null;
+      source === "shielded" && (i.shieldedSpendsOff || !live.has(source))
+        ? SHIELDED_SPENDS_COPY.source
+        : !live.has(source)
+          ? t("pay.contact.from.notOffered")
+          : i.acceptsToo
+            ? t("pay.contact.from.acceptsToo")
+            : duffs === 0
+              ? empty
+              : null;
     return { source, label: LABEL[source], balance: shown(duffs), reason };
   };
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];

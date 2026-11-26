@@ -173,12 +173,12 @@ test.describe("Shielded spends off", () => {
 
   test("Pay a contact's Shielded row says this version can't pay from it", async ({ page }) => {
     const errors = trackPageErrors(page);
-    for (const [scenario, reason] of [["dashpay-registered-spends-off", "Not available in this version"], ["dashpay-registered", "Not available on this network yet."]] as const) {
+    for (const scenario of ["dashpay-registered-spends-off", "dashpay-registered"] as const) {
       await page.goto(fixtureUrl(scenario, "light"));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
       await page.getByTestId("pay-frequent-chip").first().click();
-      await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText(reason);
+      await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText("Not available in this version");
       await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Shielded balance/ })).toBeDisabled();
     }
     expect(errors).toEqual([]);
