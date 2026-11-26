@@ -1703,8 +1703,8 @@ fn the_platform_residue_stays_while_the_network_has_no_wallet() {
 }
 
 /// Q107 C1 S1: the mark `recover` writes in a fresh folder (no pending
-/// lines, `from <left>`) stays with no wallet and clears once a wallet
-/// restored from its phrase has loaded and synced.
+/// lines, `from <left>`) stays with no wallet and clears, in the same
+/// session, once a wallet restored from its phrase has loaded and synced.
 #[test]
 fn a_recovered_folders_mark_clears_once_a_restored_wallet_has_synced() {
     use crate::RestoreWait::Wallet;
@@ -1734,13 +1734,9 @@ fn a_recovered_folders_mark_clears_once_a_restored_wallet_has_synced() {
         "the mark cleared with no wallet"
     );
     let id = import(&engine, &session);
-    let session = reopen(&engine, session);
-    assert_eq!(session.data_dir(), folder.as_path());
-    assert!(session.restored(), "the reopen cleared the mark");
-    all_synced(&session);
-    eventually("the mark clears", || !session.restored());
-    assert!(!mark_present(&session));
     assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
+    eventually("the mark clears", || !session.restored());
+    assert!(!mark_present(&session) && !residue_present(&session));
 }
 
 /// A recovery's fresh folder (a mark with no pending lines, no wallet):
