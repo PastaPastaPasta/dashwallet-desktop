@@ -367,6 +367,46 @@ fn abandon_after_the_clear_swaps_the_hold_for_its_mark_in_one_write() {
     assert!(abandoned_marks(&session, id).contains(&txid));
 }
 
+/// An abandon key-wallet refuses (it recorded the held payment in a block
+/// the history has not heard of) puts the hold back, its row and in
+/// memory: the payment's change stays held.
+#[test]
+fn a_refused_abandon_puts_the_hold_back() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let (_dir, engine, session, id, _paid, p) = held_payment_relayed();
+    let txid = p.txid();
+    cleared(&session);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    let manager = session.manager().unwrap();
+    let block = super::block_with(vec![p.clone()]);
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        (wm.process_block_for_wallets(&block, block.block_hash(), TIP, &BTreeSet::from([id.0])))
+            .await;
+    });
+
+    let refused = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed))
+        ),
+        "{refused:?}"
+    );
+    assert!(holds(&session, id).contains_key(&txid), "the row is back");
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(
+        extras.restore_held,
+        "the hold is back in memory: {extras:?}"
+    );
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+    assert!(
+        !spendable_for(&engine, &session, id, change, COIN / 4),
+        "the change is offered"
+    );
+}
+
 /// H2: a held payment mined deletes its hold with the block.
 #[test]
 fn a_held_payment_mined_deletes_its_hold() {
