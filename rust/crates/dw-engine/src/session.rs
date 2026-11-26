@@ -275,7 +275,8 @@ async fn flush_left_loaded(persister: &Arc<SqlitePersister>, wallets: &[[u8; 32]
 }
 
 /// What the failed opens that found a shielded store configured keep, for
-/// the life of the process ([`end_failed_open`]).
+/// the life of the process ([`end_failed_open`], and the close of a
+/// session whose open failed).
 static KEPT_WHOLE_AFTER_FAILED_OPEN: Mutex<Vec<Box<dyn Send>>> = Mutex::new(Vec::new());
 
 /// Ends an open that failed after its manager was built: shuts the manager
@@ -1585,12 +1586,35 @@ impl NetworkSession {
         // keeps no wallet (`PlatformRuntime::close_preflight`,
         // `wallet_loads`, E1 r2 R2-3, r3 m1).
         if closing == Closing::FailedOpen {
-            debug_assert!(
-                manager.shielded_coordinator().await.is_none(),
-                "Q86 F1: no shielded store before the session is handed out"
-            );
             let loaded = manager.list_wallet_ids_blocking();
             flush_left_loaded(&live.persister, &loaded).await;
+            if manager.shielded_coordinator().await.is_some() {
+                tracing::error!(
+                    wallets = loaded.len(),
+                    "Q86 F1: a shielded store was configured before a failed open; it and every wallet stay as they are until the app restarts"
+                );
+                #[cfg(test)]
+                failed_open_probe::record_end(&self.data_dir, !loaded.is_empty(), false);
+                (KEPT_AFTER_FAILED_OPEN
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()))
+                .push((kept_key(&self.data_dir), Arc::downgrade(&live.persister)));
+                let kept = (manager, live.store, live.persister, live.appdb, live.tap);
+                (KEPT_WHOLE_AFTER_FAILED_OPEN
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()))
+                .push(Box::new((
+                    kept,
+                    live._persister_opened,
+                    live.provenance,
+                    live.replay,
+                )));
+                self.leases.close_journal().await;
+                self.sink.emit(EngineEvent::SessionClosed {
+                    network: self.network.clone(),
+                });
+                return;
+            }
             let persister = Arc::downgrade(&live.persister);
             drop((manager, live.store, live.persister, live.appdb, live.tap));
             drop((live.provenance, live.replay));

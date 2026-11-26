@@ -2454,6 +2454,47 @@ fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
     assert_eq!(pending_rows(&data_dir, wallet), before);
 }
 
+/// Q86 F1, past the journal: an open whose shielded store was configured
+/// (armed here; no open does it) and whose history load then fails lets
+/// nothing go either. The close of its session keeps the wallets loaded and
+/// the database held, the retry is refused until a restart, and the stored
+/// spends' rows stay as they were.
+#[test]
+fn a_failed_history_load_with_the_shielded_store_configured_keeps_its_spends() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let s = Arc::clone(&session);
+    engine.block_on(async move { stash_spends(&s, wallet).await });
+    let data_dir = session.data_dir().to_path_buf();
+    let before = pending_rows(&data_dir, wallet);
+    assert_eq!(before, stashed_rows());
+    // A quit, since a close in the app is refused while a spend is stored.
+    drop(session);
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let engine = engine_at(dir.path());
+
+    (crate::session::SHIELDED_BEFORE_JOURNAL.lock().unwrap()).push(data_dir.clone());
+    (crate::session::FAIL_HISTORY_LOAD_IN.lock().unwrap()).push(data_dir.clone());
+    let failed = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(&failed, Err(EngineError::Storage(e)) if e.contains("history load failed")),
+        "{:?}",
+        failed.err()
+    );
+    assert_eq!(
+        crate::session::failed_open_probe::ended(&data_dir),
+        [(true, false)],
+        "the failed open kept its wallet loaded and its database held"
+    );
+    assert!(crate::session::held_after_failed_open(&data_dir));
+    assert_refused_until_restart(
+        engine.block_on(engine.open_network(DashNetwork::Regtest, options())),
+    );
+    assert_eq!(pending_rows(&data_dir, wallet), before);
+}
+
 /// Where the failed-open test's child processes keep their data root.
 const FAILED_OPEN_ROOT: &str = "DW_Q86_FAILED_OPEN_ROOT";
 
