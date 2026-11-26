@@ -78,9 +78,9 @@ test("Disconnect shows the fee, requires the passphrase, and removes the app on 
   await expect(grantSheet).toContainText("Enter your passphrase to disconnect this app.");
 
   // Wrong passphrase shows an error and keeps the sheet open.
-  await grantSheet.getByTestId("grant-sheet-input").fill("wrong-passphrase");
+  await grantSheet.getByTestId("grant-sheet-field").fill("wrong-passphrase");
   await grantSheet.getByTestId("grant-sheet-submit").click();
-  await expect(grantSheet.getByTestId("grant-sheet-error")).toBeVisible();
+  await expect(grantSheet.getByTestId("grant-sheet-error")).not.toBeEmpty();
 
   // Correct passphrase disconnects and removes the row.
   await authorize(page);

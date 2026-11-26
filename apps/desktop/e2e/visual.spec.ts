@@ -1489,7 +1489,7 @@ const CONNECTED_APPS: Record<string, { scenario: string; reach: (page: Page) => 
       await page.getByTestId("connected-app-row").first().getByTestId("connected-app-disconnect").click();
       await page.getByTestId("disconnect-fee").filter({ hasText: "in credits." }).waitFor();
       await page.getByTestId("disconnect-confirm").click();
-      await page.getByTestId("grant-sheet-input").waitFor();
+      await page.getByTestId("grant-sheet-field").waitFor();
     },
   },
   error: {
