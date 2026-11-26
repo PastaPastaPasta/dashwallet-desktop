@@ -1920,51 +1920,61 @@ fn a_renewal_keeps_a_key_that_took_an_unlanded_id() {
     assert!(!f.net.me().public_keys()[&taken].is_disabled());
 }
 
-/// A renewal disables only keys a login of the request could have added,
-/// whatever other ids the local record names.
+fn renew(f: &Fixture, mut request: AppConnectRequest, choice: &ConnectChoice) -> Vec<KeyID> {
+    request.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+    let l = devnet(request);
+    let grant = f.quoted_grant(&l, choice);
+    f.approve(&l, choice, &grant).unwrap();
+    f.net.updates.lock().unwrap().last().unwrap().1.clone()
+}
+
+fn first_record(f: &Fixture) -> ConnectRecord {
+    f.engine
+        .block_on(records(&f.s, f.wallet))
+        .unwrap()
+        .remove(0)
+}
+
+/// A renewal disables only what Disconnect would: keys its record added,
+/// whatever other ids the local record names, even with their key data.
 #[test]
-fn a_renewal_disables_only_the_requests_session_keys() {
+fn a_renewal_disables_only_keys_its_record_added() {
     let f = Fixture::new();
     let l = devnet(request());
     let grant = f.quoted_grant(&l, &Fixture::choice());
     f.approve(&l, &Fixture::choice(), &grant).unwrap();
-    let auth = |key_id, bounds, with_limits| {
+    let elsewhere = || Some(ContractBounds::SingleContract { id: id(77) });
+    let key = |key_id, purpose, level, key_type, bounds, with_limits| {
         make_session_key_v1(
             key_id,
-            Purpose::AUTHENTICATION,
-            SecurityLevel::HIGH,
-            KeyType::ECDSA_HASH160,
+            purpose,
+            level,
+            key_type,
             bounds,
             vec![key_id as u8; 20],
             with_limits,
         )
     };
+    use KeyType::{ECDSA_HASH160, ECDSA_SECP256K1};
+    use Purpose::{AUTHENTICATION, ENCRYPTION};
+    use SecurityLevel::{HIGH, MEDIUM};
     let foreign = [
-        auth(
-            20,
+        key(20, AUTHENTICATION, HIGH, ECDSA_HASH160, elsewhere(), false),
+        key(21, AUTHENTICATION, HIGH, ECDSA_HASH160, None, true),
+        key(
+            22,
+            AUTHENTICATION,
+            HIGH,
+            ECDSA_HASH160,
             Some(ContractBounds::SingleContract {
                 id: dashpay_contract::ID,
             }),
-            false,
-        ),
-        auth(
-            21,
-            Some(ContractBounds::SingleContract { id: id(77) }),
             true,
         ),
-        auth(22, Some(ContractBounds::ContractGroup { id: id(78) }), true),
-        auth(23, None, true),
-        make_session_key_v1(
-            24,
-            Purpose::ENCRYPTION,
-            SecurityLevel::MEDIUM,
-            KeyType::ECDSA_SECP256K1,
-            Some(ContractBounds::SingleContract {
-                id: dashpay_contract::ID,
-            }),
-            vec![0x02; 33],
-            true,
-        ),
+        key(23, AUTHENTICATION, MEDIUM, ECDSA_HASH160, elsewhere(), true),
+        key(24, AUTHENTICATION, HIGH, ECDSA_SECP256K1, elsewhere(), true),
+        key(25, ENCRYPTION, HIGH, ECDSA_HASH160, elsewhere(), true),
     ];
     {
         let mut all = f.net.identities.lock().unwrap();
@@ -1973,25 +1983,78 @@ fn a_renewal_disables_only_the_requests_session_keys() {
             me.public_keys_mut().insert(k.id(), k);
         }
     }
-    let mut record = f
-        .engine
-        .block_on(records(&f.s, f.wallet))
-        .unwrap()
-        .remove(0);
+    let mut record = first_record(&f);
     assert_eq!(record.session_keys, vec![6, 7]);
-    record.session_keys = vec![0, 6, 7, 8, 20, 21, 22, 23, 24];
-    f.put_record(record);
-    let mut second = request();
-    second.app_eph_pub =
-        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
-    let l2 = devnet(second);
-    let grant = f.quoted_grant(&l2, &Fixture::choice());
-    f.approve(&l2, &Fixture::choice(), &grant).unwrap();
-    let updates = f.net.updates.lock().unwrap().clone();
-    assert_eq!(updates[1].1, vec![6, 7]);
+    let others = [0, 8, 20, 21, 22, 23, 24, 25];
     let me = f.net.me();
-    for key_id in [0, 8, 20, 21, 22, 23, 24] {
+    for key_id in others {
+        record.session_keys.push(key_id);
+        let data = hex::encode(me.public_keys()[&key_id].data().as_slice());
+        record.session_key_data.insert(key_id, data);
+    }
+    f.put_record(record);
+    assert_eq!(renew(&f, request(), &Fixture::choice()), vec![6, 7]);
+    let me = f.net.me();
+    for key_id in others {
         assert!(!me.public_keys()[&key_id].is_disabled(), "key {key_id}");
+    }
+}
+
+/// A renewal that asks for less still disables every key of the login it
+/// replaces.
+#[test]
+fn a_renewal_that_narrows_its_bindings_disables_the_keys_it_drops() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let grant = f.quoted_grant(&l, &Fixture::choice());
+    f.approve(&l, &Fixture::choice(), &grant).unwrap();
+    let mut narrowed = request();
+    narrowed.auth_bindings.truncate(1);
+    let choice = ConnectChoice {
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 50_000_000_000,
+            ..Fixture::choice().terms
+        },
+        ..Fixture::choice()
+    };
+    assert_eq!(renew(&f, narrowed, &choice), vec![6, 7]);
+    assert!(f.net.me().public_keys()[&7].is_disabled());
+}
+
+/// A recorded key whose data no longer matches the key on Platform under
+/// that id, or a record with no key data, is left enabled.
+#[test]
+fn a_renewal_skips_a_recorded_key_it_cannot_match() {
+    for (corrupt, expected) in [
+        (
+            (|r: &mut ConnectRecord| {
+                r.session_key_data.insert(6, "00".repeat(20));
+            }) as fn(&mut ConnectRecord),
+            vec![7],
+        ),
+        (
+            (|r: &mut ConnectRecord| r.session_key_data.clear()) as fn(&mut ConnectRecord),
+            vec![],
+        ),
+    ] {
+        let f = Fixture::new();
+        let l = devnet(request());
+        let grant = f.quoted_grant(&l, &Fixture::choice());
+        f.approve(&l, &Fixture::choice(), &grant).unwrap();
+        let mut record = first_record(&f);
+        assert_eq!(record.session_key_data.len(), 2);
+        corrupt(&mut record);
+        f.put_record(record);
+        assert_eq!(renew(&f, request(), &Fixture::choice()), expected);
+        let me = f.net.me();
+        for key_id in [6, 7] {
+            assert_eq!(
+                me.public_keys()[&key_id].is_disabled(),
+                expected.contains(&key_id),
+                "key {key_id}"
+            );
+        }
     }
 }
 
