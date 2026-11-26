@@ -427,6 +427,7 @@ fn a_wallet_imported_again_after_a_cut_removal_is_not_held() {
         let (session, wallet) = first_launch(&engine);
         let st_hash = consumed_create(&engine, &session, wallet);
         cut_removal(&engine, &session, wallet, st_hash, cut);
+        let removed_at = crate::events::unix_now();
         let again = engine.block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
             Zeroizing::new(Vec::new()),
@@ -451,6 +452,10 @@ fn a_wallet_imported_again_after_a_cut_removal_is_not_held() {
         );
         engine.block_on(session.unload_wallet(wallet)).unwrap();
         engine.block_on(session.load_wallet(wallet)).unwrap();
+        // A removal's pre-delete backup is named by the second.
+        while crate::events::unix_now() <= removed_at {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let wipe = (session.vault).authorize(
             dw_vault::GrantPurpose::Wipe,
             Some(&wallet.0),
