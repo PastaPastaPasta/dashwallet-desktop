@@ -1982,17 +1982,30 @@ impl SessionHub {
 
     /// Lets go of the share of each coin of `waiting`, read as waiting for
     /// its rescan with balances just written, whose hold went meanwhile: a
-    /// release between that read and its write must not be undone.
+    /// release between that read and its write must not be undone. The
+    /// confirmed share of a released coin the restore holds keep back joins
+    /// their figure, which skipped it while it was excluded
+    /// ([`Self::restore_held_in`]).
     pub(crate) fn release_settled(&self, id: WalletId, waiting: BTreeSet<dashcore::OutPoint>) {
         if waiting.is_empty() {
             return;
         }
         let held = self.rescan_held(&id);
         let gone: BTreeSet<dashcore::OutPoint> = waiting.difference(&held).copied().collect();
-        if !gone.is_empty() {
-            self.update_wallet_state(id, |s| s.excluded.release(&gone));
-            self.pump.mark_balances(id);
+        if gone.is_empty() {
+            return;
         }
+        let (txids, inputs) = self.history.read_wallet(&id, |h| h.restore_held_coins());
+        self.update_wallet_state(id, |s| {
+            let restore_held: u64 = (gone.iter())
+                .filter(|o| txids.contains(&o.txid) || inputs.contains(*o))
+                .filter_map(|o| s.excluded.coins.get(o))
+                .map(|(_, share, _)| share.confirmed())
+                .sum();
+            s.excluded.release(&gone);
+            s.restore_held = s.restore_held.saturating_add(restore_held);
+        });
+        self.pump.mark_balances(id);
     }
 
     /// `excluded`: the excluded coins' share read with the balances;
@@ -3333,6 +3346,52 @@ mod tests {
             .filter(|(_, c)| c.contains(&PlatformChange::Startup))
             .map(|(w, _)| w)
             .collect()
+    }
+
+    /// A coin both waiting for its rescan and kept back by a restore hold
+    /// stays out of confirmed when its rescan hold settles: the restore
+    /// figure takes its confirmed share as the excluded share lets it go.
+    #[test]
+    fn a_settled_rescan_share_stays_out_of_confirmed_while_restore_held() {
+        const COIN: u64 = 100_000_000;
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let p = Txid::from_byte_array([3; 32]);
+        let (held, free) = (
+            OutPoint::new(p, 1),
+            OutPoint::new(Txid::from_byte_array([4; 32]), 0),
+        );
+        hub.history.with_wallet(W, |h| {
+            h.load_incomplete = true;
+            h.restore_holds.insert(p, BTreeSet::new());
+        });
+        let account = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let share = WalletCoreBalance::new(COIN, 0, 0, 0);
+        hub.update_wallet_state(W, |s| {
+            s.balance = WalletCoreBalance::new(3 * COIN, 0, 0, 0);
+            s.excluded = crate::withhold::Excluded {
+                balance: WalletCoreBalance::new(2 * COIN, 0, 0, 0),
+                accounts: BTreeMap::from([(account, WalletCoreBalance::new(2 * COIN, 0, 0, 0))]),
+                pending: 0,
+                coins: BTreeMap::from([
+                    (held, (account, share, false)),
+                    (free, (account, share, false)),
+                ]),
+            };
+        });
+        assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, COIN);
+
+        hub.release_settled(W, BTreeSet::from([held, free]));
+        let b = hub.wallet_state(&W).unwrap().balances();
+        assert_eq!(
+            b.confirmed,
+            2 * COIN,
+            "the restore-held coin counts confirmed: {b:?}"
+        );
+        assert_eq!(b.unconfirmed, COIN, "{b:?}");
+        assert_eq!(b.total, 3 * COIN, "{b:?}");
     }
 
     /// A wallet's Platform addresses are synced once its own pass succeeded
