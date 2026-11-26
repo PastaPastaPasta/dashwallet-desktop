@@ -336,11 +336,7 @@ fn nothing_moved(f: &Fixture, live: &[Option<String>]) {
 }
 
 fn request(f: &Fixture) {
-    let engine = engine(&f.root);
-    engine
-        .block_on(engine.request_restore(&DashNetwork::Regtest))
-        .unwrap();
-    close(engine);
+    request_got(f).unwrap();
 }
 
 /// R-1 (b): a spend dispatched after the request (here its stored record)
@@ -475,41 +471,168 @@ fn a_hold_on_disk_refuses_the_request_with_no_session_open() {
 /// again, and the hold is in the journal again.
 #[test]
 fn a_restored_fork_disposition_is_held_again_on_the_next_open() {
+    let f = fork_fixture();
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "drained at the upgrade"
+    );
+    request(&f);
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert!(dw_store_upgrade::restored_mark_present(&f.net));
+    assert_eq!(after_dirs(&f), 1);
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "held again after the restore"
+    );
+}
+
+/// The live fork disposition of [`fork_fixture`]'s wallet, nullifier
+/// `[n; 32]`, written as a fresh fork store over the live one: the store as
+/// an open that stopped before its drain leaves it.
+fn live_fork_store(f: &Fixture, n: u8) {
     use dw_shielded_drain::test_support::{ForkRow, fork_store};
-    let f = fixture("v0.1.0");
     let shielded = f.net.join("shielded.sqlite");
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let _ = std::fs::remove_file(f.net.join(format!("shielded.sqlite{suffix}")));
     }
-    let mut wallet = [0; 32];
-    hex::decode_to_slice(&MAIN[2..66], &mut wallet).unwrap();
     fork_store(
         &shielded,
-        &wallet,
+        &main_wallet(),
         0,
         &[ForkRow::Disposition {
             st: 2,
             kind: "unresolved",
             reason: Some("purged"),
-            nullifiers: vec![[102; 32]],
+            nullifiers: vec![[n; 32]],
         }],
     )
     .unwrap();
-    let held = |f: &Fixture| -> Vec<Vec<u8>> {
-        let db = rusqlite::Connection::open(f.net.join("dispatch.sqlite")).unwrap();
-        let mut stmt = db
-            .prepare("SELECT nullifier FROM shielded_drained_hold WHERE spent = 0")
-            .unwrap();
-        stmt.query_map([], |r| r.get(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect()
-    };
+}
+
+fn main_wallet() -> [u8; 32] {
+    let mut wallet = [0; 32];
+    hex::decode_to_slice(&MAIN[2..66], &mut wallet).unwrap();
+    wallet
+}
+
+/// The marker the open's import of a fork hold writes for [`live_fork_store`]'s
+/// disposition: activity `[2; 32]`, a zero anchor, nullifier `[n; 32]`.
+fn fork_marker(f: &Fixture, n: u8) {
+    marker(f, 2, &[n]);
+}
+
+/// A DEC-1057 marker of [`MAIN`], activity `[activity; 32]`, with a
+/// nullifier `[n; 32]` for each of `notes`.
+fn marker(f: &Fixture, activity: u8, notes: &[u8]) {
+    let hex = |b: u8| format!("X'{}'", hex::encode([b; 32]));
+    let a = hex(activity);
+    let mut sql = format!(
+        "INSERT INTO shielded_unrecorded (wallet, activity, anchor, at) \
+         VALUES ({MAIN}, {a}, {z}, 1);",
+        z = hex(0)
+    );
+    for n in notes {
+        sql += &format!(
+            "INSERT INTO shielded_unrecorded_nullifier (wallet, activity, nullifier, spent) \
+             VALUES ({MAIN}, {a}, {n}, 0);",
+            n = hex(*n)
+        );
+    }
+    exec(&f.net.join("dispatch.sqlite"), &sql);
+}
+
+/// A v0.1.0 fixture with a fork disposition of nullifier `[102; 32]`,
+/// upgraded and drained by a first start: its before set holds it.
+fn fork_fixture() -> Fixture {
+    let f = fixture("v0.1.0");
+    live_fork_store(&f, 102);
     assert_eq!(open_in_child(&f.root), "ok");
-    assert_eq!(held(&f), [vec![102u8; 32]], "drained at the upgrade");
+    f
+}
+
+fn drained_holds(f: &Fixture) -> Vec<Vec<u8>> {
+    let db = rusqlite::Connection::open(f.net.join("dispatch.sqlite")).unwrap();
+    let mut stmt = db
+        .prepare("SELECT nullifier FROM shielded_drained_hold WHERE spent = 0")
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn request_got(f: &Fixture) -> Result<(), EngineError> {
+    let engine = engine(&f.root);
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    close(engine);
+    got
+}
+
+/// R-1 (N): a live fork disposition and its imported marker that the
+/// snapshot's shielded store carries (same wallet and nullifiers) don't hold
+/// the restore: it runs, and its first open holds the notes again.
+#[test]
+fn a_fork_hold_the_snapshot_carries_does_not_hold_the_restore() {
+    let f = fork_fixture();
+    live_fork_store(&f, 102);
+    fork_marker(&f, 102);
     request(&f);
     assert_eq!(open_in_child(&f.root), "ok");
     assert!(dw_store_upgrade::restored_mark_present(&f.net));
     assert_eq!(after_dirs(&f), 1);
-    assert_eq!(held(&f), [vec![102u8; 32]], "held again after the restore");
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "held again after the restore"
+    );
+}
+
+/// R-1 (N): a fork hold only the live stores have, or one the snapshot's
+/// shielded store can't vouch for, holds the restore.
+#[test]
+fn a_fork_hold_the_snapshot_does_not_carry_holds_the_restore() {
+    let held = |f: &Fixture, what: &str| {
+        let before = tree(&f.net);
+        let got = request_got(f);
+        assert!(
+            matches!(
+                got,
+                Err(EngineError::ShieldedSpendHeld(
+                    dw_engine::ShieldedHold::CarriedOver
+                ))
+            ),
+            "{what}: {got:?}"
+        );
+        assert_eq!(
+            tree_diff(&before, &tree(&f.net)),
+            Vec::<String>::new(),
+            "{what}"
+        );
+    };
+    let f = fork_fixture();
+    live_fork_store(&f, 103);
+    held(&f, "a live disposition only");
+
+    for (what, activity, notes) in [
+        ("a marker only", 2, &[104][..]),
+        ("a marker of another activity", 3, &[102]),
+        ("a marker of more notes", 2, &[102, 103]),
+        ("a marker with no notes", 2, &[]),
+    ] {
+        let f = fork_fixture();
+        marker(&f, activity, notes);
+        held(&f, what);
+    }
+
+    let f = fork_fixture();
+    live_fork_store(&f, 102);
+    fork_marker(&f, 102);
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    let copy = snapshot.dir().join("shielded.sqlite");
+    let mut bytes = std::fs::read(&copy).unwrap();
+    bytes[..100].fill(0x5a);
+    std::fs::write(&copy, bytes).unwrap();
+    held(&f, "the snapshot's shielded store does not verify");
 }
