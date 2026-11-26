@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 104
+Contract-Version: 105
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1058,7 +1058,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 1123e71da92131a19e50ca96146a99ffdf3b51cf2a65126e8a1b7314672abae4 version: 104 -->
+<!-- surface-sha256: be11331cf5344055ae5c63f33f71ac63e3715a6f0e218673c34da1489937f264 version: 105 -->
 
 ```rust
 // src/platform/app_connect.rs
