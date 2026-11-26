@@ -1466,6 +1466,14 @@ impl MoveRecord {
         )
     }
 
+    /// The newest cancel of this record that still holds: a cancel of it
+    /// again re-signs that one's terms (#762).
+    fn held_cancel<'a>(&self, moves: &'a [MoveRecord]) -> Option<&'a MoveRecord> {
+        (moves.iter())
+            .filter(|m| m.cancel_of.as_deref() == Some(self.id.as_str()) && m.holds())
+            .max_by_key(|m| (m.at, m.id.clone()))
+    }
+
     /// Its inputs at their signed nonces: two moves with one key cannot
     /// both execute.
     fn key(&self) -> Vec<(String, u32)> {
@@ -3839,7 +3847,8 @@ pub(crate) async fn quote(
 /// The cancel of the held withdrawal or contact payout `of` (#762): one
 /// proved read with rule 5, the held record's inputs at their nonces, each
 /// giving what it gave the record, the fee from the one output, to the
-/// wallet's Platform receive address. Refused unless `of` holds and is
+/// wallet's Platform receive address; beside a cancel of `of` that holds,
+/// that cancel again on its own terms. Refused unless `of` holds and is
 /// answered, beside no other hold at its key that leaves no document.
 pub(crate) async fn cancel_quote(
     net: &impl MoveNet,
@@ -3861,21 +3870,35 @@ pub(crate) async fn cancel_quote(
     if let Some(p) = (moves.iter()).find(|m| m.state == PlatformActivityState::Pending) {
         return Err(CreditsError::MovePending { id: p.id.clone() });
     }
-    if let Some(h) = (moves.iter())
-        .find(|m| m.holds() && m.id != held.id && !(m.key() == held.key() && m.kind.withdraws()))
-    {
+    // A cancel of it that holds is offered again as it was signed: its
+    // exact re-send, whatever the fee or the receive address is now.
+    let resend = held.held_cancel(&moves);
+    let at_key = |m: &MoveRecord| {
+        m.key() == held.key()
+            && (m.kind.withdraws() || resend.is_some_and(|c| c.terms() == m.terms()))
+    };
+    if let Some(h) = (moves.iter()).find(|m| m.holds() && m.id != held.id && !at_key(m)) {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
-    let version = net.version();
-    let limits = Limits::transfer_at(version);
-    let planned = cancel_plan(held, &limits)?;
-    let to = next_receive_address(session, wallet, network).await?;
+    let (planned, to) = match resend {
+        Some(c) => (
+            c.replan(&BTreeMap::new())
+                .ok_or(PlatformError::Unavailable)?,
+            c.to.clone(),
+        ),
+        None => (
+            cancel_plan(held, &Limits::transfer_at(net.version()))?,
+            next_receive_address(session, wallet, network)
+                .await?
+                .address,
+        ),
+    };
     let credits = planned.may_lose();
     Ok(PlatformCancelQuote {
         of: held.id.clone(),
         credits,
         fee_credits: planned.fee,
-        to: to.address,
+        to,
         grant: GrantRequest {
             max_duffs: 0,
             max_credits: credits,
@@ -4503,14 +4526,17 @@ pub(crate) async fn run(
                     id: pending.id.clone(),
                 });
             }
-            // A held cancel has no exit of its own, and one cancel of a
-            // record holds at a time, as the quotes refuse them.
+            // A held cancel has no exit of its own, and a cancel of a
+            // record that has one holding is only its exact re-send, as the
+            // quotes offer them.
             let cancel = (moves.iter()).find(|m| {
                 m.cancel_of.is_some()
                     && m.holds()
                     && match target {
                         Target::Core(_) => exit_of.is_none() && !m.reached(&seen),
-                        Target::Cancel(_) => m.cancel_of.as_deref() == cancel_of,
+                        Target::Cancel(to) => {
+                            m.cancel_of.as_deref() == cancel_of && m.to != bech32m(&to, network)
+                        }
                         _ => false,
                     }
             });
@@ -4543,7 +4569,13 @@ pub(crate) async fn run(
                     if short {
                         return Err(CreditsError::QuoteChanged);
                     }
-                    Ok(cancel_plan(h, &limits)?)
+                    // Re-sent, it signs that cancel's terms, at any protocol
+                    // version: of equal terms, whichever executes pays the
+                    // same.
+                    match h.held_cancel(&moves) {
+                        Some(c) => c.replan(&balances).ok_or(PlatformError::Unavailable.into()),
+                        None => Ok(cancel_plan(h, &limits)?),
+                    }
                 }
                 _ => plan_beside(&target, balances.clone(), amount, &limits, held, network),
             }

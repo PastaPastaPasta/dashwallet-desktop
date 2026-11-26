@@ -540,7 +540,8 @@ fn a_cancel_whose_inputs_carry_less_than_the_held_amount_is_refused() {
 
 /// A held cancel has no exit of its own: a move beside it waits, and a
 /// move naming it as its exit is refused unsigned, so no group holds a
-/// withdrawal, its cancel and an exit of the cancel.
+/// withdrawal, its cancel and an exit of the cancel. A cancel of other
+/// terms waits for it too.
 #[test]
 fn a_held_cancel_is_no_exit_target() {
     let w = World::new();
@@ -573,8 +574,10 @@ fn a_held_cancel_is_no_exit_target() {
         matches!(&plain, Err(CreditsError::MovePending { id }) if *id == out.id),
         "{plain:?}"
     );
-    // The same cancel again, from its quote: one cancel holds at a time.
-    let again = w.cancel_as(&held.id, &q.to, &w.f.grant(q.credits));
+    // A cancel to another own address: one cancel's terms hold at a time.
+    let other = bech32m(&w.address(3), w.network());
+    assert_ne!(other, q.to);
+    let again = w.cancel_as(&held.id, &other, &w.f.grant(q.credits));
     assert!(
         matches!(&again, Err(CreditsError::MovePending { id }) if *id == out.id),
         "{again:?}"
@@ -584,6 +587,61 @@ fn a_held_cancel_is_no_exit_target() {
     assert!(!c.retried_by(&c.to, WithdrawAmount::All));
     assert_eq!(w.sent_count(), sent, "nothing signed");
     assert!(w.record(&held.id).holds() && w.record(&out.id).holds());
+}
+
+/// A cancel that never executes holds, and its way out is its exact
+/// re-send: the quote offers the held cancel's own terms (its address and
+/// fee, whatever the fee or the receive address is now), which sign the
+/// same inputs at the same nonces. Of a held move or a held contact
+/// payout alike, the re-send executes and settles all three: one cancel
+/// done, the earlier one superseded, the held record failed.
+#[test]
+fn a_held_cancel_is_sent_again_on_its_own_terms() {
+    for payout in [false, true] {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        let held = w.held_move(one());
+        if payout {
+            let mut p = w.record(&held.id);
+            p.kind = MoveKind::ToContact;
+            w.store(&[p]);
+        }
+        let q = w.cancel_quote_of(&held.id).unwrap();
+        w.net.then(Act::SignatureRefused);
+        let first = w.cancel_as(&held.id, &q.to, &w.f.grant(q.credits)).unwrap();
+        w.net.tick();
+        w.activity();
+        assert!(w.record(&first.id).holds() && w.record(&held.id).holds());
+        // Its fee as it was signed, not the one a later version would plan.
+        let mut c = w.record(&first.id);
+        c.fee_credits += 1;
+        let fee = c.fee_credits;
+        w.store(&[c]);
+        w.net.fund(w.pool_address(&q.to), DASH);
+        let q2 = w.cancel_quote_of(&held.id).unwrap();
+        assert_eq!(
+            (q2.to.as_str(), q2.fee_credits, q2.credits),
+            (q.to.as_str(), fee, q.credits),
+            "payout {payout}"
+        );
+        let again = w
+            .cancel_as(&held.id, &q2.to, &w.f.grant(q2.credits))
+            .unwrap();
+        let sent = w.net.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2], sent[1], "the same inputs at the same nonces");
+        assert_eq!(again.state, PlatformActivityState::Done, "payout {payout}");
+        assert_eq!(w.documents(), 0, "nothing withdrawn");
+        let (m, c1, c2) = (w.record(&held.id), w.record(&first.id), w.record(&again.id));
+        assert_eq!(
+            (m.state, m.can_land),
+            (PlatformActivityState::Failed, false)
+        );
+        assert_eq!(c2.state, PlatformActivityState::Done);
+        assert_eq!(c2.cancel_of.as_deref(), Some(held.id.as_str()));
+        assert!(!c1.holds(), "payout {payout}");
+        assert!(w.moves().iter().all(|m| !m.holds()), "payout {payout}");
+    }
 }
 
 /// The cancel of a held contact payout: its documents decide as a payout's

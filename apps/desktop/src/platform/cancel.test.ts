@@ -32,13 +32,16 @@ describe("which way out a held item offers", () => {
     expect(isHeldSend({ ...send, cancels: "pm-1", to: OWN })).toBe(false);
   });
 
-  it("a held move or contact payment: its cancel, unless a send, top-up, pending item or cancel holds beside it", () => {
+  it("a held move or contact payment: its cancel, unless a send, top-up, pending item or another cancel holds beside it", () => {
     const move = held("pm-1", "moveToCore");
     const payout = held("cp-1", "contactPayment");
     expect([cancelOf(move, [move]), cancelOf(payout, [payout])]).toEqual(["move", "payment"]);
     // A move and its retry at the same inputs: still one withdrawal's document decides.
     expect(cancelOf(move, [move, held("pm-2", "moveToCore")])).toBe("move");
-    for (const beside of [held("ps-1", "send", { to: PAYEE }), held("ti-1", "toIdentity"), { ...held("pm-2", "moveToCore"), state: "pending" as const }, held("pc-1", "send", { to: OWN, cancels: "pm-1" })]) expect(cancelOf(move, [move, beside])).toBeNull();
+    for (const beside of [held("ps-1", "send", { to: PAYEE }), held("ti-1", "toIdentity"), { ...held("pm-2", "moveToCore"), state: "pending" as const }, held("pc-1", "send", { to: OWN, cancels: "pm-9" }), held("pc-1", "send", { to: OWN, cancels: "pm-1", state: "pending" })]) expect(cancelOf(move, [move, beside])).toBeNull();
+    // Its own cancel that still holds: offered again, re-sent as it was signed.
+    expect(cancelOf(move, [move, held("pc-1", "send", { to: OWN, cancels: "pm-1" })])).toBe("move");
+    expect(cancelOf(payout, [payout, held("pc-2", "send", { to: OWN, cancels: "cp-1" })])).toBe("payment");
     expect(cancelOf({ ...move, state: "pending" }, [])).toBeNull();
     expect(cancelOf({ ...move, mayLand: false }, [])).toBeNull();
     expect(cancelOf({ ...move, state: "done", mayLand: false }, [])).toBeNull();

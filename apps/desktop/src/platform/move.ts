@@ -277,10 +277,12 @@ export const heldExitOps = (activity: readonly PlatformActivity[] | null | undef
 export const isHeldSend = (a: PlatformActivity): boolean => a.kind === "send" && !a.cancels && a.state === "failed" && a.mayLand && a.to !== null;
 
 /** What the cancel of `a` would be: of a held move to the Dash wallet or contact payment, and only
- * while no send, top-up or cancel holds beside it (its document could not tell those apart). */
+ * while no send, top-up or other cancel holds beside it (its document could not tell those apart). Its
+ * own cancel that Platform answered and that still holds is offered again: the engine re-sends it as signed. */
 export function cancelOf(a: PlatformActivity, activity: readonly PlatformActivity[] | null | undefined): "move" | "payment" | null {
   if (a.state !== "failed" || !a.mayLand || (a.kind !== "moveToCore" && a.kind !== "contactPayment")) return null;
-  const beside = activity?.some((b) => b.id !== a.id && isHeldOp(b) && (b.state === "pending" || b.cancels || (b.kind !== "moveToCore" && b.kind !== "contactPayment")));
+  const blocks = (b: PlatformActivity) => (b.cancels ? b.cancels !== a.id : b.kind !== "moveToCore" && b.kind !== "contactPayment");
+  const beside = activity?.some((b) => b.id !== a.id && isHeldOp(b) && (b.state === "pending" || blocks(b)));
   return beside ? null : a.kind === "moveToCore" ? "move" : "payment";
 }
 
