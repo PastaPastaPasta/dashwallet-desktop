@@ -53,6 +53,7 @@ export function screenText(tr: Translate, screen: StoreScreen, folder: string, r
 
 const RECOVER_KEY = "storeUpgrade.refused.recover";
 const RESTORE_WAY_OUT = "storeUpgrade.refused.wayOut.restore";
+const RESTORE_HELD_KEY = "storeUpgrade.recover.restoreHeld";
 
 export type ButtonAction = "quit" | "restart" | "reopen" | "keep" | "cancelRestore" | "report" | "restore" | "recover";
 
@@ -320,7 +321,7 @@ function withRecover(buttons: StoreButton[], english: string): StoreButton[] {
 /** The engine's screen as it gives it: title, text, a button per its buttons, and its hint under them.
  * "Restore earlier data" shows only while a verified snapshot is there. On the Restore screen, once a
  * restore was refused for a shielded hold (here, or the engine's screen offering Set up from recovery
- * phrase), that way out shows with its line. */
+ * phrase), that way out shows and its line replaces the Restore way out's. */
 export function StoreRefusalView({ refusal, problem, failedLink = null, restoreAvailable = false, restoreHeld = false, busy = false, onAction }: StoreRefusalViewProps) {
   const tr = useT();
   const id = useId();
@@ -328,6 +329,7 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
   const restoreScreen = screen.textKey === RESTORE_WAY_OUT;
   const shown = restoreScreen && restoreHeld ? withRecover(screen.buttons, tr(RECOVER_KEY)) : screen.buttons;
   const held = restoreScreen && shown.some((b) => b.key === RECOVER_KEY);
+  const textScreen = held ? { ...screen, lines: screen.lines.map((l) => (l.key === RESTORE_WAY_OUT ? { ...l, key: RESTORE_HELD_KEY } : l)) } : screen;
   const buttons = shown
     .map((b) => ({ ...b, label: textFor(tr, b.key, b.label, folder), action: buttonAction(b.key) }))
     .filter((b) => b.action !== "restore" || restoreAvailable);
@@ -339,15 +341,10 @@ export function StoreRefusalView({ refusal, problem, failedLink = null, restoreA
       id={id}
       testId="store-refused"
       title={textFor(tr, screen.titleKey, screen.title, folder)}
-      text={screenText(tr, screen, folder, currentLanguage().dir === "rtl")}
+      text={screenText(tr, textScreen, folder, currentLanguage().dir === "rtl")}
       problem={problem}
       failedLink={failedLink}
     >
-      {held && !problem && (
-        <p className="onboarding-text store-open-text" data-testid="store-refused-held">
-          {tr("storeUpgrade.recover.restoreHeld", { folder })}
-        </p>
-      )}
       <Buttons id={id} testId="store-refused" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {warn && (
         <p className="field-hint" data-testid="store-refused-issues-hint">

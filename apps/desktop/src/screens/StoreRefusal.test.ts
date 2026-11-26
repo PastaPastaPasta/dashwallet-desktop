@@ -755,17 +755,19 @@ describe("Set up from recovery phrase after a restore refused for a shielded hol
   const render = (refusal: StoreRefusedData, restoreHeld: boolean, problem: string | null = null) =>
     renderToStaticMarkup(createElement(StoreRefusalView, { refusal, problem, restoreAvailable: true, restoreHeld, onAction: noop }));
   const ids = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
-  const heldLine = `data-testid="store-refused-held">${escaped(en.storeUpgrade.recover.restoreHeld.replaceAll("{folder}", FOLDER))}</p>`;
+  const heldLine = escaped(en.storeUpgrade.recover.restoreHeld.replaceAll("{folder}", FOLDER));
+  const restoreLine = escaped(en.storeUpgrade.refused.wayOut.restore.replaceAll("{folder}", FOLDER));
   /** The Restore screen as the engine gives it once a hold refused its restore (`offer_recover`). */
   const engineOffer: StoreRefusedData = {
     ...offer,
     screen: { ...offer.screen, buttons: offer.screen.buttons.flatMap((b) => (b.key === "storeUpgrade.refused.restore" ? [b, { key: "storeUpgrade.refused.recover", label: "Set up from recovery phrase", destructive: false, defaultFocus: false }] : [b])) },
   };
 
-  it("shows only on the Restore screen, once the restore was refused for a hold, after Restore earlier data with its line", () => {
+  it("shows only on the Restore screen, once the restore was refused for a hold, after Restore earlier data, its line in place of the Restore way out", () => {
     const plain = render(offer, false);
     expect(button(plain, recoverButton)).toBeNull();
-    expect(plain).not.toContain("store-refused-held");
+    expect(plain).toContain(restoreLine);
+    expect(plain).not.toContain(heldLine);
     for (const [html, what] of [
       [render(offer, true), "refused in this window"],
       [render(engineOffer, false), "the engine's screen"],
@@ -774,16 +776,17 @@ describe("Set up from recovery phrase after a restore refused for a shielded hol
       expect(ids(html), what).toEqual(["storeUpgrade.refused.restore", "storeUpgrade.refused.recover", "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
       expect(button(html, recoverButton)?.label, what).toBe(escaped(en.storeUpgrade.refused.recover));
       expect(html, what).toContain(heldLine);
+      expect(html, what).not.toContain(restoreLine);
       expect(html, what).not.toContain("{folder}");
       expect(buttonAction("storeUpgrade.refused.recover")).toBe("recover");
     }
-    expect(render(offer, true, HELD.inFlight)).not.toContain("store-refused-held");
+    expect(render(offer, true, HELD.inFlight)).toContain(heldLine);
     for (const name of STORE_SCREEN_NAMES.filter((n) => n !== "refusedRestore" && n !== "damaged")) {
       const html = render(STORE_SCREENS[name](FOLDER), true);
       expect(button(html, recoverButton), name).toBeNull();
-      expect(html, name).not.toContain("store-refused-held");
+      expect(html, name).not.toContain(heldLine);
     }
-    expect(render(STORE_SCREENS.damaged(FOLDER), true)).not.toContain("store-refused-held");
+    expect(render(STORE_SCREENS.damaged(FOLDER), true)).not.toContain(heldLine);
   });
 
   it("is offered by the confirm only after a hold refused the request, and opens the recover confirm", async () => {
