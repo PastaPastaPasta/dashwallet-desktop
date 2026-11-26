@@ -378,12 +378,16 @@ pub enum GrantPurposeSpec {
         plan: [u8; 32],
     },
     /// Disconnecting one App Connect login (`app_connect_disconnect`): the
-    /// login's `request` hash and credits up to `max_credits`. Needs the
-    /// passphrase every time: never quick unlock or a cached unlock.
+    /// login on `identity` whose request hashes to `request` and credits up to
+    /// `max_credits`. Needs the passphrase every time: never quick unlock or a
+    /// cached unlock.
     AppDisconnect {
         #[ts(type = "string")]
         #[serde(with = "crate::dto::credits")]
         max_credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::hex_array")]
+        identity: [u8; 32],
         #[ts(type = "string")]
         #[serde(with = "crate::dto::hex_array")]
         request: [u8; 20],
@@ -420,9 +424,11 @@ impl From<GrantPurposeSpec> for GrantPurpose {
             },
             S::AppDisconnect {
                 max_credits,
+                identity,
                 request,
             } => GrantPurpose::AppDisconnect {
                 max_credits,
+                identity,
                 request,
             },
         }
@@ -459,9 +465,11 @@ impl From<GrantPurpose> for GrantPurposeSpec {
             },
             P::AppDisconnect {
                 max_credits,
+                identity,
                 request,
             } => Self::AppDisconnect {
                 max_credits,
+                identity,
                 request,
             },
             // The host cannot request a masternode withdrawal yet (MG-13 is

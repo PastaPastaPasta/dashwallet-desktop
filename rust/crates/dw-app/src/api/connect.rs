@@ -177,8 +177,8 @@ pub struct ConnectedApp {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub funding_limit: u64,
-    #[ts(type = "number")]
-    pub expires_at_ms: u64,
+    #[ts(type = "number | null")]
+    pub expires_at_ms: Option<u64>,
     #[ts(type = "number")]
     pub approved_at_ms: u64,
 }
@@ -544,6 +544,7 @@ commands! {
         Ok(DisconnectQuote {
             grant: crate::api::vault::GrantPurposeSpec::AppDisconnect {
                 max_credits: q.max_credits,
+                identity: q.identity_id,
                 request: q.request,
             },
             identity: q.identity,

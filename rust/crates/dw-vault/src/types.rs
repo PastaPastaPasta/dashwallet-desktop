@@ -156,14 +156,15 @@ pub enum GrantPurpose {
         plan: [u8; 32],
     },
     /// Disconnecting one App Connect login (`app_connect_disconnect`): the
-    /// login whose request hashes to `request` (`hash160`), spending at most
-    /// `max_credits` of the identity's credits on the MASTER-signed identity
-    /// update that disables that app's keys. Yields a
+    /// login on `identity` whose request hashes to `request` (`hash160`),
+    /// spending at most `max_credits` of the identity's credits on the
+    /// MASTER-signed identity update that disables that app's keys. Yields a
     /// [`crate::SignerScope::PlatformIdentity`] signer only (never
     /// `AppConnect`). Always needs a passphrase: it updates the identity with
     /// its MASTER key.
     AppDisconnect {
         max_credits: u64,
+        identity: [u8; 32],
         request: [u8; 20],
     },
 }

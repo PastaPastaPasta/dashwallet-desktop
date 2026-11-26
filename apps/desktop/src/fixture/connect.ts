@@ -253,8 +253,6 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
         throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       }
       l.keysAdded = choice.selection.map((_, i) => 5 + i);
-      if (l.outcome === "sendFailed") throw fail("connect.send_failed", "connect.send_failed");
-      l.answer = "ok";
       const addedKeys = choice.selection.map((idx, i) => {
         const b = sheet.bindings.find((x) => x.index === idx) ?? sheet.bindings[0];
         return {
@@ -277,6 +275,8 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
         expiresAtMs: choice.terms.expiresAtMs,
         approvedAtMs: FIXTURE_NOW.getTime(),
       });
+      if (l.outcome === "sendFailed") throw fail("connect.send_failed", "connect.send_failed");
+      l.answer = "ok";
       return { identity: who.identity, keysAdded: l.keysAdded };
     },
     app_connect_retry_send: ({ walletId, linkId }, { world }) => {
@@ -327,7 +327,7 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const balance = outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
       return {
-        grant: { kind: "appDisconnect", maxCredits: String(fee), request },
+        grant: { kind: "appDisconnect", maxCredits: String(fee), identity, request },
         identity,
         keys: app.keys.map((k) => k.keyId),
         fee: String(fee),
@@ -343,7 +343,8 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const idx = apps.findIndex((a) => a.identity === identity && a.request === request);
       if (idx < 0) throw fail("invalid_argument", "invalid argument: unknown app connection");
       const g = grant(world, id, walletId, ["appDisconnect"]);
-      if (!g || g.grant.purpose.kind !== "appDisconnect" || g.grant.purpose.request !== request) throw fail("platform.grant_invalid", "grant invalid");
+      if (!g || g.grant.purpose.kind !== "appDisconnect" || g.grant.purpose.identity !== identity || g.grant.purpose.request !== request)
+        throw fail("platform.grant_invalid", "grant invalid");
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });

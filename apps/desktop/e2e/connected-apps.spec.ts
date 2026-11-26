@@ -138,3 +138,38 @@ test("shows the test-networks-only notice on mainnet without listing connected a
   await expect(card.getByTestId("connected-app-row")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("keeps the funding-limit value and unit label consistent under non-DASH display units", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("dashpay-connected-apps", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+  await page.getByTestId("settings-unit-milliDash").click();
+  await expect(page.getByTestId("settings-unit-milliDash")).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("settings-tabs-advanced").click();
+  await page.getByTestId("connected-apps-card").waitFor();
+  const limit = page.getByTestId("connected-app-row").nth(0).getByTestId("connected-app-limit");
+  await expect(limit).toContainText("0.05 tDASH");
+  await expect(limit).not.toContainText("mtDASH");
+  expect(errors).toEqual([]);
+});
+
+test("Disconnect sheet shows only the keys included in the live quote", async ({ page }) => {
+  const errors = await openConnectedApps(page, "dashpay-connected-apps");
+  const yappr = page.getByTestId("connected-app-row").nth(0);
+  await expect(yappr.getByTestId("connected-app-key")).toHaveCount(2);
+
+  // Simulate Key 7 being disabled on Platform after the inventory loaded.
+  await page.evaluate(() => {
+    const app = window.__dwFixture!.world.connectedApps![0];
+    app.keys = app.keys.filter((k) => k.keyId === 6);
+  });
+
+  await yappr.getByTestId("connected-app-disconnect").click();
+  const sheet = page.getByTestId("disconnect-sheet");
+  await expect(sheet.getByTestId("disconnect-fee")).toContainText("in credits.");
+  await expect(sheet.getByTestId("disconnect-keys").getByTestId("connected-app-key")).toHaveCount(1);
+  await expect(sheet.getByTestId("disconnect-keys")).toContainText("Key 6");
+  await expect(sheet.getByTestId("disconnect-keys")).not.toContainText("Key 7");
+  expect(errors).toEqual([]);
+});

@@ -140,6 +140,14 @@ pub(crate) struct FakeConnect {
     refreshed: AtomicBool,
     /// Optional override for the live disconnect fee, for fee-bound tests.
     disconnect_fee_override: Mutex<Option<u64>>,
+    /// Per-identity nonce state (low 40 bits: tip; upper 24 bits: window).
+    nonces: Mutex<HashMap<Identifier, u64>>,
+    /// Optional lagging nonce state override for split-node retry tests.
+    stale_nonce: Mutex<Option<u64>>,
+    /// Each disable-only transition signed: `(target_revision, nonce, disable_keys)`.
+    signed_disables: Mutex<Vec<(u64, u64, Vec<KeyID>)>>,
+    /// Each raw disable-only transition payload broadcast.
+    broadcast_disables: Mutex<Vec<Vec<u8>>>,
 }
 
 impl FakeConnect {
@@ -154,6 +162,7 @@ impl FakeConnect {
                 decryption_requirement: None,
                 has_tokens: true,
                 readonly: false,
+                serialized_bytes: 4_096,
             },
         );
         contracts.insert(
@@ -165,6 +174,7 @@ impl FakeConnect {
                 decryption_requirement: None,
                 has_tokens: false,
                 readonly: true,
+                serialized_bytes: 8_192,
             },
         );
         Self {
@@ -186,6 +196,10 @@ impl FakeConnect {
             refuse_update: Mutex::default(),
             refreshed: AtomicBool::new(false),
             disconnect_fee_override: Mutex::default(),
+            nonces: Mutex::default(),
+            stale_nonce: Mutex::default(),
+            signed_disables: Mutex::default(),
+            broadcast_disables: Mutex::default(),
         }
     }
 
@@ -226,6 +240,22 @@ impl ConnectNet for FakeConnect {
 
     async fn group(&self, id: Identifier) -> Result<Option<GroupFacts>, PlatformError> {
         self.read("group");
+        // Mirror SdkConnect::members(..., Some(MAX_GROUP_MEMBERS)): once earlier
+        // categories cross MAX_GROUP_MEMBERS, later categories (tokens) are not
+        // fetched because approval refuses any group over MAX_GROUP_MEMBERS.
+        Ok(self.groups.lock().unwrap().get(&id).cloned().map(|mut g| {
+            if g.contracts.len() > plan::MAX_GROUP_MEMBERS {
+                g.document_types.clear();
+                g.tokens.clear();
+            } else if g.contracts.len() + g.document_types.len() > plan::MAX_GROUP_MEMBERS {
+                g.tokens.clear();
+            }
+            g
+        }))
+    }
+
+    async fn group_all(&self, id: Identifier) -> Result<Option<GroupFacts>, PlatformError> {
+        self.read("group_all");
         Ok(self.groups.lock().unwrap().get(&id).cloned())
     }
 
@@ -273,7 +303,14 @@ impl ConnectNet for FakeConnect {
         disable: Vec<KeyID>,
         signer: &ConnectUpdateSigner,
     ) -> Result<(), PlatformError> {
-        let master = (self.me().public_keys().values())
+        let master = self
+            .identities
+            .lock()
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .public_keys()
+            .values()
             .find(|k| k.security_level() == SecurityLevel::MASTER)
             .cloned()
             .unwrap();
@@ -326,17 +363,27 @@ impl ConnectNet for FakeConnect {
         Ok(())
     }
 
-    async fn disable_keys(
+    async fn identity_nonce(&self, id: Identifier) -> Result<u64, PlatformError> {
+        self.read("identity_nonce");
+        if let Some(stale) = *self.stale_nonce.lock().unwrap() {
+            return Ok(stale);
+        }
+        Ok(*self.nonces.lock().unwrap().get(&id).unwrap_or(&0))
+    }
+
+    async fn sign_disable_keys(
         &self,
-        _: &PlatformWallet,
-        id: Identifier,
+        identity: &Identity,
+        master_key_id: KeyID,
         disable: Vec<KeyID>,
+        nonce: u64,
         signer: &VaultIdentitySigner,
-    ) -> Result<(), PlatformError> {
-        let master = (self.me().public_keys().values())
-            .find(|k| k.security_level() == SecurityLevel::MASTER)
+    ) -> Result<Vec<u8>, PlatformError> {
+        let master = identity
+            .public_keys()
+            .get(&master_key_id)
             .cloned()
-            .unwrap();
+            .ok_or(PlatformError::SignerUnavailable)?;
         signer
             .sign(&master, b"disable")
             .await
@@ -347,31 +394,73 @@ impl ConnectNet for FakeConnect {
                 detail: "Failed to broadcast identity update".into(),
             });
         }
+        let target_revision = identity.revision() + 1;
+        self.signed_disables
+            .lock()
+            .unwrap()
+            .push((target_revision, nonce, disable.clone()));
+        serde_json::to_vec(&(target_revision, nonce, disable)).map_err(|e| {
+            PlatformError::Internal {
+                detail: format!("encode fake disable: {e}"),
+            }
+        })
+    }
+
+    async fn broadcast_disable_keys(
+        &self,
+        _: &PlatformWallet,
+        id: Identifier,
+        transition_bytes: &[u8],
+    ) -> Result<(), PlatformError> {
+        self.broadcast_disables
+            .lock()
+            .unwrap()
+            .push(transition_bytes.to_vec());
         if let Some(e) = self.refuse_update.lock().unwrap().take() {
             return Err(e);
         }
+        let (target_revision, nonce, disable): (u64, u64, Vec<KeyID>) =
+            serde_json::from_slice(transition_bytes).map_err(|e| PlatformError::Internal {
+                detail: format!("decode fake disable: {e}"),
+            })?;
         if !self.lose_updates.load(Ordering::SeqCst) {
+            let mut nonces = self.nonces.lock().unwrap();
+            let cur_nonce = *nonces.get(&id).unwrap_or(&0);
+            if !super::super::withdrawal::takes(cur_nonce, nonce, id) {
+                // Mirror CheckTx rejecting a duplicate/used nonce for free.
+                return Err(PlatformError::Unavailable);
+            }
             let mut all = self.identities.lock().unwrap();
             let me = all.get_mut(&id).unwrap();
+            if me.revision() + 1 != target_revision {
+                return Err(PlatformError::Internal {
+                    detail: format!(
+                        "wrong revision: expected {}, got {target_revision}",
+                        me.revision() + 1
+                    ),
+                });
+            }
+            me.set_revision(target_revision);
+            nonces.insert(id, nonce);
             for d in &disable {
                 if let Some(k) = me.public_keys_mut().get_mut(d) {
                     k.set_disabled_at(NOW);
                 }
             }
+            self.updates.lock().unwrap().push((Vec::new(), disable));
         }
-        self.updates.lock().unwrap().push((Vec::new(), disable));
         if let Some(after) = self.after_update.lock().unwrap().take() {
             after(self);
         }
         Ok(())
     }
 
-    async fn disconnect_fee(&self, key_count: usize) -> Result<u64, PlatformError> {
+    async fn disconnect_fee(&self, specs: &[DisconnectKeyFeeSpec]) -> Result<u64, PlatformError> {
         self.read("disconnect_fee");
         if let Some(fee) = *self.disconnect_fee_override.lock().unwrap() {
             return Ok(fee);
         }
-        disconnect_fee_at(self.protocol.load(Ordering::SeqCst), key_count)
+        disconnect_fee_at(self.protocol.load(Ordering::SeqCst), specs)
     }
 
     async fn publish(
@@ -381,7 +470,14 @@ impl ConnectNet for FakeConnect {
         response: &Response,
         signer: &VaultIdentitySigner,
     ) -> Result<(), PlatformError> {
-        let key = (self.me().public_keys().values())
+        let key = self
+            .identities
+            .lock()
+            .unwrap()
+            .get(&owner)
+            .unwrap()
+            .public_keys()
+            .values()
             .find(|k| signer.can_sign_with(k))
             .cloned()
             .expect("a key the response signs with");
@@ -577,8 +673,18 @@ impl Fixture {
     }
 
     fn disconnect_grant(&self, request: [u8; 20], max_credits: u64) -> String {
+        self.disconnect_grant_for(id(ME).to_buffer(), request, max_credits)
+    }
+
+    fn disconnect_grant_for(
+        &self,
+        identity: [u8; 32],
+        request: [u8; 20],
+        max_credits: u64,
+    ) -> String {
         let purpose = GrantPurpose::AppDisconnect {
             max_credits,
+            identity,
             request,
         };
         (self
@@ -587,6 +693,70 @@ impl Fixture {
             .authorize(purpose, Some(&self.wallet.0), Credential::None))
         .unwrap()
         .id
+    }
+
+    /// Registers a second identity in this wallet (index 1, username "bob").
+    fn add_second_identity(&self, id_byte: u8) -> Identifier {
+        let second_id = id(id_byte);
+        let grant = self
+            .s
+            .vault
+            .authorize(
+                GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: 1,
+                },
+                Some(&self.wallet.0),
+                Credential::None,
+            )
+            .unwrap()
+            .id;
+        let lease_id = self
+            .engine
+            .block_on(self.s.begin_flow(
+                self.wallet,
+                FlowKind::EnableDashPayKeys,
+                vec![grant],
+                None,
+            ))
+            .unwrap();
+        let lease = self.s.lease_for(&self.wallet, &lease_id).unwrap().unwrap();
+        let signer = lease.identity_signer(&[1]).unwrap();
+        let real = self
+            .engine
+            .block_on(
+                signer.derive_public_keys(1, &crate::platform::keys_policy::registration_specs()),
+            )
+            .unwrap();
+        lease.end();
+        let derived: BTreeMap<KeyID, IdentityPublicKey> = keys(true)
+            .into_keys()
+            .map(|k| (k, real[&k].clone()))
+            .collect();
+        let second = identity(id_byte, derived, BALANCE);
+        self.net
+            .identities
+            .lock()
+            .unwrap()
+            .insert(second_id, second.clone());
+        let manager = self.s.manager().unwrap();
+        let w = self.wallet;
+        self.engine.block_on(async move {
+            let wallet = manager.get_wallet(&w.0).await.unwrap();
+            let mut state = wallet.state_mut().await;
+            let persister = wallet.persister();
+            (state.identity_manager)
+                .add_identity(second, 1, wallet.wallet_id(), persister)
+                .unwrap();
+            let names = vec![DpnsNameInfo {
+                label: "bob".into(),
+                acquired_at: Some(1),
+            }];
+            (state.identity_manager.managed_identity_mut(&second_id))
+                .unwrap()
+                .set_dpns_names(names, persister);
+        });
+        second_id
     }
 
     fn disconnect_grant_unused(&self, grant: &str) -> bool {
@@ -1720,7 +1890,7 @@ fn list_after_approve_shows_app_details_and_only_enabled_keys() {
     assert_eq!(item.label, "Yappr");
     assert_eq!(item.returns_to.as_deref(), Some("yappr.example"));
     assert_eq!(item.funding_limit, choice.terms.funding_limit);
-    assert_eq!(item.expires_at_ms, choice.terms.expires_at_ms);
+    assert_eq!(item.expires_at_ms, Some(choice.terms.expires_at_ms));
     assert!(item.approved_at_ms > 0);
     assert_eq!(
         item.keys.len(),
@@ -1833,6 +2003,8 @@ fn disconnect_yappr_disables_both_bounded_keys_and_leaves_all_other_keys_untouch
 
     let grant = f.disconnect_grant(q.request, q.max_credits);
     let updates_before = f.net.updates.lock().unwrap().len();
+    // Clear the refresh marker left by approval so Disconnect must perform its own refresh.
+    f.net.refreshed.store(false, Ordering::SeqCst);
     let done = f.disconnect(&me_b58, &req1, &grant).unwrap();
     assert_eq!(done.keys_disabled, q.keys);
     assert_eq!(f.net.updates.lock().unwrap().len(), updates_before + 1);
@@ -1906,6 +2078,7 @@ fn disconnect_retry_after_unknown_result_does_not_double_spend_or_disable_other_
     }));
     let updates_before = f.net.updates.lock().unwrap().len();
     let g_try1 = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
     assert_eq!(
         f.disconnect(&me_b58, &req1, &g_try1),
         Err(ConnectError::Failed {
@@ -1996,6 +2169,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
         .unwrap();
     let purpose = GrantPurpose::AppDisconnect {
         max_credits: q.max_credits,
+        identity: id(ME).to_buffer(),
         request: req_hash,
     };
     assert!(matches!(
@@ -2043,6 +2217,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
             .authorize(
                 GrantPurpose::AppDisconnect {
                     max_credits: q.max_credits,
+                    identity: id(ME).to_buffer(),
                     request: [0xee; 20],
                 },
                 Some(&f.wallet.0),
@@ -2070,6 +2245,7 @@ fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
             )
             .unwrap()
             .id;
+    f.net.refreshed.store(false, Ordering::SeqCst);
     let done = f.disconnect(&me_b58, &req_hex, &ok_grant).unwrap();
     assert_eq!(done.keys_disabled, q.keys);
 }
@@ -2117,6 +2293,7 @@ fn older_grant_without_key_data_lists_but_refuses_disconnect() {
         created_ms: NOW - 10_000,
         returns_to: None,
         session_key_data: BTreeMap::new(),
+        pending_disconnect: None,
     });
 
     // Still listed with whatever the older record holds.
@@ -2174,6 +2351,7 @@ fn assert_disconnect_refused_for_key(f: &Fixture, key: IdentityPublicKey, record
         created_ms: NOW - 10_000,
         returns_to: None,
         session_key_data: [(key_id, recorded_hex)].into_iter().collect(),
+        pending_disconnect: None,
     });
     assert_eq!(
         f.disconnect_quote(&me_b58, &req_hex),
@@ -2246,6 +2424,7 @@ fn disconnect_refuses_master_key() {
         session_key_data: [(0, hex::encode(master.data().as_slice()))]
             .into_iter()
             .collect(),
+        pending_disconnect: None,
     });
     assert_eq!(
         f.disconnect_quote(&me_b58, &req_hex),
@@ -2392,6 +2571,7 @@ fn disconnect_refuses_key_outside_grant() {
         created_ms: NOW,
         returns_to: None,
         session_key_data: [(20, hex::encode(&data))].into_iter().collect(),
+        pending_disconnect: None,
     };
     assert_eq!(
         check_disconnect_key(&record, &key),
@@ -2413,8 +2593,14 @@ fn disconnect_refuses_key_outside_grant() {
 
 #[test]
 fn disconnect_fee_bound_covers_known_versions_and_refuses_over_bound_without_clamping() {
+    let typical_specs = [
+        DisconnectKeyFeeSpec::Group { admin_count: 2 },
+        DisconnectKeyFeeSpec::Contract {
+            serialized_bytes: 8_192,
+        },
+    ];
     for v in MIN_PROTOCOL_VERSION..=PlatformVersion::latest().protocol_version {
-        let fee = disconnect_fee_at(v, MAX_ADDED).unwrap();
+        let fee = disconnect_fee_at(v, &typical_specs).unwrap();
         assert!(
             fee > 0 && fee <= DISCONNECT_FEE_BOUND,
             "v{v}: {fee} vs {DISCONNECT_FEE_BOUND}"
@@ -2488,4 +2674,754 @@ fn disconnect_fee_bound_covers_known_versions_and_refuses_over_bound_without_cla
         })
     );
     assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+}
+
+#[test]
+fn put_record_never_evicts_active_records_past_max_records() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+
+    // Approve app #1 (the oldest active record).
+    let l1 = devnet_with_callback(request(), "https://yappr.example/cb");
+    let c1 = Fixture::choice();
+    let g1 = f.quoted_grant(&l1, &c1);
+    f.approve(&l1, &c1, &g1).unwrap();
+    let req1 = hex::encode(l1.request.request_hash());
+
+    // Record 63 more active (Published) grants across multiple identities so
+    // the wallet holds MAX_RECORDS (64) active records.
+    let other_id_b58 = b58(&id(2));
+    for i in 0..(MAX_RECORDS - 1) {
+        let rec = ConnectRecord {
+            request: format!("{i:040x}"),
+            app_id: b58(&app()),
+            label: format!("App {i}"),
+            identity: if i % 2 == 0 {
+                me_b58.clone()
+            } else {
+                other_id_b58.clone()
+            },
+            connection_id: None,
+            session_keys: vec![],
+            encryption_keys: vec![],
+            selection: vec![0],
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+            state: RecordState::Published,
+            created_ms: NOW + i as u64,
+            returns_to: None,
+            session_key_data: BTreeMap::new(),
+            pending_disconnect: None,
+        };
+        f.engine.block_on(put_record(&f.s, f.wallet, rec)).unwrap();
+    }
+
+    // Approve a 65th app — even if it stops at Submitted (NotConfirmed), its
+    // Submitted write must NOT evict app #1.
+    let l65 = devnet(second_app_request());
+    let c65 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g65 = f.quoted_grant(&l65, &c65);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.approve(&l65, &c65, &g65),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+
+    // App #1 must still appear in Connected apps and remain disconnectable.
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert!(
+        listed.apps.iter().any(|a| a.request == req1),
+        "oldest active app must not be evicted by the 65th approval"
+    );
+    let q = f.disconnect_quote(&me_b58, &req1).unwrap();
+    assert_eq!(q.keys.len(), 2);
+    let g_disc = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done = f.disconnect(&me_b58, &req1, &g_disc).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+
+    // Inactive (Disconnected) history IS bounded to MAX_RECORDS without touching active records.
+    for i in 0..(MAX_RECORDS + 5) {
+        let rec = ConnectRecord {
+            request: format!("{:040x}", 0x10_000 + i),
+            app_id: b58(&app()),
+            label: format!("Old {i}"),
+            identity: me_b58.clone(),
+            connection_id: None,
+            session_keys: vec![],
+            encryption_keys: vec![],
+            selection: vec![0],
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+            state: RecordState::Disconnected,
+            created_ms: NOW + 1_000 + i as u64,
+            returns_to: None,
+            session_key_data: BTreeMap::new(),
+            pending_disconnect: None,
+        };
+        f.engine.block_on(put_record(&f.s, f.wallet, rec)).unwrap();
+    }
+    let all = f.engine.block_on(records(&f.s, f.wallet)).unwrap();
+    let inactive = all
+        .iter()
+        .filter(|r| r.state == RecordState::Disconnected)
+        .count();
+    let active = all
+        .iter()
+        .filter(|r| r.state != RecordState::Disconnected)
+        .count();
+    assert_eq!(inactive, MAX_RECORDS, "inactive history stays bounded");
+    assert_eq!(
+        active, MAX_RECORDS,
+        "all 64 remaining active records (63 Published + 1 Submitted) stay intact"
+    );
+}
+
+#[test]
+fn retry_send_aborts_if_disconnected_while_waiting_for_write_lock() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.net.fail_publish.store(true, Ordering::SeqCst);
+    assert_eq!(f.approve(&l, &c, &g), Err(ConnectError::SendFailed));
+    f.net.fail_publish.store(false, Ordering::SeqCst);
+
+    let req_hash = l.request.request_hash();
+    let req_hex = hex::encode(req_hash);
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    let g_disc = f.disconnect_grant(q.request, q.max_credits);
+
+    // Case 1: retry_send peeks the identity and waits on locks.write while
+    // disconnect holds locks.write; disconnect cancels the parked response and
+    // disables the keys, so when retry_send enters the lock it aborts without
+    // publishing or overwriting Disconnected with Published.
+    let pw = f.wallet();
+    let (res_disc, res_retry) = f.engine.block_on(async {
+        let locks = identity_locks(f.wallet, id(ME));
+        let hold = locks.write.lock().await;
+        let retry_fut = {
+            let (net, s, pw, w, link) = (
+                Arc::clone(&f.net),
+                Arc::clone(&f.s),
+                Arc::clone(&pw),
+                f.wallet,
+                l.clone(),
+            );
+            tokio::spawn(async move { retry_send(&*net, &s, &pw, w, &link).await })
+        };
+        // Yield so retry_send peeks the identity and blocks on locks.write;
+        // pending MUST remain in app_connect until the lock is held.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !f.s.platform.app_connect.0.lock().unwrap().is_empty(),
+            "retry_send must not take pending before acquiring the identity write lock"
+        );
+        // Simulate disconnect running under locks.write: cancel pending,
+        // disable keys, mark Disconnected, then release the lock.
+        let _ = f.s.platform.app_connect.take(f.wallet, req_hash);
+        {
+            let mut all = f.net.identities.lock().unwrap();
+            let me = all.get_mut(&id(ME)).unwrap();
+            for &kid in &q.keys {
+                me.public_keys_mut()
+                    .get_mut(&kid)
+                    .unwrap()
+                    .set_disabled_at(NOW);
+            }
+        }
+        let mut rec = records(&f.s, f.wallet)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        rec.state = RecordState::Disconnected;
+        put_record(&f.s, f.wallet, rec).await.unwrap();
+        drop(hold);
+        let r = retry_fut.await.unwrap();
+        let d = disconnect(&*f.net, &f.s, &pw, f.wallet, &me_b58, &req_hex, g_disc).await;
+        (d, r)
+    });
+    assert!(res_disc.is_ok());
+    assert_eq!(
+        res_retry,
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NothingToSend,
+        })
+    );
+    assert!(
+        f.net.published.lock().unwrap().is_empty(),
+        "retry_send must not publish after disconnect"
+    );
+    let rec = f
+        .engine
+        .block_on(records(&f.s, f.wallet))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.request == req_hex)
+        .unwrap();
+    assert_eq!(
+        rec.state,
+        RecordState::Disconnected,
+        "retry_send must not overwrite Disconnected with Published"
+    );
+
+    // Case 2: even if disconnect's put_record failed so the stored record stays
+    // Confirmed while Platform disabled the keys, retry_send still aborts.
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2 = f.quoted_grant(&l2, &c2);
+    f.net.fail_publish.store(true, Ordering::SeqCst);
+    assert_eq!(f.approve(&l2, &c2, &g2), Err(ConnectError::SendFailed));
+    f.net.fail_publish.store(false, Ordering::SeqCst);
+    let req2 = hex::encode(l2.request.request_hash());
+    let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        for &kid in &q2.keys {
+            me.public_keys_mut()
+                .get_mut(&kid)
+                .unwrap()
+                .set_disabled_at(NOW);
+        }
+    }
+    assert_eq!(
+        f.retry(&l2),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NothingToSend,
+        })
+    );
+    assert!(
+        f.net.published.lock().unwrap().is_empty(),
+        "stale Confirmed record with disabled Platform keys must not publish"
+    );
+    let rec2 = f
+        .engine
+        .block_on(records(&f.s, f.wallet))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.request == req2)
+        .unwrap();
+    assert_eq!(rec2.state, RecordState::Confirmed);
+}
+
+#[test]
+fn list_enumerates_tokens_even_when_approved_group_grows_past_200_members() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+
+    // Approve Yappr while the group is within MAX_GROUP_MEMBERS.
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+
+    // After approval, the group owner adds contracts past MAX_GROUP_MEMBERS AND a token.
+    let token_contract = Identifier::from([0x77; 32]);
+    {
+        let mut groups = f.net.groups.lock().unwrap();
+        let gf = groups.get_mut(&group()).unwrap();
+        for i in 0..(plan::MAX_GROUP_MEMBERS + 5) {
+            let mut buf = [0u8; 32];
+            buf[0] = 0x55;
+            buf[1..5].copy_from_slice(&(i as u32).to_be_bytes());
+            gf.contracts.push(Identifier::from(buf));
+        }
+        gf.tokens.push((token_contract, 2));
+    }
+
+    // New approvals of this over-limit group are still refused as Unsupported.
+    let mut fresh_req = request();
+    fresh_req.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([9u8; 32]).unwrap()).serialize();
+    assert_eq!(f.sheet(&devnet(fresh_req)), Err(ConnectError::Unsupported));
+
+    // Connected apps pages through all members and shows the full contract list AND token.
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    let group_scope = listed.apps[0]
+        .keys
+        .iter()
+        .find_map(|k| match &k.scope {
+            ConnectScope::Group(grp) => Some(grp),
+            _ => None,
+        })
+        .expect("group key scope");
+    assert!(
+        group_scope.contracts.len() > plan::MAX_GROUP_MEMBERS,
+        "all contracts past MAX_GROUP_MEMBERS must be enumerated"
+    );
+    assert_eq!(
+        group_scope.tokens,
+        vec![ConnectToken {
+            contract: b58(&token_contract),
+            position: 2,
+        }],
+        "group tokens must never be silently omitted when the group exceeds 200 members"
+    );
+}
+
+#[test]
+fn disconnect_refuses_lagging_pre_approval_snapshot_with_absent_keys() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    // Snapshot taken BEFORE approval: keys 6 & 7 are absent.
+    let pre_approval = f.net.me();
+
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+
+    // Inventory sees the 2 newly added keys.
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert_eq!(q.keys.len(), 2);
+
+    // Case 1: Refresh returns the lagging pre-approval snapshot (keys absent).
+    // Disconnect MUST NOT treat absent keys as disabled, MUST NOT return Ok,
+    // MUST NOT mark Disconnected, and MUST leave the grant unused.
+    *f.net.stale.lock().unwrap() = Some(pre_approval.clone());
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Platform(PlatformError::Unavailable))
+    );
+    let g_disc = f.disconnect_grant(q.request, q.max_credits);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g_disc),
+        Err(ConnectError::Platform(PlatformError::Unavailable))
+    );
+    assert!(
+        f.disconnect_grant_unused(&g_disc),
+        "lagging snapshot refusal must leave grant unused"
+    );
+    *f.net.stale.lock().unwrap() = None;
+    assert_eq!(
+        f.list_apps(&me_b58).unwrap().apps.len(),
+        1,
+        "app must NOT vanish after lagging pre-approval disconnect attempt"
+    );
+
+    // Case 2: Post-write confirm receives a lagging pre-approval snapshot
+    // (absent keys) when the update was actually lost: must return NotConfirmed,
+    // NEVER Ok.
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+        *net.stale.lock().unwrap() = Some(pre_approval);
+    }));
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g_disc),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    *f.net.stale.lock().unwrap() = None;
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+
+    // Once lag clears, retrying re-broadcasts the signed transition and disables both keys.
+    let g_retry = f.disconnect_grant(q.request, q.max_credits);
+    let done = f.disconnect(&me_b58, &req_hex, &g_retry).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+}
+
+#[test]
+fn disconnect_grant_bound_to_identity_refuses_other_identity_in_same_wallet() {
+    let f = Fixture::new();
+    let id1 = id(ME);
+    let id2 = f.add_second_identity(2);
+    let id1_b58 = b58(&id1);
+    let id2_b58 = b58(&id2);
+
+    // Both identities in the same wallet approve the exact same request.
+    let l = devnet(request());
+    let c1 = Fixture::choice();
+    let g1 = f.quoted_grant(&l, &c1);
+    f.approve(&l, &c1, &g1).unwrap();
+
+    let c2 = ConnectChoice {
+        identity: id2_b58.clone(),
+        ..Fixture::choice()
+    };
+    let g2 = f.quoted_grant(&l, &c2);
+    f.approve(&l, &c2, &g2).unwrap();
+
+    let req_hex = hex::encode(l.request.request_hash());
+    let q1 = f.disconnect_quote(&id1_b58, &req_hex).unwrap();
+    assert_eq!(q1.identity_id, id1.to_buffer());
+
+    // Grant authorized for id1 MUST be refused when disconnecting id2,
+    // leaving the grant unused and sending no update.
+    let grant_for_id1 = f.disconnect_grant_for(q1.identity_id, q1.request, q1.max_credits);
+    let updates_before = f.net.updates.lock().unwrap().len();
+    assert_eq!(
+        f.disconnect(&id2_b58, &req_hex, &grant_for_id1),
+        Err(ConnectError::Platform(PlatformError::GrantInvalid))
+    );
+    assert!(
+        f.disconnect_grant_unused(&grant_for_id1),
+        "mismatched-identity refusal must leave grant unused"
+    );
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+    assert_eq!(
+        f.list_apps(&id2_b58).unwrap().apps.len(),
+        1,
+        "id2's keys must remain untouched"
+    );
+
+    // The same grant succeeds on the identity it was bound to (id1).
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done = f.disconnect(&id1_b58, &req_hex, &grant_for_id1).unwrap();
+    assert_eq!(done.keys_disabled, q1.keys);
+    assert!(f.list_apps(&id1_b58).unwrap().apps.is_empty());
+    assert_eq!(f.list_apps(&id2_b58).unwrap().apps.len(), 1);
+}
+
+#[test]
+fn disconnect_not_confirmed_cancels_parked_response_preventing_decryption_key_delivery() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.net.fail_publish.store(true, Ordering::SeqCst);
+    assert_eq!(f.approve(&l, &c, &g), Err(ConnectError::SendFailed));
+    f.net.fail_publish.store(false, Ordering::SeqCst);
+
+    let req_hex = hex::encode(l.request.request_hash());
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    let g_disc = f.disconnect_grant(q.request, q.max_credits);
+    // Update lands on Platform, but confirmation read lags -> Disconnect returns NotConfirmed.
+    let before = f.net.me();
+    *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+        *net.stale.lock().unwrap() = Some(before);
+    }));
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g_disc),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    // Even while stale hides the disabled keys, retry_send MUST be cancelled
+    // and MUST NOT publish the sealed payload (which contains the decryption key).
+    assert_eq!(
+        f.retry(&l),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NothingToSend,
+        })
+    );
+    assert!(
+        f.net.published.lock().unwrap().is_empty(),
+        "NotConfirmed disconnect must cancel parked response so no decryption key leaks"
+    );
+}
+
+#[test]
+fn disconnect_retry_rebroadcasts_same_signed_transition_without_double_charging() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+
+    // Case 1: Try 1 lands on Platform (revision 1, nonce 1), but a lagging node
+    // STILL shows revision 0 with enabled keys when the user retries!
+    let pre_disable = f.net.me();
+    let pre_disable_for_retry = pre_disable.clone();
+    *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+        *net.stale.lock().unwrap() = Some(pre_disable);
+    }));
+    let g1 = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), 1);
+
+    // Retry while the lagging node STILL returns pre_disable (revision 0, enabled keys)
+    // and even with split-node nonce (nonce already 1 on Platform while stale identity is rev 0):
+    // Disconnect MUST NOT sign a second transition, MUST NOT consume g2, and MUST NOT
+    // submit a bumped-nonce update!
+    *f.net.stale.lock().unwrap() = Some(pre_disable_for_retry.clone());
+    let g2 = f.disconnect_grant(q.request, q.max_credits);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g2),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    assert_eq!(
+        f.net.signed_disables.lock().unwrap().len(),
+        1,
+        "retry while lagging must NOT sign a second transition or bump the nonce"
+    );
+    assert!(
+        f.disconnect_grant_unused(&g2),
+        "retry of an unresolved transition must leave the new grant unused"
+    );
+
+    // Also test lagging nonce (stale_nonce = 0) + lagging identity: re-broadcasts
+    // the exact same signed transition bytes (same revision & nonce), and once
+    // lag clears on confirm, finishes cleanly with zero second fee!
+    *f.net.stale_nonce.lock().unwrap() = Some(0);
+    *f.net.after_update.lock().unwrap() = Some(Box::new(|net| {
+        *net.stale.lock().unwrap() = None;
+        *net.stale_nonce.lock().unwrap() = None;
+    }));
+    // Clear stale right after re-broadcast runs (CheckTx returns duplicate-nonce
+    // error, so clear stale via a fresh check right after verifying re-broadcast).
+    *f.net.stale.lock().unwrap() = Some(pre_disable_for_retry);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g2),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    let broadcasts = f.net.broadcast_disables.lock().unwrap().clone();
+    assert_eq!(broadcasts.len(), 2, "same transition re-broadcast once");
+    assert_eq!(
+        broadcasts[0], broadcasts[1],
+        "re-broadcast MUST reuse the exact same signed transition bytes (same revision & nonce)"
+    );
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert!(f.disconnect_grant_unused(&g2));
+
+    // Lag clears: retry sees keys already disabled, finishes cleanly with 0 updates & grant unused.
+    *f.net.stale.lock().unwrap() = None;
+    *f.net.stale_nonce.lock().unwrap() = None;
+    let done = f.disconnect(&me_b58, &req_hex, &g2).unwrap();
+    assert!(done.keys_disabled.is_empty());
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert!(f.disconnect_grant_unused(&g2));
+
+    // Case 2: Another unrelated update takes pending.revision while keys stay
+    // enabled: retry sees fresh.revision() >= pending.revision, clears the dead
+    // pending transition, and signs & broadcasts a fresh one at revision + 1.
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g_app2 = f.quoted_grant(&l2, &c2);
+    f.approve(&l2, &c2, &g_app2).unwrap();
+    let req2 = hex::encode(l2.request.request_hash());
+    let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+    let g2_try1 = f.disconnect_grant(q2.request, q2.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req2, &g2_try1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    // An unrelated update advances revision past pending.revision while keys remain enabled.
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        let next_rev = me.revision() + 1;
+        me.set_revision(next_rev);
+        let mut nonces = f.net.nonces.lock().unwrap();
+        let cur = *nonces.get(&id(ME)).unwrap_or(&0);
+        nonces.insert(id(ME), cur + 1);
+    }
+    let g2_try2 = f.disconnect_grant(q2.request, q2.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done2 = f.disconnect(&me_b58, &req2, &g2_try2).unwrap();
+    assert_eq!(done2.keys_disabled, q2.keys);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+}
+
+#[test]
+fn disconnect_fee_scales_with_bound_contract_and_group_size_and_refuses_over_bound() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+
+    let small_quote = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+
+    // Growing the bound contract's serialized bytes increases the concrete fee quote.
+    f.net
+        .contracts
+        .lock()
+        .unwrap()
+        .get_mut(&dashpay_contract::ID)
+        .unwrap()
+        .serialized_bytes = 32_768;
+    let larger_contract_quote = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert!(
+        larger_contract_quote.fee > small_quote.fee,
+        "larger bound contract must produce a higher fee bound ({} vs {})",
+        larger_contract_quote.fee,
+        small_quote.fee
+    );
+
+    // Growing the bound group's admin list also increases the concrete fee quote.
+    f.net
+        .groups
+        .lock()
+        .unwrap()
+        .get_mut(&group())
+        .unwrap()
+        .admins
+        .extend((100u8..130u8).map(id));
+    let larger_group_quote = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    assert!(
+        larger_group_quote.fee > larger_contract_quote.fee,
+        "larger bound group info must produce a higher fee bound ({} vs {})",
+        larger_group_quote.fee,
+        larger_contract_quote.fee
+    );
+
+    // A contract whose metered lookup pushes the bound past DISCONNECT_FEE_BOUND
+    // is refused with FeeTooHigh rather than clamped or under-quoted.
+    f.net
+        .contracts
+        .lock()
+        .unwrap()
+        .get_mut(&dashpay_contract::ID)
+        .unwrap()
+        .serialized_bytes = 150_000;
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::FeeTooHigh,
+        })
+    );
+}
+
+#[test]
+fn list_reports_proved_key_budgets_for_profile_only_approval() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    // Profile-only request asking for 0.05 DASH; plan::budgets caps the
+    // on-chain profile key budget to PROFILE_SHARE (0.002 DASH).
+    let mut r = second_app_request();
+    r.auth_bindings = vec![AuthBinding {
+        bounds: Bounds::DocumentType(dashpay_contract::ID.to_buffer(), "profile".into()),
+        level: Level::High,
+        budget: Some(5_000_000_000),
+        expires_at_ms: Some(NOW + 30 * DAY_MS),
+    }];
+    let l = devnet(r);
+    let c = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    assert_eq!(
+        listed.apps[0].funding_limit,
+        plan::PROFILE_SHARE,
+        "Connected apps must report the proved on-chain key budget, not the higher requested limit"
+    );
+}
+
+#[test]
+fn list_uses_latest_expiry_and_omits_end_date_when_any_key_never_expires() {
+    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
+
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+
+    let listed = f.list_apps(&me_b58).unwrap();
+    let key0 = listed.apps[0].keys[0].key_id;
+    let key1 = listed.apps[0].keys[1].key_id;
+
+    let replace_expiry = |key_id: KeyID, new_exp: Option<u64>| {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        let old = me.public_keys().get(&key_id).unwrap().clone();
+        let v0 = IdentityPublicKeyV0 {
+            id: old.id(),
+            purpose: old.purpose(),
+            security_level: old.security_level(),
+            contract_bounds: old.contract_bounds().cloned(),
+            key_type: old.key_type(),
+            read_only: old.read_only(),
+            data: old.data().clone(),
+            disabled_at: old.disabled_at(),
+        };
+        let budget = old.total_budget();
+        me.public_keys_mut().insert(
+            key_id,
+            IdentityPublicKey::V1(IdentityPublicKeyV1::from_v0_with_limits(
+                v0, budget, new_exp,
+            )),
+        );
+    };
+
+    // Case 1: Key 1 expired in the past, while Key 0 was extended into the future.
+    // The app's access has NOT ended — expires_at_ms must be the latest expiry (Key 0).
+    let extended = NOW + 180 * DAY_MS;
+    replace_expiry(key0, Some(extended));
+    replace_expiry(key1, Some(NOW - DAY_MS));
+    let listed1 = f.list_apps(&me_b58).unwrap();
+    assert_eq!(
+        listed1.apps[0].expires_at_ms,
+        Some(extended),
+        "must use latest expiry so an extended key is never shown as Access ended"
+    );
+
+    // Case 2: One enabled key has no expiry on Platform -> expires_at_ms must be None.
+    replace_expiry(key0, None);
+    let listed2 = f.list_apps(&me_b58).unwrap();
+    assert_eq!(
+        listed2.apps[0].expires_at_ms, None,
+        "must omit end date when any enabled key has no expiry"
+    );
 }

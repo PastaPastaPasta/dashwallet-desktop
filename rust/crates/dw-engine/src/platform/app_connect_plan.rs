@@ -62,6 +62,10 @@ pub(crate) struct ContractFacts {
     pub(crate) has_tokens: bool,
     /// No update can change it, so it can never gain tokens.
     pub(crate) readonly: bool,
+    /// Serialized contract size in bytes at the network's protocol version,
+    /// used to bound the real contract lookup Drive meters when disabling a
+    /// contract-bound key.
+    pub(crate) serialized_bytes: usize,
 }
 
 /// A contract group as the proved reads found it: owner, admins and every

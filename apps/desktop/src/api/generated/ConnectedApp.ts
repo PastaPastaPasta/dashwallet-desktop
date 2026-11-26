@@ -6,4 +6,4 @@ import type { ConnectedAppKey } from "./ConnectedAppKey";
  * session keys on Platform. `label` is the app's own claim: nothing
  * verifies it.
  */
-export type ConnectedApp = { request: string, appId: string, label: string, returnsTo: string | null, identity: string, keys: Array<ConnectedAppKey>, fundingLimit: string, expiresAtMs: number, approvedAtMs: number, };
+export type ConnectedApp = { request: string, appId: string, label: string, returnsTo: string | null, identity: string, keys: Array<ConnectedAppKey>, fundingLimit: string, expiresAtMs: number | null, approvedAtMs: number, };

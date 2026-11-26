@@ -1,6 +1,7 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend } from "../api/tauri";
+import { CONNECT_LINKS } from "../fixture/connect";
 import { IDENTITY } from "../fixture/dashpay";
 import { installFixture } from "../fixture/index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID } from "../fixture/scenarios";
@@ -47,6 +48,33 @@ describe("Connected apps list and empty state", () => {
     const res = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
     expect(res.apps).toEqual([]);
   });
+
+  it("records a connected app when sendFailed happens after keys are added and recovers on retry", async () => {
+    const fixture = installFixture({ scenario: "dashpay-registered" });
+    const linkId = CONNECT_LINKS.sendFailed;
+    fixture.world.links.push({ kind: "appConnect", linkId, returnsTo: "yappr.example" });
+    const backend = new IpcBackend("fixture", () => fixture.now, fixture.locale);
+    await backend.takeLinks(fixture.world.launch.network.dirName);
+    const sheet = await backend.appConnectSheet(FIXTURE_WALLET_ID, linkId);
+    const choice = {
+      identity: sheet.identities[0].identity,
+      selection: sheet.bindings.map((b) => b.index),
+      terms: sheet.terms,
+    };
+    const quote = await backend.appConnectQuote(FIXTURE_WALLET_ID, linkId, choice);
+    const grant = await backend.authorize(quote.grant, FIXTURE_WALLET_ID, {
+      kind: "passphrase",
+      passphrase: FIXTURE_PASSPHRASE,
+    });
+    await expect(backend.appConnectApprove(FIXTURE_WALLET_ID, linkId, choice, grant.id)).rejects.toMatchObject({
+      code: "connect.send_failed",
+    });
+    const afterFail = await backend.appConnectList(FIXTURE_WALLET_ID, sheet.identities[0].identity);
+    expect(afterFail.apps.some((a) => a.request === sheet.request)).toBe(true);
+    await backend.appConnectRetrySend(FIXTURE_WALLET_ID, linkId);
+    const afterRetry = await backend.appConnectList(FIXTURE_WALLET_ID, sheet.identities[0].identity);
+    expect(afterRetry.apps.some((a) => a.request === sheet.request)).toBe(true);
+  });
 });
 
 describe("Disconnect confirm with fee, passphrase, success and errors", () => {
@@ -59,7 +87,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
       retryAfterSecs: null,
       walletsWithSecrets: [FIXTURE_WALLET_ID],
     };
-    const purpose = { kind: "appDisconnect", maxCredits: "22000000", request: "1a2b".repeat(10) } as const;
+    const purpose = { kind: "appDisconnect", maxCredits: "22000000", identity: "22".repeat(32), request: "1a2b".repeat(10) } as const;
     expect(needsPassphrase(purpose, unlocked, false)).toBe(true);
     expect(needsPassphrase(purpose, { ...unlocked, encrypted: false }, false)).toBe(false);
   });

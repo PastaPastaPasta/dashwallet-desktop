@@ -440,6 +440,7 @@ fn an_app_disconnect_grant_issues_only_identity_signer_and_requires_passphrase()
     let request = request_hash(&app_eph_pub(9));
     let purpose = GrantPurpose::AppDisconnect {
         max_credits: 100_000_000,
+        identity: [7u8; 32],
         request,
     };
     assert!(purpose.requires_credential());

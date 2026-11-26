@@ -24,7 +24,6 @@ import {
   useConnectedApps,
 } from "../../dashpay/connectedApps";
 import { creditCount } from "../../dashpay/profile";
-import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GroupDetails } from "../dashpay/AppConnectSheet";
@@ -75,8 +74,8 @@ function AppRow({
   onDisconnect: () => void;
 }) {
   const t = useT();
-  const expiryDate = formatConnectDate(app.expiresAtMs, locale);
-  const expired = blockTimeMs > 0 && app.expiresAtMs <= blockTimeMs;
+  const expiryDate = app.expiresAtMs !== null ? formatConnectDate(app.expiresAtMs, locale) : null;
+  const expired = app.expiresAtMs !== null && blockTimeMs > 0 && app.expiresAtMs <= blockTimeMs;
   const approvedDate = formatConnectDate(app.approvedAtMs, locale);
   const limitValue = `${creditsDash(BigInt(app.fundingLimit))} ${unitName}`;
   return (
@@ -111,7 +110,7 @@ function AppRow({
         <DetailRow label={t("dashpay.connect.connected.fundingLimit")} testId="connected-app-limit">
           <bdi className="mono">{limitValue}</bdi>
         </DetailRow>
-        {!expired && (
+        {expiryDate !== null && !expired && (
           <DetailRow label={t("dashpay.connect.connected.expiry")} testId="connected-app-expiry">
             {expiryDate}
           </DetailRow>
@@ -120,7 +119,7 @@ function AppRow({
           {approvedDate}
         </DetailRow>
       </dl>
-      {expired && (
+      {expiryDate !== null && expired && (
         <p className="field-hint" data-testid="connected-app-expiry">
           {t("dashpay.connect.connected.expiryPast", { date: expiryDate })}
         </p>
@@ -142,6 +141,12 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
   const app = model.target;
   if (!app) return null;
   const error = model.disconnectError ?? model.quoteError;
+  // Once the live quote resolves, render only the key IDs the quote will
+  // actually disable (falling back to cached metadata for descriptions).
+  const shownKeys =
+    model.quote !== null
+      ? model.quote.keys.map((keyId) => ({ keyId, item: app.keys.find((k) => k.keyId === keyId) ?? null }))
+      : app.keys.map((item) => ({ keyId: item.keyId, item }));
   return (
     <Sheet
       title={t("dashpay.connect.connected.sheetTitle")}
@@ -174,14 +179,26 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             ? t("dashpay.connect.connected.sheetBody", { who: `@${username}` })
             : t("dashpay.connect.connected.sheetBodySelf")}
         </p>
-        <div className="connected-app-keys-block">
-          <p className="connect-asks-title">{t("dashpay.connect.connected.keysLabel")}</p>
-          <ul className="connected-app-keys" data-testid="disconnect-keys">
-            {app.keys.map((k) => (
-              <KeyItem key={k.keyId} item={k} detailed={false} />
-            ))}
-          </ul>
-        </div>
+        {shownKeys.length > 0 && (
+          <div className="connected-app-keys-block">
+            <p className="connect-asks-title">{t("dashpay.connect.connected.keysLabel")}</p>
+            <ul className="connected-app-keys" data-testid="disconnect-keys">
+              {shownKeys.map(({ keyId, item }) =>
+                item !== null ? (
+                  <KeyItem key={keyId} item={item} detailed={false} />
+                ) : (
+                  <li key={keyId} className="connected-app-key" data-testid="connected-app-key" data-key-id={keyId}>
+                    <div className="connected-app-key-head">
+                      <span className="identity-badge" data-testid="connected-app-key-id">
+                        {t("dashpay.connect.connected.keyId", { id: keyId })}
+                      </span>
+                    </div>
+                  </li>
+                ),
+              )}
+            </ul>
+          </div>
+        )}
         {model.disconnecting ? (
           <div className="connect-loading" role="status" data-testid="disconnect-busy">
             <span className="spinner" aria-hidden="true" />
@@ -238,7 +255,6 @@ export function ConnectedAppsCard({
   const t = useT();
   const b = useBackend();
   const client = useQueryClient();
-  const shown = useDisplay(network);
   const mainnet = network.kind === "mainnet";
   const query = useConnectedApps(walletId, identity.identity, !mainnet);
   const [model] = useState(
@@ -304,7 +320,7 @@ export function ConnectedAppsCard({
                   key={app.request}
                   app={app}
                   blockTimeMs={query.data.blockTimeMs}
-                  unitName={shown.name}
+                  unitName={network.unitName}
                   locale={b.locale}
                   busy={model.disconnecting}
                   onDisconnect={() => void model.openDisconnect(app)}
