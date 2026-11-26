@@ -4855,10 +4855,28 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
     assert_eq!(address.account, 0);
 }
 
-/// Shielded spends stay off until their funds review, on every network
-/// (the shipped switch, [`pool::session_keyset_spends`], is read by
-/// `tests/shielded_spends_off.rs`): with the switch off, through the real
-/// library the sync read says so and a send and an unshield to Core are
+/// The shipped switch is on for testnet only: mainnet, devnet and regtest
+/// stay off until their funds review.
+#[test]
+fn the_shipped_switch_is_on_for_testnet_only() {
+    for network in [
+        Network::Mainnet,
+        Network::Testnet,
+        Network::Devnet,
+        Network::Regtest,
+    ] {
+        assert_eq!(
+            pool::release_keyset_spends(network),
+            network == Network::Testnet,
+            "{network:?}"
+        );
+    }
+}
+
+/// Shielded spends stay off until their funds review: the shipped switch,
+/// [`pool::release_keyset_spends`], is off on every network but testnet
+/// (read by `tests/shielded_spends_off.rs`). With the switch off, through
+/// the real library the sync read says so and a send and an unshield to Core are
 /// `platform.unavailable` before the grant is redeemed; forced on, the sync
 /// read says spends are available and the same calls get past it to later
 /// gates. On mainnet an unshield to a Platform address keeps its own

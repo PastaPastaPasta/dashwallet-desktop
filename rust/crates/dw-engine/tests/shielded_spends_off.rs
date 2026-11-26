@@ -1,8 +1,9 @@
-//! The shipped engine does not spend from Shielded: built as the app links
-//! it (not `cfg(test)`, so with no test override of the switch), every
-//! network's status and sync read report `spends_available` false, and the
-//! receive address and the spend quotes are refused, and so are a
-//! Shielded-funded registration's quote and start.
+//! The shipped engine spends from Shielded on testnet only: built as the app
+//! links it (not `cfg(test)`, so with no test override of the switch),
+//! mainnet's and regtest's status and sync read report `spends_available`
+//! false, and their receive address, spend quotes and a Shielded-funded
+//! registration's quote and start are refused, while testnet reports spends
+//! available and issues the receive address.
 
 use std::sync::Arc;
 
@@ -48,7 +49,7 @@ fn opts() -> SessionOptions {
 }
 
 #[test]
-fn the_shipped_engine_reports_shielded_spends_unavailable() {
+fn shielded_spends_are_off_on_mainnet_until_their_funds_review() {
     for network in [
         DashNetwork::Mainnet,
         DashNetwork::Testnet,
@@ -70,10 +71,17 @@ fn the_shipped_engine_reports_shielded_spends_unavailable() {
             ))
             .unwrap();
         let dp = session.dashpay(wallet);
+        let on = network == DashNetwork::Testnet;
         let info = engine.block_on(dp.shielded_sync_info()).unwrap();
-        assert!(!info.spends_available, "{network:?}: sync read");
+        assert_eq!(info.spends_available, on, "{network:?}: sync read");
         let status = engine.block_on(dp.shielded_status()).unwrap();
-        assert!(!status.spends_available, "{network:?}: status");
+        assert_eq!(status.spends_available, on, "{network:?}: status");
+        if on {
+            let address = engine.block_on(dp.shielded_receive_address());
+            assert!(address.is_ok(), "{network:?}: receive address");
+            engine.block_on(engine.close_network(network)).unwrap();
+            continue;
+        }
         let address = engine.block_on(dp.shielded_receive_address());
         assert_eq!(
             address.unwrap_err().code(),
