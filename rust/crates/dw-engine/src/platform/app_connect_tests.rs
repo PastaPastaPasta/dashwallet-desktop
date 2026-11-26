@@ -4742,3 +4742,343 @@ fn group_member_page_failure_does_not_block_list_or_disconnect() {
     f.disconnect(&me_b58, &req1, &gd1).unwrap();
     assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
 }
+
+#[test]
+fn disconnect_pending_step3_stale_nonce_read_keeps_pending_and_returns_not_confirmed() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+
+    // Start at tip = 29 so the first Disconnect signs pending.nonce = 30 (> 24).
+    f.net.nonces.lock().unwrap().insert(id(ME), 29);
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    let g1 = f.disconnect_grant(q.request, q.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+
+    // Site 1 (pending step 3): stale nonce reads with tip <= pending.nonce - 25 (tip = 5)
+    // and state 0 (tip = 0, pending.nonce >= 24) both make `takes(nonce_state, 30, id)`
+    // return false via `NonceTooFarInFuture`. Even with `id_height >= nonce_height`,
+    // Disconnect MUST keep `pending_disconnect`, leave `last_conflict` unset, never
+    // re-sign, add no broadcast, and leave the retry grant unused.
+    for stale_state in [5u64, 0u64] {
+        let broadcasts_before = f.net.broadcast_disables.lock().unwrap().len();
+        *f.net.stale_nonce.lock().unwrap() = Some(stale_state);
+        *f.net.identity_height.lock().unwrap() = 105;
+        *f.net.nonce_height.lock().unwrap() = 100;
+        let g2 = f.disconnect_grant(q.request, q.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &g2),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }),
+            "stale nonce_state={stale_state} at step 3 must return NotConfirmed"
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert_eq!(
+            rec.pending_disconnect.as_ref().map(|p| p.nonce),
+            Some(30),
+            "stale nonce_state={stale_state} must keep pending_disconnect"
+        );
+        assert!(
+            rec.last_conflict.is_none(),
+            "stale nonce_state={stale_state} must not record last_conflict"
+        );
+        assert_eq!(
+            f.net.signed_disables.lock().unwrap().len(),
+            1,
+            "stale nonce_state={stale_state} must not sign a new transition"
+        );
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            broadcasts_before,
+            "stale nonce_state={stale_state} must not rebroadcast or emit a new broadcast"
+        );
+        assert!(
+            f.disconnect_grant_unused(&g2),
+            "stale nonce_state={stale_state} must leave retry grant unused"
+        );
+    }
+
+    // Once a fresh read sees the real tip (29), retrying resolves the pending
+    // transition normally without signing a second transition.
+    *f.net.stale_nonce.lock().unwrap() = None;
+    let g_resolve = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done = f.disconnect(&me_b58, &req_hex, &g_resolve).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+}
+
+#[test]
+fn disconnect_post_rebroadcast_stale_nonce_read_keeps_pending_and_returns_not_confirmed() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+
+    // Start at tip = 29 so the first Disconnect signs pending.nonce = 30 (> 24).
+    f.net.nonces.lock().unwrap().insert(id(ME), 29);
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    let g1 = f.disconnect_grant(q.request, q.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), 1);
+
+    // Site 2 (post-rebroadcast re-read): step 3 reads admissible tip = 29 so Disconnect
+    // rebroadcasts, then the post-rebroadcast re-read returns stale tip = 5 (<= 30 - 25)
+    // or state 0 with `id_height >= nonce_height` and `revision < pending.revision`.
+    for (idx, stale_state) in [5u64, 0u64].into_iter().enumerate() {
+        *f.net.stale_nonce.lock().unwrap() = None;
+        *f.net.identity_height.lock().unwrap() = 100;
+        *f.net.nonce_height.lock().unwrap() = 100;
+        *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+            *net.stale_nonce.lock().unwrap() = Some(stale_state);
+            *net.identity_height.lock().unwrap() = 105;
+            *net.nonce_height.lock().unwrap() = 100;
+        }));
+        let g2 = f.disconnect_grant(q.request, q.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &g2),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }),
+            "stale post-rebroadcast nonce_state={stale_state} must return NotConfirmed"
+        );
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            idx + 2,
+            "retry must have reached rebroadcast once before the stale post-rebroadcast read"
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert_eq!(
+            rec.pending_disconnect.as_ref().map(|p| p.nonce),
+            Some(30),
+            "stale post-rebroadcast nonce_state={stale_state} must keep pending_disconnect"
+        );
+        assert!(
+            rec.last_conflict.is_none(),
+            "stale post-rebroadcast nonce_state={stale_state} must not record last_conflict"
+        );
+        assert_eq!(
+            f.net.signed_disables.lock().unwrap().len(),
+            1,
+            "stale post-rebroadcast nonce_state={stale_state} must not sign a new transition"
+        );
+        assert!(
+            f.disconnect_grant_unused(&g2),
+            "stale post-rebroadcast nonce_state={stale_state} must leave retry grant unused"
+        );
+    }
+
+    // Once a fresh read sees the real tip (29) and delivery lands, the kept pending
+    // transition resolves normally with no second signature.
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    *f.net.stale_nonce.lock().unwrap() = None;
+    let g_resolve = f.disconnect_grant(q.request, q.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done = f.disconnect(&me_b58, &req_hex, &g_resolve).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+    assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+}
+
+#[test]
+fn disconnect_post_fresh_broadcast_stale_nonce_read_keeps_pending_and_returns_not_confirmed() {
+    // Site 3 (post-fresh-broadcast re-read): fresh sign picks next_nonce = 30 (>= 24)
+    // from tip = 29; right after broadcast (which is unconfirmed), the re-read returns
+    // a stale nonce read with tip = 5 (<= 30 - 25) or state 0 at `id_height >= nonce_height`
+    // and `revision < target_revision`.
+    for stale_state in [5u64, 0u64] {
+        let f = Fixture::new();
+        let me_b58 = b58(&id(ME));
+        let l = devnet(request());
+        let c = Fixture::choice();
+        let g = f.quoted_grant(&l, &c);
+        f.approve(&l, &c, &g).unwrap();
+        let req_hex = hex::encode(l.request.request_hash());
+
+        f.net.nonces.lock().unwrap().insert(id(ME), 29);
+        let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+        let g1 = f.disconnect_grant(q.request, q.max_credits);
+        f.net.lose_updates.store(true, Ordering::SeqCst);
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+            *net.stale_nonce.lock().unwrap() = Some(stale_state);
+            *net.identity_height.lock().unwrap() = 105;
+            *net.nonce_height.lock().unwrap() = 100;
+        }));
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &g1),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }),
+            "stale post-fresh-broadcast nonce_state={stale_state} must return NotConfirmed"
+        );
+        let rec = f
+            .engine
+            .block_on(records(&f.s, f.wallet))
+            .unwrap()
+            .into_iter()
+            .find(|r| r.request == req_hex)
+            .unwrap();
+        assert_eq!(
+            rec.pending_disconnect.as_ref().map(|p| p.nonce),
+            Some(30),
+            "stale post-fresh-broadcast nonce_state={stale_state} must keep pending_disconnect"
+        );
+        assert!(
+            rec.last_conflict.is_none(),
+            "stale post-fresh-broadcast nonce_state={stale_state} must not record last_conflict"
+        );
+        assert_eq!(
+            f.net.signed_disables.lock().unwrap().len(),
+            1,
+            "fresh broadcast must sign exactly once and never retire/resign on stale read"
+        );
+        assert_eq!(
+            f.net.broadcast_disables.lock().unwrap().len(),
+            1,
+            "fresh broadcast must emit only the single initial broadcast"
+        );
+        // Follow-up retry under the same stale read also emits no broadcast, leaves its
+        // grant unused, and keeps pending.
+        let g2 = f.disconnect_grant(q.request, q.max_credits);
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &g2),
+            Err(ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            })
+        );
+        assert!(f.disconnect_grant_unused(&g2));
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+        assert_eq!(f.net.broadcast_disables.lock().unwrap().len(), 1);
+
+        // Then a fresh read of the real tip (29) resolves the pending transition normally.
+        f.net.lose_updates.store(false, Ordering::SeqCst);
+        *f.net.stale_nonce.lock().unwrap() = None;
+        f.net.refreshed.store(false, Ordering::SeqCst);
+        let done = f.disconnect(&me_b58, &req_hex, &g2).unwrap();
+        assert_eq!(done.keys_disabled, q.keys);
+        assert_eq!(f.net.signed_disables.lock().unwrap().len(), 1);
+        assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+    }
+}
+
+#[test]
+fn disconnect_keys_disabled_by_foreign_transition_keeps_nonce_floor_at_proved_tip() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+
+    // Approve two apps on the same identity.
+    let l1 = devnet(request());
+    let c1 = Fixture::choice();
+    let g1_app = f.quoted_grant(&l1, &c1);
+    f.approve(&l1, &c1, &g1_app).unwrap();
+    let req1 = hex::encode(l1.request.request_hash());
+
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2_app = f.quoted_grant(&l2, &c2);
+    f.approve(&l2, &c2, &g2_app).unwrap();
+    let req2 = hex::encode(l2.request.request_hash());
+
+    // Start Disconnect for App 1 at tip = 5 -> persists pending_disconnect with nonce = 6,
+    // but the broadcast is lost so Platform's proved tip stays at 5.
+    f.net.nonces.lock().unwrap().insert(id(ME), 5);
+    let q1 = f.disconnect_quote(&me_b58, &req1).unwrap();
+    let g1 = f.disconnect_grant(q1.request, q1.max_credits);
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    assert_eq!(
+        f.disconnect(&me_b58, &req1, &g1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+
+    // Another transition (e.g. from another device at a lower/different nonce) disables
+    // App 1's keys on Platform while our pending.nonce (6) was never used (proved tip stays 5).
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        for key_id in &q1.keys {
+            if let Some(k) = me.public_keys_mut().get_mut(key_id) {
+                k.set_disabled_at(NOW);
+            }
+        }
+    }
+
+    // Retry Disconnect for App 1: sees all keys already disabled ("nothing to disable"
+    // branch) and finishes cleanly. The nonce floor MUST advance only to min(6, 5) = 5
+    // (floor <= proved_tip + 1), NOT above the proved tip!
+    let g1_retry = f.disconnect_grant(q1.request, q1.max_credits);
+    let done1 = f.disconnect(&me_b58, &req1, &g1_retry).unwrap();
+    assert!(done1.keys_disabled.is_empty());
+    assert!(f.disconnect_grant_unused(&g1_retry));
+    assert_eq!(
+        f.s.withdrawal_nonces.ownership(id(ME), 5),
+        crate::platform::withdrawal::NonceOwner::Free,
+        "floor must stay <= proved tip + 1 so ownership is Free, never Behind"
+    );
+
+    // A subsequent Disconnect (App 2) must NOT fail with Behind / Unavailable.
+    let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+    let g2 = f.disconnect_grant(q2.request, q2.max_credits);
+    f.net.refreshed.store(false, Ordering::SeqCst);
+    let done2 = f.disconnect(&me_b58, &req2, &g2).unwrap();
+    assert_eq!(done2.keys_disabled, q2.keys);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+
+    // And a subsequent credit transfer must also succeed cleanly (never Unavailable).
+    let amount = 100_000_000;
+    let tq = f.transfer_quote(&me_b58, amount).unwrap();
+    let w_grant = f.withdraw_grant(amount + tq.fee_credits);
+    let out = f
+        .transfer_to_platform(&me_b58, &tq.to, amount, &w_grant)
+        .unwrap();
+    assert!(!out.transition.is_empty());
+}

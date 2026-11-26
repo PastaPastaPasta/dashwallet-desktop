@@ -1714,6 +1714,27 @@ fn landed(identity: &Identity, add: &[IdentityPublicKey], disable: &[KeyID]) -> 
         .all(|id| keys.get(id).is_some_and(|on| on.is_disabled()))
 }
 
+/// Raises `id`'s nonce floor only up to `min(nonce, proved_tip)` so a foreign
+/// transition that disabled keys without consuming our `nonce` never pushes
+/// the session floor above Platform's proved tip (which would wedge subsequent
+/// Disconnects, transfers, and withdrawals as `Behind` / `Unavailable`).
+async fn advance_floor_to_proved_tip(
+    net: &impl ConnectNet,
+    session: &NetworkSession,
+    id: Identifier,
+    nonce: u64,
+    fallback_tip: u64,
+) {
+    let proved_tip = net
+        .identity_nonce(id)
+        .await
+        .map(|(state, _)| state & IDENTITY_NONCE_VALUE_FILTER)
+        .unwrap_or(fallback_tip);
+    session
+        .withdrawal_nonces
+        .advance_floor(id, nonce.min(proved_tip));
+}
+
 /// Polls Platform until every key in `disable` is present on `identity`,
 /// matches `record.session_key_data`, and has `is_disabled() == true`.
 async fn confirm_disabled(
@@ -2819,7 +2840,10 @@ pub(crate) async fn disconnect(
             .app_connect
             .take_for(wallet_id, id, request_hash);
         if let Some(p) = &record.pending_disconnect {
-            session.withdrawal_nonces.advance_floor(id, p.nonce);
+            let proved_tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
+            session
+                .withdrawal_nonces
+                .advance_floor(id, p.nonce.min(proved_tip));
         }
         let response_may_have_landed =
             reconcile_response_delivery(net, &mut record, request_hash, id).await;
@@ -2856,7 +2880,10 @@ pub(crate) async fn disconnect(
             .take_for(wallet_id, id, request_hash);
         // 1. Confirmation-only recovery always works without a fee check.
         if all_present_and_disabled(&fresh, &record, &pending.keys) {
-            session.withdrawal_nonces.advance_floor(id, pending.nonce);
+            let proved_tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
+            session
+                .withdrawal_nonces
+                .advance_floor(id, pending.nonce.min(proved_tip));
             let response_may_have_landed =
                 reconcile_response_delivery(net, &mut record, request_hash, id).await;
             record.pending_disconnect = None;
@@ -2905,11 +2932,16 @@ pub(crate) async fn disconnect(
         //    still admissible.
         let nonce_available = super::withdrawal::takes(nonce_state, pending.nonce, id);
         if !nonce_available {
-            // Only retire the pending transition when a proved identity read
-            // at height >= nonce_height confirms revision < pending.revision
-            // and the keys are still enabled; a lagging read never retires or
-            // re-signs.
-            if id_height >= nonce_height {
+            // Only retire the pending transition when the proved nonce tip is
+            // already at or past `pending.nonce` (proving `pending.nonce` was
+            // consumed or fell past the window, rather than `takes()` returning
+            // false on a stale nonce read > 24 behind) AND a proved identity
+            // read at height >= nonce_height confirms revision < pending.revision
+            // and the keys are still enabled; a lagging or stale read never
+            // retires or re-signs.
+            let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
+            let nonce_spent = pending.nonce <= tip;
+            if nonce_spent && id_height >= nonce_height {
                 let observed_debit = pending
                     .balance_before
                     .and_then(|before| before.checked_sub(fresh.balance()))
@@ -2967,7 +2999,14 @@ pub(crate) async fn disconnect(
 
             if let Some(refusal) = fee_refusal {
                 if confirm_disabled(net, wallet, id, &record, &pending.keys).await {
-                    session.withdrawal_nonces.advance_floor(id, pending.nonce);
+                    advance_floor_to_proved_tip(
+                        net,
+                        session,
+                        id,
+                        pending.nonce,
+                        nonce_state & IDENTITY_NONCE_VALUE_FILTER,
+                    )
+                    .await;
                     let response_may_have_landed =
                         reconcile_response_delivery(net, &mut record, request_hash, id).await;
                     record.pending_disconnect = None;
@@ -2995,7 +3034,14 @@ pub(crate) async fn disconnect(
         }
 
         if confirm_disabled(net, wallet, id, &record, &pending.keys).await {
-            session.withdrawal_nonces.advance_floor(id, pending.nonce);
+            advance_floor_to_proved_tip(
+                net,
+                session,
+                id,
+                pending.nonce,
+                nonce_state & IDENTITY_NONCE_VALUE_FILTER,
+            )
+            .await;
             let response_may_have_landed =
                 reconcile_response_delivery(net, &mut record, request_hash, id).await;
             record.pending_disconnect = None;
@@ -3019,7 +3065,10 @@ pub(crate) async fn disconnect(
             read_consistent_state(net, wallet, id).await
         {
             if all_present_and_disabled(&fresh2, &record, &pending.keys) {
-                session.withdrawal_nonces.advance_floor(id, pending.nonce);
+                let proved_tip2 = nonce_state2 & IDENTITY_NONCE_VALUE_FILTER;
+                session
+                    .withdrawal_nonces
+                    .advance_floor(id, pending.nonce.min(proved_tip2));
                 let response_may_have_landed =
                     reconcile_response_delivery(net, &mut record, request_hash, id).await;
                 record.pending_disconnect = None;
@@ -3036,9 +3085,11 @@ pub(crate) async fn disconnect(
                     response_may_have_landed,
                 });
             }
+            let tip2 = nonce_state2 & IDENTITY_NONCE_VALUE_FILTER;
+            let nonce_spent2 =
+                pending.nonce <= tip2 && !super::withdrawal::takes(nonce_state2, pending.nonce, id);
             if fresh2.revision() >= pending.revision
-                || (id_height2 >= nonce_height2
-                    && !super::withdrawal::takes(nonce_state2, pending.nonce, id))
+                || (id_height2 >= nonce_height2 && nonce_spent2)
             {
                 let observed_debit = pending
                     .balance_before
@@ -3211,7 +3262,10 @@ pub(crate) async fn disconnect(
             read_consistent_state(net, wallet, id).await
         {
             if all_present_and_disabled(&fresh2, &record, &disable) {
-                session.withdrawal_nonces.advance_floor(id, next_nonce);
+                let proved_tip2 = nonce_state2 & IDENTITY_NONCE_VALUE_FILTER;
+                session
+                    .withdrawal_nonces
+                    .advance_floor(id, next_nonce.min(proved_tip2));
                 let response_may_have_landed =
                     reconcile_response_delivery(net, &mut record, request_hash, id).await;
                 record.pending_disconnect = None;
@@ -3228,9 +3282,10 @@ pub(crate) async fn disconnect(
                     response_may_have_landed,
                 });
             }
-            if fresh2.revision() >= target_revision
-                || (id_height2 >= nonce_height2
-                    && !super::withdrawal::takes(nonce_state2, next_nonce, id))
+            let tip2 = nonce_state2 & IDENTITY_NONCE_VALUE_FILTER;
+            let nonce_spent2 =
+                next_nonce <= tip2 && !super::withdrawal::takes(nonce_state2, next_nonce, id);
+            if fresh2.revision() >= target_revision || (id_height2 >= nonce_height2 && nonce_spent2)
             {
                 let observed_debit = fresh
                     .balance()
@@ -3258,7 +3313,14 @@ pub(crate) async fn disconnect(
             failure: ConnectFailure::NotConfirmed,
         });
     }
-    session.withdrawal_nonces.advance_floor(id, next_nonce);
+    advance_floor_to_proved_tip(
+        net,
+        session,
+        id,
+        next_nonce,
+        nonce_state & IDENTITY_NONCE_VALUE_FILTER,
+    )
+    .await;
     let response_may_have_landed =
         reconcile_response_delivery(net, &mut record, request_hash, id).await;
     record.pending_disconnect = None;
