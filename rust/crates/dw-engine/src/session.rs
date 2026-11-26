@@ -274,18 +274,26 @@ async fn flush_left_loaded(persister: &Arc<SqlitePersister>, wallets: &[[u8; 32]
     }
 }
 
+/// What the failed opens that found a shielded store configured keep, for
+/// the life of the process ([`end_failed_open`]).
+static KEPT_WHOLE_AFTER_FAILED_OPEN: Mutex<Vec<Box<dyn Send>>> = Mutex::new(Vec::new());
+
 /// Ends an open that failed after its manager was built: shuts the manager
 /// down, drops it with `held`, and then [`release_after_failed_open`].
+///
+/// No shielded store is configured before the session is handed out (Q86
+/// F1). Were one, its spends may be ones the journal that failed has not
+/// classified, so nothing is let go: the manager, its wallets, the store
+/// and the wallet database stay as they are until the app restarts, and
+/// the directory's next open in this process is refused with
+/// [`KEPT_AFTER_FAILED_OPEN_REFUSAL`].
 async fn end_failed_open(
     data_dir: &Path,
     manager: Arc<Manager>,
     persister: Arc<SqlitePersister>,
-    held: impl Send,
+    held: impl Send + 'static,
 ) {
-    debug_assert!(
-        manager.shielded_coordinator().await.is_none(),
-        "Q86 F1: no shielded store before the session is handed out"
-    );
+    let shielded = manager.shielded_coordinator().await.is_some();
     let report = manager.shutdown().await;
     if !report.all_clean() {
         tracing::warn!(
@@ -293,12 +301,36 @@ async fn end_failed_open(
             "manager shutdown after a failed open was not clean"
         );
     }
+    if shielded {
+        let loaded = manager.list_wallet_ids_blocking();
+        tracing::error!(
+            wallets = loaded.len(),
+            "Q86 F1: a shielded store was configured before a failed open; it and every wallet stay as they are until the app restarts"
+        );
+        flush_left_loaded(&persister, &loaded).await;
+        #[cfg(test)]
+        failed_open_probe::record_end(data_dir, !loaded.is_empty(), false);
+        (KEPT_AFTER_FAILED_OPEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .push((kept_key(data_dir), Arc::downgrade(&persister)));
+        (KEPT_WHOLE_AFTER_FAILED_OPEN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()))
+        .push(Box::new((manager, persister, held)));
+        return;
+    }
     let loaded = manager.list_wallet_ids_blocking();
     flush_left_loaded(&persister, &loaded).await;
     let released = Arc::downgrade(&persister);
     drop((manager, persister, held));
     release_after_failed_open(data_dir, released, !loaded.is_empty()).await;
 }
+
+/// Tests: data directories whose next open configures shielded before it
+/// reads the journal, the ordering [`end_failed_open`] guards.
+#[cfg(test)]
+pub(crate) static SHIELDED_BEFORE_JOURNAL: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Tests: data directories whose next open fails right after its wallets
 /// load, and whose next open fails loading the history.
@@ -879,6 +911,14 @@ impl NetworkSession {
             .chain(listed)
             .chain(registered)
             .collect();
+        #[cfg(test)]
+        if crate::keys::take_test_failure(&SHIELDED_BEFORE_JOURNAL, &data_dir) {
+            (manager.configure_shielded(
+                data_dir.join(crate::platform::shielded_pool::SHIELDED_DB_FILE),
+            ))
+            .await
+            .expect("the shielded store opens");
+        }
         let opened_journal = crate::platform::lease::session::open_journal(
             &data_dir,
             known,
