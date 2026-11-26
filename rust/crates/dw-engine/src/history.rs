@@ -601,49 +601,52 @@ pub(crate) fn spent_outpoints(
     let conflicted = conflicted(txs, chainlock);
     (txs.iter())
         .filter(|(t, e)| {
-            e.context.block_info().is_some() || !(e.is_abandoned() || conflicted.contains(*t))
+            e.context.block_info().is_some() || !(e.is_abandoned() || conflicted.contains_key(*t))
         })
         .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
         .collect()
 }
 
 /// The transactions out of a block that can never confirm, by
-/// [`spent_outpoints`]' rule (Core's `MarkConflicted`): another
-/// transaction in a block spends one of their inputs, or they descend out
-/// of a block from one that does. Abandoned ones count, so a restart reads
-/// the same set from the abandoned copies the load restores. An
-/// InstantSend-locked one is conflicted only by a block `chainlock` covers,
-/// and never through its parent.
-pub(crate) fn conflicted(txs: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> HashSet<Txid> {
-    let mined = |e: &TxEntry| e.context.block_info().is_some();
+/// [`spent_outpoints`]' rule (Core's `MarkConflicted`), each with the
+/// height of the lowest block that beats it: another transaction in a block
+/// spends one of their inputs, or they descend out of a block from one that
+/// does. Abandoned ones count, so a restart reads the same set from the
+/// abandoned copies the load restores. An InstantSend-locked one is
+/// conflicted only by a block `chainlock` covers, and never through its
+/// parent.
+pub(crate) fn conflicted(
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+) -> HashMap<Txid, u32> {
+    let height = |e: &TxEntry| e.context.block_info().map(|b| b.height());
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
-    for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| height(e).is_some()) {
         for i in &e.tx.input {
             in_block.entry(i.previous_output).or_default().push((*t, e));
         }
     }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
-    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+    for (t, e) in txs.iter().filter(|(_, e)| height(e).is_none()) {
         for i in &e.tx.input {
             if !instant_locked(e) {
                 children.entry(i.previous_output.txid).or_default().push(*t);
             }
-            let beats = |(b, be): &(Txid, &TxEntry)| {
-                b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
-            };
-            if in_block
-                .get(&i.previous_output)
-                .is_some_and(|v| v.iter().any(beats))
-            {
-                todo.push(*t);
-            }
+            let beaten = (in_block.get(&i.previous_output).into_iter().flatten())
+                .filter(|(b, be)| {
+                    b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
+                })
+                .filter_map(|(_, be)| height(be))
+                .min();
+            todo.extend(beaten.map(|h| (*t, h)));
         }
     }
-    let mut conflicted = HashSet::new();
-    while let Some(t) = todo.pop() {
-        if conflicted.insert(t) {
-            todo.extend(children.get(&t).into_iter().flatten());
+    let mut conflicted: HashMap<Txid, u32> = HashMap::new();
+    while let Some((t, h)) = todo.pop() {
+        if conflicted.get(&t).is_none_or(|known| h < *known) {
+            conflicted.insert(t, h);
+            todo.extend((children.get(&t).into_iter().flatten()).map(|c| (*c, h)));
         }
     }
     conflicted

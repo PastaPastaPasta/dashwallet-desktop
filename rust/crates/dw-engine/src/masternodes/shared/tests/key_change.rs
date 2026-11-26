@@ -962,6 +962,75 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     assert!(f.locked(0).is_empty());
 }
 
+/// #740 for a shared key change: its fee coin is the change of a payment P
+/// the funder abandons once it is out, and a rival spend of P's input is
+/// mined. The key
+/// change can never confirm, so it reads `conflicted` and holds no later
+/// key change; its locks go once the rival is buried. Before that, with
+/// the rival only in the mempool, it stays `sent`.
+#[test]
+fn mg740_a_key_change_paid_from_a_beaten_payments_change_is_conflicted() {
+    use key_wallet::transaction_checking::TransactionContext;
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let input = OutPoint::new(Txid::from_byte_array([0x74; 32]), 0);
+    let spend = |value| Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: input,
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let record = |tx: &Transaction, key: Txid, abandoned: bool| {
+        let entry = crate::history::TxEntry {
+            tx: tx.clone(),
+            context: TransactionContext::Mempool,
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned,
+        };
+        (f.session.hub.history).with_wallet(f.wallets[0], |h| h.txs.insert(key, entry));
+    };
+    // The fee coin, seed 9's, is P's change: P is out of a block, and the
+    // funder abandons it once the key change is out.
+    let (p, funding) = (spend(COIN), Txid::from_byte_array([9; 32]));
+    record(&p, funding, false);
+    let (id, request) = complete(&f, txid);
+    send(&f, 0, &id, request.session.fee.unwrap()).unwrap();
+    record(&p, funding, true);
+    let reserved = f.locked(0);
+    assert!(!reserved.is_empty());
+    let rival = spend(COIN / 2);
+    record(&rival, rival.txid(), false);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Sent,
+        "in the mempool"
+    );
+    assert_update_pending(start(&f, 0, rotate(txid), 0).unwrap_err(), &id);
+
+    f.mine(rival, 60);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
+    f.credit(0, 10, COIN);
+    start(&f, 0, rotate(txid), 0).unwrap();
+    f.tip(64);
+    f.follow();
+    assert!(
+        reserved.iter().all(|o| f.locked(0).contains(o)),
+        "not buried"
+    );
+    f.tip(65);
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+}
+
 /// A listed masternode whose share 0 was registered with `reward`, fee
 /// coins ready, as [`keyed`] leaves one whose reward is the refund.
 fn keyed_reward(f: &Fx, reward: RewardChoice) -> (String, Txid) {

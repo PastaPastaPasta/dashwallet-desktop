@@ -42,7 +42,6 @@ use serde::{Deserialize, Serialize};
 use super::super::follow::ListView;
 use super::super::protx::build::{Context, invalid, plan_funding, refused, shared_voting};
 use super::super::protx::keys::{Claim, InUse};
-use super::super::protx::ops::conflict_height;
 use super::super::protx::{CHANGE_LEN, change_address, charge_fee};
 use super::super::protx_records::KeepOr;
 use super::super::shared_records::{
@@ -419,7 +418,7 @@ fn derive_stage(
         }
         let own = f.inputs();
         if out {
-            if conflict_height(&v.chain.history, &own, txid.as_ref()).is_some() {
+            if v.chain.beaten(&own, txid.as_ref()).is_some() {
                 return SharedStage::Conflicted;
             }
         } else if own.iter().any(|o| !v.chain.unspent.contains(o)) {
@@ -1346,7 +1345,8 @@ impl NetworkSession {
                 SharedStage::Confirmed { height } => buried(height),
                 SharedStage::Conflicted => {
                     let txid = k.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
-                    conflict_height(&v.chain.history, &k.own_inputs(), txid.as_ref())
+                    v.chain
+                        .beaten(&k.own_inputs(), txid.as_ref())
                         .is_some_and(&buried)
                 }
                 SharedStage::Dead { .. } => true,

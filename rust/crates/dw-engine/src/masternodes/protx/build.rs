@@ -606,9 +606,9 @@ impl NetworkSession {
                 continue;
             };
             let state = state_of(row, &history, &unspent, &conflicted);
-            // A block spends a conflicted row's input: it never confirms,
-            // so its keys and collateral are free again, as Core frees a
-            // ProRegTx's when it leaves the mempool (D54).
+            // A block beats a conflicted row, or a transaction it spends: it
+            // never confirms, so its keys and collateral are free again, as
+            // Core frees a ProRegTx's when it leaves the mempool (D54).
             if state == ProTxOperationState::Conflicted {
                 continue;
             }

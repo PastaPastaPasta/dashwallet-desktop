@@ -813,8 +813,9 @@ impl Fx {
 
     /// The operations funded from a conflicted payment's change are
     /// `conflicted`, and nothing holds on them: the barrier's operation
-    /// reads `conflicted`, the follower unlocks the collateral and a later
-    /// update of the masternode is signed.
+    /// reads `conflicted`, the follower unlocks the collateral and settles
+    /// their fee inputs (the rival is buried), and a later update of the
+    /// masternode is signed.
     fn assert_released(
         &self,
         hash: &str,
@@ -830,6 +831,10 @@ impl Fx {
         );
         self.follow();
         assert!(!self.locked().contains(&collateral), "D54");
+        let ops = [&key_change_op.id, &registration.id];
+        let rows = self.rows();
+        let mut settled = rows.iter().filter(|r| ops.contains(&&r.id));
+        assert!(settled.all(|r| r.fee_inputs == "[]"), "fee inputs settled");
         self.credit(4, COIN);
         let next = self.update(key_change(hash, 6), self.grant(COIN)).unwrap();
         assert_eq!(next.state, ProTxOperationState::Sent);
