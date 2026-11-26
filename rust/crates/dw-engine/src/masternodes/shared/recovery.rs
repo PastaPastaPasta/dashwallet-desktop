@@ -776,7 +776,7 @@ impl NetworkSession {
         if ctx.can_send
             && session.stage == SharedStage::Sent
             && !signed
-            && self.resend_passes(wallet, row, session).await
+            && self.resend_passes(wallet, row, session, chain).await
         {
             match ctx.spv_running {
                 true => r.actions.push(RecoveryAction::Resend {
@@ -883,6 +883,7 @@ impl NetworkSession {
         wallet: WalletId,
         row: &SharedSessionRow,
         session: &SharedSession,
+        chain: &ChainView,
     ) -> bool {
         if require_protx_sending(self).is_err() || super::v24_context(self, wallet).await.is_err() {
             return false;
@@ -898,7 +899,8 @@ impl NetworkSession {
             }
             _ => {
                 session.role == SharedRole::Coordinator
-                    && self.registration_resend_checks(wallet, row).is_ok()
+                    && Loaded::of(row.clone(), self.network.core_network())
+                        .is_ok_and(|l| self.registration_resend_checks(wallet, &l, chain).is_ok())
             }
         }
     }

@@ -406,6 +406,24 @@ describe("Abandon", () => {
     expect(renderSession({ ...spend("in_history"), stage: { kind: "conflicted" } }, S5_SLICE).row, "settled").toBe("conflicted");
   });
 
+  it("offers no resend while a spend of the coins is in a block that isn't final, and shows the confirming spend back", () => {
+    const confirming = (by: "abandon_tx" | "other_spend", confirmations: number) => ({ by, confirmations });
+    const contested = coordinator({ kind: "sent" }, "nothing", { txid: "7e".repeat(32), discardable: false, confirming: confirming("other_spend", 2) });
+    expect(renderSession(contested, S5_SLICE)).toEqual({ row: "contested", primary: null, copy: false, known: true });
+    expect(t("masternodes.shared.row.contested", { count: 2 })).toBe("A transaction spending your reserved coins is in a block (2 confirmations). The wallet waits for a ChainLock to make it final.");
+    const undone = { ...contested, next: "wait" as const, confirming: null };
+    expect(renderSession(undone, S5_SLICE), "the block undone").toEqual({ row: "sent", primary: "resend", copy: false, known: true });
+    const refusal = { code: "masternodes.shared_stage", message: "m", data: { kind: "sharedStage", stage: "conflicting" } };
+    expect(sharedErrorText(refusal, { network: "testnet", dash: String })).toBe("A transaction spending this registration's coins is in a block, so it can't be sent again unless that block is undone.");
+
+    const a8 = "a8".repeat(32);
+    const own = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false, next: "nothing", abandonSpend: { txid: a8, state: null, overdue: false, code: null }, confirming: confirming("abandon_tx", 1) });
+    expect(renderSession(own, S5_SLICE).row).toBe("abandoning");
+    expect(spendBackLine(own, () => null)).toBe("Abandoning: the spend back (a8a8a8a8) is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
+    expect(spendBackLine({ ...own, confirming: confirming("other_spend", 3) }, () => null)).toBe("A transaction spending your reserved coins is in a block (3 confirmations). The wallet waits for a ChainLock to make it final.");
+    expect(spendBackLine({ ...own, confirming: null }, () => null), "nothing in a block").toBeNull();
+  });
+
   it("reads the Network fee row's value without repeating its label", () => {
     const dash = (d: number) => `${(d / 1e8).toFixed(8)} tDASH`;
     const coord = coordinator({ kind: "draft" }, "copy", { fee: 1_000 });

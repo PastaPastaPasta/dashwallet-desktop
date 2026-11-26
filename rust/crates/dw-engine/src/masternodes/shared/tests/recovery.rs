@@ -1805,3 +1805,79 @@ fn test_a_legacy_row_settled_by_an_overwritten_spend_reads_other_spend() {
     assert!(r.actions.is_empty());
     assert_eq!(r.abandon_spend.map(|s| s.state), Some(None));
 }
+
+/// #954: a coordinator's sent registration whose coin another spend holds
+/// in a block that isn't final yet offers no resend, and the send refuses
+/// `conflicting`; nothing is released. A reorg that drops that block offers
+/// the resend again. Under a ChainLock the session is conflicted and
+/// settled.
+#[test]
+fn test_a_mined_rival_before_the_chainlock_offers_no_resend() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.spv(true, 1);
+    let debit = f.session_of(0, &id).debit.unwrap();
+    let resend = RecoveryAction::Resend { charge: debit };
+    assert!(f.recovery(0, &id).actions.contains(&resend));
+    let registration: Transaction =
+        dashcore::consensus::deserialize(&f.row(0, &id).signed_tx.unwrap()).unwrap();
+    let held = f.locked(0);
+    let coin = registration
+        .input
+        .iter()
+        .map(|i| i.previous_output)
+        .find(|o| held.contains(o))
+        .unwrap();
+    let rival = foreign_spend(&[coin], 7);
+
+    f.mine(rival.clone(), 60);
+    f.tip(60);
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Sent, SharedNext::Nothing));
+    assert!(!s.recovery.actions.contains(&resend), "{:?}", s.recovery);
+    assert_eq!(
+        s.recovery.settlement,
+        Settlement::Confirming {
+            by: SettledBy::OtherSpend,
+            confirmations: 1,
+            chainlocked: false
+        }
+    );
+    let sent = f.net.sent().len();
+    assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "conflicting");
+    assert_eq!(f.net.sent().len(), sent);
+    f.follow();
+    assert_eq!(
+        f.locked(0),
+        held,
+        "a block that isn't final releases nothing"
+    );
+
+    f.seam.shared_mined.lock().unwrap().clear();
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Sent, SharedNext::Wait));
+    assert!(s.recovery.actions.contains(&resend), "{:?}", s.recovery);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert_eq!(f.net.sent().len(), sent + 1);
+
+    f.mine(rival, 60);
+    f.chainlock(60);
+    f.session.hub.tracker().set_chainlock_height(60);
+    let s = f.session_of(0, &id);
+    assert_eq!(s.stage, SharedStage::Conflicted);
+    assert!(
+        matches!(
+            s.recovery.settlement,
+            Settlement::Settled {
+                by: SettledBy::OtherSpend,
+                ..
+            }
+        ),
+        "{:?}",
+        s.recovery.settlement
+    );
+    assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "conflicted");
+}

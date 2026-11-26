@@ -675,6 +675,29 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
     }
 }
 
+/// Whether an out session at `stage` that a final block hasn't settled is
+/// beaten ([`beaten_height`]) by a block that may still become final
+/// ([`ChainView::seen`]): it can't confirm on this branch, so nothing hands
+/// it off again until that block is final (`conflicted`) or a reorg drops
+/// it (#954). Recovery shows the same block as `confirming`. It releases
+/// nothing: the stage and every release read final blocks only.
+pub(crate) fn contested(l: &Loaded, chain: &ChainView, stage: &SharedStage) -> bool {
+    let txid = session_hash(l, chain)
+        .or_else(|| l.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok()));
+    l.out()
+        && !matches!(
+            stage,
+            SharedStage::Confirmed { .. } | SharedStage::Conflicted
+        )
+        && beaten_height(
+            &chain.history,
+            &chain.seen,
+            &l.conflict_inputs(),
+            txid.as_ref(),
+        )
+        .is_some()
+}
+
 /// [`ShareTermsView::service_read`]: Core's reading of each entry of
 /// `coreP2PAddrs` ([`parse_core_service`]), when one isn't its text.
 fn service_read(text: &str) -> Option<String> {
@@ -863,7 +886,13 @@ pub(crate) fn view(l: &Loaded, chain: &ChainView) -> SharedSession {
             .iter()
             .map(super::super::outpoint_string)
             .collect(),
-        next: after_abandon(&l.row, next_of(l, stage)),
+        next: after_abandon(
+            &l.row,
+            match contested(l, chain, &stage) {
+                true => SharedNext::Nothing,
+                false => next_of(l, stage),
+            },
+        ),
         discardable: may_discard(&l.row),
         abandonable: l.out()
             && !matches!(

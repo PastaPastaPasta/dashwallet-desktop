@@ -375,15 +375,18 @@ pub enum Settlement {
     /// An abandon spend is signed and no spend of a reserved coin is in a
     /// block.
     Pending { txid: String },
-    /// A spend of a reserved coin is in a block a reorg could still undo.
+    /// A spend of a reserved coin is in a block that may still become
+    /// final and isn't yet final and buried. Nothing hands the session off
+    /// again meanwhile (`shared_stage{conflicting}`).
     Confirming {
         by: SettledBy,
         confirmations: u32,
         /// The tracker has seen a ChainLock.
         chainlocked: bool,
     },
-    /// That block is ChainLocked or six deep; `released` once the
-    /// follower cleared the reservation.
+    /// That block is final, its hash on the SPV header chain under a
+    /// ChainLock checked by hash, and buried; `released` once the follower
+    /// cleared the reservation.
     Settled { by: SettledBy, released: bool },
 }
 

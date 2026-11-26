@@ -143,6 +143,7 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     resendAbandonCharge: null,
     activityAbandonTxids: [],
     activityResendTxids: [],
+    confirming: null,
     ...patch,
   });
 }
@@ -782,6 +783,17 @@ export function sharedScenarios(base: Base) {
         s.sessions = [sentRegistration()];
         s.abandoned = [SH_COORD];
       }),
+    /** Sent, and another spend of its coins is in a block that isn't final yet: no Send again. */
+    "sh-coordinator-sent-contested": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ next: "nothing", confirming: { by: "other_spend", confirmations: 2 } }))),
+    /** Out and abandoned; the spend back is in a block that isn't final yet. */
+    "sh-close-out-abandon-confirming": (t: ThemeName | null) =>
+      shBase(
+        base,
+        t,
+        withSessions(
+          participantSession("funding_signed", { next: "nothing", abandonable: false, abandonCharge: null, abandonSpend: { txid: h("a8"), state: null, overdue: false, code: null }, confirming: { by: "abandon_tx", confirmations: 1 } }),
+        ),
+      ),
     /** Participant at `combined` on mainnet: no Sign. */
     "sh-participant-combined-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [participantSession("combined")]))),
     "sh-participant-invited": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("invited"))),

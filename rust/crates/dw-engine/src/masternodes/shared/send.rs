@@ -21,7 +21,9 @@ use super::super::protx::ops::{encode_inputs, error_code};
 use super::super::shared_records::SharedStage;
 use super::build::sign_own_inputs;
 use super::recovery::{AbandonCoins, CHANGE_SCRIPT_LEN, abandon_log, latest, spend_state};
-use super::store::{Loaded, Recorded, message_refusal, out_stage, role_of, stage_refusal};
+use super::store::{
+    ChainView, Loaded, Recorded, contested, message_refusal, out_stage, role_of, stage_refusal,
+};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, now_secs};
 use crate::masternodes::shared_records::AbandonSpendState;
@@ -268,10 +270,11 @@ impl NetworkSession {
         wallet: WalletId,
         grant: &str,
         l: &Loaded,
+        chain: &ChainView,
         fence: CoinFence,
     ) -> Result<(), MasternodesError> {
         let rec = l.recorded.as_ref().ok_or_else(super::unrecorded)?;
-        let tx = self.registration_resend_checks(wallet, &l.row)?;
+        let tx = self.registration_resend_checks(wallet, l, chain)?;
         let fee = rec.fee.unwrap_or(0);
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
@@ -289,14 +292,23 @@ impl NetworkSession {
         result
     }
 
-    /// The resend's check before its lease (MG-04 D7): no other pending
-    /// spend holds an input of the saved registration. The saved bytes.
+    /// The resend's checks before its lease: a spend of the session's coins
+    /// in a block that may still become final refuses `shared_stage
+    /// {conflicting}` ([`contested`], #954), and no other pending spend may
+    /// hold an input of the saved registration (MG-04 D7). The saved bytes.
     pub(super) fn registration_resend_checks(
         &self,
         wallet: WalletId,
-        row: &dw_appdb::SharedSessionRow,
+        l: &Loaded,
+        chain: &ChainView,
     ) -> Result<Transaction, MasternodesError> {
-        let tx: Transaction = row
+        if contested(l, chain, &SharedStage::Sent) {
+            return Err(MasternodesError::SharedStage {
+                stage: "conflicting".into(),
+            });
+        }
+        let tx: Transaction = l
+            .row
             .signed_tx
             .as_deref()
             .and_then(|b| dashcore::consensus::deserialize(b).ok())

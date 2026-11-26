@@ -85,6 +85,7 @@ export type RowKey =
   | "abandoning"
   | "send"
   | "sent"
+  | "contested"
   | "confirmed"
   | "dead"
   | "conflicted"
@@ -137,6 +138,7 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
     case "create_standby":
     case "nothing":
       if (stage === "confirmed") return r("confirmed", null);
+      if ((stage === "sent" || stage === "funding_signed") && s.confirming) return r("contested", null);
       if (stage === "dead") return r("dead", null);
       if (stage === "conflicted") return r("conflicted", null);
       return r("unknown", null, false, false);
@@ -244,12 +246,19 @@ export function handoffLine(s: SharedSession, refused: (code: string) => string 
   return t("masternodes.shared.row.handoffUnknown", { sentence });
 }
 
-/** D50's line for the spend back while it is pending, by its state; `null` without one. "Didn't go
- * out" only for a recorded refusal, whose `{sentence}` is the refusal's own. */
+/** D50's line for the spend back while it is pending, by its state, or while it or another spend of the
+ * coins is in a block that isn't final yet (`confirming`); `null` without one. "Didn't go out" only for a
+ * recorded refusal, whose `{sentence}` is the refusal's own. */
 export function spendBackLine(s: SharedSession, refused: (code: string) => string | null): string | null {
   const a = s.abandonSpend;
-  if (!a?.state) return null;
+  if (!a) return null;
   const txid = a.txid.slice(0, 8);
+  const c = s.confirming;
+  if (!a.state) {
+    if (!c) return null;
+    const key = c.by === "abandon_tx" ? "masternodes.shared.spendBack.confirming" : "masternodes.shared.row.contested";
+    return t(key, { txid, count: c.confirmations });
+  }
   switch (a.state) {
     case "uncertain":
       return t("masternodes.shared.spendBack.uncertain", { txid });
@@ -507,6 +516,7 @@ export function sharedErrorText(e: unknown, ctx: { network: string; session?: Sh
       if (data.stage === "replied") return t("masternodes.shared.error.replied");
       if (data.stage === "unsigned") return t("masternodes.shared.error.unsigned");
       if (data.stage === "abandoned") return t("masternodes.shared.error.abandoned");
+      if (data.stage === "conflicting") return t("masternodes.shared.error.conflicting");
       return t("masternodes.shared.error.stage");
     case "masternodes.unsupported":
       return t("masternodes.shared.error.unsupported");

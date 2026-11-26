@@ -869,7 +869,8 @@ impl Masternodes {
             // The fence from the reservation's re-check through the
             // hand-off (§6.3).
             let fence = s.coin_fence(wallet).await?;
-            match store::derive_stage(&l, &s.shared_chain(wallet).await?) {
+            let chain = s.shared_chain(wallet).await?;
+            match store::derive_stage(&l, &chain) {
                 SharedStage::Combined => {
                     s.send_registration(wallet, &grant, &l, &ctx, fence).await?
                 }
@@ -880,7 +881,10 @@ impl Masternodes {
                         stage: "abandoned".into(),
                     });
                 }
-                SharedStage::Sent => s.resend_registration(wallet, &grant, &l, fence).await?,
+                SharedStage::Sent => {
+                    s.resend_registration(wallet, &grant, &l, &chain, fence)
+                        .await?
+                }
                 stage => return Err(stage_refusal(stage)),
             }
             outcome(&s, wallet, &session).await

@@ -1005,6 +1005,8 @@ function rowCopy(
       return s.debit === null ? "" : t(`${P}.row.everyoneSigned`, { debit });
     case "sent":
       return t(`${P}.row.sent`);
+    case "contested":
+      return t(`${P}.row.contested`, { count: s.confirming?.confirmations ?? 1 });
     case "confirmed":
       return t(`${P}.row.confirmed`);
     case "dead":
