@@ -3900,6 +3900,89 @@ fn the_spends_off_refusals_wait_for_no_pass() {
     });
 }
 
+/// A Shielded-funded registration's quote, start and unsent create refuse
+/// before the pool opens while spends are off; settling a create that
+/// already named its identity still opens it.
+#[test]
+fn a_shielded_registration_refuses_before_the_pool_while_spends_are_off() {
+    use super::registration::{RegistrationFunding, RegistrationRequest};
+    use super::registration_flow::{PwLib, RegistrationLib};
+    use super::registration_shielded::ShieldedAsk;
+    let f = super::topup_tests::fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let grant = || {
+        let purpose = dw_vault::GrantPurpose::PlatformOp {
+            max_duffs: 100_000_000,
+            max_credits: 100_000_000_000_000,
+        };
+        let credential = dw_vault::Credential::None;
+        (session
+            .vault()
+            .authorize(purpose, Some(&wallet.0), credential))
+        .unwrap()
+        .id
+    };
+    let (start_grant, lease_grant) = (grant(), grant());
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        let (_, lib) = PwLib::open(&s, wallet).await.unwrap();
+        let lease = (s
+            .begin_lease(wallet, FlowKind::Registration, &[lease_grant])
+            .await)
+            .unwrap();
+        let req = || RegistrationRequest {
+            label: "spendsoff2".into(),
+            temporary_label: None,
+            funding: RegistrationFunding::Shielded { denomination: 0 },
+            initial_profile: None,
+        };
+        let ask = |identity: Option<String>| ShieldedAsk {
+            draft: 1,
+            owner: 0,
+            index: 0,
+            denomination: 0,
+            fallback: String::new(),
+            identity,
+        };
+        s.keyset_spends_off.store(true, Ordering::SeqCst);
+        let wait = Duration::from_secs(10);
+        macro_rules! refused {
+            ($call:expr) => {
+                (tokio::time::timeout(wait, $call).await)
+                    .expect("the refusal waits for no store")
+                    .unwrap_err()
+                    .code()
+            };
+        }
+        let codes = [
+            refused!(dp.registration_quote(req())),
+            refused!(dp.start_registration(req(), start_grant)),
+            refused!(lib.shielded_fund(ask(None), Some(&lease))),
+        ];
+        assert_eq!(codes, ["platform.unavailable"; 3]);
+
+        let named = dpp::prelude::Identifier::new([7; 32])
+            .to_string(dpp::platform_value::string_encoding::Encoding::Base58);
+        let settle = lib.shielded_fund(ask(Some(named)), Some(&lease));
+        let settle = tokio::time::timeout(Duration::from_millis(300), settle);
+        assert!(
+            settle.await.is_err(),
+            "settling a named create opens the pool"
+        );
+
+        s.keyset_spends_off.store(false, Ordering::SeqCst);
+        let quote = tokio::time::timeout(Duration::from_millis(300), dp.registration_quote(req()));
+        assert!(
+            quote.await.is_err(),
+            "with spends on, the quote opens the pool"
+        );
+    });
+}
+
 /// An engine with a regtest session and no vault.
 fn vaultless(no_platform: bool) -> (tempfile::TempDir, crate::Engine, Arc<NetworkSession>) {
     struct Quiet;
