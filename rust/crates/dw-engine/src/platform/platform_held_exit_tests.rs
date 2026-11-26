@@ -989,6 +989,22 @@ fn a_payout_and_its_cancel_settle_on_the_nonces_and_the_documents() {
     settle_payouts(&mut moves, &reached, &[("p".to_owned(), true)].into());
     assert_eq!(states(&moves), [DONE, LOST]);
 
+    // Another withdrawal at the key, its document unread: it may be the one
+    // that executed, so the cancel does not win until it is read absent.
+    let mut moves = vec![
+        held_of(MoveKind::ToContact, "p", 1),
+        held_of(MoveKind::ToCore, "x", 2),
+        cancel_of("p", "c", 3),
+    ];
+    settle_payouts(&mut moves, &reached, &absent);
+    assert!(
+        moves.iter().all(MoveRecord::holds),
+        "the exit's document unknown"
+    );
+    let both: Documents = [("p".to_owned(), false), ("x".to_owned(), false)].into();
+    settle_payouts(&mut moves, &reached, &both);
+    assert_eq!(states(&moves), [LOST, LOST, DONE]);
+
     // Without a cancel, every document absent fails every member (P8).
     let mut moves = vec![held_of(MoveKind::ToContact, "p", 1)];
     settle_payouts(&mut moves, &reached, &absent);
