@@ -1551,7 +1551,7 @@ fn spend_freed_notes(
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     let again = PendingRedrive {
         activity_id: AGAIN,
-        st_bytes: spends().remove(1).st_bytes,
+        st_bytes: transition(3, r.anchor, &r.nullifiers),
         attempts: 0,
         ..r.clone()
     };
