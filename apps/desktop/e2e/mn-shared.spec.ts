@@ -475,7 +475,7 @@ for (const theme of THEMES) {
     if (info.project.name === "chromium") await shot(page, "sh-coordinator-sent-contested", theme);
     await page.goto("about:blank");
     const spendErrors = await openSession(page, "sh-close-out-abandon-confirming", theme);
-    await expect(page.getByTestId("sh-row-abandoning")).toHaveText("Abandoning: the spend back (a8a8a8a8) is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
+    await expect(page.getByTestId("sh-row-abandoning")).toHaveText("Abandoning: the spend back is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
     if (info.project.name === "chromium") await shot(page, "sh-close-out-abandon-confirming", theme);
     expect([...errors, ...spendErrors]).toEqual([]);
   });

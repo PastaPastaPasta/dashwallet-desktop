@@ -257,7 +257,7 @@ export function spendBackLine(s: SharedSession, refused: (code: string) => strin
   if (!a.state) {
     if (!c) return null;
     const key = c.by === "abandon_tx" ? "masternodes.shared.spendBack.confirming" : "masternodes.shared.row.contested";
-    return t(key, { txid, count: c.confirmations });
+    return t(key, { count: c.confirmations });
   }
   switch (a.state) {
     case "uncertain":

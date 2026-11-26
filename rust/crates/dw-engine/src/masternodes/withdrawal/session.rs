@@ -91,7 +91,7 @@ fn payout_set(
 /// change pays or names a key of records it with nothing of its own to
 /// abandon. An InstantSend-locked change is conflicted only by a block
 /// `chainlock` covers (key-wallet's finality order).
-fn payout_changes_in(
+pub(super) fn payout_changes_in(
     histories: &[&HashMap<Txid, TxEntry>],
     pro_tx_hash: &[u8; 32],
     chainlock: Option<u32>,
@@ -99,12 +99,17 @@ fn payout_changes_in(
 ) -> Vec<PayoutChange> {
     let all = || histories.iter().flat_map(|h| h.iter());
     // The histories as one, each transaction at its most settled reading
-    // in any wallet (mined, else InstantSend-locked), for the descendant
-    // rule: built once, and only for a change out of a block.
+    // in any wallet (mined, else InstantSend-locked; between mined copies,
+    // a block `finality` proves), for the descendant rule: built once, and
+    // only for a change out of a block.
     let merged = std::cell::OnceCell::new();
     let through_parent = |txid: &Txid| {
         let conflicted = merged.get_or_init(|| {
-            let rank = |e: &TxEntry| (e.context.block_info().is_some(), instant_locked(e));
+            let rank = |e: &TxEntry| {
+                let block = e.context.block_info();
+                let proven = block.is_some_and(|b| finality.proves(b));
+                (block.is_some(), instant_locked(e), proven)
+            };
             let mut txs: HashMap<Txid, TxEntry> = HashMap::new();
             for (t, e) in all() {
                 if txs.get(t).is_none_or(|m| rank(e) > rank(m)) {

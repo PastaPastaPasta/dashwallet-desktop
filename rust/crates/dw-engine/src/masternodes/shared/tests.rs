@@ -2603,13 +2603,12 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     assert_eq!(f.net.sent().len(), 1);
 
     f.mine(spend, 60);
+    f.tip(65);
+    f.follow();
+    assert_eq!(f.locked(1), reserved, "deep, not final: kept (NIT-4)");
     f.chainlock(60);
     assert_eq!(f.session_of(1, &id).stage, SharedStage::Conflicted);
     assert_stage(f.abandon(1, &id).unwrap_err(), "conflicted");
-    f.tip(64);
-    f.follow();
-    assert_eq!(f.locked(1), reserved, "five deep: kept (NIT-4)");
-    f.tip(65);
     f.follow();
     assert!(f.locked(1).is_empty());
     assert_eq!(f.row(1, &id).reserved, "[]");
@@ -2914,7 +2913,8 @@ fn test_a_resend_refused_before_its_hand_off_leaves_the_earlier_code() {
     assert_eq!(row.last_error, first);
 }
 
-/// NIT-4: a ChainLocked conflict is buried at any depth.
+/// NIT-4: a ChainLocked conflict is buried at any depth, by SPV's
+/// ChainLock before the tracker reads one, as the session's view does.
 #[test]
 fn test_QT_126_a_chainlocked_conflict_releases_at_once() {
     let f = fx(3, true);
@@ -2924,11 +2924,10 @@ fn test_QT_126_a_chainlocked_conflict_releases_at_once() {
     f.abandon(1, &id).unwrap();
     let spend = f.net.sent().pop().unwrap();
     f.mine(spend, 60);
-    f.chainlock(60);
     f.tip(60);
     f.follow();
-    assert!(!f.locked(1).is_empty());
-    f.session.hub.tracker().set_chainlock_height(60);
+    assert!(!f.locked(1).is_empty(), "not final");
+    f.chainlock(60);
     f.follow();
     assert!(f.locked(1).is_empty());
 }
@@ -2955,16 +2954,12 @@ fn test_QT_126_an_unreadable_out_session_is_released_by_its_stored_columns() {
         special_transaction_payload: None,
     };
     f.mine(spend, 70);
-    f.chainlock(70);
-    f.tip(70);
-    f.follow();
-    assert_eq!(f.locked(1), reserved, "one deep: kept");
-    f.tip(74);
-    f.follow();
-    assert_eq!(f.locked(1), reserved, "five deep: kept (D70)");
     f.tip(75);
     f.follow();
-    assert!(f.locked(1).is_empty());
+    assert_eq!(f.locked(1), reserved, "deep, not final: kept (D70)");
+    f.chainlock(70);
+    f.follow();
+    assert!(f.locked(1).is_empty(), "final, so buried (D70)");
 }
 
 /// BL-346 (c), D70: an unreadable session not yet out keeps its coins
@@ -3791,7 +3786,7 @@ fn test_an_unreadable_two_coin_abandon_spends_both_and_never_spends_them_twice()
 /// `abandon_shared_session` refuses it before spending (it used to spend,
 /// then fail to read the record back); `abandon_unreadable_shared_session`
 /// spends a reserved coin back to the wallet and returns its listing, and
-/// the follower releases the locks once that spend is final and six deep. A session
+/// the follower releases the locks once that spend is final, and so buried. A session
 /// that reads, and an unreadable one not out, are refused.
 #[test]
 fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
@@ -3837,17 +3832,13 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
     assert_eq!(listed[0].abandon_charge, None);
     assert_eq!(f.locked(1), reserved, "kept until a block settles it");
     f.mine(spend, 60);
-    f.chainlock(60);
-    f.tip(60);
-    f.follow();
-    assert_eq!(f.locked(1), reserved, "one deep: kept");
-    assert_stage(abandon(1, &id).unwrap_err(), "conflicted");
-    f.tip(64);
-    f.follow();
-    assert_eq!(f.locked(1), reserved, "five deep: kept");
     f.tip(65);
     f.follow();
-    assert!(f.locked(1).is_empty());
+    assert_eq!(f.locked(1), reserved, "deep, not final: kept");
+    f.chainlock(60);
+    assert_stage(abandon(1, &id).unwrap_err(), "conflicted");
+    f.follow();
+    assert!(f.locked(1).is_empty(), "final, so buried");
 
     // The coordinator's own row of the session reads, and isn't out.
     assert_eq!(code(abandon(0, &id).unwrap_err()), "invalid_argument");

@@ -37,8 +37,9 @@ Depth alone no longer settles anything. A shared session's `settlement` reads `s
 buried, and `confirming` from a block that may still become final (above the best ChainLock, or final and not yet
 buried). While it is `confirming`, an out registration session's `next` reads `nothing` and
 `send_shared_registration`'s resend refuses `shared_stage{stage: "conflicting"}` until that block is final
-(`conflicted`) or a reorg drops it; with no ChainLock on the network that lasts until a reorg drops it. Key-change
-sessions keep their `next`.
+(`conflicted`) or a reorg drops it; with no ChainLock on the network that lasts until a reorg drops it. With the
+signed registration saved, a spend this wallet records of any of its inputs counts for this, a participant's too (one
+that pays this wallet). Key-change sessions keep their `next`.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -210,7 +211,8 @@ verbatim), the consent checks (`masternodes.shared_funding_mismatch{reason, need
 `fee_low` before the coordinator's own-side checks, MG-04b §3.1 step 3), then the lease (`Platform`)
 and the funding's `send.*`. No refusal repeats pasted text (MG-00 D36). Every call that changes a session sends §6's
 event. A session's coins are locked from the save that records its contribution until the session is discarded or
-settles (`confirmed`, `dead`, or `conflicted` once the conflict is 6 blocks deep or ChainLocked, MG-04b D70). Its keys
+settles (`confirmed`, `dead`, or `conflicted` once the conflict is final, its block's hash under a ChainLock checked by
+hash, and buried, at or below the ChainLock height or 6 blocks deep, MG-04b D70). Its keys
 count as in use for §2.3's registrations too. A coin a session or an MG-04 operation holds stays locked whoever
 unlocks it: another row's release skips it, and m1's `unlock_outpoints` refuses it (`invalid_argument`, MG-04b D69).
 

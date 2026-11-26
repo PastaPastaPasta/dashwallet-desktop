@@ -1254,16 +1254,17 @@ export const masternodes = {
       ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
       openActivity: "Open in Activity",
     },
-    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each names the spend by its
-     * short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
+    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each pending state names the spend
+     * by its short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
     spendBack: {
       uncertain: "The spend back to this wallet ({txid}) may already be on the network. The wallet couldn't confirm it went out.",
       refused: "The spend back to this wallet didn't go out: {sentence}.",
       inHistory: "Abandoning: waiting for the spend back ({txid}) to confirm. Your coins are still reserved.",
-      /** The spend back, or another spend of the coins, is in a block that isn't final yet. */
+      /** A spend back is in a block that isn't final yet. No txid: the mined one may be an earlier spend
+       * back than the one the session records. */
       confirming: {
-        one: "Abandoning: the spend back ({txid}) is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.",
-        other: "Abandoning: the spend back ({txid}) is in a block ({count} confirmations). Your coins stay reserved until a ChainLock makes it final.",
+        one: "Abandoning: the spend back is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.",
+        other: "Abandoning: the spend back is in a block ({count} confirmations). Your coins stay reserved until a ChainLock makes it final.",
       },
       cancelled: "You cancelled the earlier spend back ({txid}) in Activity.",
       legacy: "The wallet couldn't confirm the spend back ({txid}) went out. It may still confirm.",

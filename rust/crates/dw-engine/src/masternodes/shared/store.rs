@@ -679,7 +679,10 @@ pub(crate) fn derive_stage(l: &Loaded, chain: &ChainView) -> SharedStage {
 /// beaten ([`beaten_height`]) by a block that may still become final
 /// ([`ChainView::seen`]): it can't confirm on this branch, so nothing hands
 /// it off again until that block is final (`conflicted`) or a reorg drops
-/// it (#954). Recovery shows the same block as `confirming`. It releases
+/// it (#954). With its signed bytes saved, a spend this wallet records of
+/// any of their inputs beats it, a participant's too (one paying this
+/// wallet). Recovery shows a block spending this wallet's own coins as
+/// `confirming`; for a participant's, the row waits without it. It releases
 /// nothing: the stage and every release read final blocks only.
 pub(crate) fn contested(l: &Loaded, chain: &ChainView, stage: &SharedStage) -> bool {
     let txid = session_hash(l, chain)
@@ -692,7 +695,7 @@ pub(crate) fn contested(l: &Loaded, chain: &ChainView, stage: &SharedStage) -> b
         && beaten_height(
             &chain.history,
             &chain.seen,
-            &l.conflict_inputs(),
+            &signed_inputs(&l.row).unwrap_or_else(|| l.conflict_inputs()),
             txid.as_ref(),
         )
         .is_some()

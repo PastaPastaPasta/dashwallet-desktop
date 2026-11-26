@@ -1154,7 +1154,8 @@ fn test_another_spend_in_a_block_settles_as_other_spend() {
 
 /// #954: another spend in a block below the ChainLock that the header
 /// chain replaced shows no progress: the abandon is still `pending`. Once
-/// the chain holds that block, the spend is `confirming`.
+/// the chain holds that block, the spend is final under the ChainLock, so
+/// buried: `settled`.
 #[test]
 fn test_another_spend_in_a_replaced_block_shows_nothing() {
     let f = fx(3, true);
@@ -1174,10 +1175,9 @@ fn test_another_spend_in_a_replaced_block_shows_nothing() {
     f.forks.lock().unwrap().remove(&60);
     assert_eq!(
         f.recovery(1, &id).settlement,
-        Settlement::Confirming {
+        Settlement::Settled {
             by: SettledBy::OtherSpend,
-            confirmations: 2,
-            chainlocked: false
+            released: false
         }
     );
 }
@@ -1900,4 +1900,76 @@ fn test_a_mined_rival_before_the_chainlock_offers_no_resend() {
         s.recovery.settlement
     );
     assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "conflicted");
+}
+
+/// #954: a block above the ChainLock spending only a participant's input of
+/// the saved registration offers the coordinator no resend either, and the
+/// send refuses `conflicting`; nothing is released.
+#[test]
+fn test_a_mined_rival_of_a_participants_input_offers_no_resend() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.spv(true, 1);
+    let registration: Transaction =
+        dashcore::consensus::deserialize(&f.row(0, &id).signed_tx.unwrap()).unwrap();
+    let (held, participant) = (f.locked(0), f.locked(1));
+    let theirs = registration
+        .input
+        .iter()
+        .map(|i| i.previous_output)
+        .find(|o| participant.contains(o))
+        .unwrap();
+    assert!(!held.contains(&theirs));
+    assert_eq!(f.session_of(0, &id).next, SharedNext::Wait);
+
+    f.chainlock(59);
+    f.session.hub.tracker().set_chainlock_height(59);
+    f.mine(foreign_spend(&[theirs], 7), 60);
+    f.tip(60);
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Sent, SharedNext::Nothing));
+    let sent = f.net.sent().len();
+    assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "conflicting");
+    assert_eq!(f.net.sent().len(), sent);
+    f.follow();
+    assert_eq!(f.locked(0), held, "nothing released");
+}
+
+/// #954: a rival in a block above the ChainLock that the header chain has
+/// since replaced holds the resend only until a ChainLock covers that
+/// height; the abandon stays offered meanwhile.
+#[test]
+fn test_a_replaced_rival_block_holds_the_resend_until_a_chainlock_covers_it() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    f.spv(true, 1);
+    let registration: Transaction =
+        dashcore::consensus::deserialize(&f.row(0, &id).signed_tx.unwrap()).unwrap();
+    let held = f.locked(0);
+    let coin = registration
+        .input
+        .iter()
+        .map(|i| i.previous_output)
+        .find(|o| held.contains(o))
+        .unwrap();
+    f.chainlock(59);
+    f.session.hub.tracker().set_chainlock_height(59);
+    f.mine(foreign_spend(&[coin], 7), 60);
+    let replaced = dashcore::BlockHash::from_byte_array([0x60; 32]);
+    f.forks.lock().unwrap().insert(60, replaced);
+    f.tip(61);
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Sent, SharedNext::Nothing));
+    assert!(s.abandonable, "the abandon stays offered");
+    assert_stage(f.send(0, &id, 400 * COIN + FEE).unwrap_err(), "conflicting");
+    f.chainlock(61);
+    let s = f.session_of(0, &id);
+    assert_eq!((s.stage, s.next), (SharedStage::Sent, SharedNext::Wait));
+    assert!(s.abandonable);
 }

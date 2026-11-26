@@ -927,8 +927,8 @@ fn mg740_an_abandoned_payments_rival_only_in_the_mempool_keeps_every_hold() {
 
 /// #740 with P never abandoned (the history still holds it): the
 /// operations paid from its change read `conflicted` once a rival of P's
-/// input is mined, and their fee inputs settle only once that block is
-/// buried, as a direct conflict's do.
+/// input is mined final, and their fee inputs settle once that block is
+/// buried, as a direct conflict's do: under SPV's ChainLock, at once.
 #[test]
 fn mg740_fee_inputs_of_operations_on_a_beaten_payments_change_settle_once_buried() {
     let f = fx(Library::Accept);
@@ -945,12 +945,9 @@ fn mg740_fee_inputs_of_operations_on_a_beaten_payments_change_settle_once_buried
     assert!(fee_inputs().iter().all(|i| i != "[]"));
 
     f.confirm(Fx::rival_of(input), 60);
-    f.tip(64);
+    f.tip(60);
     assert_eq!(f.state(&key_change_op), ProTxOperationState::Conflicted);
     assert_eq!(f.state(&registration), ProTxOperationState::Conflicted);
-    f.follow();
-    assert!(fee_inputs().iter().all(|i| i != "[]"), "not buried");
-    f.tip(66);
     f.follow();
     assert!(fee_inputs().iter().all(|i| i == "[]"), "{:?}", fee_inputs());
 }

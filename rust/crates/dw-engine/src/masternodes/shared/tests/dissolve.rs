@@ -55,6 +55,12 @@ pub(super) fn listed_with_reward(
 /// records it (the seam's blocks reach the session stages only), and
 /// SPV's ChainLock of that block.
 pub(super) fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
+    mine_unlocked(f, w, tx, height);
+    f.chainlock(height);
+}
+
+/// [`confirm`] with no ChainLock: a block a reorg may undo.
+fn mine_unlocked(f: &Fx, w: usize, tx: Transaction, height: u32) {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{
         TransactionDirection, TransactionRecord,
@@ -76,7 +82,6 @@ pub(super) fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
         0,
     );
     (f.session.hub.history).with_wallet(f.wallets[w], |h| h.upsert(&record, None));
-    f.chainlock(height);
 }
 
 pub(super) fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {
@@ -600,7 +605,8 @@ fn test_QT_127_dissolve_refuses_a_dust_actor_output() {
 /// reorg does put it back out after the dissolution went, the two resend
 /// as `update_registrar` rows do (MG-04 D43, D49): the reward change is
 /// superseded by the later dissolution, which waits for the reward change
-/// to be mined and buried again, then resends.
+/// to be mined and buried again (under SPV's ChainLock, at once), then
+/// resends.
 #[test]
 fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
     let f = fx(3, true);
@@ -618,7 +624,7 @@ fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
         ))
         .unwrap();
     let u = f.net.sent()[0].clone();
-    confirm(&f, 0, u.clone(), 101);
+    mine_unlocked(&f, 0, u.clone(), 101);
     f.tip(101);
     assert_update_pending(dissolve_now(&f, txid, 0).unwrap_err(), &update.id);
     f.tip(106);
@@ -643,11 +649,12 @@ fn test_QT_127_a_reward_change_holds_dissolve_until_buried_and_after_a_reorg() {
     );
     assert_eq!(f.net.sent().len(), 2, "neither resent");
 
-    // Mined again: one block deep it still holds, buried it doesn't.
-    confirm(&f, 0, u, 106);
+    // Mined again: one block deep it still holds; under SPV's ChainLock it
+    // is buried.
+    mine_unlocked(&f, 0, u, 106);
     f.tip(106);
     assert_update_pending(resend(&op.id, 2 * COIN).unwrap_err(), &update.id);
-    f.tip(111);
+    f.chainlock(106);
     resend(&op.id, 2 * COIN).unwrap();
     assert_eq!(f.net.sent().len(), 3);
     assert_eq!(f.net.sent()[2].txid(), f.net.sent()[1].txid());

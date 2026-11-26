@@ -497,15 +497,14 @@ fn test_QT_127_a_sent_key_change_is_abandoned_by_a_spend_to_the_wallet() {
     );
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     f.mine(spend, 102);
-    f.chainlock(102);
-    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
-    f.tip(103);
+    f.tip(200);
     f.follow();
     assert!(
         reserved.iter().all(|o| f.locked(0).contains(o)),
-        "not buried"
+        "deep, not final"
     );
-    f.tip(200);
+    f.chainlock(102);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
     f.follow();
     assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
 }
@@ -954,14 +953,13 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     conflict.lock_time += 1;
     conflict.special_transaction_payload = None;
     f.mine(conflict, 60);
+    f.tip(65);
+    f.follow();
     let stage = f.session_of(0, &id).stage;
     assert_eq!(stage, SharedStage::Sent, "a block no ChainLock covers");
+    assert_eq!(f.locked(0), reserved, "deep, not final");
     f.chainlock(60);
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
-    f.tip(64);
-    f.follow();
-    assert_eq!(f.locked(0), reserved);
-    f.tip(65);
     f.follow();
     assert!(f.locked(0).is_empty());
 }
@@ -1028,22 +1026,15 @@ fn mg740_a_key_change_paid_from_a_beaten_payments_change_is_conflicted() {
     assert_eq!(s.stage, SharedStage::Conflicted);
     assert_eq!(
         s.recovery.settlement,
-        crate::masternodes::Settlement::Confirming {
+        crate::masternodes::Settlement::Settled {
             by: crate::masternodes::SettledBy::OtherSpend,
-            confirmations: 1,
-            chainlocked: false
-        }
+            released: false
+        },
+        "final, so buried"
     );
     assert!(s.recovery.actions.is_empty(), "{:?}", s.recovery.actions);
     f.credit(0, 10, COIN);
     start(&f, 0, rotate(txid), 0).unwrap();
-    f.tip(64);
-    f.follow();
-    assert!(
-        reserved.iter().all(|o| f.locked(0).contains(o)),
-        "not buried"
-    );
-    f.tip(65);
     f.follow();
     assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
 }
@@ -1558,16 +1549,12 @@ fn test_an_unreadable_out_key_change_releases_on_a_buried_spend() {
         special_transaction_payload: None,
     };
     f.mine(spend, 200);
-    f.chainlock(200);
-    f.tip(200);
-    f.follow();
-    assert!(!f.locked(0).is_empty(), "one deep: kept");
-    f.tip(204);
-    f.follow();
-    assert!(!f.locked(0).is_empty(), "five deep: kept");
     f.tip(205);
     f.follow();
-    assert!(f.locked(0).is_empty());
+    assert!(!f.locked(0).is_empty(), "deep, not final: kept");
+    f.chainlock(200);
+    f.follow();
+    assert!(f.locked(0).is_empty(), "final, so buried");
 }
 
 /// An unreadable key change whose own stored transaction is mined waits
@@ -1637,8 +1624,7 @@ fn test_a_discarded_key_change_frees_its_fee_coins() {
 /// `abandonable` with the coin test's charge, and
 /// `abandon_unreadable_shared_session`, under a grant of exactly that charge
 /// (one duff less is refused), spends its reserved coins back to the wallet. Its
-/// locks stay until that spend is buried: kept one and five deep, released
-/// six deep.
+/// locks stay until that spend is buried: under SPV's ChainLock, at once.
 #[test]
 fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     let f = fx(3, true);
@@ -1701,10 +1687,12 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     assert_eq!(log[0]["fee"].as_u64(), Some(fee));
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     f.mine(spend, 200);
-    f.chainlock(200);
-    f.tip(200);
+    f.tip(205);
     f.follow();
-    assert!(!f.locked(0).is_empty(), "one deep: kept");
+    assert!(!f.locked(0).is_empty(), "deep, not final: kept");
+    f.chainlock(200);
+    f.follow();
+    assert!(f.locked(0).is_empty(), "final, so buried");
     assert_eq!(
         code(
             f.run(f.mn().abandon_unreadable_shared_session(
@@ -1716,10 +1704,4 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
         ),
         "masternodes.shared_stage"
     );
-    f.tip(204);
-    f.follow();
-    assert!(!f.locked(0).is_empty(), "five deep: kept");
-    f.tip(205);
-    f.follow();
-    assert!(f.locked(0).is_empty());
 }

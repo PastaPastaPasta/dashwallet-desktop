@@ -1245,6 +1245,63 @@ fn mg740_a_payout_change_paid_from_a_beaten_payment_holds_nothing() {
     }
 }
 
+/// #740 across wallets that hold different mined copies of the rival: one
+/// in a block a reorg replaced, one in the final block. The proven copy is
+/// the one the descendant rule reads, in either wallet order; with only the
+/// replaced copy, the change holds.
+#[test]
+fn mg740_a_payout_change_reads_the_rivals_final_copy_over_a_replaced_one() {
+    use super::super::session::payout_changes_in;
+    use crate::history::{Finality, TxEntry};
+    use dashcore::hashes::Hash;
+    use std::collections::HashMap;
+    let moved = CoreScript::new_p2pkh([0x22; 20]);
+    let payment = rival_of(&payout_change(&PRO_TX, &moved, coin(2)));
+    let change = payout_change(&PRO_TX, &moved, OutPoint::new(payment.txid(), 0));
+    let mut rival = rival_of(&payment);
+    rival.lock_time = 1;
+    let entry = |tx: &Transaction, context: TransactionContext| TxEntry {
+        tx: tx.clone(),
+        context,
+        instant_locked: false,
+        first_seen: None,
+        own_inputs: Default::default(),
+        abandoned: false,
+    };
+    let at = |hash: [u8; 32]| {
+        TransactionContext::InBlock(key_wallet::transaction_checking::BlockInfo::new(
+            TIP - 3,
+            dashcore::BlockHash::from_byte_array(hash),
+            0,
+        ))
+    };
+    let one = |tx: &Transaction, context| HashMap::from([(tx.txid(), entry(tx, context))]);
+    let mut paying = one(&payment, TransactionContext::Mempool);
+    paying.insert(change.txid(), entry(&change, TransactionContext::Mempool));
+    let replaced = one(&rival, at([0x60; 32]));
+    let proven = one(&rival, at([0x61; 32]));
+    let tip = dashcore::BlockHash::from_byte_array([0x64; 32]);
+    let finality = Finality {
+        chainlock: Some((TIP, tip)),
+        active: HashMap::from([
+            (TIP - 3, dashcore::BlockHash::from_byte_array([0x61; 32])),
+            (TIP, tip),
+        ]),
+    };
+    let changes = |rivals: [&HashMap<_, _>; 2]| {
+        payout_changes_in(
+            &[&paying, rivals[0], rivals[1]],
+            &PRO_TX,
+            Some(TIP),
+            &finality,
+        )
+        .len()
+    };
+    assert_eq!(changes([&replaced, &replaced]), 1, "only the replaced copy");
+    assert_eq!(changes([&replaced, &proven]), 0, "replaced first");
+    assert_eq!(changes([&proven, &replaced]), 0, "proven first");
+}
+
 /// #740's rule reads every wallet: a change InstantSend-locked, or paid
 /// from a payment another wallet reads mined, still holds when a final
 /// block holds a rival of the payment's input. One paid from a payment

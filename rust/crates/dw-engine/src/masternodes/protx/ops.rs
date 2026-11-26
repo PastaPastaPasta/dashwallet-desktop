@@ -658,12 +658,13 @@ impl NetworkSession {
                 .collect();
             (unspent, crate::history_ops::applied_chainlock(&state))
         };
-        let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
-            .max(self.hub.best_chainlock().map(|(h, _)| h));
         let history = self.hub.history.read(&wallet, |h| h.clone());
         let finality = self
             .finality(|at_most| spender_heights(&[&history], at_most))
             .await;
+        let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
+            .max(self.hub.best_chainlock().map(|(h, _)| h))
+            .max(finality.chainlock.map(|(h, _)| h));
         Ok(OpView {
             history,
             unspent,
@@ -866,13 +867,15 @@ impl NetworkSession {
     }
 
     /// Whether a block at `height` is one a reorg won't undo (MG-04b D70,
-    /// Opus-h NIT-4): at or under the ChainLock, or
+    /// Opus-h NIT-4): at or under the best ChainLock (the higher of the
+    /// tracker's and SPV's, which the finality proof reads), or
     /// `RECOMMENDED_CONFIRMATIONS` deep at the tip.
     pub(crate) fn buried(&self) -> impl Fn(u32) -> bool + use<> {
-        let (tip, chainlock) = {
+        let (tip, tracked) = {
             let t = self.hub.tracker();
             (t.tip_height(), t.chainlock_height())
         };
+        let chainlock = tracked.max(self.hub.best_chainlock().map(|(h, _)| h));
         move |height| {
             chainlock.is_some_and(|c| height <= c)
                 || tip.is_some_and(|t| {

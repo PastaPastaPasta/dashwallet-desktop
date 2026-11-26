@@ -424,7 +424,8 @@ describe("Abandon", () => {
     const a8 = "a8".repeat(32);
     const own = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false, next: "nothing", abandonSpend: { txid: a8, state: null, overdue: false, code: null }, confirming: confirming("abandon_tx", 1) });
     expect(renderSession(own, S5_SLICE).row).toBe("abandoning");
-    expect(spendBackLine(own, () => null)).toBe("Abandoning: the spend back (a8a8a8a8) is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
+    expect(spendBackLine(own, () => null)).toBe("Abandoning: the spend back is in a block (1 confirmation). Your coins stay reserved until a ChainLock makes it final.");
+    expect(spendBackLine({ ...own, confirming: confirming("abandon_tx", 2) }, () => null), "the mined spend back may be an earlier one").not.toContain("a8a8a8a8");
     expect(spendBackLine({ ...own, confirming: confirming("other_spend", 3) }, () => null)).toBe("A transaction spending your reserved coins is in a block (3 confirmations). The wallet waits for a ChainLock to make it final.");
     expect(spendBackLine({ ...own, confirming: null }, () => null), "nothing in a block").toBeNull();
   });

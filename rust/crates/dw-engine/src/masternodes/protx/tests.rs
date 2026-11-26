@@ -2924,15 +2924,12 @@ fn mg04_a_conflicted_update_lets_the_next_one_through() {
     assert_eq!(e.code(), "masternodes.update_pending");
 
     f.confirm(rival, 60);
-    // MG-04b D70 (review r1 of 1b, n-5): a conflict a reorg may undo keeps
-    // the inputs locked; five blocks deep it may, six it won't.
-    f.tip(64);
+    // MG-04b D70 (review r1 of 1b, n-5): a conflict a reorg won't undo
+    // releases the inputs; under SPV's ChainLock it is buried at once.
+    f.tip(60);
     let ops = f.operations();
     let settled = ops.iter().find(|o| o.id == first.id).unwrap();
     assert_eq!(settled.state, ProTxOperationState::Conflicted);
-    assert!(f.locked().contains(&input), "D70");
-    f.tip(65);
-    f.operations();
     let locked = f.engine.block_on(f.session.locked_outpoints(f.wallet));
     let locked = locked.unwrap();
     assert!(
