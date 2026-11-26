@@ -148,6 +148,27 @@ fn the_shown_request_keeps_its_link_past_the_bound() {
     assert!(!inbox.connect.get(&next).unwrap().shown);
 }
 
+/// Reading a sheet over IPC is what marks its request as shown, even when
+/// the wallet then refuses it.
+#[test]
+fn reading_a_sheet_keeps_its_request_past_the_bound() {
+    use tauri::Manager;
+    let demo = crate::ipc_tests::Demo::new();
+    let state = demo.handle().state::<crate::state::AppState>();
+    let inbox = &state.shell.inbox;
+    let ids: Vec<String> = (0..MAX_CONNECT_LINKS)
+        .map(|_| link_id(&take(inbox, &connect_uri(false), LinkOrigin::Os)))
+        .collect();
+    let read = demo.call(
+        "app_connect_sheet",
+        serde_json::json!({ "walletId": "none", "linkId": ids[0] }),
+    );
+    assert!(read.is_err(), "{read:?}");
+    take(inbox, &connect_uri(false), LinkOrigin::Os);
+    assert!(inbox.connect.get(&ids[0]).is_some_and(|l| l.shown));
+    assert!(inbox.connect.get(&ids[1]).is_none());
+}
+
 /// With every request kept on screen or being approved, a new one is
 /// refused, and none of those is lost.
 #[test]
