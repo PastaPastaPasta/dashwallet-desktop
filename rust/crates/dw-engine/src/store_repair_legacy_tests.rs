@@ -561,7 +561,7 @@ fn a_coin_spent_since_the_fork_gave_it_back_is_not_held_again() {
 #[test]
 fn a_put_back_claim_frees_no_withheld_change_while_its_record_does_not_read() {
     for pin in PINS {
-        let (_dir, engine, id, funding, _, network) = non_push_only_claim_the_fork_dropped(pin);
+        let (_dir, engine, id, funding, claim, network) = non_push_only_claim_the_fork_dropped(pin);
         let a = OutPoint::new(funding.txid(), 0);
         arm(&network, Stop::Skip);
         let session = open(&engine);
@@ -592,6 +592,9 @@ fn a_put_back_claim_frees_no_withheld_change_while_its_record_does_not_read() {
 
         let session = open(&engine);
         assert_eq!(balances(&session, id), before, "{pin:?}: read");
+        assert!((session.hub.history).read_wallet(&id, |h| {
+            !h.put_back_unread && h.put_back.contains(&claim.txid())
+        }));
         (session.hub.fail_restored_read).store(true, std::sync::atomic::Ordering::SeqCst);
         let s = Arc::clone(&session);
         engine
