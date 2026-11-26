@@ -1616,7 +1616,7 @@ impl SessionHub {
     /// the excluded coins' share, and announces them when they differ.
     pub(crate) fn publish_core_balance(&self, id: WalletId, core: &ManagedWalletInfo) {
         let excluded = self.excluded_share(id, core);
-        let held = self.restore_held_in(id, core);
+        let held = self.restore_held_in(id, core, &excluded);
         let (balance, accounts) = (core.balance(), core.account_balances());
         self.publish_balances(id, &balance, &accounts, Some(excluded), Some(held));
     }
@@ -1957,7 +1957,7 @@ impl SessionHub {
             return;
         }
         let excluded = self.excluded_share(id, core);
-        let held = self.restore_held_in(id, core);
+        let held = self.restore_held_in(id, core, &excluded);
         let (balance, accounts) = (core.balance(), core.account_balances());
         if self.write_balances(id, &balance, &accounts, Some(excluded), Some(held)) {
             self.pump.mark_balances(id);

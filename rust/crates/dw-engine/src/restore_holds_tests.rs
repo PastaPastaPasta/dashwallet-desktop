@@ -153,12 +153,14 @@ fn assert_change_held(
     );
     let row = utxo_row(engine, session, id, change).expect("the change is listed");
     assert!(row.pending_unproven && !row.spendable, "{state}: {row:?}");
+    // Pending as unconfirmed, or as withheld when the line's withhold
+    // (`crate::withhold`) also keeps it out of every bucket.
     eventually("the change counts pending", || {
         let b = balances(session, id);
-        b.confirmed == 11 * COIN && b.unconfirmed >= value
+        b.confirmed == 11 * COIN && b.unconfirmed + b.withheld >= value
     });
     let b = balances(session, id);
-    assert_eq!(b.total, 11 * COIN + value, "{state}: {b:?}");
+    assert_eq!(b.total + b.withheld, 11 * COIN + value, "{state}: {b:?}");
 }
 
 /// H1: a restored pending payment's change is never offered and counts

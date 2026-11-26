@@ -532,11 +532,13 @@ impl WalletHistory {
 impl crate::events::SessionHub {
     /// What the restore holds keep out of the confirmed bucket of `core`,
     /// wallet `id`'s state in the manager: the held coins it counts there
-    /// (key-wallet's `update_balance` rule).
+    /// (key-wallet's `update_balance` rule), less those `excluded` already
+    /// keeps out of every bucket (`crate::withhold`).
     pub(crate) fn restore_held_in(
         &self,
         id: WalletId,
         core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+        excluded: &crate::withhold::Excluded,
     ) -> u64 {
         let (txids, inputs) = self.history.read_wallet(&id, |h| h.restore_held_coins());
         if txids.is_empty() && inputs.is_empty() {
@@ -546,6 +548,7 @@ impl crate::events::SessionHub {
             .flat_map(|a| a.utxos.iter())
             .filter(|(o, u)| {
                 (txids.contains(&o.txid) || inputs.contains(*o))
+                    && !excluded.coins.contains_key(*o)
                     && !u.is_locked
                     && (u.is_confirmed || u.is_instantlocked || u.is_trusted)
             })
