@@ -209,7 +209,7 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
             {connectErrorText(flow.quoteError, network)}
           </p>
           {flow.quote === null && (
-            <DashButton variant="tintedBlue" size="small" type="button" data-testid="connect-quote-retry" disabled={flow.busy} onClick={() => void flow.requote()}>
+            <DashButton variant="tintedBlue" size="small" type="button" data-testid="connect-quote-retry" disabled={flow.busy} onClick={() => flow.retryQuote()}>
               {t("dashpay.connect.retryQuote")}
             </DashButton>
           )}

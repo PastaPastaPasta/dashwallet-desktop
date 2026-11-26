@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 104
+Contract-Version: 105
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -1036,8 +1036,8 @@ is `connect.mainnet_off` until the keys ruling (`enabled_on`); testnet, devnet a
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `app_connect_sheet(link)` | async | `ConnectSheet{request, app_id, label, app_owner, identities, bindings, encryption, terms, max_funding_limit, earlier_approval, block_time_ms}`: the request's hash, the app and its owner, the wallet's identities with a username (the hinted one alone), each binding's level and scope (a group's owner, admins, contracts, document types and tokens as proved now; a contract's `tokens`: it has tokens or is not read-only, so an update could add them), the default terms (the app's total ask capped at `max_funding_limit`, 5 DASH, its earliest expiry kept between a day and a year), `max_funding_limit`, the most an approval may set, and `earlier_approval`: the choice of this wallet's last approval of the request when Platform holds no response to it, so its keys may be on the identity; approving that choice again reuses them, where the sheet's default terms (its expiry moves with the block time) would conflict with them (one with a response refuses the sheet, `connect.answered`). `label` is the app's claim. Refused before any read: another network (`connect.network`), mainnet (`connect.mainnet_off`), an encryption binding off the app's contract (`connect.unsupported`); after the reads: protocol below 14 (`connect.protocol`), a missing contract, document type or group, a system contract as the app's, a contract that did not opt in to encryption (`connect.invalid`), a group or contract of another owner (`connect.owner`), a group over 200 members (`connect.unsupported`), no identity with a username (`connect.no_identity`), a hint the wallet does not hold (`connect.hint`), a request more than 10 minutes before or 2 minutes after the proved block time (`connect.stale`). | `ConnectError` |
-| `app_connect_quote(link, choice)` | async | `ConnectQuote{request, plan, max_credits, fee, budgets, balance}` for `ConnectChoice{identity, selection, terms}`: the grant's `max_credits` (the update and three sends of the response: a send that may have gone out keeps its reservation), the `fee` (the update and one send), each selected binding's budget (a DashPay profile key 0.002 DASH, the app's keys the rest by their asks) and the plan digest. The sheet's refusals; a selection without the primary binding, terms over 5 DASH or a year, or under an hour (`invalid_argument`); a request this identity answered (`connect.answered`); a balance below the fee (`connect.credits{needed, available}`). | `ConnectError` |
+| `app_connect_sheet(link)` | async | `ConnectSheet{request, app_id, label, app_owner, identities, bindings, encryption, terms, max_funding_limit, earlier_approval, block_time_ms, groups}`: the request's hash, the app and its owner, the wallet's identities with a username (the hinted one alone), each binding's level and scope (a group's owner, admins, contracts, document types and tokens as proved now; a contract's `tokens`: it has tokens or is not read-only, so an update could add them), the default terms (the app's total ask capped at `max_funding_limit`, 5 DASH, its earliest expiry kept between a day and a year), `max_funding_limit`, the most an approval may set, and `earlier_approval`: the choice of this wallet's last approval of the request when Platform holds no response to it, so its keys may be on the identity; approving that choice again reuses them, where the sheet's default terms (its expiry moves with the block time) would conflict with them (one with a response refuses the sheet, `connect.answered`), and `groups`, the digest of the group facts the bindings show. `label` is the app's claim. Refused before any read: another network (`connect.network`), mainnet (`connect.mainnet_off`), an encryption binding off the app's contract (`connect.unsupported`); after the reads: protocol below 14 (`connect.protocol`), a missing contract, document type or group, a system contract as the app's, a contract that did not opt in to encryption (`connect.invalid`), a group or contract of another owner (`connect.owner`), a group over 200 members (`connect.unsupported`), no identity with a username (`connect.no_identity`), a hint the wallet does not hold (`connect.hint`), a request more than 10 minutes before or 2 minutes after the proved block time (`connect.stale`). | `ConnectError` |
+| `app_connect_quote(link, choice)` | async | `ConnectQuote{request, plan, groups, max_credits, fee, budgets, balance}` for `ConnectChoice{identity, selection, terms}`: the grant's `max_credits` (the update and three sends of the response: a send that may have gone out keeps its reservation), the `fee` (the update and one send), each selected binding's budget (a DashPay profile key 0.002 DASH, the app's keys the rest by their asks), the plan digest and `groups`, the digest of the group facts this quote read: a sheet whose `groups` differs read other group facts, and reads the request again before Approve. The sheet's refusals; a selection without the primary binding, terms over 5 DASH or a year, or under an hour (`invalid_argument`); a request this identity answered (`connect.answered`); a balance below the fee (`connect.credits{needed, available}`). | `ConnectError` |
 | `app_connect_approve(link, choice, grant)` | async | As above, then `ConnectDone{identity, keys_added}`. The quote's refusals with the grant unused; a grant that is not this wallet's `AppConnect` for the request (`platform.grant_invalid`), below the bound (`platform.grant_exceeded`) or for another plan (`connect.plan_changed`). A session key this request derived that is on the identity already is sealed again, never disabled. After the update: keys not shown in time (`connect.failed{not_confirmed}`; the request stays open, and approving it again re-reads the identity first, reusing the keys that landed), a group or encryption key changed (`connect.failed{scope_changed}`), no key to sign the response (`connect.failed{no_response_key}`), a response not published (`connect.send_failed`: kept, with its lease and the approved groups, for `app_connect_retry_send`). | `ConnectError` |
 | `app_connect_retry_send(link)` | async | Publishes the response an approval sealed and could not send, under that approval's lease and the identity's write lock, once the approved groups and the sealed encryption keys are still Platform's (else `connect.failed{scope_changed}`); a response Platform holds already finishes it. `connect.failed{nothing_to_send}` when none is kept or its lease cannot sign (a lock ends it), `connect.send_failed` again. | `ConnectError` |
 
@@ -1048,7 +1048,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 27cf5f19be2458a05fe81279abfa0d9924370d8a66f56a3c1172f3a3a8c1cc4f version: 104 -->
+<!-- surface-sha256: 2b97292eedd4edbcc8df63409454e0e3466173d6ae19317c9e6e0bf836170f1c version: 105 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1131,11 +1131,13 @@ pub struct ConnectSheet {
     pub max_funding_limit: u64,
     pub earlier_approval: Option<ConnectChoice>,
     pub block_time_ms: u64,
+    pub groups: [u8 ; 32],
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectQuote {
     pub request: [u8 ; 20],
     pub plan: [u8 ; 32],
+    pub groups: [u8 ; 32],
     pub max_credits: u64,
     pub fee: u64,
     pub budgets: Vec<u64>,
