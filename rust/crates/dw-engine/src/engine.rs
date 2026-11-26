@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -90,33 +90,77 @@ struct Shared {
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
     sessions: Mutex<HashMap<DashNetwork, Arc<NetworkSession>>>,
-    /// The networks whose last open the store-upgrade check refused as
-    /// damaged ([`EngineError::StoreRefused`] with the
-    /// [`WayOut::Damaged`](dw_store_upgrade::copy::WayOut::Damaged) way
-    /// out): only these may start over in a new folder
+    /// How the store-upgrade check refused each network's last open in
+    /// this engine, where that way out allows starting over in a new folder
     /// ([`Engine::recover_in_fresh_folder`]).
-    damaged: std::sync::Mutex<HashSet<DashNetwork>>,
+    refused: std::sync::Mutex<HashMap<DashNetwork, Refused>>,
     /// The data root's instance lock (`dw_fs::instance`): another process's
     /// engine, dwcli's or an app's, is refused the root while this one has
     /// it.
     _instance: dw_fs::instance::InstanceLock,
 }
 
+/// A refused open's way out that [`Engine::recover_in_fresh_folder`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refused {
+    /// [`EngineError::StoreRefused`] with
+    /// [`WayOut::Damaged`](dw_store_upgrade::copy::WayOut::Damaged): may
+    /// start over.
+    Damaged,
+    /// [`EngineError::StoreRefused`] with
+    /// [`WayOut::Restore`](dw_store_upgrade::copy::WayOut::Restore), its
+    /// restore not refused for a shielded hold: may not start over.
+    Restore,
+    /// Restore earlier data refused for a shielded hold (R-1): the request
+    /// after a [`Self::Restore`] open, or the swap at the open. May start
+    /// over, and keeps through later opens refused with
+    /// [`WayOut::Restore`](dw_store_upgrade::copy::WayOut::Restore), whose
+    /// screens then offer it.
+    RestoreHeld,
+}
+
 impl Shared {
-    fn damaged_contains(&self, network: &DashNetwork) -> bool {
-        self.damaged
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains(network)
+    fn refused(&self, network: &DashNetwork) -> Option<Refused> {
+        let refused = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        refused.get(network).copied()
     }
 
-    fn set_damaged(&self, network: &DashNetwork, damaged: bool) {
-        let mut set = self.damaged.lock().unwrap_or_else(|p| p.into_inner());
-        if damaged {
-            set.insert(network.clone());
-        } else {
-            set.remove(network);
-        }
+    fn set_refused(&self, network: &DashNetwork, state: Option<Refused>) {
+        let mut refused = self.refused.lock().unwrap_or_else(|p| p.into_inner());
+        match state {
+            Some(state) => refused.insert(network.clone(), state),
+            None => refused.remove(network),
+        };
+    }
+
+    /// Records how `opened` was refused. A restore the swap refused for a
+    /// shielded hold, and a later [`WayOut::Restore`] refusal after one, keep
+    /// [`Refused::RestoreHeld`], whose screen then offers Set up from
+    /// recovery phrase; any other result, an open that is not refused among
+    /// them, withdraws it.
+    fn note_open<T>(&self, network: &DashNetwork, opened: &mut Result<T, EngineError>) {
+        use dw_store_upgrade::copy::WayOut;
+        let state = match opened {
+            Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Damaged => {
+                Some(Refused::Damaged)
+            }
+            Err(EngineError::StoreRefused(r)) if r.screen.way_out == WayOut::Restore => {
+                if self.refused(network) == Some(Refused::RestoreHeld) {
+                    r.screen.offer_recover();
+                    Some(Refused::RestoreHeld)
+                } else {
+                    Some(Refused::Restore)
+                }
+            }
+            Err(EngineError::StoreRestore(r))
+                if r.state == crate::store_upgrade::RestoreState::NotStarted
+                    && crate::store_upgrade::is_hold_cause(r.cause) =>
+            {
+                Some(Refused::RestoreHeld)
+            }
+            _ => None,
+        };
+        self.set_refused(network, state);
     }
 }
 
@@ -195,7 +239,7 @@ impl Engine {
                 rates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
-                damaged: std::sync::Mutex::new(HashSet::new()),
+                refused: std::sync::Mutex::new(HashMap::new()),
                 _instance: instance,
             }),
         })
@@ -226,7 +270,9 @@ impl Engine {
     /// it is. Returns the new folder. `InvalidArgument` while the network
     /// is open, or unless its last open in this engine was refused by the
     /// store-upgrade check as damaged (`SnapshotSourceDamaged`, the
-    /// `wayOut.damaged` screen); every other refusal keeps its own way out.
+    /// `wayOut.damaged` screen), or Restore earlier data was refused for a
+    /// shielded hold since an open refused with `wayOut.restore` or at that
+    /// open's swap (R-1); every other refusal keeps its own way out.
     pub async fn recover_in_fresh_folder(
         &self,
         network: DashNetwork,
@@ -241,9 +287,12 @@ impl Engine {
                         "{network} is open; only a network whose open was refused starts over"
                     )));
                 }
-                if !shared.damaged_contains(&network) {
+                if !matches!(
+                    shared.refused(&network),
+                    Some(Refused::Damaged | Refused::RestoreHeld)
+                ) {
                     return Err(EngineError::InvalidArgument(format!(
-                        "the last open of {network} was not refused as damaged; nothing to start over from"
+                        "the last open of {network} was not refused as damaged, nor its restore for a shielded hold; nothing to start over from"
                     )));
                 }
                 let (root, net) = (shared.config.data_root.clone(), network.clone());
@@ -251,7 +300,7 @@ impl Engine {
                     crate::network_folders::recover(&root, &net)
                 })
                 .await??;
-                shared.set_damaged(&network, false);
+                shared.set_refused(&network, None);
                 drop(sessions);
                 tracing::info!(%network, folder = %dir.display(), "network starts over in a new folder");
                 Ok(dir)
@@ -278,11 +327,11 @@ impl Engine {
                 {
                     Ok(dir) => dir,
                     Err(e) => {
-                        shared.set_damaged(&network, false);
+                        shared.set_refused(&network, None);
                         return Err(e);
                     }
                 };
-                let opened = NetworkSession::open(
+                let mut opened = NetworkSession::open(
                     network.clone(),
                     dir,
                     Arc::clone(&shared.sink),
@@ -290,11 +339,7 @@ impl Engine {
                     shared.config.vault.clone(),
                 )
                 .await;
-                shared.set_damaged(
-                    &network,
-                    matches!(&opened, Err(EngineError::StoreRefused(r))
-                        if r.screen.way_out == dw_store_upgrade::copy::WayOut::Damaged),
-                );
+                shared.note_open(&network, &mut opened);
                 let session = opened?;
                 sessions.insert(network.clone(), Arc::clone(&session));
                 if network == DashNetwork::Mainnet {
@@ -334,7 +379,9 @@ impl Engine {
     /// the session's, when `network` is open (the removal gate's hold of
     /// each loaded wallet), and the stores' on disk, open or not
     /// (`store_upgrade::request_restore`); the next start reads the stores
-    /// again before the restore moves anything.
+    /// again before the restore moves anything. After an open refused with
+    /// `wayOut.restore`, that refusal lets `network` start over
+    /// ([`Self::recover_in_fresh_folder`]).
     pub async fn request_restore(&self, network: &DashNetwork) -> Result<(), EngineError> {
         network.validate()?;
         let sessions = self.shared.sessions.lock().await;
@@ -344,9 +391,16 @@ impl Engine {
         {
             return Err(EngineError::ShieldedSpendHeld(hold));
         }
-        self.handle
+        let requested = self
+            .handle
             .spawn_blocking(move || crate::store_upgrade::request_restore(&dir))
-            .await?
+            .await?;
+        if matches!(requested, Err(EngineError::ShieldedSpendHeld(_)))
+            && self.shared.refused(network) == Some(Refused::Restore)
+        {
+            self.shared.set_refused(network, Some(Refused::RestoreHeld));
+        }
+        requested
     }
 
     /// The foreign-lineage screen's Keep: ends `network`'s part-done

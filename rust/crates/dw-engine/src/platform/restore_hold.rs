@@ -17,15 +17,23 @@
 //!
 //! A drained fork hold (`shielded_drained_hold`) does not hold here, as for
 //! the removal: the fork's rows it came from stay in the before set, and the
-//! open after a restore drains them again.
+//! open after a restore drains them again. For a restore, neither does a
+//! fork disposition still in the live store, nor a marker, when the verified
+//! snapshot's `shielded.sqlite` holds a disposition of the same wallet,
+//! activity and nullifiers (the activity the open's import gives a fork
+//! hold's marker): the restore brings it back and its first open holds it
+//! again. With no such disposition, or a snapshot that does not read, it
+//! holds.
 //!
 //! Anything that does not read holds: a store or journal SQLite can't open
 //! or query, a row it can't decode, a journal newer than this build.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
-use dw_appdb::dispatch::{DISPATCH_DB_FILE, DISPATCH_SCHEMA};
+use dw_appdb::dispatch::{DISPATCH_DB_FILE, DISPATCH_SCHEMA, ForkHold};
+use dw_store_upgrade::SnapshotState;
 use rusqlite::{Connection, OpenFlags};
 
 use super::shielded_pool::{self, SHIELDED_DB_FILE};
@@ -66,25 +74,97 @@ fn read_restore_hold(network_dir: &Path) -> Result<Option<ShieldedHold>, String>
         return Err("test: the shielded store does not read".into());
     }
     let mut held = None;
+    let mut carried = BTreeSet::new();
     if let Some(db) = open_read_only(&network_dir.join(SHIELDED_DB_FILE))? {
         let (forks, unreadable) = shielded_pool::fork_holds_in(&db)?;
-        if !forks.is_empty() || !unreadable.is_empty() {
+        if !unreadable.is_empty() {
             return Ok(Some(ShieldedHold::CarriedOver));
         }
+        carried.extend(forks.into_iter().map(fork_notes));
         if shielded_pool::pending_rows_in(&db, None)? {
             held = Some(ShieldedHold::InFlight);
         }
     }
     if let Some(db) = open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
         let journal = journal_holds_in(&db, None)?;
-        if journal.marked || journal.unsettled {
+        if journal.unsettled {
             return Ok(Some(ShieldedHold::CarriedOver));
+        }
+        if journal.marked {
+            carried.extend(marker_notes_in(&db)?);
         }
         if journal.open {
             held = Some(ShieldedHold::InFlight);
         }
     }
+    if !carried.is_empty() && !carried.is_subset(&snapshot_fork_notes(network_dir)?) {
+        return Ok(Some(ShieldedHold::CarriedOver));
+    }
     Ok(held)
+}
+
+/// A hold's wallet and activity, with the nullifiers it keeps.
+type HeldNotes = ([u8; 32], [u8; 32], BTreeSet<[u8; 32]>);
+
+fn fork_notes(hold: ForkHold) -> HeldNotes {
+    (
+        hold.wallet,
+        hold.activity,
+        hold.nullifiers.into_iter().collect(),
+    )
+}
+
+/// Every DEC-1057 marker of the journal open on `db`, with its nullifiers.
+fn marker_notes_in(db: &Connection) -> Result<BTreeSet<HeldNotes>, String> {
+    let bytes32 = |v: Vec<u8>| {
+        <[u8; 32]>::try_from(v.as_slice()).map_err(|_| "a marker's key is malformed".to_string())
+    };
+    let mut markers = BTreeMap::<_, BTreeSet<[u8; 32]>>::new();
+    let mut stmt = db
+        .prepare("SELECT wallet, activity FROM shielded_unrecorded")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (wallet, activity) = row.map_err(|e| e.to_string())?;
+        markers.insert((bytes32(wallet)?, bytes32(activity)?), BTreeSet::new());
+    }
+    if has_table(db, "shielded_unrecorded_nullifier")? {
+        let mut stmt = db
+            .prepare("SELECT wallet, activity, nullifier FROM shielded_unrecorded_nullifier")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (wallet, activity, nullifier) = row.map_err(|e| e.to_string())?;
+            let key = (bytes32(wallet)?, bytes32(activity)?);
+            if let Some(notes) = markers.get_mut(&key) {
+                notes.insert(bytes32(nullifier)?);
+            }
+        }
+    }
+    Ok(markers
+        .into_iter()
+        .map(|((wallet, activity), notes)| (wallet, activity, notes))
+        .collect())
+}
+
+/// The fork dispositions that hold notes in the verified snapshot's
+/// `shielded.sqlite`, the before set a restore puts back; none when the
+/// snapshot has no shielded store. No verified snapshot, or a store in it
+/// that does not read, is an error.
+fn snapshot_fork_notes(network_dir: &Path) -> Result<BTreeSet<HeldNotes>, String> {
+    let info = match dw_store_upgrade::snapshot_state(network_dir).map_err(|e| e.to_string())? {
+        SnapshotState::Verified(info) => info,
+        _ => return Err("no verified snapshot to restore".into()),
+    };
+    let Some(db) = open_read_only(&info.dir().join(SHIELDED_DB_FILE))? else {
+        return Ok(BTreeSet::new());
+    };
+    let (holds, _) = shielded_pool::fork_holds_in(&db)?;
+    Ok(holds.into_iter().map(fork_notes).collect())
 }
 
 /// What the journal at `network_dir` holds of `wallet`'s shielded spends,

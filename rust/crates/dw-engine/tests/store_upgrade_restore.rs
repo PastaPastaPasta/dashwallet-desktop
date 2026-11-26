@@ -18,6 +18,10 @@ const CHILD_ROOT: &str = "DW_RESTORE_CHILD_ROOT";
 /// Set: the child's probe reads P9a Absent, as a build without it does.
 const CHILD_WITHOUT_P9A: &str = "DW_RESTORE_CHILD_WITHOUT_P9A";
 const RESULT: &str = "CHILD-RESULT: ";
+/// The steps [`child_steps`] runs, comma-separated.
+const CHILD_STEPS: &str = "DW_RESTORE_CHILD_STEPS";
+/// Where `heal` copies `wallet.sqlite` back from, in the data root.
+const GOOD_WALLET: &str = "wallet.good";
 
 /// Run by [`open_in_child`] only: opens the root's regtest network and
 /// prints how it went.
@@ -60,14 +64,20 @@ fn open_in_child(root: &Path) -> String {
 }
 
 fn open_in_child_with(root: &Path, without_p9a: bool) -> String {
-    let mut child = Command::new(std::env::current_exe().unwrap());
-    child
-        .args(["--exact", "child_open", "--nocapture", "--test-threads=1"])
-        .env(CHILD_ROOT, root);
-    if without_p9a {
-        child.env(CHILD_WITHOUT_P9A, "1");
-    }
-    let out = child.stdin(Stdio::null()).output().unwrap();
+    let p9a = [(CHILD_WITHOUT_P9A, "1")];
+    child_result("child_open", root, if without_p9a { &p9a } else { &[] })
+}
+
+/// Runs the test `name` in a child process on `root`, with `env`; what it
+/// printed after [`RESULT`].
+fn child_result(name: &str, root: &Path, env: &[(&str, &str)]) -> String {
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD_ROOT, root)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     match stdout
         .lines()
@@ -336,11 +346,7 @@ fn nothing_moved(f: &Fixture, live: &[Option<String>]) {
 }
 
 fn request(f: &Fixture) {
-    let engine = engine(&f.root);
-    engine
-        .block_on(engine.request_restore(&DashNetwork::Regtest))
-        .unwrap();
-    close(engine);
+    request_got(f).unwrap();
 }
 
 /// R-1 (b): a spend dispatched after the request (here its stored record)
@@ -475,41 +481,358 @@ fn a_hold_on_disk_refuses_the_request_with_no_session_open() {
 /// again, and the hold is in the journal again.
 #[test]
 fn a_restored_fork_disposition_is_held_again_on_the_next_open() {
+    let f = fork_fixture();
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "drained at the upgrade"
+    );
+    request(&f);
+    assert_eq!(open_in_child(&f.root), "ok");
+    assert!(dw_store_upgrade::restored_mark_present(&f.net));
+    assert_eq!(after_dirs(&f), 1);
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "held again after the restore"
+    );
+}
+
+/// Run by [`steps_in_child`] only: one engine on the root runs each step on
+/// regtest and prints how each went. `open`; `close`; `request` (Restore
+/// earlier data); `cancel` (Cancel restore); `recover` (Set up from
+/// recovery phrase); `heal` puts [`GOOD_WALLET`] back as `wallet.sqlite`.
+#[test]
+fn child_steps() {
+    let (Some(root), Some(steps)) = (
+        std::env::var_os(CHILD_ROOT),
+        std::env::var(CHILD_STEPS).ok(),
+    ) else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let net = DashNetwork::Regtest;
+    let engine = engine(&root);
+    let err = |e: EngineError| format!("err {}", e.code());
+    let mut out = Vec::new();
+    for step in steps.split(',') {
+        out.push(match step {
+            "open" => match engine.block_on(engine.open_network(net.clone(), local_opts())) {
+                Ok(_) => "ok".to_string(),
+                Err(EngineError::StoreRestore(r)) => format!("restore {:?} {}", r.state, r.cause),
+                Err(EngineError::StoreRefused(r)) => {
+                    let keys: Vec<&str> = r.screen.buttons.iter().map(|b| b.key).collect();
+                    format!("refused {:?} {}", r.screen.way_out, keys.join(" "))
+                }
+                Err(e) => err(e),
+            },
+            "close" => engine
+                .block_on(engine.close_network(net.clone()))
+                .map_or_else(err, |closed| format!("closed {closed}")),
+            "request" => match engine.block_on(engine.request_restore(&net)) {
+                Ok(()) => "requested".to_string(),
+                Err(EngineError::ShieldedSpendHeld(hold)) => format!("held {hold:?}"),
+                Err(e) => err(e),
+            },
+            "cancel" => engine
+                .block_on(engine.cancel_restore(&net))
+                .map_or_else(err, |()| "cancelled".to_string()),
+            "recover" => engine
+                .block_on(engine.recover_in_fresh_folder(net.clone()))
+                .map_or_else(err, |dir| {
+                    format!("recovered {}", dir.file_name().unwrap().to_string_lossy())
+                }),
+            "heal" => {
+                let wallet = root.join("regtest").join("wallet.sqlite");
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    let _ = std::fs::remove_file(format!("{}{suffix}", wallet.display()));
+                }
+                std::fs::copy(root.join(GOOD_WALLET), &wallet).unwrap();
+                "healed".to_string()
+            }
+            other => panic!("no step {other}"),
+        });
+    }
+    close(engine);
+    println!("{RESULT}{}", out.join(" | "));
+}
+
+/// Runs `steps` in a child process on `root` ([`child_steps`]).
+fn steps_in_child(root: &Path, steps: &[&str]) -> Vec<String> {
+    child_result("child_steps", root, &[(CHILD_STEPS, &steps.join(","))])
+        .split(" | ")
+        .map(str::to_string)
+        .collect()
+}
+
+const RESTORE_SCREEN: &str = "refused Restore storeUpgrade.refused.restore storeUpgrade.refused.report storeUpgrade.refused.quit";
+const RESTORE_HELD_SCREEN: &str = "refused Restore storeUpgrade.refused.restore \
+     storeUpgrade.refused.recover storeUpgrade.refused.report storeUpgrade.refused.quit";
+
+/// An upgraded fixture whose open is refused with Restore earlier data (its
+/// schema history no longer matches), with a good copy of its wallet file
+/// in the root for `heal`.
+fn refused_with_restore() -> Fixture {
+    let f = upgraded();
+    std::fs::copy(f.wallet(), f.root.join(GOOD_WALLET)).unwrap();
+    exec(
+        &f.wallet(),
+        "UPDATE refinery_schema_history SET checksum = '1' WHERE version = 1",
+    );
+    f
+}
+
+/// R-1 rule 4 (a): on the Restore screen with a shielded hold on disk,
+/// Restore earlier data is refused, and Set up from recovery phrase then
+/// starts the network over in a new folder that holds only the RESTORED
+/// mark; the refused folder stays byte-identical.
+#[test]
+fn a_restore_refused_for_a_hold_on_the_restore_screen_lets_the_network_start_over() {
+    let f = refused_with_restore();
+    add_pending_row(&f.net);
+    let pristine = tree(&f.net);
+    let got = steps_in_child(
+        &f.root,
+        &["recover", "open", "recover", "request", "recover"],
+    );
+    assert_eq!(
+        got,
+        [
+            "err invalid_argument",
+            RESTORE_SCREEN,
+            "err invalid_argument",
+            "held InFlight",
+            "recovered regtest-recovered-1",
+        ]
+    );
+    assert_eq!(
+        refused_open_diff(&pristine, &tree(&f.net)),
+        Vec::<String>::new(),
+        "the refused folder is as it was: only the refused open's own snapshot is new"
+    );
+    let fresh = f.root.join("regtest-recovered-1");
+    assert_eq!(
+        tree(&fresh).into_keys().collect::<Vec<_>>(),
+        [
+            ".".to_string(),
+            UPGRADE_BACKUPS_DIR.to_string(),
+            format!("{UPGRADE_BACKUPS_DIR}/{}", dw_store_upgrade::RESTORED_MARK)
+        ],
+        "the new folder holds only the mark"
+    );
+    let engine = engine(&f.root);
+    assert_eq!(engine.network_dir(&DashNetwork::Regtest).unwrap(), fresh);
+    close(engine);
+}
+
+/// The same Restore screen without the record keeps its own way out:
+/// nothing held, the request goes through and recover is refused; and a
+/// later open that is not refused withdraws the record.
+#[test]
+fn recover_needs_the_hold_record_and_a_later_open_withdraws_it() {
+    let f = refused_with_restore();
+    let got = steps_in_child(&f.root, &["open", "request", "recover", "cancel"]);
+    assert_eq!(
+        got,
+        [
+            RESTORE_SCREEN,
+            "requested",
+            "err invalid_argument",
+            "cancelled"
+        ]
+    );
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+
+    add_pending_row(&f.net);
+    let got = steps_in_child(
+        &f.root,
+        &[
+            "open", "request", "open", "heal", "open", "close", "recover",
+        ],
+    );
+    assert_eq!(
+        got,
+        [
+            RESTORE_SCREEN,
+            "held InFlight",
+            RESTORE_HELD_SCREEN,
+            "healed",
+            "ok",
+            "closed true",
+            "err invalid_argument",
+        ]
+    );
+    assert!(!f.root.join("regtest-recovered-1").exists());
+}
+
+/// R-1 rule 4 (a) at the swap: a hold that appears after the request stops
+/// the next start's restore (notStarted); after Cancel restore, the open's
+/// Restore screen offers Set up from recovery phrase, and it starts over.
+#[test]
+fn a_swap_refused_for_a_hold_offers_starting_over_after_cancel_restore() {
+    let f = refused_with_restore();
+    let got = steps_in_child(&f.root, &["open", "request"]);
+    assert_eq!(got, [RESTORE_SCREEN, "requested"]);
+    add_pending_row(&f.net);
+    let got = steps_in_child(&f.root, &["open", "cancel", "open", "recover"]);
+    assert_eq!(
+        got,
+        [
+            "restore NotStarted shieldedSpendInFlight",
+            "cancelled",
+            RESTORE_HELD_SCREEN,
+            "recovered regtest-recovered-1",
+        ]
+    );
+    assert_eq!(after_dirs(&f), 0, "nothing was restored");
+    assert!(!dw_store_upgrade::restored_mark_present(&f.net));
+}
+
+/// The live fork disposition of [`fork_fixture`]'s wallet, nullifier
+/// `[n; 32]`, written as a fresh fork store over the live one: the store as
+/// an open that stopped before its drain leaves it.
+fn live_fork_store(f: &Fixture, n: u8) {
     use dw_shielded_drain::test_support::{ForkRow, fork_store};
-    let f = fixture("v0.1.0");
     let shielded = f.net.join("shielded.sqlite");
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let _ = std::fs::remove_file(f.net.join(format!("shielded.sqlite{suffix}")));
     }
-    let mut wallet = [0; 32];
-    hex::decode_to_slice(&MAIN[2..66], &mut wallet).unwrap();
     fork_store(
         &shielded,
-        &wallet,
+        &main_wallet(),
         0,
         &[ForkRow::Disposition {
             st: 2,
             kind: "unresolved",
             reason: Some("purged"),
-            nullifiers: vec![[102; 32]],
+            nullifiers: vec![[n; 32]],
         }],
     )
     .unwrap();
-    let held = |f: &Fixture| -> Vec<Vec<u8>> {
-        let db = rusqlite::Connection::open(f.net.join("dispatch.sqlite")).unwrap();
-        let mut stmt = db
-            .prepare("SELECT nullifier FROM shielded_drained_hold WHERE spent = 0")
-            .unwrap();
-        stmt.query_map([], |r| r.get(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect()
-    };
+}
+
+fn main_wallet() -> [u8; 32] {
+    let mut wallet = [0; 32];
+    hex::decode_to_slice(&MAIN[2..66], &mut wallet).unwrap();
+    wallet
+}
+
+/// The marker the open's import of a fork hold writes for [`live_fork_store`]'s
+/// disposition: activity `[2; 32]`, a zero anchor, nullifier `[n; 32]`.
+fn fork_marker(f: &Fixture, n: u8) {
+    marker(f, 2, &[n]);
+}
+
+/// A DEC-1057 marker of [`MAIN`], activity `[activity; 32]`, with a
+/// nullifier `[n; 32]` for each of `notes`.
+fn marker(f: &Fixture, activity: u8, notes: &[u8]) {
+    let hex = |b: u8| format!("X'{}'", hex::encode([b; 32]));
+    let a = hex(activity);
+    let mut sql = format!(
+        "INSERT INTO shielded_unrecorded (wallet, activity, anchor, at) \
+         VALUES ({MAIN}, {a}, {z}, 1);",
+        z = hex(0)
+    );
+    for n in notes {
+        sql += &format!(
+            "INSERT INTO shielded_unrecorded_nullifier (wallet, activity, nullifier, spent) \
+             VALUES ({MAIN}, {a}, {n}, 0);",
+            n = hex(*n)
+        );
+    }
+    exec(&f.net.join("dispatch.sqlite"), &sql);
+}
+
+/// A v0.1.0 fixture with a fork disposition of nullifier `[102; 32]`,
+/// upgraded and drained by a first start: its before set holds it.
+fn fork_fixture() -> Fixture {
+    let f = fixture("v0.1.0");
+    live_fork_store(&f, 102);
     assert_eq!(open_in_child(&f.root), "ok");
-    assert_eq!(held(&f), [vec![102u8; 32]], "drained at the upgrade");
+    f
+}
+
+fn drained_holds(f: &Fixture) -> Vec<Vec<u8>> {
+    let db = rusqlite::Connection::open(f.net.join("dispatch.sqlite")).unwrap();
+    let mut stmt = db
+        .prepare("SELECT nullifier FROM shielded_drained_hold WHERE spent = 0")
+        .unwrap();
+    stmt.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn request_got(f: &Fixture) -> Result<(), EngineError> {
+    let engine = engine(&f.root);
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    close(engine);
+    got
+}
+
+/// R-1 (N): a live fork disposition and its imported marker that the
+/// snapshot's shielded store carries (same wallet and nullifiers) don't hold
+/// the restore: it runs, and its first open holds the notes again.
+#[test]
+fn a_fork_hold_the_snapshot_carries_does_not_hold_the_restore() {
+    let f = fork_fixture();
+    live_fork_store(&f, 102);
+    fork_marker(&f, 102);
     request(&f);
     assert_eq!(open_in_child(&f.root), "ok");
     assert!(dw_store_upgrade::restored_mark_present(&f.net));
     assert_eq!(after_dirs(&f), 1);
-    assert_eq!(held(&f), [vec![102u8; 32]], "held again after the restore");
+    assert_eq!(
+        drained_holds(&f),
+        [vec![102u8; 32]],
+        "held again after the restore"
+    );
+}
+
+/// R-1 (N): a fork hold only the live stores have, or one the snapshot's
+/// shielded store can't vouch for, holds the restore.
+#[test]
+fn a_fork_hold_the_snapshot_does_not_carry_holds_the_restore() {
+    let held = |f: &Fixture, what: &str| {
+        let before = tree(&f.net);
+        let got = request_got(f);
+        assert!(
+            matches!(
+                got,
+                Err(EngineError::ShieldedSpendHeld(
+                    dw_engine::ShieldedHold::CarriedOver
+                ))
+            ),
+            "{what}: {got:?}"
+        );
+        assert_eq!(
+            tree_diff(&before, &tree(&f.net)),
+            Vec::<String>::new(),
+            "{what}"
+        );
+    };
+    let f = fork_fixture();
+    live_fork_store(&f, 103);
+    held(&f, "a live disposition only");
+
+    for (what, activity, notes) in [
+        ("a marker only", 2, &[104][..]),
+        ("a marker of another activity", 3, &[102]),
+        ("a marker of more notes", 2, &[102, 103]),
+        ("a marker with no notes", 2, &[]),
+    ] {
+        let f = fork_fixture();
+        marker(&f, activity, notes);
+        held(&f, what);
+    }
+
+    let f = fork_fixture();
+    live_fork_store(&f, 102);
+    fork_marker(&f, 102);
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    let copy = snapshot.dir().join("shielded.sqlite");
+    let mut bytes = std::fs::read(&copy).unwrap();
+    bytes[..100].fill(0x5a);
+    std::fs::write(&copy, bytes).unwrap();
+    held(&f, "the snapshot's shielded store does not verify");
 }

@@ -525,9 +525,10 @@ const ownCopy = (cause: string) => isHoldCause(cause) || cause === "holdsUncheck
 const heldNotStarted = (cause: string) => R.notStarted.held[RESTORE_HOLD_CAUSES[cause as keyof typeof RESTORE_HOLD_CAUSES]].replaceAll("{folder}", FOLDER);
 const strings = (node: unknown): string[] => (typeof node === "string" ? [node] : Object.values(node as object).flatMap(strings));
 /** MG's R-1 refusal of the request: the base, the inFlight sentence when the spend may still go through, then the way forward. */
+const HELD_NEXT = R.held.next.replaceAll("{folder}", FOLDER);
 const HELD = {
-  inFlight: `${R.held.text} ${R.held.inFlight} ${R.held.next}`,
-  carriedOver: `${R.held.text} ${R.held.next}`,
+  inFlight: `${R.held.text} ${R.held.inFlight} ${HELD_NEXT}`,
+  carriedOver: `${R.held.text} ${HELD_NEXT}`,
 };
 
 describe("the restore screens", () => {
@@ -578,13 +579,18 @@ describe("the restore screens", () => {
       expect(html, cause).not.toContain(escaped(R.notStarted.text.replaceAll("{folder}", FOLDER)));
       expect(html.replace(/data-testid="store-restore-text">[^<]*</, ""), cause).toBe(plain.replace(/data-testid="store-restore-text">[^<]*</, ""));
     }
-    expect(heldNotStarted("shieldedSpendInFlight")).toContain("restarting won't change this");
-    expect(heldNotStarted("shieldedSpendCarriedOver")).toContain(`Check that Dash Wallet can read and write ${FOLDER}`);
+    expect(heldNotStarted("shieldedSpendInFlight")).toContain(
+      "restarting won't change this. To stop restoring, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
+    );
+    expect(heldNotStarted("shieldedSpendCarriedOver")).toContain(
+      `Check that Dash Wallet can read and write ${FOLDER} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.`,
+    );
+    const next = `To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves ${FOLDER} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.`;
     expect(HELD.inFlight).toBe(
-      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data. Keep your current wallet data as it is and choose Report a problem.",
+      `Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data. ${next}`,
     );
     expect(HELD.carriedOver).toBe(
-      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. Keep your current wallet data as it is and choose Report a problem.",
+      `Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. ${next}`,
     );
   });
 
@@ -743,6 +749,62 @@ describe("Restore earlier data", () => {
   });
 });
 
+describe("Set up from recovery phrase after a restore refused for a shielded hold", () => {
+  const offer = STORE_SCREENS.refusedRestore(FOLDER);
+  const recoverButton = "store-refused-button-storeUpgrade.refused.recover";
+  const render = (refusal: StoreRefusedData, restoreHeld: boolean, problem: string | null = null) =>
+    renderToStaticMarkup(createElement(StoreRefusalView, { refusal, problem, restoreAvailable: true, restoreHeld, onAction: noop }));
+  const ids = (html: string) => [...html.matchAll(/data-testid="store-refused-button-([^"]+)"/g)].map((m) => m[1]);
+  const heldLine = escaped(en.storeUpgrade.recover.restoreHeld.replaceAll("{folder}", FOLDER));
+  const restoreLine = escaped(en.storeUpgrade.refused.wayOut.restore.replaceAll("{folder}", FOLDER));
+  /** The Restore screen as the engine gives it once a hold refused its restore (`offer_recover`). */
+  const engineOffer: StoreRefusedData = {
+    ...offer,
+    screen: { ...offer.screen, buttons: offer.screen.buttons.flatMap((b) => (b.key === "storeUpgrade.refused.restore" ? [b, { key: "storeUpgrade.refused.recover", label: "Set up from recovery phrase", destructive: false, defaultFocus: false }] : [b])) },
+  };
+
+  it("shows only on the Restore screen, once the restore was refused for a hold, after Restore earlier data, its line in place of the Restore way out", () => {
+    const plain = render(offer, false);
+    expect(button(plain, recoverButton)).toBeNull();
+    expect(plain).toContain(restoreLine);
+    expect(plain).not.toContain(heldLine);
+    for (const [html, what] of [
+      [render(offer, true), "refused in this window"],
+      [render(engineOffer, false), "the engine's screen"],
+      [render(engineOffer, true), "both"],
+    ] as const) {
+      expect(ids(html), what).toEqual(["storeUpgrade.refused.restore", "storeUpgrade.refused.recover", "storeUpgrade.refused.report", "storeUpgrade.refused.quit"]);
+      expect(button(html, recoverButton)?.label, what).toBe(escaped(en.storeUpgrade.refused.recover));
+      expect(html, what).toContain(heldLine);
+      expect(html, what).not.toContain(restoreLine);
+      expect(html, what).not.toContain("{folder}");
+      expect(buttonAction("storeUpgrade.refused.recover")).toBe("recover");
+    }
+    expect(render(offer, true, HELD.inFlight)).toContain(heldLine);
+    for (const name of STORE_SCREEN_NAMES.filter((n) => n !== "refusedRestore" && n !== "damaged")) {
+      const html = render(STORE_SCREENS[name](FOLDER), true);
+      expect(button(html, recoverButton), name).toBeNull();
+      expect(html, name).not.toContain(heldLine);
+    }
+    expect(render(STORE_SCREENS.damaged(FOLDER), true)).not.toContain(heldLine);
+  });
+
+  it("is offered by the confirm only after a hold refused the request, and opens the recover confirm", async () => {
+    const confirm = (onRecover?: () => void) => renderToStaticMarkup(createElement(RestoreConfirmView, { folder: FOLDER, busy: false, problem: HELD.carriedOver, onConfirm: noop, onClose: noop, onRecover }));
+    expect(button(confirm(), "restore-confirm-recover")).toBeNull();
+    expect(button(confirm(noop), "restore-confirm-recover")?.label).toBe(escaped(en.storeUpgrade.refused.recover));
+    for (const [error, held] of [
+      [{ code: "shielded_spend_unresolved", message: "held", data: { kind: "shieldedHold", reason: "carriedOver" } }, true],
+      [storeRestoreError(restoreFailure("refused:missingBackup", FOLDER)), false],
+      [new Error("no"), false],
+    ] as const) {
+      const actions = new OpenFailureActions(api([], { requestRestore: error }), FOLDER);
+      await actions.restore();
+      expect(actions.restoreHeld).toBe(held);
+    }
+  });
+});
+
 describe("the restore actions", () => {
   it("confirm: request_restore, then restart_app", async () => {
     const calls: string[] = [];
@@ -772,11 +834,13 @@ describe("the restore actions", () => {
       [null, HELD.carriedOver],
     ] as const) {
       const calls: string[] = [];
-      const actions = new OpenFailureActions(api(calls, { requestRestore: held(data) }));
+      const actions = new OpenFailureActions(api(calls, { requestRestore: held(data) }), FOLDER);
       await actions.restore();
       expect(calls).toEqual(["requestRestore"]);
       expect(actions.problem).toBe(want);
+      expect(actions.problem).not.toContain("{folder}");
       expect(actions.requested).toBe(false);
+      expect(actions.restoreHeld).toBe(true);
     }
     const shown = renderToStaticMarkup(createElement(RestoreConfirmView, { folder: FOLDER, busy: false, problem: HELD.inFlight, onConfirm: noop, onClose: noop }));
     expect(shown).toContain(`data-testid="restore-confirm-problem">${escaped(HELD.inFlight)}</p>`);

@@ -393,6 +393,13 @@ fn incomplete_cause(c: IncompleteCause) -> &'static str {
     }
 }
 
+/// Whether `cause` is a `notStarted` restore's shielded hold ([`hold_cause`]).
+pub(crate) fn is_hold_cause(cause: &str) -> bool {
+    [Some(crate::ShieldedHold::InFlight), None]
+        .into_iter()
+        .any(|hold| hold_cause(hold) == cause)
+}
+
 /// The `notStarted` cause of a restore a shielded hold stopped; one not
 /// known is carried over.
 fn hold_cause(hold: Option<crate::ShieldedHold>) -> &'static str {
