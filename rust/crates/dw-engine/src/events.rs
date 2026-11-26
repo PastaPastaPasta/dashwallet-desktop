@@ -803,6 +803,9 @@ pub(crate) struct SessionHub {
     /// Tests: abandons key-wallet refused after their marks were written.
     #[cfg(test)]
     pub(crate) refused_abandon_undos: std::sync::atomic::AtomicUsize,
+    /// Tests: the undo write of the next abandon key-wallet refuses fails.
+    #[cfg(test)]
+    pub(crate) fail_abandon_undo: std::sync::atomic::AtomicBool,
     /// Tests: the next abandon's store of its sweep fails.
     #[cfg(test)]
     pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
@@ -1128,6 +1131,8 @@ impl SessionHub {
             refuse_next_abandon: Default::default(),
             #[cfg(test)]
             refused_abandon_undos: Default::default(),
+            #[cfg(test)]
+            fail_abandon_undo: Default::default(),
             #[cfg(test)]
             fail_abandon_sweep: Default::default(),
             #[cfg(test)]

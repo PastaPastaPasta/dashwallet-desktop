@@ -326,9 +326,9 @@ fn held_unrecorded_payment() -> (
 /// H2 and the money gate: once the mark clears, Abandon is allowed with
 /// the hold still there. A failed marks write leaves the hold and no
 /// abandoned mark (A keeps its claim); a written one leaves the abandoned
-/// mark and no hold (never both, never neither).
+/// mark, and the hold's row stays and holds nothing, across a restart.
 #[test]
-fn abandon_after_the_clear_swaps_the_hold_for_its_mark_in_one_write() {
+fn abandon_after_the_clear_marks_the_payment_and_its_hold_holds_nothing() {
     let (_dir, engine, session, id, paid, p) = held_unrecorded_payment();
     let a = OutPoint::new(paid.txid(), 0);
     let txid = p.txid();
@@ -358,20 +358,27 @@ fn abandon_after_the_clear_swaps_the_hold_for_its_mark_in_one_write() {
     engine
         .block_on(session.abandon_transaction(id, txid))
         .unwrap();
-    assert!(!holds(&session, id).contains_key(&txid), "the hold goes");
+    assert!(holds(&session, id).contains_key(&txid), "the row stays");
     assert!(abandoned_marks(&session, id).contains(&txid), "marked");
     let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
     assert!(!extras.restore_held, "{extras:?}");
+    assert!(!in_effect(&session, id, txid), "the row holds nothing");
     let session = reopen(&engine, session);
-    assert!(holds(&session, id).is_empty());
+    assert!(holds(&session, id).contains_key(&txid));
     assert!(abandoned_marks(&session, id).contains(&txid));
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(!extras.restore_held, "after a restart: {extras:?}");
+    assert!(!in_effect(&session, id, txid), "after a restart");
 }
 
-/// An abandon key-wallet refuses (it holds the root as settled) after the
-/// marks write deleted the hold's row puts the hold back, its row and in
-/// memory: the payment's change stays held.
+fn in_effect(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
+    (session.hub.history).read_wallet(&id, |h| h.restore_holds_in_effect().contains_key(&txid))
+}
+
+/// An abandon key-wallet refuses (it holds the root as settled) leaves the
+/// hold, its row and in memory: the payment's change stays held.
 #[test]
-fn a_refused_abandon_puts_the_hold_back() {
+fn a_refused_abandon_keeps_the_hold() {
     use std::sync::atomic::Ordering::SeqCst;
     let (_dir, engine, session, id, _paid, p) = held_payment_relayed();
     let txid = p.txid();
@@ -392,17 +399,61 @@ fn a_refused_abandon_puts_the_hold_back() {
         1,
         "the refused abandon's undo ran"
     );
-    assert!(holds(&session, id).contains_key(&txid), "the row is back");
+    assert!(holds(&session, id).contains_key(&txid), "the row stays");
     let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
-    assert!(
-        extras.restore_held,
-        "the hold is back in memory: {extras:?}"
-    );
+    assert!(extras.restore_held, "the hold stays in memory: {extras:?}");
     let change = change_of(&p, &own_scripts(&engine, &session, id));
     assert!(
         !spendable_for(&engine, &session, id, change, COIN / 4),
         "the change is offered"
     );
+}
+
+/// A refused abandon whose undo write then fails loses no hold: the row
+/// was never deleted, so once the payment's InstantSend lock (what
+/// key-wallet's refusal stands for) is heard, a restart after the clear
+/// still holds its change.
+#[test]
+fn a_refused_abandon_with_a_failed_undo_keeps_the_hold_across_a_restart() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (_dir, engine, session, id, _paid, p) = held_payment_relayed();
+    let txid = p.txid();
+    cleared(&session);
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    session.hub.refuse_next_abandon.store(true, SeqCst);
+    session.hub.fail_abandon_undo.store(true, SeqCst);
+
+    let refused = engine.block_on(session.abandon_transaction(id, txid));
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        session.hub.refused_abandon_undos.load(SeqCst),
+        1,
+        "the refused abandon's undo ran"
+    );
+    assert!(
+        !session.hub.fail_abandon_undo.load(SeqCst),
+        "the undo write failed"
+    );
+    assert!(holds(&session, id).contains_key(&txid), "the row stays");
+    instant_lock(&engine, &session, id, &p);
+    let session = reopen(&engine, session);
+    assert!(!session.restored(), "the mark stays cleared");
+    assert!(
+        holds(&session, id).contains_key(&txid),
+        "the row is on disk after a restart"
+    );
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(
+        extras.restore_held,
+        "the hold is in memory after a restart: {extras:?}"
+    );
+    assert_change_held(&engine, &session, id, &p, "after a restart");
 }
 
 /// H2: a held payment mined deletes its hold with the block.

@@ -2608,21 +2608,13 @@ impl NetworkSession {
                 }
             }
             marks.extend(hold_marks(&holds));
-            let restore_held = (self.hub.history).read_wallet(&wallet, |h| {
-                (planned.iter())
-                    .filter_map(|t| Some((*t, h.restore_holds.get(t)?.clone())))
-                    .collect::<BTreeMap<Txid, BTreeSet<OutPoint>>>()
-            });
-            marks.extend(
-                crate::restore_gate::hold_keys(&planned)
-                    .into_iter()
-                    .map(|k| (k, None)),
-            );
+            // The planned payments' restore holds stay, on disk and in
+            // memory: once a payment is abandoned its hold holds nothing
+            // (H2), and a refused abandon has nothing to put back.
             self.write_abandoned_marks(wallet, marks).await?;
             let previous = (self.hub.history).with_wallet(wallet, |h| {
                 crate::rescan_hold::take_over(&mut h.rescan_holds, &holds)
             });
-            self.hub.forget_restore_holds(wallet, &planned);
             #[cfg(test)]
             let refuse =
                 (self.hub.refuse_next_abandon).swap(false, std::sync::atomic::Ordering::SeqCst);
@@ -2638,10 +2630,17 @@ impl NetworkSession {
                 self.hub.history.with_wallet(wallet, |h| {
                     crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
-                let mut undo = crate::rescan_hold::undo_marks(&holds, &previous);
-                undo.extend(crate::restore_gate::hold_rows(&restore_held));
-                self.hub.put_back_restore_holds(wallet, restore_held);
-                if let Err(e) = self.write_marks(wallet, undo).await {
+                let undo = crate::rescan_hold::undo_marks(&holds, &previous);
+                #[cfg(test)]
+                let failed =
+                    (self.hub.fail_abandon_undo).swap(false, std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let failed = false;
+                let written = match failed {
+                    true => Err(EngineError::Storage("abandon: test undo failure".into())),
+                    false => self.write_marks(wallet, undo).await,
+                };
+                if let Err(e) = written {
                     tracing::warn!(%wallet, error = %e, "could not drop the hold marks of a refused abandon");
                 }
             } else {
@@ -2765,6 +2764,7 @@ impl NetworkSession {
                 }
             }
         });
+        self.hub.refresh_restore_held(wallet);
         (self.hub.history).drop_claims(&wallet, abandoned.iter().copied());
         // Each abandoned transaction's own claim (DEC-179); a coin another
         // owner holds stays reserved.

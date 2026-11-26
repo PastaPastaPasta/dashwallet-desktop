@@ -435,15 +435,6 @@ pub(crate) fn hold_keys<'a>(txids: impl IntoIterator<Item = &'a Txid>) -> Vec<St
         .collect()
 }
 
-/// The rows writing the holds of `holds` back.
-pub(crate) fn hold_rows(
-    holds: &BTreeMap<Txid, BTreeSet<OutPoint>>,
-) -> Vec<(String, Option<String>)> {
-    (holds.iter())
-        .map(|(t, i)| (format!("{RESTORE_HOLD_PREFIX}{t}"), Some(encode(i))))
-        .collect()
-}
-
 impl WalletHistory {
     /// Whether the hold of `txid` holds anything: its payment is in no
     /// block and not abandoned. One the history lacks holds only while the
@@ -661,20 +652,6 @@ impl crate::events::SessionHub {
         if changed {
             self.refresh_restore_held(wallet);
         }
-    }
-
-    /// Puts back the holds an abandon key-wallet refused took out.
-    pub(crate) fn put_back_restore_holds(
-        &self,
-        wallet: WalletId,
-        holds: BTreeMap<Txid, BTreeSet<OutPoint>>,
-    ) {
-        if holds.is_empty() {
-            return;
-        }
-        self.history
-            .with_wallet(wallet, |h| h.restore_holds.extend(holds));
-        self.refresh_restore_held(wallet);
     }
 
     /// A truncation while the mark is set builds the holds again (H5).
