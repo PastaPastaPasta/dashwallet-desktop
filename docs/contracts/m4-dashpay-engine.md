@@ -1050,7 +1050,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 2b97292eedd4edbcc8df63409454e0e3466173d6ae19317c9e6e0bf836170f1c version: 105 -->
+<!-- surface-sha256: b389c902001d736eefb96270607f9f0505908b1c8832ecb3684c1925b9aee3c8 version: 106 -->
 
 ```rust
 // src/platform/app_connect.rs
