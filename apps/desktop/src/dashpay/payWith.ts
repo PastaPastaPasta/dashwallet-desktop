@@ -25,7 +25,7 @@ export const PRESELECT_SHIELDED = false;
 const P = "dashpay.registration.privacy.tip";
 
 export const PRIVACY_COPY = withTable(
-  messageTable("dashpay.registration.privacy", ["title", "body", "shieldedNote", "coreNote", "advanced", "shieldFirst", "withoutPrivacy"]),
+  messageTable("dashpay.registration.privacy", ["title", "titleNoShielded", "body", "shieldedNote", "coreNote", "advanced", "shieldFirst", "withoutPrivacy"]),
   {
     tip: {
       resting: (time: string) => ({ title: t(`${P}.restingTitle`), text: t(`${P}.resting`, { time }) }),
@@ -200,4 +200,10 @@ export function privacyStep(i: PayWithInputs): PrivacyStep {
   const canPay = shielded.reason === null;
   const rows = canPay ? [shielded, core] : [core];
   return { kind: "sources", rows, preselect: canPay && PRESELECT_SHIELDED ? "shielded" : null, platform: advanced };
+}
+
+/** Heading and lead line for `PrivacyStep`: when Shielded is not offered at all, drop the privacy pitch. */
+export function privacyHeading(step: PrivacyStep): { title: string; body: string | null } {
+  const shieldedOffered = step.kind !== "sources" || step.rows.some((r) => r.source === "shielded");
+  return shieldedOffered ? { title: PRIVACY_COPY.title, body: PRIVACY_COPY.body } : { title: PRIVACY_COPY.titleNoShielded, body: null };
 }

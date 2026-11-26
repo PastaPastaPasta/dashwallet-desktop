@@ -206,6 +206,21 @@ test.describe("Shielded spends off", () => {
     expect(errors).toEqual([]);
   });
 
+  test("Join DashPay pay-with step uses Pay for your username and omits the Shielded recommendation", async ({ page }) => {
+    const errors = await open(page, "shielded-spends-off", "light");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+    await page.getByTestId("join-create").click();
+    const step = page.getByTestId("registration-pay-with");
+    await expect(step).toHaveAttribute("data-kind", "sources");
+    await expect(step.getByRole("heading", { level: 2 })).toHaveText("Pay for your username");
+    await expect(page.getByTestId("privacy-body")).toHaveCount(0);
+    await expect(page.getByTestId("pay-with-core-note")).toHaveText("Funds will be traceable to your username");
+    await expect(page.getByTestId("pay-with-shielded")).toHaveCount(0);
+    await expect(page.getByTestId("privacy-shield-first")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   test("with spends on, as main's engine says, nothing waits for this reason", async ({ page }) => {
     const errors = await open(page, "funded", "light");
     await page.getByTestId("sidebar-pay").click();

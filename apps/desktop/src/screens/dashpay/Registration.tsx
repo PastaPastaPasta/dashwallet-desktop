@@ -12,7 +12,7 @@ import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useBackend, usePoolBalances } from "../../api/queries";
-import { PRIVACY_COPY, privacyStep, shieldedReason, type PaySource, type PaySourceRow } from "../../dashpay/payWith";
+import { PRIVACY_COPY, privacyHeading, privacyStep, shieldedReason, type PaySource, type PaySourceRow } from "../../dashpay/payWith";
 import { timeText } from "../../fiat/rates";
 import { known } from "../../format/homeBalance";
 import { useInstantChecks, useLabelQuote, useNameChecks, useNameCredits, usePlatformSource, useShieldedReadiness, useUsernameCheck, useUsernameQuote } from "../../dashpay/queries";
@@ -526,16 +526,19 @@ function PrivacyStep({ wiz, walletId, inputs }: { wiz: RegistrationWizard; walle
     navigate("home");
     transferFor(b, walletId).start("coreToShielded");
   };
+  const heading = privacyHeading(step);
   return (
     <section className="registration card-l1" data-testid="registration-pay-with" data-kind={step.kind} aria-labelledby={`${id}-title`}>
       <header className="registration-header">
         <h2 className="registration-title" id={`${id}-title`}>
-          {PRIVACY_COPY.title}
+          {heading.title}
         </h2>
       </header>
-      <p className="registration-line" data-testid="privacy-body">
-        {PRIVACY_COPY.body}
-      </p>
+      {heading.body !== null && (
+        <p className="registration-line" data-testid="privacy-body">
+          {heading.body}
+        </p>
+      )}
       <form
         className="registration-form"
         onSubmit={(e) => {
