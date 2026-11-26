@@ -227,6 +227,12 @@ fn stopped(session: &NetworkSession, engine: &Engine, txid: Txid) -> bool {
     crate::tx_actions::rebroadcast_stop_asked(session, txid)
 }
 
+/// The pinned dash-spv keeps no stop (`tx_actions::stop_rebroadcast`), so
+/// the asks recorded so far stand for what a restarted SPV no longer holds.
+fn spv_forgot_its_stops(session: &NetworkSession) {
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
+}
+
 /// The rescan the abandon scheduled reaches the tip, finding A's payment
 /// `paid` mined on its way: the holds go.
 fn rescan_back(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, paid: &Transaction) {
@@ -331,10 +337,7 @@ fn a_lock_resent_between_the_phases_is_stopped_again() {
     let manager = session.manager().unwrap();
     engine.block_on(async move { manager.spv().stop().await.unwrap() });
     start_spv(&engine, &session);
-    assert!(
-        !stopped(&session, &engine, lock.txid()),
-        "the stop survived"
-    );
+    spv_forgot_its_stops(&session);
     assert!(
         (session.hub.history.get(&id, &lock.txid())).is_some_and(|e| e.is_abandoned()),
         "the lock is no longer abandoned"
