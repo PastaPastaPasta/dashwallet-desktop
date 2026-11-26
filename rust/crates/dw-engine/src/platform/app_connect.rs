@@ -1847,7 +1847,7 @@ pub(crate) async fn list(
         .into_iter()
         .filter(|r| r.identity == owner && r.state != RecordState::Disconnected)
         .collect();
-    recs.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    recs.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
     if recs.is_empty() {
         return Ok(ConnectedApps {
             identity: owner,
@@ -1879,10 +1879,10 @@ pub(crate) async fn list(
             if k.is_disabled() {
                 continue;
             }
-            if let Some(expected_hex) = r.session_key_data.get(&key_id) {
-                if hex::encode(k.data().as_slice()) != *expected_hex {
-                    continue;
-                }
+            if let Some(expected_hex) = r.session_key_data.get(&key_id)
+                && hex::encode(k.data().as_slice()) != *expected_hex
+            {
+                continue;
             }
             let level = match k.security_level() {
                 SecurityLevel::CRITICAL => ConnectLevel::Critical,
