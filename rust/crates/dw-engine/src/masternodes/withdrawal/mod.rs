@@ -256,7 +256,10 @@ pub(crate) trait Env: Send + Sync {
     /// The masternode's registration and payout changes in every loaded
     /// wallet's history, another installation's included: a change this one
     /// signed has a barrier, one seen only in history has none.
-    fn payout_changes(&self, pro_tx_hash: &[u8; 32]) -> Vec<PayoutChange>;
+    fn payout_changes(
+        &self,
+        pro_tx_hash: &[u8; 32],
+    ) -> impl Future<Output = Vec<PayoutChange>> + Send;
     fn waits(&self) -> Waits;
     /// UNIX seconds.
     fn now(&self) -> u64;

@@ -694,7 +694,7 @@ impl Env for Scene {
             .cloned())
     }
 
-    fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
+    async fn payout_changes(&self, _: &[u8; 32]) -> Vec<PayoutChange> {
         self.changes.lock().unwrap().clone()
     }
 

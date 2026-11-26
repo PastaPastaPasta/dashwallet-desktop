@@ -569,6 +569,7 @@ fn test_a_refused_spend_back_is_replaced_by_one_of_every_coin() {
     };
     assert_eq!(s.recovery.attributed, want);
     f.mine(a.clone(), 60);
+    f.chainlock(60);
     f.tip(61);
     let r = f.recovery(1, &id);
     assert_eq!(
@@ -1068,6 +1069,7 @@ fn test_a_spend_back_in_a_block_settles_and_releases() {
     f.spv(true, 1);
     let a = f.net.sent()[0].clone();
     f.mine(a.clone(), 60);
+    f.chainlock(60);
     for (tip, n) in [(60, 1), (64, 5)] {
         f.tip(tip);
         let r = f.recovery(1, &id);
@@ -1093,6 +1095,7 @@ fn test_a_spend_back_in_a_block_settles_and_releases() {
         "a reorg"
     );
     f.mine(a.clone(), 60);
+    f.chainlock(60);
     f.tip(65);
     assert_eq!(
         f.recovery(1, &id).settlement,
@@ -1125,6 +1128,7 @@ fn test_another_spend_in_a_block_settles_as_other_spend() {
     let coin = f.net.sent()[0].input[0].previous_output;
     let x = foreign_spend(&[coin], 7);
     f.mine(x, 60);
+    f.chainlock(60);
     f.tip(60);
     let r = f.recovery(1, &id);
     assert_eq!(

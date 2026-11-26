@@ -170,7 +170,7 @@ pub(crate) async fn look(
     let identity = gated(env.rule_5(), env.waits().probe, || net.identity(id)).await?;
     let header_tip = env.chain().header_tip;
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
-    let changes = env.payout_changes(pro_tx_hash);
+    let changes = env.payout_changes(pro_tx_hash).await;
     let (unconfirmed, unapplied) = unpaid_changes(&changes, &identity.read);
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
@@ -329,7 +329,7 @@ fn payout_rank(change: &PayoutChange) -> u64 {
 /// not complete (`barriers_ready` false) is pending whatever the table
 /// holds, and counts as an older pending barrier. `Abandoned` when every
 /// pending one is an operation its wallet abandoned (MG-10 §1.10).
-async fn pending_barriers(
+pub(super) async fn pending_barriers(
     env: &impl Env,
     pro_tx_hash: &[u8; 32],
     identity: &Gated<Option<Identity>>,
@@ -352,7 +352,7 @@ async fn pending_barriers(
 
 /// Why a payout-change barrier is still pending.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Pending {
+pub(super) enum Pending {
     /// Its operation was abandoned in Activity and may still be mined.
     Abandoned,
     Other,

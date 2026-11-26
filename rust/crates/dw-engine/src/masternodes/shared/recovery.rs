@@ -651,8 +651,14 @@ impl NetworkSession {
         // is another spend too: the release reads the lowest.
         let conflict = (row.out_at.is_some() && !confirmed)
             .then(|| {
-                let direct = conflict_of(&chain.history, &own_inputs, except.as_ref(), &attributed)
-                    .map(|(by, height)| (attributed.contains(&by), height));
+                let direct = (conflict_of(
+                    &chain.history,
+                    &own_inputs,
+                    except.as_ref(),
+                    &attributed,
+                    &chain.beats,
+                ))
+                .map(|(by, height)| (attributed.contains(&by), height));
                 match (direct, chain.beaten(&own_inputs, except.as_ref())) {
                     (Some((_, d)), Some(lowest)) if lowest < d => Some((false, lowest)),
                     (None, lowest) => lowest.map(|h| (false, h)),

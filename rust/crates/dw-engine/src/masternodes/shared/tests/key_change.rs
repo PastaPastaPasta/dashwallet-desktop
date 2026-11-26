@@ -497,6 +497,7 @@ fn test_QT_127_a_sent_key_change_is_abandoned_by_a_spend_to_the_wallet() {
     );
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     f.mine(spend, 102);
+    f.chainlock(102);
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
     f.tip(103);
     f.follow();
@@ -953,6 +954,7 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     conflict.lock_time += 1;
     conflict.special_transaction_payload = None;
     f.mine(conflict, 60);
+    f.chainlock(60);
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
     f.tip(64);
     f.follow();
@@ -1018,6 +1020,7 @@ fn mg740_a_key_change_paid_from_a_beaten_payments_change_is_conflicted() {
     assert_update_pending(start(&f, 0, rotate(txid), 0).unwrap_err(), &id);
 
     f.mine(rival, 60);
+    f.chainlock(60);
     f.tip(60);
     let s = f.session_of(0, &id);
     assert_eq!(s.stage, SharedStage::Conflicted);
@@ -1553,6 +1556,7 @@ fn test_an_unreadable_out_key_change_releases_on_a_buried_spend() {
         special_transaction_payload: None,
     };
     f.mine(spend, 200);
+    f.chainlock(200);
     f.tip(200);
     f.follow();
     assert!(!f.locked(0).is_empty(), "one deep: kept");
@@ -1695,6 +1699,7 @@ fn test_an_unreadable_out_key_change_is_abandoned_and_released_once_buried() {
     assert_eq!(log[0]["fee"].as_u64(), Some(fee));
     assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
     f.mine(spend, 200);
+    f.chainlock(200);
     f.tip(200);
     f.follow();
     assert!(!f.locked(0).is_empty(), "one deep: kept");

@@ -8,7 +8,7 @@
 //! release and the coin holds of slice 1b. The network is a recorder that
 //! accepts what it is handed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use dashcore::hashes::Hash;
@@ -25,7 +25,7 @@ use key_wallet::Utxo;
 use platform_wallet::PlatformWalletError;
 use zeroize::Zeroizing;
 
-use super::super::protx::ops::{CrashPoint, Seam};
+use super::super::protx::ops::{self, CrashPoint, Seam};
 use crate::masternodes::{
     HeldShares, Masternodes, MasternodesError, OperatorChoice, RewardChoice, ShareSlot, ShareTerms,
     ShareTermsView, SharedImport, SharedNext, SharedOutcome, SharedRole, SharedSession,
@@ -139,6 +139,9 @@ struct Fx {
     net: Arc<Net>,
     /// Coins credited, per wallet, to credit again after a restart.
     coins: Mutex<Vec<(usize, u8, u64)>>,
+    /// The blocks the SPV header chain holds in place of the zero-hash
+    /// ones the fixture mines ([`ops::flat_headers`]).
+    forks: Arc<Mutex<HashMap<u32, dashcore::BlockHash>>>,
 }
 
 fn open(engine: &Engine) -> Arc<NetworkSession> {
@@ -213,6 +216,8 @@ fn fx_on(network: DashNetwork, n: usize, v24: bool) -> Fx {
         .collect();
     let net = Arc::new(Net::default());
     let seam = seam_for(&session, &net);
+    let forks = Arc::default();
+    ops::flat_headers(&session, &forks);
     let f = Fx {
         _dir: dir,
         engine,
@@ -221,6 +226,7 @@ fn fx_on(network: DashNetwork, n: usize, v24: bool) -> Fx {
         seam,
         net,
         coins: Mutex::default(),
+        forks,
     };
     if v24 {
         f.db()
@@ -338,12 +344,17 @@ impl Fx {
 
     /// Close and reopen on the same data, as a crash would leave it.
     fn restart(&mut self) {
+        let chainlock = self.session.hub.best_chainlock();
         assert!(
             self.engine
                 .block_on(self.engine.close_network(DashNetwork::Regtest))
                 .unwrap()
         );
         self.session = open(&self.engine);
+        ops::flat_headers(&self.session, &self.forks);
+        if let Some((height, hash)) = chainlock {
+            self.session.hub.note_chainlock(height, hash);
+        }
         self.seam = seam_for(&self.session, &self.net);
         let coins = self.coins.lock().unwrap().clone();
         for (w, seed, value) in coins {
@@ -506,10 +517,20 @@ impl Fx {
             .push((txid, tx, height));
     }
 
-    /// `tx` in a ChainLocked block at `height` of every wallet's history.
+    /// `tx` in a ChainLocked block at `height` of every wallet's history,
+    /// and SPV's ChainLock of that block.
     fn mine_locked(&self, tx: Transaction, height: u32) {
         self.seam.shared_locked.lock().unwrap().insert(tx.txid());
         self.mine(tx, height);
+        self.chainlock(height);
+    }
+
+    /// SPV's ChainLock of the header chain's block at `height`: a block
+    /// [`Self::mine`] put at or below it is final.
+    fn chainlock(&self, height: u32) {
+        let hash = self.forks.lock().unwrap().get(&height).copied();
+        let hash = hash.unwrap_or(dashcore::BlockHash::all_zeros());
+        self.session.hub.note_chainlock(height, hash);
     }
 
     fn tip(&self, height: u32) {
@@ -2582,6 +2603,7 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     assert_eq!(f.net.sent().len(), 1);
 
     f.mine(spend, 60);
+    f.chainlock(60);
     assert_eq!(f.session_of(1, &id).stage, SharedStage::Conflicted);
     assert_stage(f.abandon(1, &id).unwrap_err(), "conflicted");
     f.tip(64);
@@ -2902,6 +2924,7 @@ fn test_QT_126_a_chainlocked_conflict_releases_at_once() {
     f.abandon(1, &id).unwrap();
     let spend = f.net.sent().pop().unwrap();
     f.mine(spend, 60);
+    f.chainlock(60);
     f.tip(60);
     f.follow();
     assert!(!f.locked(1).is_empty());
@@ -2932,6 +2955,7 @@ fn test_QT_126_an_unreadable_out_session_is_released_by_its_stored_columns() {
         special_transaction_payload: None,
     };
     f.mine(spend, 70);
+    f.chainlock(70);
     f.tip(70);
     f.follow();
     assert_eq!(f.locked(1), reserved, "one deep: kept");
@@ -3445,7 +3469,7 @@ fn an_unseen_dissolution_stays_sent_after_a_silent_truncation() {
 
 #[test]
 fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
-    use super::super::protx::ops::{conflict_height, conflict_of};
+    use super::super::protx::ops::{Beats, conflict_height, conflict_of};
     use super::store::{Loaded, derive_stage, releasable, session_hash};
     let f = fx(3, true);
     let id = three_approved(&f);
@@ -3495,6 +3519,7 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
                 },
             );
         }
+        chain.beats = Beats::on_chain(&chain.history, Some(60));
         let original = chain
             .history
             .iter()
@@ -3508,11 +3533,11 @@ fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
             .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
             .min();
         assert_eq!(
-            conflict_height(&chain.history, &inputs, own.as_ref()),
+            conflict_height(&chain.history, &inputs, own.as_ref(), &chain.beats),
             original
         );
         assert_eq!(
-            conflict_of(&chain.history, &inputs, own.as_ref(), &[]).map(|(_, h)| h),
+            conflict_of(&chain.history, &inputs, own.as_ref(), &[], &chain.beats).map(|(_, h)| h),
             original
         );
         assert_eq!(derive_stage(&loaded, &chain), SharedStage::Conflicted);
@@ -3812,6 +3837,7 @@ fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {
     assert_eq!(listed[0].abandon_charge, None);
     assert_eq!(f.locked(1), reserved, "kept until a block settles it");
     f.mine(spend, 60);
+    f.chainlock(60);
     f.tip(60);
     f.follow();
     assert_eq!(f.locked(1), reserved, "one deep: kept");

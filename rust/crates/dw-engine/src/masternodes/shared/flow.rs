@@ -22,6 +22,7 @@ use super::super::MasternodesError;
 use super::super::follow::load_notes;
 use super::super::protx::build::{Context, invalid, refused, tx_size};
 use super::super::protx::keys::{InUse, p2pkh_id};
+use super::super::protx::ops::Beats;
 use super::super::records::HeldShares;
 use super::super::shared_records::{RewardChoice, SharedRole, SharedSession, SharedStage};
 use super::build::{Selected, placeholder, select};
@@ -182,6 +183,7 @@ impl NetworkSession {
             history,
             unspent,
             chainlock,
+            finality,
         } = self.op_view(wallet).await?;
         #[cfg(test)]
         let history = {
@@ -214,12 +216,18 @@ impl NetworkSession {
             }
             history
         };
-        let conflicted = crate::history::conflicted(&history, chainlock);
+        // The registrations the test seam mines are read with the rest.
+        #[cfg(test)]
+        let finality = {
+            drop(finality);
+            (self.finality(|at_most| crate::history::spender_heights([&history], at_most))).await
+        };
+        let beats = Beats::of(&history, chainlock, finality);
         let pending = self.spends.snapshot(&wallet);
         Ok(ChainView {
             history,
             unspent,
-            conflicted,
+            beats,
             pending,
         })
     }

@@ -35,7 +35,7 @@ fn reward_destination(
         }
         let terms: ProTxTerms = serde_json::from_str(&row.terms)
             .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
-        let state = ops::state_of(row, &chain.history, &chain.unspent, &chain.conflicted);
+        let state = ops::state_of(row, &chain.history, &chain.unspent, &chain.beats);
         updates.push((row, terms.payout_address, state));
     }
     let confirmed = updates

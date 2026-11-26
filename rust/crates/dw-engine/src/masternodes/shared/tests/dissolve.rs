@@ -52,7 +52,8 @@ pub(super) fn listed_with_reward(
 }
 
 /// `tx` in a block at `height` of wallet `w`'s history, as key-wallet
-/// records it (the seam's blocks reach the session stages only).
+/// records it (the seam's blocks reach the session stages only), and
+/// SPV's ChainLock of that block.
 pub(super) fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{
@@ -75,6 +76,7 @@ pub(super) fn confirm(f: &Fx, w: usize, tx: Transaction, height: u32) {
         0,
     );
     (f.session.hub.history).with_wallet(f.wallets[w], |h| h.upsert(&record, None));
+    f.chainlock(height);
 }
 
 pub(super) fn request(txid: Txid, share: u16, fee: u64) -> DissolveRequest {

@@ -24,7 +24,7 @@ use key_wallet::transaction_checking::TransactionContext;
 use serde::{Deserialize, Serialize};
 
 use super::super::MasternodesError;
-use super::super::protx::ops::beaten_height;
+use super::super::protx::ops::{Beats, beaten_height};
 use super::super::shared_records::{
     DeadReason, KeyBase, ShareRow, ShareTermsView, SharedKind, SharedNext, SharedRole,
     SharedSession, SharedStage, SharedWarning, UnreadableSession,
@@ -469,8 +469,8 @@ fn overlay_own_signatures(session: &mut Session, rec: &Recorded, signed: &[u8]) 
 pub(crate) struct ChainView {
     pub history: HashMap<Txid, TxEntry>,
     pub unspent: HashSet<OutPoint>,
-    /// The history's [`crate::history::conflicted`] heights.
-    pub conflicted: HashMap<Txid, u32>,
+    /// What may beat the session's transactions.
+    pub beats: Beats,
     /// The coins this wallet's pending spends hold, an abandon's among them.
     pub pending: HashSet<OutPoint>,
 }
@@ -478,7 +478,7 @@ pub(crate) struct ChainView {
 impl ChainView {
     /// [`beaten_height`] of the transaction `txid` spending `inputs`.
     pub(crate) fn beaten(&self, inputs: &[OutPoint], txid: Option<&Txid>) -> Option<u32> {
-        beaten_height(&self.history, &self.conflicted, inputs, txid)
+        beaten_height(&self.history, &self.beats, inputs, txid)
     }
 
     /// Whether one of `coins` is unspent and free of every pending spend:
@@ -600,7 +600,7 @@ pub(crate) fn releasable_by_columns(
 /// A row whose envelope no longer parses, settled by its stored columns:
 /// its stored transaction in a block (`confirmed`), or its transaction
 /// beaten by [`ChainView::beaten`]'s rule: a [`conflict_coins`] coin spent
-/// in a block by another, or a beaten parent (`conflicted`).
+/// in a final block by another, or a beaten parent (`conflicted`).
 pub(crate) fn settled_by_columns(row: &SharedSessionRow, chain: &ChainView) -> Option<SharedStage> {
     let stored = stored_txid(row);
     if let Some(height) = stored.and_then(|t| chain.confirmed_height(&t)) {

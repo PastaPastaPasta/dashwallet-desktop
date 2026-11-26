@@ -128,11 +128,10 @@ impl NetworkSession {
                 Err(EngineError::WalletNotFound(_)) => continue,
                 w => w?,
             };
-            let (history, unspent, conflicted) =
-                self.op_view_of(wallet, &w).await?.with_conflicted();
+            let (history, unspent, beats) = self.op_view_of(wallet, &w).await?.with_beats();
             let abandoned = self.abandoned_txids(wallet).await?;
             out.extend(rows.into_iter().map(|r| {
-                let state = state_of(&r, &history, &unspent, &conflicted);
+                let state = state_of(&r, &history, &unspent, &beats);
                 let state = abandon_settled(&r, state, &history, &abandoned);
                 (r, state)
             }));

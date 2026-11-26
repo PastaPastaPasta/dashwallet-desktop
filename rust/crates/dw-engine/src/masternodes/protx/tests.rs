@@ -6,7 +6,7 @@
 //! the same data, and check that nothing is sent twice, nothing is lost and
 //! no row whose transaction may be out is deleted.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -19,7 +19,7 @@ use key_wallet::transaction_checking::TransactionContext;
 use platform_wallet::PlatformWalletError;
 use zeroize::Zeroizing;
 
-use super::ops::{CrashPoint, Seam};
+use super::ops::{self, CrashPoint, Seam};
 use crate::masternodes::records::MasternodeType;
 use crate::masternodes::{
     AttachedKeyRole, CollateralChoice, EvonodeTerms, KeepOr, KeyCheck, Masternodes,
@@ -129,6 +129,9 @@ struct Fx {
     wallet: WalletId,
     lib: Arc<FakeLibrary>,
     seam: Arc<Seam>,
+    /// The blocks the SPV header chain holds in place of the zero-hash
+    /// ones the fixture's records name ([`ops::flat_headers`]).
+    forks: Arc<Mutex<HashMap<u32, dashcore::BlockHash>>>,
 }
 
 fn config(dir: &tempfile::TempDir, store: Arc<MemoryOsStore>) -> EngineConfig {
@@ -206,6 +209,8 @@ fn fx_on(network: DashNetwork, mode: Library) -> Fx {
         .unwrap();
     let lib = FakeLibrary::new(mode);
     let seam = seam_for(&session, &lib);
+    let forks = Arc::default();
+    ops::flat_headers(&session, &forks);
     let f = Fx {
         dir,
         engine,
@@ -213,6 +218,7 @@ fn fx_on(network: DashNetwork, mode: Library) -> Fx {
         wallet,
         lib,
         seam,
+        forks,
     };
     f.watch_rows();
     f
@@ -239,12 +245,17 @@ impl Fx {
     /// store as one, which takes up to minutes under load (#399).
     fn restart(&mut self, coins: &[(u8, u64)]) {
         *self.session.close_load_wait.lock().unwrap() = Some(std::time::Duration::from_secs(180));
+        let chainlock = self.session.hub.best_chainlock();
         assert!(
             self.engine
                 .block_on(self.engine.close_network(DashNetwork::Regtest))
                 .unwrap()
         );
         self.session = open(&self.engine);
+        ops::flat_headers(&self.session, &self.forks);
+        if let Some((height, hash)) = chainlock {
+            self.session.hub.note_chainlock(height, hash);
+        }
         self.seam = seam_for(&self.session, &self.lib);
         self.watch_rows();
         for (seed, value) in coins {
@@ -376,13 +387,22 @@ impl Fx {
         self.session.hub.tracker().set_tip_height(height);
     }
 
-    /// `tx` in a block of the wallet's history, as key-wallet records it.
+    /// `tx` in a ChainLocked block of the wallet's history, as key-wallet
+    /// records it, and SPV's ChainLock of that block.
     fn confirm(&self, tx: Transaction, height: u32) {
         self.confirm_in(self.wallet, tx, height);
     }
 
     fn confirm_in(&self, wallet: WalletId, tx: Transaction, height: u32) {
         self.record_in(wallet, tx, chain_locked(height));
+        self.chainlock(height);
+    }
+
+    /// SPV's ChainLock of the header chain's block at `height`.
+    fn chainlock(&self, height: u32) {
+        let hash = self.forks.lock().unwrap().get(&height).copied();
+        let hash = hash.unwrap_or(dashcore::BlockHash::all_zeros());
+        self.session.hub.note_chainlock(height, hash);
     }
 
     /// `tx` in the wallet's history in `context`.
