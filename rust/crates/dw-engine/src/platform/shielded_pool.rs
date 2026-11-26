@@ -4919,11 +4919,13 @@ fn holds_activity<S: ShieldedStore>(
 /// unknown one not yet marked [`FREED_UNKNOWN`] included ([`spend_outcome`]
 /// reads both); never one so marked, which reads nothing. A create
 /// [`settle_outcomes`] left unresolved ([`CREATE_SPENT`]) whose row reads
-/// confirmed is read once its registration's proof in `appdb` reads
-/// consumed ([`spent_create_consumed`]); until then a padded create's refund
-/// may still be owed. `None` when the journal is not ready, or the
-/// artifacts, a history row, what the library holds or such a proof cannot
-/// be read.
+/// confirmed is read once the journal marks it consumed or its
+/// registration's proof in `appdb` reads consumed
+/// ([`spent_create_consumed`]); until then a padded create's refund may
+/// still be owed. The mark outlives the wallet's app rows, so it reads for
+/// a wallet whose removal stopped before the journal archived it. `None`
+/// when the journal is not ready, or the artifacts, a history row, what the
+/// library holds, the marks or such a proof cannot be read.
 pub(super) async fn reported_outcome(
     leases: &super::lease::LeaseTable,
     coordinator: &NetworkShieldedCoordinator,
@@ -4960,6 +4962,11 @@ pub(super) async fn reported_outcome(
             }
         }
     }
+    if spent_creates.is_empty() {
+        return Some(false);
+    }
+    let marked = (leases.consumed_creates(wallet, spent_creates.clone()).await).ok()?;
+    spent_creates.retain(|st_hash| !marked.contains(st_hash));
     if spent_creates.is_empty() {
         return Some(false);
     }

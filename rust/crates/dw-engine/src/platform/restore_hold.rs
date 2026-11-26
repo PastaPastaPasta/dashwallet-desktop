@@ -15,10 +15,11 @@
 //!   among them), and, in a journal from before artifacts, a stored
 //!   redrive (what the 10 → 11 step imports `unclassified`).
 //!
-//! An unresolved create whose registration's proof in `app.sqlite` reads
-//! consumed (its notes spent with no identity, nothing owed) does not hold
-//! either, as for [`shielded_pool::holds_unresolved`]; with no such proof,
-//! or one that does not read, it holds.
+//! An unresolved create the journal marks consumed, or whose registration's
+//! proof in `app.sqlite` reads consumed (its notes spent with no identity,
+//! nothing owed), does not hold either, as for
+//! [`shielded_pool::holds_unresolved`]; with neither, or a mark or proof
+//! that does not read, it holds.
 //!
 //! A drained fork hold (`shielded_drained_hold`) does not hold here, as for
 //! the removal: the fork's rows it came from stay in the before set, and the
@@ -221,8 +222,10 @@ fn has_table(db: &Connection, name: &str) -> Result<bool, String> {
 /// every wallet's. A file with no table at all (an open that stopped once
 /// it created the journal) holds nothing, as the journal's open reads it
 /// as new; one with tables but no schema, or newer than this build, does
-/// not read. An unresolved create is open unless its proof in
-/// `network_dir`'s `app.sqlite` reads consumed ([`creates_consumed`]).
+/// not read. An unresolved create is open unless the journal marks it
+/// consumed ([`unmarked_creates`]) or its proof in `network_dir`'s
+/// `app.sqlite` reads consumed ([`creates_consumed`]); the mark outlives
+/// the proof a removal stopped before its archive deleted.
 fn journal_holds_in(
     db: &Connection,
     network_dir: &Path,
@@ -301,17 +304,44 @@ fn journal_holds_in(
             _ => holds.unsettled = true,
         }
     }
-    if !holds.open && !spent_creates.is_empty() && !creates_consumed(network_dir, &spent_creates)? {
-        holds.open = true;
+    if !holds.open && !spent_creates.is_empty() {
+        let unmarked = unmarked_creates(db, spent_creates)?;
+        if !unmarked.is_empty() && !creates_consumed(network_dir, &unmarked)? {
+            holds.open = true;
+        }
     }
     Ok(holds)
+}
+
+/// A create's wallet and transition hash, as the journal stores them.
+type CreateKey = (Vec<u8>, Vec<u8>);
+
+/// Those of `creates`, by wallet and transition hash, the journal open on
+/// `db` does not mark consumed ([`dw_appdb::dispatch::consumed_creates_in`]).
+/// A mark that does not read, or a malformed key, is an error.
+fn unmarked_creates(db: &Connection, creates: Vec<CreateKey>) -> Result<Vec<CreateKey>, String> {
+    let mut unmarked = Vec::new();
+    for (wallet, st_hash) in creates {
+        let (Ok(w), Ok(h)) = (
+            <[u8; 32]>::try_from(wallet.as_slice()),
+            <[u8; 32]>::try_from(st_hash.as_slice()),
+        ) else {
+            return Err("an artifact's wallet or transition is malformed".into());
+        };
+        let marked = dw_appdb::dispatch::consumed_creates_in(db, &w, &[h])
+            .map_err(|e| format!("the journal's consumed creates: {e}"))?;
+        if marked.is_empty() {
+            unmarked.push((wallet, st_hash));
+        }
+    }
+    Ok(unmarked)
 }
 
 /// Whether the registration proof (`dp_registration_proved`) of every
 /// create in `creates`, by wallet and transition hash, reads consumed in
 /// `network_dir`'s `app.sqlite`. No file, no settings table or no proof is
 /// `false`; a file, table or row that does not read is an error.
-fn creates_consumed(network_dir: &Path, creates: &[(Vec<u8>, Vec<u8>)]) -> Result<bool, String> {
+fn creates_consumed(network_dir: &Path, creates: &[CreateKey]) -> Result<bool, String> {
     let Some(db) = open_read_only(&network_dir.join(APP_DB_FILE))? else {
         return Ok(false);
     };

@@ -2251,6 +2251,15 @@ impl Hooked {
             .funding
     }
 
+    /// Whether the journal marks the create of `st_hash` consumed.
+    fn marked_consumed(&self, st_hash: [u8; 32]) -> bool {
+        let leases = &self.f.session.leases;
+        (self.f.engine)
+            .block_on(leases.consumed_creates(self.f.wallet, vec![st_hash]))
+            .unwrap()
+            .contains(&st_hash)
+    }
+
     fn setting(&self, key: String) -> Option<String> {
         let scope = dw_appdb::local_scope(&self.f.wallet.to_string());
         (self.f.engine)
@@ -3024,6 +3033,10 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
         Some("executed"),
         "the engine's proof, beside the library's strings"
     );
+    assert!(
+        !h.marked_consumed(artifact.st_hash.unwrap()),
+        "a padded create is never marked consumed"
+    );
     *ev.identity.lock().unwrap() = (true, 101);
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
 }
@@ -3032,8 +3045,9 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
 /// so its nullifiers read spent may be another spend's of the same notes
 /// (another install of the seed): held or not, they never claim a refund.
 /// Its identity present registers it; absent at or above the spent read,
-/// the notes are gone whoever spent them: its proof is written consumed,
-/// its artifact stays unresolved and the row is told so; absent below it
+/// the notes are gone whoever spent them: its proof is written consumed
+/// and the journal marks it so, its artifact stays unresolved and the row
+/// is told so; absent below it
 /// decides nothing. Mutants: refund it as a fallback; consume it on an
 /// absence read below the spend.
 #[test]
@@ -3065,6 +3079,7 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
             "absent below the spend, held: {held}"
         );
         assert_eq!(proved(), None);
+        assert!(!h.marked_consumed(artifact.st_hash.unwrap()));
     }
     *ev.identity.lock().unwrap() = (false, 100);
     assert_eq!(
@@ -3073,6 +3088,10 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
     );
     assert!(h.refunds().is_empty(), "no refund is claimed");
     assert_eq!(proved().as_deref(), Some("consumed"));
+    assert!(
+        h.marked_consumed(artifact.st_hash.unwrap()),
+        "marked in the journal too, which outlives the app rows"
+    );
     let artifact = h.artifact(12).unwrap();
     assert_eq!(
         (artifact.status, artifact.acked),

@@ -276,6 +276,24 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     ) -> Result<ArtifactSettled, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
+    /// Marks `wallet`'s Shielded create `st_hash` consumed, durably;
+    /// `false` when no unresolved create of the wallet has that transition.
+    fn mark_create_consumed(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+    ) -> Result<bool, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed. An
+    /// error in a journal that keeps none.
+    fn consumed_creates(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
     /// The journal connection's `synchronous` pragma (2 = FULL).
     #[cfg(test)]
     fn synchronous(&self) -> Option<i64> {
@@ -548,6 +566,19 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
     ) -> Result<ArtifactSettled, String> {
         (self.settle_shielded_artifact(wallet, st_hash, status, disposition, acked))
             .map_err(|e| e.to_string())
+    }
+
+    fn mark_create_consumed(&self, wallet: &[u8; 32], st_hash: &[u8; 32]) -> Result<bool, String> {
+        (self.mark_create_consumed(wallet, st_hash, crate::events::unix_now()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn consumed_creates(
+        &self,
+        wallet: &[u8; 32],
+        st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        (self.consumed_creates(wallet, st_hashes)).map_err(|e| e.to_string())
     }
 
     #[cfg(test)]
@@ -4355,6 +4386,8 @@ impl LeaseTable {
         }
         #[cfg(test)]
         let all = self.inspect(|i| i.mutation) == Some(Mutation::EraseAll);
+        #[cfg(test)]
+        let fail = (self.fail_next_erase).swap(false, std::sync::atomic::Ordering::SeqCst);
         // The delete applies its own outcome, so a removal dropped meanwhile
         // does not skip it; closing the journal waits for it.
         self.with_j(|i, _| {
@@ -4368,6 +4401,10 @@ impl LeaseTable {
         let table = Arc::clone(self);
         let erase = self.rt.spawn_blocking(move || {
             let erased = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if fail {
+                    return Err("test: the erase failed".into());
+                }
                 #[cfg(test)]
                 if all {
                     // The mutation: the unconditional delete.

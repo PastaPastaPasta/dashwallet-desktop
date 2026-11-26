@@ -252,6 +252,68 @@ fn a_consumed_create_on_disk_lets_the_request_through() {
     );
 }
 
+/// #976: an unresolved Shielded create the journal marks consumed holds
+/// nothing with its proof in `app.sqlite` gone, as a removal cut before its
+/// archive leaves it. A mark of another create or wallet does not count; a
+/// mark table that does not read holds (`CarriedOver`) whatever the proof
+/// says; an open transfer beside a marked create holds. Mutants: ignore the
+/// mark; read a mark that does not read as consumed.
+#[test]
+fn a_create_marked_consumed_in_the_journal_lets_the_request_through() {
+    let create = artifact("unresolved", "NULL").replace("'transfer'", "'identity_create'");
+    let other = "X'5252525252525252525252525252525252525252525252525252525252525252'";
+    let mark = |wallet: &str, st_hash: &str| {
+        format!(
+            "INSERT INTO shielded_create_consumed (wallet, st_hash, at) VALUES ({wallet}, {st_hash}, 1)"
+        )
+    };
+    let transfer = artifact("registered", "NULL").replace(KEY, other);
+    passes(
+        case(|d| journal(d, &format!("{create}; {}", mark(WALLET, KEY)))).path(),
+        "a marked create, no app.sqlite",
+    );
+    passes(
+        case(|d| {
+            journal(d, &format!("{create}; {}", mark(WALLET, KEY)));
+            app(d, None);
+        })
+        .path(),
+        "a marked create, its proof gone",
+    );
+    for (sql, what) in [
+        (mark(WALLET, other), "a mark of another create"),
+        (mark(other, KEY), "a mark of another wallet"),
+    ] {
+        refused_with(
+            case(|d| journal(d, &format!("{create}; {sql}"))).path(),
+            ShieldedHold::InFlight,
+            what,
+        );
+    }
+    for proof in [Some("consumed"), None] {
+        refused_with(
+            case(|d| {
+                journal(
+                    d,
+                    &format!(
+                        "{create}; DROP TABLE shielded_create_consumed; \
+                         CREATE TABLE shielded_create_consumed (x)"
+                    ),
+                );
+                app(d, proof);
+            })
+            .path(),
+            ShieldedHold::CarriedOver,
+            &format!("a mark that does not read, proof {proof:?}"),
+        );
+    }
+    refused_with(
+        case(|d| journal(d, &format!("{create}; {}; {transfer}", mark(WALLET, KEY)))).path(),
+        ShieldedHold::InFlight,
+        "a marked create beside an open transfer",
+    );
+}
+
 /// A journal from before artifacts: its stored redrives import as
 /// unclassified artifacts, which hold.
 #[test]

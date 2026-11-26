@@ -85,6 +85,10 @@
 //!   classification ([`DispatchJournal::classify_shielded_imports`]) reads
 //!   it as `unresolved` or, its wallet unknown, `archived` for good. The
 //!   0.1 tables stay as they were.
+//! - Schema 12 adds the drained fork tables (the `drain` module) and,
+//!   since, `shielded_create_consumed`: a Shielded create the engine proved
+//!   consumed, which outlives its wallet's app rows
+//!   ([`DispatchJournal::mark_create_consumed`]).
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -443,6 +447,52 @@ INSERT INTO shielded_artifact_note (wallet, activity, nullifier, spent)
   ON CONFLICT (wallet, activity, nullifier) DO NOTHING;
 UPDATE meta SET v = 11 WHERE k = 'schema';
 ";
+
+/// Version 12, added since its first build and run at every open of one
+/// (`IF NOT EXISTS`): each Shielded identity create the engine proved
+/// consumed (its notes spent with no identity, nothing owed), by its
+/// wallet and transition hash. It is the journal's copy of `app.sqlite`'s
+/// `dp_registration_proved` proof reading consumed, which a wallet's
+/// removal deletes before it archives the wallet's artifacts. No sweep and
+/// no removal deletes it.
+const SHIELDED_CREATE_CONSUMED: &str = "
+CREATE TABLE IF NOT EXISTS shielded_create_consumed (
+  wallet  BLOB NOT NULL CHECK (length(wallet) = 32),
+  st_hash BLOB NOT NULL CHECK (length(st_hash) = 32),
+  at      INTEGER NOT NULL,
+  PRIMARY KEY (wallet, st_hash)
+) WITHOUT ROWID;
+";
+
+/// Which of `wallet`'s creates `st_hashes` the journal open on `conn`
+/// marks consumed ([`DispatchJournal::mark_create_consumed`]); none in a
+/// journal with no such table.
+pub fn consumed_creates_in(
+    conn: &Connection,
+    wallet: &[u8; 32],
+    st_hashes: &[[u8; 32]],
+) -> Result<BTreeSet<[u8; 32]>> {
+    let table: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'table' AND name = 'shielded_create_consumed')",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut marked = BTreeSet::new();
+    if !table {
+        return Ok(marked);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT EXISTS (SELECT 1 FROM shielded_create_consumed \
+         WHERE wallet = ?1 AND st_hash = ?2)",
+    )?;
+    for st_hash in st_hashes {
+        if stmt.query_row(params![&wallet[..], &st_hash[..]], |r| r.get::<_, bool>(0))? {
+            marked.insert(*st_hash);
+        }
+    }
+    Ok(marked)
+}
 
 /// [`DispatchJournal::record_shielded_artifact`]'s insert. Only a key
 /// conflict is skipped: a row any CHECK refuses is an error.
@@ -1278,13 +1328,17 @@ impl DispatchJournal {
             match schema {
                 // Version 12's tables are `IF NOT EXISTS`; one added to
                 // them since its first build reaches a journal made then.
-                Some(12) if schema_read == 12 => tx.execute_batch(drain::SHIELDED_DRAIN)?,
+                Some(12) if schema_read == 12 => {
+                    tx.execute_batch(drain::SHIELDED_DRAIN)?;
+                    tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
+                }
                 Some(v) if v == i64::from(schema_read) => {}
                 Some(v @ 1..=11) if v < i64::from(schema_read) => {
                     if v <= 10 {
                         migrate_to_11(&tx, v)?;
                     }
                     tx.execute_batch(drain::SHIELDED_DRAIN)?;
+                    tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
                     tx.execute_batch(drain::MIGRATE_V11)?;
                 }
                 Some(v) if v > i64::from(schema_read) => {
@@ -1312,6 +1366,7 @@ impl DispatchJournal {
             tx.execute_batch(SHIELDED_UNRECORDED)?;
             tx.execute_batch(SHIELDED_ARTIFACT)?;
             tx.execute_batch(drain::SHIELDED_DRAIN)?;
+            tx.execute_batch(SHIELDED_CREATE_CONSUMED)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -2128,6 +2183,45 @@ impl DispatchJournal {
         )?;
         tx.commit()?;
         Ok(ArtifactSettled::Settled)
+    }
+
+    /// Marks `wallet`'s Shielded create `st_hash` consumed, durably, while
+    /// an unresolved `identity_create` artifact of the wallet has that
+    /// transition; `false` when none has. The first mark stands.
+    pub fn mark_create_consumed(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let create: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM shielded_artifact WHERE wallet = ?1 AND st_hash = ?2 \
+             AND kind = 'identity_create' AND status = 'unresolved' AND status_reason IS NULL)",
+            params![&wallet[..], &st_hash[..]],
+            |r| r.get(0),
+        )?;
+        if !create {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO shielded_create_consumed (wallet, st_hash, at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT (wallet, st_hash) DO NOTHING",
+            params![&wallet[..], &st_hash[..], now as i64],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed
+    /// ([`Self::mark_create_consumed`]).
+    pub fn consumed_creates(
+        &self,
+        wallet: &[u8; 32],
+        st_hashes: &[[u8; 32]],
+    ) -> Result<BTreeSet<[u8; 32]>> {
+        consumed_creates_in(&self.conn(), wallet, st_hashes)
     }
 
     /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
@@ -5276,6 +5370,78 @@ mod tests {
             ..dispatched([4; 32], [8; 32])
         };
         assert!(j.record_shielded_artifact(&W, &transfer, 3).is_err());
+    }
+
+    /// A create is marked consumed only while it is an unresolved create of
+    /// the wallet; the mark outlives the wallet's removal and stands at
+    /// every later open, and a journal of schema 12 from before the table
+    /// gains it at its open.
+    #[test]
+    fn a_consumed_create_mark_outlives_the_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+        let create = |activity, st_hash| NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            identity_id: Some([8; 32]),
+            ..dispatched(activity, st_hash)
+        };
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_artifact(&W, &create([1; 32], [10; 32]), 1)
+                .unwrap();
+            j.record_shielded_artifact(&W, &dispatched([2; 32], [20; 32]), 1)
+                .unwrap();
+            assert!(
+                !j.mark_create_consumed(&W, &[10; 32], 2).unwrap(),
+                "registered"
+            );
+            for st_hash in [[10; 32], [20; 32]] {
+                j.settle_shielded_artifact(&W, &st_hash, unresolved, None, false)
+                    .unwrap();
+            }
+            assert!(
+                !j.mark_create_consumed(&W, &[20; 32], 2).unwrap(),
+                "a transfer"
+            );
+            assert!(
+                !j.mark_create_consumed(&[9; 32], &[10; 32], 2).unwrap(),
+                "another wallet"
+            );
+            assert!(j.consumed_creates(&W, &[[10; 32]]).unwrap().is_empty());
+            assert!(j.mark_create_consumed(&W, &[10; 32], 3).unwrap());
+            assert!(j.mark_create_consumed(&W, &[10; 32], 4).unwrap());
+            j.erase_wallet(&W, true).unwrap();
+            assert!(
+                !j.mark_create_consumed(&W, &[10; 32], 5).unwrap(),
+                "archived"
+            );
+        }
+        let j = ready(&path, 6);
+        assert_eq!(
+            j.consumed_creates(&W, &[[10; 32], [20; 32]]).unwrap(),
+            BTreeSet::from([[10; 32]])
+        );
+        assert!(
+            (j.consumed_creates(&[9; 32], &[[10; 32]]).unwrap()).is_empty(),
+            "another wallet's"
+        );
+        drop(j);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE shielded_create_consumed")
+            .unwrap();
+        let j = ready(&path, 7);
+        assert!(j.consumed_creates(&W, &[[10; 32]]).unwrap().is_empty());
+        j.record_shielded_artifact(&W, &create([3; 32], [30; 32]), 8)
+            .unwrap();
+        j.settle_shielded_artifact(&W, &[30; 32], unresolved, None, false)
+            .unwrap();
+        assert!(j.mark_create_consumed(&W, &[30; 32], 8).unwrap());
+        assert_eq!(
+            j.consumed_creates(&W, &[[30; 32]]).unwrap(),
+            BTreeSet::from([[30; 32]])
+        );
     }
 
     /// A registered artifact holds its wallet and reserves its notes.

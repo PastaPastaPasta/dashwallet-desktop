@@ -1640,6 +1640,37 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// Marks `wallet`'s Shielded create `st_hash` consumed in
+    /// dispatch.sqlite (`synchronous=FULL`): written when this returns
+    /// `Ok(true)`; `Ok(false)` when no unresolved create of the wallet has
+    /// that transition. On the blocking pool.
+    pub(crate) async fn mark_create_consumed(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.mark_create_consumed(&wallet.0, &st_hash))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Which of `wallet`'s creates `st_hashes` are marked consumed; an
+    /// error while the journal is not open or cannot be read. On the
+    /// blocking pool.
+    pub(crate) async fn consumed_creates(
+        &self,
+        wallet: WalletId,
+        st_hashes: Vec<[u8; 32]>,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.consumed_creates(&wallet.0, &st_hashes))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
     /// Whether `wallet` has a shielded artifact, archived or not, for the
     /// transition `st_hash`; an error as [`Self::shielded_artifact`]'s.
     #[cfg(test)]
