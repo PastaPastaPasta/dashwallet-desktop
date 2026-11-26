@@ -461,7 +461,9 @@ commands! {
     /// (`null`: the window's) verified before-upgrade snapshot at the next
     /// start; the renderer then calls `restartApp`. Nothing is restored in
     /// this process. Without a verified snapshot, `storage_restore`
-    /// (refused, missingBackup).
+    /// (refused, missingBackup). While a wallet of `network` holds a
+    /// shielded spend whose result is not known, or its stores don't read,
+    /// `shielded_spend_unresolved` with its `shieldedHold` reason.
     #[facade("Engine::request_restore")]
     fn request_restore(state, network: Option<String>) -> () {
         let network = restore_network(&state, network)?;
@@ -496,7 +498,9 @@ commands! {
     /// folder changes. The next start opens the new folder; the renderer
     /// restarts the app after this (`restart_app`). `invalid_argument`
     /// unless the network's last open was refused by the store-upgrade
-    /// check as damaged, and while it is open.
+    /// check as damaged, or Restore earlier data was refused for a shielded
+    /// hold since an open refused with it or at that open's swap, and while
+    /// it is open.
     #[facade("Engine::recover_in_fresh_folder")]
     fn recover_in_fresh_folder(state) -> () {
         let engines = state.engine.clone();

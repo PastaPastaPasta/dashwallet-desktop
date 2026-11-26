@@ -45,6 +45,17 @@ const ATTEMPT_HEADER: &str = "dw-store-upgrade restore-attempt";
 const MARK_HEADER: &str = "dw-store-upgrade restored";
 const FORMAT: u32 = 1;
 
+/// The journal's record that the caller's [`HoldCheck`] passed before
+/// the attempt's first replace.
+const HOLDS_CHECKED: &str = "holds checked";
+
+/// The caller's check of the live stores, before a requested restore
+/// replaces or removes any of them: `Err` (why) when one keeps a hold the
+/// before set would not, or can't be read. It runs once per attempt,
+/// before anything is written; a resume never runs it, and refuses a
+/// journal without [`HOLDS_CHECKED`].
+pub type HoldCheck<'a> = &'a dyn Fn(&Path) -> std::result::Result<(), String>;
+
 /// D2: the replace order; wallet.sqlite is always last.
 const REPLACE_ORDER: [&str; 4] = [
     "app.sqlite",
@@ -112,6 +123,14 @@ pub enum IncompleteCause {
     /// S4 with a live set outside the before lineage (Q92 v2.1 S4-2):
     /// nothing moves; [`keep_current_files`] keeps it as it is.
     S4OtherLineage,
+    /// The caller's [`HoldCheck`] found, before anything moved, a hold the
+    /// live stores keep that the restore would replace, or could not read
+    /// them: the request stays, nothing moves.
+    HoldsOpen,
+    /// A journal with no record that the caller's [`HoldCheck`] passed
+    /// before its first replace (a journal an earlier build wrote): the
+    /// resume is refused, nothing moves.
+    HoldsUnchecked,
     Other,
 }
 
@@ -136,6 +155,8 @@ impl std::fmt::Display for IncompleteCause {
             Self::FileVanished => "a file vanished",
             Self::S4OldBuildWrote => "another build wrote to the restored wallet data",
             Self::S4OtherLineage => "the wallet data in place is not the restored wallet data",
+            Self::HoldsOpen => "the wallet data in place holds a payment the restore would lose",
+            Self::HoldsUnchecked => "the restore began without checking for payments it would lose",
             Self::Other => "file system error",
         })
     }
@@ -289,6 +310,7 @@ struct Journal {
     manifest: String,
     staging: String,
     after: String,
+    holds_checked: bool,
     stores: Vec<StoreEntry>,
 }
 
@@ -297,6 +319,10 @@ fn render_journal(j: &Journal) -> String {
         "{JOURNAL_HEADER}\nformat {FORMAT}\nsnapshot {}\nmanifest {}\nstaging {}\nafter {}\n",
         j.snapshot, j.manifest, j.staging, j.after
     );
+    if j.holds_checked {
+        s += HOLDS_CHECKED;
+        s.push('\n');
+    }
     for e in &j.stores {
         s += &format!(
             "store {} before {} after {}\n",
@@ -324,6 +350,8 @@ fn parse_journal(text: &str) -> Option<Journal> {
     let manifest = field("manifest")?;
     let staging = field("staging")?;
     let after = field("after")?;
+    let mut lines = lines.peekable();
+    let holds_checked = lines.next_if_eq(&HOLDS_CHECKED).is_some();
     let mut stores = Vec::new();
     for line in lines {
         let parts: Vec<&str> = line.split(' ').collect();
@@ -347,14 +375,19 @@ fn parse_journal(text: &str) -> Option<Journal> {
         manifest,
         staging,
         after,
+        holds_checked,
         stores,
     })
 }
 
 /// The startup entry for a pending restore: resume a journal, run a
-/// requested restore, or do nothing. Runs before any store opens in the
-/// process (F4-a, Q86 (f)).
-pub fn run_pending_restore(network_dir: &Path, now: SystemTime) -> Result<Option<RestoreInfo>> {
+/// requested restore once `holds` passed, or do nothing. Runs before any
+/// store opens in the process (F4-a, Q86 (f)).
+pub fn run_pending_restore(
+    network_dir: &Path,
+    now: SystemTime,
+    holds: HoldCheck<'_>,
+) -> Result<Option<RestoreInfo>> {
     let pending = pending_restore(network_dir)
         .map_err(StoreUpgradeError::io("read the restore marker", true))?;
     let Some(pending) = pending else {
@@ -366,7 +399,7 @@ pub fn run_pending_restore(network_dir: &Path, now: SystemTime) -> Result<Option
         PendingRestore::InProgress => resume(network_dir, now).map(Some),
         PendingRestore::Requested => {
             let snapshot = verify_request(network_dir).map_err(|c| refuse(network_dir, c))?;
-            fresh(network_dir, &snapshot, now).map(Some)
+            fresh(network_dir, &snapshot, now, holds).map(Some)
         }
     }
 }
@@ -378,6 +411,7 @@ pub fn restore(
     network_dir: &Path,
     snapshot: &SnapshotInfo,
     now: SystemTime,
+    holds: HoldCheck<'_>,
 ) -> Result<RestoreInfo> {
     let _locks = gates(network_dir)?;
     let pending = pending_restore(network_dir)
@@ -394,7 +428,7 @@ pub fn restore(
     {
         return Err(refuse(network_dir, RefusalCause::MismatchedBackup));
     }
-    fresh(network_dir, &verified, now)
+    fresh(network_dir, &verified, now, holds)
 }
 
 /// Read the request and the snapshot it names, every file checked against
@@ -951,7 +985,17 @@ fn space_needed(network_dir: &Path, snapshot: &SnapshotInfo) -> u64 {
 }
 
 /// Steps 0–8 of a fresh run (design §2).
-fn fresh(network_dir: &Path, snapshot: &SnapshotInfo, now: SystemTime) -> Result<RestoreInfo> {
+fn fresh(
+    network_dir: &Path,
+    snapshot: &SnapshotInfo,
+    now: SystemTime,
+    holds: HoldCheck<'_>,
+) -> Result<RestoreInfo> {
+    holds(network_dir).map_err(|detail| StoreUpgradeError::RestoreIncomplete {
+        cause: IncompleteCause::HoldsOpen,
+        journal_written: false,
+        detail,
+    })?;
     let root = root(network_dir);
     sweep_left_over_attempt(&root);
     quiesce(network_dir)?;
@@ -976,6 +1020,7 @@ fn fresh(network_dir: &Path, snapshot: &SnapshotInfo, now: SystemTime) -> Result
         manifest: snapshot.manifest_sha256().to_string(),
         after: fsx::fresh_name(&root, AFTER_PREFIX, now),
         staging: fsx::fresh_name(&root, STAGING_PREFIX, now),
+        holds_checked: true,
         stores,
     };
     let needed = space_needed(network_dir, snapshot);
@@ -1812,6 +1857,16 @@ fn load_journal(network_dir: &Path, now: SystemTime) -> Result<(Journal, Snapsho
 /// Resume from the journal, before any store opens (design §5).
 fn resume(network_dir: &Path, now: SystemTime) -> Result<RestoreInfo> {
     let root = root(network_dir);
+    let unchecked = (fs::read_to_string(root.join(RESTORE_JOURNAL)).ok())
+        .and_then(|text| parse_journal(&text))
+        .is_some_and(|journal| !journal.holds_checked);
+    if unchecked {
+        return Err(StoreUpgradeError::RestoreIncomplete {
+            cause: IncompleteCause::HoldsUnchecked,
+            journal_written: true,
+            detail: "the restore journal has no record of the hold check".into(),
+        });
+    }
     remove_record(&root).map_err(|e| incomplete(&e, "remove a stale attempt record"))?;
     sweep_keep_scratch(&root);
     let (journal, snapshot) = load_journal(network_dir, now)?;

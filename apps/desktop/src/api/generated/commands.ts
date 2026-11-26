@@ -431,7 +431,9 @@ export function restoreAvailable(network: string | null): Promise<boolean> {
  * (`null`: the window's) verified before-upgrade snapshot at the next
  * start; the renderer then calls `restartApp`. Nothing is restored in
  * this process. Without a verified snapshot, `storage_restore`
- * (refused, missingBackup).
+ * (refused, missingBackup). While a wallet of `network` holds a
+ * shielded spend whose result is not known, or its stores don't read,
+ * `shielded_spend_unresolved` with its `shieldedHold` reason.
  */
 export function requestRestore(network: string | null): Promise<null> {
   return invoke<null>("request_restore", { network });
@@ -463,7 +465,9 @@ export function cancelRestore(network: string | null): Promise<null> {
  * folder changes. The next start opens the new folder; the renderer
  * restarts the app after this (`restart_app`). `invalid_argument`
  * unless the network's last open was refused by the store-upgrade
- * check as damaged, and while it is open.
+ * check as damaged, or Restore earlier data was refused for a shielded
+ * hold since an open refused with it or at that open's swap, and while
+ * it is open.
  */
 export function recoverInFreshFolder(): Promise<null> {
   return invoke<null>("recover_in_fresh_folder");

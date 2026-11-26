@@ -55,17 +55,18 @@ pub use precheck::{
 };
 pub use reconcile::{Outcome, UpgradeNotice, reconcile_fork_store};
 pub use restore::{
-    IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT, RESTORE_JOURNAL,
-    RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark, S4_POLICY, S4Policy,
-    SAFE_TO_DELETE, cancel_restore, clear_restored_mark_on_first_all_synced, keep_current_files,
-    pending_restore, request_restore, restore, restored_mark, restored_mark_present,
-    run_pending_restore, touched_paths,
+    HoldCheck, IncompleteCause, KEPT, PendingPayment, PendingRestore, RESTORE_ATTEMPT,
+    RESTORE_JOURNAL, RESTORE_REQUESTED, RESTORED_MARK, RefusalCause, RestoreInfo, RestoredMark,
+    S4_POLICY, S4Policy, SAFE_TO_DELETE, cancel_restore, clear_restored_mark_on_first_all_synced,
+    keep_current_files, pending_restore, request_restore, restore, restored_mark,
+    restored_mark_present, run_pending_restore, touched_paths,
 };
 pub use snapshot::{
     MissingSnapshot, NOT_THIS_WALLET, PART_UPGRADED_BY, STORE_FILES, SnapshotFile, SnapshotInfo,
     SnapshotState, UPGRADE_BACKUPS_DIR, UPGRADED_FROM, latest_snapshot, snapshot_present,
     snapshot_state, take_snapshot, upgrade_copy_present,
 };
+pub use sql::open_immutable;
 pub use token::{PersisterOpened, note_stores_opening, stores_opened_in_process};
 
 /// What [`prepare`] found and did.
@@ -89,9 +90,23 @@ pub fn prepare(network_dir: &Path, now: SystemTime) -> Result<Prepared> {
 
 /// Step 1 for `adopters`: a pending restore, the refusal check, then the
 /// snapshot. A refusal is returned as [`Precheck::Refuse`] with nothing in
-/// `{folder}` written.
+/// `{folder}` written. A requested restore that has not begun is refused
+/// here (`HoldsOpen`): the caller runs [`run_pending_restore`] with its
+/// [`HoldCheck`] first, or [`prepare_with_holds`].
 pub fn prepare_with(network_dir: &Path, adopters: &Adopters, now: SystemTime) -> Result<Prepared> {
-    let restored = run_pending_restore(network_dir, now)?;
+    prepare_with_holds(network_dir, adopters, now, &|_| {
+        Err("no hold check ran before the restore".into())
+    })
+}
+
+/// [`prepare_with`], a requested restore run once `holds` passed.
+pub fn prepare_with_holds(
+    network_dir: &Path,
+    adopters: &Adopters,
+    now: SystemTime,
+    holds: HoldCheck<'_>,
+) -> Result<Prepared> {
+    let restored = run_pending_restore(network_dir, now, holds)?;
     let mut checked = precheck_with(network_dir, adopters)?;
     if matches!(checked, Precheck::NeedsLockedCheck) {
         checked = precheck_locked_with(network_dir, adopters)?;

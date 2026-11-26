@@ -543,3 +543,69 @@ fn with_nothing_held_the_removal_goes_through() {
     removed(&engine, &session, other);
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// #925: with no shielded store open, a transition the journal registered
+/// whose stored record the library has already dropped (resolved, its
+/// outcome not yet recorded) refuses the removal: the journal is read, and
+/// the artifact stays.
+#[test]
+fn a_registered_artifact_without_a_stored_spend_refuses_the_removal_with_no_store_open() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = named_launch(&engine);
+    let journal = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    let artifact = |db: &rusqlite::Connection| -> Vec<(String, Option<Vec<u8>>)> {
+        let mut stmt = db
+            .prepare("SELECT status, st_hash FROM shielded_artifact WHERE wallet = ?1")
+            .unwrap();
+        stmt.query_map([wallet.0.to_vec()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let session = relaunch(&engine, session, |_| {
+        let db = rusqlite::Connection::open(&journal).unwrap();
+        db.execute(
+            "INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, kind, anchor, \
+             status, at) VALUES (?1, ?2, 'dispatched', ?3, 'transfer', ?4, 'registered', 1)",
+            rusqlite::params![
+                wallet.0.to_vec(),
+                ACTIVITY.to_vec(),
+                [0x77u8; 32].to_vec(),
+                ANCHOR.to_vec()
+            ],
+        )
+        .unwrap();
+    });
+    let data_dir = session.data_dir().to_path_buf();
+    let shielded = data_dir.join(pool::SHIELDED_DB_FILE);
+    assert!(
+        !shielded.exists()
+            || !pool::pending_rows_in(
+                &rusqlite::Connection::open(&shielded).unwrap(),
+                Some(wallet)
+            )
+            .unwrap(),
+        "no stored spend"
+    );
+    assert_eq!(
+        hold(&engine, &session, wallet),
+        Some(ShieldedHold::InFlight)
+    );
+    removal_refused(
+        &engine,
+        &session,
+        wallet,
+        ShieldedHold::InFlight,
+        "a registered artifact",
+    );
+    assert!(!opened(&engine, &session), "the gate opens no store");
+    engine.block_on(engine.shutdown()).unwrap();
+    let db = rusqlite::Connection::open(&journal).unwrap();
+    assert_eq!(
+        artifact(&db),
+        [("registered".to_string(), Some(vec![0x77u8; 32]))]
+    );
+}

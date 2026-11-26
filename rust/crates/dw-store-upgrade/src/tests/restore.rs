@@ -46,7 +46,7 @@ impl Upgraded {
     }
 
     fn run(&self, at: SystemTime) -> crate::Result<Option<RestoreInfo>> {
-        run_pending_restore(&self.net, at)
+        run_pending_restore(&self.net, at, &|_| Ok(()))
     }
 
     fn live(&self) -> Hashes {
@@ -1456,4 +1456,146 @@ fn restore_foreign_screen_renders_the_folder_in_its_hint() {
     let shown = s.render(FOLDER);
     assert!(shown.contains(&format!("opens the files in {FOLDER} as they are now")));
     assert!(!shown.contains("{folder}"));
+}
+
+/// R-1 (b): a requested restore whose hold check refuses moves nothing (no
+/// copy, mark, journal or attempt record), keeps the request, and shows
+/// the notStarted screen; once the check passes the same request runs.
+#[test]
+fn a_hold_check_that_refuses_moves_nothing_and_keeps_the_request() {
+    let u = upgraded();
+    let was_live = u.live();
+    u.request();
+    let before = tree(&u.net);
+    let seen = std::cell::Cell::new(None);
+    let err = run_pending_restore(&u.net, now(), &|dir| {
+        seen.set(Some((dir.to_path_buf(), hashes_in(dir), tree(dir))));
+        Err("held".into())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                cause: IncompleteCause::HoldsOpen,
+                journal_written: false,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    let (dir, live_at_check, tree_at_check) = seen.take().expect("the check ran");
+    assert_eq!(dir, u.net);
+    assert_eq!(live_at_check, was_live, "checked before anything moved");
+    assert_eq!(tree_at_check, before);
+    assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
+    assert!(u.root().join(RESTORE_REQUESTED).exists());
+    assert_eq!(
+        copy::restore_screen_for(&err).unwrap().title_key,
+        "storeUpgrade.restore.notStarted.title"
+    );
+    let info = u.run(later(60)).unwrap().expect("restored");
+    assert_restored(&u, &was_live, &info);
+}
+
+/// The check runs once, at the attempt's start, and its pass is in the
+/// journal; a resume never runs it, so nothing is refused mid-swap.
+#[test]
+fn a_resume_never_runs_the_hold_check() {
+    for (point, skip) in [
+        ("restore.after_journal", 0),
+        ("restore.replaced", 0),
+        ("restore.replaced", 2),
+    ] {
+        let u = upgraded();
+        let was_live = u.live();
+        u.request();
+        let calls = std::cell::Cell::new(0);
+        arm_fault(point, skip);
+        let err = run_pending_restore(&u.net, now(), &|_| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .unwrap_err();
+        disarm_fault();
+        assert_eq!(calls.get(), 1, "{point}: {err:?}");
+        let journal = fs::read_to_string(u.root().join(RESTORE_JOURNAL)).unwrap();
+        assert!(journal.contains("\nholds checked\n"), "{journal}");
+        let refuse =
+            |_: &Path| -> std::result::Result<(), String> { panic!("a resume ran the hold check") };
+        let info = run_pending_restore(&u.net, later(60), &refuse)
+            .unwrap()
+            .expect("resumed");
+        assert_restored(&u, &was_live, &info);
+        assert!(info.resumed, "{point}");
+    }
+}
+
+/// A journal with no record of the check (an earlier build's) is not
+/// resumed: refused, nothing moves; with the record it resumes.
+#[test]
+fn a_journal_without_the_hold_record_is_not_resumed() {
+    let u = upgraded();
+    let was_live = u.live();
+    u.request();
+    arm_fault("restore.after_journal", 0);
+    u.run(now()).unwrap_err();
+    disarm_fault();
+    let path = u.root().join(RESTORE_JOURNAL);
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, text.replace("holds checked\n", "")).unwrap();
+    let mid = u.live();
+    assert_eq!(mid, was_live, "stopped before the first replace");
+    let mark = u.root().join(RESTORED_MARK);
+    if mark.exists() {
+        fs::remove_file(&mark).unwrap();
+    }
+    let before = tree(&u.net);
+    let err = u.run(later(60)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                cause: IncompleteCause::HoldsUnchecked,
+                journal_written: true,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        copy::restore_screen_for(&err).unwrap().title_key,
+        "storeUpgrade.restore.incomplete.title"
+    );
+    assert_eq!(u.live(), mid, "nothing moved");
+    assert_eq!(
+        tree(&u.net),
+        before,
+        "nothing written, the restored mark included"
+    );
+    fs::write(&path, text).unwrap();
+    let info = u.run(later(120)).unwrap().expect("resumed");
+    assert_restored(&u, &was_live, &info);
+}
+
+/// prepare and prepare_with start no requested restore: a caller runs the
+/// restore with its hold check first.
+#[test]
+fn prepare_without_a_hold_check_starts_no_restore() {
+    let u = upgraded();
+    u.request();
+    let before = tree(&u.net);
+    let err = crate::prepare_with(&u.net, build(), now()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StoreUpgradeError::RestoreIncomplete {
+                cause: IncompleteCause::HoldsOpen,
+                journal_written: false,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(tree_diff(&before, &tree(&u.net)), Vec::<String>::new());
 }
