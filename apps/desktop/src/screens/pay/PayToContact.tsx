@@ -11,7 +11,7 @@ import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useWallets } from "../../api/queries";
+import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useShieldedStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -30,6 +30,7 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
 import { chosenReason, fromRows, liveSources, type PaySource } from "./fromBalance";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -367,9 +368,10 @@ function ContactForm({
   // "From" (C-funding D-C5, P16): the Dash wallet each time the form opens, never remembered.
   const discreet = useUi((s) => s.discreet);
   const pools = usePoolBalances(walletId);
+  const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
   const [chosen, setChosen] = useState<PaySource>("core");
   const coreAvailable = useAvailable(walletId, advanced, sheets.held);
-  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), live: liveSources(network.kind) });
+  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), shieldedHold: pools.shieldedHold, live: liveSources(network.kind), shieldedSpendsOff: spendsOff });
   // The choice stays the user's: a source that can no longer pay holds Review with its reason.
   const source = chosen;
   const activity = usePlatformActivity(walletId);

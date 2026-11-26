@@ -46,7 +46,7 @@ public struct TransactionDetailExtras: Sendable, Hashable {
 /// `tx_action.refused` and `parameters["refusal"]` is `rawValue`.
 public enum TransactionActionRefusal: Int64, Sendable, Hashable, CaseIterable {
     case confirmed, instantLocked, alreadyAbandoned, coinbase, inMempool, notSentByWallet, rescanFirst,
-         settledDescendant, recordUnreadable
+         settledDescendant, recordUnreadable, platformFunding
 }
 
 /// Options for `exportCSV` (QT-093).

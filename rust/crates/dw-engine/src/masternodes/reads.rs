@@ -1030,6 +1030,7 @@ mod tests {
                 instant_locked: false,
                 chain_locked: true,
                 matures_in: None,
+                dropped: None,
             },
             timestamp: Some(NOW - 1000),
             block_height: Some(100),

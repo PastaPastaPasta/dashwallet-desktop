@@ -9,7 +9,12 @@ watchOnly: boolean,
 /**
  * The vault holds the wallet's recovery phrase.
  */
-hasMnemonic: boolean, hd: boolean, birthHeight: number | null,
+hasMnemonic: boolean,
+/**
+ * Imported from a Dash Core wallet.dat with legacy issued address
+ * ranges, which a recovery phrase doesn't restore.
+ */
+legacyIssued: boolean, hd: boolean, birthHeight: number | null,
 /**
  * UNIX seconds the wallet was added on this device, when known.
  */

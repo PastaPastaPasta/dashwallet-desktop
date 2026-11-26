@@ -1,13 +1,14 @@
 //! Transaction history, the detail sheet and the actions on a transaction
 //! (abandon, resend, drop, CSV export, notification rows, the explorer).
 
-use dw_engine::{DashNetwork, TxDetailExtras, TxNotice};
+use dw_engine::{DashNetwork, DroppedNotice, TxDetailExtras, TxNotice};
 use dw_units::Unit;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::history::{
-    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxDetails, TxTypeName,
+    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxCounterparty, TxDetails,
+    TxTypeName,
 };
 use crate::dto::{OutPoint, mirror_enum, parse_txid};
 use crate::error::{AppCode, AppError};
@@ -54,6 +55,13 @@ pub struct TxDetailExtrasInfo {
     pub can_resend: bool,
     /// Dust-locked outputs of this transaction.
     pub dust_locked_outputs: Vec<OutPoint>,
+    /// Outputs of this transaction shown as pending, kept out of spending
+    /// and every balance while it, or one it was built on, may never
+    /// confirm.
+    pub withheld_outputs: Vec<OutPoint>,
+    /// Abandoned, with a coin it spent still being checked by a rescan
+    /// before it comes back.
+    pub checking_spent_coins: bool,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
 }
@@ -73,6 +81,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs,
+            withheld_outputs,
+            checking_spent_coins,
             last_announced_at,
         } = x;
         TxDetailExtrasInfo {
@@ -88,6 +98,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs: dust_locked_outputs.into_iter().map(Into::into).collect(),
+            withheld_outputs: withheld_outputs.into_iter().map(Into::into).collect(),
+            checking_spent_coins,
             last_announced_at,
         }
     }
@@ -131,6 +143,45 @@ impl From<TxNotice> for TxNoticeRow {
             address,
             label,
             coinjoin_internal,
+        }
+    }
+}
+
+/// A payment Dash Wallet dropped because the Dash it spent came from an
+/// incoming transaction that was never valid, once the wallet's own coins
+/// it used are back, until dismissed: one per payee.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedNoticeRow {
+    pub txid: String,
+    pub record_index: u32,
+    /// What it paid this payee, in duffs, without the fee.
+    pub amount: u64,
+    pub timestamp: Option<u64>,
+    pub address: Option<String>,
+    pub label: Option<String>,
+    pub counterparty: Option<TxCounterparty>,
+}
+
+impl From<DroppedNotice> for DroppedNoticeRow {
+    fn from(n: DroppedNotice) -> Self {
+        let DroppedNotice {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty,
+        } = n;
+        DroppedNoticeRow {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty: counterparty.map(Into::into),
         }
     }
 }
@@ -254,6 +305,30 @@ commands! {
             .collect::<Result<Vec<_>, _>>()?;
         let notices = state.session().await?.tx_notices(id, txids).await?;
         Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// The notices of payments Dash Wallet dropped because what they spent
+    /// came from a transaction that was never valid, not yet dismissed.
+    #[facade("NetworkSession::dropped_notices")]
+    fn dropped_notices(state, wallet_id: String) -> Vec<DroppedNoticeRow> {
+        let id = parse_wallet_id(&wallet_id)?;
+        let notices = state.session().await?.dropped_notices(id).await?;
+        Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// Dismisses the notices of the dropped payments `txids` for good.
+    #[facade("NetworkSession::dismiss_dropped_notices")]
+    fn dismiss_dropped_notices(state, wallet_id: String, txids: Vec<String>) -> () {
+        let id = parse_wallet_id(&wallet_id)?;
+        let txids = txids
+            .iter()
+            .map(|t| parse_txid(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(state
+            .session()
+            .await?
+            .dismiss_dropped_notices(id, txids)
+            .await?)
     }
 
     /// Whether a record type is a CoinJoin mixing, denomination or

@@ -980,12 +980,14 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::BelowMinimum { min, .. } => json!({"min": min}),
         CreditsError::CoinsLocked
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
         | CreditsError::MixingActive
-        | CreditsError::MoveRunning => json!({}),
+        | CreditsError::MoveRunning
+        | CreditsError::PreflightRefused
+        | CreditsError::RulesUnsupported => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -1021,7 +1023,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::BelowMinimum { min, .. } => json!({"min": min}),
         ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
@@ -2729,7 +2731,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true,"sends_off":null}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -2913,7 +2915,7 @@ mod tests {
         // address is the random wallet's (see the run below).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":true,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         (
@@ -2962,7 +2964,7 @@ mod tests {
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
-    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted","platform_enabled":true,"addresses":"pending"}}"#;
 
     /// `I` and `C` are not identity ids.
     const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
@@ -3844,6 +3846,15 @@ mod tests {
                 assert!(ready.is_boolean(), "{line}");
                 *ready = json!(false);
             }
+            // A build that cannot spend from Shielded reads false; the row is
+            // the same either way.
+            if let Some(spends) = line
+                .get_mut("result")
+                .and_then(|r| r.get_mut("spends_available"))
+            {
+                assert!(spends.is_boolean(), "{args:?}");
+                *spends = json!(true);
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();
@@ -3976,7 +3987,10 @@ mod tests {
         }));
         assert_eq!(e["code"], "platform.will_be_sent");
         assert_eq!(e["params"], json!({"artifact": "topup/1/funding"}));
-        let e = error_json(CreditsError::BelowMinimum { min: 100 });
+        let e = error_json(CreditsError::BelowMinimum {
+            min: 100,
+            max: None,
+        });
         assert_eq!(
             (e["code"].clone(), e["params"].clone()),
             (json!("credits.below_minimum"), json!({"min": 100}))

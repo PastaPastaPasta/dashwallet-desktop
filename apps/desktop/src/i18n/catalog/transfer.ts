@@ -20,14 +20,69 @@ export const transfer = {
   platformToCoreIntro: "The spendable balance on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
   fee: "Fee about {fee} · You receive about {receive}",
   quoting: "Working out the fee…",
+  /** Under a transfer's progress once its call has run for a second (it may wait for the wallet's start-up). */
+  preparing: "Preparing the transfer…",
+  /** A network switch refused while a transfer waits for its wallet's start-up. */
+  preparingBlocksClose: "A transfer in one of your wallets is still being prepared. Try again when it's done.",
   feeOnNextStep: "Fee shown on the next step",
   invalidAmount: "Enter an amount.",
   notEnoughSpendable: "Not enough spendable Dash: {amount} available.",
   why: { amount: "Enter an amount first.", max: "Working out the most you can move…" },
+  /** Max from the Dash wallet (one lock of every coin in its main account, the fee out of it): what it
+   * leaves there, before Confirm. */
+  maxLeft: "{left} stays in your Dash wallet, because Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  maxArriving: "{arriving} still arriving stays in your Dash wallet. Move it once it confirms.",
+  /** Why Max from the Dash wallet can't run. */
+  maxLocked: "Max can't run: some coins in your Dash wallet are locked. Enter an amount instead.",
+  /** `count` is how many coins the wallet's main account holds. */
+  maxTooMany: "Max needs at most 50 coins; this wallet has {count}. Enter an amount instead.",
+  maxMixing: "Max can't run while mixing. Stop mixing first, or enter an amount.",
+  maxMoveRunning: "Another move of your coins is running. Try Max again when it's done.",
+  maxChanged: "Your Dash wallet changed since this was worked out. Review the amount again.",
+  /** Max from the Dash wallet below the smallest amount: `amount` is what Max can move, `min` the
+   * smallest amount. `maxBelowMinimumAll` when nothing in the wallet's other accounts stays. */
+  maxBelowMinimum: "Max can move only {amount}, which is less than the smallest amount, {min}. Max doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  maxBelowMinimumAll: "Max can move only {amount}, which is less than the smallest amount, {min}.",
+  /** Max from the Dash wallet can move nothing yet: its coins are still arriving (`arriving`, as `maxArriving`'s), and
+   * once they've confirmed they would clear this route's smallest amount and the fee. */
+  maxAllArriving: "Your Dash wallet's coins are still arriving ({arriving}). Max can move them once they've confirmed.",
+  /** As `maxAllArriving`, but even once they've confirmed the coins wouldn't clear this route's smallest amount and the
+   * fee. */
+  maxArrivingTooSmall: "Your Dash wallet's coins are still arriving ({arriving}), but even once they've confirmed, that's less than the smallest amount this transfer can move.",
+  /** Max from the Dash wallet can move nothing, nothing is arriving, and every coin is one Max leaves out. */
+  maxNothing: "Max has nothing to move: it doesn't include mixed coins, payments from contacts or coins in other accounts.",
+  /** Max from the Dash wallet can move nothing, and nothing is arriving or left out. */
+  maxEmpty: "There's nothing in your Dash wallet to move.",
   continue: "Continue",
   unsupported: "Moving from Platform to Shielded isn't available on desktop yet. Move the funds to your Dash wallet first, then to Shielded.",
   /** Shielded → Platform on a network where it is off (mainnet). */
   offOnNetwork: "Moving from Shielded to Platform isn't available on this network yet. Move the funds to your Dash wallet first, then to Platform.",
+  /** The off routes on mainnet, where Dash wallet → Platform is off too: no detour through it. */
+  offOnMainnet: {
+    shieldedToPlatform: "This version can move from Shielded to Platform on test networks only.",
+    platformToShielded: "Moving from Platform to Shielded isn't available in this version.",
+  },
+  /** An Activity row whose group settled with no evidence of which payment or move went through. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This move and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Check your Platform balance and Dash wallet before moving again.",
+    },
+  },
+  /** What this version keeps off on mainnet, each in place of its controls; `mainnetOffChip` beside the pool it can't reach. */
+  platform: {
+    mainnetOff: "This version can move and send from Platform addresses on test networks only.",
+    mainnetOffAdd: "This version can add Dash to Platform on test networks only.",
+    mainnetOffChip: "Test networks only",
+    /** In place of `mainnetOff` while the Platform addresses hold a balance. */
+    mainnetHeld: "{amount} is on your Platform addresses. It's still yours. This version can move it to your Dash wallet on test networks only.",
+    /** In place of both while a payment or move made earlier holds the addresses: its exit is offered. */
+    mainnetHeldExit: "A payment or move you made earlier from your Platform balance hasn't finished, and Dash Wallet can't tell yet whether it will go through. You can move what's on those Platform addresses to your Dash wallet instead. Only one of the two can go through, never both. If the earlier one goes through first, its recipient is paid and this move fails. If this move goes through, the earlier one doesn't, so whatever it paid for stays unpaid.",
+    /** `mainnetHeldExit` for a hold of `count` (2 or more) records. */
+    mainnetHeldExitSeveral: "{count} payments or moves you made earlier from your Platform balance haven't finished, and Dash Wallet can't tell yet whether they will go through. You can move what's on those Platform addresses to your Dash wallet instead. If one of them goes through first, its recipient is paid and this move fails. If this move goes through, none of them do, so whatever they paid for stays unpaid.",
+    /** After `mainnetHeldExit` while the addresses outside the hold hold credits. */
+    mainnetHeldExitRest: "The rest of your Platform balance, {rest}, is still yours. This version can move it on test networks only.",
+  },
   none: {
     absent: "Transfers move Dash between your Dash wallet, Shielded and Platform. This version has neither Shielded nor Platform addresses.",
     inactive: "Transfers move Dash between your Dash wallet, Shielded and Platform. Shielded is not active on this network yet, and this version has no Platform addresses.",
@@ -63,6 +118,8 @@ export const transfer = {
       text: "About {amount} is on its way to your Dash wallet. It shows in Activity once it arrives.",
       textWithFee: "About {amount} is on its way to your Dash wallet. The network fee was {fee}. It shows in Activity once it arrives.",
       debitOnly: "{taken} left your Platform addresses. Activity shows what arrives in your Dash wallet.",
+      /** `debitOnly` when nothing says which member of its group went through. */
+      debitUnknown: "{taken} left your Platform addresses, for this move or another payment or move from the same addresses. Dash Wallet can't tell which. If it was this move, it arrives in your Dash wallet and shows in Activity.",
     },
     pending: {
       title: "Not confirmed yet",
@@ -123,6 +180,8 @@ export const transfer = {
     confirm: {
       quoting: "Working out the fee…",
       quoteFailed: "The fee could not be worked out.",
+      /** Max from the Dash wallet: `total` is everything the lock spends, `fee` its network fee. */
+      maxAll: "Move {total} from your Dash wallet to your Platform address? That's everything Max can move. The network fee (about {fee}) comes out of it.",
       rows: {
         from: "From",
         fromValue: "Your Dash wallet",
@@ -191,17 +250,39 @@ export const transfer = {
   shielded: {
     /** While Shielded's account is not established (shielded/syncing.ts). */
     sync: {
-      syncing: "Shielded is still syncing; try again when it finishes.",
+      syncing: "Shielded is still syncing. Try again when it finishes.",
+      /** Instead of `syncing` when the vault's lock (`locked`, `mixingOnly`) or a watch-only wallet holds
+       * the viewing key's first bind. */
+      locked: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.",
+      mixingOnly: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
+      /** Receive's line while the first scan runs; `percent` is formatted. */
+      progress: "Syncing Shielded… {percent}",
       scanning: "Scanning…",
       /** `when` is how long ago, as "5 min ago". */
       lastChecked: "Last checked {when}",
     },
+    /** Where this version cannot send from Shielded (shielded/spends.ts). `source`: a "Pay from" row. */
+    spends: {
+      unavailable: "This version of Dash Wallet can't send from your Shielded balance yet. Your Shielded balance stays in your wallet and keeps syncing, and sending from it comes in a later update.",
+      source: "Not available in this version",
+    },
+    /** Where a move into Shielded would be, while this version cannot send from Shielded (shielded/spends.ts). */
+    shieldInUnavailable: "This version of Dash Wallet doesn't move funds into Shielded, because it can't send from Shielded yet. Both come in a later update.",
+    /** Receive's Shielded tab, in place of the address, while this version cannot send from Shielded. */
+    receiveUnavailable: "This version of Dash Wallet doesn't show a Shielded address, because it can't send from Shielded yet. Payments to a Shielded address you gave out earlier still arrive, and they show in your Shielded balance.",
     card: {
       inactive: "Shielded is not active on this network yet.",
       finish: "Finish",
       checkAgain: "Check again",
       why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
       unfinished: "{amount} was locked to add to Shielded and is not applied yet.",
+    },
+    /** What payments that may still go through hold of the Shielded balance (not in it). `amount`
+     * is the held total with its unit; `count` the payments holding it. */
+    held: {
+      one: "{amount} is held for a payment that may still go through. If the network shows it can no longer go through, the amount comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
+      other: "{amount} is held for {count} payments that may still go through. If the network shows one can no longer go through, its part comes back to your Shielded balance. Dash Wallet keeps checking while it's open.",
     },
     titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
     form: {
@@ -220,6 +301,8 @@ export const transfer = {
     confirm: {
       quoting: "Working out the fee…",
       quoteFailed: "The fee could not be worked out.",
+      /** Max from the Dash wallet: `total` is everything the lock spends, `fee` its network fee. */
+      maxAll: "Move {total} from your Dash wallet to Shielded? That's everything Max can move. The network fee (about {fee}) comes out of it.",
       amount: "Amount",
       fee: "Network fee",
       coreFee: "Core network fee",
@@ -276,6 +359,12 @@ export const transfer = {
       text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
       copy: "Copy address",
       loading: "Getting your Shielded address…",
+      /** Under the address while Shielded's first scan runs. */
+      early: "You can receive now. Your Shielded balance shows when the sync finishes.",
+      locked: "Unlock the wallet to show your Shielded address.",
+      mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to show your Shielded address.",
+      unlock: "Unlock",
+      watchOnly: "Shielded isn't available in a watch-only wallet.",
       qr: "QR code of {address}",
       copyAddress: "Copy Shielded address",
     },

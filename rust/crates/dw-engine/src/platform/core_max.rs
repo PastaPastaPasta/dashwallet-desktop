@@ -10,7 +10,9 @@
 //! denomination Dash Core counts as mixed, which funding leaves alone), past
 //! [`MAX_LOCK_INPUTS`] coins, and below the lock's floor, all before
 //! signing. A coin not final yet stays behind (`arriving_duffs`), as do
-//! the other accounts' coins (`left_duffs`). It takes the wallet's
+//! the other accounts' coins (`left_duffs`); below the floor, the refusal
+//! says whether the plan would clear it were every arriving coin final
+//! (`arriving_clears`). It takes the wallet's
 //! CoinJoin claim (`CoinJoinRuntime::claim_sweep`) through the funding:
 //! the mixer denominates BIP44 coins, so Max is refused while the wallet
 //! mixes or another move of its coins runs, and no mixing starts
@@ -26,7 +28,7 @@ use key_wallet::bip32::DerivationPath;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
 
-use super::credits::CoreMax;
+use super::credits::{CoreMax, CoreMaxShort};
 use super::errors::{CreditsError, PlatformError, ShieldedError};
 use super::lease::{CallPermit, FundingKey};
 use super::registration_flow::{FundError, PwLib};
@@ -37,12 +39,14 @@ use crate::coins::{CoinFence, CoinSnapshot};
 use crate::{NetworkSession, WalletId};
 
 /// BIP44 account 0 as a Core Max reads it: its final coins, and what
-/// stays behind.
+/// stays behind. `arriving` are the account's coins not final yet, never
+/// planned, only weighed below the floor; `arriving_duffs` is their sum.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CoreCoins {
     pub coins: Vec<DrainCoin>,
     pub left_duffs: u64,
     pub arriving_duffs: u64,
+    pub arriving: Vec<DrainCoin>,
 }
 
 /// A Core Max's plan: the coins the lock spends, their sum, its fee bound
@@ -63,7 +67,7 @@ pub(crate) enum MaxRefusal {
     MoveRunning,
     CoinsLocked,
     TooManyInputs { inputs: u64, max: u64 },
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: CoreMaxShort },
 }
 
 impl From<MaxRefusal> for ShieldedError {
@@ -73,7 +77,10 @@ impl From<MaxRefusal> for ShieldedError {
             MaxRefusal::MoveRunning => Self::MoveRunning,
             MaxRefusal::CoinsLocked => Self::CoinsLocked,
             MaxRefusal::TooManyInputs { inputs, max } => Self::TooManyInputs { inputs, max },
-            MaxRefusal::BelowMinimum { min } => Self::BelowMinimum { min },
+            MaxRefusal::BelowMinimum { min, max } => Self::BelowMinimum {
+                min,
+                max: Some(max),
+            },
         }
     }
 }
@@ -85,7 +92,10 @@ impl From<MaxRefusal> for CreditsError {
             MaxRefusal::MoveRunning => Self::MoveRunning,
             MaxRefusal::CoinsLocked => Self::CoinsLocked,
             MaxRefusal::TooManyInputs { inputs, max } => Self::TooManyInputs { inputs, max },
-            MaxRefusal::BelowMinimum { min } => Self::BelowMinimum { min },
+            MaxRefusal::BelowMinimum { min, max } => Self::BelowMinimum {
+                min,
+                max: Some(max),
+            },
         }
     }
 }
@@ -101,7 +111,9 @@ pub(crate) fn claim(
     })
 }
 
-/// The drain of `read` into a lock of at least `floor` duffs.
+/// The drain of `read` into a lock of at least `floor` duffs. Below the
+/// floor, `arriving_clears` is this plan of the final and arriving coins
+/// together, as if every arriving coin were final.
 pub(crate) fn plan(read: CoreCoins, floor: u64) -> Result<MaxPlan, MaxRefusal> {
     if read.coins.iter().any(|c| c.held) {
         return Err(MaxRefusal::CoinsLocked);
@@ -117,7 +129,27 @@ pub(crate) fn plan(read: CoreCoins, floor: u64) -> Result<MaxPlan, MaxRefusal> {
     let fee_duffs = crate::fees::asset_lock_fee_bound(inputs);
     let duffs = total_duffs.saturating_sub(fee_duffs);
     if duffs < floor {
-        return Err(MaxRefusal::BelowMinimum { min: floor });
+        let (left_duffs, arriving_duffs) = (read.left_duffs, read.arriving_duffs);
+        let arriving_clears = !read.arriving.is_empty() && {
+            let coins = [read.coins, read.arriving].concat();
+            plan(
+                CoreCoins {
+                    coins,
+                    ..CoreCoins::default()
+                },
+                floor,
+            )
+            .is_ok()
+        };
+        return Err(MaxRefusal::BelowMinimum {
+            min: floor,
+            max: CoreMaxShort {
+                duffs,
+                left_duffs,
+                arriving_duffs,
+                arriving_clears,
+            },
+        });
     }
     Ok(MaxPlan {
         coins: read.coins,
@@ -150,23 +182,31 @@ pub(crate) fn coins_of(
             }
             continue;
         };
-        if !((utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_mature(height)) {
-            out.arriving_duffs += value;
+        let fin = (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_mature(height);
+        // An excluded coin counts nowhere (`crate::withhold`), not even as
+        // arriving; a final one the drain would take holds Max back below.
+        if !fin && c.excluded.is_some() {
             continue;
         }
         let path = (path.clone()).filter(|p| dw_vault::paths::is_bip44_address(p, network));
-        out.coins.push(DrainCoin {
+        let coin = DrainCoin {
             outpoint: utxo.outpoint,
             value,
             fully_mixed: false,
-            confirmed: true,
+            confirmed: fin,
             held: c.user_locked
                 || c.reserved
                 || c.unresolved_lock
                 || c.counted_denomination
                 || path.is_none(),
             path: path.unwrap_or_default(),
-        });
+        };
+        if fin {
+            out.coins.push(coin);
+        } else {
+            out.arriving_duffs += value;
+            out.arriving.push(coin);
+        }
     }
     out
 }

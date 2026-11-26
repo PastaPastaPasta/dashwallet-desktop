@@ -1,16 +1,18 @@
-//! #268: a payment P of the wallet's coin A, unconfirmed, and W, a foreign
-//! spend of A paying only someone else, mined and ChainLocked. After a
+//! #268: a payment P of the wallet's coin A, unconfirmed and without change
+//! (one with change goes when W's block is scanned, #170 case 3), and W, a
+//! foreign spend of A paying only someone else, mined and ChainLocked. After a
 //! restart between P and W, key-wallet holds no record of P, so W's block
 //! does not sweep it; it only notes W's spend of A, and the ChainLock prunes
 //! that note. Removing or abandoning P then releases A, which the store
-//! keeps unspent: after a restart A is counted and listed in coin control.
-//! Sends stay refused while the remove's rescan is owed, and that rescan,
-//! once it passes W's block again, spends A for good. Reset chain data and
-//! a restore from the recovery phrase do the same; Remove unconfirmed again
-//! does not. Blocks reach the wallet as dash-spv's filter scan hands them:
-//! only above its checkpoint, and only when the block's BIP158 filter
-//! matches its scan scripts. W's block matches through A's spent script
-//! alone. Nothing here changes the engine: the root fix waits on #268.
+//! keeps unspent. No evidence holds A spent any more, so A waits for the
+//! remove's rescan (#818): neither counted nor listed in coin control, also
+//! after a restart, while that rescan is owed. Once it passes W's block
+//! again, it spends A for good. Reset chain data and a restore from the
+//! recovery phrase do the same; Remove unconfirmed again does not. Blocks
+//! reach the wallet as dash-spv's filter scan hands them: only above its
+//! checkpoint, and only when the block's BIP158 filter matches its scan
+//! scripts. W's block matches through A's spent script alone. The root fix
+//! of the store keeping A unspent waits on #268.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -266,16 +268,25 @@ impl Fx {
             .collect()
     }
 
-    /// A is held, stored unspent, listed in coin control and counted, and
-    /// the scan has not passed W's block since the remove.
-    fn assert_back(&self, state: &str) {
-        assert!(self.held(), "{state}: A is held");
+    /// A is back in key-wallet and the store, unspent, and waits for the
+    /// remove's rescan: not listed in coin control, not counted and not
+    /// offered. The scan has not passed W's block since the remove.
+    fn assert_held_for_rescan(&self, state: &str) {
+        assert!(self.held(), "{state}: key-wallet holds A");
         assert!(
             stored_coins(&self.session, self.id).contains(&self.a),
             "{state}: A is stored unspent"
         );
-        assert!(self.listed(), "{state}: coin control lists A");
-        assert_eq!(self.total(), COINS as u64 * COIN, "{state}: A is counted");
+        assert!(!self.listed(), "{state}: coin control lists A");
+        assert_eq!(
+            self.total(),
+            (COINS as u64 - 1) * COIN,
+            "{state}: A is counted"
+        );
+        assert!(
+            !spendable(&self.engine, &self.session, self.id, self.a),
+            "{state}: A is offered"
+        );
         assert!(!records(&self.session, self.id, self.w.txid()));
     }
 
@@ -362,8 +373,8 @@ fn brought_back(restart_after_lock: bool, how: Removal) -> Fx {
         &fx.session,
         id,
         CoinSource::Outpoints(vec![a]),
-        COIN / 2,
-        false,
+        COIN,
+        true,
     );
     mempool(&fx.engine, &fx.session, id, &fx.p);
     wait_stored(&fx.session, id, &[fx.p.txid()]);
@@ -425,13 +436,13 @@ fn each_story(check: impl Fn(Fx, &str)) {
     }
 }
 
-/// The known gap of #268: after the restart A is back, counted and listed
-/// in coin control. No payment can be prepared from it while the remove's
-/// rescan is owed (`replay_guard`), so it is never sent yet.
+/// After the restart A is back in the store, but held for the remove's
+/// rescan: neither counted nor listed in coin control. No payment can be
+/// prepared from it while that rescan is owed (`replay_guard`).
 #[test]
-fn known_gap_268_a_removed_payment_brings_back_a_coin_a_chain_locked_block_spent() {
+fn a_removed_payment_holds_a_coin_a_chain_locked_block_spent_until_its_rescan() {
     each_story(|fx, state| {
-        fx.assert_back(state);
+        fx.assert_held_for_rescan(state);
         assert!(
             matches!(fx.prepare_from_a(), Err(EngineError::RescanInProgress)),
             "{state}: the remove's rescan is owed"
@@ -466,7 +477,7 @@ fn the_removes_rescan_passing_the_spends_block_spends_the_coin_brought_back() {
 }
 
 /// Cancelling the remove's rescan puts the checkpoint back above W's
-/// block, keeps sends refused as interrupted, and leaves A counted.
+/// block, keeps sends refused as interrupted, and keeps A held.
 /// Rescan from birth then goes through: once its scan fetches W's block,
 /// A is spent, after another restart too.
 #[test]
@@ -475,7 +486,7 @@ fn rescan_from_birth_after_cancelling_the_removes_rescan_spends_the_coin_brought
         start_spv(&fx);
         assert!(fx.engine.block_on(fx.session.cancel_rescan()).unwrap());
         assert_eq!(fx.synced(), TIP + 1, "{state}: the cancel's checkpoint");
-        fx.assert_back(&format!("{state}, cancelled"));
+        fx.assert_held_for_rescan(&format!("{state}, cancelled"));
         assert!(
             matches!(fx.prepare_from_a(), Err(EngineError::RescanInterrupted)),
             "{state}, cancelled: {:?}",
@@ -492,10 +503,10 @@ fn rescan_from_birth_after_cancelling_the_removes_rescan_spends_the_coin_brought
     });
 }
 
-/// Remove unconfirmed again finds nothing to remove and leaves A back,
+/// Remove unconfirmed again finds nothing to remove and keeps A held,
 /// after another restart too, with the scan still below W's block.
 #[test]
-fn known_gap_268_remove_unconfirmed_again_leaves_the_coin_brought_back() {
+fn remove_unconfirmed_again_keeps_the_coin_brought_back_held() {
     let fx = brought_back(false, Removal::Remove);
     start_spv(&fx);
     assert_eq!(
@@ -505,14 +516,14 @@ fn known_gap_268_remove_unconfirmed_again_leaves_the_coin_brought_back() {
         0
     );
     assert_eq!(fx.synced(), FUNDED_AT - 1);
-    fx.assert_back("removed again");
+    fx.assert_held_for_rescan("removed again");
     let fx = fx.reopen();
     assert_eq!(fx.synced(), FUNDED_AT - 1);
-    fx.assert_back("removed again, a restart");
+    fx.assert_held_for_rescan("removed again, a restart");
 }
 
 /// Reset chain data on its own: the remove's rescan is cancelled first,
-/// which puts the checkpoint back above W's block with A still back; Reset
+/// which puts the checkpoint back above W's block with A still held; Reset
 /// then lowers it below the wallet's birth, and once the scan it owes
 /// fetches W's block, A is spent, after another restart too.
 #[test]
@@ -520,10 +531,10 @@ fn reset_chain_data_spends_the_coin_brought_back() {
     let fx = brought_back(false, Removal::Remove);
     assert!(fx.engine.block_on(fx.session.cancel_rescan()).unwrap());
     assert_eq!(fx.synced(), TIP + 1, "the cancel's checkpoint");
-    fx.assert_back("cancelled");
+    fx.assert_held_for_rescan("cancelled");
     fx.engine.block_on(fx.session.reset_chain_data()).unwrap();
     assert_eq!(fx.synced(), BIRTH - 1, "Reset rewinds below the birth");
-    fx.assert_back("reset, not scanned yet");
+    fx.assert_held_for_rescan("reset, not scanned yet");
     assert_eq!(fx.replay(), FUNDING_AND_W);
     fx.assert_gone("reset");
     let fx = fx.reopen();

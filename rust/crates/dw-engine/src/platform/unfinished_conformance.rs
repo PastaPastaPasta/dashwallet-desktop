@@ -86,6 +86,11 @@ pub(crate) trait Rig {
     fn reports_used(&self) -> bool {
         false
     }
+    /// Whether the kind keeps a lock Platform proved partly used as
+    /// Recoverable ([`LockKind::remaining_locks`](locks::LockKind::remaining_locks)).
+    fn recovers_remaining(&self) -> bool {
+        false
+    }
     /// Platform's proved state reads `read` for the lock at `outpoint`
     /// (unread until set).
     fn prove_spent(&self, _outpoint: OutPoint, _read: SpentRead) {}
@@ -206,7 +211,12 @@ pub(crate) fn conformance(rig: &impl Rig) {
         (End::AlreadyConsumed, None),
         (End::AlreadyConsumed, Some(SpentRead::Unread)),
         (End::AlreadyConsumed, Some(SpentRead::Unspent)),
-        (End::AlreadyConsumed, Some(SpentRead::Remaining)),
+        (
+            End::AlreadyConsumed,
+            Some(SpentRead::Remaining {
+                credits: 900_000_000,
+            }),
+        ),
         (End::AlreadyConsumed, Some(SpentRead::Consumed)),
         (End::SignedThenFailed, None),
     ];
@@ -234,6 +244,25 @@ pub(crate) fn conformance(rig: &impl Rig) {
         if read == Some(SpentRead::Consumed) && rig.reports_used() {
             assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
             assert_eq!(state(rig, at), None, "reported used leaves the list");
+            continue;
+        }
+        if matches!(read, Some(SpentRead::Remaining { .. })) && rig.recovers_remaining() {
+            // Partly used (#402): never applied as the kind again.
+            assert_eq!(finished.unwrap(), LockFinish::Checking);
+            assert_eq!(state(rig, at), Some(UnfinishedState::Recoverable));
+            let applies = rig.applies();
+            let again = rig.finish(at).0.unwrap();
+            assert_eq!(
+                again,
+                LockFinish::NotApplied {
+                    error: super::unfinished_locks::PARTLY_USED.into()
+                }
+            );
+            assert_eq!(
+                rig.applies(),
+                applies,
+                "a partly used lock is not applied again"
+            );
             continue;
         }
         assert_eq!(finished.unwrap(), LockFinish::Checking, "{end:?} {read:?}");

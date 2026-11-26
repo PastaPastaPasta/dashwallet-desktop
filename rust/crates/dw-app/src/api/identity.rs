@@ -22,29 +22,30 @@ use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
     CostTable, PendingTopUp, StuckTopUpFunding, TopUpFromPlatformOutcome, TopUpFromPlatformQuote,
-    TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
+    TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
-use self::platform_addresses::{
-    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PlatformAddressRow, PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
-};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
+use self::platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
+    PlatformAddressBalance, PlatformAddressRow, PlatformFundOutcome, PlatformFundQuote,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::shielded::{
-    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding, UnshieldToPlatformOutcome,
+    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress,
+    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedStatus, ShieldedSyncInfo, StuckShieldFunding,
+    UnshieldToPlatformOutcome,
 };
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
 };
-use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
+use self::unfinished::{LockFinish, LockKind, RecoverQuote, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::api::social::PaymentSourceName;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
@@ -805,6 +806,13 @@ commands! {
         Ok(state.dashpay(&wallet_id).await?.shielded_status().await?.into())
     }
 
+    /// Where the wallet's Shielded sync stands, for the status bar, Sync
+    /// progress and Receive; answers while a pass runs.
+    #[facade("DashPay::shielded_sync_info")]
+    fn shielded_sync_info(state, wallet_id: String) -> ShieldedSyncInfo {
+        Ok(state.dashpay(&wallet_id).await?.shielded_sync_info().await?.into())
+    }
+
     /// Runs a shielded sync pass now; returns the status after.
     #[facade("DashPay::shielded_sync")]
     fn shielded_sync(state, wallet_id: String) -> ShieldedStatus {
@@ -1005,5 +1013,34 @@ commands! {
     ) -> LockFinish {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
+    }
+
+    /// What a recover of the partly used transfer to Shielded at
+    /// `txid`:`vout` would move, read from Platform's proved state now.
+    #[facade("DashPay::recover_transfer_quote")]
+    fn recover_transfer_quote(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+    ) -> RecoverQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer_quote(txid, vout).await?.into())
+    }
+
+    /// Recovers what is left on the partly used transfer to Shielded at
+    /// `txid`:`vout` to the wallet's own Platform address under `grant`,
+    /// whose credits cap is the quote's `credits`; only a proved apply
+    /// finishes it.
+    #[facade("DashPay::recover_transfer")]
+    fn recover_transfer(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer(txid, vout, grant).await?.into())
     }
 }

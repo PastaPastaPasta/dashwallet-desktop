@@ -50,10 +50,10 @@ describe("transaction detail status", () => {
 });
 
 describe("the abandon confirmation", () => {
-  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.";
+  const OUTGOING = "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.";
   const INCOMING = "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.";
   const UNKNOWN_INPUTS =
-    "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice. If Dash Wallet sent it since it last started, it may keep re-sending it for up to a day. To stop that, restart Dash Wallet.";
+    "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.";
 
   it("warns about paying twice when the wallet spent inputs", () => {
     expect(abandonQuestion({ totalDebit: 50_000_226, inputsUnresolved: false })).toBe(OUTGOING);
@@ -86,9 +86,25 @@ describe("a refused abandon", () => {
     expect(actionProblem(refused("rescanFirst", "engine text"))).toBe("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
   });
 
+  it("says an Abandon refused while the wallet catches up after a fork can be tried once it has", () => {
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null })).toBe(
+      "The wallet is catching up with the network. You can abandon this payment once it has finished.",
+    );
+  });
+
+  it("keeps the engine's text for a Resend refused while the wallet catches up", () => {
+    expect(actionProblem({ code: "rescan_in_progress", message: "a rescan is in progress", data: null }, [], "resend")).toBe("a rescan is in progress");
+  });
+
   it("says why a payment with a locked or confirmed later payment can't be abandoned, from the catalog", () => {
     expect(actionProblem(refused("settledDescendant", "engine text"))).toBe(
       "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    );
+  });
+
+  it("says why a payment funding an unfinished Platform transfer can't be abandoned, from the catalog", () => {
+    expect(actionProblem(refused("platformFunding", "engine text"))).toBe(
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
     );
   });
 

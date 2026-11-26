@@ -173,7 +173,7 @@ export const onboarding = {
     wallet_already_exists: "This wallet has already been added.",
     network_not_open: "The wallet is not open.",
     wallet_not_found: "This wallet is not open.",
-    shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
+    shielded_spend_unresolved: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
     last_startup_wallet: "At least one wallet opens at start.",
     restore_only: "Nothing was added. Until Dash Wallet has finished its first sync, you can only add a wallet from its recovery phrase.",
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
@@ -242,6 +242,20 @@ export const onboarding = {
     details: "Details",
     retry: "Retry",
     dismiss: "Dismiss",
+    /** A transfer to Shielded Platform refused after a penalty, with a value left that can be moved. */
+    recover: "Recover",
+    recoverOne: "{amount} is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+    /** Two or more: the card says "one" for a single transfer. */
+    recoverSeveral: "{count} transfers to Shielded that Platform refused have {total} left. You can recover each to your Platform balance, minus Platform's fee.",
+    /** Mainnet, where this version does not recover: no Recover button anywhere. */
+    recoverOffOne: "{amount} is left on a transfer to Shielded that Platform refused. It's still yours. This version can recover it on test networks only.",
+    recoverOffSeveral: "{count} transfers to Shielded that Platform refused have {total} left. It's still yours. This version can recover it on test networks only.",
+    recoverConfirm: {
+      title: "Recover leftover value",
+      body: "Move the {amount} left on this transfer to your Platform balance? Platform's fee comes out of this amount.",
+      confirm: "Recover",
+      cancel: "Cancel",
+    },
     sheet: {
       title: "Unfinished transfers",
       introShielded: "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
@@ -260,7 +274,21 @@ export const onboarding = {
         notActive: "Not active on this network yet",
         unsupported: "Can't be finished in this version",
         tooSmall: "Too small to finish: worth less than the Platform fee",
+        recoverable: "Can be recovered",
       },
+      /** The sheet's lines for transfers to Shielded that Platform refused (never the finish lines above). */
+      introRecover: "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.",
+      introRecoverOff: "Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.",
+      footerRecover: "Recovering pays only Platform's fee, taken from what's left.",
+      /** A refused transfer's row: what is left, then its full value for context. */
+      rowLeft: "{left} left of {amount}",
+      recoverTooSmall: "The {amount} left on this transfer is less than Platform's fee for moving it, so it can't be recovered.",
+      recoverFailed: "Dash Wallet couldn't recover this value. It's still listed here, and you can try again.",
+      /** A recover that may have gone through: not a refusal. */
+      recoverChecking: "Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.",
+      recoverOff: "This version can recover what's left of a refused transfer on test networks only.",
+      /** The "Can be recovered" chip on mainnet. */
+      testNetworksOnly: "Test networks only",
       done: {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",

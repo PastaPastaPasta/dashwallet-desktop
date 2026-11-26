@@ -2524,9 +2524,9 @@ fn a_run_waits_for_the_sync_with_its_lease() {
 /// (dw-tdash B2): the first ends `PartialNoIdentity`; the next, once
 /// `rerun` lets it, proves the seed has no identity.
 #[derive(Default)]
-struct PartialBringUp {
-    calls: AtomicU32,
-    rerun: Arc<tokio::sync::Notify>,
+pub(super) struct PartialBringUp {
+    pub(super) calls: AtomicU32,
+    pub(super) rerun: Arc<tokio::sync::Notify>,
 }
 
 impl MockPlatform for PartialBringUp {
@@ -3752,9 +3752,11 @@ fn a_prepared_send_keeps_its_coin_through_a_locks_untracking() {
         reads_reserved(&f, coin),
         "the lock's untracking freed the prepared send's coin"
     );
-    // The send's own release frees it.
+    // The send's own release frees it, in the task its drop spawned.
     drop(prepared);
-    assert!(!reads_reserved(&f, coin));
+    eventually("the send's release frees the coin", || {
+        !reads_reserved(&f, coin)
+    });
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known

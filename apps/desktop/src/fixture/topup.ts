@@ -25,7 +25,7 @@ import { fundable } from "./registration";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { PlatformAddressRow } from "../api/generated/PlatformAddressRow";
 import type { TopUpFromPlatformOutcome } from "../api/generated/TopUpFromPlatformOutcome";
-import type { PlatformWorld } from "./pending";
+import { preCheck, type PlatformWorld } from "./pending";
 import { isHeldOp } from "../platform/move";
 import { TOP_UP_FROM_PLATFORM } from "../dashpay/topupSource";
 
@@ -90,6 +90,12 @@ export interface TopUpDeps {
 
 export const creditsOf = (dp: DashPayWorld): CreditsWorld => (dp.credits ??= newCreditsWorld());
 
+/** The identity's main name while it is not the contested `label`: its temporary name. */
+function temporaryOf(dp: DashPayWorld, identity: string, label: string): string | null {
+  const main = dp.identities.find((i) => i.identity === identity)?.mainName ?? null;
+  return main !== null && main !== label ? main : null;
+}
+
 /** `contest_status` with no contest set: the status's own contest, its votes counted. */
 function derivedContest(dp: DashPayWorld, identity: string, label: string): ContestStatus {
   const s = dp.status;
@@ -104,7 +110,8 @@ function derivedContest(dp: DashPayWorld, identity: string, label: string): Cont
     ],
     lockVotes: 2,
     abstainVotes: 1,
-    temporaryName: null,
+    // The engine's `temporary_name` pref, which only a registered temporary name sets.
+    temporaryName: temporaryOf(dp, identity, label),
   };
 }
 
@@ -285,6 +292,7 @@ export function topUpHandlers(d: TopUpDeps): Handlers {
       // As the engine: the fee source and its claim Confirm showed, or nothing (before the grant).
       if (feeInput && (inputs[0]?.address !== feeInput.address || inputs[0]?.credits !== feeInput.credits))
         throw fail("credits.quote_changed", "the fee input changed since this top-up was quoted");
+      preCheck(p);
       const fee = FROM_PLATFORM_RULES.fee;
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");

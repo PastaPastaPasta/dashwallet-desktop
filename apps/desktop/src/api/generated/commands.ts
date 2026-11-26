@@ -31,6 +31,10 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 import type { CoinJoinStatus } from "./CoinJoinStatus";
 import type { CoinSelectionSummary } from "./CoinSelectionSummary";
 import type { CoinSource } from "./CoinSource";
+import type { ConnectChoice } from "./ConnectChoice";
+import type { ConnectDone } from "./ConnectDone";
+import type { ConnectQuote } from "./ConnectQuote";
+import type { ConnectSheet } from "./ConnectSheet";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
@@ -63,6 +67,7 @@ import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
+import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { EvonodeCredits } from "./EvonodeCredits";
@@ -174,6 +179,7 @@ import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
+import type { RecoverQuote } from "./RecoverQuote";
 import type { RegistrationQuote } from "./RegistrationQuote";
 import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
@@ -198,6 +204,7 @@ import type { ShieldedAddress } from "./ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
+import type { ShieldedSyncInfo } from "./ShieldedSyncInfo";
 import type { SpvStateName } from "./SpvStateName";
 import type { StartSharedRequest } from "./StartSharedRequest";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
@@ -371,7 +378,8 @@ export function openNetwork(network: string | null, settings: SessionSettings | 
  * checked before and after the operations already running finish
  * (`draining` when they do not within 2 s); then the engine's own
  * refusals (`wallet` while a wallet is still opening,
- * `shielded_spend_unresolved`, both with
+ * `shielded_spend_unresolved`, `app.transfer_preparing` while a
+ * transfer waits on its wallet's start-up, each with
  * [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
  * the session, its drafts, the window and the choice stay, and the
  * paused operations run. Once closed, its vault is locked and its
@@ -1180,6 +1188,21 @@ export function exportHistoryCsv(walletId: string, filter: HistoryFilterRequest,
  */
 export function txNotices(walletId: string, txids: Array<string>): Promise<Array<TxNoticeRow>> {
   return invoke<Array<TxNoticeRow>>("tx_notices", { walletId, txids });
+}
+
+/**
+ * The notices of payments Dash Wallet dropped because what they spent
+ * came from a transaction that was never valid, not yet dismissed.
+ */
+export function droppedNotices(walletId: string): Promise<Array<DroppedNoticeRow>> {
+  return invoke<Array<DroppedNoticeRow>>("dropped_notices", { walletId });
+}
+
+/**
+ * Dismisses the notices of the dropped payments `txids` for good.
+ */
+export function dismissDroppedNotices(walletId: string, txids: Array<string>): Promise<null> {
+  return invoke<null>("dismiss_dropped_notices", { walletId, txids });
 }
 
 /**
@@ -2251,6 +2274,14 @@ export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
 }
 
 /**
+ * Where the wallet's Shielded sync stands, for the status bar, Sync
+ * progress and Receive; answers while a pass runs.
+ */
+export function shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo> {
+  return invoke<ShieldedSyncInfo>("shielded_sync_info", { walletId });
+}
+
+/**
  * Runs a shielded sync pass now; returns the status after.
  */
 export function shieldedSync(walletId: string): Promise<ShieldedStatus> {
@@ -2380,6 +2411,24 @@ export function unfinishedTransfers(walletId: string): Promise<UnfinishedTransfe
  */
 export function finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish> {
   return invoke<LockFinish>("finish_transfer", { walletId, kind, txid, vout, grant });
+}
+
+/**
+ * What a recover of the partly used transfer to Shielded at
+ * `txid`:`vout` would move, read from Platform's proved state now.
+ */
+export function recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote> {
+  return invoke<RecoverQuote>("recover_transfer_quote", { walletId, txid, vout });
+}
+
+/**
+ * Recovers what is left on the partly used transfer to Shielded at
+ * `txid`:`vout` to the wallet's own Platform address under `grant`,
+ * whose credits cap is the quote's `credits`; only a proved apply
+ * finishes it.
+ */
+export function recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("recover_transfer", { walletId, txid, vout, grant });
 }
 
 /**
@@ -2610,6 +2659,63 @@ export function loadContactPictures(): Promise<boolean> {
  */
 export function setLoadContactPictures(on: boolean): Promise<null> {
   return invoke<null>("set_load_contact_pictures", { on });
+}
+
+/**
+ * The approval sheet of the App Connect request `link_id` for the
+ * wallet `wallet_id`. A refusal answers the request (its status goes
+ * back with the return link).
+ */
+export function appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet> {
+  return invoke<ConnectSheet>("app_connect_sheet", { walletId, linkId });
+}
+
+/**
+ * What approving `choice` costs and the `appConnect` grant to ask
+ * for, bound to what this quote read.
+ */
+export function appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote> {
+  return invoke<ConnectQuote>("app_connect_quote", { walletId, linkId, choice });
+}
+
+/**
+ * Approves `choice` under `grant` (an `appConnect` grant from this
+ * request's quote): adds the keys and sends the app its response.
+ */
+export function appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_approve", { walletId, linkId, choice, grant });
+}
+
+/**
+ * Sends the response an approval could not send.
+ */
+export function appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_retry_send", { walletId, linkId });
+}
+
+/**
+ * The user denied the request: nothing is read, derived or signed.
+ * Refused once an approval started (`connect.answered`).
+ */
+export function appConnectDeny(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_deny", { linkId });
+}
+
+/**
+ * Opens the return link of an answered request the OS delivered, with
+ * its answer, in the system browser, after the user's click. A request
+ * typed, pasted or scanned, or not answered yet, opens nothing:
+ * `invalid_argument`.
+ */
+export function appConnectReturn(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_return", { linkId });
+}
+
+/**
+ * Forgets the request: the sheet closed.
+ */
+export function appConnectDismiss(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_dismiss", { linkId });
 }
 
 /**
@@ -3564,6 +3670,8 @@ export type CommandArgs = {
   drop_unconfirmed: { walletId: string | null };
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
+  dropped_notices: { walletId: string };
+  dismiss_dropped_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
   open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
@@ -3696,6 +3804,7 @@ export type CommandArgs = {
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
   shielded_status: { walletId: string };
+  shielded_sync_info: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; amount: FundAmount };
@@ -3713,6 +3822,8 @@ export type CommandArgs = {
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
+  recover_transfer_quote: { walletId: string; txid: string; vout: number };
+  recover_transfer: { walletId: string; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -3743,6 +3854,13 @@ export type CommandArgs = {
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
   load_contact_pictures: {  };
   set_load_contact_pictures: { on: boolean };
+  app_connect_sheet: { walletId: string; linkId: string };
+  app_connect_quote: { walletId: string; linkId: string; choice: ConnectChoice };
+  app_connect_approve: { walletId: string; linkId: string; choice: ConnectChoice; grant: string };
+  app_connect_retry_send: { walletId: string; linkId: string };
+  app_connect_deny: { linkId: string };
+  app_connect_return: { linkId: string };
+  app_connect_dismiss: { linkId: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -3950,6 +4068,8 @@ export type CommandResults = {
   drop_unconfirmed: number;
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
+  dropped_notices: Array<DroppedNoticeRow>;
+  dismiss_dropped_notices: null;
   is_coinjoin_internal: boolean;
   open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
@@ -4082,6 +4202,7 @@ export type CommandResults = {
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
   shielded_status: ShieldedStatus;
+  shielded_sync_info: ShieldedSyncInfo;
   shielded_sync: ShieldedStatus;
   shielded_receive_address: ShieldedAddress;
   shield_quote: ShieldQuote;
@@ -4099,6 +4220,8 @@ export type CommandResults = {
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
+  recover_transfer_quote: RecoverQuote;
+  recover_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -4129,6 +4252,13 @@ export type CommandResults = {
   dashpay_avatar: AvatarThumbnail | null;
   load_contact_pictures: boolean;
   set_load_contact_pictures: null;
+  app_connect_sheet: ConnectSheet;
+  app_connect_quote: ConnectQuote;
+  app_connect_approve: ConnectDone;
+  app_connect_retry_send: ConnectDone;
+  app_connect_deny: null;
+  app_connect_return: null;
+  app_connect_dismiss: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -4338,6 +4468,8 @@ export const COMMANDS: Record<CommandName, string> = {
   drop_unconfirmed: "history",
   export_history_csv: "history",
   tx_notices: "history",
+  dropped_notices: "history",
+  dismiss_dropped_notices: "history",
   is_coinjoin_internal: "history",
   open_tx_in_explorer: "history",
   backup_wallet: "backup",
@@ -4470,6 +4602,7 @@ export const COMMANDS: Record<CommandName, string> = {
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
   shielded_status: "identity",
+  shielded_sync_info: "identity",
   shielded_sync: "identity",
   shielded_receive_address: "identity",
   shield_quote: "identity",
@@ -4487,6 +4620,8 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
+  recover_transfer_quote: "identity",
+  recover_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -4517,6 +4652,13 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar: "social",
   load_contact_pictures: "social",
   set_load_contact_pictures: "social",
+  app_connect_sheet: "connect",
+  app_connect_quote: "connect",
+  app_connect_approve: "connect",
+  app_connect_retry_send: "connect",
+  app_connect_deny: "connect",
+  app_connect_return: "connect",
+  app_connect_dismiss: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
@@ -4650,6 +4792,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.transfer_preparing",
   "app.shared_send_off",
   "app.shared_send_unsupported",
   "invalid_config",
@@ -4860,6 +5003,20 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "invitation.claimed",
   "invitation.expired",
   "invitation.already_has_identity",
+  "connect.network",
+  "connect.mainnet_off",
+  "connect.unsupported",
+  "connect.invalid",
+  "connect.stale",
+  "connect.protocol",
+  "connect.no_identity",
+  "connect.hint",
+  "connect.owner",
+  "connect.answered",
+  "connect.credits",
+  "connect.plan_changed",
+  "connect.send_failed",
+  "connect.failed",
   "avatar.too_large",
   "avatar.unsupported",
   "avatar.fetch_failed",
@@ -4880,6 +5037,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.coins_changed",
   "credits.mixing_active",
   "credits.move_running",
+  "credits.preflight_refused",
+  "credits.rules_unsupported",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

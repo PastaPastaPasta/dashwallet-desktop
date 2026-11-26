@@ -20190,6 +20190,11 @@ public enum TxActionRefusal: Equatable, Hashable {
      * wallet clears it.
      */
     case recordUnreadable
+    /**
+     * It, or a later transaction that spends from it, funds a Platform
+     * transfer that hasn't finished, which the wallet sends again.
+     */
+    case platformFunding
 
 
 
@@ -20228,6 +20233,8 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         case 8: return .settledDescendant
         
         case 9: return .recordUnreadable
+        
+        case 10: return .platformFunding
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -20271,6 +20278,10 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case .recordUnreadable:
             writeInt(&buf, Int32(9))
+        
+        
+        case .platformFunding:
+            writeInt(&buf, Int32(10))
         
         }
     }

@@ -4,6 +4,8 @@
 // dw-app's (`generated/commands.ts`): lane E2's network choice and Platform addresses (contract
 // m4-dashpay-engine §2.12, §8) and lane E1's shielded funds (§2.13), integrated at m4 v47.
 
+import type { ErrorData } from "./generated/ErrorData";
+import type { FundAmount } from "./generated/FundAmount";
 import type { ShieldedCode } from "./generated/ShieldedCode";
 import { t } from "../i18n";
 
@@ -11,8 +13,47 @@ import { t } from "../i18n";
  * the shielded pool's figures use. */
 export const CREDITS_PER_DUFF = 1000n;
 
+/** A shield's or a fund's amount: `duffs` with the fee on top, or, for a Core Max (`all`), everything
+ * in the Dash wallet's account 0 with the fee out of it. */
+export const fundAmount = (r: { duffs: number; all?: boolean }): FundAmount => (r.all ? { kind: "all" } : { kind: "duffs", duffs: r.duffs });
+
+/** The refusals only a Core Max meets (`shielded.*` or `credits.*`): mixing, another move of the coins,
+ * coins changed since the quote. With `max` (the request was a Core Max) also its own words for a
+ * locked coin, for more than 50 coins and for a lock below the smallest amount (`duffs` formats its
+ * figures). `null`: another refusal. */
+export function coreMaxRefusal(e: unknown, max: boolean, duffs: (d: number) => string): string | null {
+  if (typeof e !== "object" || e === null || !("code" in e) || typeof e.code !== "string") return null;
+  // A Max's grant is exactly its quote's total: coins that grew since then exceed it.
+  if (max && e.code === "platform.grant_exceeded") return t("transfer.maxChanged");
+  const [domain, code] = e.code.split(".");
+  if (domain !== "shielded" && domain !== "credits") return null;
+  const data = "data" in e ? (e.data as ErrorData | null) : null;
+  switch (code) {
+    case "mixing_active":
+      return t("transfer.maxMixing");
+    case "move_running":
+      return t("transfer.maxMoveRunning");
+    case "coins_changed":
+      return t("transfer.maxChanged");
+    case "coins_locked":
+      return max ? t("transfer.maxLocked") : null;
+    case "too_many_inputs":
+      return max && data?.kind === "number" ? t("transfer.maxTooMany", { count: String(data.value) }) : null;
+    case "below_minimum":
+      if (!max || data?.kind !== "maxMinimum") return null;
+      if (data.duffs > 0) return t(data.leftDuffs > 0 ? "transfer.maxBelowMinimum" : "transfer.maxBelowMinimumAll", { amount: duffs(data.duffs), min: duffs(data.min) });
+      if (data.arrivingDuffs > 0) return t(data.arrivingClears ? "transfer.maxAllArriving" : "transfer.maxArrivingTooSmall", { arriving: duffs(data.arrivingDuffs) });
+      return t(data.leftDuffs > 0 ? "transfer.maxNothing" : "transfer.maxEmpty");
+    default:
+      return null;
+  }
+}
+
 /** Whole duffs in `credits` (a decimal string). */
 export const creditsToDuffs = (credits: string): number => Number(BigInt(credits) / CREDITS_PER_DUFF);
+
+/** Credits as duffs, rounded up: an "about" amount or a least amount never undersells. */
+export const creditsToDuffsUp = (credits: bigint | string): number => Number((BigInt(credits) + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF);
 
 /** The `ShieldedCode`s by name, one place for the screens' copy and the fixture. Every value is the
  * generated `ShieldedCode`, so a code the engine adds or renames is a type error here. */

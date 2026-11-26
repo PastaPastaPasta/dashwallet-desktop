@@ -4,7 +4,7 @@
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { errorMessage } from "../api/backend";
 import { creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformActivity, useShieldedHistory } from "../api/queries";
+import { useBackend, usePlatformActivity, useShieldedHistory, useShieldedStatus } from "../api/queries";
 import { ui } from "../app/ui";
 import { AmountText, Icon } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -12,7 +12,7 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
-import { findSourceRecord, isMayLandRow, isReplacedRow, rowSource, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
+import { findSourceRecord, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, rowSource, settledUnknownText, SourceRowText, sourceRowTitle, type SourceRecord } from "../history/sourceRows";
 import { useT } from "../i18n";
 
 function Address({ value }: { value: string }) {
@@ -27,23 +27,35 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
   const unit = display.name;
   const { row } = found;
   const replaced = isReplacedRow(row);
+  const unknown = isSettledUnknownRow(row);
   const shown = shownAmount(row.amount, row.txType);
   const date = rowDate(row);
-  const status = replaced
-    ? SourceRowText.replaced
-    : isMayLandRow(row)
-      ? SourceRowText.mayLand
-      : t(row.status.kind === "confirmed" ? "activity.sourceDetail.status.confirmed" : row.status.kind === "notAccepted" ? "activity.sourceDetail.status.notAccepted" : "activity.sourceDetail.status.pending");
-  const problem = !replaced && !isMayLandRow(row) && isProblem(row.status);
+  const status = unknown
+    ? settledUnknownText(row).text
+    : replaced
+      ? SourceRowText.replaced
+      : isMayLandRow(row)
+        ? SourceRowText.mayLand
+        : t(row.status.kind === "confirmed" ? "activity.sourceDetail.status.confirmed" : row.status.kind === "notAccepted" ? "activity.sourceDetail.status.notAccepted" : "activity.sourceDetail.status.pending");
+  const problem = !replaced && !unknown && !isMayLandRow(row) && isProblem(row.status);
   const fee = found.record.feeCredits;
+  const refusal = found.source === "shielded" ? found.record.refusal : undefined;
+  const refusalText =
+    refusal === "held"
+      ? shown.duffs !== 0
+        ? t("activity.sourceDetail.refusal.held", { amount: display.withUnit(Math.abs(shown.duffs)) })
+        : t("activity.sourceDetail.refusal.heldNoAmount")
+      : refusal === "released"
+        ? t("activity.sourceDetail.refusal.released")
+        : null;
   return (
     <>
       <div className="tx-detail-summary" data-testid="source-detail-summary">
-        <Icon id={problem ? "txDetailError" : row.amount < 0 ? "txDetailSent" : "txDetailReceived"} size={50} />
+        <Icon id={problem ? "txDetailError" : row.amount < 0 || row.category === "sent" ? "txDetailSent" : "txDetailReceived"} size={50} />
         <h3 className="tx-detail-title" data-testid="source-detail-title">
           {sourceRowTitle(row)}
         </h3>
-        {!replaced && <AmountText className="tx-detail-amount" testId="source-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />}
+        {!replaced && !(unknown && row.amount === 0) && <AmountText className="tx-detail-amount" testId="source-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />}
         <div className="tx-detail-status">
           {date && (
             <span className="tx-detail-date" data-testid="source-detail-when">
@@ -55,6 +67,11 @@ function Body({ found, network }: { found: SourceRecord; network: NetworkInfo })
           </span>
         </div>
       </div>
+      {refusalText && (
+        <p className="tx-detail-note" data-testid="source-detail-refusal">
+          {refusalText}
+        </p>
+      )}
       <dl className="detail-list card-l1" data-testid="source-detail-facts">
         {found.source === "shielded" ? (
           <>
@@ -103,7 +120,8 @@ export function SourceDetailSheet({ walletId, txid, network }: { walletId: strin
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
   const read = rowSource({ txid }) === "platform" ? platform : shielded;
-  const found = findSourceRecord(txid, platform.data, shielded.data);
+  const status = useShieldedStatus(walletId);
+  const found = findSourceRecord(txid, platform.data, shielded.data, heldActivities(status.data));
   return (
     <Sheet title={t("activity.sourceDetail.title")} width="medium" testId="source-detail" onClose={() => ui.set({ detail: null })}>
       {found ? (

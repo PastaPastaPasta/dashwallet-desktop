@@ -2,8 +2,8 @@
 //! the engine's `code()`s; `tests::codes_match_the_engine` holds them equal.
 
 use dw_engine::platform::{
-    AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ConnectFailure, ContactError, CreditsError, IdentityError,
+    InvitationError, NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -127,6 +127,8 @@ codes! {
         CoinsChanged = "credits.coins_changed",
         MixingActive = "credits.mixing_active",
         MoveRunning = "credits.move_running",
+        PreflightRefused = "credits.preflight_refused",
+        RulesUnsupported = "credits.rules_unsupported",
     }
 }
 
@@ -189,9 +191,18 @@ impl From<ShieldedError> for AppError {
                     available,
                 }),
             ),
-            S::BelowMinimum { min } => (
+            S::BelowMinimum { min, max } => (
                 ShieldedCode::BelowMinimum,
-                Some(ErrorData::Number { value: min }),
+                Some(match max {
+                    Some(m) => ErrorData::MaxMinimum {
+                        min,
+                        duffs: m.duffs,
+                        left_duffs: m.left_duffs,
+                        arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
+                    },
+                    None => ErrorData::Number { value: min },
+                }),
             ),
             S::CoinsLocked => (ShieldedCode::CoinsLocked, None),
             S::ShieldPending { txid } => {
@@ -461,6 +472,105 @@ impl From<InvitationError> for AppError {
     }
 }
 
+codes! {
+    ConnectCode {
+        Network = "connect.network",
+        MainnetOff = "connect.mainnet_off",
+        Unsupported = "connect.unsupported",
+        Invalid = "connect.invalid",
+        Stale = "connect.stale",
+        Protocol = "connect.protocol",
+        NoIdentity = "connect.no_identity",
+        Hint = "connect.hint",
+        Owner = "connect.owner",
+        Answered = "connect.answered",
+        Credits = "connect.credits",
+        PlanChanged = "connect.plan_changed",
+        SendFailed = "connect.send_failed",
+        Failed = "connect.failed",
+    }
+}
+
+/// Why an approved App Connect login stopped (`connect.failed`), from the
+/// engine's fixed list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectFailureName {
+    KeyConflict,
+    NotConfirmed,
+    NoResponseKey,
+    NothingToSend,
+    ScopeChanged,
+}
+
+/// The network an App Connect request is for (`connect.network`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectNetworkName {
+    Mainnet,
+    Testnet,
+    Devnet,
+}
+
+impl From<dw_uri::connect::NetworkSel> for ConnectNetworkName {
+    fn from(n: dw_uri::connect::NetworkSel) -> Self {
+        match n {
+            dw_uri::connect::NetworkSel::Mainnet => Self::Mainnet,
+            dw_uri::connect::NetworkSel::Testnet => Self::Testnet,
+            dw_uri::connect::NetworkSel::Devnet => Self::Devnet,
+        }
+    }
+}
+
+impl From<ConnectFailure> for ConnectFailureName {
+    fn from(f: ConnectFailure) -> Self {
+        match f {
+            ConnectFailure::KeyConflict => Self::KeyConflict,
+            ConnectFailure::NotConfirmed => Self::NotConfirmed,
+            ConnectFailure::NoResponseKey => Self::NoResponseKey,
+            ConnectFailure::NothingToSend => Self::NothingToSend,
+            ConnectFailure::ScopeChanged => Self::ScopeChanged,
+        }
+    }
+}
+
+impl From<ConnectError> for AppError {
+    fn from(e: ConnectError) -> Self {
+        use ConnectError as C;
+        let message = e.code().to_owned();
+        let (code, data) = match e {
+            C::Network => (ConnectCode::Network, None),
+            C::MainnetOff => (ConnectCode::MainnetOff, None),
+            C::Unsupported => (ConnectCode::Unsupported, None),
+            C::Invalid => (ConnectCode::Invalid, None),
+            C::Stale => (ConnectCode::Stale, None),
+            C::Protocol => (ConnectCode::Protocol, None),
+            C::NoIdentity => (ConnectCode::NoIdentity, None),
+            C::Hint => (ConnectCode::Hint, None),
+            C::Owner => (ConnectCode::Owner, None),
+            C::Answered => (ConnectCode::Answered, None),
+            C::Credits { needed, available } => (
+                ConnectCode::Credits,
+                Some(ErrorData::Credits { needed, available }),
+            ),
+            C::PlanChanged => (ConnectCode::PlanChanged, None),
+            C::SendFailed => (ConnectCode::SendFailed, None),
+            C::Failed { failure } => (
+                ConnectCode::Failed,
+                Some(ErrorData::ConnectFailure {
+                    failure: failure.into(),
+                }),
+            ),
+            C::Platform(e) => return e.into(),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
+    }
+}
+
 impl From<AvatarError> for AppError {
     fn from(e: AvatarError) -> Self {
         use AvatarError as A;
@@ -489,9 +599,18 @@ impl From<CreditsError> for AppError {
                     available,
                 }),
             ),
-            C::BelowMinimum { min } => (
+            C::BelowMinimum { min, max } => (
                 CreditsCode::BelowMinimum,
-                Some(ErrorData::Limit { duffs: min }),
+                Some(match max {
+                    Some(m) => ErrorData::MaxMinimum {
+                        min,
+                        duffs: m.duffs,
+                        left_duffs: m.left_duffs,
+                        arriving_duffs: m.arriving_duffs,
+                        arriving_clears: m.arriving_clears,
+                    },
+                    None => ErrorData::Limit { duffs: min },
+                }),
             ),
             C::CoinsLocked => (CreditsCode::CoinsLocked, None),
             C::TopUpPending { txid } => (CreditsCode::TopUpPending, Some(ErrorData::Txid { txid })),
@@ -526,6 +645,8 @@ impl From<CreditsError> for AppError {
             C::CoinsChanged => (CreditsCode::CoinsChanged, None),
             C::MixingActive => (CreditsCode::MixingActive, None),
             C::MoveRunning => (CreditsCode::MoveRunning, None),
+            C::PreflightRefused => (CreditsCode::PreflightRefused, None),
+            C::RulesUnsupported => (CreditsCode::RulesUnsupported, None),
             C::Shielded(e) => return e.into(),
             C::Platform(e) => return e.into(),
         };
@@ -696,7 +817,7 @@ mod tests {
                 needed: 2,
                 available: 1,
             },
-            CreditsError::BelowMinimum { min: 5 },
+            CreditsError::BelowMinimum { min: 5, max: None },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending { txid: s() },
             CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
@@ -715,6 +836,8 @@ mod tests {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::PreflightRefused,
+            CreditsError::RulesUnsupported,
             CreditsError::Shielded(ShieldedError::NotActive {
                 protocol_version: 11,
                 activation_version: 12,
@@ -741,7 +864,7 @@ mod tests {
                 needed: 2,
                 available: 1,
             },
-            ShieldedError::BelowMinimum { min: 5 },
+            ShieldedError::BelowMinimum { min: 5, max: None },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
             ShieldedError::PoolTooSmall {
@@ -767,6 +890,36 @@ mod tests {
         for e in shielded {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
+        let connect = [
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 2,
+                available: 1,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: dw_engine::platform::ConnectFailure::KeyConflict,
+            },
+        ];
+        assert_eq!(connect.len(), ConnectCode::ALL.len());
+        for e in connect {
+            let code = e.code();
+            assert_eq!(AppError::from(e).code_str(), code);
+        }
+        assert_eq!(
+            AppError::from(ConnectError::Platform(PlatformError::Timeout)).code_str(),
+            "platform.timeout"
+        );
     }
 
     #[test]
@@ -893,6 +1046,49 @@ mod tests {
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({ "kind": "shieldedNotReady", "reason": "rested", "readyAt": 10_800 })
         );
+        let short = Some(dw_engine::platform::CoreMaxShort {
+            duffs: 1_200,
+            left_duffs: 40_000,
+            arriving_duffs: 5_000,
+            arriving_clears: true,
+        });
+        let max = serde_json::json!({
+            "kind": "maxMinimum", "min": 30_000, "duffs": 1_200, "leftDuffs": 40_000,
+            "arrivingDuffs": 5_000, "arrivingClears": true
+        });
+        let below = [
+            (
+                AppError::from(CreditsError::BelowMinimum {
+                    min: 30_000,
+                    max: short,
+                }),
+                max.clone(),
+            ),
+            (
+                AppError::from(ShieldedError::BelowMinimum {
+                    min: 30_000,
+                    max: short,
+                }),
+                max,
+            ),
+            (
+                AppError::from(CreditsError::BelowMinimum {
+                    min: 30_000,
+                    max: None,
+                }),
+                serde_json::json!({ "kind": "limit", "duffs": 30_000 }),
+            ),
+            (
+                AppError::from(ShieldedError::BelowMinimum {
+                    min: 30_000,
+                    max: None,
+                }),
+                serde_json::json!({ "kind": "number", "value": 30_000 }),
+            ),
+        ];
+        for (e, data) in below {
+            assert_eq!(serde_json::to_value(&e).unwrap()["data"], data);
+        }
     }
 
     /// dw-engine writes the `data` of the errors in the accept contract vector by hand

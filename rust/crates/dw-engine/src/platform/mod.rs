@@ -5,6 +5,9 @@
 //! live in the domain files and are re-exported here one by one, so a `pub`
 //! helper never becomes API by accident.
 
+pub(crate) mod app_connect;
+mod app_connect_net;
+mod app_connect_plan;
 pub(crate) mod attribution;
 mod avatar;
 mod avatar_cache;
@@ -108,6 +111,7 @@ mod shielded_close_tests;
 mod shielded_import_tests;
 pub(crate) mod shielded_payout;
 pub(crate) mod shielded_pool;
+pub(crate) mod shielded_release;
 #[cfg(test)]
 pub(crate) mod shielded_tests;
 pub mod signers;
@@ -127,12 +131,18 @@ mod unfinished_funds;
 pub(crate) mod unfinished_locks;
 #[cfg(test)]
 mod unfinished_locks_tests;
+mod unfinished_remainder;
 mod unfinished_shields;
 mod users;
 #[cfg(test)]
 mod users_tests;
 pub(crate) mod withdrawal;
 
+pub use app_connect::{
+    ConnectBinding, ConnectChoice, ConnectDocumentType, ConnectDone, ConnectFailure, ConnectGroup,
+    ConnectIdentity, ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms,
+    ConnectToken,
+};
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
@@ -141,15 +151,15 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
+    CoreMax, CoreMaxShort, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding,
     TopUpFromPlatformOutcome, TopUpFromPlatformQuote, TopUpOutcome, TopUpQuote, TopUpState,
     WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
     WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
-    AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError, ShieldedError,
+    AvatarError, ConnectError, ContactError, CreditsError, IdentityError, InvitationError,
+    NameError, PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 pub use flows::{
     BudgetPurpose, BudgetView, DispatchResolution, DispatchResolved, DispatchState, FlowKind,
@@ -189,23 +199,24 @@ pub use registration::{
     ShieldedReadiness,
 };
 pub use shielded::{
-    MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
-    ShieldRepairCost, ShieldState, ShieldedActivity, ShieldedActivityKind, ShieldedActivityStatus,
-    ShieldedAddress, ShieldedDirection, ShieldedSpendOutcome, ShieldedSpendQuote,
-    ShieldedSpendState, ShieldedStatus, ShieldedStoreClosed, ShieldedSyncWait, StuckShieldFunding,
-    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    HeldSpend, MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome,
+    ShieldQuote, ShieldRepairCost, ShieldState, ShieldedAccount, ShieldedActivity,
+    ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress, ShieldedDirection,
+    ShieldedRefusal, ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote,
+    ShieldedSpendState, ShieldedStatus, ShieldedStoreClosed, ShieldedSyncInfo, ShieldedSyncWait,
+    StuckShieldFunding, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
     VaultScanKey,
 };
 pub use startup::{
-    DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility, QuorumSource,
-    StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
+    AddressSync, DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility,
+    QuorumSource, StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;
 pub use unfinished::{
-    LockFinish, LockKindId, LockOrigin, TransfersReport, UnfinishedLock, UnfinishedState,
-    UnfinishedTransfers,
+    LockFinish, LockKindId, LockOrigin, RecoverQuote, TransfersReport, UnfinishedLock,
+    UnfinishedState, UnfinishedTransfers,
 };

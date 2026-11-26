@@ -4,6 +4,7 @@
 //! signing, and the lock pending and resumed on its own outpoint.
 
 use super::super::core_max::CoreCoins;
+use super::super::credits::CoreMaxShort;
 use super::super::shield_drain::DrainCoin;
 use super::*;
 
@@ -22,7 +23,14 @@ fn account() -> CoreCoins {
     CoreCoins {
         coins: vec![bip44(0, 400_000_000), bip44(1, 60_000_000)],
         left_duffs: 3_000,
-        arriving_duffs: 0,
+        ..CoreCoins::default()
+    }
+}
+
+fn late(i: u32, value: u64) -> DrainCoin {
+    DrainCoin {
+        confirmed: false,
+        ..bip44(i, value)
     }
 }
 
@@ -206,6 +214,72 @@ fn core_max_fund_refuses_before_signing() {
     unused(&fx, &g);
     drop(sweep);
     nothing_stored(&fx, &lib);
+}
+
+/// A lock below the fund's floor is refused before signing, with what Max
+/// would move, what the other accounts hold and what is still arriving.
+#[test]
+fn core_max_fund_refuses_below_the_floor() {
+    let fx = Fixture::new(0);
+    let floor = fee() / 1_000 + 1;
+    let fee = crate::fees::asset_lock_fee_bound(1);
+    let read = CoreCoins {
+        coins: vec![bip44(0, floor + fee - 1)],
+        left_duffs: 3_000,
+        arriving_duffs: 8_000,
+        arriving: vec![late(1, 8_000)],
+    };
+    let lib = maxer(&fx, read);
+    let below = CreditsError::BelowMinimum {
+        min: floor,
+        max: Some(CoreMaxShort {
+            duffs: floor - 1,
+            left_duffs: 3_000,
+            arriving_duffs: 8_000,
+            arriving_clears: true,
+        }),
+    };
+    assert_eq!(max_quote(&fx, &lib).unwrap_err(), below);
+    let (out, g) = max_fund(&fx, &lib, floor + fee - 1);
+    assert_eq!(out.unwrap_err(), below);
+    unused(&fx, &g);
+    nothing_stored(&fx, &lib);
+}
+
+/// As the shield's: below the fund's floor, whether Max would clear it once
+/// every arriving coin is final, by the same plan over all the coins.
+#[test]
+fn core_max_fund_says_whether_the_arriving_coins_would_clear() {
+    let fx = Fixture::new(0);
+    let floor = fee() / 1_000 + 1;
+    let clears = |coins: Vec<DrainCoin>, arriving: Vec<DrainCoin>| {
+        let read = CoreCoins {
+            coins,
+            left_duffs: 0,
+            arriving_duffs: arriving.iter().map(|c| c.value).sum(),
+            arriving,
+        };
+        match max_quote(&fx, &maxer(&fx, read)).unwrap_err() {
+            CreditsError::BelowMinimum { max: Some(m), .. } => m.arriving_clears,
+            refused => panic!("{refused:?}"),
+        }
+    };
+    let at = |n: usize| floor + crate::fees::asset_lock_fee_bound(n);
+    assert!(!clears(vec![], vec![]));
+    assert!(!clears(vec![bip44(0, 1_000)], vec![]));
+    assert!(!clears(vec![], vec![late(0, 5_000)]));
+    assert!(clears(vec![], vec![late(0, at(1))]));
+    assert!(!clears(vec![], vec![late(0, at(1) - 1)]));
+    assert!(clears(vec![bip44(0, 1_000)], vec![late(1, at(2) - 1_000)]));
+    assert!(!clears(vec![bip44(0, 1_000)], vec![late(1, at(2) - 1_001)]));
+    let locked = DrainCoin {
+        held: true,
+        ..late(0, 10 * at(1))
+    };
+    assert!(!clears(vec![], vec![locked]));
+    let many: Vec<_> = (1..=50).map(|i| late(i, 1_000_000)).collect();
+    assert!(!clears(vec![bip44(0, 1_000)], many.clone()));
+    assert!(clears(vec![bip44(0, 1_000)], many[..49].to_vec()));
 }
 
 /// A Max lock signed and out but not applied pends; after a restart (a new

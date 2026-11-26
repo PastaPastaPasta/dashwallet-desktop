@@ -455,3 +455,32 @@ test("D2: My Profile without an identity is DP1-08's card with its action", asyn
   await page.getByTestId("dashpay-card-action").click();
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
 });
+
+// DP1-09 D4 reversed: the request's details while the own contest is open, and the won card.
+test("the request card: a temporary name that failed offers Try again prefilled; short credits offer Top up", async ({ page }) => {
+  await openProfile(page, "dashpay-instant-failed");
+  await expect(request(page)).toContainText("The instant username “alice2” could not be registered");
+  await expect(page.getByTestId("profile-instant")).toHaveCount(0);
+  await page.getByTestId("profile-instant-retry").click();
+  await expect(page.getByTestId("registration-name-field")).toHaveValue("alice2");
+
+  await openProfile(page, "dashpay-contest-instant-short");
+  await expect(request(page)).toContainText("Not enough credits for an instant username.");
+  await page.getByTestId("profile-instant-top-up").click();
+  await expect(sheet(page)).toBeVisible();
+});
+
+test("vote won: the contested name is now the main one, the instant one kept; no prompt", async ({ page }) => {
+  await openProfile(page, "dashpay-instant-won");
+  await expect(request(page)).toHaveAttribute("data-state", "won");
+  await expect(request(page)).toContainText("“alice” is now your main username. Your instant username “alice2” stays yours too.");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await openProfile(page, "dashpay-instant-lost");
+  await expect(request(page)).toHaveAttribute("data-state", "lost");
+  await expect(request(page)).not.toContainText("main username");
+});
+
+test("the success line on the request card", async ({ page }) => {
+  await openProfile(page, "dashpay-instant-ok");
+  await expect(request(page)).toContainText("In the meantime you are reachable at “alice2”");
+});

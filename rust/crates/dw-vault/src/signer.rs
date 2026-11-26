@@ -163,6 +163,14 @@ pub enum SignerScope {
     /// while the full key needs no prompt
     /// ([`crate::Vault::shielded_viewing_key`]).
     ShieldedView,
+    /// One App Connect login, from an `AppConnect` grant: public keys of the
+    /// DIP-13 application keys (session keys `m/9'/coin'/5'/6'/…`, shared
+    /// encryption keys `m/9'/coin'/5'/7'/…`), the proof-of-possession
+    /// signature of a new encryption key, and their seal to the app
+    /// ([`VaultSigner::app_connect_seal`]). Only session keys of the
+    /// request whose ephemeral key hashes to `request` are in reach; no
+    /// identity key, address or raw key leaves it.
+    AppConnect { request: [u8; 20] },
 }
 
 /// What a derived key is used for.
@@ -196,6 +204,9 @@ pub(crate) enum KeyUse {
     /// credit withdrawal the vault checks field by field itself
     /// ([`VaultSigner::sign_masternode_withdrawal`], MG-13 P3).
     MasternodeWithdrawal,
+    /// The key is sealed to an App Connect app
+    /// ([`VaultSigner::app_connect_seal`]).
+    AppConnectSeal,
 }
 
 impl SignerScope {
@@ -227,7 +238,9 @@ impl SignerScope {
             // No export of an asset-lock credit key or its account
             // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
-                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal => false,
+                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal | KeyUse::AppConnectSeal => {
+                    false
+                }
                 KeyUse::Sign | KeyUse::Message => {
                     !paths::is_owner_key(path, network) && !paths::is_voting_key(path, network)
                 }
@@ -249,7 +262,8 @@ impl SignerScope {
                 | KeyUse::Message
                 | KeyUse::Vote
                 | KeyUse::OwnerPayload
-                | KeyUse::MasternodeWithdrawal => false,
+                | KeyUse::MasternodeWithdrawal
+                | KeyUse::AppConnectSeal => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -302,6 +316,17 @@ impl SignerScope {
             }
             // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
             SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
+            // The request binding of a session key is checked where its
+            // path is built ([`VaultSigner::app_key_path`]).
+            SignerScope::AppConnect { .. } => {
+                let session = paths::app_session_key(path, network).is_some();
+                let encryption = paths::app_encryption_key(path, network).is_some();
+                match key_use {
+                    KeyUse::PublicKey | KeyUse::AppConnectSeal => session || encryption,
+                    KeyUse::Sign => encryption,
+                    _ => false,
+                }
+            }
         }
     }
 

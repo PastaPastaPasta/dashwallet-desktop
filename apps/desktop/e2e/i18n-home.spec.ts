@@ -136,7 +136,7 @@ test("the shortcuts follow a language change with no reload", async ({ page }) =
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
   await page.getByTestId("settings-language").selectOption("en-XA");
   await page.getByTestId("sidebar-home").click();
-  for (const id of ["transfer", "receive", "send", "scan", "backup"]) await expect(page.getByTestId(`shortcut-${id}`)).toHaveText(/^⟦.+⟧$/);
+  for (const id of ["receive", "send", "transfer", "backup"]) await expect(page.getByTestId(`shortcut-${id}`)).toHaveText(/^⟦.+⟧$/);
   await expect(page.getByTestId("shortcut-backup")).toHaveAttribute("title", /^⟦.+⟧$/);
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
   await page.getByTestId("settings-language").selectOption("");

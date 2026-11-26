@@ -25,7 +25,6 @@ import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
-import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -48,7 +47,8 @@ import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedQuote } from "./registration";
+import { connectHandlers, connectRoute, takeConnect } from "./connect";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -269,7 +269,7 @@ function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurpo
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   const sensitive = purposes.some(
-    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp",
+    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp" || p.kind === "appConnect",
   );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");
@@ -337,12 +337,6 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
-}
-
-/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
-export function fundDuffs(amount: FundAmount): number {
-  if (amount.kind === "duffs") return amount.duffs;
-  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
@@ -602,6 +596,9 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
       setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
   }
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
+  // A full unlock lets Shielded bind its viewing key (the engine's next status read binds it).
+  const shielded = world.pending.shielded;
+  if (state === "unlocked" && shielded && (shielded.account === "locked" || shielded.account === "mixingOnly")) shielded.account = "bound";
   setLock(ctx, state);
   world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
   world.windowCharged = 0;
@@ -780,6 +777,7 @@ export const HANDLERS: Handlers = {
   ...topUpHandlers(TOP_UP_DEPS),
   // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
+  ...connectHandlers({ wallet, dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesHandlers(),
   ...updatesHandlers(),
@@ -1039,9 +1037,9 @@ export const HANDLERS: Handlers = {
   // The shell (U-01): links are queued already routed (FixtureHandle.deliverLinks).
   take_links: ({ network }, { world }) => {
     if (network !== world.launch.network.dirName) throw fail("invalid_argument", `not the window's network: ${network}`);
-    return world.links.splice(0).map((route) => intake(world.stash, route, hasWallet(world)));
+    return world.links.splice(0).map((route) => takeConnect(world, intake(world.stash, route, hasWallet(world))));
   },
-  route_link: ({ text }, { world }) => intake(world.stash, routeLink(text), hasWallet(world)),
+  route_link: ({ text }, { world }) => takeConnect(world, connectRoute(text) ?? intake(world.stash, routeLink(text), hasWallet(world))),
   // The link stash (DP5-01): its entries without their text.
   stashed_links: (_, { world }) => world.stash.map((s) => s.info),
   open_stashed_link: ({ linkId }, { world }) => {
@@ -1105,6 +1103,27 @@ export const HANDLERS: Handlers = {
         label: r.label,
         coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
       })),
+  // The engine's notices of payments dropped because what they spent was never valid: those whose
+  // coins are back, not dismissed, one per payee, without the fee.
+  dropped_notices: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    return w.rows
+      .filter((r) => r.status.dropped?.cause === "invalidSource" && r.status.dropped.state.kind === "released" && r.category === "sent" && !w.droppedSeen?.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: Math.abs(r.amount) - (r.recordIndex === 0 ? (r.fee ?? 0) : 0),
+        timestamp: r.timestamp,
+        address: r.address,
+        label: r.label,
+        counterparty: r.counterparty ?? null,
+      }));
+  },
+  dismiss_dropped_notices: ({ walletId, txids }, { world }) => {
+    const w = wallet(world, walletId);
+    w.droppedSeen = [...new Set([...(w.droppedSeen ?? []), ...txids])];
+    return null;
+  },
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
@@ -1128,12 +1147,15 @@ export const HANDLERS: Handlers = {
   // session's quorum source (DP6-03).
   dashpay_sync_status: ({ walletId }, { world }) => {
     const d = dashpay(world, walletId);
+    if (d.syncStatusFails) throw fail("storage", "the fixture's sync read failed");
     return {
       startup: d.startup.startup,
       lastPass: d.lastPass ?? null,
       pendingContactCrypto: d.startup.contactAccountsPending,
       loops: fixtureLoops(world.sync.running),
       quorumSource: world.trust.source,
+      platformEnabled: true,
+      addresses: d.addresses ?? "done",
     };
   },
   quorum_source: (_, { world }) => world.trust.source,
@@ -1167,8 +1189,9 @@ export const HANDLERS: Handlers = {
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
     if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
-    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet");
-    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
+    checkTemporary(request);
+    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
+    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label, request.temporaryLabel);
     return {
       contested,
       lockDuffs,

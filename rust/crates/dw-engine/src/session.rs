@@ -87,12 +87,29 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The coins kept out of every bucket above, and out of spending,
+    /// while the payment they come from may never confirm (Q100 E1,
+    /// `crate::withhold`): shown as pending.
+    pub withheld: u64,
     /// The scan has not reached the wallet's birth block yet: the buckets
     /// hold what the wallet has seen so far (mempool and InstantSend
     /// payments included) and can miss coins in blocks not scanned yet.
     /// `false` says only that the birth block was scanned: a wallet born
     /// long ago is still behind the tip while SPV syncs (the sync snapshot).
     pub catching_up: bool,
+    /// The coins drops of payments that can never confirm hold while what
+    /// beat them is unfinished (#170, #749), summed: none of them counts in
+    /// a bucket above. Read from the hold set, never from a balance. A coin
+    /// whose value the wallet does not know is not summed but counted in
+    /// `held_unvalued`.
+    pub held_unfinished: u64,
+    /// The held coins whose value the wallet does not know: no transaction
+    /// the history holds made them.
+    pub held_unvalued: u32,
+    /// A held coin awaits what spends it: a transaction that uses it, or
+    /// that beat its payment, isn't ChainLocked yet (#749, Q81b S2). A
+    /// remove-and-restore would credit it meanwhile.
+    pub held_awaiting: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -408,6 +425,10 @@ pub struct NetworkSession {
     /// load (`test_support::hold_close_fence`).
     #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) close_load_wait: std::sync::Mutex<Option<std::time::Duration>>,
+    /// Tests: the library cannot spend from the pool's key set
+    /// (`shielded_pool::keyset_spends`).
+    #[cfg(test)]
+    pub(crate) keyset_spends_off: std::sync::atomic::AtomicBool,
     /// Other crates' tests: holds the next Platform send before it starts
     /// (`test_support::hold_platform_send`).
     #[cfg(all(debug_assertions, feature = "test-support"))]
@@ -704,7 +725,7 @@ impl NetworkSession {
         // Before any wallet loads: an abandon marked but not swept is swept,
         // so its change is never credited. A wallet this start leaves closed
         // is swept when it is opened.
-        {
+        let dropped_holds = {
             let (persister, appdb) = (Arc::clone(&persister), Arc::clone(&appdb));
             let db_path = data_dir.join(WALLET_DB_FILE);
             let closed = unloaded.clone();
@@ -717,9 +738,10 @@ impl NetworkSession {
                     .collect();
                 crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &wallets)
             })
-            .await??;
-        }
+            .await??
+        };
         let hub = Arc::new(SessionHub::new(network.clone(), Arc::clone(&sink)));
+        hub.note_dropped_holds(dropped_holds);
         let tap = Arc::new(crate::platform::journal::ChangesetTap::new(
             Arc::clone(&hub),
             Arc::clone(&appdb),
@@ -912,6 +934,8 @@ impl NetworkSession {
             gate: OpGate::default(),
             #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             close_load_wait: Default::default(),
+            #[cfg(test)]
+            keyset_spends_off: Default::default(),
             #[cfg(all(debug_assertions, feature = "test-support"))]
             hold_platform_send: Default::default(),
             wallet_lifecycle: WalletLifecycle::default(),
@@ -992,9 +1016,12 @@ impl NetworkSession {
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
+        session.attach_drain_drops();
         session.attach_dead_claims();
         session.attach_sweep_resend();
         session.attach_balance_reread();
+        session.attach_held_refresh();
+        session.attach_lock_rerun();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -1125,15 +1152,44 @@ impl NetworkSession {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
         self.hub.detect_truncation(id, core);
+        let synced = core.synced_height();
+        let excluded = self.hub.excluded_share(id, core);
+        let waiting = excluded.waiting();
         let read = WalletState {
             birth_height: core.birth_height(),
-            synced_height: core.synced_height(),
+            synced_height: synced,
             processed_height: core.last_processed_height(),
             balance: core.balance(),
             accounts: core.account_balances(),
+            excluded,
             ..WalletState::default()
         };
         self.hub.update_wallet_state(id, |s| s.take_core(read));
+        self.hub.release_settled(id, waiting);
+        let released = self.hub.settle_rescan_holds(id, Some(synced));
+        self.forget_released_holds(id, released).await;
+        drop(wm);
+    }
+
+    /// Drops the marks of the `released` holds of wallet `id` that no new
+    /// hold took again: a later open finding a replay record keeps every
+    /// hold whose mark stays (`crate::rescan_hold::load_for_open`). The
+    /// caller holds the manager's lock, so no abandon or drop writes a
+    /// hold's mark between the read of the holds and the delete.
+    pub(crate) async fn forget_released_holds(
+        &self,
+        id: WalletId,
+        released: std::collections::BTreeSet<dashcore::OutPoint>,
+    ) {
+        if released.is_empty() {
+            return;
+        }
+        let held = self.hub.rescan_held(&id);
+        let keys = crate::rescan_hold::hold_keys(released.iter().filter(|o| !held.contains(*o)));
+        let rows = keys.into_iter().map(|k| (k, None)).collect();
+        if let Err(e) = self.write_marks(id, rows).await {
+            tracing::warn!(wallet = %id, error = %e, "could not drop the marks of coins whose rescan is back");
+        }
     }
 
     pub fn network(&self) -> &DashNetwork {
@@ -1184,8 +1240,21 @@ impl NetworkSession {
         self.context.is_ready()
     }
 
-    fn not_open(&self) -> EngineError {
+    pub(crate) fn not_open(&self) -> EngineError {
         EngineError::NetworkNotOpen(self.network.to_string())
+    }
+
+    /// Whether `wait`, a lock's proof wait, proves it before the session's
+    /// gate closes: a close does not wait for it, and ends it unproved.
+    pub(crate) async fn proved_unless_closed<E>(
+        &self,
+        wait: impl Future<Output = Result<(), E>>,
+    ) -> bool {
+        tokio::select! {
+            biased;
+            () = self.gate.until_closed() => false,
+            proved = wait => proved.is_ok(),
+        }
     }
 
     /// Admits an async operation; `NetworkNotOpen` once close has started.
@@ -1365,6 +1434,12 @@ impl NetworkSession {
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
+        // A wallet closed by an operation admitted before the gate sealed
+        // let drops wait on it whose own drain the sealed gate refused:
+        // they run now, before the stores close.
+        if let Ok(live) = self.live() {
+            self.drain_deferred_drops(&live.manager).await;
+        }
         // No vault operation is admitted from here, so no unlock can follow:
         // the data key and every grant go now, not with the session's last
         // reference (an in-app network switch keeps the process running).

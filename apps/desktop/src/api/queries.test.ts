@@ -6,7 +6,7 @@ import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { keys, PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, restoredQuery, seedRestored, settledBalance, shieldedReading } from "./queries";
+import { keys, PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, restoredQuery, seedRestored, settledBalance, shieldedHold, shieldedReading } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -65,7 +65,7 @@ describe("Home's reading of a pool query", () => {
 });
 
 describe("the wallet balance the screens read", () => {
-  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, catchingUp: false };
+  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, withheld: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
 
   it("is withheld while the wallet is catching up, and passed on once it is not", () => {
     expect(settledBalance({ ...known, catchingUp: true })).toBeNull();
@@ -117,3 +117,20 @@ describe("restored: absent is not known yet", () => {
   });
 });
 
+
+describe("what payments that may still go through hold of Shielded", () => {
+  const status = (held: string, credits: string[], active = true) =>
+    ({ active, held, heldSpends: credits.map((c, i) => ({ activityId: `h${i}`, transition: "00", credits: c })) }) as unknown as ShieldedStatus;
+
+  it("counts the spends that still hold notes, with the held total", () => {
+    expect(shieldedHold(status("60000000000", ["30000000000", "30000000000"]))).toEqual({ count: 2, credits: "60000000000", duffs: 60_000_000 });
+    expect(shieldedHold(status("30000000000", ["30000000000", "0"]))).toEqual({ count: 1, credits: "30000000000", duffs: 30_000_000 });
+  });
+
+  it("shows no hold when nothing is held, even while a spend is listed", () => {
+    expect(shieldedHold(status("0", ["0"]))).toBeNull();
+    expect(shieldedHold(status("0", []))).toBeNull();
+    expect(shieldedHold(status("30000000000", ["30000000000"], false))).toBeNull();
+    expect(shieldedHold(null)).toBeNull();
+  });
+});

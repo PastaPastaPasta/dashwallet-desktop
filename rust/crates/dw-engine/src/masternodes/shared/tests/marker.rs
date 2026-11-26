@@ -41,6 +41,7 @@ where
     for event in &events {
         f.session.hub.on_wallet_event(event);
     }
+    f.session.hub.settle_rereads();
     (f.session.live().unwrap().persister)
         .flush(f.wallets[0].0)
         .unwrap();

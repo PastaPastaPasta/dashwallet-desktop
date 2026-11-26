@@ -49,8 +49,9 @@ use super::registration_flow::{FundError, LockInfo, LockStatus, Spendable};
 use super::requests::tests::Fixture;
 use super::shield_drain::{self as drain, DrainCoin};
 use super::shielded::{
-    SHIELDED_ACTIVATION_VERSION, ShieldState, ShieldedActivityKind, ShieldedActivityStatus,
-    ShieldedDirection, ShieldedSpendState, UnresolvedSpend,
+    SHIELDED_ACTIVATION_VERSION, ShieldState, ShieldedAccount, ShieldedActivityKind,
+    ShieldedActivityStatus, ShieldedDirection, ShieldedScanProgress, ShieldedSpendState,
+    UnresolvedSpend,
 };
 use super::shielded_pool::{
     self as pool, Applied, Ledger, MAX_LOCK_INPUTS, ShieldedLib, SpendError, SyncState, on_pool,
@@ -106,6 +107,101 @@ fn note(position: u64, value: u64) -> ShieldedNote {
         value,
         note_data: Vec::new(),
     }
+}
+
+/// The signed transition of spend `n` of `kind`'s family, publishing
+/// `nullifiers` against `anchor`.
+pub(super) fn signed_spend(
+    n: u8,
+    kind: &platform_wallet::wallet::shielded::ShieldedDispatchKind,
+    anchor: [u8; 32],
+    nullifiers: &[[u8; 32]],
+) -> Vec<u8> {
+    use dpp::identity::core_script::CoreScript;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::shielded::SerializedAction;
+    use dpp::state_transition::StateTransition;
+    use dpp::state_transition::identity_top_up_from_shielded_pool_transition::IdentityTopUpFromShieldedPoolTransition;
+    use dpp::state_transition::identity_top_up_from_shielded_pool_transition::v0::IdentityTopUpFromShieldedPoolTransitionV0;
+    use dpp::state_transition::shielded_transfer_transition::ShieldedTransferTransition;
+    use dpp::state_transition::shielded_transfer_transition::v0::ShieldedTransferTransitionV0;
+    use dpp::state_transition::shielded_withdrawal_transition::ShieldedWithdrawalTransition;
+    use dpp::state_transition::shielded_withdrawal_transition::v0::ShieldedWithdrawalTransitionV0;
+    use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::IdentityCreateFromShieldedPoolTransition;
+    use dpp::state_transition::state_transitions::shielded::identity_create_from_shielded_pool_transition::v0::IdentityCreateFromShieldedPoolTransitionV0;
+    use dpp::state_transition::unshield_transition::UnshieldTransition;
+    use dpp::state_transition::unshield_transition::v0::UnshieldTransitionV0;
+    use platform_wallet::wallet::shielded::ShieldedDispatchKind as K;
+    let actions: Vec<SerializedAction> = (nullifiers.iter())
+        .map(|&nullifier| SerializedAction {
+            nullifier,
+            rk: [n; 32],
+            cmx: [0x30 + n; 32],
+            encrypted_note: vec![0x40 + n; 216],
+            cv_net: [0x50 + n; 32],
+            spend_auth_sig: [0x60 + n; 64],
+        })
+        .collect();
+    let (proof, binding_signature) = (vec![0x70; 512], [0x71; 64]);
+    let st = match kind {
+        K::Transfer => StateTransition::ShieldedTransfer(ShieldedTransferTransition::V0(
+            ShieldedTransferTransitionV0 {
+                actions,
+                value_balance: 1_000 + u64::from(n),
+                anchor,
+                proof,
+                binding_signature,
+            },
+        )),
+        K::Unshield => StateTransition::Unshield(UnshieldTransition::V0(UnshieldTransitionV0 {
+            output_address: PlatformAddress::P2pkh([0x51; 20]),
+            actions,
+            unshielding_amount: 100_000_000 + u64::from(n),
+            anchor,
+            proof,
+            binding_signature,
+        })),
+        K::Withdraw => StateTransition::ShieldedWithdrawal(ShieldedWithdrawalTransition::V0(
+            ShieldedWithdrawalTransitionV0 {
+                actions,
+                unshielding_amount: 100_000_000 + u64::from(n),
+                anchor,
+                proof,
+                binding_signature,
+                core_fee_per_byte: 1,
+                pooling: dpp::withdrawal::Pooling::Never,
+                output_script: CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]),
+            },
+        )),
+        K::IdentityTopUp { identity_id } => StateTransition::IdentityTopUpFromShieldedPool(
+            IdentityTopUpFromShieldedPoolTransition::V0(
+                IdentityTopUpFromShieldedPoolTransitionV0 {
+                    identity_id: (*identity_id).into(),
+                    actions,
+                    top_up_amount: 100_000_000 + u64::from(n),
+                    anchor,
+                    proof,
+                    binding_signature,
+                },
+            ),
+        ),
+        K::IdentityCreate { identity_id } => StateTransition::IdentityCreateFromShieldedPool(
+            IdentityCreateFromShieldedPoolTransition::V0(
+                IdentityCreateFromShieldedPoolTransitionV0 {
+                    public_keys: Vec::new(),
+                    denomination: 100_000_000,
+                    actions,
+                    anchor,
+                    proof,
+                    binding_signature,
+                    send_to_address_on_creation_failure: PlatformAddress::P2pkh([0x52; 20]),
+                    identity_id: (*identity_id).into(),
+                },
+            ),
+        ),
+        K::PrivateDocumentCreate => panic!("no spend of the engine's is a private document"),
+    };
+    st.serialize_to_bytes().unwrap()
 }
 
 fn entry(kind: Kind, amount: u64, status: Status) -> ShieldedActivityEntry {
@@ -204,8 +300,10 @@ pub(crate) struct FakeShielded {
     version: u32,
     /// What a proved read of the version returns.
     refreshed: u32,
-    refreshes: AtomicU32,
+    pub(crate) refreshes: AtomicU32,
     bound: bool,
+    /// What a bind says while not `bound`.
+    unbound_as: ShieldedAccount,
     ledger: Option<Ledger>,
     notes: Vec<ShieldedNote>,
     /// The unspent notes from now on, when set (a pass moved them).
@@ -225,6 +323,9 @@ pub(crate) struct FakeShielded {
     queued: Mutex<std::collections::VecDeque<Result<Applied, PlatformError>>>,
     /// The outpoint of every apply, in order.
     applied: Mutex<Vec<OutPoint>>,
+    /// The next proof wait holds here, as the library's does until its
+    /// proof or its bound.
+    proof_hold: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
     /// The library's key set spends are off.
@@ -232,8 +333,18 @@ pub(crate) struct FakeShielded {
     /// The answers of the next reads of the hook, in order, before
     /// `unhooked` answers.
     hook_reads: Mutex<std::collections::VecDeque<bool>>,
+    /// The library cannot spend from the key set.
+    no_keyset_spends: AtomicBool,
     /// The spends the library resolved unproved and holds the notes of.
     held: Mutex<HashSet<[u8; 32]>>,
+    /// What `holds` reads; `held` is not derived from it.
+    holds: Mutex<Vec<pool::Hold>>,
+    /// Every note, spent ones too; `notes` when `None`.
+    all_notes: Mutex<Option<Vec<ShieldedNote>>>,
+    /// `all_notes` cannot be read.
+    notes_unreadable: AtomicBool,
+    /// How many times `all_notes` was read.
+    notes_reads: AtomicU32,
     /// What a send that fails (not an unconfirmed one) leaves.
     after_failure: Mutex<AfterFailure>,
     /// The library's held spends cannot be read.
@@ -272,6 +383,10 @@ pub(crate) struct FakeShielded {
     /// What the next pass finds of the unconfirmed spends: `Confirmed`
     /// (their notes spent) or `Failed` (the prune backstop released them).
     scan_finds: Mutex<Option<Status>>,
+    /// The ledger the next pass establishes (the notes it found), when set.
+    scan_ledger: Mutex<Option<Ledger>>,
+    /// The library's sync loop as the status reads it.
+    sync: Mutex<SyncState>,
     /// The locks of unknown consumption, as `app.sqlite` keeps them.
     unknown: Mutex<HashSet<Txid>>,
     /// The shield lock rows, when set: exactly these (else `locks` and
@@ -301,6 +416,8 @@ pub(crate) struct FakeShielded {
     consumed: AtomicBool,
     /// Platform's proved spent read of each outpoint; unread when unset.
     pub(super) spent_reads: Mutex<std::collections::HashMap<OutPoint, SpentRead>>,
+    /// The locks Platform proved partly used, unless `real_rows`.
+    pub(super) partly_used: Mutex<HashSet<OutPoint>>,
     /// The next applies end with these library errors, in order, after
     /// their transitions were signed, mapped as `PwShielded::apply` maps
     /// them.
@@ -423,6 +540,7 @@ impl Default for FakeShielded {
             refreshed: LATEST,
             refreshes: AtomicU32::new(0),
             bound: true,
+            unbound_as: ShieldedAccount::Binding,
             ledger: Some(Ledger {
                 spendable: 2 * NOTE,
                 synced_index: Some(42),
@@ -437,10 +555,16 @@ impl Default for FakeShielded {
             applies: Mutex::new(None),
             queued: Mutex::default(),
             applied: Mutex::default(),
+            proof_hold: Mutex::default(),
             unhooked: AtomicBool::new(false),
             no_keyset: AtomicBool::new(false),
             hook_reads: Mutex::default(),
+            no_keyset_spends: AtomicBool::new(false),
             held: Mutex::default(),
+            holds: Mutex::default(),
+            all_notes: Mutex::default(),
+            notes_unreadable: AtomicBool::new(false),
+            notes_reads: AtomicU32::new(0),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
             stored_unreadable: AtomicBool::new(false),
@@ -467,6 +591,11 @@ impl Default for FakeShielded {
             loses_record: AtomicBool::new(false),
             rows: Mutex::default(),
             scan_finds: Mutex::new(None),
+            scan_ledger: Mutex::default(),
+            sync: Mutex::new(SyncState {
+                last_sync_at: Some(1_700_000_000),
+                ..SyncState::default()
+            }),
             unknown: Mutex::default(),
             lock_rows: Mutex::default(),
             script: Mutex::new(Some(dashcore::ScriptBuf::new())),
@@ -496,6 +625,7 @@ impl Default for FakeShielded {
             hooks: AtomicBool::new(false),
             drops_artifact: AtomicBool::new(false),
             spent_reads: Mutex::default(),
+            partly_used: Mutex::default(),
         }
     }
 }
@@ -778,8 +908,12 @@ impl ShieldedLib for FakeShielded {
         self.refreshed
     }
 
-    async fn bind(&self) -> Result<bool, PlatformError> {
-        Ok(self.bound)
+    async fn bind(&self) -> Result<ShieldedAccount, PlatformError> {
+        Ok(if self.bound {
+            ShieldedAccount::Bound
+        } else {
+            self.unbound_as
+        })
     }
 
     async fn address(&self) -> Option<[u8; 43]> {
@@ -787,7 +921,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn ledger(&self) -> Result<Option<Ledger>, PlatformError> {
-        Ok(self.ledger)
+        Ok(self.scan_ledger.lock().unwrap().or(self.ledger))
     }
 
     async fn unspent(&self) -> Result<Vec<ShieldedNote>, PlatformError> {
@@ -810,6 +944,9 @@ impl ShieldedLib for FakeShielded {
 
     async fn sync_now(&self) -> bool {
         self.syncs.fetch_add(1, Ordering::SeqCst);
+        if let Some(ledger) = self.scan_ledger.lock().unwrap().as_mut() {
+            ledger.synced_index = ledger.synced_index.or(Some(1));
+        }
         if let Some(found) = self.scan_finds.lock().unwrap().take() {
             self.unresolved.lock().unwrap().clear();
             for row in self.rows.lock().unwrap().iter_mut() {
@@ -820,10 +957,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     fn sync_state(&self) -> SyncState {
-        SyncState {
-            syncing: false,
-            last_sync_at: Some(1_700_000_000),
-        }
+        *self.sync.lock().unwrap()
     }
 
     fn prover_ready(&self) -> bool {
@@ -930,6 +1064,21 @@ impl ShieldedLib for FakeShielded {
         self.unknown.lock().unwrap().insert(txid);
     }
 
+    /// The field's, and with a funder the session's own records.
+    async fn partly_used(&self) -> HashSet<OutPoint> {
+        if self.real_rows {
+            return self.real().await.partly_used().await;
+        }
+        let mut out = self.partly_used.lock().unwrap().clone();
+        let funder = self.funder.lock().unwrap().clone();
+        if let Some((session, wallet)) = funder.and_then(|(s, w)| Some((s.upgrade()?, w))) {
+            let kind = crate::platform::unfinished_locks::LockKindId::Shielded;
+            let kept = crate::platform::unfinished_locks::remaining_of(&session, wallet, kind);
+            out.extend(kept.await.into_keys());
+        }
+        out
+    }
+
     async fn settled_locks(&self) -> HashSet<Txid> {
         if self.real_rows {
             return self.real().await.settled_locks().await;
@@ -950,15 +1099,15 @@ impl ShieldedLib for FakeShielded {
         Ok(())
     }
 
-    fn keyset_spends(&self) -> bool {
-        !self.no_keyset.load(Ordering::SeqCst)
-    }
-
     async fn hooked(&self) -> bool {
         if let Some(answer) = self.hook_reads.lock().unwrap().pop_front() {
             return answer;
         }
         !self.unhooked.load(Ordering::SeqCst)
+    }
+
+    fn keyset_spends(&self) -> bool {
+        !(self.no_keyset.load(Ordering::SeqCst) || self.no_keyset_spends.load(Ordering::SeqCst))
     }
 
     async fn rest_clock(&self) -> Result<pool::RestClock, PlatformError> {
@@ -993,6 +1142,26 @@ impl ShieldedLib for FakeShielded {
             });
         }
         Ok(self.held.lock().unwrap().clone())
+    }
+
+    async fn holds(&self) -> Result<Vec<pool::Hold>, PlatformError> {
+        if self.held_unreadable.load(Ordering::SeqCst) {
+            return Err(PlatformError::Internal {
+                detail: "the dispositions cannot be read".into(),
+            });
+        }
+        Ok(self.holds.lock().unwrap().clone())
+    }
+
+    async fn all_notes(&self) -> Result<Vec<ShieldedNote>, PlatformError> {
+        self.notes_reads.fetch_add(1, Ordering::SeqCst);
+        if self.notes_unreadable.load(Ordering::SeqCst) {
+            return Err(PlatformError::Internal {
+                detail: "the notes cannot be read".into(),
+            });
+        }
+        let all = self.all_notes.lock().unwrap().clone();
+        Ok(all.unwrap_or_else(|| self.notes.clone()))
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {
@@ -1142,6 +1311,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn wait_proof(&self, _: OutPoint, _: Duration) -> Result<(), FundError> {
+        crate::coins::pause_at(&self.proof_hold).await;
         Err(FundError::Refused(PlatformError::Unavailable))
     }
 
@@ -1490,6 +1660,86 @@ fn the_platform_shield_gate_is_active_then_bound() {
     assert_eq!(gate(FakeShielded::at(11, 12)), Ok(12));
 }
 
+/// The status shows each held spend and the credits of the unspent notes
+/// they hold, each note once; nothing held reads 0, and holds that cannot
+/// be read show none. The balance stays the ledger's.
+#[test]
+fn the_status_shows_the_held_spends_and_their_unspent_notes() {
+    let fx = Fixture::new(0);
+    let status_of = |lib: FakeShielded| {
+        let lib = Arc::new(lib);
+        let status = run(&fx, &lib, |_, lib| async move {
+            pool::status(&*lib).await.unwrap()
+        });
+        (status, lib.notes_reads.load(Ordering::SeqCst))
+    };
+    // No hold: 0, and the notes are not read.
+    let (none, reads) = status_of(FakeShielded::default());
+    assert!(none.held_spends.is_empty());
+    assert_eq!((none.held, reads), (0, 0));
+
+    let spent = ShieldedNote {
+        is_spent: true,
+        ..note(5, 17)
+    };
+    let all = vec![
+        note(1, NOTE),
+        note(2, NOTE),
+        note(3, 11),
+        note(4, 13),
+        spent,
+    ];
+    let hold = |n: u8, notes: &[&ShieldedNote]| pool::Hold {
+        transition: [n; 32],
+        activity: [n + 1; 32],
+        nullifiers: notes.iter().map(|note| note.nullifier).collect(),
+    };
+    // A note the wallet does not have (never scanned, or purged).
+    let unknown = note(9, 7);
+    let holds = vec![
+        hold(0xa0, &[&all[2], &all[3]]),
+        hold(0xb0, &[&all[3], &all[4]]),
+        // Its one note seen spent: listed, holding nothing.
+        hold(0xc0, &[&all[4]]),
+        hold(0xd0, &[&unknown]),
+    ];
+    let held = || FakeShielded {
+        holds: Mutex::new(holds.clone()),
+        all_notes: Mutex::new(Some(all.clone())),
+        ..FakeShielded::default()
+    };
+    let (status, reads) = status_of(held());
+    assert_eq!(reads, 1);
+    assert_eq!(status.held, 11 + 13);
+    assert_eq!(status.held, pool::held_credits(&holds, &all));
+    assert_eq!(status.balance, 2 * NOTE);
+    let shown: Vec<_> = (status.held_spends.iter())
+        .map(|h| (h.activity_id.clone(), h.transition.clone(), h.credits))
+        .collect();
+    let spend = |n: u8, credits| (hex::encode([n + 1; 32]), hex::encode([n; 32]), credits);
+    assert_eq!(
+        shown,
+        [
+            spend(0xa0, 11 + 13),
+            spend(0xb0, 13),
+            spend(0xc0, 0),
+            spend(0xd0, 0)
+        ]
+    );
+
+    let notes_fail = held();
+    notes_fail.notes_unreadable.store(true, Ordering::SeqCst);
+    let (status, _) = status_of(notes_fail);
+    assert!(status.held_spends.is_empty());
+    assert_eq!((status.held, status.balance), (0, 2 * NOTE));
+
+    let unreadable = held();
+    unreadable.held_unreadable.store(true, Ordering::SeqCst);
+    let (status, _) = status_of(unreadable);
+    assert!(status.held_spends.is_empty());
+    assert_eq!((status.held, status.balance), (0, 2 * NOTE));
+}
+
 #[test]
 fn the_status_reads_the_ledger_pending_rows_and_open_shields() {
     let fx = Fixture::new(0);
@@ -1562,6 +1812,142 @@ fn the_receive_address_is_the_accounts_bech32m_address() {
     assert_eq!(address.address, payee_text());
     assert!(address.address.starts_with("tdash1z"));
     assert_eq!(address.account, 0);
+}
+
+/// What holds an unbound account is the status's `account`: a first bind
+/// the vault refused says unlock, unlock fully, or watch-only; a pass that
+/// held the bind back says binding. None of them gives an address, and
+/// none is a reading.
+#[test]
+fn an_unbound_account_says_why_and_gives_no_address() {
+    let fx = Fixture::new(0);
+    for why in [
+        ShieldedAccount::Locked,
+        ShieldedAccount::MixingOnly,
+        ShieldedAccount::WatchOnly,
+        ShieldedAccount::Binding,
+    ] {
+        let lib = Arc::new(FakeShielded {
+            bound: false,
+            unbound_as: why,
+            ..FakeShielded::default()
+        });
+        let (status, address) = run(&fx, &lib, |_, lib| async move {
+            let status = pool::status(&*lib).await.unwrap();
+            (status, code(pool::receive_address(&*lib).await))
+        });
+        assert_eq!(status.account, Some(why));
+        assert!(status.active && !status.ready);
+        assert_eq!(address, "shielded.not_synced");
+    }
+    let bound = Arc::new(FakeShielded::default());
+    let status = run(&fx, &bound, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert_eq!(status.account, Some(ShieldedAccount::Bound));
+    // Not active: no account at all.
+    let inactive = Arc::new(FakeShielded {
+        version: SHIELDED_ACTIVATION_VERSION - 1,
+        ..FakeShielded::default()
+    });
+    let status = run(&fx, &inactive, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert_eq!(status.account, None);
+}
+
+/// The vault's refusals of a first bind map to what the user can do; any
+/// other vault error stays the call's error.
+#[test]
+fn a_vault_refusal_of_the_viewing_key_maps_to_an_account_state() {
+    assert_eq!(
+        pool::vault_blocked(VaultError::Locked),
+        Ok(ShieldedAccount::Locked)
+    );
+    assert_eq!(
+        pool::vault_blocked(VaultError::MixingOnly),
+        Ok(ShieldedAccount::MixingOnly)
+    );
+    assert_eq!(
+        pool::vault_blocked(VaultError::NoSecret),
+        Ok(ShieldedAccount::WatchOnly)
+    );
+    assert!(pool::vault_blocked(VaultError::NoVault).is_err());
+}
+
+/// Bound and not scanned yet, the account's address reads: a note paid to
+/// it while the first pass runs is the pass's to find, and shows once the
+/// pass establishes the account.
+#[test]
+fn the_address_reads_before_the_first_scan_and_its_note_shows_after() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        ledger: None,
+        ..FakeShielded::default()
+    });
+    *lib.sync.lock().unwrap() = SyncState {
+        syncing: true,
+        last_sync_at: None,
+        scan: Some(ShieldedScanProgress {
+            checked: 4_000,
+            total: 10_000,
+        }),
+        last_pass_failed: false,
+    };
+    let (early, before) = run(&fx, &lib, |_, lib| async move {
+        let address = pool::receive_address(&*lib).await.unwrap();
+        (address, pool::status(&*lib).await.unwrap())
+    });
+    assert_eq!(early.address, payee_text());
+    assert_eq!(before.account, Some(ShieldedAccount::Bound));
+    assert!(!before.ready && before.syncing);
+    assert_eq!(
+        before.scan,
+        Some(ShieldedScanProgress {
+            checked: 4_000,
+            total: 10_000
+        })
+    );
+    // Mid-pass, a payment to `early` lands in the tree; the pass finds it.
+    *lib.scan_ledger.lock().unwrap() = Some(Ledger {
+        spendable: NOTE,
+        synced_index: None,
+    });
+    *lib.sync.lock().unwrap() = SyncState {
+        last_sync_at: Some(1_700_000_100),
+        ..SyncState::default()
+    };
+    let (after, address) = run(&fx, &lib, |_, lib| async move {
+        lib.sync_now().await;
+        let status = pool::status(&*lib).await.unwrap();
+        (status, pool::receive_address(&*lib).await.unwrap())
+    });
+    assert!(after.ready && !after.syncing);
+    assert_eq!(after.balance, NOTE);
+    assert_eq!(after.scan, None);
+    assert_eq!(address, early);
+}
+
+/// The status passes the hub's reading of the last pass through, and the
+/// scan progress only while a pass runs.
+#[test]
+fn the_status_reports_a_failed_pass_and_no_progress_between_passes() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.sync.lock().unwrap() = SyncState {
+        syncing: false,
+        last_sync_at: Some(1_700_000_000),
+        scan: Some(ShieldedScanProgress {
+            checked: 1,
+            total: 2,
+        }),
+        last_pass_failed: true,
+    };
+    let status = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(status.ready && status.last_pass_failed);
+    assert_eq!(status.scan, None);
 }
 
 #[test]
@@ -1980,7 +2366,7 @@ fn a_shield_quote_refuses_while_a_lock_pends_or_core_falls_short() {
 
     assert_eq!(
         quote(FakeShielded::default(), min - 1).unwrap_err(),
-        ShieldedError::BelowMinimum { min }
+        ShieldedError::BelowMinimum { min, max: None }
     );
     let pending = FakeShielded {
         locks: vec![
@@ -2034,6 +2420,42 @@ fn resume_refuses_an_unknown_lock_and_waits_for_a_proof() {
     assert_eq!(unknown, "invalid_argument");
     assert_eq!(waiting.state, super::shielded::ShieldState::ProofWaiting);
     assert!(fx.unused(&grant));
+}
+
+/// #879: a close that starts while "Check again" waits for a shield lock's
+/// proof does not wait for it: the press is "waiting for proof", with
+/// nothing applied.
+#[test]
+fn a_close_ends_a_shield_resumes_proof_wait_as_waiting_for_proof() {
+    let fx = Fixture::new(0);
+    let wallet = fx.wallet;
+    let grant = shield_grant(&fx, 1);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![lock(1, LockStatus::Broadcast)],
+        ..FakeShielded::default()
+    });
+    let hold = Arc::new(crate::coins::TestPause::default());
+    *lib.proof_hold.lock().unwrap() = Some(Arc::clone(&hold));
+    let txid = lock(1, LockStatus::Broadcast).outpoint.txid.to_string();
+    let (s, run) = (Arc::clone(&fx.s), Arc::clone(&lib));
+    let press = fx.s.rt.spawn(async move {
+        let _op = s.enter().await.map_err(PlatformError::from)?;
+        pool::resume(&s, wallet, &*run, &txid, &grant).await
+    });
+    assert!(hold.wait_reached(Duration::from_secs(30)), "the proof wait");
+    let s = Arc::clone(&fx.s);
+    let closing = fx.s.rt.spawn(async move { s.close().await });
+    let resumed = fx
+        .engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), press).await });
+    hold.release.notify_one();
+    let resumed = resumed.expect("the close ended the proof wait").unwrap();
+    fx.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), closing).await })
+        .expect("the close ends")
+        .unwrap();
+    assert_eq!(resumed.unwrap().state, ShieldState::ProofWaiting);
+    assert!(lib.applied.lock().unwrap().is_empty(), "no apply");
 }
 
 /// E0-04 Q15, ruling (c): a spend whose broadcast the library could not
@@ -2566,6 +2988,79 @@ fn a_shield_lock_of_unknown_consumption_pends_until_a_proved_apply() {
     });
     assert!(status.pending_shields.is_empty());
     assert_eq!(code(quote(&unread)), "platform.unavailable");
+}
+
+/// #402: this device's own shield that Platform refused after a penalty (its
+/// apply failed after the signature, and Platform's proved state shows the
+/// lock partly used) is kept with what is left: no longer a pending shield,
+/// so it blocks no shield and its "Check again" is refused, and the
+/// unfinished transfers list it Recoverable. A lock Platform has not proved
+/// partly used stays pending.
+#[test]
+fn an_own_shield_refused_after_a_penalty_leaves_the_pending_shields() {
+    let fx = Fixture::new(0);
+    let (partly, plain) = (
+        lock(1, LockStatus::InstantSendLocked),
+        lock(2, LockStatus::InstantSendLocked),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![partly.clone(), plain.clone()],
+        own: Some(HashSet::from([partly.outpoint.txid, plain.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+    lib.spent_reads.lock().unwrap().insert(
+        partly.outpoint,
+        SpentRead::Remaining {
+            credits: 600_000_000,
+        },
+    );
+
+    for n in [1, 2] {
+        assert_eq!(
+            resume_with(&fx, &lib, n, Ok(Applied::Unknown)),
+            ShieldState::ConsumptionUnknown
+        );
+    }
+    let pending: Vec<_> = pending_of(&fx, &lib).into_iter().map(|p| p.0).collect();
+    assert_eq!(
+        pending,
+        [plain.outpoint.txid.to_string()],
+        "only the unproved one pends"
+    );
+
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let (wallet, grant) = (fx.wallet, shield_grant(&fx, 1));
+    let txid = partly.outpoint.txid.to_string();
+    let again = run(&fx, &lib, move |s, lib| async move {
+        pool::resume(&s, wallet, &*lib, &txid, &grant).await
+    });
+    assert_eq!(
+        code(again),
+        "invalid_argument",
+        "no Check again of a partly used lock"
+    );
+    assert_eq!(lib.applied.lock().unwrap().len(), 2, "not shielded again");
+
+    let listed = run(&fx, &lib, move |s, lib| async move {
+        let kind = crate::platform::unfinished_shields::ShieldLocks::new(&s, wallet, &*lib);
+        crate::platform::unfinished_locks::detect(&kind)
+            .await
+            .unwrap()
+    });
+    let state = |at: OutPoint| {
+        let l = listed
+            .iter()
+            .find(|l| l.txid == at.txid.to_string())
+            .unwrap();
+        (l.state, l.remaining_credits)
+    };
+    use crate::platform::unfinished_locks::UnfinishedState;
+    assert_eq!(
+        state(partly.outpoint),
+        (UnfinishedState::Recoverable, Some(600_000_000))
+    );
+    assert_eq!(state(plain.outpoint).0, UnfinishedState::Checking);
 }
 
 /// E1 r1 R1-2: a shield whose apply failed after its transition was
@@ -3152,13 +3647,13 @@ fn a_shield_quote_refuses_a_lock_of_more_than_50_coins() {
 
 // MARK: the real library
 
-/// The account's address through the real library: bound or not, and the
-/// address once bound.
+/// The account's address through the real library: what its bind says,
+/// and the address once bound.
 fn bound_address(
     engine: &crate::Engine,
     session: &Arc<NetworkSession>,
     wallet: crate::WalletId,
-) -> (bool, Option<String>) {
+) -> (ShieldedAccount, Option<String>) {
     engine
         .block_on(on_pool(session, wallet, |_, lib| async move {
             let bound = lib.bind().await?;
@@ -3185,7 +3680,7 @@ fn the_viewing_key_binds_once_and_from_storage_after_a_restart() {
         .to_bech32m_string(Network::Regtest);
     assert_eq!(
         bound_address(&f.engine, &f.session, f.wallet),
-        (true, Some(want.clone()))
+        (ShieldedAccount::Bound, Some(want.clone()))
     );
 
     f.engine
@@ -3201,16 +3696,185 @@ fn the_viewing_key_binds_once_and_from_storage_after_a_restart() {
     );
     assert_eq!(
         bound_address(&f.engine, &f.session, f.wallet),
-        (true, Some(want))
+        (ShieldedAccount::Bound, Some(want))
     );
     assert!(f.session.data_dir().join(pool::SHIELDED_DB_FILE).exists());
 
+    // Never bound and locked: the status says unlock, and no address reads.
     let fresh = fixture(true);
     fresh.session.vault.lock();
     assert_eq!(
         bound_address(&fresh.engine, &fresh.session, fresh.wallet),
-        (false, None)
+        (ShieldedAccount::Locked, None)
     );
+    let (account, address) = fresh
+        .engine
+        .block_on(on_pool(&fresh.session, fresh.wallet, |_, lib| async move {
+            let status = pool::status(&lib).await?;
+            Ok((
+                status.account,
+                pool::receive_address(&lib).await.map_err(|e| e.code()),
+            ))
+        }))
+        .unwrap();
+    assert_eq!(account, Some(ShieldedAccount::Locked));
+    assert_eq!(address, Err("shielded.not_synced"));
+
+    // An unlock for mixing only still holds it back; after a full unlock the
+    // next bind binds the key and the address reads.
+    let unlock = |scope| {
+        let session = Arc::clone(&fresh.session);
+        (fresh.engine)
+            .block_on(session.vault_op(move |v| v.unlock(super::topup_tests::PASS, scope)))
+            .unwrap();
+    };
+    unlock(dw_vault::UnlockScope::MixingOnly);
+    assert_eq!(
+        bound_address(&fresh.engine, &fresh.session, fresh.wallet).0,
+        ShieldedAccount::MixingOnly
+    );
+    fresh.session.vault.lock();
+    unlock(dw_vault::UnlockScope::Full);
+    let (account, address) = bound_address(&fresh.engine, &fresh.session, fresh.wallet);
+    assert_eq!(account, ShieldedAccount::Bound);
+    assert!(address.is_some(), "the address reads once bound");
+}
+
+/// Review: a pass holds the note store for the whole of a first scan. The
+/// status bar's sync read and a bound key's address answer under it; the
+/// full status waits for the store.
+#[test]
+fn the_sync_read_and_a_bound_address_answer_while_a_pass_holds_the_store() {
+    let f = super::topup_tests::fixture(true);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let (account, want) = bound_address(engine, session, wallet);
+    assert!(account.is_bound());
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        let wait = Duration::from_secs(10);
+        let info = (tokio::time::timeout(wait, dp.shielded_sync_info()).await)
+            .expect("the sync read waits for no store")
+            .unwrap();
+        assert!(info.active);
+        assert_eq!(info.account, Some(ShieldedAccount::Bound));
+        let address = (tokio::time::timeout(wait, dp.shielded_receive_address()).await)
+            .expect("a bound key's address waits for no store")
+            .unwrap();
+        assert_eq!(Some(address.address), want);
+        let status = tokio::time::timeout(Duration::from_millis(300), dp.shielded_status());
+        assert!(status.await.is_err(), "the full status reads the store");
+    });
+}
+
+/// An engine with a regtest session and no vault.
+fn vaultless(no_platform: bool) -> (tempfile::TempDir, crate::Engine, Arc<NetworkSession>) {
+    struct Quiet;
+    impl crate::EventSink for Quiet {
+        fn emit(&self, _: crate::EngineEvent) {}
+    }
+    let dir = dw_testutil::private_tempdir();
+    let engine = crate::Engine::new(
+        crate::EngineConfig {
+            data_root: dir.path().join("data"),
+            worker_threads: Some(2),
+            vault: dw_vault::VaultConfig {
+                kdf: dw_vault::KdfPolicy::Fixed(dw_vault::KdfParams::TEST),
+                os_store: Arc::new(dw_vault::MemoryOsStore::new()),
+                ..dw_vault::VaultConfig::default()
+            },
+        },
+        Arc::new(Quiet),
+    )
+    .unwrap();
+    let options = crate::SessionOptions {
+        no_platform,
+        ..super::topup_tests::options()
+    };
+    let session = (engine.block_on(engine.open_network(DashNetwork::Regtest, options))).unwrap();
+    (dir, engine, session)
+}
+
+fn watch_only_xpub() -> String {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap()).to_string()
+}
+
+/// Review: a wallet without a seed is watch-only whatever the vault's
+/// state: unlocked for mixing only it is not asked for a full unlock (a
+/// seeded wallet still is), and with no vault at all its status reads.
+#[test]
+fn a_watch_only_wallet_is_watch_only_in_every_vault_state() {
+    let f = super::topup_tests::fixture(true);
+    let watch = (f.engine)
+        .block_on(
+            f.session
+                .import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()),
+        )
+        .unwrap();
+    f.session.vault.lock();
+    (f.engine)
+        .block_on(
+            f.session.vault_op(|v| {
+                v.unlock(super::topup_tests::PASS, dw_vault::UnlockScope::MixingOnly)
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        bound_address(&f.engine, &f.session, watch),
+        (ShieldedAccount::WatchOnly, None)
+    );
+    let info = (f.engine)
+        .block_on(f.session.dashpay(watch).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::WatchOnly));
+    assert_eq!(
+        bound_address(&f.engine, &f.session, f.wallet).0,
+        ShieldedAccount::MixingOnly
+    );
+    let info = (f.engine)
+        .block_on(f.session.dashpay(f.wallet).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::MixingOnly));
+
+    let (_dir, engine, session) = vaultless(false);
+    let watch = engine
+        .block_on(session.import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()))
+        .unwrap();
+    let status = engine
+        .block_on(session.dashpay(watch).shielded_status())
+        .unwrap();
+    assert_eq!(status.account, Some(ShieldedAccount::WatchOnly));
+    let info = engine
+        .block_on(session.dashpay(watch).shielded_sync_info())
+        .unwrap();
+    assert_eq!(info.account, Some(ShieldedAccount::WatchOnly));
+    assert!(info.spends_available && status.spends_available);
+}
+
+/// Review: a session without Platform (`--no-platform`) runs no pass, so
+/// Shielded is not active there and nothing waits on it.
+#[test]
+fn shielded_is_not_active_in_a_session_without_platform() {
+    let (_dir, engine, session) = vaultless(true);
+    let watch = engine
+        .block_on(session.import_watch_only(watch_only_xpub(), crate::WatchOnlyOptions::default()))
+        .unwrap();
+    let dp = session.dashpay(watch);
+    let status = engine.block_on(dp.shielded_status()).unwrap();
+    assert!(!status.active);
+    let info = engine.block_on(dp.shielded_sync_info()).unwrap();
+    assert!(!info.active);
+    assert_eq!(info.account, None);
+    assert!(status.spends_available, "this pin's library spends");
+    assert_eq!(info.spends_available, status.spends_available, "one switch");
+    let sync = dp.sync_status().unwrap();
+    assert!(!sync.platform_enabled);
 }
 
 /// A spend stored under the hook is represented by its artifact, while a
@@ -3225,7 +3889,7 @@ fn a_pass_leaves_hooked_spends_to_their_artifact_and_admit_refuses_unrecorded_on
     };
     let f = super::topup_tests::fixture(true);
     let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
-    assert!(bound_address(engine, session, wallet).0);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
     let hooked_bytes = b"a hooked transition".to_vec();
     let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
@@ -3359,7 +4023,7 @@ fn a_pass_leaves_hooked_spends_to_their_artifact_and_admit_refuses_unrecorded_on
     // while its vault is locked; the hook gates its re-send per artifact.
     let g = super::topup_tests::fixture(true);
     let (engine, session, wallet) = (&g.engine, &g.session, g.wallet);
-    assert!(bound_address(engine, session, wallet).0);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
     let s = Arc::clone(session);
     let m = Arc::clone(&manager);
@@ -3436,11 +4100,11 @@ fn a_pass_records_spends_stored_before_the_hook_and_leaves_hooked_ones_to_their_
     };
     let f = super::topup_tests::fixture(true);
     let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
-    assert!(bound_address(engine, session, wallet).0);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
+    let selected_note = note(6, NOTE);
     let hooked_bytes = b"a hooked transition".to_vec();
     let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
-    let selected_note = note(6, NOTE);
     let s = Arc::clone(session);
     let m = Arc::clone(&manager);
     engine.block_on(async move {
@@ -3557,7 +4221,7 @@ fn a_pass_records_spends_stored_before_the_hook_and_leaves_hooked_ones_to_their_
     // while its vault is locked; the hook gates its re-send per artifact.
     let g = super::topup_tests::fixture(true);
     let (engine, session, wallet) = (&g.engine, &g.session, g.wallet);
-    assert!(bound_address(engine, session, wallet).0);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
     let s = Arc::clone(session);
     let m = Arc::clone(&manager);
@@ -3642,9 +4306,9 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_its_unrecorded_spend_is_never_s
             },
         ))
         .unwrap();
-    assert!(bound_address(engine, &f.session, a).0);
+    assert!(bound_address(engine, &f.session, a).0.is_bound());
     assert!(
-        bound_address(engine, &f.session, b).0,
+        bound_address(engine, &f.session, b).0.is_bound(),
         "B's viewing key persisted"
     );
     engine
@@ -3723,7 +4387,7 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_its_unrecorded_spend_is_never_s
         resume.send(()).unwrap();
         assert!(pass.await.unwrap(), "the paused pass was admitted (A only)");
         assert!(
-            joined.await.unwrap().unwrap(),
+            joined.await.unwrap().unwrap().is_bound(),
             "B bound from storage, vault locked"
         );
 
@@ -3813,9 +4477,9 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_is_admitted_before_its_spend_is
             },
         ))
         .unwrap();
-    assert!(bound_address(engine, &f.session, a).0);
+    assert!(bound_address(engine, &f.session, a).0.is_bound());
     assert!(
-        bound_address(engine, &f.session, b).0,
+        bound_address(engine, &f.session, b).0.is_bound(),
         "B's viewing key persisted"
     );
     engine
@@ -3873,7 +4537,12 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_is_admitted_before_its_spend_is
             let s = Arc::clone(&s);
             tokio::spawn(async move {
                 s.load_wallet(b).await.unwrap();
-                on_pool(&s, b, |_, lib| async move { Ok(lib.bind().await?) }).await
+                on_pool(
+                    &s,
+                    b,
+                    |_, lib| async move { Ok(lib.bind().await?.is_bound()) },
+                )
+                .await
             })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3964,11 +4633,13 @@ fn the_facade_shows_the_mobile_wallets_address_for_the_abandon_wallet() {
     assert_eq!(address.account, 0);
 }
 
-/// Shielded spends stay off until their funds review, on every network:
-/// through the real library a send and an unshield to Core are
-/// `platform.unavailable` before the grant is redeemed, and the refusal is
-/// the library's key set switch (forced on, the same calls get past it to
-/// later gates). On mainnet an unshield to a Platform address keeps its own
+/// Shielded spends stay off until their funds review, on every network
+/// (the shipped switch, [`pool::RELEASE_KEYSET_SPENDS`], is read by
+/// `tests/shielded_spends_off.rs`): with the switch off, through the real
+/// library the sync read says so and a send and an unshield to Core are
+/// `platform.unavailable` before the grant is redeemed; forced on, the sync
+/// read says spends are available and the same calls get past it to later
+/// gates. On mainnet an unshield to a Platform address keeps its own
 /// refusal, before it.
 #[test]
 fn shielded_spends_are_off_until_their_funds_review() {
@@ -3989,16 +4660,19 @@ fn shielded_spends_are_off_until_their_funds_review() {
                 ImportOptions::default(),
             ))
             .unwrap();
+        let dp = s.dashpay(wallet);
+        let to = (engine.block_on(dp.shielded_receive_address()))
+            .unwrap()
+            .address;
+        pool::force_keyset_spends(&s, false);
         let switch = engine
             .block_on(on_pool(&s, wallet, |_, lib| async move {
                 Ok(lib.keyset_spends())
             }))
             .unwrap();
         assert!(!switch, "{network:?}");
-        let dp = s.dashpay(wallet);
-        let to = (engine.block_on(dp.shielded_receive_address()))
-            .unwrap()
-            .address;
+        let info = engine.block_on(dp.shielded_sync_info()).unwrap();
+        assert!(!info.spends_available, "{network:?}");
         let refusals = |forced: Option<bool>| {
             if let Some(on) = forced {
                 pool::force_keyset_spends(&s, on);
@@ -4039,6 +4713,8 @@ fn shielded_spends_are_off_until_their_funds_review() {
             assert_eq!(to_platform.unwrap_err().code(), "platform.feature_off");
         }
         let (sent, unshielded, kept) = refusals(Some(true));
+        let info = engine.block_on(dp.shielded_sync_info()).unwrap();
+        assert!(info.spends_available, "{network:?} forced on");
         assert_ne!(sent, "platform.unavailable", "{network:?} forced on");
         assert_ne!(unshielded, "platform.unavailable", "{network:?} forced on");
         assert!(kept, "{network:?}: refused before the grant");
@@ -4777,6 +5453,265 @@ fn shield_refused_after_the_signature(end: FundEnd) {
     assert!(fx.s.leases.signed_lock_txids(fx.wallet, &step).is_empty());
     assert_eq!(unknown(shield_with(&fx, &lib)), step);
     assert!(lib.funded.lock().unwrap().is_empty());
+}
+
+/// A library that cannot spend from the key set: the status says so, active
+/// or not, and a send, an unshield and their quotes (a contact payment's
+/// too) are refused before anything else, so
+/// nothing is quoted, no receive address is issued, the grant is kept and no
+/// key leaves the vault. When it can again, the same send runs.
+#[test]
+fn a_spend_is_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let status = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(!status.spends_available);
+    let below = Arc::new(FakeShielded::at(11, 11));
+    below.no_keyset_spends.store(true, Ordering::SeqCst);
+    let inactive = run(&fx, &below, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(!inactive.active);
+    assert!(
+        !inactive.spends_available,
+        "read on an inactive network too"
+    );
+    for unshield in [false, true] {
+        let grant = fx.grant(10 * NOTE);
+        let g = grant.clone();
+        let refused = run(&fx, &lib, move |s, lib| async move {
+            code(if unshield {
+                pool::unshield(&s, wallet, &*lib, NOTE, None, &g, false).await
+            } else {
+                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &g, false).await
+            })
+        });
+        assert_eq!(refused, "platform.unavailable");
+        assert!(fx.unused(&grant), "the refusal keeps the grant");
+    }
+    let quotes = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::send_quote(lib, &payee_text(), NOTE).await),
+            code(pool::unshield_quote(lib, NOTE, None).await),
+            code(pool::unshield_to_platform_quote(lib, NOTE, None).await),
+            (super::shielded_payout::quote(lib, NOTE).await)
+                .unwrap_err()
+                .code(),
+        ]
+    });
+    assert_eq!(quotes, ["platform.unavailable"; 4], "no quote either");
+    assert!(lib.spent().is_empty(), "no key left the vault");
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "the refusal quoted nothing"
+    );
+    assert_eq!(
+        lib.issued.load(Ordering::SeqCst),
+        0,
+        "the refusal issued no receive address"
+    );
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    let status = run(&fx, &lib, |_, lib| async move {
+        pool::status(&*lib).await.unwrap()
+    });
+    assert!(status.spends_available);
+    run(&fx, &lib, |_, lib| async move {
+        pool::send_quote(&*lib, &payee_text(), NOTE).await.unwrap()
+    });
+    let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+    let sent = run(&fx, &lib, move |s, lib| async move {
+        pool::send(
+            &s,
+            wallet,
+            &*lib,
+            (&payee_text(), NOTE),
+            None,
+            &lease,
+            false,
+        )
+        .await
+    });
+    assert_eq!(sent.unwrap().state, ShieldedSpendState::Done);
+}
+
+/// A library that cannot spend from the key set refuses a new move into the
+/// pool before anything else: no quote, no lock, the grant kept. When it can
+/// again, the same shield runs.
+#[test]
+fn a_shield_is_refused_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    let wallet = fx.wallet;
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let quoted = run(&fx, &lib, |s, lib| async move {
+        code(pool::shield_quote(&s, &*lib, 1_000_000).await)
+    });
+    assert_eq!(quoted, "platform.unavailable");
+    let max = run(&fx, &lib, move |s, lib| async move {
+        code(pool::shield_max_quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(max, "platform.unavailable");
+    let mixed = run(&fx, &lib, move |s, lib| async move {
+        code(super::shield_drain::quote(&s, wallet, &*lib).await)
+    });
+    assert_eq!(mixed, "platform.unavailable");
+    let grant = shield_grant(&fx, 2_000_000);
+    let g = grant.clone();
+    let shielded = run(&fx, &lib, move |s, lib| async move {
+        code(
+            pool::shield(
+                &s,
+                wallet,
+                &*lib,
+                FundAmount::Duffs { duffs: 1_000_000 },
+                &g,
+            )
+            .await,
+        )
+    });
+    assert_eq!(shielded, "platform.unavailable");
+    assert!(fx.unused(&grant), "the refusal keeps the grant");
+    assert!(lib.funded.lock().unwrap().is_empty(), "no lock was funded");
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    shield_on(&fx, &lib);
+}
+
+/// A shield already sent still finishes while the library cannot spend from
+/// the key set: only a new move into the pool is refused, so what is locked
+/// for Shielded is never stranded.
+#[test]
+fn a_shield_already_sent_finishes_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = real_rows(&fx);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
+    let (outpoint, state) = shield_on(&fx, &lib);
+    assert_eq!(state, ShieldState::ConsumptionUnknown);
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    let state = check_again(&fx, &lib, outpoint);
+    assert!(matches!(state, ShieldState::Applied { .. }), "{state:?}");
+    assert_eq!(*lib.applied.lock().unwrap(), vec![outpoint; 2]);
+}
+
+/// A library that cannot spend from the key set issues no receive address
+/// and quotes no shield from the Platform addresses: both refuse
+/// `platform.unavailable` before any read. When it can again, both answer.
+#[test]
+fn no_way_in_opens_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::at(11, 12));
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    let refused = run(&fx, &lib, |_, lib| async move {
+        let lib = &*lib;
+        vec![
+            code(pool::receive_address(lib).await),
+            code(pool::platform_shield_gate(lib).await),
+        ]
+    });
+    assert_eq!(refused, ["platform.unavailable"; 2]);
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "refused before any read"
+    );
+
+    lib.no_keyset_spends.store(false, Ordering::SeqCst);
+    let (address, version) = run(&fx, &lib, |_, lib| async move {
+        let address = pool::receive_address(&*lib).await.unwrap();
+        let version = pool::platform_shield_gate(&*lib).await.unwrap();
+        (address, version.protocol_version)
+    });
+    assert_eq!((address.address, version), (payee_text(), 12));
+}
+
+/// A payment to an address given out before the library lost key-set
+/// spends still lands: the pass finds it and the status shows it in the
+/// balance, while no new address is issued.
+#[test]
+fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the_key_set() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let early = run(&fx, &lib, |_, lib| async move {
+        pool::receive_address(&*lib).await.unwrap()
+    });
+    assert_eq!(early.address, payee_text());
+
+    lib.no_keyset_spends.store(true, Ordering::SeqCst);
+    *lib.scan_ledger.lock().unwrap() = Some(Ledger {
+        spendable: NOTE,
+        synced_index: None,
+    });
+    let (status, again) = run(&fx, &lib, |_, lib| async move {
+        lib.sync_now().await;
+        let status = pool::status(&*lib).await.unwrap();
+        (status, code(pool::receive_address(&*lib).await))
+    });
+    assert_eq!(status.balance, NOTE);
+    assert!(!status.spends_available);
+    assert_eq!(again, "platform.unavailable");
+}
+
+/// Through the real library: while it cannot spend from the key set the
+/// facade issues no address, neither a bound key's (read during a pass)
+/// nor a first bind's, and quotes no shield from the Platform addresses
+/// (refused first, where with spends on a later gate refuses it); when it
+/// can again, the same address.
+#[test]
+fn the_facade_issues_no_address_while_the_library_cannot_spend_from_the_key_set() {
+    use super::topup_tests::fixture;
+    let f = fixture(true);
+    let dp = f.session.dashpay(f.wallet);
+    assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
+    let address = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+
+    f.session.keyset_spends_off.store(true, Ordering::SeqCst);
+    let refused = f.engine.block_on(dp.shielded_receive_address());
+    assert_eq!(code(refused), "platform.unavailable", "the bound key's");
+    let fresh = fixture(true);
+    let off = &fresh.session.keyset_spends_off;
+    off.store(true, Ordering::SeqCst);
+    let first_dp = fresh.session.dashpay(fresh.wallet);
+    let first = fresh.engine.block_on(first_dp.shielded_receive_address());
+    assert_eq!(
+        code(first),
+        "platform.unavailable",
+        "a first bind's, by either check"
+    );
+    // A wallet never bound, with the vault locked: with spends on, a later
+    // gate refuses its Platform shield quote with another code.
+    fresh.session.vault.lock();
+    let shield_quote = || {
+        let all = super::WithdrawAmount::All;
+        let quote = fresh.engine.block_on(first_dp.platform_shield_quote(all));
+        quote.unwrap_err().code()
+    };
+    assert_eq!(
+        shield_quote(),
+        "platform.unavailable",
+        "no shield from Platform"
+    );
+    off.store(false, Ordering::SeqCst);
+    assert_eq!(shield_quote(), "shielded.not_synced", "a later gate's");
+    let status = (f.engine)
+        .block_on(on_pool(&f.session, f.wallet, |_, lib| async move {
+            pool::status(&lib).await
+        }))
+        .unwrap();
+    assert!(!status.spends_available, "the status reads the same switch");
+
+    f.session.keyset_spends_off.store(false, Ordering::SeqCst);
+    let again = f.engine.block_on(dp.shielded_receive_address()).unwrap();
+    assert_eq!(again, address);
 }
 
 /// Without the dispatch hook no spend starts: a send and an unshield are

@@ -363,6 +363,20 @@ pub enum GrantPurposeSpec {
     /// Masternode transactions (ProRegTx, ProUpRegTx): each may take at most
     /// `max_duffs` out of the wallet, fee included.
     MasternodeOp { max_duffs: u64 },
+    /// One App Connect login (`app_connect_approve`): the request and plan
+    /// its quote named, credits up to `max_credits`. Needs the passphrase
+    /// every time: never quick unlock or a cached unlock.
+    AppConnect {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        max_credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::hex_array")]
+        request: [u8; 20],
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::hex_array")]
+        plan: [u8; 32],
+    },
 }
 
 impl From<GrantPurposeSpec> for GrantPurpose {
@@ -384,6 +398,15 @@ impl From<GrantPurposeSpec> for GrantPurpose {
             S::IdentityScan => GrantPurpose::IdentityScan,
             S::Governance => GrantPurpose::Governance,
             S::MasternodeOp { max_duffs } => GrantPurpose::MasternodeOp { max_duffs },
+            S::AppConnect {
+                max_credits,
+                request,
+                plan,
+            } => GrantPurpose::AppConnect {
+                max_credits,
+                request,
+                plan,
+            },
         }
     }
 }
@@ -407,6 +430,15 @@ impl From<GrantPurpose> for GrantPurposeSpec {
             P::IdentityScan => Self::IdentityScan,
             P::Governance => Self::Governance,
             P::MasternodeOp { max_duffs } => Self::MasternodeOp { max_duffs },
+            P::AppConnect {
+                max_credits,
+                request,
+                plan,
+            } => Self::AppConnect {
+                max_credits,
+                request,
+                plan,
+            },
             // The host cannot request a masternode withdrawal yet (MG-13 is
             // engine-only; MG-10 binds it): an engine-issued one shows as the
             // Platform credits it caps, as dw-ffi shows purposes it lacks.

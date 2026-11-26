@@ -28,11 +28,13 @@ import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance"
 import type { PlatformAddressRow } from "./generated/PlatformAddressRow";
 import type { LockFinish } from "./generated/LockFinish";
 import type { LockKind } from "./generated/LockKind";
+import type { RecoverQuote } from "./generated/RecoverQuote";
 import type { ShieldedActivity } from "./generated/ShieldedActivity";
 import type { ShieldedAddress } from "./generated/ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
@@ -58,6 +60,10 @@ import type { IdentitySummary } from "./generated/IdentitySummary";
 import type { LinkRoute } from "./generated/LinkRoute";
 import type { StashedLinkInfo } from "./generated/StashedLinkInfo";
 import type { InvitationStatus } from "./generated/InvitationStatus";
+import type { ConnectChoice } from "./generated/ConnectChoice";
+import type { ConnectDone } from "./generated/ConnectDone";
+import type { ConnectQuote } from "./generated/ConnectQuote";
+import type { ConnectSheet } from "./generated/ConnectSheet";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -75,6 +81,7 @@ import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
 import type { TxNoticeRow } from "./generated/TxNoticeRow";
+import type { DroppedNoticeRow } from "./generated/DroppedNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -278,6 +285,9 @@ export interface Backend {
   switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch>;
   /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
   shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
+  /** Where the wallet's Shielded sync stands, read with no read of the note store, so it answers
+   * while a pass runs (`shielded_sync_info`): the status bar, Sync progress and Receive. */
+  shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo | null>;
   /** The account's receive address, for Receive and its QR. */
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */
@@ -289,6 +299,10 @@ export interface Backend {
   unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers | null>;
   /** Finishes the unfinished transfer of `kind` at `txid`:`vout` under a `platformOp` grant. */
   finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish>;
+  /** What a recover of the partly used transfer to Shielded at `txid`:`vout` would move, read from Platform now. */
+  recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote>;
+  /** Recovers what is left on it to the wallet's own Platform address, under a grant of exactly the quote's credits. */
+  recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish>;
   /** Shielded → Shielded; `credits` is a decimal string. */
   shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
   /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);
@@ -338,6 +352,10 @@ export interface Backend {
   exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
   /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
   txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
+  /** The notices of payments Dash Wallet dropped because the Dash they used came from a transaction
+   * that was never valid: once their coins are back, until dismissed. */
+  droppedNotices(walletId: string): Promise<DroppedNoticeRow[]>;
+  dismissDroppedNotices(walletId: string, txids: string[]): Promise<null>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
@@ -562,6 +580,15 @@ export interface Backend {
   /** DP5-02: an invitation's status by its stash id; Join's paste stashes one (DP5-03 D14). */
   invitationStatus(linkId: string): Promise<InvitationStatus>;
   stashInvitation(link: string): Promise<string>;
+  /** "Sign in to an app" (App Connect): every call names the request by its inbox id; the request
+   * and its return link stay in dw-app, which opens the return link itself. */
+  appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet>;
+  appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote>;
+  appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone>;
+  appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone>;
+  appConnectDeny(linkId: string): Promise<null>;
+  appConnectReturn(linkId: string): Promise<null>;
+  appConnectDismiss(linkId: string): Promise<null>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.

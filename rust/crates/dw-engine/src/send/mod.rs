@@ -2293,11 +2293,11 @@ impl PreparedTx {
                 .table
                 .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
-        session.spends.release(&self.wallet_id, self.owner);
         let signed = self.signed().take();
         if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
             wallet.core().abandon_transaction(&signed).await;
         }
+        session.spends.release(&self.wallet_id, self.owner);
     }
 }
 
@@ -2305,6 +2305,9 @@ impl PreparedTx {
 /// outcome is unknown releases nothing: it may be on the network, so its
 /// inputs stay reserved until the wallet sees them spent or the session
 /// closes (platform-wallet's pending-spend fence holds them the same way).
+/// The engine's claim goes only after key-wallet's reservation (#745): a
+/// coin read in between still reads reserved, so no plan takes a coin
+/// key-wallet's build would then drop.
 impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
@@ -2317,20 +2320,48 @@ impl Drop for PreparedTx {
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
-        let signed = self.signed().take();
-        session.spends.release(&wallet_id, self.owner);
-        let Some(signed) = signed else { return };
+        let owner = self.owner;
+        let Some(signed) = self.signed().take() else {
+            session.spends.release(&wallet_id, owner);
+            return;
+        };
+        let claim = ReleaseClaim {
+            session: Arc::clone(&session),
+            wallet_id,
+            owner,
+        };
         let rt = session.rt.clone();
         rt.spawn(async move {
+            let _claim = claim;
             // Admitted like any operation, so a close in progress is not
             // raced; after the close there is no wallet left to release in.
-            let Ok(_op) = session.enter().await else {
-                return;
-            };
-            if let Ok(wallet) = session.wallet(&wallet_id).await {
+            if let Ok(_op) = session.enter().await
+                && let Ok(wallet) = session.wallet(&wallet_id).await
+            {
+                #[cfg(test)]
+                let pause = session.hub.pause_release.lock().unwrap().take();
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause.mark_reached();
+                    pause.release.notified().await;
+                }
                 wallet.core().abandon_transaction(&signed).await;
             }
         });
+    }
+}
+
+/// The engine's claim of a dropped payment, released when its task ends,
+/// panics or is dropped unpolled at shutdown.
+struct ReleaseClaim {
+    session: Arc<NetworkSession>,
+    wallet_id: WalletId,
+    owner: SpendOwner,
+}
+
+impl Drop for ReleaseClaim {
+    fn drop(&mut self) {
+        self.session.spends.release(&self.wallet_id, self.owner);
     }
 }
 

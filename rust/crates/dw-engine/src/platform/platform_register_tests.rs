@@ -326,6 +326,59 @@ fn a_registration_stopped_at_each_step_settles_after_a_restart() {
     }
 }
 
+/// A held create's re-sign keeps the rule it was written under: a crash
+/// after the pre-sign write leaves a legacy record at rule 0.
+#[test]
+fn a_held_creates_resign_keeps_its_rule_through_a_restart() {
+    let mut w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut row = w.row(1);
+    w.net.then(Act::Lost);
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    w.net.tick();
+    assert_eq!(w.pass(&mut row, false).unwrap(), RegisterOutcome::Held);
+    let id = w.registers()[0].id.clone();
+    let (db, scope) = w.net.store.lock().unwrap().clone().unwrap();
+    let key = format!("{MOVE_PREFIX}{id}");
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&db.setting(&scope, &key).unwrap().unwrap()).unwrap();
+    stored.as_object_mut().unwrap().remove("rule");
+    db.set_setting_durable(&scope, &key, Some(&stored.to_string()))
+        .unwrap();
+    w.reopen();
+    row.lease = Some(w.register_lease(20 * DASH, true));
+    assert_eq!(w.registers()[0].rule, 0);
+
+    w.net.then(Act::StopsBeforeSigning);
+    assert!(w.pass(&mut row, true).is_err());
+    w.reopen();
+    let held = w.registers();
+    assert_eq!((held.len(), held[0].id.as_str()), (1, id.as_str()));
+    assert_eq!(held[0].rule, 0, "the pre-sign write kept the held rule");
+
+    row.lease = Some(w.register_lease(20 * DASH, true));
+    let plan = row.plan.clone().unwrap();
+    assert_eq!(w.pass(&mut row, true).unwrap(), RegisterOutcome::Unknown);
+    w.net.tick();
+    assert_eq!(w.pass(&mut row, false).unwrap(), RegisterOutcome::Held);
+    assert_eq!(w.registers()[0].rule, 0);
+    assert_eq!(
+        w.pass(&mut row, true).unwrap(),
+        RegisterOutcome::Registered(plan.identity.clone())
+    );
+    w.reopen();
+    let done = w.registers();
+    assert_eq!((done.len(), done[0].id.as_str()), (1, id.as_str()));
+    assert_eq!(done[0].state, PlatformActivityState::Done);
+    assert_eq!(done[0].rule, 0);
+
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    let mut row = w.row(1);
+    w.pass(&mut row, true).unwrap();
+    assert_eq!(w.registers()[0].rule, HOLD_RULE, "a new create");
+}
+
 /// Funds packet: a double submit. A second pass of a registered row, a
 /// pass beside a pending create, and a second registration while the first
 /// holds sign nothing new.

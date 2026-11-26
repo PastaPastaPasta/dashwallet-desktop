@@ -224,7 +224,7 @@ impl Opened {
 
     /// The main wallet bound, and the coordinator its bind configured.
     fn bound(&self) -> Arc<NetworkShieldedCoordinator> {
-        assert!(bound_address(&self.engine, &self.session, main_wallet()).0);
+        assert!(bound_address(&self.engine, &self.session, main_wallet()).0.is_bound());
         let manager = self.session.manager().unwrap();
         self.engine
             .block_on(manager.shielded_coordinator())

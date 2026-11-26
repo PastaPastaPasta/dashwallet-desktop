@@ -561,33 +561,42 @@ fn an_undecided_exit_and_top_up_both_hold() {
     );
 }
 
-/// A node's signature error proves nothing about a top-up (it signs no
-/// identity key, and the SDK checked its witnesses): it stays pending and
-/// able to land. Only the SDK's structure check releases it.
+/// #471 T4: a node's structure or signature error after a top-up signed
+/// proves nothing: it stays pending and holding, and the next top-up is
+/// refused until proof. Only the pre-check, before anything is signed,
+/// refuses a top-up for good: nothing recorded or redeemed, nothing held.
 #[test]
-fn a_node_signature_error_holds_the_top_up() {
+fn a_node_error_holds_the_top_up_and_only_the_pre_check_refuses_it() {
+    for act in [Act::SignatureRefused, Act::Invalid] {
+        let w = World::new();
+        w.net.fund(w.address(0), 5 * DASH);
+        w.net.then(act);
+        let out = w.top_up(credits(DASH)).unwrap();
+        assert_eq!(
+            (out.state, out.may_land),
+            (PlatformActivityState::Pending, true),
+            "{act:?}"
+        );
+        assert_eq!(
+            w.top_up(credits(DASH)).unwrap_err().code(),
+            "credits.move_pending",
+            "{act:?}"
+        );
+        w.net.tick();
+        w.activity();
+        assert!(w.moves()[0].holds(), "{act:?}");
+    }
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
-    w.net.then(Act::SignatureRefused);
+    *w.net.version.lock().unwrap() = super::no_fee_steps();
+    let grant = w.f.grant(10 * DASH);
+    super::assert_no_fee_steps(&w.top_up_as(&me(), credits(DASH), &grant).unwrap_err());
+    assert_eq!(w.sent(), 0, "nothing signed");
+    assert!(w.moves().is_empty(), "nothing recorded");
+    assert!(w.f.unused(&grant), "nothing redeemed");
+    *w.net.version.lock().unwrap() = PlatformVersion::latest();
     let out = w.top_up(credits(DASH)).unwrap();
-    assert_eq!(
-        (out.state, out.may_land),
-        (PlatformActivityState::Pending, true)
-    );
-    assert_eq!(
-        w.top_up(credits(DASH)).unwrap_err().code(),
-        "credits.move_pending"
-    );
-    let w = World::new();
-    w.net.fund(w.address(0), 5 * DASH);
-    w.net.then(Act::Invalid);
-    assert!(w.top_up(credits(DASH)).is_err());
-    let moves = w.moves();
-    assert_eq!(
-        (moves[0].state, moves[0].can_land),
-        (PlatformActivityState::Failed, false)
-    );
-    w.top_up_quote(&me(), credits(DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
 }
 
 /// A top-up whose inputs could not pay their own "Move to Dash wallet"
@@ -634,6 +643,10 @@ fn several_present_exits_settle_one() {
     ];
     settle_with(&mut moves, &seen_at(20, 4), &present);
     assert_eq!(states(&moves), [failed, done, failed]);
+    assert!(
+        moves.iter().all(|m| !m.unattributed),
+        "the document names it"
+    );
 
     let mut moves = vec![
         failed_top_up(),
@@ -662,6 +675,35 @@ fn several_present_exits_settle_one() {
         "not attributed to one exit's terms"
     );
     assert!(moves.iter().all(|m| !m.holds()));
+    // Either exit may have paid: both say so; the top-up did not land.
+    let unattributed: Vec<_> = moves.iter().map(|m| m.activity().unattributed).collect();
+    assert_eq!(unattributed, [false, true, true]);
+
+    // The same document read for one exit only: the other, of another
+    // amount, pays the same address and may as well have produced it.
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    moves[2].inputs[0].credits += 1;
+    let one: Exits = [("x".to_owned(), true)].into();
+    settle_with(&mut moves, &seen_at(20, 4), &one);
+    assert_eq!(states(&moves), [failed, failed, done]);
+    let unattributed: Vec<_> = moves.iter().map(|m| m.activity().unattributed).collect();
+    assert_eq!(unattributed, [false, true, true]);
+
+    // An unread exit to another address has another document: the one read
+    // present names its winner.
+    let mut moves = vec![
+        failed_top_up(),
+        record_of(MoveKind::ToCore, "x", 2),
+        record_of(MoveKind::ToCore, "y", 3),
+    ];
+    moves[2].to = "another".into();
+    settle_with(&mut moves, &seen_at(20, 4), &one);
+    assert_eq!(states(&moves), [failed, done, failed]);
+    assert!(moves.iter().all(|m| !m.unattributed));
 }
 
 /// A read whose nonce is below one a done record signed is behind what
@@ -996,37 +1038,58 @@ fn an_exit_platform_refuses_after_signing_is_recorded() {
     assert!(exit.signed && exit.can_land);
 }
 
-/// An exit beside a held top-up that Platform's stateless checks refuse
-/// for good, every input signed, fails alone: only a send's exact retry
-/// releases the record it names, so the top-up still holds, its inputs
-/// stay held, and the next quote is its exit again.
+/// A node answers a signed exit beside a held top-up with a structure
+/// error: one node's answer, no proof (#471). The exit is recorded and
+/// keeps holding, the top-up still holds, and while the exit is pending a
+/// re-exit signs nothing. Failed by height, the next quote is the top-up's
+/// exit again, at the same inputs and nonces, which pays once.
 #[test]
-fn an_exit_refused_for_good_leaves_its_top_up_held() {
+fn a_node_error_to_an_exit_leaves_it_and_its_top_up_held() {
     let (w, a) = shortfall();
     w.net.fee.store(1, Ordering::SeqCst);
     let q = w.quote(WithdrawAmount::All).unwrap();
     let top_up = w.moves()[0].id.clone();
     w.net.then(Act::Invalid);
-    let refused = w.exit(&q, &w.f.grant(q.credits)).unwrap_err();
-    assert_ne!(refused.code(), "credits.quote_changed");
+    let out = w.exit(&q, &w.f.grant(q.credits)).unwrap();
+    assert_ne!(out.state, PlatformActivityState::Done);
     let moves = w.moves();
     assert_eq!(moves.len(), 2);
     let exit = moves.iter().find(|m| m.id != top_up).unwrap();
     assert!(exit.signed, "every input signed");
-    assert_eq!(
-        (exit.state, exit.can_land),
-        (PlatformActivityState::Failed, false)
-    );
+    assert!(exit.holds(), "the exit keeps its hold");
     let held = moves.iter().find(|m| m.id == top_up).unwrap();
     assert!(held.holds(), "the top-up still holds");
+    let early = w.exit(&q, &w.f.grant(q.credits)).unwrap_err();
+    assert_eq!(early.code(), "credits.move_pending");
+    assert_eq!(w.sent(), 2, "nothing else signed");
 
+    w.net.tick();
+    w.activity();
+    let exit = (w.moves().into_iter()).find(|m| m.id == out.id).unwrap();
+    assert_eq!(
+        (exit.state, exit.holds()),
+        (PlatformActivityState::Failed, true),
+        "failed by height, and holding"
+    );
     let again = w.quote(WithdrawAmount::All).unwrap();
-    assert_eq!(again.exit_of, Some(top_up));
-    let out = w.exit(&again, &w.f.grant(again.credits)).unwrap();
-    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(again.exit_of, Some(top_up.clone()));
+    let before = w.net.credits(a);
+    let done = w.exit(&again, &w.f.grant(again.credits)).unwrap();
+    assert_eq!(done.state, PlatformActivityState::Done);
     let sent = w.net.sent.lock().unwrap().clone();
     assert_eq!(sent.len(), 3);
     assert_eq!(sent[2][&a].0, sent[0][&a].0, "at the top-up's nonce");
+    w.activity();
+    let moves = w.moves();
+    for id in [&top_up, &out.id] {
+        let m = moves.iter().find(|m| &m.id == id).unwrap();
+        assert!(!m.holds(), "{id} no longer holds");
+    }
+    assert_eq!(
+        w.net.credits(a),
+        before - sent[2][&a].1 - w.net.fee(),
+        "debited by exactly one withdrawal"
+    );
 }
 
 /// The same race with no `exit_of`: as before it, the move is planned on the
@@ -1389,4 +1452,57 @@ fn record_of(kind: MoveKind, id: &str, at: u64) -> MoveRecord {
 
 fn seen_at(height: u64, nonce: u32) -> Seen {
     seen(height, &[("a", Some(nonce))])
+}
+
+/// #773: the structure check's refusal while the network proved a version
+/// above this build's is `credits.rules_unsupported`, with nothing signed,
+/// recorded or redeemed, for a move to Core, a send and a top-up. A session
+/// without Platform reads no version, and #855: a version proved only under
+/// quorum keys SPV has not verified counts for nothing. Either way the same
+/// refusal is the generic one.
+#[test]
+fn a_refusal_past_the_known_version_says_the_rules_changed() {
+    let one = WithdrawAmount::Credits { credits: DASH };
+    for (platform, verified, expected) in [
+        (true, true, CreditsError::RulesUnsupported),
+        (true, false, CreditsError::PreflightRefused),
+        (false, true, CreditsError::PreflightRefused),
+    ] {
+        let w = if platform {
+            World::with_platform()
+        } else {
+            World::new()
+        };
+        w.net.fund(w.address(0), 5 * DASH);
+        let (_, to) = w.theirs(9);
+        *w.net.version.lock().unwrap() = super::no_fee_steps();
+        let s = Arc::clone(&w.f.s);
+        s.platform
+            .protocol
+            .record(PlatformVersion::latest().protocol_version + 1, verified);
+        let grants = [
+            w.f.grant(3 * DASH),
+            w.f.grant(20 * DASH),
+            w.f.grant(10 * DASH),
+        ];
+        let e = w.move_to(one, &w.to.clone(), &grants[0]).unwrap_err();
+        assert_eq!(
+            e, expected,
+            "move, platform {platform}, verified {verified}"
+        );
+        let quote = w.send_quote(one, &to).unwrap();
+        let e = w.confirm(&quote.operation, &grants[1]).unwrap_err();
+        assert_eq!(
+            e, expected,
+            "send, platform {platform}, verified {verified}"
+        );
+        let e = w.top_up_as(&me(), one, &grants[2]).unwrap_err();
+        assert_eq!(
+            e, expected,
+            "top-up, platform {platform}, verified {verified}"
+        );
+        assert!(w.net.sent.lock().unwrap().is_empty(), "nothing signed");
+        assert!(w.moves().is_empty(), "nothing recorded");
+        assert!(grants.iter().all(|g| w.f.unused(g)), "nothing redeemed");
+    }
 }

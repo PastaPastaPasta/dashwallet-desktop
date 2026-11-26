@@ -62,7 +62,7 @@
 //! owning an input, in ascending wallet id, held through its send. Every
 //! other holder takes one and waits for no other, so no cycle forms.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -77,7 +77,6 @@ use key_wallet::managed_account::managed_account_collection::ManagedAccountColle
 use key_wallet::managed_account::managed_account_ref::ManagedAccountRef;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
-use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
@@ -208,6 +207,10 @@ pub(crate) struct WalletCoin {
     /// Reserved while its transaction's event hasn't reached the history
     /// ([`NetworkSession::coin_snapshot`]).
     pub awaiting_history: bool,
+    /// Kept out of spending and every balance, and why
+    /// ([`crate::withhold`]): reserved as well, so every rule that skips a
+    /// reserved coin skips it.
+    pub excluded: Option<crate::ExclusionReason>,
 }
 
 impl WalletCoin {
@@ -303,11 +306,13 @@ impl CoinSnapshot {
     /// doc). A coin both reserved and locked reads `Reserved`: releasing
     /// its lock would not free it. A tracked lock's input (`lock_input`) is
     /// not among them: the library reserves those itself. An unresolved
-    /// signed lock's input is ([`CoinHold::UnresolvedLock`]).
+    /// signed lock's input is ([`CoinHold::UnresolvedLock`]). An excluded
+    /// coin is not either: the funding's fence locks it in key-wallet for
+    /// the build ([`NetworkSession::exclude_denominations_under_fence`]).
     pub(crate) fn held_funding_coins(&self) -> impl Iterator<Item = HeldCoin> + '_ {
         self.coins
             .iter()
-            .filter(|c| c.send_account)
+            .filter(|c| c.send_account && c.excluded.is_none())
             .filter_map(|c| {
                 let hold = if c.awaiting_history {
                     CoinHold::AwaitingHistory
@@ -345,32 +350,24 @@ struct TempUtxoLocks {
     rt: tokio::runtime::Handle,
 }
 
-/// A wallet's balances as key-wallet last computed them.
-type CoreBalances = (
-    WalletCoreBalance,
-    std::collections::BTreeMap<key_wallet::account::AccountType, WalletCoreBalance>,
-);
-
 /// Takes `outpoints` out of wallet `wallet_id`'s lock set, held or spent
-/// since; returns the balances recomputed when one was in it.
-fn unlock_temp_utxos(
-    wm: &mut platform_wallet::key_wallet_manager::WalletManager<
+/// since; returns the wallet, its balances recomputed, when one was in it.
+fn unlock_temp_utxos<'a>(
+    wm: &'a mut platform_wallet::key_wallet_manager::WalletManager<
         platform_wallet::PlatformWalletInfo,
     >,
     wallet_id: &[u8; 32],
     outpoints: &[OutPoint],
-) -> Option<CoreBalances> {
+) -> Option<&'a ManagedWalletInfo> {
     let info = wm.get_wallet_info_mut(wallet_id)?;
     let mut changed = false;
     for op in outpoints {
         changed |= info.core_wallet.unlock_outpoint(op);
     }
-    changed.then(|| recompute_balances(&mut info.core_wallet))
-}
-
-fn recompute_balances(info: &mut ManagedWalletInfo) -> CoreBalances {
-    info.update_balance();
-    (info.balance(), info.account_balances())
+    changed.then(|| {
+        info.core_wallet.update_balance();
+        &info.core_wallet
+    })
 }
 
 impl TempUtxoLocks {
@@ -383,8 +380,8 @@ impl TempUtxoLocks {
             platform_wallet::PlatformWalletInfo,
         >,
     ) {
-        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints) {
-            (self.hub).apply_balance_read(WalletId(self.wallet_id), &balance, &accounts);
+        if let Some(core) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints) {
+            (self.hub).apply_balance_read(WalletId(self.wallet_id), core);
         }
     }
 }
@@ -736,6 +733,9 @@ pub struct CoinInfo {
     /// other coins and unknown chains ("n/a").
     pub coinjoin_rounds: Option<u32>,
     pub spendable: bool,
+    /// Kept out of spending and every balance, and why
+    /// ([`crate::withhold`]).
+    pub excluded: Option<crate::ExclusionReason>,
 }
 
 /// `(txid display hex, vout)`, the dw-appdb key of an outpoint.
@@ -792,13 +792,14 @@ fn collect(
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            excluded: None,
         });
     }
 }
 
 /// The inputs of the tracked asset locks that may be sent (`Built`,
 /// `Broadcast`): reserved for them (module doc).
-fn pending_lock_inputs<'a>(
+pub(crate) fn pending_lock_inputs<'a>(
     locks: impl IntoIterator<Item = &'a platform_wallet::TrackedAssetLock>,
 ) -> HashSet<OutPoint> {
     locks
@@ -861,20 +862,23 @@ pub(crate) fn tx_chain_locked(info: &ManagedWalletInfo, txid: &Txid) -> bool {
     funding_accounts(accounts).any(locked) || accounts.coinjoin_accounts.values().any(locked)
 }
 
-/// A transaction of the funding accounts (BIP44, BIP32, DashPay receiving)
-/// that spends one of the wallet's coins and is not ChainLocked yet, if
-/// any. Repair's self-spend waits for none (`platform/lease/repair.rs`):
+/// The transactions of the funding accounts (BIP44, BIP32, DashPay
+/// receiving) that spend one of the wallet's coins and are not ChainLocked
+/// yet. Repair's self-spend waits for none (`platform/lease/repair.rs`):
 /// a coin such a transaction spends is no coin of the self-spend, so a lost
 /// asset lock that conflicts only with it is not beaten by the self-spend.
-pub(crate) fn unsettled_spend(info: &ManagedWalletInfo) -> Option<Txid> {
-    let accounts = &info.accounts;
-    let pending = |a: &ManagedCoreFundsAccount| {
-        a.transactions()
-            .values()
-            .find(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
-            .map(|r| r.txid)
-    };
-    funding_accounts(accounts).find_map(pending)
+/// Each is mapped to whether it is only in the mempool: neither mined nor
+/// InstantSend-locked, so an abandon may take it.
+pub(crate) fn unsettled_spends(info: &ManagedWalletInfo) -> BTreeMap<Txid, bool> {
+    use key_wallet::transaction_checking::TransactionContext;
+    let mut out = BTreeMap::new();
+    for r in (funding_accounts(&info.accounts))
+        .flat_map(|a| a.transactions().values())
+        .filter(|r| !r.input_details.is_empty() && !r.context.is_chain_locked())
+    {
+        *out.entry(r.txid).or_insert(true) &= matches!(r.context, TransactionContext::Mempool);
+    }
+    out
 }
 
 /// The coins of exactly a masternode collateral amount whose funding
@@ -959,47 +963,59 @@ impl NetworkSession {
         let Ok(manager) = self.manager() else { return };
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
-        if let Some(info) = wm.get_wallet_info(&id.0) {
-            let core = &info.core_wallet;
-            (self.hub).apply_balance_read(id, &core.balance(), &core.account_balances());
-        }
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return;
+        };
+        let core = &info.core_wallet;
+        (self.hub).apply_balance_read(id, core);
+        let released = self.hub.settle_rescan_holds(id, Some(core.synced_height()));
+        self.forget_released_holds(id, released).await;
+        drop(wm);
     }
 
     /// Hands the hub what reads a wallet's balances again
-    /// ([`Self::reread_balances`]).
+    /// ([`Self::reread_balances`]), on the runtime: the event that asks
+    /// for it holds the hub's unload guard.
     pub(crate) fn attach_balance_reread(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
         self.hub.attach_balance_reread(Box::new(move |id| {
             let weak = weak.clone();
+            #[cfg(test)]
+            let running = weak.upgrade().map(|s| s.hub.reread_started());
             rt.spawn(async move {
                 if let Some(session) = weak.upgrade() {
                     session.reread_balances(id).await;
                 }
+                #[cfg(test)]
+                drop(running);
             });
         }));
     }
 
-    /// Keeps the snapshot's counted BIP44 denominations out of the library
-    /// builder's selection and spendable balance until `fence` drops. They
-    /// go into key-wallet's lock set, which every balance refresh and
-    /// funding reads the coins' lock flags from, through
+    /// Keeps the funding coins the library's builder must not select though
+    /// no hold refuses the funding (denominations Dash Core counts, excluded
+    /// coins ([`crate::withhold`]) and coins waiting for their rescan) out of
+    /// its selection and spendable balance until `fence` drops. They go into
+    /// key-wallet's lock set, which every balance refresh and funding reads
+    /// the coins' lock flags from, through
     /// `ManagedWalletInfo::lock_outpoint`, which stores nothing: the
     /// persister stores only `PlatformWallet::lock_outpoint`/`unlock_outpoint`
     /// and the collateral locks the library itself just added, so a crash
-    /// leaves no hold behind. Only the
-    /// outpoints this call added are released, so a lock already in the set
-    /// stays.
+    /// leaves no hold behind. Only the outpoints this call added are
+    /// released, so a lock already in the set stays.
     pub(crate) async fn exclude_denominations_under_fence(
         &self,
         fence: &CoinFence,
         snapshot: &CoinSnapshot,
     ) -> Result<(), EngineError> {
+        // A coin waiting for its rescan is not in the snapshot at all.
         let denoms: Vec<OutPoint> = snapshot
             .coins
             .iter()
-            .filter(|c| c.send_account && c.counted_denomination)
+            .filter(|c| c.send_account && (c.counted_denomination || c.excluded.is_some()))
             .map(|c| c.utxo.outpoint)
+            .chain(self.hub.rescan_held(&fence.wallet))
             .collect();
         let wm = self.manager()?.wallet_manager_arc();
         let locked: Vec<OutPoint> = {
@@ -1060,7 +1076,7 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen, applied) = {
+        let (mut snapshot, lock_inputs, unseen, applied, excluded) = {
             let state = crate::wallet_read::info_of(wallet).await?;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
@@ -1069,6 +1085,7 @@ impl NetworkSession {
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
                 crate::history_ops::applied_chainlock(&state),
+                self.hub.excluded_coins(wallet_id, &state.core_wallet),
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1153,7 +1170,14 @@ impl NetworkSession {
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);
+            coin.excluded = excluded.get(&o).copied();
+            if coin.excluded.is_some() {
+                coin.reserved = true;
+                coin.lock_input = false;
+            }
         }
+        // An excluded coin is listed with its reason, or not at all.
+        (snapshot.coins).retain(|c| c.excluded.is_none_or(|r| r.listed()));
         fence.record_checked(snapshot.free_outpoints());
         Ok(snapshot)
     }
@@ -1205,6 +1229,7 @@ impl NetworkSession {
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
+                        excluded: c.excluded,
                     }
                 })
                 .filter(|row| {
@@ -1923,6 +1948,7 @@ mod tests {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            excluded: None,
         }
     }
 
@@ -1965,6 +1991,7 @@ mod tests {
             lock_input: true,
             unresolved_lock: true,
             awaiting_history: false,
+            excluded: None,
             ..coin(8, true)
         };
         let snapshot = CoinSnapshot {

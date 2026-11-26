@@ -25,7 +25,7 @@ const AREAS: Record<string, string[]> = {
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
-  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx"],
+  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx", "screens/DroppedNoticeBanner.tsx"],
 
   activity: ["screens/SourceDetailSheet.tsx"],
 
@@ -35,7 +35,7 @@ const AREAS: Record<string, string[]> = {
 
   contacts: ["screens/contacts"],
 
-  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/EditProfileSheet.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/MyProfile.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
+  dashpay: ["screens/dashpay/AboutDashPay.tsx", "screens/dashpay/AppConnectSheet.tsx", "screens/dashpay/Claim.tsx", "screens/dashpay/DashPayCard.tsx", "screens/dashpay/EditProfileSheet.tsx", "screens/dashpay/JoinDashPay.tsx", "screens/dashpay/MyProfile.tsx", "screens/dashpay/Registration.tsx", "screens/dashpay/ShareSheet.tsx", "screens/dashpay/TopUpSheet.tsx", "screens/dashpay/Welcome.tsx", "screens/dashpay/WithdrawSheet.tsx"],
 
   coinjoin: ["screens/coinjoin"],
 
