@@ -3401,8 +3401,8 @@ pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
         if (pw.session.keyset_spends_off).load(Ordering::SeqCst) {
             return false;
         }
-        let forced = *(pw.session.platform.keyset_spends.lock())
-            .unwrap_or_else(PoisonError::into_inner);
+        let forced =
+            *(pw.session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner);
         forced.unwrap_or(true)
     }
     #[cfg(not(test))]

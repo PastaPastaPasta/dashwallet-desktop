@@ -10,9 +10,9 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use dashcore::signer::double_sha;
 use dpp::secp256k1::ecdh::shared_secret_point;
 use dpp::secp256k1::{PublicKey, SecretKey};
-use dashcore::signer::double_sha;
 use hkdf::Hkdf;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::dip9::ApplicationKeyPurpose;
@@ -242,9 +242,8 @@ impl VaultSigner {
         let plaintext = self.run(&uses, |op| {
             let mut slots = Zeroizing::new(Vec::with_capacity(32 * paths.len()));
             for path in &paths {
-                let secret = op.with_key(path, KeyUse::AppConnectSeal, |x| {
-                    x.private_key.to_bytes()
-                })?;
+                let secret =
+                    op.with_key(path, KeyUse::AppConnectSeal, |x| x.private_key.to_bytes())?;
                 slots.extend_from_slice(&secret[..]);
             }
             Ok(slots)

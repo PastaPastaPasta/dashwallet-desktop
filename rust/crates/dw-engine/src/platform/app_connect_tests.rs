@@ -6,7 +6,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -16,6 +15,7 @@ use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::system_data_contracts::dashpay_contract;
 use dw_uri::connect::{
     AppConnectRequest, AuthBinding, Bounds, Carrier, ConnectUri, EncBinding, EncPurpose, Level,

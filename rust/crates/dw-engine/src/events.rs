@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
+use dash_spv::SyncEvent;
 use dash_spv::SyncProgress;
 use dash_spv::network::NetworkEvent;
-use dash_spv::SyncEvent;
 use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::{Transaction, Txid};
 use key_wallet::account::AccountType;

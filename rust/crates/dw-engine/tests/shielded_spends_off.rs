@@ -47,7 +47,11 @@ fn opts() -> SessionOptions {
 
 #[test]
 fn the_shipped_engine_reports_shielded_spends_unavailable() {
-    for network in [DashNetwork::Mainnet, DashNetwork::Testnet, DashNetwork::Regtest] {
+    for network in [
+        DashNetwork::Mainnet,
+        DashNetwork::Testnet,
+        DashNetwork::Regtest,
+    ] {
         let dir = dw_testutil::private_tempdir();
         let engine = engine(&dir.path().join("data"));
         let session = engine

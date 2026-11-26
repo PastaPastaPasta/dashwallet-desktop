@@ -96,11 +96,7 @@ fn connect_signer(v: &Vault, app: &[u8; 33]) -> VaultSigner {
 
 fn derived_secret(path: &DerivationPath) -> Zeroizing<[u8; 32]> {
     let master = ExtendedPrivKey::new_master(Network::Regtest, &SEED).unwrap();
-    master
-        .derive_priv(path)
-        .unwrap()
-        .private_key
-        .to_bytes()
+    master.derive_priv(path).unwrap().private_key.to_bytes()
 }
 
 fn open_payload(app_secret: &SecretKey, sealed: &AppConnectSealed, owner: &[u8; 32]) -> Vec<u8> {
