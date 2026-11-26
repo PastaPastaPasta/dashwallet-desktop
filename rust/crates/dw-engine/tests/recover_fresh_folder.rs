@@ -409,6 +409,29 @@ fn every_other_refusal_is_refused_for_recover() {
     }
 }
 
+/// M1: an open refused as damaged offers no Restore earlier data, so a
+/// request is refused and nothing in the refused folder is written.
+#[test]
+fn a_damaged_refusal_refuses_restore_earlier_data() {
+    probe_p9a_absent();
+    let f = fixture("v0.1.0");
+    damage_header(&f, "dispatch.sqlite");
+    let engine = engine(&f.root);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Damaged),
+        Err(other) => panic!("not refused as damaged: {other:?}"),
+        Ok(_) => panic!("opened"),
+    }
+    let before = tree(&f.net);
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    assert!(
+        matches!(got, Err(EngineError::InvalidArgument(_))),
+        "{got:?}"
+    );
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A damaged refusal followed by an open that is not refused as damaged
 /// (here, the store mended) takes the way out back.
 #[test]

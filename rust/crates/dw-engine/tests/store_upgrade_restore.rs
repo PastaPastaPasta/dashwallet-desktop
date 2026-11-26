@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use dw_engine::store_upgrade::RestoreState;
 use dw_engine::{DashNetwork, Engine, EngineError};
 use dw_store_upgrade::UPGRADE_BACKUPS_DIR;
+use dw_store_upgrade::copy::WayOut;
 use store_upgrade_common::*;
 
 const CHILD_ROOT: &str = "DW_RESTORE_CHILD_ROOT";
@@ -116,14 +117,92 @@ fn after_dirs(f: &Fixture) -> usize {
         .count()
 }
 
-/// Restore earlier data: the request writes only RESTORE-REQUESTED; the
-/// next start's open runs it before any store opens and opens the restored
-/// data, with the RESTORED mark set. Run after a store opened in that
-/// process, or after the refusal check, the restore would stop the open.
+/// Makes `f`'s schema history no longer match, keeping a good copy of its
+/// wallet file in the root for [`heal`]: the next open is refused with
+/// Restore earlier data.
+fn break_history(f: &Fixture) {
+    std::fs::copy(f.wallet(), f.root.join(GOOD_WALLET)).unwrap();
+    exec(
+        &f.wallet(),
+        "UPDATE refinery_schema_history SET checksum = '1' WHERE version = 1",
+    );
+}
+
+/// Puts [`GOOD_WALLET`] back as `f`'s wallet file.
+fn heal(f: &Fixture) {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", f.wallet().display()));
+    }
+    std::fs::copy(f.root.join(GOOD_WALLET), f.wallet()).unwrap();
+}
+
+/// An engine on `f`'s root showing the Restore screen: [`break_history`],
+/// then its open of regtest refused with Restore earlier data, the only
+/// screen that asks for a restore. The refused open opens no store.
+fn on_restore_screen(f: &Fixture) -> Engine {
+    break_history(f);
+    let engine = engine(&f.root);
+    match engine.block_on(engine.open_network(DashNetwork::Regtest, local_opts())) {
+        Err(EngineError::StoreRefused(r)) => assert_eq!(r.screen.way_out, WayOut::Restore),
+        Err(other) => panic!("not refused with Restore earlier data: {other:?}"),
+        Ok(_) => panic!("opened"),
+    }
+    engine
+}
+
+/// M1: Restore earlier data is only for a network whose open was refused
+/// with it. On a healthy open network, and once it is closed, the request
+/// is refused and nothing is asked for, though a verified snapshot is
+/// there.
+#[test]
+fn a_request_on_an_open_network_is_refused() {
+    let f = upgraded();
+    let got = steps_in_child(&f.root, &["open", "request", "close", "request"]);
+    assert_eq!(
+        got,
+        [
+            "ok",
+            "err invalid_argument",
+            "closed true",
+            "err invalid_argument"
+        ]
+    );
+    assert!(!backups(&f).join("RESTORE-REQUESTED").exists());
+    assert_eq!(dw_store_upgrade::pending_restore(&f.net).unwrap(), None);
+    let engine = engine(&f.root);
+    assert!(
+        engine
+            .block_on(engine.restore_available(&DashNetwork::Regtest))
+            .unwrap()
+    );
+    close(engine);
+}
+
+/// M1: a network this engine never opened, its snapshot verified, is
+/// refused too, and nothing is written.
+#[test]
+fn a_request_without_a_refused_open_is_refused_and_writes_nothing() {
+    let f = upgraded();
+    let before = tree(&f.net);
+    let engine = engine(&f.root);
+    let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+    assert!(
+        matches!(got, Err(EngineError::InvalidArgument(_))),
+        "{got:?}"
+    );
+    close(engine);
+    assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
+}
+
+/// Restore earlier data: from the Restore screen, the request writes only
+/// RESTORE-REQUESTED; the next start's open runs it before any store opens
+/// and opens the restored data, with the RESTORED mark set. Run after a
+/// store opened in that process, or after the refusal check, the restore
+/// would stop the open.
 #[test]
 fn a_requested_restore_runs_at_the_next_open() {
     let f = upgraded();
-    let engine = engine(&f.root);
+    let engine = on_restore_screen(&f);
     assert!(
         engine
             .block_on(engine.restore_available(&DashNetwork::Regtest))
@@ -156,11 +235,7 @@ fn a_refusal_after_a_restore_never_says_nothing_changed() {
     let f = fixture("v0.1.0");
     add_retired_row(&f.wallet());
     assert_eq!(open_in_child(&f.root), "ok");
-    let engine = engine(&f.root);
-    engine
-        .block_on(engine.request_restore(&DashNetwork::Regtest))
-        .unwrap();
-    close(engine);
+    request(&f);
     assert_eq!(
         open_in_child_with(&f.root, true),
         "refused RetiredPoolWithoutAdopter storeUpgrade.refused.keep"
@@ -207,7 +282,7 @@ fn a_garbled_request_stops_the_open_once() {
 #[test]
 fn a_cancelled_request_never_runs() {
     let f = upgraded();
-    let engine = engine(&f.root);
+    let engine = on_restore_screen(&f);
     engine
         .block_on(engine.request_restore(&DashNetwork::Regtest))
         .unwrap();
@@ -219,6 +294,7 @@ fn a_cancelled_request_never_runs() {
         .block_on(engine.keep_current_files(&DashNetwork::Regtest))
         .unwrap();
     close(engine);
+    heal(&f);
     assert_eq!(open_in_child(&f.root), "ok");
     assert!(!dw_store_upgrade::restored_mark_present(&f.net));
     assert_eq!(after_dirs(&f), 0);
@@ -230,13 +306,13 @@ fn a_cancelled_request_never_runs() {
 #[test]
 fn a_request_while_a_restore_is_replacing_files_is_the_incomplete_screen() {
     let f = upgraded();
+    let engine = on_restore_screen(&f);
     std::fs::write(
         backups(&f).join(dw_store_upgrade::RESTORE_JOURNAL),
         b"journal",
     )
     .unwrap();
     let before = tree(&f.net);
-    let engine = engine(&f.root);
     match engine.block_on(engine.request_restore(&DashNetwork::Regtest)) {
         Err(EngineError::StoreRestore(r)) => {
             assert_eq!((r.state, r.cause), (RestoreState::Incomplete, "other"));
@@ -253,6 +329,7 @@ fn a_request_while_a_restore_is_replacing_files_is_the_incomplete_screen() {
 #[test]
 fn a_request_while_a_restore_is_replacing_files_beside_a_torn_snapshot_is_incomplete() {
     let f = upgraded();
+    let engine = on_restore_screen(&f);
     let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
     std::fs::write(
         snapshot.dir().join(dw_store_upgrade::STORE_FILES[0]),
@@ -265,7 +342,6 @@ fn a_request_while_a_restore_is_replacing_files_beside_a_torn_snapshot_is_incomp
     )
     .unwrap();
     let before = tree(&f.net);
-    let engine = engine(&f.root);
     assert!(
         !engine
             .block_on(engine.restore_available(&DashNetwork::Regtest))
@@ -281,13 +357,20 @@ fn a_request_while_a_restore_is_replacing_files_beside_a_torn_snapshot_is_incomp
     assert_eq!(tree_diff(&before, &tree(&f.net)), Vec::<String>::new());
 }
 
-/// Without a verified snapshot there is nothing to restore: the request is
+/// Without a verified snapshot there is nothing to restore: from the
+/// Restore screen, once its snapshot no longer verifies, the request is
 /// refused (missingBackup) and nothing is written.
 #[test]
 fn a_request_without_a_snapshot_is_refused() {
-    let f = fixture("v0.1.0");
+    let f = upgraded();
+    let engine = on_restore_screen(&f);
+    let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
+    std::fs::write(
+        snapshot.dir().join(dw_store_upgrade::STORE_FILES[0]),
+        b"torn",
+    )
+    .unwrap();
     let before = tree(&f.net);
-    let engine = engine(&f.root);
     assert!(
         !engine
             .block_on(engine.restore_available(&DashNetwork::Regtest))
@@ -455,8 +538,8 @@ fn a_hold_on_disk_refuses_the_request_with_no_session_open() {
              VALUES ({MAIN}, {KEY}, {KEY}, 1)"
         ),
     );
+    let engine = on_restore_screen(&f);
     let before = tree(&f.net);
-    let engine = engine(&f.root);
     assert!(
         engine
             .block_on(engine.session(&DashNetwork::Regtest))
@@ -501,7 +584,8 @@ fn a_restored_fork_disposition_is_held_again_on_the_next_open() {
 /// Run by [`steps_in_child`] only: one engine on the root runs each step on
 /// regtest and prints how each went. `open`; `close`; `request` (Restore
 /// earlier data); `cancel` (Cancel restore); `recover` (Set up from
-/// recovery phrase); `heal` puts [`GOOD_WALLET`] back as `wallet.sqlite`.
+/// recovery phrase); `heal` puts [`GOOD_WALLET`] back as `wallet.sqlite`;
+/// `unhold` deletes [`add_pending_row`]'s row.
 #[test]
 fn child_steps() {
     let (Some(root), Some(steps)) = (
@@ -550,6 +634,13 @@ fn child_steps() {
                 std::fs::copy(root.join(GOOD_WALLET), &wallet).unwrap();
                 "healed".to_string()
             }
+            "unhold" => {
+                exec(
+                    &root.join("regtest").join("shielded.sqlite"),
+                    "DELETE FROM shielded_pending_spends",
+                );
+                "unheld".to_string()
+            }
             other => panic!("no step {other}"),
         });
     }
@@ -574,11 +665,7 @@ const RESTORE_HELD_SCREEN: &str = "refused Restore storeUpgrade.refused.restore 
 /// in the root for `heal`.
 fn refused_with_restore() -> Fixture {
     let f = upgraded();
-    std::fs::copy(f.wallet(), f.root.join(GOOD_WALLET)).unwrap();
-    exec(
-        &f.wallet(),
-        "UPDATE refinery_schema_history SET checksum = '1' WHERE version = 1",
-    );
+    break_history(&f);
     f
 }
 
@@ -663,6 +750,23 @@ fn recover_needs_the_hold_record_and_a_later_open_withdraws_it() {
         ]
     );
     assert!(!f.root.join("regtest-recovered-1").exists());
+}
+
+/// M1: Restore earlier data refused for a hold keeps the Restore screen's
+/// request: once the hold is gone, the same engine's request goes through.
+#[test]
+fn a_request_after_a_held_one_goes_through_once_the_hold_is_gone() {
+    let f = refused_with_restore();
+    add_pending_row(&f.net);
+    let got = steps_in_child(&f.root, &["open", "request", "unhold", "request"]);
+    assert_eq!(
+        got,
+        [RESTORE_SCREEN, "held InFlight", "unheld", "requested"]
+    );
+    assert_eq!(
+        dw_store_upgrade::pending_restore(&f.net).unwrap(),
+        Some(dw_store_upgrade::PendingRestore::Requested)
+    );
 }
 
 /// R-1 rule 4 (a) at the swap: a hold that appears after the request stops
@@ -763,8 +867,10 @@ fn drained_holds(f: &Fixture) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Restore earlier data asked for from `f`'s Restore screen
+/// ([`on_restore_screen`]), the engine closed after.
 fn request_got(f: &Fixture) -> Result<(), EngineError> {
-    let engine = engine(&f.root);
+    let engine = on_restore_screen(f);
     let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
     close(engine);
     got
@@ -793,9 +899,10 @@ fn a_fork_hold_the_snapshot_carries_does_not_hold_the_restore() {
 /// shielded store can't vouch for, holds the restore.
 #[test]
 fn a_fork_hold_the_snapshot_does_not_carry_holds_the_restore() {
-    let held = |f: &Fixture, what: &str| {
+    let held = |f: &Fixture, engine: Engine, what: &str| {
         let before = tree(&f.net);
-        let got = request_got(f);
+        let got = engine.block_on(engine.request_restore(&DashNetwork::Regtest));
+        close(engine);
         assert!(
             matches!(
                 got,
@@ -813,7 +920,7 @@ fn a_fork_hold_the_snapshot_does_not_carry_holds_the_restore() {
     };
     let f = fork_fixture();
     live_fork_store(&f, 103);
-    held(&f, "a live disposition only");
+    held(&f, on_restore_screen(&f), "a live disposition only");
 
     for (what, activity, notes) in [
         ("a marker only", 2, &[104][..]),
@@ -823,16 +930,17 @@ fn a_fork_hold_the_snapshot_does_not_carry_holds_the_restore() {
     ] {
         let f = fork_fixture();
         marker(&f, activity, notes);
-        held(&f, what);
+        held(&f, on_restore_screen(&f), what);
     }
 
     let f = fork_fixture();
     live_fork_store(&f, 102);
     fork_marker(&f, 102);
+    let engine = on_restore_screen(&f);
     let snapshot = dw_store_upgrade::latest_snapshot(&f.net).unwrap().unwrap();
     let copy = snapshot.dir().join("shielded.sqlite");
     let mut bytes = std::fs::read(&copy).unwrap();
     bytes[..100].fill(0x5a);
     std::fs::write(&copy, bytes).unwrap();
-    held(&f, "the snapshot's shielded store does not verify");
+    held(&f, engine, "the snapshot's shielded store does not verify");
 }
