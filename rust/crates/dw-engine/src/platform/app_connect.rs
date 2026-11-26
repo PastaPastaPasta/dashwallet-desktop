@@ -1715,8 +1715,15 @@ pub(crate) async fn clear_spent_conflict_nonces(
     let tip = nonce_state & IDENTITY_NONCE_VALUE_FILTER;
     let owner = b58(&identity);
     let _write = RECORD_WRITE.lock().await;
-    let Ok(mut all) = records(session, wallet).await else {
-        return;
+    let mut all = match records(session, wallet).await {
+        Ok(all) => all,
+        Err(e) => {
+            tracing::warn!(
+                error = %e.code(),
+                "app connect read records before clearing conflict nonce"
+            );
+            return;
+        }
     };
     let mut changed = false;
     let mut cleared = Vec::new();
@@ -1738,11 +1745,27 @@ pub(crate) async fn clear_spent_conflict_nonces(
         for k in cleared {
             session.withdrawal_nonces.advance_floor(identity, k);
         }
-        if let Ok(value) = serde_json::to_string(&all) {
-            let scope = dw_appdb::local_scope(&wallet.to_string());
-            let _ = session
-                .appdb_op(move |db| db.set_setting_durable(&scope, RECORDS_SETTING, Some(&value)))
-                .await;
+        match serde_json::to_string(&all) {
+            Ok(value) => {
+                let scope = dw_appdb::local_scope(&wallet.to_string());
+                if let Err(e) = session
+                    .appdb_op(move |db| {
+                        db.set_setting_durable(&scope, RECORDS_SETTING, Some(&value))
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?e,
+                        "app connect persist cleared conflict nonce"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "app connect serialize cleared conflict nonce"
+                );
+            }
         }
     }
 }
@@ -2920,6 +2943,7 @@ pub(crate) async fn disconnect(
             && !super::withdrawal::takes(nonce_state, k, id)
         {
             c.nonce = None;
+            session.withdrawal_nonces.advance_floor(id, k);
         }
     }
     let verified = verified_disconnect_keys(&record, &fresh)?;
@@ -3009,6 +3033,9 @@ pub(crate) async fn disconnect(
             );
             let reserved =
                 reserved_nonce_on_retire(pending.nonce, nonce_state, id_height, nonce_height, id);
+            if reserved.is_none() {
+                session.withdrawal_nonces.advance_floor(id, pending.nonce);
+            }
             record.pending_disconnect = None;
             record.last_conflict = Some(DisconnectConflictInfo {
                 transition_hash: pending.transition_hash,
@@ -3047,6 +3074,7 @@ pub(crate) async fn disconnect(
                     observed_debit = ?observed_debit,
                     "app connect disconnect retired after spent nonce at consistent height"
                 );
+                session.withdrawal_nonces.advance_floor(id, pending.nonce);
                 record.pending_disconnect = None;
                 record.last_conflict = Some(DisconnectConflictInfo {
                     transition_hash: pending.transition_hash,
@@ -3186,6 +3214,9 @@ pub(crate) async fn disconnect(
                     nonce_height2,
                     id,
                 );
+                if reserved.is_none() {
+                    session.withdrawal_nonces.advance_floor(id, pending.nonce);
+                }
                 record.pending_disconnect = None;
                 record.last_conflict = Some(DisconnectConflictInfo {
                     transition_hash: pending.transition_hash,
@@ -3408,6 +3439,9 @@ pub(crate) async fn disconnect(
                     nonce_height2,
                     id,
                 );
+                if reserved.is_none() {
+                    session.withdrawal_nonces.advance_floor(id, next_nonce);
+                }
                 record.pending_disconnect = None;
                 record.last_conflict = Some(DisconnectConflictInfo {
                     transition_hash,
