@@ -1196,7 +1196,7 @@ describe("Set up from recovery phrase (Q107 C1)", () => {
       restart({}, ctx);
       expect(open({}, ctx)).toMatchObject({ network: { restored: true }, lock: { state: "noVault" } });
       expect(world.wallets).toEqual([]);
-      expect(world.restoreCalls).toEqual(["recoverInFreshFolder"]);
+      expect(world.restoreCalls).toEqual(["recover"]);
       expect(world.appExits).toEqual(["restart"]);
     });
   });

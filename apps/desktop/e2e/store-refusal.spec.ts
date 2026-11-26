@@ -192,7 +192,7 @@ test.describe("a damaged store (Q107 C1)", () => {
     await page.getByTestId(RECOVER).click();
     await page.getByTestId("recover-confirm-confirm").click();
     await expectRestoreOnly(page);
-    expect(await restoreCalls(page)).toEqual(["recoverInFreshFolder"]);
+    expect(await restoreCalls(page)).toEqual(["recover"]);
     expect(await appExits(page)).toEqual(["restart"]);
     await expect(page.getByTestId("onboarding-welcome-text")).toHaveText(
       "Your earlier wallet data couldn't be read, so Dash Wallet started with a new data folder. Enter a recovery phrase to set up a wallet again.",
@@ -240,7 +240,7 @@ test.describe("a damaged store (Q107 C1)", () => {
       await expect(page.getByTestId("store-refused")).toHaveCount(0);
       await expect(page.getByTestId("onboarding")).toHaveCount(0);
     }
-    expect(await restoreCalls(page)).toEqual(["recoverInFreshFolder"]);
+    expect(await restoreCalls(page)).toEqual(["recover"]);
     expect(errors).toEqual([]);
   });
 });
