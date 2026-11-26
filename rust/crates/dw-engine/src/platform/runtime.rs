@@ -1126,11 +1126,12 @@ impl PlatformRuntime {
         &self,
         leases: &super::lease::LeaseTable,
         manager: &Manager,
+        appdb: &Arc<dw_appdb::AppDb>,
         id: WalletId,
     ) -> Result<(), EngineError> {
         let _fence = self.contacts.fences.removal(id).await;
         let _passes = self.shielded_passes.write().await;
-        if super::shielded_pool::holds_unresolved(leases, manager, id).await {
+        if super::shielded_pool::holds_unresolved(leases, manager, appdb, id).await {
             return Err(EngineError::ShieldedSpendUnresolved);
         }
         manager.remove_wallet(&id.0).await?;
@@ -1161,7 +1162,9 @@ impl NetworkSession {
         };
         for id in live.manager.list_wallet_ids_blocking() {
             let id = WalletId(id);
-            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, id).await {
+            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, &live.appdb, id)
+                .await
+            {
                 return true;
             }
             #[cfg(test)]
@@ -1183,7 +1186,9 @@ impl NetworkSession {
         let live = self.live().ok()?;
         let mut held = None;
         for id in live.manager.list_wallet_ids_blocking() {
-            match super::shielded_pool::removal_hold(self, &live.manager, WalletId(id)).await {
+            match super::shielded_pool::removal_hold(self, &live.manager, &live.appdb, WalletId(id))
+                .await
+            {
                 Some(crate::ShieldedHold::CarriedOver) => {
                     return Some(crate::ShieldedHold::CarriedOver);
                 }

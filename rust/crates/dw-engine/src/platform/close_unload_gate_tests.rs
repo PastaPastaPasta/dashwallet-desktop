@@ -209,7 +209,9 @@ fn both_refuse(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId,
 
 pub(super) fn holds(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> bool {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
-    engine.block_on(async move { pool::holds_unresolved(&s.leases, &m, wallet).await })
+    engine.block_on(async move {
+        pool::holds_unresolved(&s.leases, &m, &s.live().unwrap().appdb, wallet).await
+    })
 }
 
 fn persister(session: &NetworkSession) -> Weak<SqlitePersister> {

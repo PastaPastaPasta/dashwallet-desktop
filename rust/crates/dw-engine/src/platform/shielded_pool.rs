@@ -4914,12 +4914,17 @@ fn holds_activity<S: ShieldedStore>(
 /// artifacts that [`settle_outcomes`] has not read into the journal yet,
 /// a pending row of an imported spend the library holds nothing of and an
 /// unknown one not yet marked [`FREED_UNKNOWN`] included ([`spend_outcome`]
-/// reads both); never one so marked, which reads nothing. `None` when the
-/// journal is not ready, or the artifacts, a history row or what the
-/// library holds cannot be read.
+/// reads both); never one so marked, which reads nothing. A create
+/// [`settle_outcomes`] left unresolved ([`CREATE_SPENT`]) whose row reads
+/// confirmed is read once its registration's proof in `appdb` reads
+/// consumed ([`spent_create_consumed`]); until then a padded create's refund
+/// may still be owed. `None` when the journal is not ready, or the
+/// artifacts, a history row, what the library holds or such a proof cannot
+/// be read.
 pub(super) async fn reported_outcome(
     leases: &super::lease::LeaseTable,
     coordinator: &NetworkShieldedCoordinator,
+    appdb: &Arc<dw_appdb::AppDb>,
     wallet: WalletId,
 ) -> Option<bool> {
     if !leases.journal_ready() {
@@ -4927,25 +4932,64 @@ pub(super) async fn reported_outcome(
     }
     let artifacts = leases.shielded_artifacts(wallet).await.ok()?;
     let subwallet = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
-    let store = coordinator.store().read().await;
-    for artifact in artifacts.iter().filter(|a| open_artifact(a)) {
-        let row = store
-            .get_activity_by_entry_id(subwallet, &artifact.activity)
-            .ok()?;
-        let reported = match row.map(|e| e.status) {
-            _ if freed_unknown(artifact) => false,
-            Some(Status::Confirmed | Status::Failed) => true,
-            Some(Status::Pending) if imported(artifact) => {
-                !holds_activity(&*store, subwallet, &artifact.activity).ok()?
+    let mut spent_creates = Vec::new();
+    {
+        let store = coordinator.store().read().await;
+        for artifact in artifacts.iter().filter(|a| open_artifact(a)) {
+            let row = store
+                .get_activity_by_entry_id(subwallet, &artifact.activity)
+                .ok()?;
+            let reported = match row.map(|e| e.status) {
+                _ if freed_unknown(artifact) => false,
+                Some(Status::Confirmed) if spent_create(artifact) => {
+                    spent_creates.extend(artifact.st_hash);
+                    false
+                }
+                Some(Status::Confirmed | Status::Failed) => true,
+                Some(Status::Pending) if imported(artifact) => {
+                    !holds_activity(&*store, subwallet, &artifact.activity).ok()?
+                }
+                Some(Status::Unknown) => imported(artifact),
+                _ => false,
+            };
+            if reported {
+                return Some(true);
             }
-            Some(Status::Unknown) => imported(artifact),
-            _ => false,
-        };
-        if reported {
-            return Some(true);
         }
     }
-    Some(false)
+    if spent_creates.is_empty() {
+        return Some(false);
+    }
+    let consumed = spent_create_consumed(appdb, wallet, spent_creates).await?;
+    Some(!consumed)
+}
+
+/// Whether `artifact` is a create [`settle_outcomes`] settled
+/// [`CREATE_SPENT`], left to its registration's evidence.
+fn spent_create(artifact: &dw_appdb::dispatch::ShieldedArtifact) -> bool {
+    artifact.kind == Some(ArtifactKind::IdentityCreate) && artifact.status == CREATE_SPENT.0
+}
+
+/// Whether the registration proof ([`dw_appdb::dp_registration_proved`]) of
+/// every create in `st_hashes` reads consumed: its notes spent with no
+/// identity, nothing owed. No proof, or any other, is `false`; a proof that
+/// cannot be read is `None`.
+async fn spent_create_consumed(
+    appdb: &Arc<dw_appdb::AppDb>,
+    wallet: WalletId,
+    st_hashes: Vec<[u8; 32]>,
+) -> Option<bool> {
+    let appdb = Arc::clone(appdb);
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let read = tokio::task::spawn_blocking(move || {
+        st_hashes.iter().try_fold(true, |all, st_hash| {
+            let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+            Ok::<_, dw_appdb::AppDbError>(
+                all && appdb.setting(&scope, &key)?.as_deref() == Some("consumed"),
+            )
+        })
+    });
+    read.await.ok()?.ok()
 }
 
 /// Whether an artifact waits for the library's outcome: registered, or
@@ -5106,17 +5150,19 @@ pub(crate) async fn holds_stored_spends(manager: &Manager, id: WalletId) -> bool
 /// an unread journal or a read that fails holds): the library keeps that
 /// outcome in memory only, so a removal would lose it before a pass reads
 /// it. Close Wallet, an in-app network close and a restore's rollback
-/// refuse such a wallet (`shielded_spend_unresolved`).
+/// refuse such a wallet (`shielded_spend_unresolved`). `appdb` keeps the
+/// registrations' proofs [`reported_outcome`] reads.
 pub(crate) async fn holds_unresolved(
     leases: &super::lease::LeaseTable,
     manager: &Manager,
+    appdb: &Arc<dw_appdb::AppDb>,
     id: WalletId,
 ) -> bool {
     if holds_stored_spends(manager, id).await || leases.marks_unrecorded(id).await {
         return true;
     }
     match manager.shielded_coordinator().await {
-        Some(coordinator) => reported_outcome(leases, &coordinator, id).await != Some(false),
+        Some(coordinator) => reported_outcome(leases, &coordinator, appdb, id).await != Some(false),
         None => false,
     }
 }
@@ -5149,6 +5195,7 @@ pub(crate) async fn holds_unresolved(
 pub(crate) async fn removal_hold(
     session: &NetworkSession,
     manager: &Manager,
+    appdb: &Arc<dw_appdb::AppDb>,
     id: WalletId,
 ) -> Option<crate::ShieldedHold> {
     let path = session.data_dir().join(SHIELDED_DB_FILE);
@@ -5176,7 +5223,7 @@ pub(crate) async fn removal_hold(
         tracing::warn!(wallet_id = %id, error = %e, "the dispatch journal could not be read; the removal is refused");
     }
     let leases = &session.leases;
-    if !holds_unresolved(leases, manager, id).await
+    if !holds_unresolved(leases, manager, appdb, id).await
         && on_disk == Ok(false)
         && journal == Ok(JournalHolds::default())
     {
@@ -5184,7 +5231,9 @@ pub(crate) async fn removal_hold(
     }
     let (unread, unloaded) = match coordinator {
         Some(coordinator) => (
-            reported_outcome(leases, &coordinator, id).await.is_none(),
+            reported_outcome(leases, &coordinator, appdb, id)
+                .await
+                .is_none(),
             on_disk == Ok(true) && !holds_stored_spends(manager, id).await,
         ),
         None => (false, false),
@@ -5543,11 +5592,12 @@ async fn pool_is_idle(
         if session.hub.shielded_pass_failed(WalletId(wallet)) {
             return None;
         }
+        let appdb = session.live().ok()?.appdb;
         let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
             ShieldedLocalBalanceState::Unbound => true,
             ShieldedLocalBalanceState::RestoreIncomplete => false,
             ShieldedLocalBalanceState::Ready(snapshot) => {
-                let appdb = session.live().ok()?.appdb;
+                let appdb = Arc::clone(&appdb);
                 let clock =
                     tokio::task::spawn_blocking(move || read_rest_clock(&appdb, WalletId(wallet)));
                 clock.await.ok()?.ok()?.scanned
@@ -5557,7 +5607,8 @@ async fn pool_is_idle(
                     })
             }
         };
-        let settled = !reported_outcome(&session.leases, coordinator, WalletId(wallet)).await?
+        let settled = !reported_outcome(&session.leases, coordinator, &appdb, WalletId(wallet))
+            .await?
             && !session.leases.marks_unrecorded(WalletId(wallet)).await;
         if !scanned || !settled {
             return None;

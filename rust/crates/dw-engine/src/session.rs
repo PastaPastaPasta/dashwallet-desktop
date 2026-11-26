@@ -1627,8 +1627,12 @@ impl NetworkSession {
         }
         let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
-            let unloaded =
-                (self.platform).remove_from_manager(&self.leases, &manager, WalletId(id));
+            let unloaded = (self.platform).remove_from_manager(
+                &self.leases,
+                &manager,
+                &live.appdb,
+                WalletId(id),
+            );
             match unloaded.await {
                 Ok(()) => {}
                 Err(EngineError::ShieldedSpendUnresolved) => kept.push(id),
