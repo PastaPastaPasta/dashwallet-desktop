@@ -34,10 +34,9 @@ use dashcore::blockdata::transaction::special_transaction::{
     SpecialTransactionBasePayloadEncodable, TransactionPayload,
 };
 use dashcore::bls_sig_utils::BLSPublicKey;
+use dashcore::ecdsa::EcdsaSecretKey;
 use dashcore::hash_types::InputsHash;
-use dashcore::hashes::Hash;
 use dashcore::platform_node_id::PlatformNodeId;
-use dashcore::secp256k1::{Message, SecretKey, ecdsa::RecoverableSignature};
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::{Network, OutPoint, PubkeyHash, ScriptBuf, Transaction, Txid};
 use zeroize::Zeroizing;
@@ -220,9 +219,8 @@ pub fn sign_message_compact(secret: &[u8; 32], message: &str) -> Result<[u8; 65]
 /// `CKey::SignCompact` over a 32-byte hash (internal byte order), for a
 /// compressed public key: `27 + 4 + recid ‖ r ‖ s`.
 pub fn sign_hash_compact(secret: &[u8; 32], hash: &[u8; 32]) -> Result<[u8; 65], PayloadError> {
-    let key = SecretKey::from_secret_bytes(*secret).map_err(|_| PayloadError::BadSecret)?;
-    let sig = RecoverableSignature::sign_ecdsa_recoverable(Message::from_digest(*hash), &key);
-    Ok(dashcore::sign_message::MessageSignature::new(sig, true).serialize())
+    let key = EcdsaSecretKey::from_bytes(secret).map_err(|_| PayloadError::BadSecret)?;
+    Ok(key.sign_recoverable(hash).to_bytes())
 }
 
 /// The ProUpRegTx placeholder (version 2). Unchanged fields carry the
@@ -317,8 +315,7 @@ pub fn checked_collateral(
 mod tests {
     use super::*;
     use dashcore::blockdata::transaction::special_transaction::TransactionType;
-    use dashcore::secp256k1::PublicKey;
-    use dashcore::sign_message::MessageSignature;
+    use dashcore::sign_message;
     use dashcore::{Address, TxIn, TxOut};
 
     fn addr(seed: u8) -> Address {
@@ -441,7 +438,7 @@ mod tests {
     #[test]
     fn test_QT_123_existing_collateral_signs_the_core_sign_string() {
         let secret = Zeroizing::new([0x11u8; 32]);
-        let pk = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(*secret).unwrap());
+        let pk = EcdsaSecretKey::from_bytes(&secret).unwrap().public_key();
         let collateral_address = Address::p2pkh(&dashcore::PublicKey::new(pk), Network::Testnet);
         let t = terms(CollateralSource::Existing(OutPoint {
             txid: Txid::from_byte_array([5; 32]),
@@ -469,9 +466,9 @@ mod tests {
         assert_eq!(parts.len(), 5);
         assert_eq!(parts[1], "0");
         assert_eq!(parts[0], addr(3).to_string());
-        let sig = MessageSignature::from_slice(&p.signature).unwrap();
+        let sig = sign_message::from_slice(&p.signature).unwrap();
         let hash = dashcore::sign_message::signed_msg_hash(&message);
-        assert!(sig.is_signed_by_address(&collateral_address, hash).unwrap());
+        assert!(sign_message::is_signed_by_address(&sig, &collateral_address, hash).unwrap());
     }
 
     #[test]
@@ -493,15 +490,14 @@ mod tests {
             panic!("ProUpRegTx payload expected");
         };
         assert_eq!(p.payload_sig.len(), 65);
-        let sig = MessageSignature::from_slice(&p.payload_sig).unwrap();
-        assert!(sig.compressed);
-        let pubkey = sig
-            .signature
-            .recover_ecdsa(Message::from_digest(*p.base_payload_hash().as_byte_array()))
-            .unwrap();
+        let sig = sign_message::from_slice(&p.payload_sig).unwrap();
+        assert!(sig.is_compressed().unwrap());
+        let pubkey =
+            dashcore::ecdsa::EcdsaPublicKey::recover(p.base_payload_hash().as_byte_array(), &sig)
+                .unwrap();
         assert_eq!(
             pubkey,
-            PublicKey::from_secret_key(&SecretKey::from_secret_bytes(secret).unwrap())
+            EcdsaSecretKey::from_bytes(&secret).unwrap().public_key()
         );
     }
 }

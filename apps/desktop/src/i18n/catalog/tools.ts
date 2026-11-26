@@ -224,7 +224,7 @@ export const tools = {
     walletTitle: "Repair the wallet",
     dropUnconfirmed: "Remove unconfirmed transactions",
     dropUnconfirmedButton: "Remove unconfirmed transactions…",
-    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm.",
+    dropUnconfirmedQuestion: "Abandon unconfirmed transactions that aren't locked yet, and rescan? Locked transactions are kept, because they will confirm, and so is any transaction a locked or confirmed one depends on. So is a payment that an unfinished Platform transfer, credit top-up or username registration depends on. A masternode registration or key change it abandons ends, and its coins are released. Any abandoned transaction that reached the network may still confirm. Dash Wallet may also keep re-sending the ones it sent since it last started, for up to a day. To stop that, restart Dash Wallet.",
     dropAction: "Remove",
     removeUnconfirmed: {
       /** Remove unconfirmed refused with `rescan_in_progress`: after a chain fork the wallet catches up for about a block. */

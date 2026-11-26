@@ -227,8 +227,8 @@ fn test_IOS_082_reading_an_attached_key_needs_a_reveal_grant() {
 /// key, read with the full-scope key and nothing secret returned.
 #[test]
 fn test_IOS_082_an_attached_keys_id_needs_the_full_scope_key() {
-    use dashcore::hashes::{Hash, hash160};
-    use dashcore::secp256k1::{PublicKey, SecretKey};
+    use dashcore::ecdsa::EcdsaSecretKey;
+    use dashcore::hashes::hash160;
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
@@ -236,8 +236,8 @@ fn test_IOS_082_an_attached_keys_id_needs_the_full_scope_key() {
     v.store_masternode_key(&HASH, "voting", &secret).unwrap();
     v.store_masternode_key(&HASH, "owner", b"not a secret key")
         .unwrap();
-    let public = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(secret).unwrap());
-    let id = hash160::Hash::hash(&public.serialize()).to_byte_array();
+    let public = EcdsaSecretKey::from_bytes(&secret).unwrap().public_key();
+    let id = hash160::Hash::hash(&public.to_compressed()).to_byte_array();
     assert_eq!(v.masternode_key_id(&HASH, "voting").unwrap(), Some(id));
     assert_eq!(v.masternode_key_id(&HASH, "owner").unwrap(), None);
     assert_eq!(v.masternode_key_id(&HASH, "payout").unwrap(), None);

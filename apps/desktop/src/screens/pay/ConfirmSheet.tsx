@@ -35,6 +35,7 @@ import {
   broadcastFailure,
   confirmActions,
   contactConfirmActions,
+  contactsUpdatingNotice,
   credentialPrompt,
   failureText,
   isContact,
@@ -303,7 +304,10 @@ export function ConfirmSheet({
     } catch (e) {
       if (grant) void b.revokeGrant(grant.id).catch(() => null);
       endLease();
-      notSent(failureText(e, chain, amountUnit, toContact));
+      // Refused until the contacts are re-checked (H-09): a notice on the form, not a result.
+      const notice = contactsUpdatingNotice(e, toContact, accepted);
+      if (notice) attempt.notice(notice);
+      else notSent(failureText(e, chain, amountUnit, toContact));
       return;
     } finally {
       setCheckingContact(false);

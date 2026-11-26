@@ -503,7 +503,7 @@ fn an_attached_key_is_in_no_read_and_no_event() {
     let wif_secret = dashcore::PrivateKey::from_wif(wif)
         .unwrap()
         .inner
-        .to_secret_bytes();
+        .to_bytes();
     let hex_secret = hex::decode(&owner_hex).unwrap();
     let mut forms = vec![wif.to_owned(), owner_hex.clone(), owner_hex.to_uppercase()];
     for bytes in [&wif_secret[..], &hex_secret[..]] {

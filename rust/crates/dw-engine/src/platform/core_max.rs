@@ -317,8 +317,6 @@ pub(crate) async fn credit_script(
         })
     };
     let mut account = account.ok_or_else(|| unavailable("no funding account"))?;
-    let address = account
-        .next_address(xpub.as_ref(), false)
-        .map_err(unavailable)?;
+    let address = account.next_address(xpub.as_ref()).map_err(unavailable)?;
     Ok(address.script_pubkey())
 }

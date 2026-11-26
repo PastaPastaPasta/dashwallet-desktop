@@ -50,6 +50,8 @@ export function actionError(e: unknown): string {
   if (hasCode(e, "contact.already_contact")) return t("contacts.errors.alreadyContact");
   if (hasCode(e, "contact.details_too_long")) return t("contacts.errors.detailsTooLong");
   if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return t("contacts.errors.platform");
+  if (hasCode(e, "platform.broadcast_unknown")) return t("contacts.errors.maybeSent");
+  if (hasCode(e, "platform.will_be_sent")) return t("contacts.errors.willBeSent");
   if (hasCode(e, "vault.locked") || hasCode(e, "platform.signer_unavailable")) return t("contacts.errors.locked");
   return isAppError(e) || e instanceof Error ? e.message : String(e);
 }

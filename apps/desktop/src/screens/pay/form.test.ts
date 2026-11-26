@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { acknowledge, beginPayment, beginRetry, draftClosed, keptPayment, outliving, payAttempt, payFormKey, resetKeptPayments } from "./form";
-import type { Outcome } from "./model";
+import { acknowledge, beginPayment, beginRetry, dismissNotice, draftClosed, keptPayment, outliving, payAttempt, payFormKey, resetKeptPayments } from "./form";
+import type { Outcome, PayNotice } from "./model";
 
 const KEY = payFormKey("w");
 const SENDING = { amount: 5, fee: 1 };
@@ -53,5 +53,36 @@ describe("a payment that outlives its form", () => {
     expect(keptPayment(KEY)).toMatchObject({ kind: "result", retrying: false, outcome: { kind: "unknown", retry: false } });
     expect(beginRetry(KEY)).toBeNull();
     expect(acknowledge(KEY, id)).toMatchObject({ kind: "unknown", retry: false });
+  });
+
+  it("keeps a refusal said as a notice for a form mounted again, until it is dismissed or another payment starts", () => {
+    const notice: PayNotice = { kind: "updating", text: "Still checking." };
+    const settled: (Outcome | null)[] = [];
+    const id = beginPayment(KEY, SENDING);
+    payAttempt(KEY, id, () => false, (o) => settled.push(o)).notice(notice);
+    expect(settled).toEqual([null]);
+    expect(keptPayment(KEY)).toEqual({ kind: "notice", attempt: id, notice });
+    // Nothing to acknowledge or retry: it is no result.
+    expect(acknowledge(KEY, id)).toBeNull();
+    expect(beginRetry(KEY)).toBeNull();
+    dismissNotice(KEY);
+    expect(keptPayment(KEY)).toBeNull();
+    payAttempt(KEY, beginPayment(KEY, SENDING), () => true).notice(notice);
+    const next = beginPayment(KEY, SENDING);
+    expect(keptPayment(KEY)).toEqual({ kind: "preparing", attempt: next, sending: SENDING });
+  });
+
+  it("ignores an older payment's late notice, and a notice once the payment went to the broadcast", () => {
+    const notice: PayNotice = { kind: "updating", text: "Still checking." };
+    const old = payAttempt(KEY, beginPayment(KEY, SENDING), () => true);
+    const id = beginPayment(KEY, SENDING);
+    old.notice(notice);
+    expect(keptPayment(KEY)).toEqual({ kind: "preparing", attempt: id, sending: SENDING });
+    const current = payAttempt(KEY, id, () => true);
+    current.broadcasting(SENDING);
+    current.notice(notice);
+    expect(keptPayment(KEY)).toEqual({ kind: "sending", attempt: id, sending: SENDING });
+    dismissNotice(KEY);
+    expect(keptPayment(KEY)).toEqual({ kind: "sending", attempt: id, sending: SENDING });
   });
 });

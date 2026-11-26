@@ -966,7 +966,7 @@ async fn masternode_sync_wakes_the_refetch_once_and_stays() {
 #[tokio::test]
 async fn spv_progress_marks_masternode_sync_through_the_hub() {
     use dash_spv::EventHandler;
-    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
 
     let r = rig(TrustMode::Enforcing);
     let hub = crate::events::SessionHub::new(DashNetwork::Regtest, Arc::new(Notices::default()));

@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, Block, BlockHash, InstantLock, OutPoint, Transaction, TxIn, TxOut, Txid};
 use platform_wallet::PlatformWalletInfo;
 use platform_wallet::key_wallet_manager::{WalletEvent, WalletInterface};
@@ -25,6 +24,8 @@ mod crash_send_tests;
 mod dismissed_spend_disk_tests;
 #[path = "dropped_claim_tests.rs"]
 mod dropped_claim_tests;
+#[path = "g1_islock_tests.rs"]
+mod g1_islock_tests;
 #[path = "h03_kill9_core_tests.rs"]
 mod h03_kill9_core_tests;
 #[cfg(unix)]
@@ -36,8 +37,14 @@ mod own_spend_balance_tests;
 mod own_spend_disk_tests;
 #[path = "removed_payment_way_out_tests.rs"]
 mod removed_payment_way_out_tests;
+#[path = "restore_holds_tests.rs"]
+mod restore_holds_tests;
 #[path = "signed_coin_pin_tests.rs"]
 mod signed_coin_pin_tests;
+#[path = "store_repair_legacy_tests.rs"]
+mod store_repair_legacy_tests;
+#[path = "store_repair_tests.rs"]
+mod store_repair_tests;
 #[path = "stuck_lock_repair_tests.rs"]
 mod stuck_lock_repair_tests;
 #[path = "withheld_coin_tests.rs"]
@@ -208,6 +215,16 @@ fn wait_stored_locked(session: &NetworkSession, id: WalletId, txid: Txid) {
     panic!("the store never held {txid}'s coins InstantSend-locked");
 }
 
+/// A payment of [`PAID`] to the wallet's receive address, InstantSend-locked
+/// and stored: a balance that outlives a restart. Returns its amount.
+pub(crate) fn paid_and_stored(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> u64 {
+    let tx = payment(&receive_address(engine, session, id));
+    mempool(engine, session, id, &tx);
+    instant_lock(engine, session, id, &tx);
+    wait_stored_locked(session, id, tx.txid());
+    PAID
+}
+
 fn receive_address(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> Address {
     let info = engine
         .block_on(session.current_receive_address(id))
@@ -233,16 +250,6 @@ fn payment(to: &Address) -> Transaction {
         }],
         special_transaction_payload: None,
     }
-}
-
-/// A payment of [`PAID`] to the wallet's receive address, InstantSend-locked
-/// and stored: a balance that outlives a restart. Returns its amount.
-pub(crate) fn paid_and_stored(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> u64 {
-    let tx = payment(&receive_address(engine, session, id));
-    mempool(engine, session, id, &tx);
-    instant_lock(engine, session, id, &tx);
-    wait_stored_locked(session, id, tx.txid());
-    PAID
 }
 
 fn block_with(txs: Vec<Transaction>) -> Block {

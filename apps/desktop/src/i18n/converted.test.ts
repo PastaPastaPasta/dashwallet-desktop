@@ -21,11 +21,11 @@ const AREAS: Record<string, string[]> = {
 
   components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 
-  app: ["app/App.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx", "fiat/rates.tsx"],
+  app: ["app/App.tsx", "screens/StoreRefusal.tsx", "screens/ShellDialogs.tsx", "screens/Routes.tsx", "screens/SavedLinks.tsx", "fiat/entry.tsx", "fiat/rates.tsx"],
 
   onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
 
-  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/DroppedNoticeBanner.tsx"],
+  home: ["screens/Overview.tsx", "screens/UnfinishedTransfersCard.tsx", "screens/ProtocolAdvisoryBanner.tsx", "screens/RestoredBanner.tsx", "screens/DroppedNoticeBanner.tsx", "screens/RestoredStatePanel.tsx"],
 
   activity: ["screens/SourceDetailSheet.tsx"],
 

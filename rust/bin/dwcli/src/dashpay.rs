@@ -862,6 +862,7 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::SeedMismatch
         | P::GrantInvalid
         | P::Cancelled
+        | P::Restored
         | P::LeaseExpired
         | P::NetworkNotOpen
         | P::WalletNotFound
@@ -1030,6 +1031,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
             json!({"notes": notes, "required": required})
         }
         ShieldedError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
+        ShieldedError::StoreClosed { reason } => json!({"reason": reason.as_str()}),
         ShieldedError::Platform(p) => platform_params(p),
     }
 }
@@ -2911,36 +2913,25 @@ mod tests {
         ),
         // 0.1 E1: regtest's floor (13) is past the activation; the new
         // wallet's account binds from the vault, and is not ready: no pass
-        // has scanned it this session (Platform is not started here). The
-        // address is the random wallet's (see the run below).
+        // has scanned it this session (Platform is not started here).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":true,"account":"bound","scan":null,"last_pass_failed":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
-        (
-            "shielded address",
-            r#"{"ok":true,"result":{"address":"tdash1z…","account":0}}"#,
-        ),
-        (
-            "shielded shield --duffs 100000",
-            r#"{"ok":false,"error":{"code":"shielded.below_minimum","message":"below the minimum of 212852","params":{"min":212852}}}"#,
-        ),
+        // This build cannot spend from Shielded: no receive address is
+        // issued and no way into or out of the pool is quoted.
+        ("shielded address", NO_PLATFORM),
+        ("shielded shield --duffs 100000", NO_PLATFORM),
         (
             "shielded shield-resume ab12",
             r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
         ),
-        (
-            "shielded send --to tZ --credits 5 --memo hi",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a shielded address of this network","params":{"detail":"not a shielded address of this network"}}}"#,
-        ),
-        (
-            "shielded unshield --credits 5 --to yA",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
-        ),
+        ("shielded send --to tZ --credits 5 --memo hi", NO_PLATFORM),
+        ("shielded unshield --credits 5 --to yA", NO_PLATFORM),
         (
             "shielded unshield-to-platform --credits 5 --to yA",
-            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Platform address of this network","params":{"detail":"not a Platform address of this network"}}}"#,
+            NO_PLATFORM,
         ),
         (
             "shielded history --offset 1 --limit 5",
@@ -3834,26 +3825,12 @@ mod tests {
         }
         for (args, call) in TABLE {
             let mut line = envelope(&run(&engine, &session, args));
-            if *args == "shielded address" {
-                let address = &mut line["result"]["address"];
-                assert!(address.as_str().unwrap().starts_with("tdash1z"), "{line}");
-                *address = json!("tdash1z…");
-            }
             // Whether the prover is built by now depends on the machine (CI
             // runners finish it before this row); only its type is checked.
             let result = line.get_mut("result");
             if let Some(ready) = result.and_then(|r| r.get_mut("prover_ready")) {
                 assert!(ready.is_boolean(), "{line}");
                 *ready = json!(false);
-            }
-            // A build that cannot spend from Shielded reads false; the row is
-            // the same either way.
-            if let Some(spends) = line
-                .get_mut("result")
-                .and_then(|r| r.get_mut("spends_available"))
-            {
-                assert!(spends.is_boolean(), "{args:?}");
-                *spends = json!(true);
             }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {

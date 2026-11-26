@@ -88,7 +88,7 @@ public actor EngineClient: EngineProtocol {
     }
 
     public nonisolated func directory(for network: DashNetwork) -> URL {
-        if let path = core.peek()?.networkDir(network: network.ffi) {
+        if let path = try? core.peek()?.networkDir(network: network.ffi) {
             return URL(fileURLWithPath: path, isDirectory: true)
         }
         // After shutdown: the engine's layout is `<dataRoot>/<network>`.

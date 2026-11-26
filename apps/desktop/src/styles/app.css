@@ -2426,6 +2426,10 @@ input[type="radio"]:disabled {
   margin-bottom: 0;
 }
 
+.pay-banner.is-updating > .dash-button {
+  flex-shrink: 0;
+}
+
 .pay-fee-line {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -2975,6 +2979,10 @@ input[type="radio"]:disabled {
 
 .onboarding-text {
   text-align: center;
+}
+
+.store-open-text {
+  overflow-wrap: anywhere;
 }
 
 .onboarding-note,
@@ -4946,6 +4954,19 @@ button.bell-row-open:focus-visible {
 
 .protocol-advisory-link:disabled {
   opacity: var(--dw-opacity-disabled);
+}
+
+.restored-state-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.restored-state-panel .history-gap-actions {
+  margin-top: 0;
 }
 
 .history-gap-notice {

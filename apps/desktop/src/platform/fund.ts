@@ -19,6 +19,7 @@ import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { moveErrorText, onMoveSettledNotify } from "./move";
+import { platformHoldText } from "../api/platformHold";
 
 export type PlatformFundApi = Pick<Backend, "platformFund" | "resumePlatformFund" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -234,6 +235,8 @@ export function endedBeforeApply(error: string, amount: string | null): string |
 /** A refusal of the quote or the call, by code. `credits` shows a credit figure as Dash, `duffs` a duff
  * figure; `ctx` is the request it answers. */
 export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, ctx: FundContext = { request: null }): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
   const maxText = coreMaxRefusal(e, ctx.request?.kind === "add" && !!ctx.request.all, duffs);

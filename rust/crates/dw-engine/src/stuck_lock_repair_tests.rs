@@ -107,6 +107,8 @@ fn stuck_on(
     );
     assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     let row = platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: OutPoint::new(lock.txid(), 0),
         transaction: lock.clone(),
         account_index: 0,
@@ -221,8 +223,14 @@ fn phase_one(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, step:
 }
 
 fn stopped(session: &NetworkSession, engine: &Engine, txid: Txid) -> bool {
-    let manager = session.manager().unwrap();
-    engine.block_on(async move { manager.spv().is_rebroadcast_stopped(&txid).await })
+    let _ = engine;
+    crate::tx_actions::rebroadcast_stop_asked(session, txid)
+}
+
+/// The pinned dash-spv keeps no stop (`tx_actions::stop_rebroadcast`), so
+/// the asks recorded so far stand for what a restarted SPV no longer holds.
+fn spv_forgot_its_stops(session: &NetworkSession) {
+    session.hub.stopped_rebroadcasts.lock().unwrap().clear();
 }
 
 /// The rescan the abandon scheduled reaches the tip, finding A's payment
@@ -310,7 +318,8 @@ fn resolve_after_the_rescan_sends_the_locks_coins_back() {
 }
 
 /// A resume of the lock between the phases: the catch-up resends it,
-/// which lifts its stop (here SPV's restart, which drops every stop), and
+/// which lifts its stop (here SPV's restart: the pinned dash-spv keeps no
+/// stop, [`spv_forgot_its_stops`]), and
 /// the wallet sees it again unconfirmed. It stays abandoned and A is
 /// counted once; the next Resolve stops its rebroadcast again rather than
 /// wedging, and after the rescan sends A back.
@@ -329,10 +338,7 @@ fn a_lock_resent_between_the_phases_is_stopped_again() {
     let manager = session.manager().unwrap();
     engine.block_on(async move { manager.spv().stop().await.unwrap() });
     start_spv(&engine, &session);
-    assert!(
-        !stopped(&session, &engine, lock.txid()),
-        "the stop survived"
-    );
+    spv_forgot_its_stops(&session);
     assert!(
         (session.hub.history.get(&id, &lock.txid())).is_some_and(|e| e.is_abandoned()),
         "the lock is no longer abandoned"

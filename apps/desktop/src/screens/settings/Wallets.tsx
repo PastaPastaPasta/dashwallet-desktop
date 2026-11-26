@@ -4,7 +4,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
-import { keys, useBackend, useQrMatrix, useWallets } from "../../api/queries";
+import { keys, useBackend, useQrMatrix, useRestored, useWallets } from "../../api/queries";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
@@ -29,6 +29,7 @@ export function WalletsTab() {
   const wallets = useWallets();
   useEffect(() => void model.load(), [model, wallets.dataUpdatedAt]);
   const [sheet, setSheet] = useState<WalletSheet>(null);
+  const restoreOnly = useRestored().data === true;
   const [notice, setNotice] = useState<string | null>(null);
   const refresh = () => void client.invalidateQueries({ queryKey: keys.wallets });
   const closeSheet = (message?: string) => {
@@ -42,9 +43,11 @@ export function WalletsTab() {
         <DashButton variant="plainBlue" data-testid="settings-add-wallet" onClick={() => ui.set({ onboarding: true })}>
           {t("settings.wallets.addWallet")}
         </DashButton>
-        <DashButton variant="plainBlue" data-testid="settings-add-watch-only" onClick={() => setSheet({ kind: "watchOnly" })}>
-          {t("settings.wallets.addWatchOnly")}
-        </DashButton>
+        {!restoreOnly && (
+          <DashButton variant="plainBlue" data-testid="settings-add-watch-only" onClick={() => setSheet({ kind: "watchOnly" })}>
+            {t("settings.wallets.addWatchOnly")}
+          </DashButton>
+        )}
         <DashButton variant="plainBlue" data-testid="settings-recovery-phrase" onClick={() => ui.set({ dialog: "recoveryPhrase", recoveryWallet: null })}>
           {t("settings.wallets.showPhrase")}
         </DashButton>
@@ -77,7 +80,7 @@ export function WalletsTab() {
       {sheet?.kind === "rename" && <RenameSheet row={sheet.row} model={model} onClose={closeSheet} />}
       {sheet?.kind === "remove" && <RemoveSheet row={sheet.row} onClose={closeSheet} />}
       {sheet?.kind === "xpub" && <XpubSheet row={sheet.row} onClose={() => setSheet(null)} />}
-      {sheet?.kind === "watchOnly" && <WatchOnlySheet onClose={closeSheet} />}
+      {sheet?.kind === "watchOnly" && !restoreOnly && <WatchOnlySheet onClose={closeSheet} />}
     </>
   );
 }
@@ -228,6 +231,17 @@ function RemoveSheet({ row, onClose }: { row: WalletRow; onClose: (message?: str
       onClose(WalletsText.removed(row.name));
     }
   }, [model.step, onClose, row]);
+  if (model.step === "held")
+    return (
+      <Sheet title={WalletsText.removeHeldTitle} width="medium" testId="settings-remove-sheet" focusKey="held" onClose={() => onClose()}>
+        <p className="sheet-warning" role="alert" data-testid="settings-remove-held">
+          {model.held}
+        </p>
+        <DashButton variant="filledBlue" size="large" fill data-testid="settings-remove-held-ok" onClick={() => onClose()}>
+          {WalletsText.removeHeldOk}
+        </DashButton>
+      </Sheet>
+    );
   return (
     <Sheet title={t("settings.wallets.removeTitle")} width="medium" testId="settings-remove-sheet" focusKey={String(model.encrypted)} closable={!model.busy} onClose={() => onClose()}>
       <p className="sheet-warning" role="note">

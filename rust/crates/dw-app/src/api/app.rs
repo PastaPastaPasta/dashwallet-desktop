@@ -12,7 +12,8 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 /// The repository's GitHub releases page, built in Rust so the renderer has
 /// no opener or shell grant (`open_releases_page`).
-pub(crate) const RELEASES_URL: &str = "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
+pub(crate) const RELEASES_URL: &str =
+    "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
 
 /// The project pages Settings ▸ About links to. The renderer names one; the
 /// URL is fixed here, so it cannot open anything else (`open_project_link`).
@@ -40,7 +41,10 @@ impl ProjectLinkName {
 /// Opens `url`, a page under [`RELEASES_URL`], in the system browser.
 pub(crate) async fn open_official(url: String) -> Result<(), AppError> {
     if url != RELEASES_URL && !url.starts_with(&format!("{RELEASES_URL}/")) {
-        return Err(AppError::app(AppCode::BrowserOpen, format!("not a release page: {url}")));
+        return Err(AppError::app(
+            AppCode::BrowserOpen,
+            format!("not a release page: {url}"),
+        ));
     }
     tauri::async_runtime::spawn_blocking(move || open::that_detached(url))
         .await
@@ -126,6 +130,23 @@ commands! {
             .map_err(|e| failed(e.to_string()))
     }
 
+    /// Quits the app through its normal exit path: the engine flushes and
+    /// closes, as the menu's Quit does. A refused open's screen offers it.
+    #[facade()]
+    fn quit_app(state) -> () {
+        state.exit(0);
+        Ok(())
+    }
+
+    /// Quits through the normal exit path, as `quit_app`, and starts the
+    /// app again: the restart `storage_in_use` asks for when the wallet
+    /// store is held until the process ends.
+    #[facade()]
+    fn restart_app(state) -> () {
+        state.restart();
+        Ok(())
+    }
+
     /// Registered but granted by no capability: the U6 probe that the ACL
     /// refuses an unlisted command (`api::UNGRANTED`).
     #[facade()]
@@ -148,7 +169,10 @@ mod tests {
             ("website", ProjectLinkName::Website),
         ] {
             let line = format!("{name}: \"{}\",", link.url());
-            assert!(fixture.contains(&line), "fixture PROJECT_LINKS is missing `{line}`");
+            assert!(
+                fixture.contains(&line),
+                "fixture PROJECT_LINKS is missing `{line}`"
+            );
         }
     }
 }

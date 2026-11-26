@@ -18,8 +18,8 @@
 //! `index` before signing ([`SignerError::KeyMismatch`]). Core's rules for
 //! each type and D16's lock rules are the engine's (MG-04b §4, §5.1).
 
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dw_protx::shared::registration::TRANSACTION_PROVIDER_REGISTER;
 use dw_protx::shared::{
     ProDisTx, ProRegTxV3, ProUpShareTx, ProUpSharedRegTx, SpecialTx, TRANSACTION_PROVIDER_DISSOLVE,
@@ -35,8 +35,8 @@ fn malformed(what: &str) -> SignerError {
 
 /// The hash160 of `secret`'s compressed public key: a share's
 /// `keyIDOwner` when the share is this key's.
-fn key_id_of(secret: &SecretKey) -> [u8; 20] {
-    hash160::Hash::hash(&PublicKey::from_secret_key(secret).serialize()).to_byte_array()
+fn key_id_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    hash160::Hash::hash(&secret.public_key().to_compressed()).to_byte_array()
 }
 
 /// `bytes` as a whole transaction of type `tx_type`; trailing bytes are

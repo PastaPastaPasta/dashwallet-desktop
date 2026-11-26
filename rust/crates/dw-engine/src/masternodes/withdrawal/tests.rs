@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dashcore::Network;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::hashes::hash160;
 use dpp::ProtocolError;
 use dpp::consensus::ConsensusError;
 use dpp::consensus::basic::BasicError;
@@ -35,6 +34,7 @@ use dpp::identity::v0::IdentityV0;
 use dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::Value;
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::serialization::Signable;
 use dpp::state_transition::StateTransition;
 use dpp::state_transition::identity_credit_withdrawal_transition::v1::IdentityCreditWithdrawalTransitionV1;
@@ -1376,7 +1376,7 @@ fn every_nonce_refusal_is_a_nonce_refusal_and_in_cache_is_in_cache() {
         dpp::consensus::basic::UnsupportedProtocolVersionError::new(99, 1),
     ));
     assert!(matches!(
-        classify(Err(protocol(merits))),
+        classify(Err(protocol(merits.clone()))),
         Answer::Refused(_)
     ));
     let cache = dash_sdk::Error::AlreadyExists("tx already exists in cache".into());
@@ -1394,6 +1394,19 @@ fn every_nonce_refusal_is_a_nonce_refusal_and_in_cache_is_in_cache() {
         Answer::Unknown(_)
     ));
     assert_eq!(classify(Ok(())), Answer::Accepted);
+    // Submitted, outcome unresolved: whatever it carries, unknown, also
+    // under the retry envelope.
+    let unconfirmed = |e| dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(e));
+    for e in [
+        unconfirmed(protocol(nonce(MergeIdentityNonceResult::InvalidNonce))),
+        unconfirmed(protocol(merits)),
+        unconfirmed(dash_sdk::Error::AlreadyExists("in cache".into())),
+        dash_sdk::Error::NoAvailableAddressesToRetry(Box::new(unconfirmed(
+            dash_sdk::Error::Generic("x".into()),
+        ))),
+    ] {
+        assert!(matches!(classify(Err(e)), Answer::Unknown(_)));
+    }
 }
 
 #[tokio::test]

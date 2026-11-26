@@ -14,7 +14,6 @@
 
 use std::str::FromStr;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, OutPoint, Txid};
 use dw_governance::clock::superblock_budget;
 use dw_governance::object::{GovernanceObject, display_hex};

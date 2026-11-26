@@ -35,8 +35,8 @@ use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{
     BlockDecrypt, BlockDecryptMut, BlockEncrypt, BlockEncryptMut, KeyInit, KeyIvInit,
 };
-use dashcore::secp256k1::ecdh::SharedSecret;
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dpp::secp256k1::ecdh::SharedSecret;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::SignerError;

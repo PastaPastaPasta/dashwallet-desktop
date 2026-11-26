@@ -96,7 +96,6 @@ pub struct ArtifactId(pub [u8; 32]);
 
 impl ArtifactId {
     pub fn from_txid(txid: &dashcore::Txid) -> Self {
-        use dashcore::hashes::Hash;
         let mut bytes = txid.to_byte_array();
         bytes.reverse();
         Self(bytes)
@@ -113,7 +112,7 @@ impl ArtifactId {
     /// the step. SHA-256 over a domain tag, the wallet and the step id; the
     /// wallet keeps two wallets' identical step ids apart (review O-1).
     pub fn of_step(wallet: &crate::WalletId, step: &str) -> Self {
-        use dashcore::hashes::{Hash, HashEngine, sha256};
+        use dashcore::hashes::{HashEngine, sha256};
         let mut engine = sha256::Hash::engine();
         engine.input(b"dw-e0-04/call-step/v1");
         engine.input(&wallet.0);
@@ -287,12 +286,22 @@ pub enum LeaseError {
     /// unused (DP2-02): `identity.keys_missing`.
     #[error("the vault holds none of the write's keys")]
     KeysNotHeld,
+    /// A flow that moves funds while the network's restored mark is set
+    /// (the money gate, `restore_gate`): `platform.restored`.
+    #[error("funds actions wait for the first sync after a restore")]
+    Restored,
+    /// A flow that moves funds through Platform in a session without
+    /// Platform: `platform.unavailable`.
+    #[error("Platform is off in this session")]
+    PlatformUnavailable,
 }
 
 impl From<LeaseError> for PlatformError {
     fn from(e: LeaseError) -> Self {
         match e {
             LeaseError::Locked => PlatformError::Cancelled,
+            LeaseError::Restored => PlatformError::Restored,
+            LeaseError::PlatformUnavailable => PlatformError::Unavailable,
             LeaseError::Revoked(cause) => PlatformError::LeaseRevoked { cause },
             LeaseError::Ended => PlatformError::LeaseExpired,
             LeaseError::Parked(purpose) | LeaseError::NeedsGrant(purpose) => {

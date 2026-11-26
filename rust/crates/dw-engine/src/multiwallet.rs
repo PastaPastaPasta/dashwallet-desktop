@@ -182,8 +182,10 @@ pub(crate) fn watch_only_wallet_id(xpub: &ExtendedPubKey, network: dashcore::Net
 
 impl crate::Engine {
     /// Every network with data under the data root (IOS-009), in
-    /// `DashNetwork` order, devnets by name. Reads files and the OS secret
-    /// store only.
+    /// `DashNetwork` order, devnets by name, each in its folder
+    /// ([`Self::network_dir`]): a network that started over is listed by its
+    /// new folder, and the folder it left is not listed. Reads files and the
+    /// OS secret store only.
     pub async fn existing_networks(&self) -> Result<Vec<NetworkDataInfo>, EngineError> {
         let root = self.config().data_root.clone();
         let os_store = Arc::clone(&self.config().vault.os_store);
@@ -195,8 +197,14 @@ impl crate::Engine {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
                 Err(e) => return Err(e.into()),
             };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
+            let redirects = crate::network_folders::redirects(&root)?;
+            let mut names: BTreeSet<String> = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| !redirects.values().any(|folder| folder == name))
+                .collect();
+            names.extend(redirects.keys().cloned());
+            for name in names {
                 let network = match name.as_str() {
                     "mainnet" => DashNetwork::Mainnet,
                     "testnet" => DashNetwork::Testnet,
@@ -208,10 +216,11 @@ impl crate::Engine {
                         _ => continue,
                     },
                 };
-                if !entry.path().is_dir() {
+                let dir = root.join(redirects.get(&name).unwrap_or(&name));
+                if !dir.is_dir() {
                     continue;
                 }
-                let info = inspect_network_dir(&entry.path(), network, &*os_store);
+                let info = inspect_network_dir(&dir, network, &*os_store);
                 if info.has_wallet_state || info.has_vault || info.has_os_store_key {
                     match info.network {
                         DashNetwork::Devnet { .. } => devnets.push(info),
@@ -325,8 +334,13 @@ impl NetworkSession {
             // unknown result would delete its stored transition (no detach
             // at the pin); refused before anything of it changes, and again
             // at the removal (fail closed).
-            if crate::platform::shielded_pool::holds_unresolved(&this.leases, &live.manager, id)
-                .await
+            if crate::platform::shielded_pool::holds_unresolved(
+                &this.leases,
+                &live.manager,
+                &live.appdb,
+                id,
+            )
+            .await
             {
                 return Err(EngineError::ShieldedSpendUnresolved);
             }
@@ -359,12 +373,7 @@ impl NetworkSession {
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
             if let Err(e) = (this.platform)
-                .remove_from_manager(
-                    &this.leases,
-                    &live.manager,
-                    id,
-                    crate::platform::runtime::StoredSpends::Refuse,
-                )
+                .remove_from_manager(&this.leases, &live.manager, &live.appdb, id)
                 .await
             {
                 live.store.set_unloaded(id.0, false);
@@ -384,6 +393,7 @@ impl NetworkSession {
                 pause.release.notified().await;
             }
             this.hub.unload_wallet(&id);
+            this.hub.restore.forget_wallet_checks(id, false);
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
@@ -464,6 +474,8 @@ impl NetworkSession {
                 this.hub.unload_wallet(&id);
                 return Err(e);
             }
+            let in_flight = live.manager.platform_address_sync_arc().is_syncing();
+            this.hub.restore.forget_wallet_checks(id, in_flight);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -736,12 +748,14 @@ impl NetworkSession {
 
     /// Registers a watch-only wallet from a BIP44 account xpub (QT-114):
     /// no vault record, so sends fail with `send.watch_only`. Returns its
-    /// id. Refused (`Storage`) while the dispatch journal is unavailable.
+    /// id. Refused (`Storage`) while the dispatch journal is unavailable,
+    /// and `RestoreOnly` while the network's RESTORED mark is set.
     pub async fn import_watch_only(
         self: &Arc<Self>,
         xpub: String,
         options: WatchOnlyOptions,
     ) -> Result<WalletId, EngineError> {
+        crate::store_upgrade::refuse_while_restored(self.data_dir())?;
         let network = self.network.core_network();
         let (key, account) = parse_account_xpub(&xpub, network)?;
         let name = options.name.as_deref().map(validate_name).transpose()?;
@@ -798,6 +812,8 @@ impl NetworkSession {
                 }
             };
             let was_unloaded = this.hub.admit(id);
+            let in_flight = live.manager.platform_address_sync_arc().is_syncing();
+            this.hub.restore.forget_wallet_checks(id, in_flight);
             let registered = async {
                 let store = Arc::clone(&live.store);
                 let refused = crate::keys::registration_refused(this.data_dir());
@@ -873,6 +889,7 @@ impl NetworkSession {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the watch-only xpub");
             }
             this.list_on_startup(&held, id, true).await;
+            this.load_added_wallet(id).await;
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
                 wallet_id: id,
@@ -944,7 +961,7 @@ fn watch_only_registration(
         let account_type = managed.managed_account_type().to_account_type();
         for pool in managed.managed_account_type().address_pools() {
             let addresses: Vec<key_wallet::AddressInfo> =
-                pool.addresses.values().cloned().collect();
+                pool.addresses().values().cloned().collect();
             if addresses.is_empty() {
                 continue;
             }
@@ -952,7 +969,7 @@ fn watch_only_registration(
                 .account_address_pools
                 .push(AccountAddressPoolEntry {
                     account_type,
-                    pool_type: pool.pool_type,
+                    pool_type: pool.pool_type(),
                     addresses,
                 });
         }

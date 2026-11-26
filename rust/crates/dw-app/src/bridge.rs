@@ -633,7 +633,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use dashcore::hashes::Hash;
     use dw_engine::WalletId;
     use dw_engine::platform::{
         DispatchResolution, DispatchResolved, FlowKind, LeaseStateView, LeaseView, LockPhase,

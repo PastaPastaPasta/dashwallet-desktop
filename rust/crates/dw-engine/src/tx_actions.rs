@@ -66,6 +66,9 @@ pub enum TxActionRefusal {
     /// transfer, top-up or registration whose asset lock is still tracked
     /// and unsent or unproved: the catch-up resumes it, sending it again.
     PlatformFunding,
+    /// The network's data was restored from its backup: funds actions wait
+    /// for its first full sync (the money gate, `restore_gate`).
+    Restored,
 }
 
 impl TxActionRefusal {
@@ -113,6 +116,8 @@ pub struct TxDetailExtras {
     /// the rescan that checks it (Q100 E2, `crate::rescan_hold`).
     pub checking_spent_coins: bool,
     pub last_announced_at: Option<u64>,
+    /// A restore hold exists for it (`restore_gate`).
+    pub restore_held: bool,
 }
 
 /// One notification row (one per dash-qt record).
@@ -758,7 +763,15 @@ pub(crate) fn forget_swept(
             .map_or(&none, |(.., i)| i)
     };
     let keys: Vec<String> = (gone.iter())
-        .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
+        .flat_map(|t| {
+            [
+                SENT_PREFIX,
+                SENT_TX_PREFIX,
+                SENT_IN_PREFIX,
+                crate::restore_gate::RESTORE_HOLD_PREFIX,
+            ]
+            .map(|p| format!("{p}{t}"))
+        })
         .collect();
     let dropped: Vec<(String, String)> = (dead.iter())
         .map(|(t, cause)| {
@@ -870,31 +883,49 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Abandoned, boo
 /// history held (a plain conflict sweep), or one through an input script
 /// that isn't push-only, whose verdict may be wrong.
 pub(crate) fn swept_claims(wallet: WalletId, by: Txid, swept: &[Transaction]) -> Option<Dead> {
-    let spends_by = |i: &dashcore::TxIn| i.previous_output.txid == by;
-    let claims: Vec<&Transaction> = (swept.iter())
-        .filter(|tx| tx.input.iter().any(spends_by))
-        .collect();
-    if claims.is_empty() {
+    let tree = claim_tree(by, swept);
+    if tree.is_empty() {
         return None;
     }
-    if let Some(tx) = (claims.iter())
-        .find(|tx| (tx.input.iter()).any(|i| spends_by(i) && !push_only(&i.script_sig)))
-    {
+    if let Some(tx) = swept.iter().find(|tx| {
+        (tx.input.iter()).any(|i| i.previous_output.txid == by && !push_only(&i.script_sig))
+    }) {
         tracing::warn!(%wallet, claim = %tx.txid(), %by, "kept what is built on a dropped claim whose input script isn't push-only");
         return None;
     }
-    let mut dead: Dead = (claims.iter())
-        .map(|tx| (tx.txid(), DropCause::InvalidClaim))
+    let dead = (swept.iter())
+        .filter(|tx| tree.contains(&tx.txid()))
+        .map(|tx| {
+            let cause = match (tx.input.iter()).any(|i| i.previous_output.txid == by) {
+                true => DropCause::InvalidClaim,
+                false => DropCause::InvalidSource,
+            };
+            (tx.txid(), cause)
+        })
         .collect();
+    Some(dead)
+}
+
+/// Of the `swept` transactions, those that spend an output of `by` (claims
+/// on it) and those that descend from them, whatever their input scripts.
+pub(crate) fn claim_tree(by: Txid, swept: &[Transaction]) -> BTreeSet<Txid> {
+    let claims = (swept.iter())
+        .filter(|tx| (tx.input.iter()).any(|i| i.previous_output.txid == by))
+        .map(|tx| tx.txid());
+    built_on(claims.collect(), swept)
+}
+
+/// `tree` with every one of the `swept` transactions that descends from it.
+pub(crate) fn built_on(mut tree: BTreeSet<Txid>, swept: &[Transaction]) -> BTreeSet<Txid> {
     loop {
-        let before = dead.len();
+        let before = tree.len();
         for tx in swept {
-            if (tx.input.iter()).any(|i| dead.contains_key(&i.previous_output.txid)) {
-                dead.entry(tx.txid()).or_insert(DropCause::InvalidSource);
+            if (tx.input.iter()).any(|i| tree.contains(&i.previous_output.txid)) {
+                tree.insert(tx.txid());
             }
         }
-        if dead.len() == before {
-            return Some(dead);
+        if tree.len() == before {
+            return tree;
         }
     }
 }
@@ -1307,7 +1338,7 @@ fn settled_in_tree(
 }
 
 /// Whether every instruction of `script` parses and pushes bytes, as
-/// [`key_wallet::transaction_checking::verify_input_authorization`] reads
+/// [`crate::input_authorization::verify_input_authorization`] reads
 /// a push-only input script.
 pub(crate) fn push_only(script: &dashcore::Script) -> bool {
     (script.instructions()).all(|i| {
@@ -1327,7 +1358,7 @@ pub(crate) fn push_only(script: &dashcore::Script) -> bool {
 /// not push-only, whose key or signature the script could build as it
 /// runs, keeps the claim.
 ///
-/// [`verify_input_authorization`]: key_wallet::transaction_checking::verify_input_authorization
+/// [`verify_input_authorization`]: crate::input_authorization::verify_input_authorization
 fn unsigned_claim(
     txs: &HashMap<Txid, TxEntry>,
     core: &ManagedWalletInfo,
@@ -1354,7 +1385,7 @@ fn unsigned_claim(
         else {
             return false;
         };
-        key_wallet::transaction_checking::verify_input_authorization(&e.tx, n, output) == Ok(false)
+        crate::input_authorization::verify_input_authorization(&e.tx, n, output) == Ok(false)
     })
 }
 
@@ -2179,9 +2210,13 @@ impl NetworkSession {
         Ok(sent)
     }
 
-    /// Stops dash-spv's rebroadcast timer from sending `txid` again.
-    pub(crate) async fn stop_rebroadcast(&self, manager: &Manager, _wallet: WalletId, txid: Txid) {
-        manager.spv().stop_rebroadcast(&txid).await;
+    /// Where an abandon stops dash-spv's rebroadcast timer from sending
+    /// `txid` again. The pinned dash-spv has no such stop: its timer keeps
+    /// what this run sent until it confirms, is locked or ages out (a day),
+    /// and a restart ends it, as the abandon's confirmation says.
+    pub(crate) async fn stop_rebroadcast(&self, _manager: &Manager, _wallet: WalletId, txid: Txid) {
+        #[cfg(not(test))]
+        let _ = txid;
         #[cfg(test)]
         {
             let marked = self.abandon_marked(_wallet, txid).await;
@@ -2271,6 +2306,8 @@ impl NetworkSession {
                     (entry.tx.input.iter()).any(|i| held.contains(&i.previous_output))
                 },
                 last_announced_at: this.hub.announced_at(&txid),
+                restore_held: (this.hub.history)
+                    .read_wallet(&wallet, |h| h.restore_holds_in_effect().contains_key(&txid)),
             })
         })
         .await
@@ -2293,6 +2330,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             // Not while a wallet loads: its spend claims are read before
             // they are restored.
             let _lifecycle = this.wallet_lifecycle.hold().await;
@@ -2539,10 +2577,10 @@ impl NetworkSession {
             let mut marks: Vec<(String, Option<String>)> = (txs.iter())
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
-            // Before the marks, under the gate a resend's hand-off holds: no
-            // marked transaction this wallet sent is sent again by
-            // dash-spv's rebroadcast timer. One this abandon then fails is
-            // rebroadcast again only after a resend of it lifts the stop.
+            // Before the marks, under the gate a resend's hand-off holds:
+            // the stop of each marked transaction this wallet sent is asked
+            // (`Self::stop_rebroadcast`). The pinned dash-spv has none, and
+            // keeps sending what this run sent until a restart.
             for t in self.sent_by(wallet, &planned, info).await? {
                 self.stop_rebroadcast(manager, wallet, t).await;
             }
@@ -2570,17 +2608,39 @@ impl NetworkSession {
                 }
             }
             marks.extend(hold_marks(&holds));
+            // The planned payments' restore holds stay, on disk and in
+            // memory: once a payment is abandoned its hold holds nothing
+            // (H2), and a refused abandon has nothing to put back.
             self.write_abandoned_marks(wallet, marks).await?;
             let previous = (self.hub.history).with_wallet(wallet, |h| {
                 crate::rescan_hold::take_over(&mut h.rescan_holds, &holds)
             });
-            let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
+            #[cfg(test)]
+            let refuse =
+                (self.hub.refuse_next_abandon).swap(false, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(not(test))]
+            let refuse = false;
+            let abandoned = match refuse {
+                true => BTreeSet::new(),
+                false => abandon_with(&mut info.core_wallet, root, &descendants),
+            };
             if abandoned.is_empty() {
+                #[cfg(test)]
+                (self.hub.refused_abandon_undos).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.hub.history.with_wallet(wallet, |h| {
                     crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
                 let undo = crate::rescan_hold::undo_marks(&holds, &previous);
-                if let Err(e) = self.write_marks(wallet, undo).await {
+                #[cfg(test)]
+                let failed =
+                    (self.hub.fail_abandon_undo).swap(false, std::sync::atomic::Ordering::SeqCst);
+                #[cfg(not(test))]
+                let failed = false;
+                let written = match failed {
+                    true => Err(EngineError::Storage("abandon: test undo failure".into())),
+                    false => self.write_marks(wallet, undo).await,
+                };
+                if let Err(e) = written {
                     tracing::warn!(%wallet, error = %e, "could not drop the hold marks of a refused abandon");
                 }
             } else {
@@ -2704,6 +2764,7 @@ impl NetworkSession {
                 }
             }
         });
+        self.hub.refresh_restore_held(wallet);
         (self.hub.history).drop_claims(&wallet, abandoned.iter().copied());
         // Each abandoned transaction's own claim (DEC-179); a coin another
         // owner holds stays reserved.
@@ -4384,6 +4445,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let manager = this.manager()?;
             let (entry, f) = this.tx_facts(&manager, wallet, txid, false).await?;
             let peers = this.hub.tracker().snapshot().connected_peers;
@@ -4461,6 +4523,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            this.refuse_tx_action_while_restored()?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             if let Some(id) = &wallet {
@@ -4669,9 +4732,9 @@ impl NetworkSession {
         self.drop_trees(manager, wallet, drops).await;
     }
 
-    /// Forgets the `dropped:` rows of `dead` the history now holds mined or
-    /// InstantSend-locked: the verdict that dropped them was wrong, and
-    /// they no longer seed the load's walk.
+    /// Forgets the `dropped:` rows and the store repair's records of `dead`
+    /// the history now holds mined or InstantSend-locked: the verdict that
+    /// dropped them was wrong, and they no longer seed the load's walk.
     async fn prune_dropped(&self, wallet: WalletId, dead: &Dead) {
         let settled: Vec<Txid> = (self.hub.history).read(&wallet, |txs| {
             (dead.keys())
@@ -4690,7 +4753,12 @@ impl NetworkSession {
         let result = self
             .appdb_op(move |db| {
                 let keys: Vec<String> = (settled.iter())
-                    .map(|t| format!("{DROPPED_PREFIX}{t}"))
+                    .flat_map(|t| {
+                        [
+                            format!("{DROPPED_PREFIX}{t}"),
+                            crate::store_repair::record_key(t),
+                        ]
+                    })
                     .collect();
                 let writes: Vec<(&str, Option<&str>)> =
                     keys.iter().map(|k| (k.as_str(), None)).collect();
@@ -4825,9 +4893,21 @@ impl NetworkSession {
         }));
     }
 
+    /// The money gate of Abandon, Resend and Remove Unconfirmed
+    /// (`restore_gate`).
+    fn refuse_tx_action_while_restored(&self) -> Result<(), EngineError> {
+        match self.hub.restore.is_restored() {
+            true => Err(EngineError::TxActionRefused(TxActionRefusal::Restored)),
+            false => Ok(()),
+        }
+    }
+
     /// Hooks [`Self::abandon_on_dead`] to the hub's sweep events, and
-    /// [`Self::abandon_unsigned_claims`] to its new transactions.
+    /// [`Self::abandon_unsigned_claims`] to its new transactions; reads the
+    /// restored mark and starts what clears it (`restore_gate`), before the
+    /// history loads.
     pub(crate) fn attach_dead_claims(self: &Arc<Self>) {
+        self.attach_restore_gate();
         let (weak, rt) = (Arc::downgrade(self), self.rt.clone());
         self.hub.attach_swept_dead(Box::new(move |id, dead| {
             let weak = weak.clone();
@@ -5130,7 +5210,6 @@ mod tests {
     /// doesn't read keeps none.
     #[test]
     fn a_sweeps_notes_are_written_filled_and_reset() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -5257,7 +5336,6 @@ mod tests {
     /// built on one.
     #[test]
     fn the_dropped_marks_name_the_same_transactions_whatever_their_values() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -5309,7 +5387,6 @@ mod tests {
     /// the read of the others whole.
     #[test]
     fn a_sent_mark_reads_back_its_transaction() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -5356,7 +5433,6 @@ mod tests {
     /// earlier build's mark, which has neither, is not.
     #[test]
     fn a_failed_read_of_the_copies_keeps_only_marks_written_with_them() {
-        use dashcore::hashes::Hash;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(dw_appdb::APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
@@ -5398,7 +5474,6 @@ mod tests {
     /// that read incomplete, a malformed sent mark does not.
     #[test]
     fn a_malformed_mark_is_skipped() {
-        use dashcore::hashes::Hash;
         let db = AppDb::open_in_memory().unwrap();
         let wallet = WalletId([7; 32]);
         let scope = wallet.to_string();
@@ -5586,7 +5661,6 @@ mod tests {
     /// the settled C that A's lock added, so P stays under it.
     #[test]
     fn a_lock_only_child_stays_settled_under_another_wallets_unlocked_record() {
-        use dashcore::hashes::Hash;
         let p = Txid::from_byte_array([1; 32]);
         let c = Transaction {
             version: 2,
@@ -5639,4 +5713,11 @@ mod tests {
         assert!(!is_coinjoin_internal(TxType::CoinJoinSend));
         assert!(!is_coinjoin_internal(TxType::RecvWithAddress));
     }
+}
+
+/// Tests: whether an abandon asked to stop the rebroadcast of `txid`
+/// ([`NetworkSession::stop_rebroadcast`]).
+#[cfg(test)]
+pub(crate) fn rebroadcast_stop_asked(session: &NetworkSession, txid: Txid) -> bool {
+    (session.hub.stopped_rebroadcasts.lock().unwrap().iter()).any(|(t, _)| *t == txid)
 }

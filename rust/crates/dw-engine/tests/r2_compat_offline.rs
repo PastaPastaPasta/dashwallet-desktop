@@ -991,7 +991,7 @@ fn test_qt_109_exports_for_dash_qt_read_back() {
         let path = DerivationPath::from_str(k.hdkeypath.as_deref().unwrap()).unwrap();
         let child = master.derive_priv(&path).unwrap();
         let secret = k.secret(dashcore::Network::Regtest).unwrap();
-        assert_eq!(&secret.key[..], &child.private_key.to_secret_bytes()[..]);
+        assert_eq!(&secret.key[..], &child.private_key.to_bytes()[..]);
         let pk = dashcore::PublicKey::new(child.private_key.public_key());
         assert_eq!(
             dashcore::Address::p2pkh(&pk, dashcore::Network::Regtest).to_string(),

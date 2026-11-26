@@ -14,19 +14,18 @@ use dw_appdb::dispatch::{
     ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact, ShieldedArtifact,
 };
 use dw_vault::SHIELDED_ACCOUNT;
-use platform_wallet::PlatformWalletError;
-use platform_wallet::wallet::shielded::store::{NotExecutedReason, PendingRedrive};
+use platform_wallet::wallet::shielded::store::PendingRedrive;
 use platform_wallet::wallet::shielded::{
-    CachedOrchardProver, DispatchedNote, NetworkShieldedCoordinator, OrchardKeySet,
-    ShieldedDispatch, ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedSpendDisposition,
-    ShieldedStore, SubwalletId,
+    DispatchedNote, NetworkShieldedCoordinator, ShieldedActivityEntry, ShieldedActivityKind,
+    ShieldedActivityStatus, ShieldedDirection, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedDispatchPayload, ShieldedStore, SubwalletId,
 };
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::{self, PASS, options};
-use super::{NOTE, bound_address, core_address, note, payee, signed_spend};
+use super::{NOTE, bound_address, core_address, note, signed_spend};
 use crate::{DashNetwork, EngineError, ImportOptions, NetworkSession};
 
 /// A nullifier no note of the account has: a padding action's.
@@ -107,10 +106,11 @@ impl Hooked {
             attempts: 0,
             identity_nonce_finalized: false,
             identity_user_abandoned: false,
+            anchor_height: Some(ANCHOR_HEIGHT),
         };
         self.f.engine.block_on(async move {
             (coordinator.store().write().await)
-                .arm_unsent_redrive(id, redrive)
+                .arm_redrive(id, redrive)
                 .unwrap();
         });
     }
@@ -285,12 +285,58 @@ impl Hooked {
     fn attempts(&self, n: u8) -> Option<u32> {
         let (coordinator, wallet) = (Arc::clone(&self.coordinator), self.f.wallet.0);
         (self.f.engine)
-            .block_on(async move { coordinator.pending_spend_redrives(wallet).await })
+            .block_on(async move { stored_spends(&coordinator, wallet).await })
             .unwrap()
             .into_iter()
             .find(|(_, r)| r.activity_id == [n; 32])
             .map(|(_, r)| r.attempts)
     }
+}
+
+/// The proved height at which a test spend's anchor was in Platform's
+/// recorded set, as the library keeps it with each record.
+const ANCHOR_HEIGHT: u64 = 1_000;
+
+/// `wallet`'s stored spend records, as the library holds them.
+async fn stored_spends(
+    coordinator: &NetworkShieldedCoordinator,
+    wallet: [u8; 32],
+) -> Result<Vec<(SubwalletId, PendingRedrive)>, String> {
+    (coordinator.store().read().await)
+        .pending_redrives_for_wallet(wallet)
+        .map_err(|e| e.to_string())
+}
+
+/// What the library does with stored spend `n` the hook refused before its
+/// first broadcast (operations.rs `settle_failed_spend`): its record retired
+/// and its notes released, its history row failed.
+fn refuse_undelivered<S: ShieldedStore>(store: &mut S, id: SubwalletId, n: u8)
+where
+    S::Error: std::fmt::Debug,
+{
+    let record = (store.pending_redrives(id).unwrap().into_iter())
+        .find(|r| r.activity_id == [n; 32])
+        .expect("the stored spend");
+    assert!(store.retire_undelivered_spend(id, &[n; 32], &[]).unwrap());
+    for nullifier in &record.nullifiers {
+        store.clear_pending(id, nullifier).unwrap();
+    }
+    let entry = ShieldedActivityEntry {
+        id: [n; 32],
+        kind: ShieldedActivityKind::Sent,
+        direction: ShieldedDirection::Out,
+        amount: 1_000,
+        fee: None,
+        counterparty: None,
+        memo: None,
+        block_height: None,
+        status: ShieldedActivityStatus::Failed,
+        created_at_ms: 0,
+        min_note_position: None,
+        note_cmxs: Vec::new(),
+        spent_nullifiers: record.nullifiers,
+    };
+    store.save_activity(id, &entry).unwrap();
 }
 
 /// The nullifiers spend `n` taking the notes at `positions` publishes: a
@@ -320,8 +366,10 @@ fn unspent(positions: &[u64]) -> Vec<([u8; 32], bool)> {
         .collect()
 }
 
-async fn recording(coordinator: &NetworkShieldedCoordinator) -> bool {
-    (coordinator.store().read().await).records_spend_dispositions()
+/// Whether the engine set its dispatch hook on `coordinator`: the library
+/// does not say.
+fn recording(session: &NetworkSession, coordinator: &Arc<NetworkShieldedCoordinator>) -> bool {
+    pool::hooked(session, coordinator)
 }
 
 /// The hook checks each selected note against the account's notes: a spend
@@ -540,13 +588,6 @@ impl super::super::shielded_release::ReleaseNet for Anchors {
             read
         })
     }
-
-    fn nullifiers(
-        &self,
-        _: Vec<[u8; 32]>,
-    ) -> super::super::trust::BoxFuture<Option<super::super::shielded_release::Statuses>> {
-        Box::pin(async { None })
-    }
 }
 
 /// Q80 R1: before anything of a spend is written or sent, the hook reads
@@ -692,6 +733,7 @@ fn admit_refuses_an_artifact_with_a_disposition() {
     assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
     for (kind, reason) in [
         ("'unresolved'", "'cancelled'"),
+        ("'unresolved'", "'unattributable'"),
         ("'not_executed'", "'refused'"),
         ("'executed'", "NULL"),
     ] {
@@ -820,6 +862,20 @@ fn a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook() {
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 8, h.st_hash(8)), Ok(()));
 }
 
+/// The fork held a pass without the wallet's lease while a record armed
+/// before the hook was set (re-sent without asking it) stood beside a hooked
+/// one. Upstream asks `admit` before every re-send, records stored before
+/// the hook included, and `admit` requires the lease
+/// (`a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook`):
+/// no record is re-sent without asking. The fork's body is kept below, not
+/// compiled.
+#[test]
+#[ignore = "P13b: every stored spend asks admit, so no record predates the hook and no pass is held for one"]
+fn a_pass_is_held_without_the_lease_while_a_spend_predates_the_hook() {
+    panic!("P13b: no hookless record on upstream");
+}
+
+#[cfg(any())]
 /// Any unmarked (pre-hook) record keeps the wallet-wide lease hold, including
 /// when a marked hooked record is present beside it.
 #[test]
@@ -920,10 +976,10 @@ fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
 
 /// A quit begun between the library's store of a spend (unsent, its note
 /// reserved) and the hook's answer: with the wallet's lease still held the
-/// hook refuses it and writes nothing. The library then records it
-/// `NotExecuted(Refused)`, which frees its note (its `record_refusal`,
-/// staged here: no spend built in a test reaches the network's hook), so
-/// nothing was sent and nothing of it holds the wallet.
+/// hook refuses it and writes nothing. The library then retires its record,
+/// frees its note and fails its history row ([`refuse_undelivered`], staged
+/// here: no spend built in a test reaches the network's hook), so nothing
+/// was sent and nothing of it holds the wallet.
 #[test]
 fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
     let h = Hooked::new();
@@ -935,7 +991,7 @@ fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
         let mut store = coordinator.store().write().await;
         let n = note(1, NOTE).nullifier;
         assert!(store.mark_pending(id, &n).unwrap());
-        (store.set_pending_spend(id, &n, [0xa0; 32], [1; 32])).unwrap();
+        (store.set_pending_spend(id, &n, [0xa0; 32], [1; 32], Some(ANCHOR_HEIGHT))).unwrap();
     });
     h.during_a_held_quit(|| {
         assert!(h.f.session.leases.background(&h.f.wallet).is_some());
@@ -948,23 +1004,15 @@ fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
         h.f.engine.block_on(async move {
             let mut store = coordinator.store().write().await;
             assert!(store.get_unspent_notes(id).unwrap().is_empty(), "reserved");
-            (store.resolve_unsent_redrive(id, &[1; 32], NotExecutedReason::Refused)).unwrap();
+            refuse_undelivered(&mut *store, id, 1);
             assert_eq!(store.get_unspent_notes(id).unwrap().len(), 1, "freed");
             assert!(store.stale_pending_spends(id).unwrap().is_empty());
             drop(store);
             assert!(
-                (coordinator.pending_spend_redrives(wallet.0).await)
+                stored_spends(&coordinator, wallet.0)
+                    .await
                     .unwrap()
                     .is_empty()
-            );
-            let dispositions = coordinator.spend_dispositions(wallet.0).await.unwrap();
-            assert!(
-                matches!(
-                    &dispositions[..],
-                    [d] if d.disposition
-                        == ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused)
-                ),
-                "{dispositions:?}"
             );
             assert!(!pool::holds_stored_spends(&manager, wallet).await);
         });
@@ -1154,7 +1202,7 @@ fn the_hook_is_set_on_every_open_path() {
     // Bound, so the reopened session (its vault locked) binds from storage.
     assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
-    assert!(f.engine.block_on(recording(&coordinator)));
+    assert!(recording(&f.session, &coordinator));
     drop((coordinator, manager));
 
     // A reopened session has a new store: the hook again, by the same call.
@@ -1168,7 +1216,7 @@ fn the_hook_is_set_on_every_open_path() {
     assert!(f.engine.block_on(manager.shielded_coordinator()).is_none());
     assert!(bound_address(&f.engine, &f.session, f.wallet).0.is_bound());
     let coordinator = (f.engine.block_on(manager.shielded_coordinator())).unwrap();
-    assert!(f.engine.block_on(recording(&coordinator)));
+    assert!(recording(&f.session, &coordinator));
 
     // The Platform start.
     let started = topup_tests::fixture(true);
@@ -1188,7 +1236,7 @@ fn the_hook_is_set_on_every_open_path() {
         pool::start(&s, &m, &[wallet], &cancelled).await;
         let coordinator = (m.shielded_coordinator().await)
             .expect("the start opens the store on an active network");
-        assert!(recording(&coordinator).await);
+        assert!(recording(&s, &coordinator));
         assert!(pool::admit_pass(&s, &m).await.is_ok());
     });
 }
@@ -1206,7 +1254,7 @@ fn a_pass_is_held_while_the_hook_is_not_set_and_the_next_open_sets_it() {
             .await
             .unwrap();
         let bare = m.shielded_coordinator().await.unwrap();
-        assert!(!recording(&bare).await);
+        assert!(!recording(&s, &bare));
         assert_eq!(
             pool::admit_pass(&s, &m).await.err(),
             Some(pool::PassHeld::NoHook)
@@ -1215,19 +1263,22 @@ fn a_pass_is_held_while_the_hook_is_not_set_and_the_next_open_sets_it() {
 
         let opened = pool::coordinator(&s, &m, None).await.unwrap();
         assert!(Arc::ptr_eq(&opened, &bare));
-        assert!(recording(&bare).await);
+        assert!(recording(&s, &bare));
         assert!(pool::admit_pass(&s, &m).await.is_ok());
         // Set once: a later open leaves it.
         pool::coordinator(&s, &m, None).await.unwrap();
-        assert!(recording(&bare).await);
+        assert!(recording(&s, &bare));
     });
 }
 
 /// The library refuses a key set that is not the account's before it
-/// selects, builds, stores or asks the hook anything, on both spends, and
-/// the facade reads that as a refusal with nothing sent.
+/// selects, builds, stores or asks the hook anything, on a send and an
+/// unshield to Core or to a Platform address, and the engine reads that as
+/// a refusal with nothing sent.
 #[test]
 fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
+    use platform_wallet::PlatformWalletError;
+    use platform_wallet::wallet::shielded::{CachedOrchardProver, OrchardKeySet};
     let h = Hooked::new();
     h.hold_notes(&[1, 2]);
     // Another wallet's key set (the payee's fixed test seed).
@@ -1245,7 +1296,7 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
                 &coordinator,
                 &other,
                 SHIELDED_ACCOUNT,
-                &payee().to_raw_bytes(),
+                &super::payee().to_raw_bytes(),
                 NOTE / 2,
                 [0; 36],
                 &prover,
@@ -1264,26 +1315,33 @@ fn a_spend_with_a_mismatched_keyset_is_refused_and_sends_nothing() {
             )
             .await
             .unwrap_err();
+        let unshield = pw
+            .shielded_unshield_to_with_keyset(
+                &coordinator,
+                &other,
+                SHIELDED_ACCOUNT,
+                &super::platform_text(dpp::address_funds::PlatformAddress::P2pkh([0x51; 20])),
+                NOTE / 2,
+                &prover,
+            )
+            .await
+            .unwrap_err();
         // Nothing reserved, stored or resolved.
         let store = coordinator.store().read().await;
         let id = SubwalletId::new(wallet.0, SHIELDED_ACCOUNT);
         assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert!(store.pending_redrives(id).unwrap().is_empty());
         assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
-        drop(store);
         assert!(
-            (coordinator.pending_spend_redrives(wallet.0).await)
-                .unwrap()
-                .is_empty()
+            (store.get_activity(id, 0, 10).unwrap()).is_empty(),
+            "no history row"
         );
-        assert!(
-            (coordinator.spend_dispositions(wallet.0).await)
-                .unwrap()
-                .is_empty()
-        );
-        [transfer, withdraw]
+        [transfer, withdraw, unshield]
     });
-    let journal = h.f.session.leases.journal.get().unwrap();
-    assert_eq!(journal.shielded_artifacts(&h.f.wallet.0), Ok(Vec::new()));
+    let artifacts = (h.f.engine)
+        .block_on(h.f.session.leases.shielded_artifacts(h.f.wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
     for refused in refusals {
         assert!(
             matches!(
@@ -1429,6 +1487,193 @@ fn a_payout_spend_whose_dispatch_is_not_recorded_is_refused_unsent() {
     assert_eq!(payout_hash(&h.f, "sh-c"), Some(hex::encode(h.st_hash(5))));
 }
 
+/// P6 at a re-send: a payout spend the hook accepted, whose recorded
+/// dispatch is gone (a restart after a refusal whose artifact could not be
+/// settled), is never re-sent; with its dispatch recorded it is.
+#[test]
+fn a_payout_spend_is_re_sent_only_with_its_dispatch_recorded() {
+    let h = Hooked::new();
+    h.lease();
+    let (session, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    payout_row(&h.f, "sh-d");
+    let arm = session.arm_payout(wallet, "sh-d");
+    let withdrawal = h.staged_as(6, &[6], ShieldedDispatchKind::Withdraw);
+    assert_eq!(h.dispatch(withdrawal), Ok(()));
+    drop(arm);
+    assert!(dispatched(&h.f, "sh-d"));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)), Ok(()));
+
+    let set = |value: Option<&'static str>| {
+        let scope = dw_appdb::local_scope(&wallet.to_string());
+        let key = dw_appdb::dp_payout_dispatched("sh-d");
+        (h.f.engine)
+            .block_on(session.appdb_op(move |db| db.set_setting_durable(&scope, &key, value)))
+            .unwrap();
+    };
+    set(None);
+    let refused = h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)).unwrap_err();
+    assert!(refused.contains("dispatch was not recorded"), "{refused}");
+    set(Some("1"));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 6, h.st_hash(6)), Ok(()));
+}
+
+/// While key set spends are off, through the real library a send, a
+/// withdrawal and an unshield are `platform.unavailable` before the grant
+/// is read, and nothing is stored, reserved or written to the journal.
+#[test]
+fn every_spend_through_the_library_is_unavailable_while_key_set_spends_are_off() {
+    let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, false);
+    h.lease();
+    h.hold_notes(&[1, 2]);
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    for route in ["send", "withdraw", "unshield"] {
+        let refused = (h.f.engine)
+            .block_on(on_pool(&s, wallet, move |s, lib| async move {
+                let code = match route {
+                    "send" => {
+                        let to = (super::payee_text(), NOTE);
+                        (pool::send(&s, wallet, &lib, (&to.0, to.1), None, "unknown", false).await)
+                            .map(|_| ())
+                    }
+                    "withdraw" => (pool::unshield(&s, wallet, &lib, NOTE, None, "unknown", false)
+                        .await)
+                        .map(|_| ()),
+                    _ => {
+                        (pool::unshield_to_platform(&s, wallet, &lib, NOTE, None, "unknown", false)
+                            .await)
+                            .map(|_| ())
+                    }
+                };
+                Ok(code.unwrap_err().code())
+            }))
+            .unwrap();
+        assert_eq!(refused, "platform.unavailable", "{route}");
+    }
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let store = coordinator.store().read().await;
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
+    });
+    let artifacts = (h.f.engine)
+        .block_on(s.leases.shielded_artifacts(wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
+}
+
+/// With key set spends on, a send through the real library spends with the
+/// key set the vault derives from the wallet's own seed for that call: the
+/// library takes it as the account's spend authority (no
+/// `ShieldedKeysetMismatch`) and goes on past its notes' selection to the
+/// network, where it fails offline before anything is stored or sent. The
+/// notes it reserved are released and nothing is recorded or asked of the
+/// hook.
+#[test]
+fn a_send_through_the_library_spends_with_the_wallets_own_key_set() {
+    use platform_wallet::PlatformWalletError;
+    let h = Hooked::new();
+    pool::force_keyset_spends(&h.f.session, true);
+    h.lease();
+    h.hold_notes(&[1, 2]);
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        (coordinator.store().write().await)
+            .set_last_synced_note_index(id, 3)
+            .unwrap();
+    });
+    let grant = (h.f.session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: 2 * NOTE,
+            },
+            Some(&h.f.wallet.0),
+            dw_vault::Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let failed = (h.f.engine)
+        .block_on(on_pool(&s, wallet, move |s, lib| async move {
+            let to = super::payee_text();
+            let quoting = (NOTE / 2, pool::Quoting::Send(&to));
+            let flow = super::super::flows::FlowKind::ShieldedSpend;
+            let armed = pool::arm(&s, wallet, &lib, quoting, &grant, flow).await?;
+            let permit = super::super::requests::write_permit(
+                &armed.lease,
+                "transfer",
+                armed.quote.total_credits,
+            )?;
+            let sent = super::super::requests::leased(
+                &armed.lease,
+                lib.transfer(&permit, &super::payee(), NOTE / 2, [0; 36]),
+            )
+            .await;
+            permit.finish(sent.is_ok());
+            Ok(sent)
+        }))
+        .unwrap();
+    let Err(pool::SpendError::Library(e)) = failed else {
+        panic!("{failed:?}");
+    };
+    // Past the key set check and the notes' selection, the first network
+    // call (the recorded anchors) finds no node.
+    assert!(matches!(*e, PlatformWalletError::Sdk(_)), "{e:?}");
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let store = coordinator.store().read().await;
+        assert!(store.pending_redrives(id).unwrap().is_empty());
+        assert!(store.stale_pending_spends(id).unwrap().is_empty());
+        assert_eq!(store.get_unspent_notes(id).unwrap().len(), 2);
+    });
+    let artifacts = (h.f.engine)
+        .block_on(s.leases.shielded_artifacts(wallet))
+        .unwrap();
+    assert!(artifacts.is_empty());
+}
+
+/// The balance the desktop shows is the library's reservation-aware sum.
+/// With three notes scanned and one reserved by a spend in flight (its
+/// record saved and its reservation anchored, as before the first
+/// broadcast), the status reads two notes spendable and a spend may select
+/// only those two; once the reservation is released, all three.
+#[test]
+fn a_reserved_note_is_not_counted_spendable() {
+    let h = Hooked::new();
+    h.hold_notes(&[1, 2, 3]);
+    h.store_unsent(1, &[2]);
+    let reserved = note(2, NOTE).nullifier;
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        store.set_last_synced_note_index(id, 4).unwrap();
+        assert!(store.mark_pending(id, &reserved).unwrap());
+        (store.set_pending_spend(id, &reserved, [0xa0; 32], [1; 32], Some(ANCHOR_HEIGHT))).unwrap();
+    });
+    let read = || {
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine)
+            .block_on(on_pool(&s, wallet, |_, lib| async move {
+                let status = pool::status(&lib).await?;
+                let mut selectable: Vec<u64> =
+                    (lib.unspent().await?.iter()).map(|n| n.position).collect();
+                selectable.sort_unstable();
+                Ok((status.active, status.ready, status.balance, selectable))
+            }))
+            .unwrap()
+    };
+    assert_eq!(read(), (true, true, 2 * NOTE, vec![1, 3]));
+
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        assert!(store.clear_pending(id, &reserved).unwrap());
+    });
+    assert_eq!(read(), (true, true, 3 * NOTE, vec![1, 2, 3]));
+}
+
 // ---- C-routes C1b-2: the unshield's FromShielded record ----
 
 /// What unshield `n` taking the notes at `positions` signs: `to` credited
@@ -1491,10 +1736,11 @@ impl Hooked {
             attempts: 0,
             identity_nonce_finalized: false,
             identity_user_abandoned: false,
+            anchor_height: Some(ANCHOR_HEIGHT),
         };
         self.f.engine.block_on(async move {
             (coordinator.store().write().await)
-                .arm_unsent_redrive(id, redrive)
+                .arm_redrive(id, redrive)
                 .unwrap();
         });
         ShieldedDispatchPayload {
@@ -1661,12 +1907,132 @@ fn unshield_hook_refuses_when_its_record_is_not_written() {
     assert_eq!(h.intended_record(), None);
 }
 
+/// **A refusal between the artifact and the arming:** the record is
+/// written before the artifact, so it is there unarmed (no row); the send
+/// is refused and the artifact settled `not_executed` (the library retires
+/// its record), so no re-send is admitted. **A stop between the artifact
+/// and the arming** leaves both open: the pass's re-send is admitted only
+/// once the hook armed the record. An unshield artifact with no record is
+/// refused, as `dispatch` refuses one whose record is gone.
+#[test]
+fn an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_at_re_send() {
+    let h = Hooked::new();
+    let fee = UNSHIELD_FEE;
+    let payload = h.staged_unshield(
+        1,
+        &[1],
+        unshield_bytes(1, &[1], own_platform(), NOTE / 2 + fee),
+    );
+    let hash = payload.st_hash;
+    h.intend(own_platform(), NOTE / 2);
+    super::super::platform_moves::tests::fail_next_arm_of(&h.f.session);
+    let refused = h.dispatch(payload).unwrap_err();
+    assert!(refused.contains("not armed"), "{refused}");
+    assert_eq!(h.artifact(1).unwrap().status, ArtifactStatus::NotExecuted);
+    let records = h.records();
+    assert_eq!((records.len(), records[0].armed), (1, false));
+    assert_eq!(h.intended_record(), None);
+    h.lease();
+    let refused = h.admit(SHIELDED_ACCOUNT, 1, hash).unwrap_err();
+    assert!(refused.contains("does not allow a send"), "{refused}");
+    assert!(!h.records()[0].armed);
+
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let stopped_hash = [0x33; 32];
+    let record = super::super::platform_moves::FromShieldedRecord {
+        activity: hex::encode([3; 32]),
+        st_hash: hex::encode(stopped_hash),
+        ..records[0].clone()
+    };
+    let stopped = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: [3; 32],
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some(stopped_hash),
+        kind: Some(ArtifactKind::Unshield),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x93; 32]],
+        published: vec![[0x93; 32], [0xee; 32]],
+    };
+    let wrote = (h.f.engine).block_on(async move {
+        super::super::platform_moves::stage_from_shielded(&s, wallet, record)
+            .await
+            .unwrap();
+        s.leases.record_shielded_artifact(wallet, stopped).await
+    });
+    assert_eq!(wrote, Ok(true));
+    let armed = |n: u8| {
+        (h.records().into_iter())
+            .find(|r| r.activity == hex::encode([n; 32]))
+            .unwrap()
+            .armed
+    };
+    assert!(!armed(3));
+    super::super::platform_moves::tests::fail_next_arm_of(&h.f.session);
+    let refused = h.admit(SHIELDED_ACCOUNT, 3, stopped_hash).unwrap_err();
+    assert!(refused.contains("not armed"), "{refused}");
+    assert!(!armed(3));
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 3, stopped_hash), Ok(()));
+    assert!(armed(3), "armed before the re-send");
+
+    let before = h.records().len();
+    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+    let legacy = dw_appdb::dispatch::NewShieldedArtifact {
+        activity: [2; 32],
+        origin: dw_appdb::dispatch::ArtifactOrigin::Dispatched,
+        st_hash: Some([0x22; 32]),
+        kind: Some(ArtifactKind::Unshield),
+        anchor: Some([0xa0; 32]),
+        identity_id: None,
+        selected: vec![[0x92; 32]],
+        published: vec![[0x92; 32], [0xee; 32]],
+    };
+    let wrote = (h.f.engine)
+        .block_on(async move { s.leases.record_shielded_artifact(wallet, legacy).await });
+    assert_eq!(wrote, Ok(true));
+    let refused = h.admit(SHIELDED_ACCOUNT, 2, [0x22; 32]).unwrap_err();
+    assert!(refused.contains("it is gone"), "{refused}");
+    assert_eq!(h.records().len(), before);
+}
+
+/// A re-send whose `FromShielded` record is settled (failed or done) while
+/// its artifact is still open is refused: nothing arms a settled record.
+#[test]
+fn an_unshield_whose_record_is_settled_is_not_admitted() {
+    use super::super::platform_addresses::PlatformActivityState;
+    let h = Hooked::new();
+    let fee = UNSHIELD_FEE;
+    for (n, state) in [
+        (1u8, PlatformActivityState::Failed),
+        (2, PlatformActivityState::Done),
+    ] {
+        let payload = h.staged_unshield(
+            n,
+            &[u64::from(n)],
+            unshield_bytes(n, &[u64::from(n)], own_platform(), NOTE / 2 + fee),
+        );
+        let hash = payload.st_hash;
+        h.intend(own_platform(), NOTE / 2);
+        assert_eq!(h.dispatch(payload), Ok(()));
+        h.lease();
+        assert_eq!(h.admit(SHIELDED_ACCOUNT, n, hash), Ok(()));
+        let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
+        (h.f.engine).block_on(async move {
+            super::super::platform_moves::tests::set_record_state(&s, wallet, [n; 32], state).await
+        });
+        let refused = h.admit(SHIELDED_ACCOUNT, n, hash).unwrap_err();
+        assert!(refused.contains("it is gone"), "{state:?}: {refused}");
+        assert_eq!(h.artifact(n).unwrap().status, ArtifactStatus::Registered);
+    }
+}
+
 /// **A stop between the artifact and the arming:** the record is written
 /// before the artifact, so it is there unarmed (no row); the send is
 /// refused, and the pass's re-send is admitted only once the hook armed
 /// the record. An unshield artifact with no record (dispatched before
 /// records were kept) is admitted as before.
 #[test]
+#[ignore = "P13a placement ruling: a refusal after the artifact settles it not_executed and upstream retires the record, so a refused unshield is never re-sent (ported: an_unshield_refused_before_its_arming_is_settled_and_a_stopped_one_is_armed_at_re_send)"]
 fn unshield_resend_is_admitted_only_once_its_record_is_armed() {
     let h = Hooked::new();
     let fee = UNSHIELD_FEE;
@@ -1754,7 +2120,7 @@ fn an_unshield_the_library_builds_for_the_quote_is_admitted() {
     let anchor = merkle_path.root(ExtractedNoteCommitment::from(note.commitment()));
     let spend = SpendableNote { note, merkle_path };
     let change = OrchardAddress::from_raw_bytes(&address.to_raw_address_bytes()).unwrap();
-    let prover = CachedOrchardProver::new();
+    let prover = platform_wallet::wallet::shielded::CachedOrchardProver;
     let (st, fee) = build_unshield_transition(
         vec![spend],
         own_platform(),
@@ -1883,6 +2249,15 @@ impl Hooked {
             .unwrap()
             .unwrap()
             .funding
+    }
+
+    /// Whether the journal marks the create of `st_hash` consumed.
+    fn marked_consumed(&self, st_hash: [u8; 32]) -> bool {
+        let leases = &self.f.session.leases;
+        (self.f.engine)
+            .block_on(leases.consumed_creates(self.f.wallet, vec![st_hash]))
+            .unwrap()
+            .contains(&st_hash)
     }
 
     fn setting(&self, key: String) -> Option<String> {
@@ -2459,6 +2834,7 @@ fn a_create_through_the_hook_registers_its_proved_identity() {
 /// named; a create the hook never saw is never retried.
 #[test]
 fn a_named_create_refused_by_the_pool_floor_stays_unknown() {
+    use platform_wallet::PlatformWalletError;
     let h = Hooked::new();
     let draft = h.shielded_row();
     let (bytes, id) = create_bytes(8, &[8], (DENOMINATION, own_platform()), None);
@@ -2657,6 +3033,10 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
         Some("executed"),
         "the engine's proof, beside the library's strings"
     );
+    assert!(
+        !h.marked_consumed(artifact.st_hash.unwrap()),
+        "a padded create is never marked consumed"
+    );
     *ev.identity.lock().unwrap() = (true, 101);
     assert_eq!(h.evidence(draft, &id, &ev), ShieldedOutcome::Registered(id));
 }
@@ -2665,8 +3045,9 @@ fn an_unresolved_create_spent_and_absent_above_is_the_fallback() {
 /// so its nullifiers read spent may be another spend's of the same notes
 /// (another install of the seed): held or not, they never claim a refund.
 /// Its identity present registers it; absent at or above the spent read,
-/// the notes are gone whoever spent them: its proof is written consumed,
-/// its artifact stays unresolved and the row is told so; absent below it
+/// the notes are gone whoever spent them: its proof is written consumed
+/// and the journal marks it so, its artifact stays unresolved and the row
+/// is told so; absent below it
 /// decides nothing. Mutants: refund it as a fallback; consume it on an
 /// absence read below the spend.
 #[test]
@@ -2698,6 +3079,7 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
             "absent below the spend, held: {held}"
         );
         assert_eq!(proved(), None);
+        assert!(!h.marked_consumed(artifact.st_hash.unwrap()));
     }
     *ev.identity.lock().unwrap() = (false, 100);
     assert_eq!(
@@ -2706,6 +3088,10 @@ fn an_unpadded_create_spent_never_claims_the_fallback() {
     );
     assert!(h.refunds().is_empty(), "no refund is claimed");
     assert_eq!(proved().as_deref(), Some("consumed"));
+    assert!(
+        h.marked_consumed(artifact.st_hash.unwrap()),
+        "marked in the journal too, which outlives the app rows"
+    );
     let artifact = h.artifact(12).unwrap();
     assert_eq!(
         (artifact.status, artifact.acked),
@@ -2908,9 +3294,8 @@ fn a_create_refused_after_its_naming_is_unsent_not_signed_again() {
 /// F12: a create that succeeds is resolved unattributable by the library
 /// (its success marks the notes spent with no action read), which the pass
 /// `sync_now` runs settles `executed` with no proof before the identity is
-/// read. The proved identity still records the engine's proof, so the
-/// outcome is acknowledged once its notes read spent (the wallet then
-/// closes). A proof that cannot be written leaves the row on evidence, not
+/// read. The proved identity still records the engine's proof (upstream
+/// keeps the notes until its own scan reads them spent). A proof that cannot be written leaves the row on evidence, not
 /// registered; the next pass records it. Mutants: prove only in-flight
 /// artifacts; register without the proof.
 #[test]
@@ -2950,16 +3335,6 @@ fn a_create_settled_executed_before_its_proof_is_still_proved() {
     assert_eq!(
         (artifact.status, artifact.acked),
         (ArtifactStatus::Executed, false)
-    );
-    let (s, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
-    let counted = (h.f.engine).block_on(async move {
-        super::super::registration_shielded::proved_creates(&s, wallet, &[artifact], &[st_hash])
-            .await
-    });
-    assert_eq!(
-        counted.get(&st_hash),
-        Some(&ArtifactStatus::Executed),
-        "the next read of the outcomes acknowledges it once its notes read spent"
     );
 }
 

@@ -1,0 +1,42 @@
+[package]
+name = "dw-store-upgrade"
+description = "Moves wallet files written by released fork-pinned builds onto upstream platform-wallet-storage (M3 store upgrade)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# `test-support`, for other crates' tests and never enabled by the app:
+# `Adopters::cache_with_p9a_for_test` (debug builds only), so a test
+# binary's open path meets a chosen P9a outcome, and `test_support`, a real
+# between-state store.
+test-support = []
+
+[dependencies]
+# The data root's instance lock, which proves no other process runs a check.
+dw-fs = { workspace = true }
+# The same rusqlite platform-wallet-storage links (libsqlite3-sys bundled);
+# `backup` for the coordinated pre-upgrade snapshot (Q78 R3).
+rusqlite = { version = "0.41", features = ["bundled", "backup"] }
+platform-wallet-storage = { workspace = true }
+# The P9a probe (Q78-A) seeds and reads a store through the build's own types.
+platform-wallet = { workspace = true }
+key-wallet = { workspace = true }
+dashcore = { workspace = true }
+# The record and outpoint blob encoding platform-wallet-storage writes.
+bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
+serde = "1"
+sha2 = "0.10"
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# The effective uid, to refuse a wallet.sqlite another user owns.
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
+
+[dev-dependencies]
+# The fork migrations' recorded checksums, recomputed from the copied SQL.
+refinery = { version = "=0.10.0", default-features = false, features = ["rusqlite"] }

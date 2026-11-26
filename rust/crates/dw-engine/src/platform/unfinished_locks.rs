@@ -54,7 +54,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
-use dashcore::secp256k1::{PublicKey, ecdsa};
+use dashcore::ecdsa::{EcdsaPublicKey, EcdsaSignature};
 use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, AppDbError};
 use dw_vault::{SignerError, VaultSigner};
@@ -125,11 +125,12 @@ pub(crate) enum ApplyReply {
 
 /// The start of platform-wallet's refusal to keep a lock "consumption
 /// unknown" at a persister that does not attest asset-lock reconciliation
-/// (`sync/tracking.rs:343-355` at the pin). The library raises it only on
-/// Platform's "already consumed" for the outpoint its call applied, matched
-/// first (`asset_lock/orchestration.rs:474-528`), and the pinned storage
-/// never attests `WALLET_RESTORE` (`persister.rs:1362-1389`), so after a
-/// restore it is how that answer arrives.
+/// (`mark_asset_lock_consumption_unknown`, `sync/tracking.rs` at the pin).
+/// The library raises it only on Platform's "already consumed" for the
+/// outpoint its call applied, matched first (`asset_lock/orchestration.rs`).
+/// The pinned storage attests reconciliation, so there the answer arrives as
+/// `AssetLockAlreadyConsumed`; this is that answer from a backend that does
+/// not.
 const UNRECORDED_CONSUMED: &str = "asset-lock reconciliation requires persistence capabilities ";
 
 /// Whether an apply's `error` is the library's [`UNRECORDED_CONSUMED`]
@@ -663,7 +664,7 @@ impl<'a> LockKeySigner<'a> {
     }
 
     /// Whether `key` is the one the lock's credit output pays.
-    pub(crate) fn is_the_lock_key(&self, key: &PublicKey) -> bool {
+    pub(crate) fn is_the_lock_key(&self, key: &EcdsaPublicKey) -> bool {
         let hash = dashcore::PublicKey::new(*key).pubkey_hash();
         ScriptBuf::new_p2pkh(&hash) == self.credit_script
     }
@@ -681,7 +682,7 @@ impl key_wallet::Signer for LockKeySigner<'_> {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), SignerError> {
         if !self.is_the_lock_key(&self.inner.public_key(path).await?) {
             tracing::warn!(%path, "a finish refused to sign with a key other than the lock's");
             return Err(SignerError::KeyMismatch(path.to_string()));
@@ -702,7 +703,7 @@ impl key_wallet::Signer for LockKeySigner<'_> {
         }
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, SignerError> {
         self.inner.public_key(path).await
     }
 }

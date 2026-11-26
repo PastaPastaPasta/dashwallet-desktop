@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, ScriptBuf, TxOut, Txid};
 use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::dissolve::{
@@ -673,7 +672,8 @@ mod tests {
                     is_valid: true,
                     is_evonode: false,
                     has_extended_net_info: true,
-                    net_info: None,
+                    service_addresses: Vec::new(),
+                    operator_key_is_legacy: false,
                 })
                 .collect(),
         }

@@ -32,13 +32,16 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import { PLATFORM_ADDRESS_SENDS } from "../platform/mainnetOff";
 import { heldExitOp, isHeldOp, isHeldSend } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, payeeOfPayout, payoutOnContact, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, HANDLERS, landHeldTopUp, openedNetwork, payeeOfPayout, payoutOnContact, restoredNetwork, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, REMAINDER_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { coreMaxPlan, lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
 import { restarted } from "./registration";
 import { buildWorld, type World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
+import { restoreFailure, storeRestoreError } from "./errors";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
+import { FIXTURE_DATA_DIR } from "./settings";
 
 /** What a move costs the fixture's wallet, in credits. */
 const MOVE_FEE_CREDITS = 2_000_000n;
@@ -247,6 +250,23 @@ export function switchedWorld(): World | null {
   const { active, others } = JSON.parse(saved) as { active: World; others: Record<string, World> };
   otherNetworks = others;
   return active;
+}
+
+/** What the gate waits for (`restore_status`), as the engine counts it: while RESTORED is set with
+ * Platform off, Platform's first check is not waited for; `platformOff` is the session's. */
+function restoreStatusOf(world: World): RestoreStatus {
+  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false };
+  const off = world.noPlatform === true;
+  return { ...s, waiting: off && !s.platformOnly ? s.waiting.filter((w) => w !== "platformPass") : s.waiting, platformOff: off };
+}
+
+/** Clears RESTORED once nothing holds it; with Platform off, Platform's check stays held (C6). */
+function settleRestored(world: World) {
+  const s = restoreStatusOf(world);
+  if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
+    world.restored = false;
+    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true, platformOff: true } : undefined;
+  }
 }
 
 function keepWorlds(world: World) {
@@ -612,6 +632,95 @@ function refusePayoutOnMainnet(world: Ctx["world"], source: PaymentSourceName) {
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
+  // App::quit_app and restart_app, from the screens shown instead of the wallet. A restart frees a
+  // store the session before held, and the page starts again.
+  quit_app: (_: Record<string, never>, { world }: Ctx) => {
+    (world.appExits ??= []).push("quit");
+    return null;
+  },
+  restart_app: (_: Record<string, never>, { world, relaunch }: Ctx) => {
+    (world.appExits ??= []).push("restart");
+    world.storageHeld = undefined;
+    // The start's drain finishes once the other program has let go, or after a passing failure.
+    const shielded = world.pending.shielded;
+    if (shielded && (shielded.closed === "in_use" || shielded.closed === "failed")) shielded.closed = undefined;
+    if (world.networkSwitch) world.networkSwitch.reopenFails = false;
+    world.noPlatform = undefined;
+    // The restore asked for runs at the start, before the stores are checked: the earlier data opens.
+    if (world.restoreRequested) {
+      world.restoreRequested = false;
+      world.openRefusal = undefined;
+      world.restored = true;
+    }
+    relaunch?.();
+    return null;
+  },
+  // App::restore_available, request_restore, keep_current_files and cancel_restore (DTO contract v3),
+  // for the window's network, before it opens.
+  restore_available: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreAvailable");
+    return world.restoreAvailable === true;
+  },
+  request_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("requestRestore");
+    if (!world.restoreAvailable) throw storeRestoreError(restoreFailure("refused:missingBackup", `${FIXTURE_DATA_DIR}/${world.launch.network.dirName}`));
+    world.restoreRequested = true;
+    return null;
+  },
+  // Keep runs KeepLive: the request and the journal go, RESTORED stays.
+  keep_current_files: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("keepCurrentFiles");
+    if (world.openRestore?.state === "foreign") {
+      world.openRestore = undefined;
+      world.restored = true;
+    }
+    return null;
+  },
+  // Only the request goes; nothing was changed, so the current data opens.
+  cancel_restore: (_: { network: string | null }, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("cancelRestore");
+    if (world.openRestore?.state === "notStarted") world.openRestore = undefined;
+    return null;
+  },
+  // B addendum 1: what RESTORED waits for; Try again, which writes a clear that failed before; and
+  // Finish without Dash Platform, which closes the network unless busy and opens it without Platform
+  // (as usual if that fails), under one lock as `switch_network` does.
+  restore_status: (_: Record<string, never>, { world }: Ctx) => (world.restored || world.restoreStatus?.platformOnly ? restoreStatusOf(world) : null),
+  restore_retry: (_: Record<string, never>, { world }: Ctx) => {
+    (world.restoreCalls ??= []).push("restoreRetry");
+    if (world.restored && world.restoreStatus?.clearFailed) {
+      world.restoreStatus = { ...world.restoreStatus, clearFailed: false };
+      settleRestored(world);
+    }
+    return null;
+  },
+  finish_without_platform: (_: Record<string, never>, { world }: Ctx) => {
+    // Nothing unless Platform's first check is what RESTORED waits for.
+    if (!world.restored || !restoreStatusOf(world).waiting.includes("platformPass")) return openedNetwork(world, restoredNetwork(world));
+    const knob = world.finishWithoutPlatform;
+    if (knob === "busy" || knob === "draining")
+      throw fail("app.network_busy", "closing the network would cut what runs", {
+        kind: "networkBusy",
+        flows: knob === "busy" ? ["registration"] : [],
+        mixing: false,
+        broadcast: false,
+        stalled: false,
+        draining: knob === "draining",
+      });
+    restarted(world);
+    if (knob === "rolledBack") {
+      world.finishWithoutPlatform = undefined;
+      throw fail("app.network_switch_failed", `${world.launch.network.dirName} did not open without Platform: fixture`, {
+        kind: "networkSwitch",
+        network: world.launch.network,
+        rolledBack: true,
+      });
+    }
+    world.noPlatform = true;
+    settleRestored(world);
+    keepWorlds(world);
+    return openedNetwork(world, restoredNetwork(world));
+  },
   // DashPay::contact_pay_quote and contact_pay (C-funding D-C5): the payee as a draft checks it,
   // then the source: Shielded is off until its slice; Platform pays one address withdrawal.
   contact_pay_quote: ({ walletId, identity, contact, credits, source }: CommandArgs["contact_pay_quote"], { world }: Ctx) => {
@@ -671,10 +780,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
       // Saved last, as dw-app saves it; `saveFails` keeps the choice the switch started from.
       world.pending.networkChoice = knobs.saveFails ? before : { chosen: network, saved: true };
       keepWorlds(world);
-      return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+      return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
     }
     world.pending.networkChoice = { chosen: network, saved: true };
-    return { opened: { network: world.launch.network, lock: world.lock }, choice: networkView(world) };
+    return { opened: openedNetwork(world, world.launch.network), choice: networkView(world) };
   },
   ...SHIELDED_HANDLERS,
   ...RECOVERY_HANDLERS,

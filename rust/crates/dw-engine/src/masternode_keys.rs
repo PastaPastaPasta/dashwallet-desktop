@@ -241,7 +241,7 @@ impl NetworkSession {
             };
             let mut keys = Vec::new();
             for pool in account.managed_account_type().address_pools() {
-                for entry in pool.addresses.values() {
+                for entry in pool.addresses().values() {
                     if !(start..end).contains(&entry.index) {
                         continue;
                     }

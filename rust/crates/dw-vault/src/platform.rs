@@ -16,11 +16,9 @@
 //! `SeedCryptoProvider` (`contact_requests.rs:171-345`) is the reference
 //! for the outputs.
 
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::ecdsa::RecoverableSignature;
-use dashcore::secp256k1::{Message, PublicKey};
-use dashcore::sign_message::MessageSignature;
+use dashcore::hashes::hash160;
 use dashcore::signer::double_sha;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use key_wallet::dip9::{
     DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD, DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
@@ -29,7 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::SignerError;
 use crate::crypto::Key32;
-use crate::signer::{KeyUse, SignerScope, VaultSigner, WalletSigner};
+use crate::signer::{KeyUse, SignerScope, VaultSigner, WalletSigner, sign_compact};
 use crate::types::{GrantKind, GrantToken, KeyHold, WalletId};
 use crate::vault::Vault;
 use crate::{dip15, paths};
@@ -81,7 +79,7 @@ fn require(shape: bool, path: &DerivationPath) -> Result<(), SignerError> {
 }
 
 fn secret_bytes(x: &ExtendedPrivKey) -> Zeroizing<[u8; 32]> {
-    Zeroizing::new(x.private_key.to_secret_bytes())
+    x.private_key.to_bytes()
 }
 
 impl VaultSigner {
@@ -101,10 +99,7 @@ impl VaultSigner {
     ) -> Result<bool, SignerError> {
         self.require_identity_key(path)?;
         self.with_key(path, KeyUse::PublicKey, |x| {
-            key_data_matches(
-                &PublicKey::from_secret_key(&x.private_key).serialize(),
-                key_data,
-            )
+            key_data_matches(&x.private_key.public_key().to_compressed(), key_data)
         })
     }
 
@@ -126,15 +121,11 @@ impl VaultSigner {
             .try_into()
             .map_err(|_| SignerError::Derivation("digest length".into()))?;
         self.with_key(path, KeyUse::Sign, |x| {
-            let public = PublicKey::from_secret_key(&x.private_key).serialize();
+            let public = x.private_key.public_key().to_compressed();
             if !key_data_matches(&public, key_data) {
                 return Err(SignerError::KeyMismatch(path.to_string()));
             }
-            let sig = RecoverableSignature::sign_ecdsa_recoverable(
-                Message::from_digest(digest),
-                &x.private_key,
-            );
-            Ok(MessageSignature::new(sig, true).serialize())
+            Ok(sign_compact(digest, &x.private_key))
         })?
     }
 
@@ -154,10 +145,7 @@ impl VaultSigner {
     ) -> Result<bool, SignerError> {
         self.require_platform_address(path)?;
         self.with_key(path, KeyUse::PublicKey, |x| {
-            key_data_matches(
-                &PublicKey::from_secret_key(&x.private_key).serialize(),
-                hash,
-            )
+            key_data_matches(&x.private_key.public_key().to_compressed(), hash)
         })
     }
 
@@ -177,15 +165,11 @@ impl VaultSigner {
             .try_into()
             .map_err(|_| SignerError::Derivation("digest length".into()))?;
         self.with_key(path, KeyUse::Sign, |x| {
-            let public = PublicKey::from_secret_key(&x.private_key).serialize();
+            let public = x.private_key.public_key().to_compressed();
             if !key_data_matches(&public, hash) {
                 return Err(SignerError::KeyMismatch(path.to_string()));
             }
-            let sig = RecoverableSignature::sign_ecdsa_recoverable(
-                Message::from_digest(digest),
-                &x.private_key,
-            );
-            Ok(MessageSignature::new(sig, true).serialize())
+            Ok(sign_compact(digest, &x.private_key))
         })?
     }
 
@@ -199,8 +183,12 @@ impl VaultSigner {
     ) -> Result<Zeroizing<[u8; 32]>, SignerError> {
         self.require_identity_key(path)?;
         self.with_key(path, KeyUse::Agreement, |x| {
-            dip15::ecdh(&x.private_key, peer)
-        })
+            let mut secret = SecretKey::from_secret_bytes(*x.private_key.to_bytes())
+                .map_err(|e| SignerError::Derivation(e.to_string()))?;
+            let shared = dip15::ecdh(&secret, peer);
+            secret.non_secure_erase();
+            Ok(shared)
+        })?
     }
 
     /// DIP-15 `accountReference`: the identity key at `path` keys the
@@ -405,8 +393,8 @@ mod tests {
 
     #[test]
     fn key_data_binding() {
-        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
-        let pk = PublicKey::from_secret_key(&sk).serialize();
+        let sk = dashcore::ecdsa::EcdsaSecretKey::from_bytes(&[7; 32]).unwrap();
+        let pk = sk.public_key().to_compressed();
         assert!(key_data_matches(&pk, &pk));
         let h = hash160::Hash::hash(&pk);
         assert!(key_data_matches(&pk, h.as_byte_array()));

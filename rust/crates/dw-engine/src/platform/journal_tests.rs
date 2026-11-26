@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dashcore::hashes::Hash;
 use dashcore::{BlockHash, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
@@ -630,6 +629,8 @@ fn asset_locks_report_their_tracked_rows() {
     use platform_wallet::changeset::AssetLockEntry;
     use platform_wallet::{AssetLockFundingType as T, AssetLockStatus as A};
     let entry = |n: u8, status: A, identity_index: u32| AssetLockEntry {
+        operation_id: None,
+        shielded_recipient: None,
         out_point: outpoint(n, 0),
         transaction: Transaction {
             version: 3,
@@ -736,6 +737,8 @@ fn a_tracked_registration_lock_reaches_its_flow_before_the_broadcast() {
         (
             op,
             AssetLockEntry {
+                operation_id: None,
+                shielded_recipient: None,
                 out_point: op,
                 transaction: tx,
                 account_index,

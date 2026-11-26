@@ -17,7 +17,7 @@
 //! `testdata/bip39_core_quirks.json`, produced by compiling Core's own
 //! `bip39.cpp` and by running dashd.
 
-use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256, sha512};
+use dashcore::hashes::{Hash, HashEngine, HmacEngine, sha256, sha512};
 use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
@@ -251,11 +251,11 @@ pub fn core_seed(mnemonic: &[u8], passphrase: &[u8]) -> Zeroizing<[u8; 64]> {
 /// PBKDF2-HMAC-SHA512 producing exactly one 64-byte block.
 fn pbkdf2_hmac_sha512_one_block(password: &[u8], salt: &[u8], rounds: u32) -> Zeroizing<[u8; 64]> {
     let mac = |data: &[&[u8]]| -> [u8; 64] {
-        let mut engine = HmacEngine::<sha512::Hash>::new(password);
+        let mut engine = HmacEngine::<sha512::HashEngine>::new(password);
         for d in data {
             engine.input(d);
         }
-        Hmac::<sha512::Hash>::from_engine(engine).to_byte_array()
+        engine.finalize().to_byte_array()
     };
     let mut u = Zeroizing::new(mac(&[salt, &1u32.to_be_bytes()]));
     let mut out = Zeroizing::new(*u);

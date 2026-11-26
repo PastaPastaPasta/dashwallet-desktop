@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 dashcore = { workspace = true }
 key-wallet = { workspace = true }
+secp256k1 = { version = "0.33.1", default-features = false }
 base64 = "0.22"
 thiserror = { workspace = true }
 

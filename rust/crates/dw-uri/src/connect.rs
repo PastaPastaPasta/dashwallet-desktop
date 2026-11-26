@@ -14,7 +14,7 @@
 //! other than a contract group, and a third `ENC_BINDING`, are `invalid`
 //! (as wallets built before the DIP answer), not `unsupported`.
 
-use dashcore::hashes::{Hash, hash160, sha256d};
+use dashcore::hashes::{hash160, sha256d};
 
 use crate::Network;
 
@@ -386,7 +386,7 @@ impl AppConnectRequest {
         }
         let mut rules = Rules::default();
         let app_eph_pub: [u8; 33] = body[1..1 + PUBKEY_LEN].try_into().expect("33 bytes");
-        if dashcore::secp256k1::PublicKey::from_byte_array_compressed(app_eph_pub).is_err() {
+        if dashcore::ecdsa::EcdsaPublicKey::from_bytes(&app_eph_pub).is_err() {
             rules.note("app ephemeral public key is not a compressed secp256k1 point");
         }
         let app_id: [u8; 32] = body[1 + PUBKEY_LEN..HEADER_LEN - 1]

@@ -2,7 +2,7 @@
 // Tools ▸ Coin Selection render these, over the same `txid:vout` selection. Coin Selection adds
 // dash-qt's columns, sortable headers, the tree by address and a cell of row actions.
 
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
 import type { Display } from "../format/display";
@@ -61,6 +61,8 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
   const why = notSelectable(u);
   const party = u.label || shortAddress(u.address);
   const on = selected.has(key);
+  const heldId = useId();
+  const held = u.pendingUnproven ? t("components.coins.pendingUnproven.text") : null;
   return (
     <tr data-testid={`coin-${u.outpoint.txid.slice(0, 8)}-${u.outpoint.vout}`} className={detail?.groups ? "coin-child" : undefined}>
       <td>
@@ -69,8 +71,14 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
           aria-label={t("components.coins.use", { amount: shown.compact(u.amount), unit: shown.name, party })}
           checked={on}
           disabled={why !== null && !on}
+          aria-describedby={held ? heldId : undefined}
           onChange={(e) => onToggle(key, e.target.checked)}
         />
+        {held && (
+          <span id={heldId} hidden>
+            {held}
+          </span>
+        )}
       </td>
       <td className="num">
         <bdi dir="ltr">{shown.compact(u.amount)}</bdi>
@@ -88,7 +96,7 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
         <td title={u.address}>{party}</td>
       )}
       <td className="num">{u.confirmations}</td>
-      <td>{status(u)}</td>
+      <td title={held ?? undefined}>{status(u)}</td>
       {detail && <td className="coin-actions">{detail.actions(u)}</td>}
     </tr>
   );

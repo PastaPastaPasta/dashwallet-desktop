@@ -596,8 +596,9 @@ where
     consumed_verdict(found, keys)
 }
 
-/// `identity` holds exactly `keys`: the same ids, types and data, as the
-/// library's adoption compares.
+/// `identity` holds exactly `keys`: the same ids, types and data. Only our
+/// signer can prove those keys, so the identity is our claim's. The
+/// library's adoption also compares each key's other creation fields.
 fn carries_keys(identity: &Identity, keys: &BTreeMap<KeyID, IdentityPublicKey>) -> bool {
     let actual = identity.public_keys();
     actual.len() == keys.len()
@@ -3561,6 +3562,8 @@ pub(crate) fn lock_status(
         S::ChainLocked => LockStatus::ChainLocked,
         S::Consumed => LockStatus::Consumed,
         S::RecoveredFromChain => LockStatus::RecoveredFromChain,
+        // Only the library's own wallet drain writes it: the lock is out and spent.
+        S::DrainCompleted => LockStatus::Consumed,
     }
 }
 
@@ -3811,6 +3814,7 @@ impl RegistrationLib for PwLib {
         match self.session.replay_guard(self.wallet_id, 0).await {
             Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
             Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            Err(crate::EngineError::Restored) => Some(PlatformError::Restored),
             _ => None,
         }
     }

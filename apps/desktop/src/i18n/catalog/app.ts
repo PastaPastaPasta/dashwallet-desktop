@@ -10,6 +10,15 @@ export const app = {
     tooNew: "This wallet file was written by a newer version of Dash Wallet. Open it with that version; nothing was changed. ({error})",
     failed: "Dash Wallet could not open the wallet: {error}",
   },
+  /** Instead of the wallet when the session before (a close, a network switch) still holds its data. */
+  storageInUse: {
+    title: "Dash Wallet is still closing your wallet data",
+    text: "Dash Wallet hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Try again in a moment, or restart Dash Wallet to finish.",
+    /** When trying again can't help until a restart. */
+    textRestartOnly: "Dash Wallet hasn't finished closing the wallet data it had open before, so it can't open it again yet. Your wallets and funds aren't affected. Restart Dash Wallet to finish.",
+    tryAgain: "Try again",
+    restart: "Restart Dash Wallet",
+  },
   /** Pay's tabs. */
   pay: {
     loading: "Loading…",

@@ -424,6 +424,9 @@ pub(crate) enum Act {
     EarlierExecutes(usize),
     /// Signed and broadcast; a node answers with a signature error.
     SignatureRefused,
+    /// Signed and broadcast; the wait ends unconfirmed, a structure refusal
+    /// its diagnostic. Nothing executes.
+    Unconfirmed,
     /// The protocol version rises after the pre-check, then a node answers
     /// the signed call with a structure error.
     VersionRisesThenInvalid,
@@ -764,6 +767,14 @@ impl FakeMoves {
                 use dpp::consensus::basic::state_transition::TransitionNoInputsError;
                 Err(PlatformWalletError::Sdk(
                     TransitionNoInputsError::new().into(),
+                ))
+            }
+            Act::Unconfirmed => {
+                use dpp::consensus::basic::state_transition::TransitionNoInputsError;
+                Err(PlatformWalletError::Sdk(
+                    dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+                        TransitionNoInputsError::new().into(),
+                    )),
                 ))
             }
             Act::VersionRisesThenInvalid => {
@@ -1149,6 +1160,25 @@ fn an_unknown_move_holds_its_inputs_until_settled() {
     assert_eq!(w.net.withdrawal_reads(), 0);
 }
 
+/// A move whose wait ends unconfirmed may still execute, whatever its
+/// diagnostic says: pending and able to land, its inputs held, so the next
+/// move is `credits.move_pending` and nothing is signed again.
+#[test]
+fn an_unconfirmed_move_is_pending_and_holds_its_inputs() {
+    let w = World::new();
+    w.net.fund(w.address(0), 3 * DASH);
+    w.net.then(Act::Unconfirmed);
+    let out = w.move_all(&w.f.grant(3 * DASH)).unwrap();
+    assert_eq!(out.state, PlatformActivityState::Pending);
+    let moves = w.moves();
+    assert!(moves[0].signed && moves[0].can_land && moves[0].holds());
+    assert_eq!(
+        w.move_all(&w.f.grant(3 * DASH)).unwrap_err().code(),
+        "credits.move_pending"
+    );
+    assert_eq!(w.net.sent.lock().unwrap().len(), 1);
+}
+
 /// A move that executed but whose answer was lost is done on its nonce.
 #[test]
 fn an_unanswered_move_is_done_on_its_nonce() {
@@ -1300,7 +1330,6 @@ fn refusals_keep_the_grant() {
     let other = w.f.flow(FlowKind::ProfileEdit, vec![w.f.grant(3 * DASH)]);
     assert_eq!(code(w.move_all(&other)), "platform.grant_invalid");
     // Not one of the wallet's receiving addresses.
-    use dpp::dashcore::hashes::Hash;
     let theirs = dpp::dashcore::Address::new(
         w.f.s.vault.network(),
         dpp::dashcore::address::Payload::PubkeyHash(dpp::dashcore::PubkeyHash::from_byte_array(
@@ -1373,6 +1402,24 @@ pub(crate) fn fail_next_outcome_write_of(session: &NetworkSession) {
 pub(crate) fn outcome_write_fails(appdb: &Arc<dw_appdb::AppDb>) -> bool {
     let key = Arc::as_ptr(appdb) as usize;
     FAILING_OUTCOME_WRITES.lock().unwrap().remove(&key)
+}
+
+/// Sets the `FromShielded` record of `activity` to `state` in place.
+pub(crate) async fn set_record_state(
+    session: &NetworkSession,
+    wallet: WalletId,
+    activity: [u8; 32],
+    state: PlatformActivityState,
+) {
+    let store = Store::of(session, wallet).unwrap();
+    let mut record = (store.shielded_record(&hex::encode(activity)).await)
+        .unwrap()
+        .unwrap();
+    record.state = state;
+    store
+        .commit(vec![from_shielded_write(&record).unwrap()])
+        .await
+        .unwrap();
 }
 
 static FAILING_ARMS: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
@@ -1892,8 +1939,7 @@ fn reason(r: Result<impl std::fmt::Debug, CreditsError>) -> RecipientProblem {
 /// A bech32m string of `hrp` over `payload` (dw-uri's shielded form when
 /// `payload` is the shielded type byte and 43 bytes).
 fn bech32m_of(hrp: &str, payload: &[u8]) -> String {
-    use dpp::dashcore::bech32::{self, ToBase32, Variant};
-    bech32::encode(hrp, payload.to_base32(), Variant::Bech32m).unwrap()
+    bech32::encode::<bech32::Bech32m>(bech32::Hrp::parse(hrp).unwrap(), payload).unwrap()
 }
 
 /// R1: the receive address is the payment account's lowest unused one, in
@@ -2040,7 +2086,9 @@ fn forget_marks(w: &World, indices: std::ops::RangeInclusive<u32>) {
             .platform_payment_managed_account_at_index_mut(0)
             .unwrap();
         for i in indices {
-            account.addresses.addresses.get_mut(&i).unwrap().state = AddressState::Available;
+            let mut info = (account.addresses.addresses().get(&i).cloned()).unwrap();
+            info.state = AddressState::Available;
+            account.addresses.insert(info).unwrap();
         }
         Ok(())
     })
@@ -2136,25 +2184,27 @@ fn an_unreadable_hand_out_record_refuses_every_hand_out() {
 /// no address marked: what the account holds before a sync restores it.
 fn reload_derived_to(w: &World, last: u32) {
     w.call(move |_, _, wallet, _| async move {
-        use key_wallet::managed_account::address_pool::AddressState;
+        use key_wallet::managed_account::address_pool::{AddressInfo, AddressPool, AddressState};
         let mut wm = wallet.wallet_manager().write().await;
         let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
         let pool = &mut (info.core_wallet)
             .platform_payment_managed_account_at_index_mut(0)
             .unwrap()
             .addresses;
-        let dropped: Vec<u32> = pool.addresses.range(last + 1..).map(|(i, _)| *i).collect();
-        for i in dropped {
-            let gone = pool.addresses.remove(&i).unwrap();
-            pool.address_index.remove(&gone.address);
-            pool.script_pubkey_index.remove(&gone.script_pubkey);
+        let mut reloaded = AddressPool::new_without_generation(
+            pool.base_path().clone(),
+            pool.pool_type(),
+            pool.gap_limit(),
+            pool.network(),
+        );
+        for info in pool.addresses().range(..=last).map(|(_, info)| info) {
+            let info = AddressInfo {
+                state: AddressState::Available,
+                ..info.clone()
+            };
+            reloaded.insert(info).unwrap();
         }
-        for info in pool.addresses.values_mut() {
-            info.state = AddressState::Available;
-        }
-        pool.used_indices.clear();
-        pool.highest_used = None;
-        pool.highest_generated = Some(last);
+        *pool = reloaded;
         Ok(())
     })
     .unwrap();
@@ -4447,6 +4497,26 @@ fn a_failed_from_shielded_settle_write_gives_back_once() {
     for _ in 0..2 {
         assert_eq!(incoming_total(&w.activity()), DASH / 2);
         assert_eq!(w.shielded_row(1).state, PlatformActivityState::Failed);
+    }
+}
+
+/// A settled record (failed or done) is not armed again: `false`, as for
+/// no record.
+#[test]
+fn a_settled_from_shielded_record_is_not_armed() {
+    let w = World::new();
+    let a = w.address(0);
+    for (n, state) in [
+        (1u8, PlatformActivityState::Failed),
+        (3, PlatformActivityState::Done),
+    ] {
+        w.arm_unshield(n, a, DASH).unwrap();
+        let (s, id) = (Arc::clone(&w.f.s), w.f.wallet);
+        let armed = (w.f.engine).block_on(async move {
+            set_record_state(&s, id, [n; 32], state).await;
+            arm_from_shielded(&s, id, ([n; 32], [n.wrapping_add(1); 32])).await
+        });
+        assert_eq!(armed, Ok(false), "{state:?}");
     }
 }
 

@@ -7,7 +7,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, TxOut, Txid};
 use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use key_wallet::Utxo;
@@ -190,6 +189,8 @@ impl Fixture {
                         state.tracked_asset_locks.insert(
                             out_point,
                             platform_wallet::TrackedAssetLock {
+                                operation_id: None,
+                                shielded_recipient: None,
                                 out_point,
                                 transaction: Transaction {
                                     version: 3,
@@ -1665,7 +1666,8 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
                     account_xpub: ExtendedPubKey::from_priv(&master),
                     is_watch_only: true,
                 },
-            );
+            )
+            .unwrap();
             (wallet.state_mut().await.core_wallet.accounts)
                 .insert_funds_bearing_account(receiving)
                 .unwrap();
@@ -1685,7 +1687,7 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
                 let address = ty
                     .address_pools()
                     .into_iter()
-                    .flat_map(|pool| pool.addresses.values())
+                    .flat_map(|pool| pool.addresses().values())
                     .map(|info| info.address.clone())
                     .next()
                     .unwrap_or_else(|| panic!("{name} has no address"));
@@ -4070,7 +4072,7 @@ impl Fixture {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
             let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
-            key_wallet::test_utils::sign_owned_inputs(&device, info, tx, fundings).await
+            crate::input_authorization::sign_owned_inputs(&device, info, tx, fundings).await
         })
     }
 
@@ -4808,7 +4810,6 @@ mod normal_payment_beside_mixing {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use dashcore::hashes::Hash;
     use dashcore::{Address, OutPoint, Transaction, TxIn, TxOut, Txid};
     use dw_vault::{Credential, GrantPurpose};
     use key_wallet::Utxo;
@@ -5420,13 +5421,9 @@ mod normal_payment_beside_mixing {
                 external_addresses, ..
             } = account.managed_account_type_mut()
             {
-                let mainnet_path: DerivationPath = "m/44'/5'/0'/0/0".parse().unwrap();
-                for info in external_addresses.addresses.values_mut() {
-                    if info.address == addr {
-                        info.path = mainnet_path;
-                        break;
-                    }
-                }
+                let mut info = external_addresses.address_info(&addr).unwrap().clone();
+                info.path = "m/44'/5'/0'/0/0".parse::<DerivationPath>().unwrap();
+                external_addresses.insert(info).unwrap();
             }
             let mut utxo = Utxo::new(
                 op,
@@ -5515,6 +5512,7 @@ impl Fixture {
             )
         });
         platform_wallet::events::WalletEvent::TransactionDetected {
+            locked_outpoints: Vec::new(),
             wallet_id: self.wallet.0,
             record: Box::new(record.expect("key-wallet records the transaction")),
             balance,
@@ -6633,7 +6631,7 @@ fn an_old_chains_store_heard_before_a_forks_note_leaves_its_record() {
 #[test]
 fn a_falling_header_tip_finds_a_fork_no_event_announced() {
     use dash_spv::EventHandler;
-    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, SyncProgress, SyncState};
     let progress = |tip| {
         let mut headers = BlockHeadersProgress::default();
         headers.update_target_height(tip);
@@ -7176,6 +7174,7 @@ impl Fixture {
     ) -> bool {
         (self.session.hub).apply_wallet_event(
             &platform_wallet::events::WalletEvent::TransactionDetected {
+                locked_outpoints: Vec::new(),
                 wallet_id: wallet.0,
                 record: Box::new(record.clone()),
                 balance: Default::default(),
@@ -7365,6 +7364,7 @@ fn a_transaction_only_a_block_event_carried_is_this_sessions() {
         unreachable!()
     };
     (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::BlockProcessed {
+        locked_outpoints: Vec::new(),
         wallet_id: f.wallet.0,
         height: 902,
         chain_lock: None,
@@ -7465,7 +7465,8 @@ fn a_found_fork_drops_a_hidden_registration_key_wallet_no_longer_holds() {
                 account_xpub: ExtendedPubKey::from_priv(&master),
                 is_watch_only: true,
             },
-        );
+        )
+        .unwrap();
         for (t, r) in held {
             account.transactions_mut().insert(t.txid(), r);
         }

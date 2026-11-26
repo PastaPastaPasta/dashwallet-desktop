@@ -16,6 +16,8 @@ import type { FlowKindName } from "../api/generated/FlowKindName";
 import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
+import type { NotPrivateData, StoreRefusedData, StoreRestoreData } from "../api/storeOpen";
+import type { StoreLine } from "../api/generated/StoreLine";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { FixtureConnect } from "./connect";
 import { stashRoute, type FixtureStashedLink } from "./links";
@@ -34,6 +36,7 @@ import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registeri
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
+import type { RestoreStatus } from "../api/generated/RestoreStatus";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
@@ -80,7 +83,7 @@ export interface World {
   networkForced?: boolean;
   /** Row 74: what the next `switch_network` to the other network does instead of switching: refuse
    * (`busy`, or close's own refusal `closeRefused`), or fail after the close (`fail`; when it did
-   * not roll back, the next `open_network` fails once too, `reopenFails`). */
+   * not roll back, every `open_network` fails too until `restart_app`, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
     closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
@@ -89,6 +92,39 @@ export interface World {
     /** The switch goes through but its choice is not written. */
     saveFails?: boolean;
   };
+  /** `open_network` refuses the wallet data as the engine does when it can't open it safely (it
+   * changed nothing): every open, a restart's included. */
+  openRefusal?: StoreRefusedData;
+  /** `open_network` refuses a data folder others can change, before anything else: every open, a
+   * restart's included, until a test clears it (the user changed the folder's permissions). */
+  openNotPrivate?: NotPrivateData;
+  /** `open_network` fails with StorageInUse: `retryable`, once (Try again opens it); otherwise
+   * every open until `restart_app`. */
+  storageHeld?: { retryable: boolean };
+  /** `quit_app` and `restart_app` calls, in order (the fixture quits nothing). */
+  appExits?: ("quit" | "restart")[];
+  /** `open_network` stops at a restore the user asked for: `refused` and `noSpace` once (the request is
+   * cleared), the others until it is cancelled. */
+  openRestore?: StoreRestoreData;
+  /** `open_network` stops on the machine while it upgrades the store, every time. */
+  openRetry?: boolean;
+  /** The store upgrade's notice every `open_network` carries (`OpenedNetwork.notice`). */
+  upgradeNotice?: StoreLine;
+  /** A verified snapshot is there (`restore_available`); `request_restore` refuses without one. */
+  restoreAvailable?: boolean;
+  /** `request_restore` asked for a restore: the next `restart_app` runs it. */
+  restoreRequested?: boolean;
+  /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
+  restored?: boolean;
+  /** What RESTORED waits for (`restore_status`); nothing when unset. */
+  restoreStatus?: RestoreStatus;
+  /** The session was opened with `no_platform` (Finish without Dash Platform), until `restart_app`. */
+  noPlatform?: boolean;
+  /** What `finish_without_platform` does instead of finishing: refuse as a busy or draining network
+   * does, or fail to open without Platform and open as usual (`rolledBack`). */
+  finishWithoutPlatform?: "busy" | "draining" | "rolledBack";
+  /** The restore commands called, in order. */
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "restoreRetry" | "recover")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
@@ -189,6 +225,16 @@ export interface FixtureGrant {
 
 /** dw-app's `MAX_REPORT_WALLETS`: a lock report lists this many wallets and counts the rest. */
 export const MAX_REPORT_WALLETS = 16;
+
+/** `recover_in_fresh_folder`: the network's new folder, as the next open finds it: no vault, no wallet,
+ * and the restore's RESTORED mark (`restored`). The refused folder's world is gone from the window. */
+export function startOverInNewFolder(w: World) {
+  w.openRefusal = undefined;
+  w.wallets = [];
+  w.phrases = {};
+  w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+  w.restored = true;
+}
 
 const unlocked = (walletIds: string[]): LockStatus => ({
   state: "unlocked",
@@ -573,6 +619,63 @@ function attributeMore(w: World) {
 export function withHistoryGap(w: World): World {
   for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
   w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+  return w;
+}
+
+/** The `restore-holds` scenarios' payment. */
+export const RESTORE_HELD_TXID = "4e".repeat(32);
+
+/** A payment still unconfirmed in the wallet data restored from before the upgrade (Q92 H1, H2): it
+ * spent the 7.5 DASH coin, and its change is shown but never offered, counted as pending. */
+function withRestoreHold(w: World, stillRestored: boolean): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const row: TxRow = {
+    ...sent,
+    txid: RESTORE_HELD_TXID,
+    timestamp: (sent.timestamp ?? 0) + 60,
+    blockHeight: null,
+    label: null,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  const spent = wallet.coins.find((u) => u.amount === 750_000_000)!;
+  const change: Utxo = {
+    ...spent,
+    outpoint: { txid: RESTORE_HELD_TXID, vout: 1 },
+    amount: spent.amount + row.amount,
+    confirmations: 0,
+    blockHeight: null,
+    timestamp: row.timestamp,
+    instantLocked: false,
+    chainLocked: false,
+    label: null,
+    isChange: true,
+    spendable: false,
+    pendingUnproven: true,
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [...wallet.coins.filter((u) => u !== spent), change];
+  const b = wallet.summary.balances!;
+  wallet.summary = {
+    ...wallet.summary,
+    balances: { ...b, confirmed: b.confirmed - spent.amount, unconfirmed: b.unconfirmed + change.amount, total: b.total + row.amount },
+  };
+  w.restored = stillRestored;
+  w.send.sent[RESTORE_HELD_TXID] = { walletId: wallet.summary.walletId, spent: [spent], change: change.outpoint };
+  w.send.restoreHeld = [RESTORE_HELD_TXID];
+  return w;
+}
+
+/** RESTORED set, waiting as `status` says (`restore_status`). */
+function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
+  w.restored = true;
+  w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false, ...status };
+  return w;
+}
+
+function withFinish(w: World, finish: World["finishWithoutPlatform"]): World {
+  withRestoreStatus(w, { waiting: ["platformPass"] });
+  w.finishWithoutPlatform = finish;
   return w;
 }
 
@@ -1013,10 +1116,57 @@ const SCENARIOS = {
     w.send.debitUnknown = [row.txid];
     return w;
   },
+  /** RESTORED cleared, with a payment still held from before the restore: its change shows MG's
+   * pendingUnproven line in Coin Selection, and Abandon's confirm starts with the restoredHint. */
+  "restore-holds": (t) => withRestoreHold(base(t), false),
+  /** As `restore-holds` while RESTORED is still set: the money gate's line stands in for Abandon. */
+  "restore-holds-restored": (t) => withRestoreHold(base(t), true),
+  /** RESTORED set while the engine waits for the wallet to sync with the Dash network. */
+  "restored-waiting-core": (t) => withRestoreStatus(base(t), { waiting: ["coreSync"] }),
+  /** RESTORED set while Platform's first check is what it waits for: Finish without Dash Platform shows,
+   * and after it RESTORED clears. */
+  "restored-waiting-platform": (t) => withRestoreStatus(base(t), { waiting: ["platformPass"] }),
+  /** As `restored-waiting-platform`, but Finish without Dash Platform is refused: username registration runs. */
+  "restored-finish-busy": (t) => withFinish(base(t), "busy"),
+  /** As `restored-waiting-platform`, but the open without Platform fails and the network opens as usual. */
+  "restored-finish-rolled-back": (t) => withFinish(base(t), "rolledBack"),
+  /** C6: the Core gate open (RESTORED clear) while Platform and Shielded funds wait for Platform's check. */
+  "restored-status-platform-only": (t) => {
+    const w = withRestoreStatus(base(t), { waiting: ["platformPass"], platformOnly: true });
+    w.restored = false;
+    return w;
+  },
+  /** RESTORED set while a wallet's history loads. */
+  "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
+  /** The wallet's history couldn't load: named, with Report a problem only. */
+  "restored-status-history-failed": (t) => withRestoreStatus(base(t), { historyWallets: [FIXTURE_WALLET_ID] }),
+  /** The check finished but its clear couldn't be written: Try again (which works) and Report a problem. */
+  "restored-status-clear-failed": (t) => withRestoreStatus(base(t), { clearFailed: true }),
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);
     w.pending.shielded!.active = false;
+    return w;
+  },
+  /** The upgrade's move of the old Shielded records stopped: Shielded stays closed, Home says why. */
+  "shielded-closed-in-use": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "in_use";
+    return w;
+  },
+  "shielded-closed-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "failed";
+    return w;
+  },
+  "shielded-closed-damaged": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "damaged";
+    return w;
+  },
+  "shielded-closed-no-copy": (t) => {
+    const w = base(t);
+    w.pending.shielded!.closed = "no_upgrade_copy";
     return w;
   },
   /** Platform addresses holding only what is too small to move: Home counts none of it. */
