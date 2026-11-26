@@ -99,7 +99,7 @@ describe("helpers", () => {
 
   it("shows the limit the quote writes, every digit kept", () => {
     expect([0n, 1n, 100_000_000_000n, 5_000_000_000n, 123_456_789_012n].map(creditsDash)).toEqual(["0", "0.00000000001", "1", "0.05", "1.23456789012"]);
-    const quote = { grant: { kind: "appConnect", maxCredits: "1", request: "", plan: "" }, fee: "1", balance: "1", budgets: ["30000000000", "1000000000"] } as const;
+    const quote = { grant: { kind: "appConnect", maxCredits: "1", request: "", plan: "" }, fee: "1", balance: "1", budgets: ["30000000000", "1000000000"], groups: "" } as const;
     expect(quotedLimit({ ...quote, budgets: [...quote.budgets] })).toBe("0.31");
   });
 
@@ -285,6 +285,34 @@ describe("the flow over the fixture", () => {
     quote.mockRestore();
     await approve(flow);
     expect(flow.phase).toBe("done");
+  });
+
+  it("a quote that read the group facts the sheet shows is kept, with no second read", async () => {
+    const { flow, backend } = await open("ok");
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    expect([flow.quote?.groups, flow.planChanged, flow.phase]).toEqual([flow.sheet!.groups, false, "sheet"]);
+    expect(sheet).not.toHaveBeenCalled();
+  });
+
+  it("a quote that read other group facts than the sheet shows reads the request again and says so", async () => {
+    const { flow } = await open("groupChanged");
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect(flow.planChanged).toBe(true);
+    const group = flow.sheet!.bindings.find((b) => b.scope.kind === "group")!.scope;
+    expect(group.kind === "group" && group.group.admins).toHaveLength(2);
+    expect(flow.quote!.groups).toBe(flow.sheet!.groups);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("an approval whose fresh quote read other group facts than the sheet shows reads the request again", async () => {
+    const { flow, backend, link } = await open("ok");
+    const real = backend.appConnectQuote;
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    await flow.approve();
+    await settle();
+    expect([flow.phase, flow.planChanged, flow.grants.pending, link().started]).toEqual(["sheet", true, null, false]);
   });
 
   it("keys not confirmed in time leave the request open, and approving again finishes it", async () => {

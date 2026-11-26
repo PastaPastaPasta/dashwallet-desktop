@@ -116,6 +116,8 @@ pub struct ConnectSheet {
     /// UNIX milliseconds: Platform's block time the sheet was read at.
     #[ts(type = "number")]
     pub block_time_ms: u64,
+    /// The digest of the group facts the bindings show, hex.
+    pub groups: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -139,6 +141,9 @@ pub struct ConnectQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub balance: u64,
+    /// The digest of the group facts the quote read, hex: the sheet reads
+    /// the request again when it shows others.
+    pub groups: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -259,6 +264,7 @@ fn sheet_of(s: engine::ConnectSheet, link: &ConnectLink) -> ConnectSheet {
         max_funding_limit: s.max_funding_limit,
         earlier_approval: s.earlier_approval.map(Into::into),
         block_time_ms: s.block_time_ms,
+        groups: hex::encode(s.groups),
     }
 }
 
@@ -335,6 +341,7 @@ commands! {
             fee: q.fee,
             budgets: q.budgets.iter().map(u64::to_string).collect(),
             balance: q.balance,
+            groups: hex::encode(q.groups),
         })
     }
 

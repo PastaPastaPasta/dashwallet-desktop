@@ -708,6 +708,29 @@ fn a_changed_group_refuses_the_approval_with_the_grant_unused() {
     assert!(f.net.signed().is_empty());
 }
 
+/// The quote names the group facts it read: those the sheet showed when
+/// nothing changed between the two reads, others when the group did.
+#[test]
+fn the_quote_names_the_group_facts_it_read() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let sheet = f.sheet(&l).unwrap();
+    let quote = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_eq!(quote.groups, sheet.groups);
+    f.net
+        .groups
+        .lock()
+        .unwrap()
+        .get_mut(&group())
+        .unwrap()
+        .admins
+        .push(id(51));
+    let changed = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_ne!(changed.groups, sheet.groups);
+    assert_ne!(changed.plan, quote.plan);
+    assert_eq!(f.sheet(&l).unwrap().groups, changed.groups);
+}
+
 #[test]
 fn changed_terms_refuse_the_approval_with_the_grant_unused() {
     let f = Fixture::new();

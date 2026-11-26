@@ -308,7 +308,8 @@ export class ConnectFlow extends Model {
     };
   }
 
-  /** Quotes the current choice; only the latest quote's answer counts. */
+  /** Quotes the current choice; only the latest quote's answer counts. A quote that read other group
+   * facts than the sheet shows reads the request again. */
   async requote(): Promise<void> {
     const n = ++this.#quotes;
     const choice = this.choice();
@@ -320,6 +321,7 @@ export class ConnectFlow extends Model {
     try {
       const quote = await this.api.appConnectQuote(this.walletId, this.linkId, choice);
       if (n !== this.#quotes || this.#closed) return;
+      if (quote.groups !== this.sheet?.groups) return this.#reread();
       this.quote = quote;
     } catch (e) {
       if (n !== this.#quotes || this.#closed) return;
@@ -335,7 +337,8 @@ export class ConnectFlow extends Model {
   }
 
   /** Approve: a fresh quote, its grant under the passphrase, then the approval. A fresh quote that
-   * read anything other than what the sheet showed reads the request again instead. */
+   * read anything other than what the sheet showed (its plan, or the group facts the sheet lists)
+   * reads the request again instead. */
   async approve(): Promise<void> {
     const choice = this.choice();
     if (this.phase !== "sheet" || this.busy || !choice) return;
@@ -346,7 +349,7 @@ export class ConnectFlow extends Model {
     try {
       const quote = await this.api.appConnectQuote(this.walletId, this.linkId, choice);
       if (this.#closed) return;
-      if (planOf(quote) !== planOf(this.quote)) {
+      if (planOf(quote) !== planOf(this.quote) || quote.groups !== this.sheet?.groups) {
         this.busy = false;
         return this.#reread();
       }
