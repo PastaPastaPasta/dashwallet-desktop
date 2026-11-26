@@ -528,8 +528,8 @@ describe("the fixture's restore status", () => {
       ["restored-waiting-core", status({ waiting: ["coreSync"] })],
       ["restored-waiting-platform", status({ waiting: ["platformPass"] })],
       ["restored-waiting-history", status({ waiting: ["historyLoad"] })],
-      ["restored-history-failed", status({ historyWallets: [W] })],
-      ["restored-clear-failed", status({ clearFailed: true })],
+      ["restored-status-history-failed", status({ historyWallets: [W] })],
+      ["restored-status-clear-failed", status({ clearFailed: true })],
     ] as const;
     for (const [scenario, expected] of cases) {
       installFixture({ scenario });
@@ -542,7 +542,7 @@ describe("the fixture's restore status", () => {
   });
 
   it("Core funds free, Platform and Shielded funds held: RESTORED clear, and the status says only Platform's check", async () => {
-    installFixture({ scenario: "restored-platform-only" });
+    installFixture({ scenario: "restored-status-platform-only" });
     expect(isRestored(await backend.activeNetwork())).toBe(false);
     expect(await backend.restoreStatus()).toEqual(PLATFORM_ONLY);
     expect((await backend.finishWithoutPlatform()).network.kind).toBe("testnet");
@@ -620,7 +620,7 @@ describe("the fixture's restore status", () => {
   });
 
   it("Try again writes the clear a failed one couldn't, and RESTORED clears; a wait stays", async () => {
-    const fixture = installFixture({ scenario: "restored-clear-failed" });
+    const fixture = installFixture({ scenario: "restored-status-clear-failed" });
     await backend.restoreRetry();
     expect(fixture.world.restoreCalls).toContain("restoreRetry");
     expect(isRestored(await backend.activeNetwork())).toBe(false);

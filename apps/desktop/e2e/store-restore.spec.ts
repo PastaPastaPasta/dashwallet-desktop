@@ -295,7 +295,7 @@ test.describe("what RESTORED waits for", () => {
   for (const theme of THEMES)
     test(`Core funds free, Platform and Shielded funds held: the panel without the banner, and no Finish (${theme})`, async ({ page }) => {
       const errors = trackPageErrors(page);
-      await page.goto(fixtureUrl("restored-platform-only", theme));
+      await page.goto(fixtureUrl("restored-status-platform-only", theme));
       await expect(page.getByTestId("restored-state")).toBeVisible();
       await expect(page.getByTestId("restored-banner")).toHaveCount(0);
       await expect(page.getByTestId("restored-platform-only")).toHaveText(
@@ -323,7 +323,7 @@ test.describe("what RESTORED waits for", () => {
 
   for (const theme of THEMES)
     test(`a history that failed to load names the wallet, with Report a problem only (${theme})`, async ({ page }) => {
-      await page.goto(fixtureUrl("restored-history-failed", theme));
+      await page.goto(fixtureUrl("restored-status-history-failed", theme));
       await expect(page.getByTestId("restored-history-failed")).toHaveText(
         "Dash Wallet couldn't load the history of Main, so it can't finish checking the wallet data it restored. Anything that moves your funds stays paused.",
       );
@@ -335,7 +335,7 @@ test.describe("what RESTORED waits for", () => {
 
   for (const theme of THEMES)
     test(`a clear that couldn't be written: Try again writes it and the banner goes (${theme})`, async ({ page }) => {
-      await page.goto(fixtureUrl("restored-clear-failed", theme));
+      await page.goto(fixtureUrl("restored-status-clear-failed", theme));
       await expect(page.getByTestId("restored-clear-failed")).toContainText("couldn't save that the check is done");
       await expect(page.getByTestId("restored-report")).toBeVisible();
       await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);

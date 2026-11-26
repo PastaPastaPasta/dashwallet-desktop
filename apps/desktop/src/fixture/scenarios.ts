@@ -1131,7 +1131,7 @@ const SCENARIOS = {
   /** As `restored-waiting-platform`, but the open without Platform fails and the network opens as usual. */
   "restored-finish-rolled-back": (t) => withFinish(base(t), "rolledBack"),
   /** C6: the Core gate open (RESTORED clear) while Platform and Shielded funds wait for Platform's check. */
-  "restored-platform-only": (t) => {
+  "restored-status-platform-only": (t) => {
     const w = withRestoreStatus(base(t), { waiting: ["platformPass"], platformOnly: true });
     w.restored = false;
     return w;
@@ -1139,9 +1139,9 @@ const SCENARIOS = {
   /** RESTORED set while a wallet's history loads. */
   "restored-waiting-history": (t) => withRestoreStatus(base(t), { waiting: ["historyLoad"] }),
   /** The wallet's history couldn't load: named, with Report a problem only. */
-  "restored-history-failed": (t) => withRestoreStatus(base(t), { historyWallets: [FIXTURE_WALLET_ID] }),
+  "restored-status-history-failed": (t) => withRestoreStatus(base(t), { historyWallets: [FIXTURE_WALLET_ID] }),
   /** The check finished but its clear couldn't be written: Try again (which works) and Report a problem. */
-  "restored-clear-failed": (t) => withRestoreStatus(base(t), { clearFailed: true }),
+  "restored-status-clear-failed": (t) => withRestoreStatus(base(t), { clearFailed: true }),
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);
