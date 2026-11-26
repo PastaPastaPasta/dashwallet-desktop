@@ -245,7 +245,10 @@ fn spends_known_coin(h: &WalletHistory, t: &Txid, e: &TxEntry) -> bool {
 /// spends a coin of the wallet which nothing else holds spent: not in
 /// key-wallet's observed spends, spent by no other transaction of the
 /// history that is not abandoned, and not an unspent coin of key-wallet's
-/// (only the payment's own claim holds it). The root's outputs that
+/// (only the payment's own claim holds it). A claim the store's repair put
+/// back pending is no such other spender: a peer's spend it could not
+/// judge proves nothing about the coin. When the load could not read
+/// those claims, no other spender counts. The root's outputs that
 /// key-wallet holds unspent are withheld, and so is every output of an
 /// unmined transaction built on a withheld one that is neither abandoned
 /// nor InstantSend-locked (a lock on it proves its inputs).
@@ -261,8 +264,9 @@ pub(crate) fn pending_unproven(core: &ManagedWalletInfo, h: &WalletHistory) -> B
     let observed = core.observed_spent_outpoints();
     let locks = core.instant_send_locks();
     let network = core.network();
+    let proves = |t: &Txid| !h.put_back_unread && !h.put_back.contains(t);
     let mut spenders: HashMap<OutPoint, Vec<Txid>> = HashMap::new();
-    for (t, e) in txs.iter().filter(|(_, e)| !e.is_abandoned()) {
+    for (t, e) in txs.iter().filter(|(t, e)| !e.is_abandoned() && proves(t)) {
         for i in &e.tx.input {
             spenders.entry(i.previous_output).or_default().push(*t);
         }

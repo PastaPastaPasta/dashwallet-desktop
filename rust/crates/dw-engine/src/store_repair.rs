@@ -1711,6 +1711,27 @@ pub(crate) fn store_dropped(
     Ok((dropped, doubtful))
 }
 
+/// The claims this repair put back pending in `wallet`'s store, staged
+/// ones too: a peer's claim it could not judge, whose spend of a coin
+/// proves nothing about the coin ([`crate::withhold::pending_unproven`]).
+/// A key that names no transaction is left out. Only the read itself
+/// fails.
+pub(crate) fn store_restored(
+    appdb: &AppDb,
+    wallet: WalletId,
+) -> Result<HashSet<Txid>, dw_appdb::AppDbError> {
+    let rows = appdb.settings_with_prefix_lossy(&wallet.to_string(), STORE_RESTORED_PREFIX)?;
+    Ok((rows.into_iter())
+        .filter_map(|(key, _)| {
+            let txid = Txid::from_str(&key[STORE_RESTORED_PREFIX.len()..]);
+            if txid.is_err() {
+                tracing::warn!(%wallet, %key, "a store-restored record names no transaction");
+            }
+            txid.ok()
+        })
+        .collect())
+}
+
 #[cfg(test)]
 #[path = "store_repair_unit_tests.rs"]
 mod tests;

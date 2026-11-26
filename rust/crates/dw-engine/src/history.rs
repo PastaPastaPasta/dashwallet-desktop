@@ -1414,6 +1414,12 @@ pub(crate) struct WalletHistory {
     pub session_held: HashSet<Txid>,
     /// The last load of the history missed a stored record or mark.
     pub load_incomplete: bool,
+    /// The claims the store's repair put back pending, as the last load
+    /// read them ([`crate::store_repair::store_restored`]).
+    pub put_back: HashSet<Txid>,
+    /// The last load could not read [`Self::put_back`]: any transaction
+    /// may be one.
+    pub put_back_unread: bool,
     /// A load filled the history: until then it may lack any record.
     pub loaded: bool,
     /// Transactions with a verified InstantSend lock stored and no record

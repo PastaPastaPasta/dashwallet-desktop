@@ -554,6 +554,55 @@ fn a_coin_spent_since_the_fork_gave_it_back_is_not_held_again() {
     }
 }
 
+/// (d) with the re-check's records unread at a load: P's change, withheld
+/// while P alone spends A, stays withheld though the claim put back spends
+/// A too. A load that can't tell which claims were put back counts no
+/// other spender of the wallet's coins.
+#[test]
+fn a_put_back_claim_frees_no_withheld_change_while_its_record_does_not_read() {
+    for pin in PINS {
+        let (_dir, engine, id, funding, _, network) = non_push_only_claim_the_fork_dropped(pin);
+        let a = OutPoint::new(funding.txid(), 0);
+        arm(&network, Stop::Skip);
+        let session = open(&engine);
+        let payment = send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![a]),
+            PAID / 2,
+            false,
+        );
+        mempool(&engine, &session, id, &payment);
+        eventually("P is stored", || {
+            stored(session.data_dir(), id, payment.txid())
+        });
+        let network = close(&engine, session);
+        on_store(
+            &network,
+            "UPDATE core_utxos SET spent_in_txid = NULL WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![id.0.as_slice(), &encode_outpoint(&a)],
+        );
+        arm(&network, Stop::Skip);
+        let session = open(&engine);
+        let before = balances(&session, id);
+        assert!(before.withheld > 0, "{pin:?}: P's change is withheld");
+        let network = close(&engine, session);
+        repair_closed(&network);
+
+        let session = open(&engine);
+        assert_eq!(balances(&session, id), before, "{pin:?}: read");
+        (session.hub.fail_restored_read).store(true, std::sync::atomic::Ordering::SeqCst);
+        let s = Arc::clone(&session);
+        engine
+            .block_on(session.on_runtime(async move { s.load_history_for(vec![id]).await }))
+            .unwrap();
+        assert_eq!(balances(&session, id), before, "{pin:?}: unread");
+        assert!((session.hub.history).read_wallet(&id, |h| h.put_back_unread));
+        drop(session);
+    }
+}
+
 /// (e) A second open changes nothing; a stop inside the store transaction
 /// rolls the put-back back (its staged record goes at the next open), and
 /// a stop after the commit keeps it (its record is done at the next open).

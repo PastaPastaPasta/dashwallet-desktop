@@ -560,6 +560,8 @@ struct LoadedHistory {
     /// [`Persisted::dropped`] (never-valid claims) and what this app
     /// dropped ([`crate::tx_actions::load_dropped`]).
     dropped: crate::tx_actions::Dead,
+    /// [`crate::store_repair::store_restored`]; `None` when it didn't read.
+    put_back: Option<HashSet<Txid>>,
 }
 
 impl NetworkSession {
@@ -587,6 +589,11 @@ impl NetworkSession {
             (self.hub.fail_dropped_read).swap(false, std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         let fail_dropped = false;
+        #[cfg(test)]
+        let fail_restored =
+            (self.hub.fail_restored_read).swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail_restored = false;
         #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
         #[cfg(test)]
@@ -665,6 +672,13 @@ impl NetworkSession {
                                 (HashSet::new(), false)
                             }
                         };
+                    let put_back = match fail_restored {
+                        true => Err(dw_appdb::AppDbError::Corrupt("test".into())),
+                        false => crate::store_repair::store_restored(&appdb, wallet),
+                    };
+                    let put_back = put_back
+                        .inspect_err(|e| tracing::warn!(%wallet, error = %e, "could not read the claims the store's repair put back: no other spender proves a coin"))
+                        .ok();
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
                             .chain(persisted.recordless)
@@ -711,6 +725,7 @@ impl NetworkSession {
                             }
                             dead
                         },
+                        put_back,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -744,6 +759,7 @@ impl NetworkSession {
             lock_parents,
             orphan_exempt,
             dropped,
+            put_back,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -778,6 +794,8 @@ impl NetworkSession {
                 h.set_loaded_coins(loaded_coins);
                 h.load_incomplete = !complete;
                 h.loaded = true;
+                h.put_back_unread = put_back.is_none();
+                h.put_back = put_back.unwrap_or_default();
                 h.lock_parents = lock_parents;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
