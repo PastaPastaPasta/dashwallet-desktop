@@ -893,6 +893,8 @@ export const dashpay = {
       unsupported: "This app uses a sign-in method this version of Dash Wallet doesn't support.",
       invalid: "This sign-in request can't be read. Ask the app for a new one.",
       newer: "This link needs a newer version of Dash Wallet.",
+      /** A new request while every request kept is on screen or being approved. */
+      busy: "Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.",
       stale: "This sign-in request has expired. Ask the app for a new one.",
       protocol: "This network doesn't support app sign-in yet.",
       noIdentity: "You need a DashPay username to sign in to apps. Create one in DashPay first.",

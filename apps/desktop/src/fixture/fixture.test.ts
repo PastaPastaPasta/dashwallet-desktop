@@ -117,6 +117,8 @@ describe("fixture backend", () => {
       "settings.ts",
       "shared.test.ts",
       "shared.ts",
+      "sharedDetail.test.ts",
+      "sharedMaintenance.test.ts",
       "shielded.ts",
       "tools.test.ts",
       "tools.ts",

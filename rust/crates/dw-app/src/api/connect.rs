@@ -307,12 +307,13 @@ fn answered<T>(
 
 commands! {
     /// The approval sheet of the App Connect request `link_id` for the
-    /// wallet `wallet_id`. A refusal answers the request (its status goes
-    /// back with the return link).
+    /// wallet `wallet_id`, which the inbox then keeps as the one on screen.
+    /// A refusal answers the request (its status goes back with the return
+    /// link).
     #[facade("DashPay::app_connect_sheet")]
     fn app_connect_sheet(state, wallet_id: String, link_id: String) -> ConnectSheet {
         let links = &state.shell.inbox.connect;
-        let link = links.get(&link_id).ok_or_else(unknown_link)?;
+        let link = links.show(&link_id).ok_or_else(unknown_link)?;
         let dashpay = state.dashpay(&wallet_id).await?;
         let sheet = answered(links, &link_id, &link, dashpay.app_connect_sheet(link.uri.clone()).await)?;
         Ok(sheet_of(sheet, &link))
@@ -367,11 +368,12 @@ commands! {
         Ok(done.into())
     }
 
-    /// Sends the response an approval could not send.
+    /// Sends the response an approval of `link_id` could not send; a
+    /// request with no approval started has none (`invalid_argument`).
     #[facade("DashPay::app_connect_retry_send")]
     fn app_connect_retry_send(state, wallet_id: String, link_id: String) -> ConnectDone {
         let links = &state.shell.inbox.connect;
-        let link = links.get(&link_id).ok_or_else(unknown_link)?;
+        let link = links.started(&link_id).ok_or_else(unknown_link)?;
         let dashpay = state.dashpay(&wallet_id).await?;
         let done = dashpay.app_connect_retry_send(link.uri.clone()).await;
         let done = answered(links, &link_id, &link, done)?;

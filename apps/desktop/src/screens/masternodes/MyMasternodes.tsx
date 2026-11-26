@@ -1,7 +1,8 @@
 // Masternodes ▸ My masternodes (MG-10 §1.2): the summary, the groups with In progress (S2), the
 // pane with Release collateral / Lock it again (S2), Change keys or payout (S3) and the operator
 // explanation sheet, Track, Add keys, Keys you added and Stop tracking (tracking.tsx), and the
-// page's states. Withdraw comes with another slice.
+// page's states. A shared masternode's pane reads its shares instead of the 30-day payouts, with
+// its maintenance (§2.4, S6). Withdraw comes with another slice.
 
 import { Fragment, useEffect, useState } from "react";
 import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
@@ -45,9 +46,12 @@ import type { ProTxOperation } from "../../api/generated/ProTxOperation";
 import { InProgressGroup, useInProgressActions, type InProgressActions } from "./InProgress";
 import { registrationCalls, registrationSends } from "../../masternodes/registration";
 import { collateralErrorText, ReleaseSheet } from "./ReleaseSheet";
+import { isSharedRow, percentText } from "../../masternodes/shared";
 import { useT } from "../../i18n";
 import { ChangeKeysSheet, OperatorSheet } from "./ChangeKeysSheet";
 import { MoreMenu, Notice, StatusChip } from "./common";
+import type { OpenSession } from "./Shared";
+import { SharedSection } from "./SharedPane";
 import { AddKeySheet, KeysYouAdded, MAX_LABEL, SheetFooter, TrackSheet, UntrackSheet } from "./tracking";
 
 const DAY = 86_400;
@@ -57,6 +61,8 @@ interface MyMasternodesProps {
   network: NetworkInfo;
   onVote: () => void;
   onContinue: (op: ProTxOperation) => void;
+  /** Opens a shared masternode's session sheet (§2.4). */
+  onOpenSession: (s: OpenSession) => void;
   /** Track a masternode… was chosen in the page's header. */
   tracking: boolean;
   onTrackClose: () => void;
@@ -116,6 +122,7 @@ function MyMasternodesBody({
   selected,
   setSelected,
   onAddKey,
+  onOpenSession,
 }: MyMasternodesProps & {
   actions: InProgressActions;
   selected: string | null;
@@ -269,7 +276,7 @@ function MyMasternodesBody({
           ])}
           {all.every((g) => g.id === "attention") && progress}
         </div>
-        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} onAddKey={() => onAddKey(current.proTxHash)} />}
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} network={network} shown={shown} onVote={onVote} onAddKey={() => onAddKey(current.proTxHash)} onOpenSession={onOpenSession} />}
       </div>
     </>
   );
@@ -283,6 +290,7 @@ function Pane({
   shown,
   onVote,
   onAddKey,
+  onOpenSession,
 }: {
   row: MasternodeRow;
   rows: MasternodeRow[];
@@ -291,12 +299,13 @@ function Pane({
   shown: Display;
   onVote: () => void;
   onAddKey: () => void;
+  onOpenSession: (s: OpenSession) => void;
 }) {
   const t = useT();
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const backend = useBackend();
   const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
-  const payouts = useMasternodePayouts(wallet.walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
+  const payouts = useMasternodePayouts(wallet.walletId, row.proTxHash, since, row.mine && !isSharedRow(row));
   const refresh = useMasternodesRefresh();
   const [renaming, setRenaming] = useState(false);
   const [releasing, setReleasing] = useState(false);
@@ -330,6 +339,11 @@ function Pane({
           <div className="chip-row mg-pane-chip">
             <StatusChip chip={statusChip(row.status)} testId="mn-pane-chip" />
             <span className="chip chip-neutral">{kindText(row.kind)}</span>
+            {row.shares && (
+              <span className="chip chip-neutral" data-testid="mn-pane-shares">
+                {t("masternodes.shared.detail.held", { held: row.shares.held, of: row.shares.of })}
+              </span>
+            )}
           </div>
         </div>
         <div className="mg-pane-actions">
@@ -395,7 +409,7 @@ function Pane({
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
-        <Payouts payouts={payouts} row={row} rows={rows} name={name} shown={shown} />
+        {isSharedRow(row) ? <SharedSection wallet={wallet} network={network} row={row} shown={shown} operatorReward={d?.registration?.operatorReward ?? null} onOpenSession={onOpenSession} /> : <Payouts payouts={payouts} row={row} rows={rows} name={name} shown={shown} />}
         <div>
           <h3 className="mg-section-title">{t("masternodes.myMasternodes.inWallet")}</h3>
           <ul className="mg-roles" data-testid="mn-roles">
@@ -446,7 +460,7 @@ function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeD
       {row.mine && reg?.payoutAddress && fact("payout", t("masternodes.myMasternodes.fact.payout"), <>
         <span className="mono">{shortAddress(reg.payoutAddress)}</span> <span className="mg-muted">{MnText.payoutProvenance}</span>
       </>)}
-      {reg?.operatorReward ? fact("operator-share", t("masternodes.myMasternodes.fact.operatorShare"), operatorShare(reg.operatorReward)) : null}
+      {reg?.operatorReward ? fact("operator-share", t("masternodes.myMasternodes.fact.operatorShare"), isSharedRow(row) ? t("masternodes.shared.session.operatorShareValue", { share: percentText(reg.operatorReward / 100) }) : operatorShare(reg.operatorReward)) : null}
       {list && fact("voting", t("masternodes.myMasternodes.fact.voting"), <span className="mono">{shortAddress(list.votingAddress)}</span>)}
       {list?.platformNodeId &&
         fact(
