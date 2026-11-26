@@ -1196,7 +1196,7 @@ fn mg954_a_rival_in_a_block_no_chainlock_covers_releases_nothing_until_one_does(
 /// registration's collateral stays locked. Once a ChainLock covers the
 /// block they are `conflicted` and release.
 #[test]
-fn mg954_an_instant_send_locked_operation_holds_against_a_plain_block_until_a_chainlock() {
+fn mg954_operations_hold_against_a_plain_block_rival_until_a_chainlock_locked_or_not() {
     let f = fx(Library::Accept);
     let (reg_tx, reg) = f.registered();
     let hash = reg.pro_tx_hash.clone().unwrap();

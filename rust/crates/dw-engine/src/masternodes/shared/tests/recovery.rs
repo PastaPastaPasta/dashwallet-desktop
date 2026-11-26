@@ -1152,6 +1152,36 @@ fn test_another_spend_in_a_block_settles_as_other_spend() {
     );
 }
 
+/// #954: another spend in a block below the ChainLock that the header
+/// chain replaced shows no progress: the abandon is still `pending`. Once
+/// the chain holds that block, the spend is `confirming`.
+#[test]
+fn test_another_spend_in_a_replaced_block_shows_nothing() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let a = f.net.sent()[0].clone();
+    let x = foreign_spend(&[a.input[0].previous_output], 7);
+    f.mine(x, 60);
+    let replaced = dashcore::BlockHash::from_byte_array([0x60; 32]);
+    f.forks.lock().unwrap().insert(60, replaced);
+    f.chainlock(61);
+    f.tip(61);
+    let pending = Settlement::Pending {
+        txid: a.txid().to_string(),
+    };
+    assert_eq!(f.recovery(1, &id).settlement, pending, "a replaced block");
+    f.forks.lock().unwrap().remove(&60);
+    assert_eq!(
+        f.recovery(1, &id).settlement,
+        Settlement::Confirming {
+            by: SettledBy::OtherSpend,
+            confirmations: 2,
+            chainlocked: false
+        }
+    );
+}
+
 /// T4 "registration wins against the abandon" with A absent from history:
 /// stage `confirmed`, no recovery action, no spend-back state; both calls
 /// refuse `confirmed`.

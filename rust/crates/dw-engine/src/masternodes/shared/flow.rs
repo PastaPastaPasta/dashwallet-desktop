@@ -220,7 +220,7 @@ impl NetworkSession {
             let finality = self.finality(heights).await;
             (history, finality)
         };
-        let seen = Beats::seen(&history, chainlock);
+        let seen = Beats::seen(&history, chainlock, finality.clone());
         let beats = Beats::of(&history, chainlock, finality);
         let pending = self.spends.snapshot(&wallet);
         Ok(ChainView {

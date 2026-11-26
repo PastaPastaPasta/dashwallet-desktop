@@ -683,6 +683,12 @@ impl Finality {
             &self.active,
         )
     }
+
+    /// Whether the header chain may still make `block` final: it proves
+    /// it, or no ChainLock reaches its height yet.
+    pub(crate) fn may_hold(&self, block: &BlockInfo) -> bool {
+        self.chainlock.is_none_or(|(h, _)| block.height() > h) || self.proves(block)
+    }
 }
 
 /// Heights at or below `at_most` of the blocks holding a transaction that

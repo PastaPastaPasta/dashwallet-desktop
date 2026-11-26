@@ -471,8 +471,9 @@ pub(crate) struct ChainView {
     pub unspent: HashSet<OutPoint>,
     /// What may beat the session's transactions.
     pub beats: Beats,
-    /// What a block beats, final or not: recovery's progress only.
-    pub seen: Beats,
+    /// What a block beats while it may still become final: recovery's
+    /// progress only.
+    pub(super) seen: Beats,
     /// The coins this wallet's pending spends hold, an abandon's among them.
     pub pending: HashSet<OutPoint>,
 }

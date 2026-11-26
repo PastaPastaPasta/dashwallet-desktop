@@ -156,19 +156,22 @@ impl OpView {
     }
 }
 
-/// What may beat an operation: only a block the SPV header chain proves
-/// final under a ChainLock ([`Finality`]), as a reorg can undo any other
-/// and a record kept from a fork a restart reloads names a block the chain
-/// no longer holds. A block that beats one the history holds
-/// InstantSend-locked is also ChainLocked (DIP-10, key-wallet's order).
-/// Each release that a beaten operation allows (its inputs and collateral,
-/// its payout-change barrier, the hold on a later update) reads it.
+/// What may beat an operation ([`Beats::of`]): only a block the SPV header
+/// chain proves final under a ChainLock ([`Finality`]), as a reorg can
+/// undo any other and a record kept from a fork a restart reloads names a
+/// block the chain no longer holds. A block that beats one the history
+/// holds InstantSend-locked is also ChainLocked (DIP-10, key-wallet's
+/// order). Each release that a beaten operation allows (its inputs and
+/// collateral, its payout-change barrier, the hold on a later update)
+/// reads it.
 pub(crate) struct Beats {
-    /// The history's [`crate::history::conflicted`] blocks, of those
-    /// `finality` proves.
+    /// The history's [`crate::history::conflicted`] blocks, of those that
+    /// count.
     conflicted: HashMap<Txid, (u32, dashcore::BlockHash)>,
-    /// None for [`Beats::seen`].
-    finality: Option<Finality>,
+    finality: Finality,
+    /// [`Beats::seen`]: a block counts unless the chain is known not to
+    /// hold it ([`Finality::may_hold`]).
+    seen: bool,
     chainlock: Option<u32>,
 }
 
@@ -178,25 +181,31 @@ impl Beats {
         chainlock: Option<u32>,
         finality: Finality,
     ) -> Self {
-        Self::new(history, chainlock, Some(finality))
+        Self::new(history, chainlock, finality, false)
     }
 
-    /// What a block beats whether or not it is final, in the same
+    /// What a block beats while it may still become final, in the same
     /// InstantSend order: what a progress display reads, never a release.
-    pub(crate) fn seen(history: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> Self {
-        Self::new(history, chainlock, None)
+    pub(crate) fn seen(
+        history: &HashMap<Txid, TxEntry>,
+        chainlock: Option<u32>,
+        finality: Finality,
+    ) -> Self {
+        Self::new(history, chainlock, finality, true)
     }
 
     fn new(
         history: &HashMap<Txid, TxEntry>,
         chainlock: Option<u32>,
-        finality: Option<Finality>,
+        finality: Finality,
+        seen: bool,
     ) -> Self {
-        let counts = |b: &BlockInfo| finality.as_ref().is_none_or(|f| f.proves(b));
+        let counts = |b: &BlockInfo| counts(&finality, seen, b);
         let conflicted = crate::history::conflicted(history, chainlock, counts);
         Self {
             conflicted,
             finality,
+            seen,
             chainlock,
         }
     }
@@ -205,7 +214,7 @@ impl Beats {
     /// history holds InstantSend-locked (`locked`) or not.
     fn height(&self, rival: &TxEntry, locked: bool) -> Option<u32> {
         let block = rival.context.block_info()?;
-        let counts = |b: &BlockInfo| self.finality.as_ref().is_none_or(|f| f.proves(b));
+        let counts = |b: &BlockInfo| counts(&self.finality, self.seen, b);
         crate::history::block_beats(&rival.context, locked, self.chainlock, counts)
             .then(|| block.height())
     }
@@ -232,6 +241,13 @@ impl Beats {
             active,
         };
         Self::of(history, chainlock, finality)
+    }
+}
+
+fn counts(finality: &Finality, seen: bool, block: &BlockInfo) -> bool {
+    match seen {
+        true => finality.may_hold(block),
+        false => finality.proves(block),
     }
 }
 
@@ -1516,6 +1532,10 @@ mod tests {
         let read = |history: &HashMap<Txid, TxEntry>, chainlock| {
             read_with(history, &Beats::on_chain(history, chainlock))
         };
+        let shown = |history: &HashMap<Txid, TxEntry>, chainlock, finality| {
+            let seen = Beats::seen(history, chainlock, finality);
+            beaten_height(history, &seen, &k_inputs, Some(&k.txid()))
+        };
         let sent = (None, ProTxOperationState::Sent);
         let beaten = |h| (Some(h), ProTxOperationState::Conflicted);
 
@@ -1526,11 +1546,27 @@ mod tests {
         history.insert(rival.txid(), entry(&rival, Some(9), false));
         assert_eq!(read(&history, None), sent, "no ChainLock");
         assert_eq!(read(&history, Some(8)), sent, "above the ChainLock");
+        let on = |cl| Beats::on_chain(&history, cl).finality;
+        assert_eq!(
+            shown(&history, None, on(None)),
+            Some(9),
+            "shown, no ChainLock"
+        );
+        assert_eq!(
+            shown(&history, Some(8), on(Some(8))),
+            Some(9),
+            "shown above it"
+        );
         assert_eq!(read(&history, cl), beaten(9), "K not in the history");
-        let mut stale = Beats::on_chain(&history, cl).finality.unwrap();
+        let mut stale = Beats::on_chain(&history, cl).finality;
         stale
             .active
             .insert(9, dashcore::BlockHash::from_byte_array([9; 32]));
+        assert_eq!(
+            shown(&history, cl, stale.clone()),
+            None,
+            "a replaced block shown"
+        );
         let stale = Beats::of(&history, cl, stale);
         assert_eq!(
             read_with(&history, &stale),
@@ -1549,6 +1585,12 @@ mod tests {
         let direct = spend(OutPoint::new(p.txid(), 0), 6);
         history.insert(direct.txid(), entry(&direct, Some(12), false));
         assert_eq!(read(&history, Some(11)), sent, "K locked, a plain block");
+        let on = |cl| Beats::on_chain(&history, cl).finality;
+        assert_eq!(
+            shown(&history, Some(11), on(Some(11))),
+            None,
+            "K locked, shown"
+        );
         assert_eq!(
             read(&history, Some(12)),
             beaten(12),
