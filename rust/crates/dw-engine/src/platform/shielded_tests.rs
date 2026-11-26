@@ -5412,6 +5412,11 @@ fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the
         .as_ref()
         .map(|l| l.synced_index);
     assert_eq!(synced, Some(Some(1)), "the sync ran its pass");
+    assert_eq!(
+        status.synced_index,
+        Some(1),
+        "the returned status includes the pass"
+    );
     assert_eq!(status.balance, NOTE);
     assert!(!status.spends_available);
     assert_eq!(again, "platform.unavailable");

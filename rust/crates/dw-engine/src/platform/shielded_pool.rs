@@ -2928,7 +2928,11 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, false, false, body).await
+    let gates = PoolGates {
+        signing: false,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
 }
 
 /// [`on_pool`] for a quote of a spend or of a move into the pool:
@@ -2945,7 +2949,11 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, false, true, body).await
+    let gates = PoolGates {
+        signing: false,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
 }
 
 /// [`on_pool`] for a call that signs (a send, an unshield, a shield or its
@@ -2964,7 +2972,11 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, true, false, body).await
+    let gates = PoolGates {
+        signing: true,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
 }
 
 /// [`on_pool_signing`] for a spend or a move into the pool, refused as
@@ -2979,14 +2991,25 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, true, true, body).await
+    let gates = PoolGates {
+        signing: true,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// What [`run_on_pool`] admits a call under: `signing`, the session's
+/// close preflight; `keyset`, the spends-off refusal before the open.
+#[derive(Clone, Copy)]
+struct PoolGates {
+    signing: bool,
+    keyset: bool,
 }
 
 async fn run_on_pool<T, F, Fut>(
     session: &Arc<NetworkSession>,
     wallet_id: WalletId,
-    signing: bool,
-    keyset: bool,
+    PoolGates { signing, keyset }: PoolGates,
     body: F,
 ) -> Result<T, ShieldedError>
 where
@@ -3008,7 +3031,7 @@ where
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
         if keyset {
-            keyset_open(&session)?;
+            session_keyset_closed(&session)?;
         }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
@@ -3122,7 +3145,7 @@ pub(crate) fn session_keyset_spends(session: &NetworkSession) -> bool {
 
 /// [`keyset_closed`] from the session alone: `platform.unavailable` while
 /// the library cannot spend from the key set.
-pub(crate) fn keyset_open(session: &NetworkSession) -> Result<(), ShieldedError> {
+pub(crate) fn session_keyset_closed(session: &NetworkSession) -> Result<(), ShieldedError> {
     if session_keyset_spends(session) {
         Ok(())
     } else {

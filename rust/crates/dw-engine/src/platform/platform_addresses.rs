@@ -612,7 +612,7 @@ impl DashPay {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             platform_moves::address_sends_open(session.vault.network())?;
-            shielded_pool::keyset_open(&session)?;
+            shielded_pool::session_keyset_closed(&session)?;
             let lib = shielded_pool::PwShielded::open(&session, wallet_id).await?;
             let version = shielded_pool::platform_shield_gate(&lib).await?;
             let net = platform_moves::SdkMoves {
