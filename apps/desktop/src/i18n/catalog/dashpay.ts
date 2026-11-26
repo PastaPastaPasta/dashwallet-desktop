@@ -858,6 +858,9 @@ export const dashpay = {
     critical: "This key has critical access: it can do anything these contracts let your identity do, including sending the app's tokens your identity holds. The funding limit doesn't cap tokens.",
     /** Under a CRITICAL binding that can't reach tokens: a read-only contract without tokens, or one document type. */
     criticalNoTokens: "This key has critical access: within what it covers, it can do anything your identity can.",
+    /** Under a binding on the app's contracts, a document type or a group, unless the critical warning
+     * names tokens already: a document write can carry a token cost the identity pays. */
+    tokenCost: "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
     cannot: "It can't spend Dash from this wallet, withdraw credits, transfer credits to anyone or change your other keys. It can spend your identity's credits up to the funding limit.",
     limit: "Funding limit (Dash)",
     limitHint: "The most this app can spend from your identity's credits.",

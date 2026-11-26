@@ -14,7 +14,7 @@ import { installFixture } from "../fixture/index";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { t } from "../i18n";
 import { needsPassphrase } from "../tools/grant";
-import { bindingText, ConnectFlow, connectErrorText, creditsDash, criticalText, expiryDays, FAILURE_KEYS, failureDetail, limitCredits, limitText, quotedLimit, validLimit } from "./connect";
+import { bindingText, ConnectFlow, connectErrorText, creditsDash, criticalText, expiryDays, FAILURE_KEYS, failureDetail, limitCredits, limitText, quotedLimit, tokenCostText, validLimit } from "./connect";
 import type { ConnectBinding } from "../api/generated/ConnectBinding";
 
 const err = (code: AppError["code"], data: AppError["data"] = null, message = "a message the engine wrote"): AppError => ({ code, message, data });
@@ -118,6 +118,21 @@ describe("helpers", () => {
     const noTokens = "This key has critical access: within what it covers, it can do anything your identity can.";
     expect(line("critical")).toEqual([tokens, tokens, noTokens, noTokens, noTokens]);
     expect(line("high")).toEqual([null, null, null, null, null]);
+  });
+
+  it("says document writes can spend tokens, except on the profile and where the critical warning names tokens", () => {
+    const group = { group: "g", owner: "o", admins: [], contracts: [], documentTypes: [], tokens: [] };
+    const scopes: ConnectBinding["scope"][] = [
+      { kind: "group", group },
+      { kind: "contract", contract: "c", tokens: true },
+      { kind: "contract", contract: "c", tokens: false },
+      { kind: "documentType", contract: "c", documentType: "post" },
+      { kind: "profile" },
+    ];
+    const line = (level: ConnectBinding["level"]) => scopes.map((scope) => tokenCostText({ index: 0, primary: true, level, scope }));
+    const spends = "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.";
+    expect(line("high")).toEqual([spends, spends, spends, spends, null]);
+    expect(line("critical")).toEqual([null, null, spends, spends, null]);
   });
 
   it("pins the ruled group sentence, {admins, select}, as its two keys", () => {
