@@ -550,6 +550,11 @@ fn a_held_cancel_is_no_exit_target() {
     let q = w.cancel_quote_of(&held.id).unwrap();
     w.net.then(Act::SignatureRefused);
     let out = w.cancel_as(&held.id, &q.to, &w.f.grant(q.credits)).unwrap();
+    // Signed after the move, as a cancel always is: the move is the first
+    // hold a plain move finds.
+    let mut c = w.record(&out.id);
+    c.at = w.record(&held.id).at + 60;
+    w.store(&[c]);
     w.net.tick();
     w.activity();
     assert!(w.record(&out.id).holds());
