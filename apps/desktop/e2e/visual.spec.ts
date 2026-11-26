@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
-import { CARDS, CHIP_TEXT, CHIPS, platformRunFails } from "./dashpay";
+import { CARDS, CHIPS, CHIP_TEXT, payFrom, payFromDashWallet, platformRunFails, privacyTip, setShielded, shieldedRunFails } from "./dashpay";
 import { openConnect, quoted } from "./connect";
 import type { ConnectOutcome } from "../src/fixture/connect";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
@@ -488,9 +488,10 @@ for (const theme of THEMES) {
 // readiness states, the voting info and the FAQ.
 const SHOT = { animations: "disabled", caret: "hide" } as const;
 
-const JOIN: Record<string, { scenario: string; ready: string }> = {
+const JOIN: Record<string, { scenario: string; ready: string; shielded?: Record<string, unknown> }> = {
   join: { scenario: "dashpay-no-identity", ready: "join-cost" },
-  "join-shortfall": { scenario: "empty", ready: "join-shortfall" },
+  // C-funding F16: neither balance can pay.
+  "join-shortfall": { scenario: "empty", ready: "join-shortfall", shielded: { balance: "0", notes: undefined } },
   "join-waiting": { scenario: "dashpay-waiting-for-sync", ready: "join-waiting" },
   "join-watch-only": { scenario: "dashpay-watch-only", ready: "join-watch-only" },
   "join-voting": { scenario: "dashpay-contest-pending", ready: "dashpay-card" },
@@ -504,6 +505,7 @@ const JOIN: Record<string, { scenario: string; ready: string }> = {
 /** Step 1 for the contested "alice", then its instant offer (DP1-09 D4 reversed). */
 async function instantOffered(page: Page) {
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await page.getByTestId("registration-name-field").fill("alice");
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
@@ -585,36 +587,47 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
       await page.getByTestId("registration-instantRetry").waitFor();
     },
   },
-  // C-funding F19: "Pay another way".
+  // C-funding F19: "Make your username private", Shielded first; Platform behind Advanced, opened.
   "pay-with": {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await expect(page.getByTestId("pay-with-shielded-reason")).toBeVisible();
+      await page.getByTestId("join-create").click();
+      await expect(page.getByTestId("pay-with-shielded-note")).toBeVisible();
       await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+      await page.getByTestId("privacy-advanced").click();
+      await expect(page.getByTestId("pay-with-platform-balance")).toBeVisible();
+      await page.mouse.move(0, 0);
     },
   },
-  // A Platform move that may still execute holds the balance: the Platform row's reason.
-  "pay-with-move-pending": {
-    scenario: "platform-send-held",
-    reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await expect(page.getByTestId("pay-with-platform-reason")).toHaveText("Another Platform transfer is still being confirmed. Try again when it is done.");
-    },
-  },
-  // Dash wallet short of the cost: its reason; Continue off.
+  // Dash wallet short of the cost: its reason; Continue off until Shielded is picked.
   "pay-with-short": {
     scenario: "empty",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
+      await page.getByTestId("join-create").click();
       await expect(page.getByTestId("pay-with-core-reason")).toBeVisible();
       await expect(page.getByTestId("registration-next")).toBeDisabled();
+    },
+  },
+  // C-funding F16: the tip cards that replace the sources while Shielded cannot pay.
+  "privacy-nothing": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { balance: "0", notes: undefined }, "nothing") },
+  "privacy-partly": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { balance: "1000000000", notes: undefined }, "partly") },
+  "privacy-resting": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { restingUntil: 1_900_000_000 }, "resting") },
+  "privacy-pool": { scenario: "dashpay-no-identity", reach: (page) => privacyTip(page, { poolNotes: 120 }, "pool") },
+  // On mainnet a username paid from the Shielded balance is off (flag shielded_registration): the Dash wallet only.
+  "privacy-mainnet": {
+    scenario: "dashpay-no-identity-mainnet",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await expect(page.getByTestId("pay-with-core-balance")).toBeVisible();
+      await expect(page.getByTestId("pay-with-shielded-note")).toHaveCount(0);
+      await page.mouse.move(0, 0);
     },
   },
   name: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await page.getByTestId("registration-name-field").fill("alice");
       await expect(page.getByTestId("registration-availability")).toHaveText("Username available");
     },
@@ -623,6 +636,19 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
+  // C-funding F20: Confirm paid from the Shielded balance.
+  "confirm-shielded": {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "shielded");
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -633,9 +659,8 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   "confirm-platform": {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-platform").getByRole("radio").check();
-      await page.getByTestId("registration-next").click();
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "platform");
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -646,15 +671,18 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   paused: { scenario: "dashpay-registration-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
   held: { scenario: "dashpay-registering-held", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=held]").waitFor() },
+  "shielded-recheck": { scenario: "dashpay-registering-shielded-recheck", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=paused]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
   refunded: { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "paidFailure") },
+  "shielded-consumed": { scenario: "dashpay-no-identity", reach: (page) => shieldedRunFails(page, "alice-77", "consumed") },
   "quote-changed": { scenario: "dashpay-no-identity", reach: (page) => platformRunFails(page, "alice-77", "replanRefused") },
   // PRODUCT #4: the welcome, after a new username's run to its end.
   welcome: {
     scenario: "dashpay-no-identity",
     reach: async (page) => {
       await page.getByTestId("join-create").click();
+      await payFromDashWallet(page);
       await page.getByTestId("registration-name-field").fill("alice-77");
       await expect(page.getByTestId("registration-next")).toBeEnabled();
       await page.getByTestId("registration-next").click();
@@ -698,9 +726,10 @@ for (const theme of THEMES) {
       await expect(chip).toHaveScreenshot(`${theme}-dashpay-chip-${kind}.png`, SHOT);
     });
   }
-  for (const [name, { scenario, ready }] of Object.entries(JOIN)) {
+  for (const [name, { scenario, ready, shielded }] of Object.entries(JOIN)) {
     test(`visual dashpay-${name} ${theme}`, async ({ page }) => {
       await openJoin(page, scenario, theme);
+      if (shielded) await setShielded(page, shielded);
       await page.getByTestId(ready).waitFor();
       await shoot(page, `dashpay-${name}`, theme);
     });

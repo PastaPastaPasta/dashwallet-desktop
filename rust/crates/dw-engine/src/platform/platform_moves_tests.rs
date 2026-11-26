@@ -482,6 +482,8 @@ pub(crate) struct FakeMoves {
     withdrawal_reads: AtomicUsize,
     /// The `MoveNet` calls made so far.
     calls: AtomicUsize,
+    /// The addresses each read asked for, in order.
+    pub(crate) read_sets: Mutex<Vec<BTreeSet<PlatformAddress>>>,
 }
 
 impl FakeMoves {
@@ -514,6 +516,7 @@ impl FakeMoves {
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
+            read_sets: Mutex::default(),
         })
     }
 
@@ -822,6 +825,7 @@ impl MoveNet for FakeMoves {
             self.unverified.store(true, Ordering::SeqCst);
         }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
+        self.read_sets.lock().unwrap().push(addresses.clone());
         let state = self.state.lock().unwrap();
         let infos = (addresses.into_iter())
             .map(|a| (a, state.get(&a).copied()))
@@ -1861,9 +1865,9 @@ impl World {
     }
 
     fn receive_address(&self) -> PlatformReceiveAddress {
-        self.call(
-            |net, s, w, _| async move { Ok(receive_address(&*net, &w, s.vault.network()).await?) },
-        )
+        self.call(|net, s, w, _| async move {
+            Ok(receive_address(&*net, &s, &w, s.vault.network()).await?)
+        })
         .unwrap()
     }
 }
@@ -1930,6 +1934,284 @@ fn the_receive_address_is_the_lowest_unused_and_stable() {
     .unwrap();
     let next = w.receive_address();
     assert_eq!((next.index, &next.address), (1, &by_index[&1]));
+}
+
+/// C-funding F13 (mobile parity, on the condition that it is never handed
+/// out again): the fallback a Shielded-funded registration fixed is
+/// published beside its identity, so the receive address skips it. The
+/// row is its record; the account's mark is in memory only, so a wallet
+/// that never marked it (a restart) skips it too. Mutant: hand out an
+/// address without marking the rows' fallbacks.
+#[test]
+fn a_registration_fallback_is_never_the_receive_address() {
+    let w = World::new();
+    let first = w.receive_address();
+    assert_eq!(first.index, 0);
+    insert_shielded_row(&w, &first.address);
+    let next = w.receive_address();
+    assert_eq!(next.index, 1, "{next:?}");
+    assert_ne!(next.address, first.address);
+    assert_eq!(w.receive_address(), next, "stable");
+}
+
+/// A Shielded-funded registration row of `fallback`.
+fn insert_shielded_row(w: &World, fallback: &str) {
+    let funding = super::super::registration_rows::Funding::Shielded {
+        denomination: DASH,
+        fallback: fallback.to_owned(),
+        identity: None,
+    }
+    .encode();
+    let row = dw_appdb::NewRegistration {
+        identity_index: Some(0),
+        identity: None,
+        label: "alice".into(),
+        temp_label: None,
+        funding,
+        initial_profile: None,
+        phase: "draft".into(),
+    };
+    w.call(move |_, s, _, id| async move {
+        let wallet = id.to_string();
+        s.appdb_op(move |db| db.insert_registration(&wallet, &row, 1))
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// The account's index of `address`.
+fn index_of(w: &World, address: String) -> Option<u32> {
+    w.call(move |_, _, wallet, _| async move {
+        let target = parse(&address).unwrap();
+        Ok(pool(&wallet)
+            .await?
+            .get(&target)
+            .map(|p| u32::from(*p.as_ref().last().unwrap())))
+    })
+    .unwrap()
+}
+
+fn new_fallback(w: &World) -> String {
+    w.call(|_, s, wallet, _| async move {
+        Ok(fallback_address(&s, &wallet, s.vault.network()).await?)
+    })
+    .unwrap()
+}
+
+/// `address` published by a create, as the dispatch hook marks it.
+fn mark_published(w: &World, address: &str) {
+    let key = dw_appdb::dp_registration_published(address);
+    w.call(move |_, s, _, id| async move {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        s.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("1")))
+            .await
+            .map_err(PlatformError::from)?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A new fallback a create then published: never given again.
+fn published_fallback(w: &World) -> String {
+    let address = new_fallback(w);
+    mark_published(w, &address);
+    address
+}
+
+/// The account's in-memory marks of `indices` lost, as at a restart.
+fn forget_marks(w: &World, indices: std::ops::RangeInclusive<u32>) {
+    w.call(move |_, _, wallet, _| async move {
+        use key_wallet::managed_account::address_pool::AddressState;
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
+        let account = (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap();
+        for i in indices {
+            account.addresses.addresses.get_mut(&i).unwrap().state = AddressState::Available;
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// C-funding F13: a new fallback is never the address Receive may be
+/// showing: that one and the fallback after it are marked used. Its
+/// durable record outlives the account's in-memory mark (a restart) and
+/// its registration's row. Mutants: give the shown address; forget the
+/// record.
+#[test]
+fn a_new_fallback_is_never_an_address_handed_out_before_or_after() {
+    let w = World::new();
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 0);
+    let fallback = new_fallback(&w);
+    assert_eq!(
+        index_of(&w, fallback.clone()),
+        Some(1),
+        "not the shown address"
+    );
+    assert_eq!(w.receive_address().index, 2);
+    forget_marks(&w, 1..=2);
+    let next = w.receive_address();
+    assert_eq!(next.index, 2, "{next:?}");
+    assert_ne!(next.address, fallback);
+}
+
+/// C-funding F13 across a restart: every mark the account kept in memory
+/// is lost, yet the next fallback is above every address handed out before
+/// it (the highest is recorded durably), and Receive keeps showing the
+/// address it showed. Mutants: no mark below the highest handed out; no
+/// record of it.
+#[test]
+fn a_fallback_after_a_restart_is_above_every_address_handed_out() {
+    let w = World::new();
+    assert_eq!(w.receive_address().index, 0);
+    let first = published_fallback(&w);
+    assert_eq!(index_of(&w, first.clone()), Some(1));
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 2);
+    forget_marks(&w, 0..=2);
+    assert_eq!(w.receive_address(), shown, "Receive's address stays");
+    let second = published_fallback(&w);
+    assert_eq!(index_of(&w, second.clone()), Some(3), "above the shown 2");
+    assert_ne!(second, first);
+    let after = w.receive_address();
+    assert_eq!(after.index, 4, "{after:?}");
+    forget_marks(&w, 0..=4);
+    assert_eq!(w.receive_address(), after, "stable after a second restart");
+}
+
+/// C-funding F13: an unreadable record of what was handed out refuses
+/// every hand-out instead of maybe handing out an address shown before.
+/// Mutants: read either record as absent.
+#[test]
+fn an_unreadable_hand_out_record_refuses_every_hand_out() {
+    for key in [
+        dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT.to_owned(),
+        dw_appdb::dp_registration_fallback("unreadable"),
+    ] {
+        let w = World::new();
+        w.call(move |_, s, _, id| async move {
+            let scope = dw_appdb::local_scope(&id.to_string());
+            s.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some("x")))
+                .await
+                .map_err(PlatformError::from)?;
+            Ok(())
+        })
+        .unwrap();
+        let refused = w
+            .call(|net, s, wallet, _| async move {
+                let network = s.vault.network();
+                let receive = receive_address(&*net, &s, &wallet, network).await;
+                let fallback = fallback_address(&s, &wallet, network).await;
+                Ok([
+                    receive.err().map(|e| format!("{e:?}")),
+                    fallback.err().map(|e| format!("{e:?}")),
+                ])
+            })
+            .unwrap();
+        for e in refused {
+            assert!(
+                e.as_deref().is_some_and(|e| e.contains("unreadable")),
+                "{e:?}"
+            );
+        }
+    }
+}
+
+/// A reload that has derived the payment account only up to `last`, with
+/// no address marked: what the account holds before a sync restores it.
+fn reload_derived_to(w: &World, last: u32) {
+    w.call(move |_, _, wallet, _| async move {
+        use key_wallet::managed_account::address_pool::AddressState;
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm.get_wallet_info_mut(&wallet.wallet_id()).unwrap();
+        let pool = &mut (info.core_wallet)
+            .platform_payment_managed_account_at_index_mut(0)
+            .unwrap()
+            .addresses;
+        let dropped: Vec<u32> = pool.addresses.range(last + 1..).map(|(i, _)| *i).collect();
+        for i in dropped {
+            let gone = pool.addresses.remove(&i).unwrap();
+            pool.address_index.remove(&gone.address);
+            pool.script_pubkey_index.remove(&gone.script_pubkey);
+        }
+        for info in pool.addresses.values_mut() {
+            info.state = AddressState::Available;
+        }
+        pool.used_indices.clear();
+        pool.highest_used = None;
+        pool.highest_generated = Some(last);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// C-funding F13: a fallback and the addresses handed out below the
+/// highest are skipped even before a reload derives them again. Mutant:
+/// mark them without deriving them first.
+#[test]
+fn a_fallback_not_derived_again_after_a_reload_is_still_skipped() {
+    let w = World::new();
+    assert_eq!(w.receive_address().index, 0);
+    let fallback = published_fallback(&w);
+    assert_eq!(index_of(&w, fallback.clone()), Some(1));
+    let shown = w.receive_address();
+    assert_eq!(shown.index, 2);
+    reload_derived_to(&w, 0);
+    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
+    assert_eq!(w.receive_address(), shown, "never the fallback");
+    let next = published_fallback(&w);
+    assert_eq!(index_of(&w, next), Some(3));
+}
+
+/// C-funding F13 (bot r4702054059): after a reload that derived only index
+/// 0, the activity read still asks for every recorded fallback, so a
+/// refund there is read as the refund it is. Mutant: activity reads
+/// without deriving them first.
+#[test]
+fn the_activity_read_covers_every_recorded_fallback_after_a_reload() {
+    let w = World::new();
+    let fallback = published_fallback(&w);
+    reload_derived_to(&w, 0);
+    assert_eq!(index_of(&w, fallback.clone()), None, "not derived");
+    w.activity();
+    let read = w.net.read_sets.lock().unwrap().last().cloned();
+    assert!(read.unwrap().contains(&parse(&fallback).unwrap()));
+}
+
+/// C-funding F13 (bot r4699213569): a fallback no row names and no create
+/// published never left this install, so the next registration is given
+/// it again: fifteen starts dropped before their create was sent take two
+/// indices in all, and Receive stays where the first left it. Mutant: never
+/// give one again.
+#[test]
+fn starts_dropped_before_dispatch_take_no_more_indices() {
+    let w = World::new();
+    let first = new_fallback(&w);
+    assert_eq!(index_of(&w, first.clone()), Some(1));
+    for _ in 0..15 {
+        assert_eq!(new_fallback(&w), first);
+    }
+    assert_eq!(w.receive_address().index, 2);
+}
+
+/// C-funding F13: a fallback a create published, or a row still names, is
+/// never given again. Mutants: give a published one again; a named one.
+#[test]
+fn a_published_or_named_fallback_is_never_given_again() {
+    let w = World::new();
+    let published = published_fallback(&w);
+    let named = new_fallback(&w);
+    assert_ne!(named, published);
+    assert_eq!(index_of(&w, named.clone()), Some(3));
+    insert_shielded_row(&w, &named);
+    let third = new_fallback(&w);
+    assert_eq!(index_of(&w, third.clone()), Some(5));
+    assert!(third != published && third != named);
 }
 
 /// Q3: a P2SH Platform address of this network is a recipient, as a
@@ -3244,7 +3526,7 @@ fn sends_and_receive_need_address_funds_and_platform() {
     assert_eq!(
         off(w
             .call(|net, s, wallet, _| async move {
-                Ok(receive_address(&*net, &wallet, s.vault.network()).await?)
+                Ok(receive_address(&*net, &s, &wallet, s.vault.network()).await?)
             })
             .map(drop)),
         "platform_addresses"
@@ -4187,3 +4469,119 @@ mod register;
 
 #[path = "platform_mainnet_flag_tests.rs"]
 mod mainnet_flag;
+
+// ---- C-funding C4b-2: a Shielded-funded registration's refund ----
+
+impl World {
+    fn height(&self) -> u64 {
+        self.net.height.load(Ordering::SeqCst)
+    }
+
+    fn activity_height(&self) -> u64 {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        (self.f.engine)
+            .block_on(async move { activity_height(&s, id).await })
+            .unwrap()
+    }
+
+    /// The refund record of create `n` to `to`, at most `cap`, the create
+    /// named at activity height `named_at` and proved executed by
+    /// `executed_by`.
+    fn arm_refund(&self, n: u8, to: PlatformAddress, cap: u64, heights: (u64, u64)) {
+        let (s, id) = (Arc::clone(&self.f.s), self.f.wallet);
+        let to = bech32m(&to, Network::Regtest);
+        (self.f.engine)
+            .block_on(async move {
+                arm_registration_refund(
+                    &s,
+                    id,
+                    ([n; 32], [n.wrapping_add(1); 32]),
+                    (7, to, cap),
+                    heights,
+                )
+                .await
+            })
+            .unwrap();
+    }
+
+    fn refund_rows(&self) -> Vec<PlatformActivity> {
+        (self.activity().into_iter())
+            .filter(|r| r.kind == PlatformActivityKind::RegistrationRefund)
+            .collect()
+    }
+}
+
+/// F13: the refund of a create Platform ran as its fallback, armed after
+/// the proof and before any read showed it, is one `registrationRefund`
+/// row of exactly what the first read showed, no `incoming` row; once read,
+/// the next rise of the address is `incoming`, and nothing is listed
+/// before the read. Arming again changes nothing.
+#[test]
+fn a_registration_refund_is_one_row_of_what_the_read_shows() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.net.fund(a, DASH);
+    let executed_by = w.height();
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    let activity = w.activity();
+    assert_eq!(incoming_total(&activity), 0);
+    let rows: Vec<_> = (activity.iter())
+        .filter(|r| r.kind == PlatformActivityKind::RegistrationRefund)
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].state, rows[0].credits, rows[0].may_land),
+        (PlatformActivityState::Done, DASH, false)
+    );
+    assert_eq!(rows[0].address, Some(bech32m(&a, Network::Regtest)));
+    w.net.fund(a, DASH);
+    assert_eq!(
+        incoming_total(&w.activity()),
+        DASH,
+        "the next rise is incoming"
+    );
+    assert_eq!(w.refund_rows()[0].credits, DASH);
+}
+
+/// F13: a read between the create's execution and the record's arming
+/// showed the refund as `incoming`: the record claims nothing and lists no
+/// row, and a later rise stays `incoming`. Mutant: absorb whatever the
+/// baseline.
+#[test]
+fn a_read_between_execution_and_arming_absorbs_nothing() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.net.fund(a, DASH);
+    let executed_by = w.height();
+    assert_eq!(incoming_total(&w.activity()), DASH);
+    w.arm_refund(9, a, 2 * DASH, (named_at, executed_by));
+    assert!(w.refund_rows().is_empty());
+    w.net.fund(a, DASH);
+    assert_eq!(incoming_total(&w.activity()), 2 * DASH);
+    assert!(w.refund_rows().is_empty());
+}
+
+/// F13: an unshield's pending record and a refund record on one address
+/// share one rise in arming order, the unshield's first, no credit counted
+/// twice and none `incoming`.
+#[test]
+fn two_armed_records_absorb_in_arming_order() {
+    let w = World::new();
+    let a = w.address(0);
+    assert!(w.activity().is_empty());
+    let named_at = w.activity_height();
+    w.arm_unshield(1, a, DASH).unwrap();
+    w.net.fund(a, 2 * DASH);
+    w.arm_refund(9, a, 2 * DASH, (named_at, w.height()));
+    let activity = w.activity();
+    assert_eq!(incoming_total(&activity), 0);
+    let unshield = w.shielded_row(1);
+    let refund = w.refund_rows();
+    assert_eq!(unshield.credits, DASH, "the unshield's first");
+    assert_eq!((refund.len(), refund[0].credits), (1, DASH));
+}

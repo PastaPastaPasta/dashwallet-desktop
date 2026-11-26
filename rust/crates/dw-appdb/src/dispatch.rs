@@ -365,7 +365,7 @@ const MIGRATE_V9: &str = "UPDATE meta SET v = 10 WHERE k = 'schema';";
 /// gating, reserving nothing) or settled. `disposition_kind` and
 /// `disposition_reason` are the library's stored strings, in the
 /// combinations it decodes; no combination reads as unknown to the CHECK.
-/// `identity_id` is a top-up's identity. A note's `spent` is set once a
+/// `identity_id` is a top-up's identity, or the one a create makes. A note's `spent` is set once a
 /// proved scan or result shows it spent. `IF NOT EXISTS`, as
 /// `shielded_redrive`.
 const SHIELDED_ARTIFACT: &str = "
@@ -623,7 +623,7 @@ pub struct NewShieldedArtifact {
     /// Required for a dispatched one, as is `anchor`.
     pub kind: Option<ArtifactKind>,
     pub anchor: Option<[u8; 32]>,
-    /// A top-up's identity.
+    /// A top-up's identity, or the one a create makes.
     pub identity_id: Option<[u8; 32]>,
     /// The nullifiers of the wallet's own notes it spends.
     pub selected: Vec<[u8; 32]>,
@@ -1849,14 +1849,17 @@ impl DispatchJournal {
                 "a dispatched shielded artifact has no kind or no anchor".into(),
             ));
         }
-        let top_up = artifact.kind == Some(ArtifactKind::IdentityTopUp);
-        if (artifact.identity_id.is_some() && !top_up)
-            || (top_up
+        let names = matches!(
+            artifact.kind,
+            Some(ArtifactKind::IdentityTopUp | ArtifactKind::IdentityCreate)
+        );
+        if (artifact.identity_id.is_some() && !names)
+            || (names
                 && artifact.origin == ArtifactOrigin::Dispatched
                 && artifact.identity_id.is_none())
         {
             return Err(AppDbError::Corrupt(
-                "only a top-up names an identity, and a dispatched one must".into(),
+                "only a top-up or a create names an identity, and a dispatched one must".into(),
             ));
         }
         let status = match artifact.origin {
@@ -5032,6 +5035,34 @@ mod tests {
             (Some(ArtifactKind::IdentityTopUp), Some([7; 32]))
         );
         assert!(!j.record_shielded_artifact(&W, &top_up, 2).unwrap());
+    }
+
+    /// A create keeps the identity its notes make (C-funding F11); a
+    /// dispatched one without it, and a transfer naming one, are refused.
+    #[test]
+    fn a_create_keeps_its_identity() {
+        let j = journal();
+        let create = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            identity_id: Some([8; 32]),
+            ..dispatched([2; 32], [6; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &create, 1).unwrap());
+        let a = &j.shielded_artifacts(&W).unwrap()[0];
+        assert_eq!(
+            (a.kind, a.identity_id),
+            (Some(ArtifactKind::IdentityCreate), Some([8; 32]))
+        );
+        let nameless = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityCreate),
+            ..dispatched([3; 32], [7; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &nameless, 2).is_err());
+        let transfer = NewShieldedArtifact {
+            identity_id: Some([9; 32]),
+            ..dispatched([4; 32], [8; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &transfer, 3).is_err());
     }
 
     /// A registered artifact holds its wallet and reserves its notes.

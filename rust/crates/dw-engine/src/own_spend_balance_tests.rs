@@ -3070,7 +3070,7 @@ pub(super) fn reconciled(engine: &Engine, session: &NetworkSession, id: WalletId
 }
 
 /// Waits for every reconcile the session's events started.
-fn reconciles_done(engine: &Engine, session: &NetworkSession) {
+pub(super) fn reconciles_done(engine: &Engine, session: &NetworkSession) {
     loop {
         let started = std::mem::take(&mut *session.hub.reconciles.lock().unwrap());
         if started.is_empty() {

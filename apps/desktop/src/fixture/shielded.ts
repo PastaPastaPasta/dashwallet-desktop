@@ -88,6 +88,9 @@ export interface ShieldedWorld {
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** The pool's proved note count a registration's readiness reads (C-funding F16); unset: 120
+   * while `poolTooSmall`, else unknown, which passes. */
+  poolNotes?: number;
   /** The notes are resting until then (Unix seconds; C-funding F17): a registration cannot use
    * them yet. Unset: rested. */
   restingUntil?: number;
@@ -529,7 +532,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
+    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
@@ -548,7 +551,7 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const s = ctx.world.pending.shielded!;
     // As the engine: the grant is redeemed before Platform's pool floor refuses, so a floor refusal uses it up.
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
+    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null });
     // Until the From Shielded attribution lands, the address's rise reads as an incoming row.
     if (end.state === "done") creditPlatform(p, address, BigInt(credits));

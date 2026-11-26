@@ -5510,6 +5510,38 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-secondary);
 }
 
+/* "Make your username private": a source's note, balance and reason, one line each. */
+.pay-with-source .topup-choice-buys > span {
+  display: block;
+}
+
+/* The tip shown instead of the sources while the Shielded balance cannot pay; the pool's warning in
+   the warning color. */
+.privacy-tip {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-neutral-tint);
+}
+
+.privacy-tip[data-tone="warning"] {
+  background: var(--dw-role-warning-tint);
+}
+
+.privacy-tip-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.privacy-tip[data-tone="warning"] .privacy-tip-title {
+  color: var(--dw-role-warning);
+}
+
+.privacy-tip-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
+}
+
 .topup-title {
   display: flex;
   align-items: center;
