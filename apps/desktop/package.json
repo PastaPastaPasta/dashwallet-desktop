@@ -19,6 +19,7 @@
     "e2e:tauri:onboarding": "bash scripts/e2e-tauri-onboarding.sh",
     "e2e:tauri:tools": "bash scripts/e2e-tauri-tools.sh",
     "e2e:tauri:settings": "bash scripts/e2e-tauri-settings.sh",
+    "e2e:tauri:atspi": "DW_E2E_SCRIPT=e2e-tauri/atspi-walk.ts bash scripts/e2e-tauri.sh",
     "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {

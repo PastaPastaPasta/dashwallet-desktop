@@ -4,13 +4,14 @@
 // subtract fee, note, coin control. Review opens U-03's confirm sheet with the contact, which can
 // accept their request and pay in one step; U-03's result follows.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
+import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { useLockStatus, useWallets } from "../../api/queries";
+import { keys, useLockStatus, usePlatformActivity, usePoolBalances, useShieldedStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
@@ -18,7 +19,7 @@ import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
 import { useT } from "../../i18n";
-import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
+import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS, shortId } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
@@ -27,6 +28,9 @@ import { CoinControl } from "./CoinControl";
 import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
+import { BalanceAmount, BalancePaySheet, FromStep, useBalancePay } from "./PayFromBalance";
+import { chosenReason, fromRows, liveSources, type PaySource } from "./fromBalance";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
@@ -326,7 +330,7 @@ function ContactForm({
     hasKeys,
     accepted,
   });
-  const held = blocks(banner);
+  const lockHeld = blocks(banner);
   // What Check again found (D7), kept once the lock it resolved (and the banner) went, but not
   // under a new lock: it spoke of another payment.
   const resolve = useResolveLock(walletId, identity, contact);
@@ -359,11 +363,43 @@ function ContactForm({
   const backToForm = () => (reviewButton.current?.disabled === false ? reviewButton.current : amountField.current);
 
   const { duffs } = amount;
+  // "From" (C-funding D-C5, P16): the Dash wallet each time the form opens, never remembered.
+  const discreet = useUi((s) => s.discreet);
+  const pools = usePoolBalances(walletId);
+  const spendsOff = shieldedSpendsOff(useShieldedStatus(walletId).data);
+  const [chosen, setChosen] = useState<PaySource>("core");
+  const coreAvailable = useAvailable(walletId, advanced, sheets.held);
+  const rows = fromRows({ coreDuffs: coreAvailable, shielded: pools.shielded, platform: pools.platform, amount: (d) => shown.withUnit(d), discreet, acceptsToo: acceptsToo(detail.data, accepted), shieldedHold: pools.shieldedHold, live: liveSources(network.kind), shieldedSpendsOff: spendsOff });
+  // The choice stays the user's: a source that can no longer pay holds Review with its reason.
+  const source = chosen;
+  const activity = usePlatformActivity(walletId);
+  const basis = `${pools.platform}|${activity.dataUpdatedAt}`;
+  const balance = useBalancePay({ walletId, identity, contact, source, duffs, settled: amount.settled && !amount.fiat.error, shown, blocked: chosenReason(rows, chosen), basis });
+  // A payment whose reply was lost holds the contact until a later read settles it (P6).
+  const [lostFound, setLostFound] = useState<{ text: string; resolved: boolean } | null>(null);
+  const { flow } = balance;
+  const settleLost = useCallback(async () => {
+    const r = await flow.recheck();
+    if (r) setLostFound(resolveText(r));
+  }, [flow]);
+  const lost = flow.unresolved !== null;
+  useEffect(() => {
+    if (lost) void settleLost();
+  }, [lost, settleLost]);
+  const lostHeld = !lockHeld && lost;
+  const held = lockHeld || lostHeld;
+  const shownFound = found ?? lostFound;
+  const shownBanner: Banner | null = lostHeld ? { kind: "paymentLock", text: t("pay.contact.banner.paymentLockPlatform"), txid: "", source: "platform" } : banner;
+  const recheck = () => {
+    setLostFound(null);
+    void settleLost();
+    void detail.refetch();
+  };
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
-  const available = useAvailable(walletId, advanced, sheets.held);
-  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held, shown);
+  const available = coreAvailable;
+  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held || balance.active, shown);
   const ready = estimated && amount.settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
@@ -382,7 +418,8 @@ function ContactForm({
         aria-label={t("pay.contact.form", { name: payee.name })}
         onSubmit={(e) => {
           e.preventDefault();
-          review();
+          if (balance.active) balance.review();
+          else review();
         }}
       >
         <section className="pay-card card-l1 pay-payee-card" data-testid="pay-payee">
@@ -399,9 +436,25 @@ function ContactForm({
             {t("pay.contact.change")}
           </DashButton>
         </section>
-        {banner && <PayBanner banner={banner} contact={contact} checking={resolve.isPending} onCheck={check} retry={() => void detail.refetch()} />}
-        <ActionLine ok={found?.resolved ?? true} text={found?.text ?? null} testId="pay-lock-resolve" />
+        {shownBanner && <PayBanner banner={shownBanner} contact={contact} checking={lostHeld ? flow.checking : resolve.isPending} onCheck={lostHeld ? recheck : check} retry={() => void detail.refetch()} />}
+        <ActionLine ok={shownFound?.resolved ?? true} text={shownFound?.text ?? null} testId="pay-lock-resolve" />
         {!held && (
+          <section className="pay-card card-l1">
+            <FromStep rows={rows} source={source} onChange={setChosen} />
+          </section>
+        )}
+        {!held && balance.active && (
+          <>
+            <section className="pay-card card-l1">
+              <BalanceAmount shown={shown} amount={amount} inputRef={amountField} />
+              <FormField label={t("pay.contact.note")} hint={t("pay.contact.noteHint")}>
+                {(p) => <input {...p} data-testid="pay-note" value={note} autoComplete="off" onChange={(e) => setNote(e.target.value)} />}
+              </FormField>
+            </section>
+            <PayFooter form="contact" problem={balance.problem} fee={balance.fee} shown={shown} ready={balance.ready} incomplete={balance.incomplete} reviewRef={reviewButton} />
+          </>
+        )}
+        {!held && !balance.active && (
           <>
             <section className="pay-card card-l1">
               <AmountFields
@@ -447,6 +500,34 @@ function ContactForm({
           }}
         />
       )}
+      {(balance.confirmed !== null || balance.flow.step !== "confirm") && (
+        <BalancePaySheet
+          flow={balance.flow}
+          quote={balance.confirmed}
+          name={payee.name}
+          sub={payee.sub ?? shortId(payee.contact)}
+          before={activity.data}
+          note={note.trim() || null}
+          shown={shown}
+          onClose={(paid) => {
+            const unknown = balance.flow.outcome?.state === "pending" ? balance.flow.outcome.reference : null;
+            balance.close();
+            // The contact is locked from here, whatever the next read takes (P6).
+            if (unknown !== null)
+              client.setQueryData<ContactDetailInfo>([...keys.contactsAll(walletId), "detail", identity, contact], (d) =>
+                d && !d.paymentLock ? { ...d, paymentLock: { txid: unknown, since: Math.floor(Date.now() / 1000), source: "platform", reference: unknown } } : d,
+              );
+            if (paid) {
+              amount.setText("");
+              setNote("");
+              // The next payment opens on the Dash wallet again (P16).
+              setChosen("core");
+            }
+            refreshAfter(client, walletId, identity, ["contacts"]);
+            backToForm()?.focus();
+          }}
+        />
+      )}
       {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
@@ -486,9 +567,12 @@ function PayBanner({ banner, contact, checking, onCheck, retry }: { banner: Bann
     case "paymentLock":
       action = (
         <span className="add-contact-actions">
-          <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
-            {t("pay.contact.showTransaction")}
-          </DashButton>
+          {/* A payout's reference is no Core transaction: there is none to show yet. */}
+          {banner.source === "core" && (
+            <DashButton key="show" variant="tintedGray" size="small" data-testid="pay-banner-show" onClick={() => navigate("activity", { detail: banner.txid })}>
+              {t("pay.contact.showTransaction")}
+            </DashButton>
+          )}
           <DashButton key="check" variant="tintedBlue" size="small" data-testid="pay-banner-check" disabled={checking} onClick={onCheck}>
             {checking ? t("pay.contact.checking") : t("pay.contact.checkAgain")}
           </DashButton>

@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { fixtureUrl, fontsReady, trackPageErrors } from "./helpers";
 import { armRecorder, expectSaid, heardBy, liveRegion, liveState } from "./liveRegion";
 
@@ -127,6 +128,7 @@ async function toConfirmAndPay(page: Page, label: string) {
 
   await tabTo(page, page.getByTestId("join-create"), { back: true });
   await page.keyboard.press("Enter");
+  await dashWalletByKeyboard(page);
   // Step 1: the field has focus; availability is a live status as typed.
   const field = page.getByTestId("registration-name-field");
   await expect(field).toBeFocused();
@@ -228,6 +230,65 @@ test("keyboard only: send a contact request", async ({ page }) => {
   await expect(page.getByTestId("add-contact")).toHaveCount(0);
   await expect(addButton).toBeFocused();
   await expect(page.getByTestId("contacts-group-pending").locator(".contact-row-name")).toContainText(["Mallory"]);
+  expect(errors).toEqual([]);
+});
+
+test("keyboard only: Show Request in Add contact moves focus to the sender's detail (#407)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  await goTo(page, "contacts");
+  await expect(page.getByTestId("page-contacts")).toBeVisible();
+  await tabTo(page, page.getByTestId("contacts-add"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("searchbox", { name: "Search username" })).toBeFocused();
+  await page.keyboard.type("grace");
+  await tabTo(page, namedRow(page, "add-contact-hit", "Grace Hopper"));
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("add-contact-line")).toHaveText("They sent you a contact request.");
+  const show = page.getByTestId("add-contact-show");
+  await expect(show).toHaveText("Show Request");
+  await tabTo(page, show);
+  await page.keyboard.press("Enter");
+
+  // Add contact closes with the button that had focus; the sender's detail takes it at its name.
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
+  const heading = page.getByTestId("contact-detail").getByRole("heading", { level: 2 });
+  await expect(heading).toHaveText("Grace Hopper");
+  await expect.poll(async () => ((await heading.evaluate((el) => el === document.activeElement)) ? "the detail heading" : await focusName(page))).toBe("the detail heading");
+  await expectAxeClean(page);
+  expect(errors).toEqual([]);
+});
+
+test("Show Request before the contact list has loaded: the sender's detail takes focus once it shows (#407)", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  // The toolbar's own reads of the list (the bell's requests) are done first, so the next read
+  // held is the Contacts page's.
+  const listReads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_contacts").length);
+  await expect(page.getByTestId("toolbar-bell-badge")).toBeVisible();
+  let reads = -1;
+  await expect.poll(async () => {
+    const was = reads;
+    reads = await listReads();
+    return reads === was;
+  }, { intervals: [500] }).toBe(true);
+  // The list's next read answers only when released: the link's card offers Show Request (from its
+  // own eligibility read) while the list, and so the sender's detail, is not there yet.
+  await page.evaluate(() => {
+    const w = window as unknown as { __release?: () => void };
+    w.__release = window.__dwFixture!.hold("dashpay_contacts");
+  });
+  await page.evaluate((identity) => window.__dwFixture!.deliverLinks([{ kind: "addContact", identity, username: "grace" }]), IDENTITY.grace);
+  const show = page.getByTestId("add-contact-show");
+  await expect(show).toHaveText("Show Request");
+  await tabTo(page, show);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
+  await rendered(page);
+  await expect(page.getByTestId("contact-detail")).toHaveCount(0);
+
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  const heading = page.getByTestId("contact-detail").getByRole("heading", { level: 2 });
+  await expect(heading).toHaveText("Grace Hopper");
+  await expect.poll(async () => ((await heading.evaluate((el) => el === document.activeElement)) ? "the detail heading" : await focusName(page))).toBe("the detail heading");
   expect(errors).toEqual([]);
 });
 
@@ -614,12 +675,27 @@ test("keyboard only: while the wedge's OK runs after its passphrase, focus stays
   expect(errors).toEqual([]);
 });
 
+/** "Make your username private" by keyboard: the Dash wallet row checked with Space, Continue with
+ * Enter; nothing is chosen until then. */
+async function dashWalletByKeyboard(page: Page) {
+  const core = page.getByTestId("pay-with-core").getByRole("radio");
+  await expect(page.getByTestId("registration-next")).toBeDisabled();
+  // One Tab stop for the group, its first row (Shielded when it can pay); the arrows choose.
+  const radios = page.getByTestId("registration-pay-with").getByRole("radio");
+  await tabTo(page, radios.first());
+  await page.keyboard.press((await radios.count()) > 1 ? "ArrowDown" : "Space");
+  await expect(core).toBeChecked();
+  await expect(core).toBeFocused();
+  await page.keyboard.press("Enter");
+}
+
 /** Registers "alice-77" with the keyboard from `dashpay-no-identity`: the progress screen, its
  * Home button focused, and the welcome's status region recorded. */
 async function toProgressHome(page: Page) {
   await goTo(page, "joinDashPay");
   await tabTo(page, page.getByTestId("join-create"));
   await page.keyboard.press("Enter");
+  await dashWalletByKeyboard(page);
   await expect(page.getByTestId("registration-name-field")).toBeFocused();
   await page.keyboard.type("alice-77");
   await expect(page.getByTestId("registration-availability")).toHaveText("Username available");

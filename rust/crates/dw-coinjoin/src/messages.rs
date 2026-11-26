@@ -409,6 +409,44 @@ impl BroadcastTx {
     }
 }
 
+/// `inv`: inventory announcements (`CInv` vector, `src/protocol.h`).
+pub const INV: &str = "inv";
+/// `getdata`: inventory requests.
+pub const GETDATA: &str = "getdata";
+/// `MSG_DSQ` (`src/protocol.h`): a `dsq` announced by hash to peers at
+/// `DSQ_INV_VERSION` (70234) or later.
+pub const MSG_DSQ: u32 = 32;
+/// `MAX_INV_SZ` (`src/net_processing.cpp`).
+pub const MAX_INV_SZ: usize = 50_000;
+
+/// The `MSG_DSQ` hashes of an `inv`.
+pub fn decode_dsq_inv(bytes: &[u8]) -> Result<Vec<[u8; 32]>, MessageError> {
+    let r = &mut &bytes[..];
+    let entries: Vec<(u32, [u8; 32])> = read_capped_vec(INV, r, MAX_INV_SZ)?;
+    if !r.is_empty() {
+        return Err(MessageError::Malformed {
+            command: INV,
+            detail: "trailing bytes".into(),
+        });
+    }
+    Ok(entries
+        .into_iter()
+        .filter(|(kind, _)| *kind == MSG_DSQ)
+        .map(|(_, hash)| hash)
+        .collect())
+}
+
+/// A `getdata` (or `inv`) for `dsq` hashes.
+pub fn encode_dsq_inventory(hashes: &[[u8; 32]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    to_bytes(&encode::VarInt(hashes.len() as u64), &mut out);
+    for h in hashes {
+        to_bytes(&MSG_DSQ, &mut out);
+        out.extend_from_slice(h);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +560,23 @@ mod tests {
         assert_eq!(FinalTx::decode(&f.encode()).unwrap(), f);
         let signed = encode_signed_inputs(&t.input);
         assert_eq!(decode_signed_inputs(&signed).unwrap(), t.input);
+    }
+
+    #[test]
+    fn dsq_inventory_keeps_only_dsq_entries() {
+        let mut out = Vec::new();
+        to_bytes(&encode::VarInt(3), &mut out);
+        for (kind, seed) in [(1u32, 1u8), (MSG_DSQ, 2), (MSG_DSQ, 3)] {
+            to_bytes(&kind, &mut out);
+            out.extend_from_slice(&[seed; 32]);
+        }
+        assert_eq!(decode_dsq_inv(&out).unwrap(), vec![[2; 32], [3; 32]]);
+        assert_eq!(
+            decode_dsq_inv(&encode_dsq_inventory(&[[2; 32], [3; 32]])).unwrap(),
+            vec![[2; 32], [3; 32]]
+        );
+        out.push(0);
+        assert!(decode_dsq_inv(&out).is_err());
     }
 
     #[test]

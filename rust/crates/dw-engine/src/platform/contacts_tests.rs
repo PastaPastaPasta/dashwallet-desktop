@@ -1696,3 +1696,6 @@ fn the_testnet_fixture_reads_its_established_contact() {
     }
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+#[cfg(unix)]
+mod kill9;

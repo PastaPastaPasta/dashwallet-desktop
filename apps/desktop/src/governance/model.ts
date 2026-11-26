@@ -444,23 +444,22 @@ export function voteRows(nodes: VotingMasternode[], now: number, locale?: string
     const v = seenVote(n);
     const base = { proTxHash: n.proTxHash, name: nodeName(n, names), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : t("masternodes.governance.node.none") };
     if (!n.valid) return { ...base, sub: t("masternodes.governance.node.banned"), eligible: false, lastSeen: "—" };
+    // `vote` refuses it until the collateral is found (MG-02 D80).
+    if (!n.collateralResolved) return { ...base, sub: rejectedText(COLLATERAL_UNRESOLVED), eligible: false };
     if (v && !v.shared && v.time !== null && now - v.time < VOTE_CHANGE_SECS) {
       const after = formatDate(v.time + VOTE_CHANGE_SECS, locale, HOUR_MINUTE);
       return { ...base, sub: t("masternodes.governance.node.recent", { outcome: outcomeText(v.outcome), ago: ago(v.time, now, locale), time: after }), eligible: false };
     }
-    const index = String(n.keyIndex + 1);
-    const sub =
-      n.keyHolders > 1
-        ? t("masternodes.governance.node.eligibleShared", { index, count: n.keyHolders })
-        : t("masternodes.governance.node.eligible", { index });
+    const custody = n.key.kind === "keychain" ? t("masternodes.governance.node.keychain", { index: n.key.index + 1 }) : t("masternodes.governance.node.added");
+    const sub = n.keyHolders > 1 ? t("masternodes.governance.node.eligibleShared", { custody, count: n.keyHolders }) : custody;
     return { ...base, sub, eligible: true };
   });
 }
 
-/** The outcome a sheet starts with: the last vote seen when every eligible row saw the same one
+/** The outcome a sheet starts with: the last vote seen when every row that can vote saw the same one
  * (§4.25.4), else none. */
 export function presetOutcome(nodes: VotingMasternode[]): VoteOutcomeName | null {
-  const seen = new Set(nodes.filter((n) => n.valid).map((n) => seenVote(n)?.outcome ?? null));
+  const seen = new Set(nodes.filter((n) => n.valid && n.collateralResolved).map((n) => seenVote(n)?.outcome ?? null));
   return seen.size === 1 ? [...seen][0] : null;
 }
 
@@ -472,6 +471,9 @@ export function selectionNote(picked: Pick<NodeRowView, "weight">[]): string {
 
 /** The engine's refusal of a PoSe-banned masternode's vote (`VoteRejection::Banned`, Core's wording). */
 export const BANNED_REJECTION = "masternode_not_found";
+
+/** The engine's refusal of a vote whose masternode's collateral isn't resolved yet (MG-02 D80, MG-05 §5). */
+export const COLLATERAL_UNRESOLVED = "collateral_unresolved";
 
 const REJECTED = messageTable("masternodes.governance.rejected", Object.keys(masternodes.governance.rejected));
 

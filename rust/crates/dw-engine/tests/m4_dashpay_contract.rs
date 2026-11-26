@@ -141,6 +141,9 @@ const IMPLEMENTED: &[&str] = &[
     // C-routes C6a-1: credits to an own Platform address.
     "DashPay.withdraw_to_platform_quote",
     "DashPay.withdraw_to_platform",
+    // C-routes C3a: the top-up from the Platform addresses.
+    "DashPay.top_up_from_platform_quote",
+    "DashPay.top_up_from_platform",
     // Release 0.1 (lane E2): the Platform addresses.
     "DashPay.platform_addresses",
     "DashPay.platform_activity",
@@ -162,6 +165,7 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_shield_quote",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
+    "DashPay.shielded_sync_info",
     "DashPay.shielded_sync",
     "DashPay.shielded_receive_address",
     "DashPay.shield_quote",
@@ -174,15 +178,26 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.shielded_send",
     "DashPay.unshield_quote",
     "DashPay.unshield_to_core",
+    "DashPay.unshield_to_platform_quote",
+    "DashPay.unshield_to_platform",
     "DashPay.shielded_history",
     // 0.2 RECOVERY: unfinished transfers.
     "DashPay.unfinished_transfers",
     "DashPay.finish_transfer",
+    // #402: recovering a partly used transfer to Shielded.
+    "DashPay.recover_transfer_quote",
+    "DashPay.recover_transfer",
+    // 1.0 F24: App Connect sign-ins.
+    "DashPay.app_connect_sheet",
+    "DashPay.app_connect_quote",
+    "DashPay.app_connect_approve",
+    "DashPay.app_connect_retry_send",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
 /// file there must join this list or `NOT_FACADE`.
 const FACADE: &[&str] = &[
+    "app_connect.rs",
     "contacts.rs",
     "credits.rs",
     "dashpay.rs",
@@ -226,23 +241,31 @@ const FACADE: &[&str] = &[
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
 /// with their tests (0.2 recovery), the input-0 planner with its tests
 /// (1.0 C1a-1), the credit transfer to an own Platform address with its
-/// tests (1.0 C6a-1), and the parsers dw-fuzz drives (H-02, `fuzzing`
-/// feature).
+/// tests (1.0 C6a-1), the Shielded-funded identity create (1.0 C4b-2),
+/// the parsers dw-fuzz drives (H-02, `fuzzing` feature), the kill -9
+/// rows' test folders (H-03), and App Connect's network seam, rules and
+/// tests (1.0 F24).
 const NOT_FACADE: &[&str] = &[
+    "app_connect_net.rs",
+    "app_connect_plan.rs",
+    "app_connect_tests.rs",
     "attribution.rs",
     "avatar.rs",
     "avatar_cache.rs",
     "avatar_dhash.rs",
     "avatar_fetch.rs",
     "avatar_image.rs",
+    "avatar_tests",
     "avatar_tests.rs",
     "balances.rs",
     "banner.rs",
     "banner_tests.rs",
     "bringup.rs",
     "contact_names.rs",
+    "contact_payout.rs",
     "contacts_model.rs",
     "contacts_perf_tests.rs",
+    "contacts_tests",
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
@@ -282,20 +305,28 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund.rs",
     "platform_fund_tests.rs",
     "platform_moves.rs",
+    "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
+    "platform_register.rs",
+    "platform_register_tests.rs",
     "platform_shield_tests.rs",
+    "platform_top_up_tests.rs",
     "protocol.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
     "requests.rs",
     "requests_net.rs",
+    "requests_tests",
     "requests_tests.rs",
     "reverify.rs",
     "names_tests.rs",
     "registration_flow.rs",
     "registration_ledger.rs",
+    "registration_platform.rs",
+    "registration_platform_tests.rs",
     "registration_rows.rs",
+    "registration_shielded.rs",
     "registration_tests",
     "registration_tests.rs",
     "runtime.rs",
@@ -306,13 +337,18 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_disposition_tests.rs",
+    "shielded_payout.rs",
     "shielded_pool.rs",
+    "shielded_release.rs",
+    "shielded_release_tests.rs",
+    "shielded_status_lock_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",
     "startup_status.rs",
     "status.rs",
     "topup.rs",
+    "topup_tests",
     "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",
@@ -320,6 +356,8 @@ const NOT_FACADE: &[&str] = &[
     "unfinished_funds.rs",
     "unfinished_locks.rs",
     "unfinished_locks_tests.rs",
+    "unfinished_remainder.rs",
+    "unfinished_remainder_tests.rs",
     "unfinished_shields.rs",
     "users.rs",
     "users_tests.rs",
@@ -878,7 +916,11 @@ fn contract_row(name: &str) -> Vec<String> {
 fn is_wrapper(v: &syn::Variant) -> bool {
     match &v.fields {
         syn::Fields::Unnamed(u) if u.unnamed.len() == 1 => {
-            tidy(&u.unnamed[0].ty).ends_with("Error")
+            let ty = tidy(&u.unnamed[0].ty);
+            ty.strip_prefix("Box<")
+                .and_then(|t| t.strip_suffix('>'))
+                .unwrap_or(&ty)
+                .ends_with("Error")
         }
         _ => false,
     }
@@ -1051,6 +1093,8 @@ fn error_codes_match_the_contract() {
                 ready_at: None,
             },
             RegistrationError::QuoteChanged,
+            RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
         ],
         RegistrationError::code,
     );
@@ -1087,6 +1131,32 @@ fn error_codes_match_the_contract() {
     );
     check_domain(
         &enums,
+        "ConnectError",
+        &[
+            ConnectError::Network,
+            ConnectError::MainnetOff,
+            ConnectError::Unsupported,
+            ConnectError::Invalid,
+            ConnectError::Stale,
+            ConnectError::Protocol,
+            ConnectError::NoIdentity,
+            ConnectError::Hint,
+            ConnectError::Owner,
+            ConnectError::Answered,
+            ConnectError::Credits {
+                needed: 0,
+                available: 0,
+            },
+            ConnectError::PlanChanged,
+            ConnectError::SendFailed,
+            ConnectError::Failed {
+                failure: ConnectFailure::KeyConflict,
+            },
+        ],
+        ConnectError::code,
+    );
+    check_domain(
+        &enums,
         "InvitationError",
         &[
             InvitationError::Invalid,
@@ -1116,7 +1186,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            CreditsError::BelowMinimum { min: 0 },
+            CreditsError::BelowMinimum { min: 0, max: None },
             CreditsError::CoinsLocked,
             CreditsError::TopUpPending {
                 txid: String::new(),
@@ -1138,6 +1208,8 @@ fn error_codes_match_the_contract() {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::PreflightRefused,
+            CreditsError::RulesUnsupported,
         ],
         CreditsError::code,
     );
@@ -1161,7 +1233,7 @@ fn error_codes_match_the_contract() {
                 needed: 0,
                 available: 0,
             },
-            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::BelowMinimum { min: 0, max: None },
             ShieldedError::CoinsLocked,
             ShieldedError::ShieldPending { txid: s() },
             ShieldedError::TooManyInputs { inputs: 0, max: 0 },
@@ -1182,6 +1254,7 @@ fn error_codes_match_the_contract() {
 
     let mut checked = [
         "AvatarError",
+        "ConnectError",
         "ContactError",
         "CreditsError",
         "IdentityError",
@@ -1319,7 +1392,8 @@ as_platform_via_accessor!(
     InvitationError,
     AvatarError,
     CreditsError,
-    ShieldedError
+    ShieldedError,
+    ConnectError
 );
 
 #[derive(Default)]
@@ -1621,6 +1695,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.withdraw_to_platform(s(), s(), WithdrawAmount::All, s())
                 .await
                 .map(drop),
+            // C3a's.
+            dp.top_up_from_platform_quote(s(), WithdrawAmount::All)
+                .await
+                .map(drop),
+            dp.top_up_from_platform(s(), WithdrawAmount::All, None, s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
@@ -1632,7 +1713,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.platform_activity().await.map(drop),
             dp.sync_platform_addresses().await.map(drop),
             dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
-            dp.move_to_core(WithdrawAmount::All, s(), s())
+            dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)
@@ -1644,6 +1725,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         // 0.1 E1: shielded funds refuse an unknown wallet.
         for refused in [
             dp.shielded_status().await.map(drop),
+            dp.shielded_sync_info().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
             dp.shield_quote(FundAmount::Duffs { duffs: 1 })
@@ -1660,6 +1742,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
             dp.unshield_quote(1, None).await.map(drop),
             dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.unshield_to_platform_quote(1, None).await.map(drop),
+            dp.unshield_to_platform(1, None, s(), false).await.map(drop),
             dp.shielded_history(0, 10).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
@@ -1673,6 +1757,43 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.finish_transfer(LockKindId::PlatformAddress, s(), 0, s())
                 .await
                 .map(drop),
+            dp.recover_transfer_quote(s(), 0).await.map(drop),
+            dp.recover_transfer(s(), 0, s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 1.0 F24: App Connect refuses an unknown wallet.
+        let link = || dw_uri::connect::ConnectUri {
+            carrier: dw_uri::connect::Carrier::DashPayConnect,
+            network: dw_uri::connect::NetworkSel::Devnet,
+            request: dw_uri::connect::AppConnectRequest {
+                app_eph_pub: [2; 33],
+                app_id: [1; 32],
+                label: s(),
+                identity_hint: None,
+                auth_bindings: Vec::new(),
+                connection_id: None,
+                enc_bindings: Vec::new(),
+                renew: false,
+                created_at_ms: 0,
+            },
+            callback: None,
+        };
+        let choice = || ConnectChoice {
+            identity: s(),
+            selection: vec![0],
+            terms: ConnectTerms {
+                funding_limit: 1,
+                expires_at_ms: 0,
+            },
+        };
+        for refused in [
+            dp.app_connect_sheet(link()).await.map(drop),
+            dp.app_connect_quote(link(), choice()).await.map(drop),
+            dp.app_connect_approve(link(), choice(), s())
+                .await
+                .map(drop),
+            dp.app_connect_retry_send(link()).await.map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

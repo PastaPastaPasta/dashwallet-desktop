@@ -9,9 +9,10 @@ export const onboarding = {
   welcome: {
     title: "Welcome to Dash Wallet",
     addTitle: "Add a wallet",
-    text: "Create a new wallet, or restore one with its recovery phrase.",
+    text: "Create a new wallet, or restore one with its recovery phrase or a backup file.",
     create: "Create a new wallet",
     restore: "Restore from recovery phrase",
+    restoreFile: "Restore from a file",
     words24: "Create a 24-word recovery phrase",
   },
   unlock: {
@@ -23,6 +24,43 @@ export const onboarding = {
     title: "Restore a wallet",
     text: "Enter the wallet's recovery phrase: 12, 15, 18, 21 or 24 words.",
   },
+  /** Restore from a file: a Dash Wallet backup, or a Dash Core wallet.dat or dumpwallet file. */
+  file: {
+    title: "Restore from a file",
+    text: "Choose a Dash Wallet backup (.dwbackup), or a Dash Core wallet.dat or dumpwallet file.",
+    path: "File",
+    choose: "Choose File…",
+    pathHelp: "Or type the file's full path.",
+    inspect: "Continue",
+    inspecting: "Reading the file…",
+    kind: {
+      dwBackup: { one: "A Dash Wallet backup of {count} wallet.", other: "A Dash Wallet backup of {count} wallets." },
+      dumpWallet: "A Dash Core dumpwallet file.",
+      walletDat: "A Dash Core wallet.dat.",
+      walletDatEncrypted: "An encrypted Dash Core wallet.dat.",
+      psbt: "A partially signed transaction, not a wallet.",
+      unknown: "Dash Wallet can't read this file as a wallet.",
+    },
+    backupPassphrase: "Backup passphrase",
+    backupPassphraseHelp: "The passphrase the backup was made with: the old wallet's passphrase, or the backup passphrase you chose.",
+    walletDatPassphrase: "wallet.dat passphrase",
+    name: "Wallet name (optional)",
+    restore: "Restore",
+    otherFile: "Choose another file",
+    passphraseMissing: "Enter the file's passphrase.",
+    /** `network`: the file's network, as the engine names it (mainnet, testnet). */
+    otherNetwork: "This file is for {network}, not for the network this window uses.",
+    unknownNetwork: "This file is for a network this version of Dash Wallet doesn't know.",
+    emptyBackup: "This backup holds no wallet.",
+    psbtRefusal: "Open a partially signed transaction in Tools ▸ PSBT once a wallet is set up.",
+    unknownRefusal: "Dash Wallet reads Dash Wallet backups, Dash Core wallet.dat files and dumpwallet files.",
+    /** On Done, after a Dash Core import that left keys out (QT-107). */
+    keysSkipped: {
+      one: "1 key outside the HD wallet was not imported. Move its coins to this wallet from Dash Core.",
+      other: "{count} keys outside the HD wallet were not imported. Move their coins to this wallet from Dash Core.",
+    },
+    scriptsSkipped: { one: "1 script was not imported.", other: "{count} scripts were not imported." },
+  },
   working: {
     title: "Adding the wallet",
     text: "Adding the wallet…",
@@ -33,6 +71,8 @@ export const onboarding = {
   ready: {
     title: "Your wallet is ready",
     restored: "Dash Wallet now scans the blockchain for the wallet's transactions. This can take a while.",
+    /** A backup that held several wallets. */
+    restoredMany: "{count} wallets were restored. Dash Wallet now scans the blockchain for their transactions. This can take a while.",
     created: "Keep your recovery phrase safe. It is the only way to restore this wallet.",
     listFailed: "The wallet was saved, but the list of wallets could not be read.",
     retry: "Try again",
@@ -80,6 +120,8 @@ export const onboarding = {
     startsAtFirst: "The scan starts at the first block.",
     finish: "Restore wallet",
     birthDateInFuture: "The wallet creation date cannot be in the future.",
+    birthDateMissing: "Enter a valid wallet creation date, or choose The beginning.",
+    firstBlockSlow: "This can take a long time. If this recovery phrase belongs to a watch-only wallet already in Dash Wallet, sending from that wallet is unavailable until the scan finishes.",
   },
   phrase: {
     wordCount: "Recovery phrases have 12, 15, 18, 21 or 24 words.",
@@ -127,7 +169,7 @@ export const onboarding = {
     wallet_already_exists: "This wallet has already been added.",
     network_not_open: "The wallet is not open.",
     wallet_not_found: "This wallet is not open.",
-    shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
+    shielded_spend_unresolved: "Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
     last_startup_wallet: "At least one wallet opens at start.",
     invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
     not_implemented: "Dash Wallet cannot do this yet.",
@@ -169,6 +211,8 @@ export const onboarding = {
       passphrase_required: "This wallet.dat is encrypted: enter its passphrase.",
       unsupported_format: "Dash Wallet cannot read this kind of file.",
       watch_only: "A watch-only wallet has no keys to export.",
+      wallet_too_large: "This wallet.dat uses more than 10,000 addresses in a row, more than Dash Wallet imports. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
+      extra_hd_account: "This wallet.dat uses an HD account other than the first one, and Dash Wallet imports only the first. Open it in Dash Core, then send its funds to an address from Receive in Dash Wallet.",
       wrong_passphrase: "The passphrase does not open this wallet.dat.",
     },
   },
@@ -182,9 +226,10 @@ export const onboarding = {
     severalToPlatformAddress: "{count} transfers to your Platform address ({total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     severalToShielded: "{count} transfers to Shielded ({total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
     running: "Finishing…",
+    /** "Check again" in these lines names the `checkAgain` button: keep the two the same. */
     checking: {
-      one: "{count} transfer may already be finished. We can't confirm it yet.",
-      other: "{count} transfers may already be finished. We can't confirm it yet.",
+      one: "{count} transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+      other: "{count} transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
     },
     finish: "Finish",
     finishAll: "Finish all",
@@ -192,6 +237,20 @@ export const onboarding = {
     details: "Details",
     retry: "Retry",
     dismiss: "Dismiss",
+    /** A transfer to Shielded Platform refused after a penalty, with a value left that can be moved. */
+    recover: "Recover",
+    recoverOne: "{amount} is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+    /** Two or more: the card says "one" for a single transfer. */
+    recoverSeveral: "{count} transfers to Shielded that Platform refused have {total} left. You can recover each to your Platform balance, minus Platform's fee.",
+    /** Mainnet, where this version does not recover: no Recover button anywhere. */
+    recoverOffOne: "{amount} is left on a transfer to Shielded that Platform refused. It's still yours. This version can recover it on test networks only.",
+    recoverOffSeveral: "{count} transfers to Shielded that Platform refused have {total} left. It's still yours. This version can recover it on test networks only.",
+    recoverConfirm: {
+      title: "Recover leftover value",
+      body: "Move the {amount} left on this transfer to your Platform balance? Platform's fee comes out of this amount.",
+      confirm: "Recover",
+      cancel: "Cancel",
+    },
     sheet: {
       title: "Unfinished transfers",
       introShielded: "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
@@ -210,11 +269,26 @@ export const onboarding = {
         notActive: "Not active on this network yet",
         unsupported: "Can't be finished in this version",
         tooSmall: "Too small to finish: worth less than the Platform fee",
+        recoverable: "Can be recovered",
       },
+      /** The sheet's lines for transfers to Shielded that Platform refused (never the finish lines above). */
+      introRecover: "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.",
+      introRecoverOff: "Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.",
+      footerRecover: "Recovering pays only Platform's fee, taken from what's left.",
+      /** A refused transfer's row: what is left, then its full value for context. */
+      rowLeft: "{left} left of {amount}",
+      recoverTooSmall: "The {amount} left on this transfer is less than Platform's fee for moving it, so it can't be recovered.",
+      recoverFailed: "Dash Wallet couldn't recover this value. It's still listed here, and you can try again.",
+      /** A recover that may have gone through: not a refusal. */
+      recoverChecking: "Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.",
+      recoverOff: "This version can recover what's left of a refused transfer on test networks only.",
+      /** The "Can be recovered" chip on mainnet. */
+      testNetworksOnly: "Test networks only",
       done: {
         appliedPlatformAddress: "Added to your Platform address",
         appliedShielded: "Added to Shielded",
-        checking: "Checking: this amount may already be in your balance; we can't confirm it yet.",
+        /** "Check again" names the row's `checkAgain` button: keep the two the same. */
+        checking: "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
         proofWaiting: "Waiting for the network to confirm",
         reportedUsed: "The network says this was already added. There's nothing left to finish.",
       },

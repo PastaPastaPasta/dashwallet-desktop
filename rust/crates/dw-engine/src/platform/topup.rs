@@ -259,6 +259,7 @@ async fn check<L: TopUpLib>(
     if duffs < table.top_up_min_duffs {
         return Err(CreditsError::BelowMinimum {
             min: table.top_up_min_duffs,
+            max: None,
         });
     }
     if let Some((lock, _)) = (open_locks(session, wallet, lib).await?.into_iter())
@@ -413,6 +414,9 @@ pub(crate) async fn top_up<L: TopUpLib>(
     duffs: u64,
     grant: &str,
 ) -> Result<TopUpOutcome, CreditsError> {
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             // Nothing else runs it again before the next start.
@@ -666,10 +670,9 @@ pub(crate) async fn resume<L: TopUpLib>(
         {
             return Err(PlatformError::WillBeSent { artifact: step }.into());
         }
-        if lib
-            .wait_proof(lock.outpoint, RESUME_PROOF_WAIT)
+        if !session
+            .proved_unless_closed(lib.wait_proof(lock.outpoint, RESUME_PROOF_WAIT))
             .await
-            .is_err()
         {
             return Ok(outcome(TopUpState::ProofWaiting));
         }
@@ -736,20 +739,16 @@ pub(crate) async fn resolve<L: TopUpLib>(
 /// lock is counted only when Platform applies it: any other answer
 /// (already consumed, a cached refusal of the same transition, an error)
 /// counts nothing, as `pending_top_ups` lists nothing for it.
+/// Fails when it cannot read the wallet's identities (the wallet left the
+/// manager): it counts nothing then, not "nothing pending".
 pub(crate) async fn finish<L: TopUpLib>(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &L,
     lease: &Lease,
     report: &mut FinishReport,
-) {
-    let identities = match lib.identities().await {
-        Ok(identities) => identities,
-        Err(e) => {
-            tracing::warn!(error = %e, "Finish transfers cannot read the identities for top-ups");
-            return;
-        }
-    };
+) -> Result<(), PlatformError> {
+    let identities = lib.identities().await?;
     let signer = match lease.uncounted_funding_signer() {
         Ok(signer) => Some(signer),
         Err(e) => {
@@ -793,6 +792,7 @@ pub(crate) async fn finish<L: TopUpLib>(
             }
         }
     }
+    Ok(())
 }
 
 impl TopUpLib for PwLib {

@@ -283,7 +283,8 @@ commands! {
     /// checked before and after the operations already running finish
     /// (`draining` when they do not within 2 s); then the engine's own
     /// refusals (`wallet` while a wallet is still opening,
-    /// `shielded_spend_unresolved`, both with
+    /// `shielded_spend_unresolved`, `app.transfer_preparing` while a
+    /// transfer waits on its wallet's start-up, each with
     /// [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
     /// the session, its drafts, the window and the choice stay, and the
     /// paused operations run. Once closed, its vault is locked and its
@@ -327,6 +328,15 @@ commands! {
                             return Err(busy_error(Busy {
                                 draining: true,
                                 ..Busy::default()
+                            }));
+                        }
+                        Err(CloseRefused::Preparing) => {
+                            return Err(AppError::app(
+                                AppCode::TransferPreparing,
+                                "a transfer is still being prepared",
+                            )
+                            .with(ErrorData::NetworkCloseRefused {
+                                reason: CloseRefusalReason::TransferPreparing,
                             }));
                         }
                         Err(CloseRefused::Engine(e)) => Err(e),
@@ -531,6 +541,16 @@ fn update_busy(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Up
         } else {
             UpdateBusyReason::Platform
         }
+    })
+}
+
+/// The switch's refusal while mixing, for a reset of chain data too: a
+/// mixing session's signed inputs stay held while the reset blinds the
+/// wallet to its transaction.
+pub(crate) fn mixing_busy_error() -> AppError {
+    busy_error(Busy {
+        mixing: true,
+        ..Busy::default()
     })
 }
 

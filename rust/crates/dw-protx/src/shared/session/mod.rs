@@ -225,6 +225,12 @@ impl Session {
         fingerprint(&self.to_json_body())
     }
 
+    /// The revision a change moves to; `None` at `i32::MAX`, past which
+    /// dash-qt's `int` has none.
+    pub fn next_revision(&self) -> Option<i32> {
+        self.revision.checked_add(1)
+    }
+
     /// The index of the first share named `label` (`ShareIndexOfLabel`).
     pub fn share_index_of(&self, label: &str) -> Option<usize> {
         self.shares.iter().position(|s| s.label == label)

@@ -126,7 +126,7 @@ export const STATES: Record<string, State> = {
     await p.getByTestId("settings-watch-only-add").click();
     await expect(p.getByTestId("settings-watch-only-error")).toBeVisible();
   }),
-  About: tab("about", "funded", ["settings-about", "settings-about-more"], async (p) => {
+  About: tab("about", "funded", ["settings-about", "settings-about-license", "settings-about-more"], async (p) => {
     await p.getByTestId("settings-about-agent").getByText("…").waitFor({ state: "detached" });
   }),
   CoinJoin: tab("coinjoin", "funded", ["settings-coinjoin", "settings-coinjoin-mixing"], async (p) => {
@@ -252,6 +252,19 @@ test.describe("usernames and amounts keep their order under ar-XB", () => {
   test("the toolbar chip while a name registers", async ({ page }) => {
     await open(page, "dashpay-registering");
     await inOrder(page.getByTestId("toolbar-chip"), "the registering chip");
+  });
+
+  test("the build version reads left to right in About, Settings and Information", async ({ page }) => {
+    const VERSION = /(0)\.1\.0-(d)ev/;
+    await open(page, "funded");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "about" }));
+    await inOrder(page.getByTestId("about-version"), "the About sheet", VERSION);
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs-about").click();
+    await inOrder(page.getByTestId("settings-about-version"), "Settings ▸ About", VERSION);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "information" }));
+    await inOrder(page.getByTestId("information-general"), "Tools ▸ Information", VERSION);
   });
 
   test("the toolbar chip's accessible name isolates the whole username", async ({ page }) => {

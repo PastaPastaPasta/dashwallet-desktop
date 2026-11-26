@@ -48,7 +48,8 @@ pub enum UnfinishedState {
     Confirming,
     /// Ready to finish.
     Ready,
-    /// The apply may have executed, unproved ("Checking").
+    /// The apply may have executed, or a lock read back from the chain may
+    /// already have been taken, unproved ("Checking"): its finish tries it.
     Checking,
     /// Not listed in this version: a lock Platform reported already used
     /// leaves the list, and its finish reads [`LockFinish::ReportedUsed`].
@@ -59,12 +60,19 @@ pub enum UnfinishedState {
     /// transaction's first). Never offered a finish.
     Unsupported,
     /// Worth less than the Platform fee its finish pays. Never offered a
-    /// finish.
+    /// finish. With `remainingCredits`: a partly used transfer to Shielded
+    /// whose remaining value is below Platform's fee for moving it, never
+    /// offered a recover.
     TooSmall,
+    /// A transfer to Shielded Platform refused after a penalty, proved
+    /// partly used: `remainingCredits` are left, at least Platform's fee
+    /// for moving them. Offered a recover (`recoverTransfer`), never a
+    /// finish.
+    Recoverable,
 }
 
 mirror_enum!(engine::UnfinishedState => UnfinishedState {
-    Confirming, Ready, Checking, ReportedUsed, NotActive, Unsupported, TooSmall
+    Confirming, Ready, Checking, ReportedUsed, NotActive, Unsupported, TooSmall, Recoverable
 });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -77,6 +85,11 @@ pub struct UnfinishedLock {
     pub duffs: u64,
     pub origin: LockOrigin,
     pub state: UnfinishedState,
+    /// For a partly used transfer, the credits Platform's proved state
+    /// showed left when it was read; a recover reads them again.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub remaining_credits: Option<u64>,
 }
 
 impl From<engine::UnfinishedLock> for UnfinishedLock {
@@ -88,6 +101,7 @@ impl From<engine::UnfinishedLock> for UnfinishedLock {
             duffs,
             origin,
             state,
+            remaining_credits,
         } = l;
         UnfinishedLock {
             txid,
@@ -96,6 +110,66 @@ impl From<engine::UnfinishedLock> for UnfinishedLock {
             duffs,
             origin: origin.into(),
             state: state.into(),
+            remaining_credits,
+        }
+    }
+}
+
+/// What a recover of a partly used transfer to Shielded would move, read
+/// from Platform's proved state when asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecoverQuote {
+    /// `credits` are left, at least `feeCredits` (Platform's fee for moving
+    /// them, which comes out of them). The recover's grant carries exactly
+    /// `credits` as its credits cap.
+    Ready {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        fee_credits: u64,
+    },
+    /// `credits` are left, less than `feeCredits`: never recovered.
+    TooSmall {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        fee_credits: u64,
+    },
+    /// Nothing left to move: recovered, or Platform proved it used up.
+    Finished,
+    /// Not recoverable now, with `error` (a code).
+    NotApplied { error: String },
+}
+
+impl From<engine::RecoverQuote> for RecoverQuote {
+    fn from(q: engine::RecoverQuote) -> Self {
+        use engine::RecoverQuote as Q;
+        match q {
+            Q::Ready {
+                credits,
+                fee_credits,
+            } => RecoverQuote::Ready {
+                credits,
+                fee_credits,
+            },
+            Q::TooSmall {
+                credits,
+                fee_credits,
+            } => RecoverQuote::TooSmall {
+                credits,
+                fee_credits,
+            },
+            Q::Finished => RecoverQuote::Finished,
+            Q::NotApplied { error } => RecoverQuote::NotApplied { error },
         }
     }
 }

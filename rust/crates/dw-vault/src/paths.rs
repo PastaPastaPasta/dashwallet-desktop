@@ -172,6 +172,65 @@ pub fn identity_auth_key(path: &DerivationPath, network: Network) -> Option<(u32
     Some((hardened_index(&p[5])?, hardened_index(&p[6])?))
 }
 
+/// DIP-13 identity sub-features of the App Connect keys (dips#191).
+const APP_SESSION_SUBFEATURE: u32 = 6;
+const APP_ENCRYPTION_SUBFEATURE: u32 = 7;
+/// DIP-13 purpose levels of an application encryption key.
+const APP_ENCRYPTION_PURPOSE: u32 = 1;
+const APP_DECRYPTION_PURPOSE: u32 = 2;
+
+fn hardened256(c: &ChildNumber) -> Option<[u8; 32]> {
+    match c {
+        ChildNumber::Hardened256 { index } => Some(*index),
+        _ => None,
+    }
+}
+
+fn app_key_prefix(p: &[ChildNumber], network: Network, subfeature: u32) -> Option<[u8; 32]> {
+    let shaped = p.len() >= 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES)
+        && is_hardened(&p[3], subfeature)
+        && is_hardened(&p[4], ECDSA_KEY_TYPE);
+    if shaped { hardened256(&p[5]) } else { None }
+}
+
+/// The App Connect session key
+/// `m/9'/coin'/5'/6'/0'/identity'/request'` (both DIP-14 256-bit hardened
+/// children), as `(identity, request)`.
+pub fn app_session_key(path: &DerivationPath, network: Network) -> Option<([u8; 32], [u8; 32])> {
+    let p: &[ChildNumber] = path.as_ref();
+    if p.len() != 7 {
+        return None;
+    }
+    Some((
+        app_key_prefix(p, network, APP_SESSION_SUBFEATURE)?,
+        hardened256(&p[6])?,
+    ))
+}
+
+/// The App Connect shared encryption key
+/// `m/9'/coin'/5'/7'/0'/identity'/contract'/purpose'/rotation'`, or the
+/// legacy form without `rotation'` that test-network wallets registered, as
+/// `(identity, contract)`. `purpose'` is `1'` or `2'`.
+pub fn app_encryption_key(path: &DerivationPath, network: Network) -> Option<([u8; 32], [u8; 32])> {
+    let p: &[ChildNumber] = path.as_ref();
+    let rotation_ok = match p.len() {
+        9 => hardened_index(&p[8]).is_some(),
+        8 => network != Network::Mainnet,
+        _ => false,
+    };
+    if !rotation_ok
+        || !(is_hardened(&p[7], APP_ENCRYPTION_PURPOSE)
+            || is_hardened(&p[7], APP_DECRYPTION_PURPOSE))
+    {
+        return None;
+    }
+    Some((
+        app_key_prefix(p, network, APP_ENCRYPTION_SUBFEATURE)?,
+        hardened256(&p[6])?,
+    ))
+}
+
 /// A DIP-15 contactInfo key: an identity authentication key path followed
 /// by exactly `65536'` (`encToUserId`) or `65537'` (`privateData`) and a
 /// hardened derivation index.

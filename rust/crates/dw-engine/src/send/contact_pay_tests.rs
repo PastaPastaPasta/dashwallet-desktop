@@ -375,11 +375,10 @@ fn a_core_lock_and_a_payout_row_refuse_each_other() {
 }
 
 /// P2's order: the arguments, the live payee, the pair's lock and rule 5
-/// before the source's gates, which refuse `platform.feature_off` for
-/// every source until its slice lands. Nothing before takes an address
-/// or the grant.
+/// before the source's gates. Nothing before takes an address or the
+/// grant.
 #[test]
-fn contact_pay_refuses_in_order_and_every_source_is_off() {
+fn contact_pay_refuses_in_order_before_the_source() {
     let f = fixture(false);
     let grant = f.grant(GrantPurpose::PlatformOp {
         max_duffs: 0,
@@ -396,17 +395,14 @@ fn contact_pay_refuses_in_order_and_every_source_is_off() {
         pay(CAROL, 1_000, PaymentSource::Shielded),
         "contact.ineligible"
     );
-    assert_eq!(
-        pay(BOB, 1_000, PaymentSource::Shielded),
-        "platform.feature_off"
-    );
+    // C5b: Platform pays; this session has no Platform to reach.
     assert_eq!(
         pay(BOB, 1_000, PaymentSource::Platform),
-        "platform.feature_off"
+        "platform.unavailable"
     );
     assert_eq!(
         code(f.quote(BOB, PaymentSource::Platform)),
-        "platform.feature_off"
+        "platform.unavailable"
     );
 
     let platform = f.gated(TrustMode::Enforcing, Proof::Unverified);
@@ -425,9 +421,9 @@ fn contact_pay_refuses_in_order_and_every_source_is_off() {
     );
 }
 
-/// P15: "Accept and pay" takes its source; a non-Core one and a plain
-/// payout's flow are off until their slices, with every grant kept; a
-/// source on another flow is refused.
+/// P15: "Accept and pay" takes its source; a non-Core one is off until
+/// its slice, with every grant kept; a source on another flow is refused.
+/// A payout's flow from Shielded is C5a's (`a_flow_lease_pays_one_payout`).
 #[test]
 fn begin_flow_takes_the_payment_source() {
     let f = fixture(false);
@@ -454,11 +450,6 @@ fn begin_flow_takes_the_payment_source() {
         ),
         (
             FlowKind::ContactPayFromBalance,
-            Some(PaymentSource::Platform),
-            "platform.feature_off",
-        ),
-        (
-            FlowKind::ContactPayFromBalance,
             Some(PaymentSource::Core),
             "invalid_argument",
         ),
@@ -476,5 +467,24 @@ fn begin_flow_takes_the_payment_source() {
         );
     }
     let lease = begin(FlowKind::AcceptAndPay, Some(PaymentSource::Core)).expect("Core as today");
+    f.session.end_flow(lease).unwrap();
+    // C5b: a payout from the Platform balance has its flow, from a grant of
+    // its own (the one above went into the lease that just ended).
+    let fresh = f.grant(GrantPurpose::PlatformOp {
+        max_duffs: 0,
+        max_credits: 10_000_000,
+    });
+    let s = Arc::clone(&f.session);
+    let lease = (f.engine)
+        .block_on(async move {
+            s.begin_flow(
+                f.wallet,
+                FlowKind::ContactPayFromBalance,
+                vec![fresh],
+                Some(PaymentSource::Platform),
+            )
+            .await
+        })
+        .expect("the Platform source's flow");
     f.session.end_flow(lease).unwrap();
 }

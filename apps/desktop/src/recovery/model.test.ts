@@ -7,7 +7,9 @@ import type { UnfinishedTransfers } from "../api/generated/UnfinishedTransfers";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onMoveSettled } from "../platform/move";
-import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
+import type { RecoverQuote } from "../api/generated/RecoverQuote";
+import { t } from "../i18n";
+import { cardView, failureStale, lockKey, onRecoverySettled, RECOVERY_COPY as C, RecoveryModel, resultText, sheetCopy, sheetRows, withoutPendingShields, type RecoveryState } from "./model";
 
 const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock["origin"] = "restored", duffs = 50_000_000): UnfinishedLock => ({
   txid: String(n).repeat(64),
@@ -16,7 +18,10 @@ const lock = (n: number, state: UnfinishedLock["state"], origin: UnfinishedLock[
   duffs,
   origin,
   state,
+  remainingCredits: null,
 });
+/** This device's refused transfer to Shielded with `credits` left (#402). */
+const partly = (n: number, state: "recoverable" | "tooSmall", credits: string): UnfinishedLock => ({ ...lock(n, state, "thisDevice"), remainingCredits: credits });
 const fundLock = (n: number, state: UnfinishedLock["state"], duffs = 50_000_000): UnfinishedLock => ({ ...lock(n, state, "restored", duffs), kind: "platformAddress" });
 const list = (locks: UnfinishedLock[], complete = true): UnfinishedTransfers => ({ locks, complete, unread: [] });
 const IDLE: RecoveryState = { kind: "idle" };
@@ -83,8 +88,19 @@ describe("unfinished transfers card", () => {
   });
 
   it("checking locks only: Check again, singular and plural", () => {
-    expect(view(list([lock(1, "checking")]))).toMatchObject({ kind: "checking", text: "1 transfer may already be finished. We can't confirm it yet.", actions: ["checkAgain", "details"] });
-    expect(view(list([lock(1, "checking"), lock(2, "checking")]))?.text).toBe("2 transfers may already be finished. We can't confirm it yet.");
+    expect(view(list([lock(1, "checking")]))).toMatchObject({ kind: "checking", text: "1 transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.", actions: ["checkAgain", "details"] });
+    expect(view(list([lock(1, "checking"), lock(2, "checking")]))?.text).toBe(
+      "2 transfers may already be finished. Choose Check again to confirm them. If an amount wasn't added yet, Check again tries to add it. If any still show Checking, try again later.",
+    );
+  });
+
+  it("names the Check again button by its own label in each Checking line", () => {
+    const label = C.checkAgain;
+    const lines = [C.checking(1), C.checking(2), C.sheet.done.checking];
+    for (const line of lines) {
+      expect(line).toContain(`Choose ${label} to confirm`);
+      expect(line).toContain(`, ${label} tries to add it.`);
+    }
   });
 
   it("running says Finishing…, whatever the list", () => {
@@ -122,6 +138,103 @@ describe("unfinished transfers card", () => {
   });
 });
 
+describe("unfinished transfers card: refused transfers to Shielded (#402)", () => {
+  it("one recoverable transfer, this device's or restored: what is left and Recover", () => {
+    const one = partly(1, "recoverable", "300000000000");
+    expect(view(list([one]))).toMatchObject({
+      kind: "recoverable",
+      text: "300000000 duffs is left on a transfer to Shielded that Platform refused. You can recover it to your Platform balance, minus Platform's fee.",
+      actions: ["recover"],
+      lock: one,
+    });
+  });
+
+  it("counts only the rows at or above the fee; a below-fee row stays on the sheet", () => {
+    const rows = [partly(1, "recoverable", "300000000000"), partly(2, "recoverable", "100000000000"), partly(3, "tooSmall", "40000000")];
+    expect(view(list(rows))).toMatchObject({
+      kind: "recoverable",
+      text: "2 transfers to Shielded that Platform refused have 400000000 duffs left. You can recover each to your Platform balance, minus Platform's fee.",
+      actions: ["details"],
+      lock: null,
+    });
+    const withSmall = view(list([rows[0], rows[2]]));
+    expect(withSmall).toMatchObject({ kind: "recoverable", actions: ["recover", "details"], lock: rows[0] });
+    expect(withSmall?.text).toContain("300000000 duffs is left");
+    expect(sheetRows(list([rows[0], rows[2]]), new Map()).map((r) => r.lock.state)).toEqual(["recoverable", "tooSmall"]);
+  });
+
+  it("on mainnet lists what is left with MG's off line and offers no Recover", () => {
+    const one = partly(1, "recoverable", "30000000000");
+    expect(cardView(list([one]), IDLE, duffs, errorText, true)).toMatchObject({
+      kind: "recoverable",
+      text: "30000000 duffs is left on a transfer to Shielded that Platform refused. It's still yours. This version can recover it on test networks only.",
+      actions: [],
+      lock: null,
+    });
+    const two = cardView(list([one, partly(2, "recoverable", "20000000000")]), IDLE, duffs, errorText, true);
+    expect(two).toMatchObject({
+      text: "2 transfers to Shielded that Platform refused have 50000000 duffs left. It's still yours. This version can recover it on test networks only.",
+      actions: ["details"],
+    });
+    expect(C.sheet.testNetworksOnly).toBe("Test networks only");
+  });
+
+  it("shows no card when every refused transfer is below the fee", () => {
+    expect(view(list([partly(3, "tooSmall", "40000000")]))).toBeNull();
+    expect(view(list([partly(3, "tooSmall", "40000000"), partly(4, "tooSmall", "1")]))).toBeNull();
+  });
+
+  it("names its states and lines in MG's words", () => {
+    expect(C.sheet.state.recoverable).toBe("Can be recovered");
+    expect(C.recover).toBe("Recover");
+    expect(C.recoverConfirm.title).toBe("Recover leftover value");
+    expect(C.recoverConfirm.body("0.3 DASH")).toBe("Move the 0.3 DASH left on this transfer to your Platform balance? Platform's fee comes out of this amount.");
+    expect([C.recoverConfirm.confirm, C.recoverConfirm.cancel]).toEqual(["Recover", "Cancel"]);
+    expect(C.sheet.recoverTooSmall("0.0004 DASH")).toBe("The 0.0004 DASH left on this transfer is less than Platform's fee for moving it, so it can't be recovered.");
+    expect(C.sheet.recoverFailed).toBe("Dash Wallet couldn't recover this value. It's still listed here, and you can try again.");
+  });
+});
+
+describe("unfinished transfers sheet: lines for each composition", () => {
+  const ready = lock(1, "ready");
+  const refused = partly(2, "recoverable", "30000000000");
+  const small = partly(3, "tooSmall", "40000000");
+  const FINISH_INTRO = "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.";
+  const FINISH_FOOTER = "Nothing more is paid: finishing only adds money that's already locked.";
+  const RECOVER_INTRO = "Platform refused these transfers to Shielded after charging a penalty. Recover moves what's left of each to your Platform balance, minus Platform's fee.";
+  const RECOVER_OFF = "Platform refused these transfers to Shielded after charging a penalty. What's left is still yours.";
+  const RECOVER_FOOTER = "Recovering pays only Platform's fee, taken from what's left.";
+  const texts = (c: ReturnType<typeof sheetCopy>) => [c.intros.map((l) => l.text), c.footers.map((l) => l.text)];
+
+  it("finishable rows only: the finish intro and footer", () => {
+    expect(texts(sheetCopy([ready], false))).toEqual([[FINISH_INTRO], [FINISH_FOOTER]]);
+  });
+
+  it("refused rows only: the recover intro and footer, never the finish lines", () => {
+    expect(texts(sheetCopy([refused, small], false))).toEqual([[RECOVER_INTRO], [RECOVER_FOOTER]]);
+  });
+
+  it("mixed: both pairs, the finishable ones first; the finish intro names only the finishable rows", () => {
+    expect(texts(sheetCopy([refused, ready], false))).toEqual([
+      [FINISH_INTRO, RECOVER_INTRO],
+      [FINISH_FOOTER, RECOVER_FOOTER],
+    ]);
+    expect(sheetCopy([refused, ready], false).intros.map((l) => l.kind)).toEqual(["finish", "recover"]);
+  });
+
+  it("refused rows on mainnet: the off intro and no recover footer", () => {
+    expect(texts(sheetCopy([refused], true))).toEqual([[RECOVER_OFF], []]);
+    expect(texts(sheetCopy([ready, refused], true))).toEqual([
+      [FINISH_INTRO, RECOVER_OFF],
+      [FINISH_FOOTER],
+    ]);
+  });
+
+  it("a refused row says what is left of its full value", () => {
+    expect(t("onboarding.unfinished.sheet.rowLeft", { left: "0.30", amount: "0.50" })).toBe("0.30 left of 0.50");
+  });
+});
+
 describe("unfinished transfers sheet", () => {
   it("lists the restored locks and keeps the ones applied in this session", () => {
     const a = lock(1, "ready");
@@ -131,9 +244,19 @@ describe("unfinished transfers sheet", () => {
     expect(rows[2].result).toEqual({ kind: "applied" });
   });
 
+  it("keeps a lock the network reported already added, with its line", () => {
+    const a = lock(1, "checking");
+    const results = new Map([[lockKey(a), { lock: a, result: { kind: "reportedUsed" } as LockFinish }]]);
+    const rows = sheetRows(list([lock(2, "checking")]), results);
+    expect(rows.map((r) => r.lock.txid[0])).toEqual(["2", "1"]);
+    expect(rows[1].result).toEqual({ kind: "reportedUsed" });
+  });
+
   it("says what each finish came to", () => {
     expect(resultText({ kind: "applied" }, errorText)).toBe("Added to Shielded");
-    expect(resultText({ kind: "checking" }, errorText)).toBe("Checking: this amount may already be in your balance; we can't confirm it yet.");
+    expect(resultText({ kind: "checking" }, errorText)).toBe(
+      "This transfer may already be finished. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.",
+    );
     expect(resultText({ kind: "reportedUsed" }, errorText)).toBe("The network says this was already added. There's nothing left to finish.");
     expect(resultText({ kind: "proofWaiting" }, errorText)).toBe("Waiting for the network to confirm");
     expect(resultText({ kind: "notApplied", error: "platform.unavailable" }, errorText)).toBe("error platform.unavailable");
@@ -158,11 +281,52 @@ function setup(finish: (txid: string, n: number) => LockFinish | Error = () => (
       if (got instanceof Error) throw got;
       return got;
     }),
+    recoverTransferQuote: vi.fn(async (): Promise<RecoverQuote> => ({ kind: "finished" })),
+    recoverTransfer: vi.fn(async (): Promise<LockFinish> => ({ kind: "applied" })),
   };
   return { model: new RecoveryModel(api, WALLET_A), api, calls, vault };
 }
 
+function recoverSetup(quote: RecoverQuote | Error, recovered: LockFinish | Error | ReturnType<typeof appError> = { kind: "applied" }) {
+  const base = setup();
+  const api = {
+    ...base.api,
+    recoverTransferQuote: vi.fn(async (_: string, txid: string, vout: number) => {
+      base.calls.push(`quote ${txid[0]}:${vout}`);
+      if (quote instanceof Error) throw quote;
+      return quote;
+    }),
+    recoverTransfer: vi.fn(async (_: string, txid: string, vout: number, grant: string) => {
+      base.calls.push(`recover ${txid[0]}:${vout} ${grant}`);
+      if (recovered instanceof Error || "code" in recovered) throw recovered;
+      return recovered;
+    }),
+  };
+  return { ...base, api, model: new RecoveryModel(api, WALLET_A) };
+}
+
 describe("RecoveryModel", () => {
+  it("says it is preparing once a Finish's call has been pending for a second", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { model, api } = setup();
+      let finished: ((f: LockFinish) => void) | null = null;
+      api.finishTransfer.mockImplementation(() => new Promise<LockFinish>((resolve) => (finished = resolve)));
+      const going = model.finish(lock(1, "ready"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(model.running).toBe(true);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(model.preparing.shown).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(model.preparing.shown).toBe(true);
+      finished!({ kind: "applied" });
+      await going;
+      expect([model.state.kind, model.preparing.shown]).toEqual(["idle", false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   afterEach(() => vi.restoreAllMocks());
 
   it("Finish asks for a platformOp grant of one duff and no credits, and records the result", async () => {
@@ -229,6 +393,19 @@ describe("RecoveryModel", () => {
     expect(model.results.get(lockKey(lock(2, "checking")))?.result).toEqual({ kind: "checking" });
   });
 
+  it("a single Finish or Check again the network answers already added leaves that line on the card", async () => {
+    const reported = "The network says this was already added. There's nothing left to finish.";
+    for (const run of [(m: RecoveryModel) => m.checkAgain([lock(1, "checking")]), (m: RecoveryModel) => m.finish(lock(1, "ready"))]) {
+      const { model } = setup(() => ({ kind: "reportedUsed" }));
+      await run(model);
+      expect(model.state).toEqual({ kind: "done", text: reported });
+      expect(view(list([]), model.state)).toMatchObject({ kind: "done", text: reported, actions: ["dismiss"] });
+    }
+    const { model } = setup((txid) => (txid[0] === "1" ? { kind: "reportedUsed" } : { kind: "checking" }));
+    await model.checkAgain([lock(1, "checking"), lock(2, "checking")]);
+    expect(model.state).toEqual({ kind: "idle" });
+  });
+
   it("a notApplied lock fails the card, stops the rest, and Retry runs it again", async () => {
     let n = 0;
     const { model, calls } = setup(() => (++n === 1 ? { kind: "notApplied", error: "platform.unavailable" } : { kind: "applied" }));
@@ -271,5 +448,77 @@ describe("RecoveryModel", () => {
     expect(model.state).toEqual({ kind: "idle" });
     expect(calls).toEqual([]);
     expect(api.finishTransfer).not.toHaveBeenCalled();
+  });
+});
+
+describe("RecoveryModel recover (#402)", () => {
+  const one = partly(1, "recoverable", "300000000000");
+  const READY: RecoverQuote = { kind: "ready", credits: "29000000000", feeCredits: "56000000" };
+
+  it("reads Platform first, asks to confirm the fresh amount, then recovers under a grant of exactly those credits", async () => {
+    const { model, calls, vault } = recoverSetup(READY);
+    await model.askRecover(one, duffs);
+    expect(model.asking).toEqual({ lock: one, credits: "29000000000" });
+    expect(calls).toEqual(["quote 1:0"]);
+    expect(vault.calls.authorize).toEqual([]);
+    await model.confirmRecover();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "platformOp", maxDuffs: 1, maxCredits: "29000000000" }, walletId: WALLET_A });
+    expect(calls).toEqual(["quote 1:0", "recover 1:0 grant-1"]);
+    expect(model.asking).toBeNull();
+    expect(model.results.get(lockKey(one))).toEqual({ lock: one, result: { kind: "applied" }, recovered: true });
+    expect(model.state).toEqual({ kind: "idle" });
+  });
+
+  it("Cancel recovers nothing", async () => {
+    const { model, calls, api } = recoverSetup(READY);
+    await model.askRecover(one, duffs);
+    model.cancelRecover();
+    expect(model.asking).toBeNull();
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
+    expect(calls).toEqual(["quote 1:0"]);
+  });
+
+  it("a value now below the fee is never offered: the row says so", async () => {
+    const { model, api } = recoverSetup({ kind: "tooSmall", credits: "40000000", feeCredits: "56000000" });
+    await model.askRecover(one, duffs);
+    expect(model.asking).toBeNull();
+    expect(model.notes.get(lockKey(one))).toEqual({ kind: "tooSmall", credits: "40000000" });
+    expect(model.state).toEqual({ kind: "done", text: C.sheet.recoverTooSmall("40000 duffs") });
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
+  });
+
+  it("a definite refusal says couldn't recover; one that may have gone through says so; mainnet says test networks only", async () => {
+    const cases: [RecoverQuote | Error, LockFinish | ReturnType<typeof appError> | undefined, string, string][] = [
+      [new Error("down"), undefined, "failed", C.sheet.recoverFailed],
+      [{ kind: "notApplied", error: "platform.unavailable" }, undefined, "failed", C.sheet.recoverFailed],
+      [READY, appError("platform.grant_invalid"), "failed", C.sheet.recoverFailed],
+      [READY, { kind: "notApplied", error: "platform.unavailable" }, "failed", C.sheet.recoverFailed],
+      [READY, { kind: "checking" }, "checking", C.sheet.recoverChecking],
+      [{ kind: "notApplied", error: "platform.feature_off" }, undefined, "off", C.sheet.recoverOff],
+      [READY, { kind: "notApplied", error: "platform.feature_off" }, "off", C.sheet.recoverOff],
+    ];
+    for (const [quote, recovered, note, text] of cases) {
+      const { model } = recoverSetup(quote, recovered);
+      await model.askRecover(one, duffs);
+      if (model.asking) await model.confirmRecover();
+      expect(model.notes.get(lockKey(one))).toEqual({ kind: note });
+      expect(model.results.has(lockKey(one))).toBe(false);
+      expect(model.state).toEqual({ kind: "done", text });
+    }
+    expect(C.sheet.recoverChecking).toBe("Dash Wallet can't tell yet whether the recovery went through. Trying again is safe: the same amount can't be recovered twice.");
+    expect(C.sheet.recoverOff).toBe("This version can recover what's left of a refused transfer on test networks only.");
+  });
+
+  it("a lock already recovered or used up elsewhere reads the list again, and claims no result", async () => {
+    const { model, api } = recoverSetup({ kind: "finished" });
+    const settled = vi.fn();
+    const stop = onRecoverySettled(settled);
+    await model.askRecover(one, duffs);
+    stop();
+    await Promise.resolve();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(model.results.has(lockKey(one))).toBe(false);
+    expect(model.asking).toBeNull();
+    expect(api.recoverTransfer).not.toHaveBeenCalled();
   });
 });

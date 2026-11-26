@@ -4,31 +4,35 @@
 
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
-import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
+import { CREDITS_PER_DUFF, creditsToDuffs, fundAmount } from "../api/pending";
 import { usePendingPlatformFunds, usePlatformFundQuote } from "../api/queries";
 import { useUi } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
+import { useT } from "../i18n";
 import { useModel } from "../onboarding/model";
+import { preparingText } from "../transfer/preparing";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, FUND_COPY as C, type PlatformFundFlow } from "../platform/fund";
+import { coreMaxNotes } from "../transfer/model";
 
-/** Formats for the sheet: Dash in the display unit, masked in discreet mode. */
+/** Formats for the sheet: Dash in the display unit with its full decimals, masked in discreet mode. */
 function useFormats(network: NetworkInfo) {
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
-  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.compact(d)} ${shown.name}`);
+  const duffs = (d: number) => (discreet ? shown.masked() : `${shown.full(d)} ${shown.name}`);
   return { shown, duffs, credits: (c: string) => duffs(creditsToDuffs(c)) };
 }
 
 type Formats = ReturnType<typeof useFormats>;
 
-/** A confirm row; an amount or address `value` reads left to right in any language, a `text` one follows the page. */
+/** A confirm row; an amount `value` reads left to right in any language, right-aligned in tabular digits so the
+ * decimals line up; a `text` one follows the page. */
 function Row({ label, value, testId, total, text }: { label: string; value: string; testId: string; total?: boolean; text?: boolean }) {
   return (
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
-      <dd className="detail-value" data-testid={testId}>
+      <dd className={`detail-value ${text ? "" : "detail-amount"}`} data-testid={testId}>
         {text ? value : <bdi dir="ltr">{value}</bdi>}
       </dd>
     </div>
@@ -36,8 +40,9 @@ function Row({ label, value, testId, total, text }: { label: string; value: stri
 }
 
 function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId: string; fmt: Formats }) {
+  const tr = useT();
   const request = flow.request?.kind === "add" ? flow.request : null;
-  const quote = usePlatformFundQuote(walletId, request?.duffs ?? null);
+  const quote = usePlatformFundQuote(walletId, request ? fundAmount(request) : null);
   const q = quote.data;
   const { duffs, credits } = fmt;
   // The fees (the lock's and Platform's) against what is added.
@@ -46,7 +51,7 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-fund-quote-error">
-          {fundErrorText(quote.error, credits, duffs)}
+          {fundErrorText(quote.error, credits, duffs, { request })}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -70,6 +75,16 @@ function ConfirmStep({ flow, walletId, fmt }: { flow: PlatformFundFlow; walletId
           <Row label={C.confirm.rows.platformFee} value={credits(q.feeCredits)} testId="platform-fund-confirm-platform-fee" />
           <Row label={C.confirm.rows.receive} value={credits(q.credits)} testId="platform-fund-confirm-receive" total />
         </dl>
+      )}
+      {q && request?.all && (
+        <div className="core-max-confirm" data-testid="core-max-confirm">
+          <p className="sheet-text">{tr("transfer.fund.confirm.maxAll", { total: duffs(q.totalDuffs), fee: duffs(q.feeDuffs) })}</p>
+          {coreMaxNotes(q.max, duffs).map((note) => (
+            <p key={note} className="field-hint" data-testid="core-max-note">
+              {note}
+            </p>
+          ))}
+        </div>
       )}
       {warning && (
         <p className="fee-warning" role="alert" data-testid="platform-fund-fee-warning">
@@ -100,7 +115,8 @@ function Outcome({ flow, fmt, pending }: { flow: PlatformFundFlow; fmt: Formats;
   if (!o) return null;
   const s = o.state;
   const r = flow.request;
-  const duffs = r?.kind === "add" ? r.duffs : pending?.find((p) => p.txid === o.txid)?.duffs;
+  // A Max's lock is what the drain credited, known from its pending row; an amount's is the amount.
+  const duffs = r?.kind === "add" && !r.all ? r.duffs : pending?.find((p) => p.txid === o.txid)?.duffs;
   const ended = s.kind === "notApplied" ? endedBeforeApply(s.error, duffs === undefined ? null : fmt.duffs(duffs)) : null;
   const { title, text } =
     s.kind === "applied"
@@ -154,6 +170,11 @@ export function FundBody({ flow, walletId, network }: { flow: PlatformFundFlow; 
             {C.running.steps.join(" → ")}
           </p>
           <p className="sheet-text">{C.running.text}</p>
+          {flow.preparing.shown && (
+            <p className="sheet-text" data-testid="transfer-preparing">
+              {preparingText()}
+            </p>
+          )}
         </div>
       )}
       {step === "done" && <Outcome flow={flow} fmt={fmt} pending={pending} />}

@@ -11,28 +11,34 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
-import { SHIELDED_CODES } from "../api/pending";
+import { coreMaxRefusal, fundAmount, SHIELDED_CODES } from "../api/pending";
 import { RESCAN_TEXT } from "../app/rescan";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
-import { SHIELDED_SYNC_COPY, syncingRefusal } from "./syncing";
+import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
+import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { Preparing } from "../transfer/preparing";
 
 export type ShieldedApi = Pick<
   Backend,
-  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
+  "shieldFromCore" | "resumeShield" | "shieldedSend" | "unshieldToCore" | "unshieldToPlatform" | "platformAddressesSync" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly"
 >;
 
-/** What a sheet is for: the three moves, and finishing a lock that was not applied. */
-export type ShieldedKind = "add" | "send" | "out" | "resume";
+/** What a sheet is for: the moves, and finishing a lock that was not applied. `toPlatform` moves to the
+ * wallet's own Platform receive address. */
+export type ShieldedKind = "add" | "send" | "out" | "toPlatform" | "resume";
 
 /** What the confirm step quotes and sends. Credits are decimal strings, a duff is 1000 of them. */
 export type ShieldedRequest =
-  | { kind: "add"; duffs: number }
+  /** `all`: a Core Max, everything in the Dash wallet's account 0 with the fee out of it (`duffs`
+   * is what its quote said the lock would be). */
+  | { kind: "add"; duffs: number; all?: boolean }
   | { kind: "send"; credits: string; to: string; memo: string | null }
   | { kind: "out"; credits: string }
+  | { kind: "toPlatform"; credits: string }
   | { kind: "resume"; txid: string };
 
 export type ShieldedStep = "form" | "confirm" | "running" | "done" | "refused";
@@ -61,6 +67,8 @@ export const SHIELDED_COPY = {
     },
     unfinished: (amount: string) => t("transfer.shielded.card.unfinished", { amount }),
   },
+  /** What payments that may still go through hold of the balance. */
+  held: (amount: string, count: number) => t("transfer.shielded.held", { amount, count }),
   titles: {
     get add() {
       return t("transfer.shielded.titles.add");
@@ -92,6 +100,9 @@ export const SHIELDED_COPY = {
     },
     get out() {
       return t("transfer.shielded.form.out");
+    },
+    get toPlatform() {
+      return t("transfer.shielded.form.toPlatform");
     },
     get to() {
       return t("transfer.shielded.form.to");
@@ -197,6 +208,9 @@ export const SHIELDED_COPY = {
       get text() {
         return t("transfer.shielded.done.checking.text");
       },
+      get row() {
+        return t("transfer.shielded.done.checking.row");
+      },
     },
     notApplied: {
       get title() {
@@ -224,6 +238,12 @@ export const SHIELDED_COPY = {
         return t("transfer.shielded.done.out.title");
       },
       text: (amount: string) => t("transfer.shielded.done.out.text", { amount }),
+    },
+    toPlatform: {
+      get title() {
+        return t("transfer.shielded.done.out.title");
+      },
+      text: (addr: string) => t("transfer.shielded.done.toPlatform.text", { addr }),
     },
   },
   /** The confirmation a send or move from a wallet with an unrecorded spend needs (DEC-1057). */
@@ -264,6 +284,9 @@ export const SHIELDED_COPY = {
   get unseen() {
     return t("transfer.shielded.unseen");
   },
+  get unseenSend() {
+    return t("transfer.shielded.unseenSend");
+  },
   receive: {
     get text() {
       return t("transfer.shielded.receive.text");
@@ -271,11 +294,23 @@ export const SHIELDED_COPY = {
     get copy() {
       return t("transfer.shielded.receive.copy");
     },
-    get notSynced() {
-      return SHIELDED_SYNC_COPY.syncing;
-    },
     get loading() {
       return t("transfer.shielded.receive.loading");
+    },
+    get early() {
+      return t("transfer.shielded.receive.early");
+    },
+    get locked() {
+      return t("transfer.shielded.receive.locked");
+    },
+    get unlock() {
+      return t("transfer.shielded.receive.unlock");
+    },
+    get mixingOnly() {
+      return t("transfer.shielded.receive.mixingOnly");
+    },
+    get watchOnly() {
+      return t("transfer.shielded.receive.watchOnly");
     },
   },
 };
@@ -290,12 +325,16 @@ function errorLike(e: unknown): { code: string; data: Record<string, unknown> | 
 /** Whether `e` is the app error `code`. */
 export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code === code;
 
-/** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, syncing = false): string {
+/** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
+ * the refusal of a Core Max. */
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false, spendsOff = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
-  if (syncingRefusal(err.code, syncing)) return SHIELDED_SYNC_COPY.syncing;
+  if (spendsOffRefusal(err.code, kind, spendsOff)) return spendsOffText(kind);
+  if (syncingRefusal(err.code, wait !== false && wait !== null)) return SHIELDED_SYNC_COPY.wait(typeof wait === "string" ? wait : "syncing");
+  const maxText = coreMaxRefusal(err, max, duffs);
+  if (maxText) return maxText;
   switch (err.code) {
     case SHIELDED_CODES.notActive:
       return SHIELDED_COPY.card.inactive;
@@ -328,7 +367,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case "platform.feature_off":
       return t("transfer.shielded.error.featureOff");
     case "platform.broadcast_unknown":
-      return kind === "add" ? SHIELDED_COPY.fundingUnknown : moveErrorText(e, credits);
+      if (kind === "add") return SHIELDED_COPY.fundingUnknown;
+      return kind === "toPlatform" ? t("transfer.shielded.error.toPlatformUnknown") : moveErrorText(e, credits);
     default:
       return moveErrorText(e, credits);
   }
@@ -336,7 +376,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
 
 /** Back is offered when another amount or address may pass. */
 export const shieldedCanChange = (e: unknown): boolean =>
-  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, "platform.grant_exceeded", "invalid_argument", SHIELDED_CODES.unrecordedSpend].some((c) => isCode(e, c));
+  [SHIELDED_CODES.invalidAddress, SHIELDED_CODES.insufficientFunds, SHIELDED_CODES.fundingInsufficient, SHIELDED_CODES.belowMinimum, SHIELDED_CODES.coinsChanged, "platform.grant_exceeded", "invalid_argument", SHIELDED_CODES.unrecordedSpend].some((c) => isCode(e, c));
 
 const settledListeners = new Set<() => void>();
 
@@ -357,6 +397,8 @@ export class ShieldedFlow extends Model {
   open = false;
   kind: ShieldedKind = "add";
   step: ShieldedStep = "form";
+  /** A shield's call has been pending for a second. */
+  readonly preparing = new Preparing(() => this.changed());
   /** The form's fields as typed (the amount in the display unit). */
   text = "";
   to = "";
@@ -395,6 +437,15 @@ export class ShieldedFlow extends Model {
       this.result = null;
       this.error = null;
     }
+    this.changed();
+  }
+
+  /** Opens a fresh send to `to` for `text` (Pay's Shielded address); a running or unseen call shows instead. */
+  sendTo(to: string, text: string) {
+    this.begin("send");
+    if (this.running || this.step !== "form") return;
+    this.to = to;
+    this.text = text;
     this.changed();
   }
 
@@ -465,12 +516,14 @@ export class ShieldedFlow extends Model {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
+        if (request.kind === "add") this.preparing.start();
         this.changed();
         return this.call(request, g.id, confirmUnrecorded);
       });
       if (got) {
         this.result = got.value;
         this.step = "done";
+        if (request.kind === "toPlatform" && got.value.kind === "spend" && got.value.outcome.state === "done") this.readPlatform();
       } else if (request.kind === "resume") {
         // A cancelled passphrase: there is no form to go back to.
         this.open = false;
@@ -481,22 +534,31 @@ export class ShieldedFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
+      this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) shieldedSettled();
       this.changed();
     }
   }
 
+  /** The Platform address a done move credited is read now, not at the next pass: Home's total
+   * follows it. A failed read changes nothing of the move. */
+  private readPlatform() {
+    this.api.platformAddressesSync(this.walletId).then(shieldedSettled, () => undefined);
+  }
+
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
-        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, { kind: "duffs", duffs: r.duffs }, grant) };
+        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, fundAmount(r), grant) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":
         return { kind: "spend", outcome: await this.api.shieldedSend(this.walletId, r.to, r.credits, r.memo, grant, confirmUnrecorded) };
       case "out":
         return { kind: "spend", outcome: await this.api.unshieldToCore(this.walletId, r.credits, null, grant, confirmUnrecorded) };
+      case "toPlatform":
+        return { kind: "spend", outcome: await this.api.unshieldToPlatform(this.walletId, r.credits, null, grant, confirmUnrecorded) };
     }
   }
 }

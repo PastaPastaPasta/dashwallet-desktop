@@ -38,8 +38,9 @@ pub use nested::{
     SendCode, SignerCode, UriCode,
 };
 pub use platform::{
-    AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode, ShieldedCode,
+    AvatarCode, ConnectCode, ConnectFailureName, ConnectNetworkName, ContactCode, CreditsCode,
+    IdentityCode, InvitationCode, NameCode, PlatformCode, ProfileCode, RegistrationCode,
+    ShieldedCode,
 };
 pub use rates::RatesCode;
 
@@ -79,6 +80,7 @@ pub enum ErrorCode {
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),
@@ -169,6 +171,12 @@ codes! {
         ExplorerOpen = "app.explorer_open",
         /// The system browser could not be opened (`open_releases_page`).
         BrowserOpen = "app.browser_open",
+        /// No automatic backup has made the backup folder yet
+        /// (`open_backup_directory`).
+        BackupFolderMissing = "app.backup_folder_missing",
+        /// The backup folder exists but no file manager opened it
+        /// (`open_backup_directory`).
+        FolderOpen = "app.folder_open",
         /// This copy cannot update itself (`UpdateAvailability`: a build
         /// without the updater key, a Flatpak, a package-manager install).
         UpdatesUnavailable = "app.updates_unavailable",
@@ -192,6 +200,10 @@ codes! {
         /// Install or Restart would close the engine while something runs
         /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
         UpdateBusy = "app.update_busy",
+        /// A network switch's close waited on a transfer that is still
+        /// being prepared ([`ErrorData::NetworkCloseRefused`]). Nothing
+        /// changed.
+        TransferPreparing = "app.transfer_preparing",
         /// A shared-masternode send on a network this release doesn't send
         /// them on ([`ErrorData::SharedSendNetwork`]): mainnet. Nothing was
         /// signed or sent.
@@ -211,6 +223,8 @@ pub enum CloseRefusalReason {
     WalletOpening,
     /// A shielded spend's result is not known yet.
     ShieldedSpendUnresolved,
+    /// A transfer waits on its wallet's start-up to go on.
+    TransferPreparing,
 }
 
 /// What `app.update_busy` waits for ([`ErrorData::UpdateBusy`]).
@@ -282,6 +296,10 @@ pub enum ErrorData {
     /// A duff shortfall (`*.funding_insufficient`, `send.amount_exceeds_balance`,
     /// `send.insufficient_mixed_funds`, …).
     Duffs { needed: Option<u64>, available: u64 },
+    /// `connect.failed`: where an approved login stopped.
+    ConnectFailure { failure: ConnectFailureName },
+    /// `connect.network`: the network the request is for.
+    ConnectNetwork { requested: ConnectNetworkName },
     /// `platform.insufficient_credits`: a credit shortfall.
     Credits {
         #[ts(type = "string")]
@@ -320,6 +338,18 @@ pub enum ErrorData {
     /// `psbt.grant_exceeded` (the grant's cap), `coinjoin.insufficient_funds`
     /// (the mixing minimum): a limit in duffs.
     Limit { duffs: u64 },
+    /// `credits.below_minimum` and `shielded.below_minimum` of a Core Max:
+    /// the floor, what Max would move (the figure held against it), the
+    /// spendable coins of the wallet's other accounts and the account's coins
+    /// not final yet, all in duffs, and whether Max would clear the floor
+    /// once those coins are final.
+    MaxMinimum {
+        min: u64,
+        duffs: u64,
+        left_duffs: u64,
+        arriving_duffs: u64,
+        arriving_clears: bool,
+    },
     /// `send.absurd_fee`, `send.amount_with_fee_exceeds_balance`, `psbt.absurd_fee`.
     Fee { fee: u64, available: Option<u64> },
     /// `send.grant_exceeded`: the payment's outflow against the grant's cap, in duffs.
@@ -343,6 +373,9 @@ pub enum ErrorData {
     /// `platform.broadcast_unknown`, `platform.will_be_sent`: what to ask
     /// `dispatch_status` about.
     Artifact { artifact: String },
+    /// `app.browser_open` from `open_project_link`: the page that did not
+    /// open, for the user to copy.
+    Link { url: String },
     /// `contact.payment_locked`, `credits.top_up_pending` (the lock to
     /// resume), and a txid elsewhere.
     Txid { txid: String },
@@ -395,10 +428,18 @@ pub enum ErrorData {
     /// `governance.not_a_contender`: the identity id (base58) the poll does
     /// not list (MG-07 D13).
     Contender { identity: String },
-    /// `masternodes.key_mismatch`: the role the key was given for.
+    /// `masternodes.key_mismatch`, `masternodes.key_exists`: the role the key
+    /// was given for.
     MasternodeKey {
         role: crate::dto::masternodes::AttachedKeyRoleName,
     },
+    /// `masternodes.operation_state`: the operation's state now.
+    OperationState { state: String },
+    /// `masternodes.keys_exhausted`: the keychain role with no unused key.
+    KeyRole { role: String },
+    /// `masternodes.update_pending`, `masternodes.update_superseded`: the
+    /// other operation's id.
+    Operation { operation: String },
     /// `masternodes.shared_message`: why a message was refused (never its
     /// text), and the share whose approval doesn't verify.
     SharedMessage { reason: String, share: Option<u16> },
@@ -435,8 +476,12 @@ pub enum ErrorData {
     /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13);
     /// `credits.recipient_invalid`: why the address cannot be paid (m4 §2.12).
     Reason { reason: String },
-    /// `tx_action_refused`: why the abandon or resend was refused.
-    TxAction { refusal: TxActionRefusalName },
+    /// `tx_action_refused`: why the abandon or resend was refused, and for
+    /// `recordUnreadable` the wallet whose saved transaction didn't read.
+    TxAction {
+        refusal: TxActionRefusalName,
+        wallet_id: Option<String>,
+    },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
     /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
     /// shield would spend; at most 50 fit): the number named.
@@ -499,6 +544,12 @@ pub enum StuckFundingRefusalName {
     LockInputsSpent {
         txid: String,
     },
+    /// Repair abandoned this asset lock, which the wallet recorded as a
+    /// payment that never settled: its coins come back after the rescan,
+    /// then Resolve again.
+    LockAbandoned {
+        txid: String,
+    },
     /// The self-spend spends no input of this signed asset lock.
     MissesSignedLock {
         txid: String,
@@ -526,6 +577,7 @@ impl From<dw_engine::platform::lease::StuckFundingRefusal> for StuckFundingRefus
             R::JournalUnavailable => Self::JournalUnavailable,
             R::SpendUnsettled(t) => Self::SpendUnsettled { txid: txid(t) },
             R::LockInputsSpent(t) => Self::LockInputsSpent { txid: txid(t) },
+            R::LockAbandoned(t) => Self::LockAbandoned { txid: txid(t) },
             R::MissesSignedLock(t) => Self::MissesSignedLock { txid: txid(t) },
             R::UnattributedLock(t) => Self::UnattributedLock { txid: txid(t) },
             R::NoKnownLock => Self::NoKnownLock,
@@ -543,11 +595,37 @@ pub enum TxActionRefusalName {
     Coinbase,
     InMempool,
     NotSentByWallet,
+    /// Abandon can go through after a restart and a rescan from the
+    /// wallet's birth (the message says so).
+    RescanFirst,
+    /// A later transaction that spends from it is already locked or
+    /// confirmed, so this one will confirm too.
+    SettledDescendant,
+    /// A saved transaction of the loaded wallet `walletId` names didn't
+    /// read at its load, so what descends from this one is unknown.
+    RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which Dash Wallet sends again.
+    PlatformFunding,
 }
 
-crate::dto::mirror_enum!(dw_engine::TxActionRefusal => TxActionRefusalName {
-    Confirmed, InstantLocked, AlreadyAbandoned, Coinbase, InMempool, NotSentByWallet
-});
+impl From<dw_engine::TxActionRefusal> for TxActionRefusalName {
+    fn from(r: dw_engine::TxActionRefusal) -> Self {
+        use dw_engine::TxActionRefusal as R;
+        match r {
+            R::Confirmed => Self::Confirmed,
+            R::InstantLocked => Self::InstantLocked,
+            R::AlreadyAbandoned => Self::AlreadyAbandoned,
+            R::Coinbase => Self::Coinbase,
+            R::InMempool => Self::InMempool,
+            R::NotSentByWallet => Self::NotSentByWallet,
+            R::RescanFirst => Self::RescanFirst,
+            R::SettledDescendant => Self::SettledDescendant,
+            R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::PlatformFunding => Self::PlatformFunding,
+        }
+    }
+}
 
 impl AppError {
     pub fn new(code: impl Into<ErrorCode>, message: impl Into<String>) -> Self {
@@ -624,6 +702,7 @@ into_code!(
     Name(NameCode),
     Contact(ContactCode),
     Invitation(InvitationCode),
+    Connect(ConnectCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
     Shielded(ShieldedCode),

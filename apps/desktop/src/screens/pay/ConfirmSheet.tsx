@@ -39,7 +39,9 @@ import {
   failureText,
   isContact,
   keepsPromise,
+  mixedSendNotes,
   paysWithUnmixed,
+  receivedAmounts,
   settleNotSent,
   subtractsFee,
   UNRECORDED,
@@ -152,9 +154,17 @@ export function ConfirmSheet({
   const fiat = useFiat();
   const discreet = useUi((s) => s.discreet);
   const value = (duffs: number, testId: string) => <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="confirm-fiat" testId={testId} />;
-  const { recipient, estimate, changeAddress, total } = confirmed;
+  const { recipient, more, estimate, changeAddress, total } = confirmed;
+  // A payment to several: each recipient's row with what it receives (`receivedAmounts`).
+  const many = !isContact(recipient) && more.length > 0 ? [recipient, ...more] : null;
+  const received = many ? receivedAmounts(many, estimate.totalSent) : null;
+  const payer = many ? many.findIndex(subtractsFee) : -1;
+  // What the fee took from that recipient's entered amount: nothing when a dust rest paid it.
+  const deducted = many && received && payer >= 0 ? many[payer].amount - received[payer] : 0;
+  const subtracting = payer >= 0 && deducted > 0 ? many![payer] : null;
   // The fee against what the payee gets (after a subtract-fee share; the change is not in it).
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
+  const mixed = mixedSendNotes(coins.coins, estimate, feeWarn !== null);
   const toast = useActionToast(walletId);
   const normal = coins.coins !== "mixed";
   const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
@@ -252,7 +262,14 @@ export function ConfirmSheet({
     let authId: string;
     if (contact?.acceptsToo) {
       try {
-        lease = await acceptUnderLease(b, { walletId, identity: contact.identity, from: contact.payee.contact, spendCap: total, credential });
+        lease = await acceptUnderLease(b, {
+          walletId,
+          identity: contact.identity,
+          from: contact.payee.contact,
+          spendCap: total,
+          credential,
+          windowed: credential.kind === "unencrypted" && lock.data?.encrypted === true,
+        });
       } catch (e) {
         if (e instanceof AcceptFailed && e.stage === "authorize") return refused(e.cause);
         const text = acceptFailedText(e instanceof AcceptFailed ? e.cause : e);
@@ -395,6 +412,14 @@ export function ConfirmSheet({
                 </span>
               )}
             </DetailRow>
+          ) : many && received ? (
+            many.map((r, i) => (
+              <DetailRow key={r.address} label={i === 0 ? t("pay.confirm.recipients", { count: many.length }) : ""} testId={`pay-confirm-recipient-${i}`}>
+                {r.label && <span className="confirm-label">{r.label}</span>}
+                <span className="address-full">{r.address}</span>
+                <AmountText text={shown.full(received[i])} unitName={unit} glyph={false} />
+              </DetailRow>
+            ))
           ) : (
             <DetailRow label={t("pay.confirm.payTo")} testId="pay-confirm-address">
               {recipient.label && <span className="confirm-label">{recipient.label}</span>}
@@ -432,7 +457,37 @@ export function ConfirmSheet({
             {feeWarningText(feeWarn)}
           </p>
         )}
-        {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+        {many
+          ? subtracting && (
+              <p className="placeholder-note" data-testid="pay-confirm-subtract-many">
+                {t("pay.confirm.subtractNoteMany", { amount: `${shown.full(deducted)} ${unit}`, address: ("label" in subtracting && subtracting.label) || ("address" in subtracting ? subtracting.address : "") })}
+              </p>
+            )
+          : subtractsFee(recipient) &&
+            // Only when the fee took something: a remainder can pay it all (a fully mixed payment).
+            estimate.totalSent < recipient.amount && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+        {mixed && (
+          <>
+            <p className="placeholder-note" data-testid="pay-confirm-mixed-coins">
+              {t("pay.confirm.mixed.coins", { count: mixed.inputCount })}
+            </p>
+            {mixed.manyCoins && (
+              <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-warning">
+                {t("pay.confirm.mixed.manyCoins")}
+              </p>
+            )}
+            {mixed.leftOver !== null &&
+              (mixed.largeLeftOver ? (
+                <p className="fee-warning" role="alert" data-testid="pay-confirm-mixed-left-over">
+                  {t.rich("pay.confirm.mixed.largeLeftOver", { amount: <AmountText text={shown.full(mixed.leftOver)} unitName={unit} glyph={false} /> })}
+                </p>
+              ) : (
+                <p className="placeholder-note" data-testid="pay-confirm-mixed-change">
+                  {t.rich("pay.confirm.mixed.noChange", { amount: <AmountText text={shown.full(mixed.leftOver)} unitName={unit} glyph={false} /> })}
+                </p>
+              ))}
+          </>
+        )}
         {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
         {unmixed && (
           <p className="placeholder-note" data-testid="pay-confirm-unmixed">

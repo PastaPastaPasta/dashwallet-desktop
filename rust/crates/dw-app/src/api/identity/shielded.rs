@@ -47,6 +47,14 @@ pub struct ShieldedStatus {
     /// Spends whose result is not confirmed yet (`pending`), until a sync
     /// pass resolves each. Offer no retry.
     pub unresolved_spends: Vec<UnresolvedSpend>,
+    /// Spends that may still go through, whose notes stay held (out of
+    /// `balance`) until the network shows they can no longer go through.
+    /// Offer no retry.
+    pub held_spends: Vec<HeldSpend>,
+    /// Credits the `heldSpends` hold; "0" when nothing is held.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub held: u64,
     /// Spends from before a restart whose result is not known and whose
     /// record was lost: one may still go through, so every send and
     /// unshield needs `confirmUnrecorded` until a sync shows all its notes
@@ -60,6 +68,98 @@ pub struct ShieldedStatus {
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
     pub prover_ready: bool,
+    /// This build can send, unshield and pay a contact from Shielded. When
+    /// false those calls, and a new shield into the pool, refuse
+    /// `platform.unavailable`; finishing a shield already sent, receive,
+    /// sync and balance still work.
+    pub spends_available: bool,
+    /// Whether the viewing key is bound, or what holds its first bind;
+    /// `null` while the network is not active. Once bound the receive
+    /// address reads before any scan.
+    pub account: Option<ShieldedAccount>,
+    /// The running pass's progress through the pool's note tree
+    /// (network-wide); `null` while no pass runs or before it knows the
+    /// pool's size.
+    pub scan: Option<ShieldedScanProgress>,
+    /// The last sync pass failed; cleared by the next one that succeeds.
+    pub last_pass_failed: bool,
+}
+
+/// Where the shielded account's viewing key stands. `locked` and
+/// `mixingOnly` clear with a full unlock; `watchOnly` does not clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedAccount {
+    Bound,
+    Binding,
+    Locked,
+    MixingOnly,
+    WatchOnly,
+}
+
+mirror_enum!(engine::ShieldedAccount => ShieldedAccount {
+    Bound, Binding, Locked, MixingOnly, WatchOnly
+});
+
+/// Tree positions a pass scanned of the pool's notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedScanProgress {
+    pub checked: u64,
+    pub total: u64,
+}
+
+impl From<engine::ShieldedScanProgress> for ShieldedScanProgress {
+    fn from(p: engine::ShieldedScanProgress) -> Self {
+        let engine::ShieldedScanProgress { checked, total } = p;
+        ShieldedScanProgress { checked, total }
+    }
+}
+
+/// Where the wallet's Shielded sync stands, for the status bar, Sync
+/// progress and Receive; read with no read of the note store, so it answers
+/// while a pass runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedSyncInfo {
+    /// The network takes shielded transitions and the session runs Platform.
+    pub active: bool,
+    /// `binding` for a key a status read binds next; `null` while not active.
+    pub account: Option<ShieldedAccount>,
+    /// A pass scanned the account this session, or a status read found its
+    /// ledger ready.
+    pub established: bool,
+    /// A pass is running.
+    pub syncing: bool,
+    pub scan: Option<ShieldedScanProgress>,
+    /// The wallet's last pass this session failed, until one succeeds.
+    pub last_pass_failed: bool,
+    /// As `ShieldedStatus.spendsAvailable`, and read on an inactive network
+    /// too.
+    pub spends_available: bool,
+}
+
+impl From<engine::ShieldedSyncInfo> for ShieldedSyncInfo {
+    fn from(s: engine::ShieldedSyncInfo) -> Self {
+        let engine::ShieldedSyncInfo {
+            active,
+            account,
+            established,
+            syncing,
+            scan,
+            last_pass_failed,
+            spends_available,
+        } = s;
+        ShieldedSyncInfo {
+            active,
+            account: account.map(Into::into),
+            established,
+            syncing,
+            scan: scan.map(Into::into),
+            last_pass_failed,
+            spends_available,
+        }
+    }
 }
 
 impl From<engine::ShieldedStatus> for ShieldedStatus {
@@ -73,11 +173,17 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields,
             unresolved_spends,
+            held_spends,
+            held,
             unrecorded_spends,
             synced_index,
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
+            account,
+            scan,
+            last_pass_failed,
         } = s;
         ShieldedStatus {
             active,
@@ -88,11 +194,17 @@ impl From<engine::ShieldedStatus> for ShieldedStatus {
             pending,
             pending_shields: pending_shields.into_iter().map(Into::into).collect(),
             unresolved_spends: unresolved_spends.into_iter().map(Into::into).collect(),
+            held_spends: held_spends.into_iter().map(Into::into).collect(),
+            held,
             unrecorded_spends: unrecorded_spends.into_iter().map(Into::into).collect(),
             synced_index,
             last_sync_at,
             syncing,
             prover_ready,
+            spends_available,
+            account: account.map(Into::into),
+            scan: scan.map(Into::into),
+            last_pass_failed,
         }
     }
 }
@@ -361,7 +473,9 @@ impl From<&dw_engine::EngineError> for ShieldRepairBlocked {
         use dw_engine::{CoinJoinFailure, EngineError as E, SendFailure};
         let reason = match e {
             E::StuckFunding(r) => match r {
-                R::RowsUnknown | R::CallRunning | R::JournalUnavailable => B::NotReady,
+                R::RowsUnknown | R::CallRunning | R::JournalUnavailable | R::LockAbandoned(_) => {
+                    B::NotReady
+                }
                 R::SpendUnsettled(_) => B::SpendUnsettled,
                 R::LockInputsSpent(_) | R::MissesSignedLock(_) => B::LockInputsSpent,
                 R::UnattributedLock(_) => B::UnattributedLock,
@@ -537,6 +651,48 @@ impl From<engine::ShieldedSpendOutcome> for ShieldedSpendOutcome {
     }
 }
 
+/// What an unshield to the wallet's own Platform address did: as
+/// `ShieldedSpendOutcome`, plus `record`, the `id` of its `fromShielded`
+/// Platform activity row when the wallet recorded one. That row turns
+/// `done` only once Platform executed the unshield.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnshieldToPlatformOutcome {
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The shielded balance after.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub balance: u64,
+    /// The Platform address paid.
+    pub to: String,
+    pub state: ShieldedSpendState,
+    pub unresolved: Option<UnresolvedSpend>,
+    pub record: Option<String>,
+}
+
+impl From<engine::UnshieldToPlatformOutcome> for UnshieldToPlatformOutcome {
+    fn from(o: engine::UnshieldToPlatformOutcome) -> Self {
+        let engine::UnshieldToPlatformOutcome {
+            credits,
+            balance,
+            to,
+            state,
+            unresolved,
+            record,
+        } = o;
+        UnshieldToPlatformOutcome {
+            credits,
+            balance,
+            to,
+            state: state.into(),
+            unresolved: unresolved.map(Into::into),
+            record,
+        }
+    }
+}
+
 /// Where a spend stands when the call returns. `pending`: it went out and
 /// its result is not confirmed. It is never failed meanwhile: its history
 /// row (`unresolved.activityId`) turns `confirmed` when a scan sees it
@@ -574,6 +730,36 @@ impl From<engine::UnresolvedSpend> for UnresolvedSpend {
             activity_id,
             transition,
             attempts,
+        }
+    }
+}
+
+/// A spend that may still go through, whose notes are held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldSpend {
+    /// Its history row's id.
+    pub activity_id: String,
+    /// Platform's hash of its signed state transition (hex).
+    pub transition: String,
+    /// Credits of the unspent notes it holds; "0" once all are spent. Two
+    /// spends that hold one note both count it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+}
+
+impl From<engine::HeldSpend> for HeldSpend {
+    fn from(h: engine::HeldSpend) -> Self {
+        let engine::HeldSpend {
+            activity_id,
+            transition,
+            credits,
+        } = h;
+        HeldSpend {
+            activity_id,
+            transition,
+            credits,
         }
     }
 }
@@ -637,6 +823,19 @@ mirror_enum!(engine::ShieldedActivityStatus => ShieldedActivityStatus {
     Pending, Confirmed, Failed, Unknown
 });
 
+/// Whether a spend's outcome is held open: `held` while the wallet cannot
+/// rule out that it executes (a refusal at its broadcast, or an outcome not
+/// recorded or not readable yet; its row reads pending), `released` once a
+/// refusal is proved never to go through (its row reads failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedRefusal {
+    Held,
+    Released,
+}
+
+mirror_enum!(engine::ShieldedRefusal => ShieldedRefusal { Held, Released });
+
 /// One row of the wallet's shielded history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -655,6 +854,15 @@ pub struct ShieldedActivity {
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
     pub created_at: Option<u64>,
+    /// The DashPay contact a withdrawal paid, when it was a contact
+    /// payment.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
+    /// Set on a spend whose outcome is held open, or a refusal released.
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<ShieldedRefusal>,
 }
 
 impl From<engine::ShieldedActivity> for ShieldedActivity {
@@ -670,6 +878,8 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status,
             created_at,
+            contact,
+            refusal,
         } = a;
         ShieldedActivity {
             id,
@@ -682,6 +892,8 @@ impl From<engine::ShieldedActivity> for ShieldedActivity {
             block_height,
             status: status.into(),
             created_at,
+            contact: contact.map(Into::into),
+            refusal: refusal.map(Into::into),
         }
     }
 }

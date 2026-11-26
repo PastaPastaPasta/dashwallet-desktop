@@ -820,7 +820,7 @@ retry forever nor count towards `registration.in_progress`, so a new registratio
 |---|---|---|
 | `WALLET_RESTORE` is not attested | `create_invitation` is refused, and so is `mark_asset_lock_consumption_unknown` | Invitation creation is X3 (1.1), after the storage patch; never fake the capability bit. The rare asset-lock case shows "Finish registration" again. #5207, which relaxes the reconciliation requirement, targets v5.1 only. |
 | `pending_contact_crypto` is not reloaded | the queue is lost on restart | drain at unlock and in the bring-up; Contacts shows "Unlock to finish setting up N contacts" |
-| the payments overlay and token balances are not reloaded | display metadata only | forced DashPay pass after `load()`; covered by the H-03 kill -9 test |
+| `load()` does not read the payments overlay tables or token balances | none for payments; the app shows no token balances | DashPay payments come back with the identity's stored record, not the overlay tables: the H-03 kill -9 matrix's row R7 checks that a payment stored before a kill is in the wallet after the relaunch. There is no forced DashPay pass after `load()`. The bell's row for that payment is not restored (#381). |
 | `dpns_name_states` live for one session only | marketplace departure classification | X4: mirror them in dw-appdb |
 
 ### 3.5 Change detection and events
@@ -1124,7 +1124,7 @@ library support and we build it.
 | F21 | Masternode voting on contested names (IOS-079; AND-079…083) | iOS voting with masternode voting keys | MG-07, with the wallet's masternode voting keys (§5a); DashPay itself shows the user's own contest state | present (SDK contested-resource votes) | 1.1, optional |
 | F22 | Transaction metadata on Platform (AND-036, 044…047) | Android only | local notes exist; Platform sync post-1.0 | upstream or ours | post-1.0 |
 | F23 | DashPay sync info (IOS-114, 139) | iOS Sync Info | DashPay card in Tools ▸ Information: loops, last pass, pending crypto, scan verdict, quorum source, "Sync now" | present | 1.0 |
-| F24 | DashConnect and tokens (IOS-085, 086) | test networks only | out of 1.0; revisit with Connect v2 | present | post-1.0 |
+| F24 | DashConnect and tokens (IOS-085, 086) | test networks only | App Connect v2 sign-ins (dips#181) in 1.0: a `dashpay://connect` link (or a pasted or scanned `dash-key:`) opens a sheet with the app's claimed name marked not verified, its App ID, the return host, the identity, each key's scope (a group's owner, admins and members as Platform proves them), the funding limit and the expiry; Approve asks for the PIN or password, adds bounded AUTHENTICATION keys and answers the app. Testnet and devnet only; mainnet stays off until the keys ruling (Pasta, 11-24). Connected apps and Disconnect follow; tokens stay post-1.0 | present (SDK App Connect queries) + ours (vault sealing, consent) | 1.0 (sign-in), post-1.0 (tokens) |
 | F25 | Platform (DIP-17) addresses, advanced mode, internal transfer (IOS-045, 047, 053, 059…064) | iOS only | X1a: read-only balance and a notice; X1b: transfers, receive, advanced mode | present | X1a 1.0; X1b 1.1 (§2.10) |
 | F26 | Shielded pool (IOS-059…062) | iOS only (default on Home) | X2; never the default registration funding; 1.0 says shielded balances are not shown yet | present behind the feature | 1.1 (§2.10) |
 

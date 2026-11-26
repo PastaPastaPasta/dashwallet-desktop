@@ -3,15 +3,17 @@
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { FundAmount } from "./generated/FundAmount";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldedSyncInfo } from "./generated/ShieldedSyncInfo";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
-import { creditsToDuffs } from "./pending";
+import { creditsToDuffs, fundAmount } from "./pending";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
@@ -25,6 +27,7 @@ import { heroQuietEnds, heroSync, newHeroWatch, watchHero, type HeroReading, typ
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 import { catchUpArrival } from "../components/emptyStates";
+import { resetUnderway } from "../tools/repair";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -49,6 +52,8 @@ export const keys = {
   balance: (walletId: string) => ["balance", walletId] as const,
   // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
   shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedSyncInfo: (walletId: string) => ["dashpay", "shielded", "syncInfo", walletId] as const,
+  shieldedAll: ["dashpay", "shielded"] as const,
   shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
   shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
   unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
@@ -61,15 +66,20 @@ export const keys = {
   // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
   platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
   platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
-  platformFundQuote: (walletId: string, duffs: number) => ["platformFundQuote", walletId, duffs] as const,
+  platformFundQuote: (walletId: string, amount: FundAmount) => ["platformFundQuote", walletId, amount] as const,
   // Under "dashpay" so the settle invalidation (events.ts) re-reads the unfinished locks.
   pendingPlatformFunds: (walletId: string) => ["dashpay", "pendingPlatformFunds", walletId] as const,
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  rescanProgress: ["rescanProgress"] as const,
+  historyGap: ["historyGap"] as const,
   scanHeightAll: ["scanHeight"] as const,
   scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
+  /** Outside the history's key, whose queries events.ts rewrites as pages of rows; a history
+   * change invalidates it by name. */
+  droppedNotices: (walletId: string) => ["droppedNotices", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
   txDetail: (walletId: string, txid: string) => ["txDetail", walletId, txid] as const,
@@ -139,9 +149,9 @@ export function useOpenNetwork() {
   });
 }
 
-export function useLockStatus() {
+export function useLockStatus(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()) });
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()), enabled });
 }
 
 export function useWallets(enabled = true) {
@@ -169,7 +179,7 @@ export const PENDING_MOVE_REFETCH_MS = 30_000;
 // A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
 // within minutes: look again.
 export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
-  hasPendingMove(data) || data?.some((a) => a.kind === "fromCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
+  hasPendingMove(data) || data?.some((a) => (a.kind === "fromCore" || a.kind === "recovered") && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
 
 /** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
 export function usePlatformActivity(walletId: string) {
@@ -213,13 +223,13 @@ export function usePlatformSendQuote(walletId: string, to: string, amount: Withd
   });
 }
 
-/** What "Add from Dash wallet" of `duffs` costs and adds; `null` duffs: no quote yet. */
-export function usePlatformFundQuote(walletId: string, duffs: number | null) {
+/** What "Add from Dash wallet" of `amount` costs and adds; `null`: no quote yet. */
+export function usePlatformFundQuote(walletId: string, amount: FundAmount | null) {
   const b = useBackend();
   return useQuery({
-    queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
-    queryFn: () => b.platformFundQuote(walletId, { kind: "duffs", duffs: duffs! }),
-    enabled: duffs !== null,
+    queryKey: keys.platformFundQuote(walletId, amount ?? { kind: "duffs", duffs: 0 }),
+    queryFn: () => b.platformFundQuote(walletId, amount!),
+    enabled: amount !== null,
     retry: false,
     gcTime: 0,
   });
@@ -231,22 +241,83 @@ export function usePendingPlatformFunds(walletId: string) {
   return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
-/** How often a sheet that shows the sync line re-reads the status while a pass runs: the engine
- * sends no event when a pass ends. */
+/** How often a view that shows Shielded's sync re-reads the status while a pass runs or the account
+ * is not established: the scan's progress comes with no event. */
 export const SHIELDED_SCAN_POLL_MS = 5_000;
 
-export const shieldedStatusRefetchMs = (status: ShieldedStatus | null | undefined): number | false => (status?.syncing ? SHIELDED_SCAN_POLL_MS : false);
+/** While a first bind is held back by a pass: each read tries the bind and waits on the pass, so
+ * the status bar reads it less often. */
+export const SHIELDED_BIND_POLL_MS = 15_000;
+
+/** While a pass runs, or the account is not established and nothing but time holds it (not an
+ * unlock, not a watch-only wallet). */
+export function shieldedStatusRefetchMs(status: ShieldedStatus | null | undefined): number | false {
+  if (status?.active && status.account === "binding") return SHIELDED_BIND_POLL_MS;
+  return status?.syncing || (status?.active && !status.ready && (status.account === null || status.account === "bound")) ? SHIELDED_SCAN_POLL_MS : false;
+}
 
 /** The shielded account's status; `null` while dw-app has no such command (api/pending.ts).
- * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while a pass runs. */
-export function useShieldedStatus(walletId: string, pollWhileSyncing = false) {
+ * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while it syncs (not while the window
+ * is hidden: TanStack pauses interval reads in the background). */
+export function useShieldedStatus(walletId: string, pollWhileSyncing = false, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: keys.shieldedStatus(walletId),
     queryFn: () => b.shieldedStatus(walletId),
+    enabled,
     retry: false,
-    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+    refetchInterval: pollWhileSyncing ? (q) => (q.state.status === "error" ? SHIELDED_SCAN_POLL_MS : shieldedStatusRefetchMs(q.state.data)) : false,
   });
+}
+
+/** While a pass runs, the account is not established and nothing but time holds it, or its last
+ * pass failed (the retry's start comes with no event); a failed read is tried again. */
+export function shieldedSyncInfoRefetchMs(info: ShieldedSyncInfo | null | undefined, failed: boolean): number | false {
+  if (failed) return SHIELDED_SCAN_POLL_MS;
+  if (!info?.active) return false;
+  return info.account === "binding" || info.syncing || info.lastPassFailed || (!info.established && info.account === "bound") ? SHIELDED_SCAN_POLL_MS : false;
+}
+
+/** Where the wallet's Shielded sync stands (`ShieldedSyncInfo`); `null` while dw-app has no such
+ * command. It answers while a pass holds the note store, which the full status waits for. */
+export function useShieldedSyncInfo(walletId: string, enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedSyncInfo(walletId),
+    queryFn: () => b.shieldedSyncInfo(walletId),
+    enabled,
+    retry: false,
+    refetchInterval: (q) => shieldedSyncInfoRefetchMs(q.state.data, q.state.status === "error"),
+  });
+}
+
+/** Reads a failed read once more when the account reads bound, once per bound state: a read with
+ * no data goes back to pending while it refetches, so its error alone would re-read in a loop. */
+export function useRereadWhenBound(bound: boolean, enabled: boolean, failed: boolean, reread: () => unknown) {
+  const done = useRef(false);
+  useEffect(() => {
+    if (!bound) done.current = false;
+    else if (enabled && failed && !done.current) {
+      done.current = true;
+      void reread();
+    }
+  }, [enabled, bound, failed, reread]);
+}
+
+/** An account the full status read may bind: the sync read cannot see a viewing key saved by an
+ * earlier session, which binds with no unlock. */
+export function shieldedBindable(info: ShieldedSyncInfo | null | undefined): boolean {
+  return !!info?.active && info.account !== null && info.account !== "bound";
+}
+
+/** The full status read binds a bindable account, and the sync read is read again once it binds. */
+export function useShieldedBind(walletId: string, info: ShieldedSyncInfo | null | undefined, enabled = true) {
+  const qc = useQueryClient();
+  const bindable = shieldedBindable(info);
+  const bound = useShieldedStatus(walletId, true, enabled && bindable).data?.account === "bound";
+  useEffect(() => {
+    if (bindable && bound) void qc.invalidateQueries({ queryKey: keys.shieldedSyncInfo(walletId) });
+  }, [bindable, bound, qc, walletId]);
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
@@ -270,6 +341,20 @@ export function shieldedDuffs(status: ShieldedStatus | null): number | null {
   return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
 }
 
+/** What payments that may still go through hold of the Shielded balance (not in `balance`): how
+ * many still hold notes, and the held total in credits and duffs. `null` when nothing is held: a
+ * held spend whose notes a scan saw spent holds nothing. */
+export interface ShieldedHold {
+  count: number;
+  credits: string;
+  duffs: number;
+}
+
+export function shieldedHold(status: ShieldedStatus | null | undefined): ShieldedHold | null {
+  if (!status?.active || BigInt(status.held) === 0n) return null;
+  return { count: status.heldSpends.filter((h) => BigInt(h.credits) > 0n).length, credits: status.held, duffs: creditsToDuffs(status.held) };
+}
+
 /** What `request` costs and buys, read while the sheet asks to confirm it. */
 export function useShieldedQuote(walletId: string, request: ShieldedRequest | null) {
   const b = useBackend();
@@ -278,13 +363,16 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
     queryFn: async (): Promise<ShieldedQuoteView> => {
       switch (request?.kind) {
         case "add": {
-          return { kind: "add", quote: await b.shieldQuote(walletId, { kind: "duffs", duffs: request.duffs }) };
+          return { kind: "add", quote: await b.shieldQuote(walletId, fundAmount(request)) };
         }
         case "send": {
           return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
         }
         case "out": {
           return { kind: "spend", quote: await b.unshieldQuote(walletId, request.credits, null) };
+        }
+        case "toPlatform": {
+          return { kind: "spend", quote: await b.unshieldToPlatformQuote(walletId, request.credits, null) };
         }
         default:
           throw new Error("nothing to quote");
@@ -312,6 +400,7 @@ export function usePoolBalances(walletId: string) {
   const platform = usePlatformAddresses(walletId);
   return {
     shielded: poolReading(shielded, shieldedReading),
+    shieldedHold: shieldedHold(shielded.data),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
     platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */
@@ -444,6 +533,12 @@ export function useHistory(walletId: string, filter: HistoryFilter, limit: numbe
   });
 }
 
+/** The notices of payments Dash Wallet dropped because what they spent was never valid. */
+export function useDroppedNotices(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.droppedNotices(walletId), queryFn: () => b.droppedNotices(walletId) });
+}
+
 export function useTxDetail(walletId: string, txid: string) {
   const b = useBackend();
   return useQuery({ queryKey: keys.txDetail(walletId, txid), queryFn: () => b.txDetail(walletId, txid) });
@@ -511,9 +606,9 @@ export function useFeePolicy() {
 }
 
 /** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
-export function usePaymentAuthentication() {
+export function usePaymentAuthentication(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+  return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), enabled, staleTime: 0, gcTime: 0, retry: false });
 }
 
 /** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */
@@ -642,6 +737,43 @@ export function useDustProtection() {
 export function useNodeInfo() {
   const b = useBackend();
   return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
+}
+
+/** The running rescan, re-read every few seconds: an in-memory read the engine answers at once. */
+export function useRescanProgress() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.rescanProgress, queryFn: () => b.rescanProgress(), refetchInterval: 5_000 });
+}
+
+/** When `history_gap` is read while SPV runs: at once, then while it answers `null`, since the
+ * engine's first header anchor reaches disk some seconds after the start and no event says so. */
+const HISTORY_GAP_READS_MS = [0, 6_000, 20_000, 60_000];
+
+/** Reads `history_gap` (about 1 MB of headers on disk) for the app shell: never on a sync tick.
+ * Kept until the wallet locks, so Home finds it again however long it was away. */
+const historyGapQuery = (b: Backend) => ({ queryKey: keys.historyGap, queryFn: () => b.historyGap(), gcTime: Infinity });
+
+/** `wallets` is the open wallets' ids and birth heights, joined: a new wallet or a lower birth
+ * height reads again. With sync stopped it reads once, as stored headers answer without SPV. */
+export function useHistoryGapReads(running: boolean, wallets: string) {
+  const b = useBackend();
+  const client = useQueryClient();
+  useEffect(() => {
+    if (!wallets || (!running && resetUnderway(b))) return;
+    const timers = (running ? HISTORY_GAP_READS_MS : [0]).map((ms) =>
+      setTimeout(() => {
+        if (ms > 0 && client.getQueryData(keys.historyGap) != null) return;
+        void client.fetchQuery({ ...historyGapQuery(b), staleTime: 0 }).catch(() => undefined);
+      }, ms),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [b, client, running, wallets]);
+}
+
+/** The last `history_gap` answer the shell read; this never reads itself. */
+export function useHistoryGap() {
+  const b = useBackend();
+  return useQuery({ ...historyGapQuery(b), enabled: false });
 }
 
 export function useProtocolCompatibility() {

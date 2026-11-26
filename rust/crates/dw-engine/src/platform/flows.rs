@@ -89,6 +89,11 @@ pub enum FlowKind {
     /// `PlatformOp` grant (C-funding P15), with the one key class its source
     /// needs; never a `ContactPayment` lease, nor the reverse.
     ContactPayFromBalance,
+    /// One App Connect login under an `AppConnect` grant: the MASTER-signed
+    /// IdentityUpdate adding the app's keys, then the response document,
+    /// each under its own call permit. Its signers are `PlatformIdentity`
+    /// and an `AppConnect` one bound to the grant's request.
+    AppConnect,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -251,7 +256,14 @@ impl NetworkSession {
         crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
         match (flow, source) {
+            // An approval begins its own lease, under the grant its quote
+            // bound (app_connect.rs): never a host's.
+            (FlowKind::AppConnect, _) => return Err(PlatformError::GrantInvalid),
             (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded))
+                if super::shielded_payout::enabled_on(&self.network) => {}
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Platform))
+                if super::contact_payout::refuse_on_mainnet(self).is_ok() => {}
             (FlowKind::AcceptAndPay | FlowKind::ContactPayFromBalance, Some(source)) => {
                 return Err(payout_source(source));
             }
@@ -262,7 +274,12 @@ impl NetworkSession {
             }
             _ => {}
         }
-        let lease = self.begin_lease(wallet_id, flow, &grants).await?;
+        let lease = match (flow, source) {
+            (FlowKind::ContactPayFromBalance, Some(PaymentSource::Shielded)) => {
+                (self.begin_payout_lease(wallet_id, PaymentSource::Shielded, &grants)).await?
+            }
+            _ => self.begin_lease(wallet_id, flow, &grants).await?,
+        };
         // A removal or Close Wallet holds its barrier until the wallet is
         // gone (§8.6), so a lease that waited it out finds no wallet here.
         // Dropping the owning handle ends it.

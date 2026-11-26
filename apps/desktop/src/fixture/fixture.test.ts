@@ -32,6 +32,33 @@ afterEach(() => {
 });
 
 describe("fixture backend", () => {
+  it("reports Shielded spends available, as main's engine does, and refuses them, their quotes, new shields and the receive address before anything moves where they are off", async () => {
+    const on = backend({ scenario: "funded" }).b;
+    expect((await on.shieldedStatus(FIXTURE_WALLET_ID))?.spendsAvailable).toBe(true);
+    const { b } = backend({ scenario: "shielded-spends-off" });
+    const before = await b.shieldedStatus(FIXTURE_WALLET_ID);
+    expect(before?.spendsAvailable).toBe(false);
+    const history = await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50);
+    for (const call of [
+      () => b.shieldedSendQuote(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000"),
+      () => b.unshieldQuote(FIXTURE_WALLET_ID, "10000000000", null),
+      () => b.unshieldToPlatformQuote(FIXTURE_WALLET_ID, "10000000000", null),
+      () => b.shieldedReceiveAddress(FIXTURE_WALLET_ID),
+      () => b.shieldedSend(FIXTURE_WALLET_ID, "tdash1zq0k8y", "10000000000", null, "g", false),
+      () => b.unshieldToCore(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.unshieldToPlatform(FIXTURE_WALLET_ID, "10000000000", null, "g", false),
+      () => b.shieldQuote(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }),
+      () => b.shieldFromCore(FIXTURE_WALLET_ID, { kind: "duffs", duffs: 1_000_000 }, "g"),
+      () => b.shieldMixedQuote(FIXTURE_WALLET_ID),
+      () => b.shieldMixedCoins(FIXTURE_WALLET_ID, "g"),
+    ]) {
+      const e = await call().catch((x: unknown) => x);
+      expect(isAppError(e) && e.code).toBe("platform.unavailable");
+    }
+    expect(await b.shieldedStatus(FIXTURE_WALLET_ID)).toEqual(before);
+    expect(await b.shieldedHistory(FIXTURE_WALLET_ID, 0, 50)).toEqual(history);
+  });
+
   // vite.config.ts fails a production build holding a module with this marker, wherever it
   // lives: a fixture module copied or renamed out of src/fixture/ keeps it. One whose marker
   // was also removed is found by its literals (scripts/check-bundle.mjs, sentinels.test.ts),
@@ -49,6 +76,7 @@ describe("fixture backend", () => {
       "addContact.test.ts",
       "coinjoin.test.ts",
       "coinjoin.ts",
+      "connect.ts",
       "contacts.test.ts",
       "dashpay.ts",
       "errors.ts",
@@ -69,6 +97,7 @@ describe("fixture backend", () => {
       "notifications.test.ts",
       "pane.test.ts",
       "payContact.test.ts",
+      "payFromBalance.test.ts",
       "pending.test.ts",
       "pending.ts",
       "profile.test.ts",
@@ -96,6 +125,7 @@ describe("fixture backend", () => {
       "topup.test.ts",
       "topup.ts",
       "transfer.ts",
+      "unshieldToPlatform.test.ts",
       "updates.ts",
       "vault.ts",
       "vectors/accept.json",
@@ -106,7 +136,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shared.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "updates.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "connect.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shared.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "updates.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -218,6 +248,60 @@ describe("fixture backend", () => {
     await expect(quote("dashpaydesktopquote2", { kind: "invitation", linkId: "1".padStart(32, "0"), requestInviter: true })).rejects.toMatchObject({
       code: "invitation.expired",
     });
+    // C-funding F5: from the Platform balance the identity receives the name's credits and the first
+    // address keeps three fees; the start takes only those numbers, under a grant it can redeem.
+    const fromPlatform = await quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" });
+    expect(fromPlatform).toMatchObject({
+      lockDuffs: 0,
+      totalDuffs: 0,
+      remainingCredits: "0",
+      grant: { maxDuffs: 0, maxCredits: "4124500000" },
+      platform: { fundingCredits: "2000000000", feeCredits: "41500000", feeReserveCredits: "124500000", debitCredits: "2124500000" },
+    });
+    expect((await quote("dashpaydesktopquote2")).platform).toBeNull();
+    const { fundingCredits, feeReserveCredits } = fromPlatform.platform!;
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits: "1" }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "registration.quote_changed" });
+    // The label's rules come first, as the engine's: the quote and the start refuse it alike.
+    const doubled = { kind: "platformAddresses", fundingCredits, feeReserveCredits } as const;
+    await expect(quote("foo--bar", doubled)).rejects.toMatchObject({ code: "name.invalid" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "foo--bar", temporaryLabel: null, funding: doubled, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "name.invalid" });
+    // A move that may still execute holds the addresses: refused, naming it.
+    clearMocks();
+    backend({ scenario: "platform-send-held" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "credits.move_pending",
+      data: { kind: "artifact", artifact: "ps-held" },
+    });
+    // Mainnet: off (flag platform_registration).
+    clearMocks();
+    backend({ scenario: "dashpay-no-identity", network: "mainnet" });
+    await expect(quote("dashpaydesktopquote2", { kind: "platformAddresses", fundingCredits: "0", feeReserveCredits: "0" })).rejects.toMatchObject({
+      code: "platform.feature_off",
+      data: { feature: "platform_registration" },
+    });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: { kind: "platformAddresses", fundingCredits, feeReserveCredits }, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "platform_registration" } });
+    // From the Shielded balance: off on mainnet too (flag shielded_registration), before any read.
+    const fromShielded = { kind: "shielded", denomination: "0" } as const;
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
+    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 112).
+    clearMocks();
+    backend({ scenario: "shielded-spends-off" });
+    await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.unavailable" });
+    await expect(
+      cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
+    ).rejects.toMatchObject({ code: "platform.unavailable" });
   });
 
   it("opens a transaction on the window's network and refuses regtest and devnet", async () => {

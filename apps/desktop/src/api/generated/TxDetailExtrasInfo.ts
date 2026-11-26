@@ -15,6 +15,11 @@ totalCredit: number,
  */
 totalDebit: number | null,
 /**
+ * Some input spends a coin this wallet holds no record of: another
+ * party's, or this wallet's whose funding it has not seen.
+ */
+inputsUnresolved: boolean,
+/**
  * Signed duffs.
  */
 net: number,
@@ -31,6 +36,17 @@ inMempool: boolean | null, abandoned: boolean, canAbandon: boolean, canResend: b
  * Dust-locked outputs of this transaction.
  */
 dustLockedOutputs: Array<OutPoint>,
+/**
+ * Outputs of this transaction shown as pending, kept out of spending
+ * and every balance while it, or one it was built on, may never
+ * confirm.
+ */
+withheldOutputs: Array<OutPoint>,
+/**
+ * Abandoned, with a coin it spent still being checked by a rescan
+ * before it comes back.
+ */
+checkingSpentCoins: boolean,
 /**
  * UNIX seconds the engine last announced it (send or resend).
  */

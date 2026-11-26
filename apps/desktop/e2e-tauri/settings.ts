@@ -123,14 +123,6 @@ async function main() {
     }
     throw new Error(`${id} did not take ${text.length} characters`);
   };
-  /** Chooses an option of a <select> as its change event reports it to React. */
-  const choose = (id: string, value: string) =>
-    wd.script(
-      `const el = document.querySelector(arguments[0]);
-       Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, arguments[1]);
-       el.dispatchEvent(new Event("change", { bubbles: true }));`,
-      [tid(id), value],
-    );
   const checked = (id: string) => wd.script<boolean>(`return !!document.querySelector(arguments[0])?.checked`, [tid(id)]);
   const invoke = async <T>(command: string, args: Record<string, unknown> = {}): Promise<T> => {
     const r = await wd.scriptAsync<{ ok?: T; err?: string }>(
@@ -176,7 +168,7 @@ async function main() {
     await wd.press(tid("settings-theme-dark"));
     await poll(TIMEOUT_MS, "the dark appearance", async () => ((await wd.script<string>("return document.documentElement.dataset.theme ?? ''")) === "dark" ? true : undefined));
     await wd.press(tid("settings-unit-milliDash"));
-    await choose("settings-digits", "3");
+    await wd.press(tid("settings-decimals-3"));
     await wd.press(tid("settings-subtract-fee"));
     await poll(TIMEOUT_MS, "the saved settings", async () => {
       const s = await invoke<UiSettings>("ui_settings");
@@ -275,7 +267,8 @@ async function main() {
       throw new Error(`settings.json after the run: ${JSON.stringify(saved)}`);
     await launch();
     await unlock(NEW_PASSPHRASE);
-    await waitText(tid("hero-amount"), /^#\.###\s?mtDASH$/, "the balance hidden at start (#.### mtDASH)");
+    // Decimal places pads shown amounts only; the discreet mask keeps two.
+    await waitText(tid("hero-amount"), /^#\.##\s?mtDASH$/, "the balance hidden at start (#.## mtDASH)");
     if ((await wd.script<string>("return document.documentElement.dataset.theme ?? ''")) !== "dark") throw new Error("the relaunch is not dark");
     const after = await loadStates();
     if (after.find((w) => w.walletId === watcher.walletId)?.loaded !== false) throw new Error("Watcher was loaded at start");

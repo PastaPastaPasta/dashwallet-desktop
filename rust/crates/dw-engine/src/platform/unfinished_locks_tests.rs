@@ -2,7 +2,7 @@
 //! and the engine's evidence, the one reply that reads "already consumed",
 //! and detection over a scripted kind.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -63,6 +63,8 @@ struct Ev {
     used: HashSet<OutPoint>,
     readiness: Readiness,
     minimum: Option<Minimum>,
+    remaining: HashMap<OutPoint, u64>,
+    remainder_floor: Option<u64>,
 }
 
 impl Default for Ev {
@@ -74,8 +76,20 @@ impl Default for Ev {
             used: HashSet::new(),
             readiness: Readiness::Ready,
             minimum: None,
+            remaining: HashMap::new(),
+            remainder_floor: None,
         }
     }
+}
+
+/// The bytes drive stores for a lock of `initial` credits with `remaining`
+/// left (`add_asset_lock_outpoint_operations/v0`).
+pub(super) fn stored_value(initial: u64, remaining: u64) -> Vec<u8> {
+    use dpp::asset_lock::reduced_asset_lock_value::AssetLockValue;
+    use dpp::serialization::PlatformSerializable;
+    let rules = dpp::version::PlatformVersion::latest();
+    let value = AssetLockValue::new(initial, vec![0x76; 25], remaining, Vec::new(), rules).unwrap();
+    value.serialize_to_bytes().unwrap()
 }
 
 impl Ev {
@@ -91,6 +105,8 @@ impl Ev {
             reported_used: &self.used,
             readiness: &self.readiness,
             minimum: self.minimum,
+            remaining: &self.remaining,
+            remainder_floor: self.remainder_floor,
         };
         classify(LockKindId::Shielded, l, &ev).map(|u| (u.origin, u.state))
     }
@@ -121,13 +137,35 @@ fn every_kind_names_its_funding_type_and_no_other_type_is_a_kind() {
 }
 
 /// A lock a restore read back from the chain that no funding step here
-/// signed is unfinished and ready to try: nothing tells whether Platform
-/// took it.
+/// signed may already have been added on Platform, and nothing the wallet
+/// reads tells whether it was: it reads Checking, as this device's own
+/// recovered lock does, never Ready ("this wallet hasn't seen it added").
 #[test]
-fn a_restored_chain_locked_lock_is_ready() {
+fn a_restored_chain_locked_lock_is_checking() {
     let l = lock(1, LockStatus::RecoveredFromChain);
     let state = Ev::default().state(&l);
-    assert_eq!(state, Some((LockOrigin::Restored, UnfinishedState::Ready)));
+    assert_eq!(
+        state,
+        Some((LockOrigin::Restored, UnfinishedState::Checking))
+    );
+}
+
+/// A restore's lock below the apply's minimum could not have been added:
+/// it reads TooSmall, read back from the chain or not.
+#[test]
+fn a_restored_chain_locked_lock_below_the_minimum_is_too_small() {
+    let l = lock(1, LockStatus::RecoveredFromChain);
+    let ev = Ev {
+        minimum: Some(Minimum {
+            duffs: l.amount + 1,
+            code: "shielded.below_minimum",
+        }),
+        ..Ev::default()
+    };
+    assert_eq!(
+        ev.state(&l),
+        Some((LockOrigin::Restored, UnfinishedState::TooSmall))
+    );
 }
 
 /// A lock of this device's the library holds "consumption unknown" reads
@@ -187,7 +225,7 @@ fn a_lock_without_a_proof_is_confirming() {
 
 #[test]
 fn an_apply_that_may_have_executed_is_checking() {
-    let l = lock(1, LockStatus::RecoveredFromChain);
+    let l = lock(1, LockStatus::ChainLocked);
     let ev = Ev {
         unknown: txids([l.outpoint.txid]),
         ..Ev::default()
@@ -203,7 +241,7 @@ fn an_apply_that_may_have_executed_is_checking() {
 /// sibling outpoint's report says nothing of it.
 #[test]
 fn a_lock_reported_used_is_finished_and_only_at_its_outpoint() {
-    let l = lock(1, LockStatus::RecoveredFromChain);
+    let l = lock(1, LockStatus::ChainLocked);
     let ev = Ev {
         used: HashSet::from([l.outpoint]),
         ..Ev::default()
@@ -483,7 +521,7 @@ fn detection_lists_the_unfinished_locks_only_sorted() {
                 restored.outpoint.txid.to_string(),
                 2_000_000,
                 LockOrigin::Restored,
-                UnfinishedState::Ready
+                UnfinishedState::Checking
             ),
             (
                 own.outpoint.txid.to_string(),
@@ -661,7 +699,7 @@ fn a_txid_of_two_locks_is_told_apart_by_outpoint() {
 fn a_sibling_of_another_kind_settled_by_txid_hides_nothing() {
     let shield = KindLock {
         credit_outputs: 2,
-        ..alone(&lock(1, LockStatus::RecoveredFromChain))
+        ..alone(&lock(1, LockStatus::ChainLocked))
     };
     let txid = shield.info.outpoint.txid;
     let kind = FakeKind {
@@ -1036,7 +1074,7 @@ impl Rig for FakeRig {
         let marks = match mark {
             Mark::Settled => &self.kind.settled,
             Mark::Unknown => &self.kind.unknown,
-            Mark::Reported => unreachable!("no record by txid of a report"),
+            Mark::Used | Mark::Remaining => unreachable!("no record by txid of a proved read"),
         };
         marks.lock().unwrap().txids.insert(txid);
     }
@@ -1123,4 +1161,143 @@ fn an_error_after_the_signature_is_checking_whatever_the_kind_says() {
     assert!(rig.marks().1.outpoints.contains(&at));
     let listed = rig.list().unwrap();
     assert_eq!(listed[0].state, UnfinishedState::Checking);
+}
+
+/// BL-921: how a verified read of `SpentAssetLockTransactions` is read.
+/// No element is unspent, an empty item or an `AssetLockValue` with nothing
+/// left consumed, any other `AssetLockValue` partly used with its remaining
+/// credits (#402); nothing back, the key missing from the answer, an item
+/// that is not an `AssetLockValue`, or an element of another sort is no
+/// answer.
+#[test]
+fn a_spent_read_follows_drives_asset_lock_tree() {
+    use super::unfinished_locks::{SpentRead, read_spent, spent_key};
+    use dash_sdk::query_types::Elements;
+    use drive::grovedb::Element;
+    let at = OutPoint::new(Txid::from_byte_array([0x5A; 32]), 7);
+    let key = spent_key(at);
+    assert_eq!(key.len(), 36);
+    assert_eq!(&key[..32], &[0x5A; 32]);
+    assert_eq!(&key[32..], &7u32.to_le_bytes());
+    let answer = |element: Option<Element>| {
+        let mut elements = Elements::default();
+        elements.insert(key.clone(), element);
+        elements
+    };
+    assert_eq!(read_spent(None, &key), SpentRead::Unread);
+    assert_eq!(
+        read_spent(Some(&Elements::default()), &key),
+        SpentRead::Unread
+    );
+    assert_eq!(read_spent(Some(&answer(None)), &key), SpentRead::Unspent);
+    let used = answer(Some(Element::new_item(Vec::new())));
+    assert_eq!(read_spent(Some(&used), &key), SpentRead::Consumed);
+    let junk = answer(Some(Element::new_item(vec![0, 1, 2, 3])));
+    assert_eq!(read_spent(Some(&junk), &key), SpentRead::Unread);
+    let rest = answer(Some(Element::new_item(stored_value(
+        1_000_000_000,
+        400_000_000,
+    ))));
+    assert_eq!(
+        read_spent(Some(&rest), &key),
+        SpentRead::Remaining {
+            credits: 400_000_000
+        }
+    );
+    let none_left = answer(Some(Element::new_item(stored_value(1_000_000_000, 0))));
+    assert_eq!(read_spent(Some(&none_left), &key), SpentRead::Consumed);
+    let mut trailing = stored_value(1_000_000_000, 400_000_000);
+    trailing.push(0);
+    let trailing = answer(Some(Element::new_item(trailing)));
+    assert_eq!(read_spent(Some(&trailing), &key), SpentRead::Unread);
+    let tree = answer(Some(Element::empty_tree()));
+    assert_eq!(read_spent(Some(&tree), &key), SpentRead::Unread);
+    let other = spent_key(OutPoint::new(at.txid, 8));
+    assert_eq!(read_spent(Some(&answer(None)), &other), SpentRead::Unread);
+}
+
+/// The spent read asks drive's own path and key: the tree byte as drive
+/// builds it (72, `SpentAssetLockTransactions`), and the outpoint's
+/// consensus bytes, as drive-abci keys a spent lock
+/// (`Bytes36::new(out_point.into())`).
+#[test]
+fn the_spent_read_asks_drives_own_path_and_key() {
+    use super::unfinished_locks::{spent_key, spent_path};
+    assert_eq!(spent_path(), vec![vec![72u8]]);
+    let at = OutPoint::new(Txid::from_byte_array([0x11; 32]), 3);
+    let drive_key: [u8; 36] = at.into();
+    assert_eq!(spent_key(at), drive_key.to_vec());
+}
+
+/// What drive stores for a partly used lock, a serialized `AssetLockValue`,
+/// reads as a remaining value with its credits; only an empty item reads
+/// consumed.
+#[test]
+fn a_value_drive_stores_for_a_partly_used_lock_reads_remaining() {
+    use super::unfinished_locks::{SpentRead, read_spent, spent_key};
+    use dash_sdk::query_types::Elements;
+    use dpp::asset_lock::reduced_asset_lock_value::AssetLockValue;
+    use dpp::serialization::PlatformSerializable;
+    use dpp::version::PlatformVersion;
+    use drive::grovedb::Element;
+    let value = AssetLockValue::new(
+        100_000_000,
+        vec![0x76, 0xa9],
+        40_000_000,
+        Vec::new(),
+        PlatformVersion::latest(),
+    )
+    .unwrap();
+    let bytes = value.serialize_to_bytes().unwrap();
+    assert!(!bytes.is_empty());
+    let key = spent_key(OutPoint::new(Txid::from_byte_array([0x12; 32]), 0));
+    let mut elements = Elements::default();
+    elements.insert(key.clone(), Some(Element::new_item(bytes)));
+    assert_eq!(
+        read_spent(Some(&elements), &key),
+        SpentRead::Remaining {
+            credits: 40_000_000
+        }
+    );
+}
+
+/// A spent read that fails, hangs past its bound, or would go out without
+/// a proof is no answer; the fetch is not even made without proofs.
+#[tokio::test(start_paused = true)]
+async fn a_spent_read_that_fails_hangs_or_has_no_proof_is_unread() {
+    use super::unfinished_locks::{SpentRead, read_fetched, spent_key};
+    use dash_sdk::query_types::Elements;
+    use drive::grovedb::Element;
+    let at = OutPoint::new(Txid::from_byte_array([0x13; 32]), 0);
+    let key = spent_key(at);
+    let limit = std::time::Duration::from_secs(30);
+
+    let ran = AtomicBool::new(false);
+    let unproved = read_fetched(false, at, &key, limit, || async {
+        ran.store(true, Ordering::SeqCst);
+        Ok::<_, String>(Elements::default())
+    })
+    .await;
+    assert_eq!(unproved, SpentRead::Unread);
+    assert!(!ran.load(Ordering::SeqCst), "no fetch without proofs");
+
+    let failed = read_fetched(true, at, &key, limit, || async {
+        Err::<Elements, _>("no proof in result".to_string())
+    })
+    .await;
+    assert_eq!(failed, SpentRead::Unread);
+
+    let hung = read_fetched(true, at, &key, limit, || {
+        std::future::pending::<Result<Elements, String>>()
+    })
+    .await;
+    assert_eq!(hung, SpentRead::Unread);
+
+    let used = read_fetched(true, at, &key, limit, || async {
+        let mut elements = Elements::default();
+        elements.insert(key.clone(), Some(Element::new_item(Vec::new())));
+        Ok::<_, String>(elements)
+    })
+    .await;
+    assert_eq!(used, SpentRead::Consumed);
 }

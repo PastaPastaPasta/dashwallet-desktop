@@ -238,6 +238,13 @@ describe("pseudo-locales", () => {
     expect(m).toBe("‮Switch to ‬{network}‮?‬");
   });
 
+  it("keep a multi-paragraph message right to left in every paragraph", () => {
+    const m = rtl.get("settings.about.license.text") as string;
+    const paragraphs = m.split("\n").filter((p) => p !== "");
+    expect(paragraphs.length).toBeGreaterThan(3);
+    for (const p of paragraphs) expect(p.startsWith("‮") && p.endsWith("‬"), p.slice(0, 20)).toBe(true);
+  });
+
   it("read through t once chosen", () => {
     choose("en-XA");
     expect(t("shell.status.synced")).toMatch(/^⟦Šýñçéð·+⟧$/);

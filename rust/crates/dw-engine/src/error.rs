@@ -76,7 +76,7 @@ pub enum EngineError {
     #[error("invalid xpub: {0}")]
     InvalidXpub(String),
     /// The transaction's state forbids abandon or resend.
-    #[error("transaction action refused: {0:?}")]
+    #[error("{}", .0.message())]
     TxActionRefused(crate::TxActionRefusal),
     /// No connected peer to announce a transaction to.
     #[error("no connected peers")]

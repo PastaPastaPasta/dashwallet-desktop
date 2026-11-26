@@ -264,8 +264,6 @@ pub(super) fn known_mn(hash: [u8; 32], height: u32, p: &ProRegTxV3) -> SharedMn<
     }
 }
 
-/// The operation the session was handed off as: the one whose signed bytes
-/// carry its `txid`.
 /// What `together_discard` does with a parsed session (D17), and what
 /// `SharedSession.discardable` reads.
 enum Discard {
@@ -304,6 +302,8 @@ fn discard_rule(t: &Together, mn: Option<&SharedMn>, v: &TogetherView) -> Discar
     }
 }
 
+/// The operation the session was handed off as: the one whose signed bytes
+/// carry its `txid`.
 fn handed_off<'a>(t: &Together, v: &'a TogetherView) -> Option<&'a MasternodeOpRow> {
     let txid = t.row.txid.as_deref()?;
     v.ops
@@ -1210,6 +1210,7 @@ fn view(
         reserved: Vec::new(),
         next,
         discardable,
+        abandonable: false,
         warnings,
         approved_terms: None,
         base_keys: None,
@@ -1218,6 +1219,7 @@ fn view(
         created_at: t.row.created_at,
         updated_at: t.row.updated_at,
         last_error: t.row.last_error.clone(),
+        recovery: Default::default(),
     }
 }
 

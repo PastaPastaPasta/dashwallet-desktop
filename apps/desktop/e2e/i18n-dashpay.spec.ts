@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { MAIN_PHRASE } from "../src/fixture/vault";
-import { CARDS } from "./dashpay";
+import { CARDS, payFrom, payFromDashWallet, platformRunFails, setShielded } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors } from "./helpers";
 import { checkArea, overflow, PANES, PSEUDO, untranslated } from "./pseudo";
 
@@ -41,6 +41,7 @@ async function toJoin(page: Page) {
 async function nameStep(page: Page) {
   await toJoin(page);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await page.getByTestId("registration-name").waitFor();
 }
 
@@ -55,7 +56,18 @@ async function confirm(page: Page, label: string) {
   await page.getByTestId("registration-name-field").fill(label);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();
+  // A contested label's instant offer, declined.
+  if (label === "alice") await page.getByTestId("instant-offer-decline").click();
   await page.getByTestId("registration-confirm").waitFor();
+}
+
+/** Step 1 for the contested "alice", then its instant offer. */
+async function offered(page: Page) {
+  await nameStep(page);
+  await page.getByTestId("registration-name-field").fill("alice");
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("instant-offer").waitFor();
 }
 
 async function started(page: Page, label = LABEL) {
@@ -63,6 +75,12 @@ async function started(page: Page, label = LABEL) {
   if (label === "alice") await page.getByTestId("registration-accept").check();
   await page.getByTestId("registration-pay").click();
   await authorize(page);
+}
+
+/** The Join page's voting card, once it offers `action`. */
+async function onCard(page: Page, action: string) {
+  await toJoin(page);
+  await expect(page.getByTestId("dashpay-card-action")).toHaveAttribute("data-kind", action);
 }
 
 async function onScreen(page: Page, kind: string) {
@@ -102,7 +120,15 @@ const card = (name: string): State => ({
 export const STATES: Record<string, State> = {
   ...Object.fromEntries(Object.keys(CARDS).map((name) => [`card-${name}`, card(name)])),
   join: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-cost").waitFor()) },
-  "join-shortfall": { scenario: "empty", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-shortfall").waitFor()) },
+  "join-shortfall": {
+    scenario: "empty",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await setShielded(page, { balance: "0", notes: undefined });
+      await page.getByTestId("join-shortfall").waitFor();
+    },
+  },
   "join-watch-only": { scenario: "dashpay-watch-only", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-watch-only").waitFor()) },
   "join-joined": { scenario: "dashpay-registered", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("join-joined").waitFor()) },
   "join-card": { scenario: "dashpay-not-started", roots: ["page-joinDashPay"], go: (page) => toJoin(page).then(() => page.getByTestId("dashpay-card").waitFor()) },
@@ -140,9 +166,21 @@ export const STATES: Record<string, State> = {
     roots: ["page-joinDashPay"],
     go: async (page) => {
       await toJoin(page);
-      await page.getByTestId("join-pay-another").click();
-      await page.getByTestId("pay-with-shielded-reason").waitFor();
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("pay-with-shielded-note").waitFor();
       await page.getByTestId("pay-with-core-balance").waitFor();
+      await page.getByTestId("privacy-advanced").click();
+      await page.getByTestId("pay-with-platform-balance").waitFor();
+    },
+  },
+  "privacy-tip": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await setShielded(page, { balance: "1000000000", notes: undefined });
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("privacy-tip").waitFor();
     },
   },
   "name-rules": {
@@ -159,10 +197,42 @@ export const STATES: Record<string, State> = {
   "name-taken": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => typed(page, "b0b", /problem/) },
   confirm: { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, LABEL) },
   "confirm-contested": { scenario: "dashpay-no-identity", roots: ["page-joinDashPay"], go: (page) => confirm(page, "alice") },
+  "instant-offer": { scenario: "dashpay-no-identity", roots: ["instant-offer"], go: offered },
+  "instant-form": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await offered(page);
+      await page.getByTestId("instant-offer-create").click();
+      await page.getByTestId("registration-instant-field").fill("alice");
+      await expect(page.getByTestId("registration-instant-check")).toHaveAttribute("data-kind", "contested");
+    },
+  },
+  "voting-instant-card": { scenario: "dashpay-contest-no-temporary", roots: ["page-joinDashPay"], go: (page) => onCard(page, "instantName") },
+  "voting-instant-failed": { scenario: "dashpay-instant-failed", roots: ["page-joinDashPay"], go: (page) => onCard(page, "instantRetry") },
+  "confirm-platform": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await page.getByTestId("join-create").click();
+      await payFrom(page, "platform");
+      await page.getByTestId("registration-name-field").fill(LABEL);
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-fee").waitFor();
+    },
+  },
   "confirm-shortfall": {
     scenario: "empty",
     roots: ["page-joinDashPay"],
-    go: (page) => confirm(page, LABEL).then(() => page.getByTestId("registration-shortfall").waitFor()),
+    go: async (page) => {
+      // Neither balance can pay: "Continue without privacy" reaches the Dash wallet's Confirm.
+      await toolbar(page);
+      await setShielded(page, { balance: "0", notes: undefined });
+      await confirm(page, LABEL);
+      await page.getByTestId("registration-shortfall").waitFor();
+    },
   },
   "start-refused": {
     scenario: "dashpay-no-identity",
@@ -177,9 +247,26 @@ export const STATES: Record<string, State> = {
   paused: { scenario: "dashpay-registration-paused", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "paused") },
   unlock: { scenario: "dashpay-registering-unlock", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "unlock") },
   retry: { scenario: "dashpay-registering-paused", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "retry") },
+  held: { scenario: "dashpay-registering-held", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "held") },
   repair: { scenario: "dashpay-registration-needs-finish", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   "repair-unknown": { scenario: "dashpay-registration-failed-unknown", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "repair") },
   stopped: { scenario: "dashpay-registration-stopped", roots: ["page-joinDashPay"], go: (page) => onScreen(page, "stopped") },
+  refunded: {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await platformRunFails(page, LABEL, "paidFailure");
+    },
+  },
+  "quote-changed": {
+    scenario: "dashpay-no-identity",
+    roots: ["page-joinDashPay"],
+    go: async (page) => {
+      await toJoin(page);
+      await platformRunFails(page, LABEL, "replanRefused");
+    },
+  },
   finished: {
     scenario: "dashpay-registration-needs-finish",
     roots: ["page-joinDashPay"],

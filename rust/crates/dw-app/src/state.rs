@@ -24,6 +24,12 @@ use crate::instance::InstanceLock;
 use crate::launch::LaunchOptions;
 use crate::shell::Shell;
 
+/// Debug builds only: milliseconds [`AppState::shutdown_engine`] waits
+/// before it shuts the engine down, to stand in for a slow shutdown when
+/// quitting and relaunching is checked by hand (issue 399).
+#[cfg(debug_assertions)]
+pub const DEBUG_QUIT_DELAY: &str = "DW_DEBUG_QUIT_DELAY_MS";
+
 #[cfg(test)]
 thread_local! {
     static ENGINE_START_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce() + Send>>> =
@@ -751,6 +757,13 @@ impl AppState {
     /// the slot abandoned so late completion drops the result without releasing
     /// queued commands, and returns without waiting on the build.
     pub(crate) async fn shutdown_engine(&self) -> Result<(), AppError> {
+        #[cfg(debug_assertions)]
+        if let Some(ms) = std::env::var(DEBUG_QUIT_DELAY)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
         match self.engine.begin_shutdown() {
             ShutdownStep::Ready(engine) => engine.shutdown().await.map_err(AppError::from),
             ShutdownStep::PendingAbandoned => {

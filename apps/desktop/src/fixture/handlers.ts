@@ -19,10 +19,10 @@ import type { AppError, AppEvent, CommandArgs, CommandName, CommandResults } fro
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { Budget } from "../api/generated/Budget";
 import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
+import type { PaymentSourceName } from "../api/generated/PaymentSourceName";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
-import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -43,14 +43,15 @@ import { activityPage, contactList, coreActivity, eventOf, fixtureLoops, relatio
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
-import { masternodesHandlers } from "./masternodes";
+import { addedVoters, masternodesHandlers, staleAddedVoter } from "./masternodes";
 import { sharedHandlers } from "./shared";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedQuote } from "./registration";
+import { advance, checkTemporary, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, platformQuote, registrationHandlers, shieldedOff, shieldedQuote, shieldedSpendsOff } from "./registration";
+import { connectHandlers, connectRoute, takeConnect } from "./connect";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
-import { topUpHandlers } from "./topup";
+import { landHeldTopUp as landTopUp, topUpHandlers, type TopUpDeps } from "./topup";
 import { ratesHandlers } from "./rates";
 import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
@@ -65,6 +66,13 @@ export interface Ctx {
 }
 
 export type Handlers = { [K in CommandName]?: (args: CommandArgs[K], ctx: Ctx) => CommandResults[K] };
+
+/** dw-app's `ProjectLinkName::url` table, for the fixture's failed opens. */
+const PROJECT_LINKS = {
+  sourceCode: "https://github.com/PastaPastaPasta/dashwallet-desktop",
+  issues: "https://github.com/PastaPastaPasta/dashwallet-desktop/issues",
+  website: "https://www.dash.org",
+} as const;
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
@@ -238,7 +246,7 @@ function windowSum(purposes: GrantPurposeSpec[]): bigint {
 
 /** `admit_window`: an open window, a limit above 0, and the total within it. */
 function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
-  return windowOpen(w) && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
+  return windowOpen(w) && !w.spendLimitUnreadable && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
 }
 
 function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
@@ -255,7 +263,7 @@ function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurpo
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
   const sensitive = purposes.some(
-    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp",
+    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp" || p.kind === "appConnect",
   );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");
@@ -280,6 +288,9 @@ function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPu
     }
     case "quickUnlock":
       if (!w.lock.quickUnlockEnrolled) throw fail("vault.quick_unlock_unavailable", "quick unlock is not enrolled");
+      // An unreadable sealed limit pays nothing by quick unlock (dw-vault `sealed_spend_limit`).
+      if (w.spendLimitUnreadable && purposes.some((p) => quickValue(p) !== null && quickValue(p)! > 0n))
+        throw fail("vault.credential_required", "the spending limit can't be read: the passphrase is required");
       return;
     case "unencrypted":
       if (w.lock.state === "locked") throw fail("vault.locked", "vault locked");
@@ -320,12 +331,6 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
-}
-
-/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
-export function fundDuffs(amount: FundAmount): number {
-  if (amount.kind === "duffs") return amount.duffs;
-  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
@@ -585,6 +590,9 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
       setLease(ctx, { ...lease, state: { kind: "needsGrant" }, keyExpiresInSecs: null });
   }
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
+  // A full unlock lets Shielded bind its viewing key (the engine's next status read binds it).
+  const shielded = world.pending.shielded;
+  if (state === "unlocked" && shielded && (shielded.account === "locked" || shielded.account === "mixingOnly")) shielded.account = "bound";
   setLock(ctx, state);
   world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
   world.windowCharged = 0;
@@ -662,6 +670,33 @@ function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
   contactsChanged(ctx, walletId, identity);
 }
 
+/** A payout's payee, as a contact draft checks it, then its source (`core` is a draft's). */
+export function payeeOfPayout(w: World, walletId: string, pair: Pair, credits: string, source: PaymentSourceName): ContactDetailInfo {
+  if (source === "core" || !/^[0-9]+$/.test(credits) || BigInt(credits) === 0n) throw fail("invalid_argument", "not a payment from a balance");
+  checkContact(w, walletId, pair, "prepare");
+  if (source === "shielded") {
+    if (w.launch.network.kind !== "mainnet" && w.pending.shielded?.spendsAvailable === false) throw fail("platform.unavailable", "this build cannot spend from Shielded");
+    throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  }
+  return pairContact(w, walletId, pair);
+}
+
+/** Whether the payout `reference` names was proved sent (its Platform row is done). */
+const payoutSettled = (w: World, reference: string) => w.pending.platform?.activity.some((a) => a.id === reference && a.kind === "contactPayment" && a.state === "done") ?? false;
+
+/** A payout's outcome on the contact (fixture/pending.ts pays it): unknown locks the pair; sent is
+ * the contact's activity. */
+export function payoutOnContact(ctx: Ctx, walletId: string, pair: Pair, c: ContactDetailInfo, out: { reference: string; state: string }, credits: string) {
+  const now = secs(FIXTURE_NOW);
+  if (out.state === "pending") sendDeps.setPaymentLock(ctx, walletId, pair, { txid: out.reference, since: now, source: "platform", reference: out.reference });
+  if (out.state !== "sent") return;
+  const dp = dashpay(ctx.world, walletId, pair.identity);
+  const amount = Number(BigInt(credits) / CREDITS_PER_DUFF);
+  (dp.activity[pair.contact] ??= []).push({ txid: out.reference, direction: "sent", amount, height: null, timestamp: now, source: "platform", reference: out.reference, coreTxid: null });
+  c.summary = { ...c.summary, lastActivityAt: now };
+  paymentsChanged(ctx, walletId, pair.identity);
+}
+
 const sendDeps: SendDeps = {
   wallet,
   spendGrant: (w, id, walletId) => checkGrant(w, id, walletId, ["spend"]),
@@ -703,6 +738,11 @@ function frequent(dp: DashPayWorld, limit: number): ContactSummaryInfo[] {
   return [...sent, ...rest].slice(0, Math.min(20, Math.max(1, limit)));
 }
 
+const TOP_UP_DEPS: TopUpDeps = { wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE };
+
+/** A held top-up from Platform executed in its exit's place (platform_move_to_core's `lost`). */
+export const landHeldTopUp = (ctx: Ctx, id: string) => landTopUp(TOP_UP_DEPS, ctx, id);
+
 export const HANDLERS: Handlers = {
   // Pay and Receive (U-03): send.ts.
   ...sendHandlers(sendDeps),
@@ -714,16 +754,17 @@ export const HANDLERS: Handlers = {
   // CoinJoin (U-06): coinjoin.ts.
   ...coinjoinHandlers({ wallet, grant: checkGrant, useGrant }),
   // Governance (MG-09): governance.ts.
-  ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
+  ...governanceHandlers({ wallet, grant: checkGrant, useGrant, addedVoters, staleAddedVoter }),
   // My masternodes (MG-10): masternodes.ts.
   ...masternodesHandlers({ wallet, useGrant }),
   // Shared masternodes (MG-10b): shared.ts.
   ...sharedHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
-  ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),
+  ...topUpHandlers(TOP_UP_DEPS),
   // Settings ▸ Advanced ▸ Identities (DP6-01): identities.ts.
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
+  ...connectHandlers({ wallet, dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesHandlers(),
   ...updatesHandlers(),
@@ -733,6 +774,11 @@ export const HANDLERS: Handlers = {
   recent_notices: (_, { world }) => world.notices,
   open_releases_page: (_, { world }) => {
     world.releasesOpened = (world.releasesOpened ?? 0) + 1;
+    return null;
+  },
+  open_project_link: ({ link }, { world }) => {
+    world.linksOpened = [...(world.linksOpened ?? []), link];
+    if (world.linkOpenFails) throw fail("app.browser_open", "no browser", { kind: "link", url: PROJECT_LINKS[link] });
     return null;
   },
   protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
@@ -849,15 +895,20 @@ export const HANDLERS: Handlers = {
     world.paymentAuth = on;
     return null;
   },
-  quick_unlock_policy: (_, { world }) => ({
-    enrolled: world.lock.quickUnlockEnrolled,
-    spendLimitDuffs: world.spendLimitDuffs,
-    passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
-    lastPassphraseAt: null,
-    signingWindowOpen: windowOpen(world),
-    signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
-    signingWindowSecs: SIGNING_WINDOW_MS / 1000,
-  }),
+  quick_unlock_policy: (_, { world }) => {
+    // Known only with the data key, as the vault reads it (a mixing-only unlock holds it too).
+    const unreadable = world.spendLimitUnreadable === true && (world.lock.state === "unlocked" || world.lock.state === "unlockedMixingOnly");
+    return {
+      enrolled: world.lock.quickUnlockEnrolled,
+      spendLimitDuffs: unreadable ? 0 : world.spendLimitDuffs,
+      passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+      lastPassphraseAt: null,
+      signingWindowOpen: windowOpen(world),
+      signingWindowRemainingDuffs: windowOpen(world) && !world.spendLimitUnreadable ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
+      signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: unreadable,
+    };
+  },
   set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
     if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
     if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
@@ -865,6 +916,7 @@ export const HANDLERS: Handlers = {
     if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
     useGrant(world, grantId);
     world.spendLimitDuffs = spendLimitDuffs;
+    world.spendLimitUnreadable = false;
     return {
       enrolled: world.lock.quickUnlockEnrolled,
       spendLimitDuffs,
@@ -873,6 +925,7 @@ export const HANDLERS: Handlers = {
       signingWindowOpen: windowOpen(world),
       signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, spendLimitDuffs - (world.windowCharged ?? 0)) : null,
       signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+      spendLimitUnreadable: false,
     };
   },
   destroy_vault: ({ credential }, ctx) => {
@@ -950,9 +1003,9 @@ export const HANDLERS: Handlers = {
   // The shell (U-01): links are queued already routed (FixtureHandle.deliverLinks).
   take_links: ({ network }, { world }) => {
     if (network !== world.launch.network.dirName) throw fail("invalid_argument", `not the window's network: ${network}`);
-    return world.links.splice(0).map((route) => intake(world.stash, route, hasWallet(world)));
+    return world.links.splice(0).map((route) => takeConnect(world, intake(world.stash, route, hasWallet(world))));
   },
-  route_link: ({ text }, { world }) => intake(world.stash, routeLink(text), hasWallet(world)),
+  route_link: ({ text }, { world }) => takeConnect(world, connectRoute(text) ?? intake(world.stash, routeLink(text), hasWallet(world))),
   // The link stash (DP5-01): its entries without their text.
   stashed_links: (_, { world }) => world.stash.map((s) => s.info),
   open_stashed_link: ({ linkId }, { world }) => {
@@ -1016,6 +1069,27 @@ export const HANDLERS: Handlers = {
         label: r.label,
         coinjoinInternal: r.txType === "coinJoinMixing" || r.txType === "coinJoinCollateralPayment" || r.txType === "coinJoinMakeCollaterals" || r.txType === "coinJoinCreateDenominations",
       })),
+  // The engine's notices of payments dropped because what they spent was never valid: those whose
+  // coins are back, not dismissed, one per payee, without the fee.
+  dropped_notices: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    return w.rows
+      .filter((r) => r.status.dropped?.cause === "invalidSource" && r.status.dropped.state.kind === "released" && r.category === "sent" && !w.droppedSeen?.includes(r.txid))
+      .map((r) => ({
+        txid: r.txid,
+        recordIndex: r.recordIndex,
+        amount: Math.abs(r.amount) - (r.recordIndex === 0 ? (r.fee ?? 0) : 0),
+        timestamp: r.timestamp,
+        address: r.address,
+        label: r.label,
+        counterparty: r.counterparty ?? null,
+      }));
+  },
+  dismiss_dropped_notices: ({ walletId, txids }, { world }) => {
+    const w = wallet(world, walletId);
+    w.droppedSeen = [...new Set([...(w.droppedSeen ?? []), ...txids])];
+    return null;
+  },
   tx_detail: ({ walletId, txid }, { world }) => {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
@@ -1039,12 +1113,15 @@ export const HANDLERS: Handlers = {
   // session's quorum source (DP6-03).
   dashpay_sync_status: ({ walletId }, { world }) => {
     const d = dashpay(world, walletId);
+    if (d.syncStatusFails) throw fail("storage", "the fixture's sync read failed");
     return {
       startup: d.startup.startup,
       lastPass: d.lastPass ?? null,
       pendingContactCrypto: d.startup.contactAccountsPending,
       loops: fixtureLoops(world.sync.running),
       quorumSource: world.trust.source,
+      platformEnabled: true,
+      addresses: d.addresses ?? "done",
     };
   },
   quorum_source: (_, { world }) => world.trust.source,
@@ -1073,11 +1150,21 @@ export const HANDLERS: Handlers = {
         availableDuffs: 0,
         grant: { maxDuffs: 0, maxCredits: String(plan.credits) },
         readiness: null,
+        platform: null,
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    if (funding.kind === "shielded") return shieldedQuote(label, world.pending.shielded);
-    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
+    if (funding.kind === "shielded") {
+      // registration_shielded.rs `FEATURE`: off on mainnet before any read.
+      if (world.launch.network.kind === "mainnet") throw shieldedOff();
+      checkTemporary(request);
+      const spendsOff = shieldedSpendsOff(world.pending.shielded);
+      if (spendsOff) throw spendsOff;
+      return shieldedQuote(label, world.pending.shielded, request.temporaryLabel);
+    }
+    checkTemporary(request);
+    if (funding.kind === "platformAddresses") return platformQuote(label, world.pending.platform, world.launch.network.kind === "mainnet", dashpay(world, walletId));
+    const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label, request.temporaryLabel);
     return {
       contested,
       lockDuffs,
@@ -1088,6 +1175,7 @@ export const HANDLERS: Handlers = {
       // D30: one duff past the total for a lock, the identity step's proof authority (registration.rs).
       grant: { maxDuffs: funding.kind === "coreBalance" ? totalDuffs + 1 : totalDuffs, maxCredits: String(credits) },
       readiness: null,
+      platform: null,
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {
@@ -1254,7 +1342,7 @@ export const HANDLERS: Handlers = {
   resolve_contact_payment_lock: ({ walletId, identity, contact: id }, ctx) => {
     const c = contact(ctx.world, walletId, identity, id);
     if (!c.paymentLock) throw fail("invalid_argument", "no payment lock for this contact");
-    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] ? "sent" : "unknown");
+    const found = ctx.world.send.lockEvidence ?? (ctx.world.send.sent[c.paymentLock.txid] || payoutSettled(ctx.world, c.paymentLock.reference) ? "sent" : "unknown");
     if (found !== "unknown") sendDeps.setPaymentLock(ctx, walletId, { identity, contact: id }, null);
     return found;
   },

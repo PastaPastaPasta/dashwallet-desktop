@@ -12,7 +12,7 @@ import { navigate, switchWallet, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
 import { useT, type Translate } from "../i18n";
 import { ExperimentalBadge } from "./basics";
-import { isSyncing, syncPercent, syncState } from "../format/sync";
+import { barSync, type SyncItem } from "../format/syncItems";
 import { Avatar } from "../screens/contacts/Avatar";
 
 interface SidebarItem {
@@ -348,33 +348,43 @@ export function Toolbar({
 
 export function StatusBar({
   sync,
+  items = [],
   lock,
   unitName,
   hd,
   onUnlock,
+  onSync,
   governance = null,
 }: {
   sync: SyncStatus | undefined;
+  /** Platform's and Shielded's syncs for the open wallet (`useSyncItems`): the bar says Synced only
+   * once they are done too. */
+  items?: readonly (SyncItem | null)[];
   lock: LockStatus | undefined;
   unitName: string;
   hd: boolean;
   /** Opens the unlock sheet: the lock state is a button while unlocked for mixing only (U-02 D12). */
   onUnlock: () => void;
+  /** Opens Sync progress. */
+  onSync?: () => void;
   /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
   governance?: ReactNode;
 }) {
   const t = useT();
   const { locale } = useBackend();
-  const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
+  const bar = barSync(sync, items);
+  const buttonText = bar.button && t(`shell.status.${bar.button}`);
   const lockText = lock && t(`shell.status.lock.${lock.state}`);
   return (
     <footer className="status-bar" data-testid="status-bar">
       <span className="status-left">
-        <span role="status">{syncState(sync)}</span>
-        {percent !== null && (
+        <span role="status" data-testid="status-state">
+          {bar.text}
+        </span>
+        {bar.percent !== null && (
           <>
-            <span aria-hidden="true">{new Intl.NumberFormat(locale, { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(percent / 100)}</span>
-            <progress className="status-progress" max={100} value={percent} aria-label={t("shell.status.syncProgress")} />
+            <span aria-hidden="true">{new Intl.NumberFormat(locale, { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(bar.percent / 100)}</span>
+            <progress className="status-progress" max={100} value={bar.percent} aria-label={t("shell.status.syncProgress")} />
           </>
         )}
       </span>
@@ -390,7 +400,14 @@ export function StatusBar({
         )}
         {sync && <span>{t("shell.status.peers", { count: sync.connectedPeers })}</span>}
         {governance}
-        {sync && <span>{!sync.running ? t("shell.status.offline") : sync.caughtUp ? t("shell.status.synced") : t("shell.status.syncing")}</span>}
+        {buttonText &&
+          (onSync ? (
+            <button type="button" className="status-button" data-testid="status-sync" title={t("shell.status.showSync")} onClick={onSync}>
+              {buttonText}
+            </button>
+          ) : (
+            <span>{buttonText}</span>
+          ))}
       </span>
     </footer>
   );

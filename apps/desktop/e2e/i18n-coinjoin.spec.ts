@@ -48,6 +48,14 @@ interface State {
 }
 
 const STATES: Record<string, State> = {
+  "explainer": {
+    roots: ["coinjoin-explainer"],
+    open: async (page, theme, lang) => {
+      await openCoinJoin(page, "funded", theme, lang);
+      await page.getByTestId("coinjoin-explainer-open").click();
+      await expect(page.getByTestId("coinjoin-explainer")).toBeVisible();
+    },
+  },
   "page-mixing-details": {
     roots: ["page-coinJoin"],
     open: async (page, theme, lang) => {

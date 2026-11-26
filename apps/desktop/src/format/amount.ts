@@ -14,6 +14,9 @@ const FACTOR: Record<Unit, number> = { DASH: 100_000_000, mDASH: 100_000, uDASH:
 const DECIMALS: Record<Unit, number> = { DASH: 8, mDASH: 5, uDASH: 2, duffs: 0 };
 const MAX_DIGITS = 16;
 
+/** How many decimals `unit` has (`format`'s precision). */
+export const unitDecimals = (unit: Unit): number => DECIMALS[unit];
+
 export function unitName(unit: Unit, chain: Chain): string {
   const t = chain === "test";
   switch (unit) {
@@ -83,17 +86,18 @@ export function formatAmount(unit: Unit, amount: number, signed: boolean, trunca
 }
 
 /** Trailing zeros after the decimal mark removed, keeping at least two decimals. */
-export function trimDecimals(number: string): string {
+export function trimDecimals(number: string, keep = 2): string {
   const dot = number.indexOf(".");
   if (dot < 0) return number;
   let end = number.length;
-  while (end > dot + 3 && number[end - 1] === "0") end--;
+  while (end > dot + 1 + keep && number[end - 1] === "0") end--;
   return number.slice(0, end);
 }
 
-/** UX-SPEC §5.2 `.compact`: the exact value, trailing zeros trimmed to two decimals, never rounded. */
-export function compact(amount: number, signed: boolean, unit: Unit = "DASH"): string {
-  return trimDecimals(format(unit, amount, signed, "standard", false));
+/** UX-SPEC §5.2 `.compact`: the exact value, never rounded, trailing zeros trimmed to `minDecimals`
+ * (the Decimal places setting, 2 to 8; at most the unit's own decimals). */
+export function compact(amount: number, signed: boolean, unit: Unit = "DASH", minDecimals = 2): string {
+  return trimDecimals(format(unit, amount, signed, "standard", false), minDecimals);
 }
 
 /** UX-SPEC §5.2 hero and breakdown: floored to the Decimal digits setting (default 2). */

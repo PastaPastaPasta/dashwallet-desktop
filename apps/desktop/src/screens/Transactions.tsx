@@ -9,7 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useShieldedStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { navigate, ui, useUi, type ActivityFilter } from "../app/ui";
@@ -19,22 +19,23 @@ import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShows
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
-import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
-import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
+import { filterExtra, heldActivities, isMayLandRow, isReplacedRow, isSettledUnknownRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
+import { contactName, DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
 
-/** A Platform or Shielded row among the Core ones: titled and tagged, and it opens nothing. */
+/** A Platform or Shielded row among the Core ones: titled and tagged; it opens its own details. */
 const decorateSource = (row: TxRow): RowDecor => {
   const source = rowSource(row);
   if (!source) return {};
   const replaced = isReplacedRow(row);
+  const party = contactName(row.counterparty);
   return {
     title: sourceRowTitle(row),
+    ...(party ? { party } : {}),
     tag: SOURCE_TAG[source],
-    readOnly: true,
-    ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
+    ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isSettledUnknownRow(row) ? (row.amount === 0 ? { hideAmount: true } : {}) : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
   };
 };
 
@@ -94,7 +95,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // have no type to filter by, and nothing to search); Table mode is the Core columns.
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
-  const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
+  const shieldedStatus = useShieldedStatus(walletId);
+  const extra = useMemo(() => {
+    const held = heldActivities(shieldedStatus.data);
+    return [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map((a) => shieldedRow(a, held))];
+  }, [platform.data, shielded.data, shieldedStatus.data]);
   const withExtra = mode === "list" && category.id === "all" && !text && !routeFilter;
   const extraShown = useMemo(
     () => (withExtra ? filterExtra(extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : []),
@@ -268,6 +273,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 className="filter-chip is-selected"
                 aria-label={`Remove the filter ${routeFilterTitle(routeFilter)}`}
                 data-testid="tx-route-filter"
+                data-txids={routeFilter.kind === "txids" ? routeFilter.txids.join(",") : undefined}
                 onClick={() => ui.set({ activityFilter: null })}
               >
                 {routeFilterTitle(routeFilter)} <span aria-hidden="true">×</span>

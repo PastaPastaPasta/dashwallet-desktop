@@ -39,6 +39,18 @@ pub struct PlatformAddressBalance {
     pub synced_at: Option<u64>,
     /// A sync pass runs now.
     pub syncing: bool,
+    /// The network's protocol version as the session last knew it has
+    /// address funds transitions: a send, a top-up of an identity or a
+    /// move from these addresses. Below it they are refused
+    /// (`platform.feature_off`).
+    #[serde(default)]
+    pub sends_active: bool,
+    /// `Some(feature)`: this build keeps them off on this network
+    /// (`platform.feature_off{feature}`), whatever its protocol version,
+    /// and `sends_active` is `false`; what settles or exits a move signed
+    /// before still runs.
+    #[serde(default)]
+    pub sends_off: Option<String>,
 }
 
 /// One funded Platform address.
@@ -66,6 +78,26 @@ pub enum PlatformActivityKind {
     /// wallet applied to its Platform address (`address`); `Pending` until
     /// a proved apply, then `Done` with the credits it added.
     FromCore,
+    /// A top-up of one of this wallet's identities from its Platform
+    /// addresses (1.0 C3a): `to` is the identity (base58). Settled as a
+    /// move, by its inputs' proved nonces.
+    ToIdentity,
+    /// A payment to a DashPay contact (`contact`) from the Platform balance
+    /// (C-funding P10): a withdrawal to the contact's Core address (`to`).
+    ContactPayment,
+    /// An unshield of this wallet's to its Platform address (`address`,
+    /// C-routes C1-9): `Pending` from the dispatch hook's accept until its
+    /// artifact reads executed (`Done`) or not executed (`Failed`).
+    FromShielded,
+    /// The value left on a transfer to Shielded that Platform refused after
+    /// a penalty, recovered to this wallet's Platform address (`address`)
+    /// (#402); `Pending` until a proved apply, then `Done` with the credits
+    /// it added.
+    Recovered,
+    /// What Platform returned to this wallet's Platform address
+    /// (`address`) when it could not create the identity a Shielded-funded
+    /// registration paid for (C-funding F13): the payment less a penalty.
+    RegistrationRefund,
 }
 
 /// Where an activity row stands.
@@ -78,10 +110,10 @@ pub enum PlatformActivityState {
     /// A move recorded and signed whose outcome is not known yet; the next
     /// read asks Platform again. No time limit; never retried by the engine.
     Pending,
-    /// A move that can never execute (not fully signed, or refused by
-    /// Platform's structure or signature check), or one a proof after its
-    /// call shows unexecuted: the latter may still execute, so a next move
-    /// signs the same inputs at the same nonces (m4 §2.12).
+    /// A move that can never execute (not every input was signed), or one
+    /// a proof after its call shows unexecuted: the latter may still
+    /// execute, so a next move signs the same inputs at the same nonces
+    /// (m4 §2.12). No error after signing fails a move (#471).
     Failed,
     /// A move whose inputs, at the nonces it signed, another move of this
     /// wallet with other terms also signed, and Platform took: one of them
@@ -123,6 +155,14 @@ pub struct PlatformActivity {
     /// dpp's estimate for it.
     #[serde(default)]
     pub estimated: bool,
+    /// A `ContactPayment`'s contact, from its payout row (C-funding P10).
+    #[serde(default)]
+    pub contact: Option<super::payments::Counterparty>,
+    /// A row of a group whose proof does not say which member executed:
+    /// one of them did, and neither this row's state nor the newest row's
+    /// `Done` names which.
+    #[serde(default)]
+    pub unattributed: bool,
 }
 
 /// What "Move to Dash wallet" takes and pays out, at the network's
@@ -146,6 +186,11 @@ pub struct MoveToCoreQuote {
     pub to: String,
     /// What to authorize: no duffs, `credits` credits.
     pub grant: GrantRequest,
+    /// The held top-up from Platform this move is the exit of: the quote is
+    /// planned on its inputs only. Pass it to `move_to_core`, which then
+    /// moves only while that top-up still holds.
+    #[serde(default)]
+    pub exit_of: Option<String>,
 }
 
 /// A move's outcome.
@@ -166,6 +211,8 @@ pub struct MoveToCoreOutcome {
     pub state: PlatformActivityState,
     /// Done: the fee taken, as [`PlatformActivity::fee_credits`].
     pub fee_credits: Option<u64>,
+    /// As [`PlatformActivity::unattributed`].
+    pub unattributed: bool,
 }
 
 /// Why a string is no Platform address a send may pay
@@ -278,6 +325,8 @@ pub struct PlatformSendOutcome {
     pub fee_credits: Option<u64>,
     /// Done: `credits` counts the fee estimate (`fee_credits` `None`).
     pub estimated: bool,
+    /// As [`PlatformActivity::unattributed`].
+    pub unattributed: bool,
 }
 
 /// What moving credits from the Platform addresses into Shielded takes, at
@@ -432,11 +481,13 @@ impl DashPay {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`
-    /// (a `PlatformOp` grant or a `PlatformAddressMove` lease).
+    /// (a `PlatformOp` grant or a `PlatformAddressMove` lease). `exit_of`:
+    /// the quote's, the held top-up this move is the exit of.
     pub async fn move_to_core(
         &self,
         amount: WithdrawAmount,
         to: String,
+        exit_of: Option<String>,
         grant: String,
     ) -> Result<MoveToCoreOutcome, CreditsError> {
         let wallet_id = self.wallet_id;
@@ -445,7 +496,7 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            let ask = (amount, to.as_str());
+            let ask = (amount, to.as_str(), exit_of.as_deref());
             platform_moves::move_to_core(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await
@@ -466,7 +517,10 @@ impl DashPay {
                 sdk: manager.sdk_arc(),
                 wallet: Arc::clone(&wallet),
             };
-            Ok(platform_moves::receive_address(&net, &wallet, session.vault.network()).await?)
+            Ok(
+                platform_moves::receive_address(&net, &session, &wallet, session.vault.network())
+                    .await?,
+            )
         })
         .await
     }
@@ -557,6 +611,8 @@ impl DashPay {
     ) -> Result<PlatformShieldQuote, CreditsError> {
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
+            platform_moves::address_sends_open(session.vault.network())?;
+            shielded_pool::session_keyset_closed(&session)?;
             let lib = shielded_pool::PwShielded::open(&session, wallet_id).await?;
             let version = shielded_pool::platform_shield_gate(&lib).await?;
             let net = platform_moves::SdkMoves {

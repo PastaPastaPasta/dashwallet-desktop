@@ -62,6 +62,60 @@ pub fn single_instance<R: Runtime>(root: &Path) -> Option<TauriPlugin<R>> {
     }
 }
 
+/// Debug builds only: set, a refused launch prints its refusal and shows no
+/// dialog (the e2e harness's refused launches, which no one answers).
+#[cfg(debug_assertions)]
+pub const NO_LAUNCH_DIALOG: &str = "DW_NO_LAUNCH_DIALOG";
+
+/// Gives up the single-instance plugin's claim (its D-Bus name, or its
+/// mutex and message window), so a launch made while this one shows its
+/// refusal no longer hands its links to a process about to exit. Nothing
+/// without the plugin.
+pub fn release_single_instance<R: Runtime, M: tauri::Manager<R>>(app: &M) {
+    #[cfg(not(target_os = "macos"))]
+    tauri_plugin_single_instance::destroy(app);
+    #[cfg(target_os = "macos")]
+    let _ = app;
+}
+
+/// Shows the dialog of a launch the instance lock refused and waits for its
+/// button; the launch exits after it. It runs before the event loop (and,
+/// without the single-instance plugin, before Tauri starts), so it is the
+/// OS's own message box (GTK's on Linux), not the dialog plugin's.
+pub fn show_refusal(dialog: crate::instance::RefusalDialog) {
+    #[cfg(debug_assertions)]
+    if std::env::var_os(NO_LAUNCH_DIALOG).is_some() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::{DialogExt, GtkWindowExt};
+        // A dialog on its own GTK thread (rfd's) never shows once Tauri has
+        // started GTK on this one.
+        if !gtk::is_initialized_main_thread() && gtk::init().is_err() {
+            return;
+        }
+        let message = gtk::MessageDialog::new(
+            None::<&gtk::Window>,
+            gtk::DialogFlags::MODAL,
+            gtk::MessageType::Info,
+            gtk::ButtonsType::None,
+            dialog.body,
+        );
+        message.set_title(dialog.title);
+        message.add_button(dialog.button, gtk::ResponseType::Ok);
+        message.run();
+        message.close();
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Info)
+        .set_title(dialog.title)
+        .set_description(dialog.body)
+        .set_buttons(rfd::MessageButtons::OkCustom(dialog.button.to_owned()))
+        .show();
+}
+
 /// Puts back together the link that the Windows plugin's `|` split cut up
 /// (D22): every piece from the first one with a link scheme on is one link,
 /// joined again with `|`. So no piece of a split ever becomes a link of its

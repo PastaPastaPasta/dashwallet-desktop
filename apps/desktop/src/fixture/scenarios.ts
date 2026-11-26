@@ -17,6 +17,7 @@ import type { FlowLockReport } from "../api/generated/FlowLockReport";
 import type { FlowOutcomeName } from "../api/generated/FlowOutcomeName";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { LinkRoute } from "../api/generated/LinkRoute";
+import type { FixtureConnect } from "./connect";
 import { stashRoute, type FixtureStashedLink } from "./links";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -26,24 +27,26 @@ import type { ShellSync } from "../api/generated/ShellSync";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { TxDropInfo } from "../api/generated/TxDropInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { contestedRow, coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
 import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
-import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
-import { restoredFundLock, restoredLock } from "./recovery";
+import { newSettingsWorld, withAutomaticBackups, withRestoreBackup, type SettingsWorld } from "./settings";
+import { partlyUsedLock, restoredFundLock, restoredLock } from "./recovery";
 import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
+import { holdShielded } from "./shielded";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
-import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
+import { masternodesScenarios, noMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { newSharedWorld, sharedScenarios, type SharedWorld } from "./shared";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
@@ -62,6 +65,11 @@ export interface FixtureWallet {
   receive: ReceiveWorld;
   /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
   scanHeight?: number | null;
+  /** Dropped payments whose notice was dismissed. */
+  droppedSeen?: string[];
+  /** Coins ("txid:vout") of a funding account other than BIP44 account 0 (BIP32, DashPay), which a
+   * Core Max leaves out. */
+  otherAccounts?: string[];
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -75,7 +83,7 @@ export interface World {
    * not roll back, the next `open_network` fails once too, `reopenFails`). */
   networkSwitch?: {
     busy?: { flows: FlowKindName[]; mixing: boolean; broadcast: boolean; stalled?: boolean; draining?: boolean };
-    closeRefused?: "wallet" | "shielded_spend_unresolved";
+    closeRefused?: "wallet" | "shielded_spend_unresolved" | "transfer_preparing";
     fail?: { rolledBack: boolean };
     reopenFails?: boolean;
     /** The switch goes through but its choice is not written. */
@@ -112,6 +120,8 @@ export interface World {
   links: LinkRoute[];
   /** The engine's link stash (DP5-01): links kept for after onboarding, and invitations. */
   stash: FixtureStashedLink[];
+  /** dw-app's App Connect requests by inbox id (fixture/connect.ts). */
+  connect?: Record<string, FixtureConnect>;
   /** DP5-03: `invitation_status` of a stashed invitation by its id; absent: valid, from Bob. */
   invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */
@@ -120,6 +130,10 @@ export interface World {
   explorerOpened?: string[];
   /** How many times `open_releases_page` was called. */
   releasesOpened?: number;
+  /** `open_project_link` calls, in order (the fixture opens nothing). */
+  linksOpened?: string[];
+  /** `open_project_link` fails as when no browser opens. */
+  linkOpenFails?: boolean;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
   /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
@@ -127,6 +141,9 @@ export interface World {
   paymentAuth: boolean;
   /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
   spendLimitDuffs: number;
+  /** The sealed limit no longer authenticates (issue 173, item 10): while unlocked the engine reports
+   * it, the limit in force is 0, and setting the limit again clears it. */
+  spendLimitUnreadable?: boolean;
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;
@@ -190,6 +207,7 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       name: variant === "xss" ? XSS_PAYLOADS.walletName : "Main",
       watchOnly: false,
       hasMnemonic: true,
+      legacyIssued: false,
       hd: true,
       birthHeight: 1_200_000,
       createdAt: null,
@@ -215,6 +233,102 @@ function lockedAfter(w: World, failedAttempts: number): World {
   return w;
 }
 
+/** Adds a payment Dash Wallet dropped itself for each of `drops`, newest first, an hour apart, to the
+ * first wallet: an abandoned send, not counted (the never-valid transaction itself is a receive). */
+function withDropped(w: World, drops: TxDropInfo[]): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const received = wallet.rows.find((r) => r.category === "received")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const rows: TxRow[] = drops.map((dropped, i) => {
+    const like = dropped.cause === "invalidClaim" ? received : sent;
+    return {
+      ...like,
+      txid: (0xd0 + i).toString(16).repeat(32),
+      recordIndex: 0,
+      timestamp: newest + 3600 * (drops.length - i),
+      blockHeight: null,
+      amount: like.amount < 0 ? -(25_000_000 + i * 1_000_000) - 374 : 40_000_000,
+      fee: like.amount < 0 ? 374 : null,
+      label: null,
+      status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null, dropped },
+      countsTowardBalance: false,
+      counterparty: undefined,
+      fiatThen: undefined,
+    };
+  });
+  wallet.rows = [...rows, ...wallet.rows];
+  return w;
+}
+
+/** The txid of `withPendingUnproven`'s payment. */
+export const PENDING_UNPROVEN_TXID = "e7".repeat(32);
+/** Its change, which the engine withholds. */
+export const PENDING_UNPROVEN_CHANGE = 74_999_774;
+
+/** Adds to the first wallet an unconfirmed payment the engine withholds the change of: the change is
+ * listed, not spendable and in no balance bucket, and the balances report it as withheld. */
+function withPendingUnproven(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: PENDING_UNPROVEN_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    amount: -25_000_226,
+    fee: 226,
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  wallet.coins = [
+    ...wallet.coins,
+    {
+      ...wallet.coins[0],
+      outpoint: { txid: PENDING_UNPROVEN_TXID, vout: 1 },
+      amount: PENDING_UNPROVEN_CHANGE,
+      confirmations: 0,
+      blockHeight: null,
+      instantLocked: false,
+      chainLocked: false,
+      label: null,
+      isChange: true,
+      reserved: true,
+      spendable: false,
+      excluded: "pendingUnproven",
+    },
+  ];
+  wallet.summary = { ...wallet.summary, balances: { ...(wallet.summary.balances ?? FUNDED_BALANCES), withheld: PENDING_UNPROVEN_CHANGE } };
+  return w;
+}
+
+/** The txid of `withAbandonChecking`'s payment. */
+export const ABANDON_CHECKING_TXID = "e8".repeat(32);
+
+/** Adds to the first wallet a payment the user abandoned, a coin of which the engine's rescan is
+ * still checking before giving it back. */
+function withAbandonChecking(w: World): World {
+  const wallet = w.wallets[0];
+  const sent = wallet.rows.find((r) => r.category === "sent")!;
+  const newest = Math.max(...wallet.rows.map((r) => r.timestamp ?? 0));
+  const row: TxRow = {
+    ...sent,
+    txid: ABANDON_CHECKING_TXID,
+    recordIndex: 0,
+    timestamp: newest + 600,
+    blockHeight: null,
+    label: null,
+    countsTowardBalance: false,
+    status: { kind: "abandoned", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+  };
+  wallet.rows = [row, ...wallet.rows];
+  w.send.checkingSpentCoins = [ABANDON_CHECKING_TXID];
+  return w;
+}
+
 function base(theme: ThemeName | null, variant: HistoryVariant = "default", plainWords = false): World {
   const main = wallet(variant, plainWords);
   return {
@@ -228,6 +342,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
       network: { kind: "testnet", dirName: "testnet", unitName: "tDASH" },
       appVersion: "0.1.0",
       engineVersion: "fixture",
+      // A dev build from main, as the release workflow stamps one.
+      buildVersion: "0.1.0-dev.57.g1a2b3c4",
     },
     passphrase: FIXTURE_PASSPHRASE,
     lock: unlocked([FIXTURE_WALLET_ID]),
@@ -258,7 +374,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
-    masternodes: newMasternodesWorld(),
+    masternodes: noMasternodesWorld(),
     shared: newSharedWorld(),
     rates: newRatesWorld(),
     updates: newUpdatesWorld(),
@@ -452,6 +568,14 @@ function attributeMore(w: World) {
   (w.dashpay.activity[IDENTITY.judy] ??= []).push(coreActivity({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp }));
 }
 
+/** Every wallet of `w` born below block 1,100,000, where its stored headers begin: Home's
+ * history-gap notice names them all. */
+export function withHistoryGap(w: World): World {
+  for (const x of w.wallets) x.summary.birthHeight = 1_000_000;
+  w.tools.historyGap = { startHeight: 1_100_000, walletIds: w.wallets.map((x) => x.summary.walletId) };
+  return w;
+}
+
 function twoWallets(w: World): World {
   w.wallets.push(emptyWallet(SECOND_WALLET_ID, "Savings"));
   w.lock = unlocked([FIXTURE_WALLET_ID, SECOND_WALLET_ID]);
@@ -523,7 +647,7 @@ function withdrawal(n: number, status: Withdrawal["status"], credits: number, ho
 }
 
 /** The contested world with `contest_status` reading `state` (DP1-10 R3–R5). */
-function withContest(w: World, state: ContestStatus["state"]): World {
+function withContest(w: World, state: ContestStatus["state"], temporaryName = "alice007"): World {
   const s = w.dashpay.status;
   if (s.kind !== "contestPending") return w;
   const contest: ContestStatus = {
@@ -536,10 +660,19 @@ function withContest(w: World, state: ContestStatus["state"]): World {
     ],
     lockVotes: state.kind === "locked" ? 55 : 3,
     abstainVotes: 2,
-    temporaryName: "alice007",
+    temporaryName,
   };
   w.dashpay.credits = newCreditsWorld({ contest });
   return w;
+}
+
+/** "alice" contested by a registration that asked for the temporary "alice2" beside it (DP1-09
+ * D4 reversed): registered (`owned`), or refused, so the identity holds no name. */
+function withInstant(w: World, owned: boolean): World {
+  const c = contestPending(w, 1_900_000_000);
+  c.dashpay.registrations = [contestedRow("alice2")];
+  c.dashpay.identities = c.dashpay.identities.map((i) => (owned ? { ...i, names: ["alice2"], mainName: "alice2" } : { ...i, names: [], mainName: null }));
+  return c;
 }
 
 /** The wallet's DashPay status set to `status`, no identity on file (DP1-08). The bring-up's
@@ -697,6 +830,189 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** One payment Dash Wallet dropped because the Dash it used came from an incoming transaction that
+   * was never valid, its coins back: Home's notice names it. */
+  "dropped-one": (t) => withDropped(base(t), [{ cause: "invalidSource", state: { kind: "released" } }]),
+  /** Two such payments: the notice counts them, and Details opens Activity. */
+  "dropped-several": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "released" } },
+      { cause: "invalidSource", state: { kind: "released" } },
+    ]),
+  /** A dropped row in each state the engine gives, and the never-valid transaction itself; no
+   * notice, since none is back. */
+  "dropped-states": (t) =>
+    withDropped(base(t), [
+      { cause: "invalidSource", state: { kind: "releasing" } },
+      { cause: "invalidSource", state: { kind: "rescanNeeded" } },
+      { cause: "invalidSource", state: { kind: "rescanFromHeight", height: 2_103_500 } },
+      { cause: "invalidSource", state: { kind: "awaitingFunding" } },
+      { cause: "replaced", state: { kind: "held" } },
+      { cause: "invalidClaim", state: { kind: "released" } },
+    ]),
+  /** An unconfirmed payment the engine can't yet tell will confirm (Q100 E1): its change is
+   * withheld, out of every balance and of spending, and shown as pending; Abandon is offered with
+   * its hint. */
+  "pending-unproven": (t) => withPendingUnproven(base(t)),
+  /** A payment the user abandoned while the engine's rescan checks a coin it spent (Q100 E2): its
+   * details say so until the check ends. */
+  "abandon-checking": (t) => withAbandonChecking(base(t)),
+  /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
+   * offered, and refused until the wallet restarts and rescans. */
+  "abandon-rescan-first": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5e".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.rescanFirst = [row.txid];
+    return w;
+  },
+  /** Just after a chain fork, while the wallet catches up: an unconfirmed payment offers Abandon,
+   * and Abandon and Remove Unconfirmed are refused with `rescan_in_progress`. */
+  "abandon-catching-up": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5b".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.catchingUp = true;
+    return w;
+  },
+  /** An unconfirmed payment whose later payment locked while its detail was open: Abandon is
+   * offered and refused, and the detail says why. */
+  "abandon-settled-child": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5c".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChild = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment of the first of two open wallets, whose saved transaction doesn't read:
+   * Abandon is offered and refused, and so is Remove Unconfirmed; both name the wallet and say to
+   * close it, or remove and restore it. */
+  "abandon-record-unreadable-two-wallets": (t) => {
+    const w = twoWallets(base(t));
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** As `abandon-record-unreadable-two-wallets`, with only that wallet open: the refusal doesn't
+   * say to close it. */
+  "abandon-record-unreadable": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5f".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.recordUnreadable = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment a later payment spends from, already locked when the detail opens:
+   * Abandon isn't offered. */
+  "abandon-settled-child-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5d".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.settledChildHidden = [row.txid];
+    return w;
+  },
+  /** An unconfirmed payment that funds an unfinished credit top-up's asset lock, built while its
+   * detail was open: Abandon is offered and refused, and the detail says why. */
+  "abandon-platform-funding": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "58".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFunding = [row.txid];
+    return w;
+  },
+  /** As `abandon-platform-funding`, with the lock already built when the detail opens: Abandon
+   * isn't offered. */
+  "abandon-platform-funding-hidden": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "57".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.platformFundingHidden = [row.txid];
+    return w;
+  },
+  /** A payment this wallet made on another device, seen only by its change before the coins it
+   * spent are known: its debit is unknown, so Abandon warns about paying twice. */
+  "abandon-debit-unknown": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const received = wallet.rows.find((r) => r.category === "received" && r.status.kind === "unconfirmed")!;
+    const row: TxRow = { ...received, txid: "d0".repeat(32), timestamp: (received.timestamp ?? 0) + 60, label: null };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.debitUnknown = [row.txid];
+    return w;
+  },
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);
@@ -753,10 +1069,36 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
+  "platform-move-held-and-rest": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.heldInputs = { "pm-held": p.addresses.map((a) => a.address) };
+    p.addresses.push({ address: "tdash1q3rest7y5v9nmp3dfz0ht6l2wrk8s4xj7ga5c9e3v0u6y2pnt4qk5m8zr", credits: "10000000000" });
+    return w;
+  },
+  /** A move and its retry at the same inputs, both failed by height and able to land: one hold of two records. */
+  "platform-move-held-several": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, mayLand: true, estimated: false } as const;
+    p.activity = [{ ...row, id: "pm-held-2", at: at - 300 }, { ...row, id: "pm-held", at: at - 600 }, ...p.activity];
+    return w;
+  },
   /** The next "Add from Dash wallet" is applied (as the base world does). */
   "paddr-fund-applies": (t) => {
     const w = base(t);
     w.pending.platform!.nextFund = "done";
+    return w;
+  },
+  /** Credits moved from Shielded to the receive address: a "From Shielded" row, done. */
+  "paddr-from-shielded": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.activity = [{ id: "from-shielded-5a5a", kind: "fromShielded", state: "done", credits: "25000000000", address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: false }, ...p.activity];
     return w;
   },
   /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */
@@ -826,6 +1168,24 @@ const SCENARIOS = {
     ];
     return w;
   },
+  /** Groups that settled with no evidence of which member went through, as the engine marks them: two moves
+   * of other terms at the same inputs, and two exits of a top-up that did not land, of other amounts. Only
+   * each group's newest row carries its debit. */
+  "platform-settled-unknown": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const row = { address: null, to: null, expectedDuffs: null, feeCredits: null, mayLand: false, estimated: false } as const;
+    p.activity = [
+      { ...row, id: "pm-exit2", kind: "moveToCore", state: "done", credits: "20000000000", at: at - 1800, winnerKnown: false },
+      { ...row, id: "pm-exit1", kind: "moveToCore", state: "failed", credits: "19000000000", at: at - 2100, winnerKnown: false },
+      { ...row, id: "pt-topup", kind: "toIdentity", state: "failed", credits: "20000000000", at: at - 2400 },
+      { ...row, id: "pm-move", kind: "moveToCore", state: "done", credits: "30000000000", at: at - 3600, winnerKnown: false },
+      { ...row, id: "pm-old", kind: "moveToCore", state: "replaced", credits: "25000000000", at: at - 7200, winnerKnown: false },
+      ...p.activity,
+    ];
+    return w;
+  },
   /** A wallet that starts one block short of the tip and has never been caught up. */
   "sync-one-behind": (t) => {
     const w = base(t);
@@ -833,11 +1193,65 @@ const SCENARIOS = {
     w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
     return w;
   },
-  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  /** Shielded ready and funded while the wallet's Core sync still runs: a shield's funding waits. */
+  "shielded-core-syncing": (t) => {
+    const w = base(t);
+    w.sync = syncing();
+    return w;
+  },
+  /** Shielded is on and its account is not established yet: its actions wait and say why, the
+   * status bar says so with the first scan's progress, and Receive shows the address already. */
   "shielded-syncing": (t) => {
     const w = base(t);
     w.pending.shielded!.ready = false;
     w.pending.shielded!.balance = "0";
+    w.pending.shielded!.scan = { checked: 42_000, total: 100_000 };
+    return w;
+  },
+  /** Shielded's first bind needs an unlock: Receive says so and shows no address; the bar is Synced,
+   * Sync progress says "Unlock to sync"; Send, Add and Transfer name the unlock. The vault itself reads
+   * unlocked here: the app shows the lock screen while it is locked, so this shows the engine's
+   * answer alone. */
+  "shielded-locked": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "locked";
+    return w;
+  },
+  /** The same while the wallet is unlocked for mixing only: a full unlock binds it. */
+  "shielded-mixing-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "mixingOnly";
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** A watch-only wallet has no viewing key to bind. */
+  "shielded-watch-only": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.account = "watchOnly";
+    return w;
+  },
+  /** The wallet's last Platform-address pass failed: the bar says Platform did not finish. */
+  "platform-addresses-failed": (t) => {
+    const w = base(t);
+    w.dashpay.addresses = "failed";
+    return w;
+  },
+  /** Shielded's sync status cannot be read: the bar says so, never Synced. */
+  "shielded-sync-unread": (t) => {
+    const w = base(t);
+    w.pending.shielded!.syncInfoFails = true;
+    return w;
+  },
+  /** Shielded is established and its last pass failed: the bar says it did not finish. */
+  "shielded-pass-failed": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastPassFailed = true;
     return w;
   },
   /** Shielded is not ready and an earlier shield is waiting to be finished. */
@@ -858,6 +1272,19 @@ const SCENARIOS = {
   "shielded-unrecorded": (t) => {
     const w = base(t);
     w.pending.shielded!.unrecorded = [{ activityId: "sh-9", since: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3600 }];
+    return w;
+  },
+  /** A payment Platform refused at broadcast may still go through: its notes are held, out of the
+   * balance, and Activity shows it as "May still go through". */
+  "shielded-held": (t) => {
+    const w = base(t);
+    holdShielded(w.pending.shielded!, 1);
+    return w;
+  },
+  /** Two such payments. */
+  "shielded-held-two": (t) => {
+    const w = base(t);
+    holdShielded(w.pending.shielded!, 2);
     return w;
   },
   /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
@@ -890,6 +1317,19 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "15000000";
     return w;
   },
+  /** This build cannot spend from Shielded: Send, the moves out and paying from it wait with one reason. */
+  "shielded-spends-off": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    return w;
+  },
+  /** As `shielded-spends-off`, with a shield lock sent and not applied yet: Finish stays open. */
+  "shielded-spends-off-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.spendsAvailable = false;
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);
@@ -913,6 +1353,28 @@ const SCENARIOS = {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
     w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** Two restored locks that may already be applied: the card's plural Checking line. */
+  "recovery-checking-two": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking"), restoredLock(2, 25_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** A restore read back a Core → Shielded lock Platform already took: it may already be finished, and Check again hears the network say it was added. */
+  "recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
+    return w;
+  },
+  /** A restore read back a Core → Shielded lock Platform has not taken: it reads checking, and the first Check again or Finish transfers applies it. */
+  "recovery-restored-unapplied": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 0;
     return w;
   },
   /** A restored lock still waiting for its confirmations: Home has no card. */
@@ -941,6 +1403,14 @@ const SCENARIOS = {
     w.pending.recovery.locks = [restoredFundLock(1, 50_000_000)];
     return w;
   },
+  /** A restore read back an "Add from Dash wallet" lock Platform already took: Check again hears the network say it was added. */
+  "paddr-recovery-restored-finished": (t) => {
+    const w = base(t);
+    const lock = restoredFundLock(1, 50_000_000, "checking");
+    w.pending.recovery.locks = [lock];
+    w.pending.recovery.consumed = [lock.txid];
+    return w;
+  },
   /** A restored "Add from Dash wallet" lock, ready, while the shielded side can't be read. */
   "paddr-recovery-shielded-unread": (t) => {
     const w = base(t);
@@ -952,6 +1422,44 @@ const SCENARIOS = {
   "paddr-recovery-mixed": (t) => {
     const w = base(t);
     w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** A transfer to Shielded of this device's that Platform refused after a penalty, 0.30 DASH left: Home offers Recover. */
+  "recovery-recoverable": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Two refused transfers to Shielded: one with 0.30 DASH left, one with less than the fee left (too small, not on the card). */
+  "recovery-recoverable-small": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A restored lock ready to finish and a refused transfer to Shielded with 0.30 DASH left: the sheet shows both pairs of lines. */
+  "recovery-recoverable-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(4, 25_000_000), partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    return w;
+  },
+  /** Only refused transfers to Shielded with less than the fee left: no card. */
+  "recovery-too-small-only": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(2, 20_000_000, 40_000_000n)];
+    return w;
+  },
+  /** A refused transfer to Shielded with 0.30 DASH left, on mainnet: listed, never offered a Recover. */
+  "recovery-recoverable-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n), partlyUsedLock(3, 40_000_000, 20_000_000_000n)];
+    return w;
+  },
+  /** The first recover may have gone through ("checking"); the next is applied. */
+  "recovery-recover-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [partlyUsedLock(1, 50_000_000, 30_000_000_000n)];
+    w.pending.recovery.failures = 1;
     return w;
   },
   /** The first finish ends `platform.unavailable`; a retry is applied. */
@@ -977,6 +1485,21 @@ const SCENARIOS = {
     w.wallets = [];
     w.phrases = {};
     w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    return w;
+  },
+  /** No wallet and no vault, and a backup of two wallets on disk that Choose File… picks
+   * (passphrase FIXTURE_RESTORE_BACKUP_PASSPHRASE): onboarding's Restore from a file. */
+  "no-wallet-backup-file": (t) => {
+    const w = base(t);
+    const backedUp = [
+      { walletId: FIXTURE_WALLET_ID, name: "Main", phrase: MAIN_PHRASE },
+      { walletId: SECOND_WALLET_ID, name: "Savings", phrase: SECOND_PHRASE },
+    ];
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    withRestoreBackup(w.settings, backedUp);
+    w.tools.files.open = { name: "Main and Savings.dwbackup", data: "" };
     return w;
   },
   /** A vault (passphrase `demo`) that holds no wallet yet: onboarding without a passphrase step. */
@@ -1052,6 +1575,13 @@ const SCENARIOS = {
   /** Hostile labels and names (U6): they must render as text. */
   xss: (t) => base(t, "xss"),
   "dashpay-no-identity": (t) => base(t),
+  /** The same on mainnet: a username paid from the Shielded balance is off there (flag `shielded_registration`). */
+  "dashpay-no-identity-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    if (w.pending.networkChoice) w.pending.networkChoice = { ...w.pending.networkChoice, chosen: "mainnet", saved: true };
+    return w;
+  },
   /** A username registration funded and waiting for its InstantSend lock. */
   "dashpay-registering": (t) => {
     const w = base(t);
@@ -1065,6 +1595,14 @@ const SCENARIOS = {
     const w = base(t);
     w.dashpay = registered();
     attributePayments(w);
+    return w;
+  },
+  /** `dashpay-registered` where this build cannot spend from Shielded: Pay a contact's Shielded row says so. */
+  "dashpay-registered-spends-off": (t) => {
+    const w = base(t);
+    w.dashpay = registered();
+    attributePayments(w);
+    w.pending.shielded!.spendsAvailable = false;
     return w;
   },
   /** DP4-02: `dashpay-registered` with Alice's avatar published and verified. */
@@ -1119,6 +1657,26 @@ const SCENARIOS = {
     main.rows = [];
     return w;
   },
+  /** The first start after an update from 0.1 or 0.2: the funded wallet is replayed once from its
+   * birth, so Home and Pay say why sends wait. The replay does not move on while the scenario is up. */
+  "upgrade-replay": (t) => {
+    const w = base(t);
+    const tip = w.sync.tipHeight!;
+    w.tools.rescan = { fromHeight: tip - 200_000, currentHeight: tip - 150_000, targetHeight: tip, startedAt: secs(FIXTURE_NOW), upgradeWallets: [w.wallets[0].summary.walletId] };
+    w.tools.rescanStep = 0;
+    return w;
+  },
+  /** The wallet's history starts before the block data this install keeps: Home says its older
+   * payments aren't shown and offers Repair's reset, which clears it. */
+  "history-gap": (t) => withHistoryGap(base(t)),
+  /** The notice with mixing stopped but a signed round's inputs still held: its reset is refused. */
+  "history-gap-settling": (t) => {
+    const w = withHistoryGap(base(t));
+    w.tools.inputsHeld = true;
+    return w;
+  },
+  /** The same for two wallets. */
+  "history-gap-two-wallets": (t) => withHistoryGap(twoWallets(base(t))),
   /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
   "wallet-behind-stopped": (t) => walletBehind(t, true, false),
   /** The same with nothing found yet: Home shows 0. */
@@ -1146,6 +1704,13 @@ const SCENARIOS = {
   "dashpay-identity-unsettled": (t) => {
     const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
     w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    return w;
+  },
+  /** The same while the wallet's Platform-address pass failed: the bar says Platform did not finish. */
+  "dashpay-identity-unsettled-addresses-failed": (t) => {
+    const w = withStatus(base(t), { kind: "startupIncomplete", startup: "identityUnsettled" });
+    w.lock = { ...w.lock, state: "unlockedMixingOnly" };
+    w.dashpay.addresses = "failed";
     return w;
   },
   /** The bring-up could not finish its discovery. */
@@ -1223,6 +1788,42 @@ const SCENARIOS = {
       running: false,
       fundsCommitted: false,
       failure: { phase: "keysPrepared", code: "registration.funding_insufficient", retryable: true, needed: "3002260", available: "1000000" },
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  /** Paid from the Platform balance, and Platform has not said whether the payment went through:
+   * Continue pays it again, Move to Dash wallet frees the balance (F22). */
+  "dashpay-registering-held": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentHeld",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromPlatform: true,
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  /** Paid from the Shielded balance, its outcome unknown, and the app reopened since: nothing
+   * checks it, so Continue checks it again (F12). */
+  "dashpay-registering-shielded-recheck": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentUnknown",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromShielded: true,
     };
     w.dashpay.runs = [];
     return w;
@@ -1442,6 +2043,19 @@ const SCENARIOS = {
     w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null }));
     return w;
   },
+  /** "alice" contested with no temporary name and too few credits for one: Top up (D4 reversed). */
+  "dashpay-contest-instant-short": (t) => {
+    const w = contestPending(base(t), 1_900_000_000);
+    w.dashpay.identities = w.dashpay.identities.map((i) => ({ ...i, names: [], mainName: null, balance: "1000000", creditLevel: "low" }));
+    return w;
+  },
+  /** DP1-09 D4 reversed: the registration's temporary "alice2" registered beside the contested
+   * "alice" (iOS's success line), or refused (its failure line and Try again). */
+  "dashpay-instant-ok": (t) => withInstant(base(t), true),
+  "dashpay-instant-failed": (t) => withInstant(base(t), false),
+  /** The vote on "alice" won (the main name switches, "alice2" kept) or lost ("alice2" stays main). */
+  "dashpay-instant-won": (t) => withContest(withInstant(base(t), true), { kind: "won" }, "alice2"),
+  "dashpay-instant-lost": (t) => withContest(withInstant(base(t), true), { kind: "lost", winner: IDENTITY.mallory }, "alice2"),
   /** The contest read before the status moved on: won (R3), lost to another user (R4), blocked (R5). */
   "dashpay-contest-won": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "won" }),
   "dashpay-contest-lost": (t) => withContest(contestPending(base(t), 1_900_000_000), { kind: "lost", winner: IDENTITY.mallory }),

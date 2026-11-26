@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import { CLUB, HOME, OFFICE } from "../src/fixture/masternodes";
+import { CLUB, HOME, OFFICE, OP_UPDATE_SAVED } from "../src/fixture/masternodes";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { seriousAxeViolations } from "./axe";
@@ -12,10 +12,10 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
 const shots = process.env.DW_ROUTE_SHOTS;
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", network?: "mainnet") {
   const errors = trackPageErrors(page);
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, network ? `&network=${network}` : ""));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
@@ -33,7 +33,7 @@ const sheet = (page: Page) => page.getByTestId("mn-change-keys-sheet");
 const PAYOUT = "yNewPayoutMn7qR2vWx9KfT4Mn7qR2vWx9";
 
 for (const theme of THEMES) {
-  test(`change keys ${theme}: the PoSe warning, the recorded payout, send; 0 serious axe issues`, async ({ page }) => {
+  test(`change keys ${theme}: the PoSe warning, the recorded payout, then send; 0 serious axe issues`, async ({ page }) => {
     const errors = await open(page, "mn-list", theme);
     await page.getByTestId(`mn-row-${HOME}`).click();
     await shot(page, "pane-home", theme);
@@ -43,6 +43,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("mn-change-payout-recorded").locator("input")).toBeChecked();
     await expect(sheet(page)).toContainText("If the payout was changed elsewhere, this sets it back.");
     await expect(page.getByTestId("mn-change-nothing")).toBeVisible();
+    await expect(sheet(page).locator("fieldset, legend")).toHaveCount(0);
+    for (const name of ["Operator key", "Voting key", "Payouts go to"]) await expect(sheet(page).getByRole("radiogroup", { name })).toBeVisible();
     await expect(page.getByTestId("mn-change-send")).toBeDisabled();
     await shot(page, "change-keys-open", theme);
     await page.getByTestId("mn-change-operator-keychain").click();
@@ -102,7 +104,7 @@ test("a given operator key and another payout address are signed as reviewed; a 
   await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
   await page.getByTestId("mn-change-send").click();
   await expect(page.getByTestId("mn-change-keys-sent")).toBeVisible();
-  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.updates[0].terms);
+  const terms = await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.find((o) => o.kind === "update_registrar")!.terms);
   expect(terms).toMatchObject({ operatorPublicKey: "ab".repeat(48), payoutAddress: PAYOUT });
 });
 
@@ -129,6 +131,25 @@ for (const theme of THEMES)
     expect(errors).toEqual([]);
   });
 
+test("a refused Send again of an update that didn't go out leaves no live grant (review of issue 460)", async ({ page }) => {
+  const errors = await open(page, "mn-update-not-sent");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-operator-keychain").click();
+  await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-send").click();
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("mn_resend_operation", "rpc"));
+  const revokes = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "revoke_grant").length);
+  const before = await revokes();
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect.poll(revokes).toBe(before + 1);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  expect(errors.filter((e) => !e.includes("rpc"))).toEqual([]);
+});
+
 test("discarding an update that didn't go out frees the masternode for another change", async ({ page }) => {
   await open(page, "mn-update-not-sent");
   await page.getByTestId(`mn-row-${HOME}`).click();
@@ -141,6 +162,111 @@ test("discarding an update that didn't go out frees the masternode for another c
   await page.getByTestId("mn-change-keys-done").click();
   await page.getByTestId("mn-change-keys").click();
   await expect(page.getByTestId("mn-change-review-voting")).toBeVisible();
+});
+
+test("a saved change that didn't go out: Discard, then a fresh preview, with nothing sent (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(page.getByTestId("mn-change-unsent")).toContainText("This change didn't go out");
+  await page.getByTestId("mn-change-unsent-discard").click();
+  await expect(page.getByTestId("mn-change-keys-discarded")).toContainText("Discarded. Nothing was sent.");
+  await page.getByTestId("mn-change-keys-done").click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-voting-keychain").click();
+  await expect(page.getByTestId("mn-change-review-voting")).toContainText("Changes");
+  const calls = await page.evaluate(() => window.__dwFixture!.calls);
+  expect(calls.filter((c) => c === "mn_update_registrar" || c === "mn_resend_operation" || c === "authorize")).toEqual([]);
+  expect(await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+for (const theme of THEMES)
+  test(`a change already sent ${theme}: the sheet says how to free the masternode (#438)`, async ({ page }) => {
+    const errors = await open(page, "mn-update-sent", theme);
+    await page.getByTestId(`mn-row-${HOME}`).click();
+    await page.getByTestId("mn-change-keys").click();
+    const error = page.getByTestId("mn-change-preview-error");
+    await expect(error).toContainText("was sent but hasn't reached the masternode list yet");
+    await expect(error).toContainText("abandon it in Activity");
+    await expect(page.getByTestId("mn-change-unsent")).toHaveCount(0);
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await shot(page, "change-keys-pending-sent", theme);
+    expect(errors).toEqual([]);
+  });
+
+for (const theme of THEMES)
+  test(`a change abandoned in Activity ${theme}: a new one previews, and sending it says how to clear the old one`, async ({ page }) => {
+    const errors = await open(page, "mn-update-abandoned", theme);
+    await page.getByTestId(`mn-row-${HOME}`).click();
+    await page.getByTestId("mn-change-keys").click();
+    await page.getByTestId("mn-change-operator-keychain").click();
+    await expect(page.getByTestId("mn-change-review-operator")).toContainText("Changes");
+    await expect(page.getByTestId("mn-change-preview-error")).toHaveCount(0);
+    await page.getByTestId("mn-change-passphrase").fill(FIXTURE_PASSPHRASE);
+    await page.getByTestId("mn-change-send").click();
+    await expect(page.getByTestId("mn-change-error")).toHaveText(
+      "An abandoned change to this masternode may still confirm, and it would undo this one. To clear it, send one of that change's coins to yourself. You can make this change once that payment is in a block.",
+    );
+    await expect(page.getByTestId("mn-change-keys-sent")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+    expect(await page.evaluate(() => window.__dwFixture!.world.masternodes.operations.length)).toBe(1);
+    await fontsReady(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await shot(page, "change-keys-abandoned-pending", theme);
+    expect(errors.filter((e) => !e.includes("may still confirm"))).toEqual([]);
+  });
+
+test("Send again of a change saved behind a sent one: the sent line, in the sheet and in In progress (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved-behind-sent");
+  const SENT = "was sent but hasn't reached the masternode list yet";
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect(page.getByTestId("mn-change-unsent-error")).toContainText(SENT);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  const more = await open(page, "mn-update-saved-behind-sent");
+  await page.getByTestId(`mn-op-resend-${OP_UPDATE_SAVED}`).click();
+  await page.getByTestId("mn-op-resend-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-op-resend-confirm").click();
+  await expect(page.getByTestId("mn-op-resend-error")).toContainText(SENT);
+  expect(await page.evaluate(() => window.__dwFixture!.world.grants.filter((g) => !g.used).length)).toBe(0);
+  expect([...errors, ...more].filter((e) => !e.includes("not in the list yet"))).toEqual([]);
+});
+
+test("Send again words the refusal from the operations read after it, not the cached list (#438)", async ({ page }) => {
+  const errors = await open(page, "mn-update-saved");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(page.getByTestId("mn-change-unsent")).toBeVisible();
+  // An earlier change goes out while the sheet is open; no event, so the cached list doesn't hold it.
+  await page.evaluate(() => {
+    const m = window.__dwFixture!.world.masternodes;
+    const saved = m.operations[0];
+    m.operations.push({ ...saved, id: "e".repeat(32), state: { kind: "sent" }, sentAt: saved.createdAt - 60, createdAt: saved.createdAt - 120, lastError: null });
+  });
+  await page.getByTestId("mn-change-unsent-passphrase").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("mn-change-unsent-resend").click();
+  await expect(page.getByTestId("mn-change-unsent-error")).toContainText("was sent but hasn't reached the masternode list yet");
+  expect(errors.filter((e) => !e.includes("not in the list yet"))).toEqual([]);
+});
+
+test("mainnet: Change keys can be reviewed, and nothing is sent", async ({ page }) => {
+  const errors = await open(page, "mn-list", "light", "mainnet");
+  await page.getByTestId(`mn-row-${HOME}`).click();
+  await page.getByTestId("mn-change-keys").click();
+  await expect(sheet(page)).toBeVisible();
+  await page.getByTestId("mn-change-operator-keychain").click();
+  await expect(page.getByTestId("mn-change-pose")).toBeVisible();
+  await expect(page.getByTestId("mn-change-held")).toHaveText("You can review this change, but this version can't send it yet. Nothing has been sent.");
+  await expect(page.getByTestId("mn-change-send")).toHaveCount(0);
+  await expect(page.getByTestId("mn-change-passphrase")).toHaveCount(0);
+  await sheet(page).locator("form").evaluate((f: HTMLFormElement) => f.requestSubmit());
+  await expect(sheet(page)).toBeVisible();
+  await expect(page.getByTestId("mn-change-keys-sent")).toHaveCount(0);
+  expect(errors).toEqual([]);
 });
 
 test("no Change keys for a tracked node without its registration: the reason line instead", async ({ page }) => {

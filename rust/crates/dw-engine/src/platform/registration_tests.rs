@@ -52,6 +52,19 @@ const COIN: u64 = 100_000_000;
 const PLAIN: &str = "alice2";
 const CONTESTED: &str = "alice";
 const NAME_CREDITS: u64 = 50_000_000;
+/// The Platform address a Shielded-funded row's create refunds to.
+const FALLBACK: &str = "fallback-address";
+
+/// The identity a Shielded funding record names.
+fn identity_of(funding: &str) -> String {
+    match super::registration_rows::Funding::decode(funding) {
+        super::registration_rows::Decoded::Known(super::registration_rows::Funding::Shielded {
+            identity: Some(identity),
+            ..
+        }) => identity,
+        _ => panic!("no identity named"),
+    }
+}
 
 struct NullSink;
 impl crate::EventSink for NullSink {
@@ -439,10 +452,62 @@ enum FundScript {
     OverInputCap,
 }
 
+/// How a scripted Platform funding pass ends.
+type PlatformFundEnd = Result<super::platform_moves::RegisterOutcome, super::errors::CreditsError>;
+
+/// The plan a scripted pass writes: one input at nonce 1 claiming the
+/// row's funding, and the identity [`platform_identity`].
+fn platform_plan_of(funding: u64) -> super::registration_rows::PlatformPlan {
+    super::registration_rows::PlatformPlan {
+        inputs: vec![(
+            super::platform_moves::bech32m(
+                &dpp::address_funds::PlatformAddress::P2pkh([0x50; 20]),
+                dpp::dashcore::Network::Testnet,
+            ),
+            1,
+            funding,
+        )],
+        identity: platform_identity(),
+    }
+}
+
+/// The identity a scripted Platform plan creates.
+fn platform_identity() -> String {
+    flow::b58(&dpp::prelude::Identifier::from([0x51u8; 32]))
+}
+
 #[derive(Default)]
 struct World {
     /// What a Shielded-funded registration reads.
     shielded: super::registration::ShieldedFacts,
+    /// The proved balances of the Platform addresses (stored nonce: the
+    /// address's first byte), and a move that holds them.
+    platform: BTreeMap<dpp::address_funds::PlatformAddress, u64>,
+    platform_held: Option<String>,
+    /// How each funding pass of a Platform-funded row ends: whether it
+    /// writes a plan first (one with none), then its outcome; an empty
+    /// script is `Unknown`.
+    platform_fund: std::collections::VecDeque<(bool, PlatformFundEnd)>,
+    /// Each pass's ask, and the plan it found the row with.
+    platform_asks: Vec<super::platform_moves::RegisterAsk>,
+    /// How each funding pass of a Shielded-funded row ends, and with which
+    /// identity it names the row first, if any; an empty script is
+    /// `Unknown`.
+    shielded_fund: std::collections::VecDeque<(
+        Option<String>,
+        Result<super::registration_shielded::ShieldedOutcome, PlatformError>,
+    )>,
+    /// Each Shielded pass's ask.
+    shielded_asks: Vec<super::registration_shielded::ShieldedAsk>,
+    /// The fallbacks the starts took.
+    fallbacks_taken: usize,
+    /// A naming pass also records the identity it named at the row's
+    /// index, as the library does on an `Ok` whatever Platform proved.
+    shielded_records_named: bool,
+    /// The session's network reads as mainnet.
+    mainnet: bool,
+    /// Name lookups fail as DAPI unreachable would.
+    names_offline: bool,
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
@@ -1041,6 +1106,9 @@ impl RegistrationLib for Fake {
     }
 
     async fn name_credits(&self, _: &str) -> Result<u64, NameError> {
+        if self.w().names_offline {
+            return Err(NameError::Platform(PlatformError::Unavailable));
+        }
         Ok(NAME_CREDITS)
     }
 
@@ -1051,6 +1119,14 @@ impl RegistrationLib for Fake {
 
     async fn credit_balance(&self, _: &str) -> Result<Option<u64>, PlatformError> {
         Ok(Some(0))
+    }
+
+    fn network(&self) -> DashNetwork {
+        if self.w().mainnet {
+            DashNetwork::Mainnet
+        } else {
+            DashNetwork::Regtest
+        }
     }
 
     fn claim_hold(&self) -> Option<RegistrationWait> {
@@ -1157,6 +1233,104 @@ impl RegistrationLib for Fake {
 
     async fn shielded_facts(&self) -> Result<super::registration::ShieldedFacts, PlatformError> {
         Ok(self.w().shielded.clone())
+    }
+
+    async fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> Result<super::registration_platform::RegisterPlan, super::errors::CreditsError> {
+        use dpp::address_funds::PlatformAddress;
+        let version = self.platform_version().await;
+        let (balances, held) = {
+            let w = self.w();
+            (w.platform.clone(), w.platform_held.clone())
+        };
+        if let Some(id) = held {
+            return Err(super::errors::CreditsError::MovePending { id });
+        }
+        let nonces = (balances.keys())
+            .map(|a| match a {
+                PlatformAddress::P2pkh(h) | PlatformAddress::P2sh(h) => (*a, h[0] as u32),
+            })
+            .collect();
+        let keys = super::keys_policy::registration_specs().len();
+        Ok(super::registration_platform::register_plan(
+            (&balances, &nonces),
+            funding,
+            keys,
+            version,
+        )?)
+    }
+
+    fn platform_fund<'a>(
+        &'a self,
+        ask: super::platform_moves::RegisterAsk,
+        _lease: Option<&'a Lease>,
+        write_plan: super::platform_moves::PlanWriter<'a>,
+    ) -> super::platform_moves::PlanFund<'a> {
+        Box::pin(async move {
+            let (writes, end) = {
+                let mut w = self.w();
+                w.platform_asks.push(ask.clone());
+                w.platform_fund
+                    .pop_front()
+                    .unwrap_or((false, Ok(super::platform_moves::RegisterOutcome::Unknown)))
+            };
+            if writes && ask.plan.is_none() {
+                write_plan(platform_plan_of(ask.funding_credits)).await?;
+            }
+            end
+        })
+    }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        self.w().fallbacks_taken += 1;
+        Ok(FALLBACK.to_owned())
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: super::registration_shielded::ShieldedAsk,
+        _lease: Option<&Lease>,
+    ) -> Result<super::registration_shielded::ShieldedOutcome, PlatformError> {
+        let (names, end) = {
+            let mut w = self.w();
+            w.shielded_asks.push(ask.clone());
+            (w.shielded_fund.pop_front()).unwrap_or((
+                None,
+                Ok(super::registration_shielded::ShieldedOutcome::Unknown),
+            ))
+        };
+        if let Some(identity) = names {
+            let funding = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback.clone(),
+                identity: Some(identity),
+            }
+            .encode();
+            let expected = super::registration_rows::Funding::Shielded {
+                denomination: ask.denomination,
+                fallback: ask.fallback,
+                identity: None,
+            }
+            .encode();
+            let marker = dw_appdb::dp_registration_named(&identity_of(&funding));
+            let written = self
+                .appdb
+                .set_registration_funding_durable(
+                    (&self.wallet.to_string(), ask.draft, ask.owner),
+                    (&expected, &funding),
+                    (&marker, "0"),
+                    0,
+                )
+                .unwrap();
+            assert!(written, "the fake names the row as the hook does");
+            let mut w = self.w();
+            if w.shielded_records_named {
+                w.identities.push((ask.index, identity_of(&funding)));
+            }
+        }
+        end
     }
 
     async fn request_inviter(
@@ -2401,9 +2575,9 @@ fn a_run_waits_for_the_sync_with_its_lease() {
 /// (dw-tdash B2): the first ends `PartialNoIdentity`; the next, once
 /// `rerun` lets it, proves the seed has no identity.
 #[derive(Default)]
-struct PartialBringUp {
-    calls: AtomicU32,
-    rerun: Arc<tokio::sync::Notify>,
+pub(super) struct PartialBringUp {
+    pub(super) calls: AtomicU32,
+    pub(super) rerun: Arc<tokio::sync::Notify>,
 }
 
 impl MockPlatform for PartialBringUp {
@@ -3625,9 +3799,11 @@ fn a_prepared_send_keeps_its_coin_through_a_locks_untracking() {
         reads_reserved(&f, coin),
         "the lock's untracking freed the prepared send's coin"
     );
-    // The send's own release frees it.
+    // The send's own release frees it, in the task its drop spawned.
     drop(prepared);
-    assert!(!reads_reserved(&f, coin));
+    eventually("the send's release frees the coin", || {
+        !reads_reserved(&f, coin)
+    });
 }
 
 /// DEC-173 (2), DEC-171 (2): a lock is a row's by its index, so a known
@@ -4381,7 +4557,10 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
 }
 
 mod invitation;
+#[cfg(unix)]
+mod kill9;
 mod ledger;
+mod platform;
 mod rules;
 mod shielded;
 mod step2;
@@ -4815,6 +4994,111 @@ fn a_drain_lease_starts_no_registration() {
     assert_eq!(err.code(), "platform.grant_invalid");
     assert!(f.rows().is_empty());
     assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
+}
+
+/// A contact payout's lease, from either source, starts or resumes no
+/// registration: refused `grant_invalid`, nothing funded or signed, the
+/// lease unchanged, its signers included.
+#[test]
+fn a_payout_lease_starts_or_resumes_no_registration() {
+    use crate::platform::PaymentSource;
+    for source in [PaymentSource::Shielded, PaymentSource::Platform] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let g = f.grant(0, 1_000, Credential::None);
+        let s = Arc::clone(&f.session);
+        let flow = FlowKind::ContactPayFromBalance;
+        let id = (f.engine)
+            .block_on(async move { s.begin_flow(f.wallet, flow, vec![g], Some(source)).await })
+            .unwrap();
+        let lease = f.session.lease_for(&f.wallet, &id).unwrap().unwrap();
+        let held = |l: &Lease| {
+            let signers = (
+                l.call_platform_address_signer().is_ok(),
+                l.call_shielded_spend_key().is_ok(),
+            );
+            (l.state(), l.available(BudgetPurpose::Credits), signers)
+        };
+        let before = held(&lease);
+        assert_eq!(
+            before.2,
+            (
+                source == PaymentSource::Platform,
+                source == PaymentSource::Shielded
+            )
+        );
+        let started = f.engine.block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            id.clone(),
+        ));
+        assert_eq!(
+            started.unwrap_err().code(),
+            "platform.grant_invalid",
+            "{source:?}"
+        );
+        assert!(f.rows().is_empty());
+        let draft = f.insert(core_row(PLAIN));
+        let resumed = f.engine.block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(id.clone()),
+        ));
+        assert_eq!(
+            resumed.unwrap_err().code(),
+            "platform.grant_invalid",
+            "{source:?}"
+        );
+        assert!(!f.running(draft));
+        assert_eq!(lib.counts(), (0, 0), "nothing funded or created");
+        assert_eq!(held(&lease), before, "{source:?}");
+    }
+}
+
+/// A contact payout's lease a registration run holds (its grant named it)
+/// is never rebound by a resume: the resume is refused `grant_invalid`, the
+/// fresh grant stays unredeemed and the lease never gets a Platform address
+/// signer, so a later Platform-balance payout with it signs nothing.
+#[test]
+fn a_resume_never_rebinds_a_payout_lease_a_run_holds() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().proof_arrives = false;
+    let draft = adopted_lock_row(&f, &lib, 1, LockStatus::Broadcast);
+    let g = f.grant(0, 1_000, Credential::None);
+    let payout = (f.engine)
+        .block_on(
+            f.session
+                .begin_lease(f.wallet, FlowKind::ContactPayFromBalance, &[g]),
+        )
+        .unwrap();
+    f.spawn(&lib, draft, Some(payout.clone()));
+    eventually("the proof wait", || {
+        f.status(&lib, draft).waiting == Some(RegistrationWait::ChainLock)
+    });
+    payout.park();
+    let fresh = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+    let err = f
+        .engine
+        .block_on(registration::resume(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            &draft.to_string(),
+            Some(fresh.clone()),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
+    let unused =
+        (f.session.vault()).check_grant(&fresh, dw_vault::GrantKind::PlatformOp, Some(&f.wallet.0));
+    assert!(unused.is_ok(), "the fresh grant is not redeemed");
+    assert!(payout.call_platform_address_signer().is_err());
+    lib.w().proof_arrives = true;
+    f.settle(draft);
 }
 
 /// #263: the library's identities, for a wallet gone from the manager, fail

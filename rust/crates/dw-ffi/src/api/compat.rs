@@ -217,6 +217,7 @@ impl From<dw_engine::EngineError> for CompatError {
                 F::InvalidKeyMaterial(detail) => Self::InvalidKeyMaterial { detail },
                 F::WatchOnly => Self::WatchOnly,
                 F::DestinationUnwritable(detail) => Self::DestinationUnwritable { detail },
+                F::WalletTooLarge | F::ExtraHdAccount { .. } => Self::UnsupportedFormat { detail },
             },
             // A phrase in a Core file that no BIP39 rule accepts.
             E::InvalidMnemonic(_) => Self::Corrupt { detail },

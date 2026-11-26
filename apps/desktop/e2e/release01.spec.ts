@@ -415,7 +415,11 @@ test.describe("network choice", () => {
     await setKnobs(page, { closeRefused: "shielded_spend_unresolved" });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
-    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A shielded payment is still being confirmed. Switch networks once it is.");
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so switching networks now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
+    await setKnobs(page, { closeRefused: "transfer_preparing" });
+    await page.getByTestId("settings-network-choice-mainnet").click();
+    await page.getByTestId("network-switch-confirm").click();
+    await expect(page.getByTestId("settings-network-choice-problem")).toHaveText("A transfer in one of your wallets is still being prepared. Try again when it's done.");
     expect(await activeNetwork(page)).toBe("testnet");
   });
 
@@ -680,7 +684,7 @@ test.describe("Export CSV", () => {
 });
 
 test.describe("Show Masternodes", () => {
-  test("hides Masternodes until the setting is on, and sends the route home", async ({ page }) => {
+  test("Auto hides Masternodes from a wallet without any, Off sends the route home, On shows it", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("hero").waitFor();
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
@@ -688,20 +692,36 @@ test.describe("Show Masternodes", () => {
     await expect(page.getByTestId("page-masternodes")).toHaveCount(0);
     await expect(page.getByTestId("page-home")).toBeVisible();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
-    await page.getByTestId("settings-show-masternodes").check();
+    await expect(page.getByTestId("settings-show-masternodes-auto")).toHaveAttribute("aria-pressed", "true");
+    await page.getByTestId("settings-show-masternodes-on").click();
     await page.getByTestId("settings-governance-turn-on").click();
     await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
-    await page.getByTestId("settings-show-masternodes").uncheck();
+    await page.getByTestId("settings-show-masternodes-off").click();
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
+    await page.getByTestId("settings-show-masternodes-auto").click();
+    await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
+    expect(await world(page, (w) => w.settings.ui.masternodesItem)).toBe("auto");
   });
 
-  test("a proposal in progress does not show it", async ({ page }) => {
-    // `governance`: the setting is on and one of the wallet's proposals is confirming.
-    await open(page, "governance");
+  test("Auto shows it for a wallet with masternodes, and Off hides it", async ({ page }) => {
+    await open(page, "mn-list");
     await page.getByTestId("hero").waitFor();
-    await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
-    await page.getByTestId("settings-show-masternodes").uncheck();
+    await page.getByTestId("settings-show-masternodes-auto").click();
+    await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
+    await page.getByTestId("settings-show-masternodes-off").click();
+    await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
+    await expect(page.getByTestId("status-governance")).toHaveCount(0);
+  });
+
+  test("Auto shows it for a proposal in progress, and Off hides it", async ({ page }) => {
+    // `governance-proposal-only`: a confirming proposal is the wallet's only masternode work.
+    await open(page, "governance-proposal-only");
+    await page.getByTestId("hero").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-show-masternodes-auto").click();
+    await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
+    await page.getByTestId("settings-show-masternodes-off").click();
     await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
     await expect(page.getByTestId("status-governance")).toHaveCount(0);
   });
@@ -824,7 +844,7 @@ test.describe("Move to Dash wallet", () => {
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
-    // Settled while the sheet is still open: it keeps showing the result.
+    // Settled while the sheet is still open: it takes Activity's answer.
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const p = f.world.pending.platform!;
@@ -832,7 +852,7 @@ test.describe("Move to Dash wallet", () => {
       p.addresses = [];
       f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "identities" } });
     });
-    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
+    await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
@@ -862,7 +882,7 @@ test.describe("Move to Dash wallet", () => {
 });
 
 test.describe("Platform activity in Activity", () => {
-  test("mixes Platform rows into the list with a tag, and they open nothing", async ({ page }) => {
+  test("mixes Platform rows into the list with a tag, and each opens its details", async ({ page }) => {
     const errors = await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -870,7 +890,7 @@ test.describe("Platform activity in Activity", () => {
     await expect(rows).toHaveCount(2);
     await expect(rows.first()).toContainText("Received on Platform");
     await expect(rows.first()).toContainText("Platform");
-    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="platform:"]')).toHaveCount(2);
     await shot(page, "light-activity-platform");
     expect(await seriousAxeViolations(page)).toEqual([]);
     // Only under "All": a type filter is the Core engine's.
@@ -1000,8 +1020,8 @@ test.describe("Shielded", () => {
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("shielded-quote")).toBeVisible();
     // The quote's own pool fee, not a constant.
-    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.0001 tDASH");
-    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.0001 tDASH, whatever you add.");
+    await expect(page.getByTestId("shielded-quote-pool-fee")).toHaveText("0.00010000 tDASH");
+    await expect(page.getByTestId("shielded-pool-fee-note")).toHaveText("The Platform pool fee is fixed at about 0.00010000 tDASH, whatever you add.");
     await expect(page.getByTestId("shielded-fee-warning")).toHaveText("Most of this goes to fees.");
     await shot(page, "light-shielded-fee-warning");
     await page.getByTestId("shielded-back").click();
@@ -1053,7 +1073,7 @@ test.describe("Shielded", () => {
         for (const id of ids) {
           const b = page.getByTestId(id);
           await expect(b).toBeDisabled();
-          await expect(b).toHaveAttribute("title", "Shielded is still syncing; try again when it finishes.");
+          await expect(b).toHaveAttribute("title", "Shielded is still syncing. Try again when it finishes.");
           // Disabled is dimmed, not hidden: its text still has at least 3:1 against what is behind it.
           expect(await contrast(b)).toBeGreaterThanOrEqual(3);
         }
@@ -1061,7 +1081,7 @@ test.describe("Shielded", () => {
       // Both of its Transfer routes wait and say why.
       for (const route of ["coreToShielded", "shieldedToCore"] as const) {
         await openTransfer(page, route);
-        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
         await expect(page.getByTestId("transfer-amount")).toBeDisabled();
         await waits(["transfer-max", "transfer-continue"]);
         if (route === "shieldedToCore") await shot(page, `${theme}-shielded-syncing-disabled`);
@@ -1069,7 +1089,9 @@ test.describe("Shielded", () => {
       }
       await page.getByTestId("sidebar-receive").click();
       await page.getByTestId("shielded-receive-open").click();
-      await expect(page.getByTestId("shielded-receive-why")).toHaveText("Shielded is still syncing; try again when it finishes.");
+      // Receive does not wait: the address shows with the first scan's progress.
+      await expect(page.getByTestId("shielded-receive-progress")).toHaveText("Syncing Shielded… 42.0%");
+      await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
       await page.getByTestId("sidebar-pay").click();
       await waits(["shielded-send"]);
       expect(errors).toEqual([]);
@@ -1096,7 +1118,8 @@ test.describe("Shielded", () => {
     const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
     await expect(row).toContainText("Pending");
     await expect(row).not.toContainText("Not accepted");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await row.click();
+    await expect(page.getByTestId("source-detail-status")).toHaveText("Pending");
   });
 
   test("leaves an unavailable Shielded balance off Home, with no Home card", async ({ page }) => {
@@ -1115,7 +1138,7 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
   });
 
-  test("Activity lists the shielded rows with a Shielded tag, that open nothing", async ({ page }) => {
+  test("Activity lists the shielded rows with a Shielded tag, each opening its details", async ({ page }) => {
     await open(page, "funded");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
@@ -1123,7 +1146,7 @@ test.describe("Shielded", () => {
     await expect(rows).toHaveCount(3);
     await expect(page.locator('[data-txid^="shielded:received:"]')).toContainText("Received in Shielded");
     await expect(page.locator('[data-txid^="shielded:shieldFromCore:"]')).toContainText("Added to Shielded");
-    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
+    await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(3);
   });
 });
 

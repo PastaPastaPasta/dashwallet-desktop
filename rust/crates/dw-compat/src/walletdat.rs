@@ -80,6 +80,11 @@ pub enum WalletDatError {
     NoHdChain,
     /// Legacy HD seed whose length the importer cannot store.
     SeedLength(usize),
+    /// A legacy wallet with more than [`MAX_LEGACY_CHAIN_KEYS`] keys on one
+    /// chain: read, and refused on purpose.
+    RangeTooLarge,
+    /// A legacy wallet with keys on an HD account other than 0.
+    ExtraHdAccount(u32),
 }
 
 impl std::fmt::Display for WalletDatError {
@@ -92,6 +97,13 @@ impl std::fmt::Display for WalletDatError {
             Self::WrongPassphrase => f.write_str("wrong passphrase"),
             Self::NoHdChain => f.write_str("no HD chain"),
             Self::SeedLength(n) => write!(f, "HD seed is {n} bytes"),
+            Self::RangeTooLarge => write!(
+                f,
+                "more than {MAX_LEGACY_CHAIN_KEYS} keys on one chain cannot be restored"
+            ),
+            Self::ExtraHdAccount(a) => {
+                write!(f, "HD account {a} cannot be restored; only account 0 is")
+            }
         }
     }
 }
@@ -1040,14 +1052,10 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
 fn check_chain_range(chain: &LegacyChain, children: &[HdChild]) -> Result<(), WalletDatError> {
     for (&account, &(external, internal)) in &chain.accounts {
         if account != 0 {
-            return Err(WalletDatError::Unsupported(format!(
-                "HD account {account} cannot be restored; only account 0 is"
-            )));
+            return Err(WalletDatError::ExtraHdAccount(account));
         }
         if external > MAX_LEGACY_CHAIN_KEYS || internal > MAX_LEGACY_CHAIN_KEYS {
-            return Err(WalletDatError::Unsupported(
-                "the wallet's address range is too large to restore".into(),
-            ));
+            return Err(WalletDatError::RangeTooLarge);
         }
     }
     for child in children {
@@ -1305,17 +1313,12 @@ fn parse_record(
             // Refused here, before any key is derived, as the import would
             // refuse them later.
             if child.account != 0 {
-                return Err(WalletDatError::Unsupported(format!(
-                    "HD account {} cannot be restored; only account 0 is",
-                    child.account
-                )));
+                return Err(WalletDatError::ExtraHdAccount(child.account));
             }
             if child.index >= MAX_LEGACY_CHAIN_KEYS
                 || w.hd_children.len() >= 2 * MAX_LEGACY_CHAIN_KEYS as usize
             {
-                return Err(WalletDatError::Unsupported(
-                    "the wallet's address range is too large to restore".into(),
-                ));
+                return Err(WalletDatError::RangeTooLarge);
             }
             g.hd_pubs.insert(pubkey);
             w.hd_children.push(child);
@@ -1439,6 +1442,15 @@ fn plain_key_matches(pubkey: &[u8], der: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+        assert!(
+            rusqlite::version_number() >= 3_051_002,
+            "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+            rusqlite::version()
+        );
+    }
 
     fn vector(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1645,6 +1657,32 @@ mod tests {
             "//srv/share/x.dat"
         );
         assert_eq!(windows_uri_path(r"D:\Wället\w.dat"), "/D:/Wället/w.dat");
+    }
+
+    /// A legacy wallet's records in a SQLite file (`createfromdump
+    /// -format=sqlite`) are refused as in Berkeley DB: an account other
+    /// than 0 is `ExtraHdAccount`, never an unreadable file (#81 item 1).
+    #[test]
+    fn legacy_records_in_sqlite_get_the_same_refusal() {
+        let pairs =
+            crate::bdb::read_pairs(&std::fs::read(vector("bdb_account1.dat")).unwrap()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("CREATE TABLE main (key BLOB PRIMARY KEY, value BLOB)", [])
+            .unwrap();
+        for (k, v) in &pairs {
+            conn.execute(
+                "INSERT INTO main VALUES (?1, ?2)",
+                rusqlite::params![&k[..], &v[..]],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        assert_eq!(
+            read_sqlite(&path).err(),
+            Some(WalletDatError::ExtraHdAccount(1))
+        );
     }
 
     /// Review L5: odd characters and a leading `//` stay in the path; a
@@ -2278,8 +2316,10 @@ mod tests {
         let seed = [0x5au8; 64];
         let chain = ser_chain(&sha256d(&seed), false, &seed, b"", b"", 1, 0);
         let pubkey = [0x02u8; 33];
-        for (account, index, want) in [(1, 0, "account 1"), (0, MAX_LEGACY_CHAIN_KEYS, "too large")]
-        {
+        for (account, index, want) in [
+            (1, 0, WalletDatError::ExtraHdAccount(1)),
+            (0, MAX_LEGACY_CHAIN_KEYS, WalletDatError::RangeTooLarge),
+        ] {
             let pairs = [
                 (db_key("hdchain"), chain.clone()),
                 (
@@ -2292,10 +2332,7 @@ mod tests {
                 .map(|(k, v)| (k.as_slice(), v.as_slice()))
                 .collect();
             let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
-            assert!(
-                matches!(err, WalletDatError::Unsupported(ref d) if d.contains(want)),
-                "{err:?}"
-            );
+            assert_eq!(err, want);
         }
     }
 

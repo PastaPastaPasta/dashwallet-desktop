@@ -1691,3 +1691,6 @@ fn an_avatar_decode_that_panics_leaves_the_engine_unpoisoned() {
     }));
     assert!(!crate::engine_poisoned());
 }
+
+#[cfg(unix)]
+mod kill9;

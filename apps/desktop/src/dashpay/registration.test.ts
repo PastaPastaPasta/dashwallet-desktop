@@ -18,10 +18,14 @@ import {
   pendingModel,
   REG_COPY,
   screenModel,
+  platformRefusalText,
   startErrorText,
   type ScreenInputs,
 } from "./registration";
-import { COPY } from "./status";
+import { INSTANT_COPY } from "./instantOffer";
+import { PAY_WITH_COPY } from "./payWith";
+import { COPY, heldWithBoth, waitLine } from "./status";
+import { t } from "../i18n";
 
 const amount = (duffs: number) => `${duffs / 1e8} tDASH`;
 
@@ -36,6 +40,7 @@ const quote = (q: Partial<RegistrationQuote> = {}): RegistrationQuote => ({
   availableDuffs: 10e8,
   grant: { maxDuffs: 3_002_261, maxCredits: "2000000000" },
   readiness: null,
+  platform: null,
   ...q,
 });
 
@@ -55,6 +60,8 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: null,
+  fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,
@@ -115,6 +122,55 @@ describe("IOS-067 step 2: the cost (D2, D5)", () => {
     expect(confirmModel(quote({ availableDuffs: 3_002_259 }), amount).shortfall).toBe("You need at least 0.0300226 tDASH to create this username.");
     expect(confirmModel(quote({ availableDuffs: 3_002_260 }), amount).shortfall).toBeNull();
   });
+
+  it("C-funding F9: from the Platform balance, what leaves it, the identity's funding and the fee, never the reserve", () => {
+    const platform = { fundingCredits: "2000000000", feeCredits: "41500001", feeReserveCredits: "124500000", debitCredits: "2124500000" };
+    const model = confirmModel(quote({ totalDuffs: 0, availableDuffs: 0, platform }), amount);
+    expect(model).toEqual({
+      cost: "0.02041501 tDASH",
+      lines: ["About 0.02041501 tDASH leaves your Platform balance: 0.02 tDASH for your identity and a Platform fee of about 0.00041501 tDASH. Your identity starts with a balance of 0.02 tDASH."],
+      shortfall: null,
+    });
+    expect(confirmModel(quote({ contested: true, totalDuffs: 0, availableDuffs: 0, platform }), amount).lines[1]).toBe(REG_COPY.confirm.contested);
+  });
+});
+
+describe("C-funding F20: Confirm from the Shielded balance", () => {
+  const readiness = (change: string | null) => ({ denomination: "3000000000", checks: [], readyAt: null, poolNotes: null, poolRequired: 250, change });
+  // The denomination 0.03, the names and the profile 0.007, the fee 0.003: 0.02 left.
+  const shielded = (change: string | null, remainingCredits = "2000000000") =>
+    quote({ totalDuffs: 0, availableDuffs: 0, remainingCredits, grant: { maxDuffs: 0, maxCredits: "3700000000" }, readiness: readiness(change) });
+
+  it("the denomination leaves, the fee, the start and what stays, and the change returning to this wallet's Shielded balance", () => {
+    expect(confirmModel(shielded("7000000000"), amount)).toEqual({
+      cost: "0.03 tDASH",
+      lines: [
+        "0.03 tDASH leaves your Shielded balance.",
+        "Network fee: about 0.003 tDASH.",
+        "Your identity starts with 0.027 tDASH in credits. The username and profile are paid from it, and about 0.02 tDASH stays as credits for contacts and profile changes.",
+        "0.07 tDASH returns to your Shielded balance after the next sync.",
+      ],
+      shortfall: null,
+    });
+  });
+
+  it("no change line at zero change; the whole balance says so", () => {
+    expect(confirmModel(shielded("0"), amount, 5_000_000).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000).lines[3]).toBe("This uses your whole Shielded balance.");
+  });
+
+  it("discreet mode tells nothing of the Shielded balance: no change line, no whole-balance line", () => {
+    expect(confirmModel(shielded("7000000000"), amount, 10_000_000, true).lines).toHaveLength(3);
+    expect(confirmModel(shielded("0"), amount, 3_000_000, true).lines).toHaveLength(3);
+  });
+
+  it("drops the credits-left clause at or below zero", () => {
+    expect(confirmModel(shielded("0", "0"), amount).lines[2]).toBe("Your identity starts with 0.007 tDASH in credits. The username and profile are paid from it.");
+  });
+
+  it("a contested name adds the voting line", () => {
+    expect(confirmModel({ ...shielded("0"), contested: true }, amount).lines.at(-1)).toBe(REG_COPY.confirm.contested);
+  });
 });
 
 describe("IOS-068 the progress and result screens (R1–R11)", () => {
@@ -131,6 +187,32 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(kinds(row({ waiting: "unlock", holdsKey: false }))).toEqual(["unlock", "unlock"]);
     expect(isRunning(row({ waiting: "authorize" }))).toBe(false);
     expect(isRunning(row({ waiting: "unlock" }))).toBe(false);
+  });
+
+  it("#685: a held Platform payment's screen offers Continue, then Move to Dash wallet", () => {
+    const m = screenModel(row({ waiting: "paymentHeld", running: false, fundsCommitted: true, fromPlatform: true }), I);
+    expect(m).toMatchObject({ kind: "held", busy: false, step: { n: 1 } });
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), heldWithBoth()]);
+    expect(m.actions).toEqual([
+      { kind: "continue", label: "Continue" },
+      { kind: "moveToCore", label: "Move to Dash wallet" },
+    ]);
+  });
+
+  it("F12: a Shielded payment no run checks (after a relaunch) is paused, Continue; a run's is progress", () => {
+    const idle = row({ waiting: "paymentUnknown", running: false, fundsCommitted: true, fromShielded: true });
+    const m = screenModel(idle, I);
+    expect(m).toMatchObject({ kind: "paused", busy: false });
+    expect(m.lines).toEqual([REG_COPY.progress.message("alice"), waitLine(idle)]);
+    expect(waitLine(idle)).toMatch(/Choose Continue to check it again/);
+    expect(m.actions).toEqual([{ kind: "continue", label: "Continue" }]);
+    expect(isRunning(idle)).toBe(false);
+    const running = { ...idle, running: true };
+    expect(kinds(running)).toEqual(["progress", "home"]);
+    expect(waitLine(running)).toBe("Checking whether the payment from your Shielded balance went through.");
+    expect(isRunning(running)).toBe(true);
+    // A Platform payment's unknown outcome is unchanged.
+    expect(kinds({ ...idle, fromShielded: false, fromPlatform: true })[0]).toBe("progress");
   });
 
   it("D21, D26: an idle row waiting for a proof (after a relaunch) is paused, Continue", () => {
@@ -181,6 +263,31 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
     expect(stopped.lines).toContain(REG_COPY.recovery);
   });
 
+  it("C-funding F10: a paid failure from the Platform balance says what was kept, and offers a new registration", () => {
+    const refunded = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("registration.refunded", { retryable: false }) }), I);
+    expect([refunded.kind, refunded.title, ...refunded.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "another:Start a new registration"]);
+    expect(refunded.lines).toEqual(["Dash Platform could not create the identity with this wallet's keys and kept a Platform fee and a penalty from your Platform balance for the attempt. The rest of your Platform balance was not used."]);
+    // Another failure keeps its label.
+    const failed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("platform.timeout", { retryable: false }) }), I);
+    expect(failed.actions.map((a) => `${a.kind}:${a.label}`)).toEqual(["another:Choose another username"]);
+  });
+
+  it("C-funding F12: a Shielded payment whose coins were spent with no identity claims no refund and offers a new registration", () => {
+    const consumed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromShielded: true, failure: failure("registration.payment_consumed", { retryable: false }) }), I);
+    expect([consumed.kind, consumed.title, ...consumed.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "another:Start a new registration"]);
+    expect(consumed.lines).toEqual([t("dashpay.failure.consumedShielded")]);
+    expect(consumed.lines[0]).toMatch(/another device using this recovery phrase spent them/);
+    expect(consumed.lines.join(" ")).not.toContain("registration.payment_consumed");
+  });
+
+  it("F22: a Platform run stopped by a changed plan says so in its own words and goes back to Confirm", () => {
+    const changed = screenModel(row({ phase: "failed", waiting: null, fundsCommitted: false, fromPlatform: true, failure: failure("registration.quote_changed", { retryable: false }) }), I);
+    expect([changed.kind, changed.title, ...changed.actions.map((a) => `${a.kind}:${a.label}`)]).toEqual(["failed", "Registration failed", "reconfirm:Review the cost"]);
+    expect(changed.lines).toEqual(["No identity was paid for. If you chose Move to Dash wallet for this registration, those credits are in your Dash wallet now, less that move's fee. Review the cost and confirm to try again."]);
+    expect(changed.lines).not.toContain(t("dashpay.registration.startError.quoteChanged"));
+    expect(changed.lines.join(" ")).not.toContain("registration.quote_changed");
+  });
+
   it("R9, R10, R11: done greets the name; a refused name keeps the identity; a contested one shows the vote", () => {
     const done = screenModel(row({ phase: "done", waiting: null, identity: "A" }), I);
     expect(done).toMatchObject({
@@ -206,6 +313,35 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
   });
 });
 
+describe("R11 with an instant username beside the vote (D4 reversed)", () => {
+  const contested = row({ phase: "contested", waiting: null, identity: "A", temporaryLabel: "alice2", contestEndsAt: 9 });
+
+  it("registered: iOS's success line", () => {
+    const m = screenModel(contested, { ...I, temporary: "owned" });
+    expect(m.lines).toEqual([REG_COPY.voting.message("alice"), "Results on day 9.", INSTANT_COPY.success("alice2", "alice")]);
+    expect(m.actions.map((a) => a.kind)).toEqual(["done", "votingInfo"]);
+  });
+
+  it("refused: its failure line, Try again first", () => {
+    const m = screenModel(contested, { ...I, temporary: "failed" });
+    expect(m.lines.at(-1)).toBe(INSTANT_COPY.failure("alice2"));
+    expect(m.actions.map((a) => a.kind)).toEqual(["instantRetry", "done", "votingInfo"]);
+    expect(m.actions[0].label).toBe("Try again");
+    // A done row whose contest is open says the same.
+    expect(screenModel({ ...contested, phase: "done" }, { ...I, contestPending: true, temporary: "failed" }).actions[0].kind).toBe("instantRetry");
+  });
+
+  it("not known yet, or none asked: neither line", () => {
+    expect(screenModel(contested, { ...I, temporary: null }).lines).toHaveLength(2);
+    expect(screenModel({ ...contested, temporaryLabel: null }, { ...I, temporary: "failed" }).lines).toHaveLength(2);
+  });
+
+  it("D13: an instant username from credits while a vote runs says iOS's success line", () => {
+    expect(namedModel("alice2", { kind: "registered" }, I.date, "alice").lines.at(-1)).toBe(INSTANT_COPY.success("alice2", "alice"));
+    expect(namedModel("alice2", { kind: "registered" }, I.date).lines.join(" ")).not.toContain("reachable");
+  });
+});
+
 describe("refusals of a start", () => {
   it("say the amounts unless discreet, and the m4 copy for a recent unknown funding", () => {
     const short = appError("registration.funding_insufficient", { kind: "duffs", needed: 3_002_260, available: 1_000_000 });
@@ -217,6 +353,17 @@ describe("refusals of a start", () => {
     expect(startErrorText(appError("registration.funding_unknown_recent", { kind: "draftWait", draft: "d", waitSecs: null }), amount)).toMatch(/can't yet tell/);
     expect(startErrorText(appError("name.taken"), amount)).toBe("Username taken. Choose another one.");
     expect(startErrorText(new Error("boom"), amount)).toBe("boom");
+  });
+
+  it("from the Platform balance, its own refusals say what the balance lacks or what holds it", () => {
+    const short = appError("platform.insufficient_credits", { kind: "credits", needed: "2124500000", available: "1" });
+    expect(startErrorText(short, amount, false, true)).toBe("You need at least 0.021245 tDASH to create this username.");
+    expect(startErrorText(short, amount)).toBe("The identity's credits do not cover this username.");
+    expect(startErrorText(appError("credits.move_pending", { kind: "artifact", artifact: "m" }), amount, false, true)).toBe(PAY_WITH_COPY.movePending);
+    expect(startErrorText(appError("platform.feature_off", { kind: "feature", feature: "platform_registration" }), amount, false, true)).toBe(PAY_WITH_COPY.notOffered);
+    expect(startErrorText(appError("registration.quote_changed"), amount, false, true)).toBe("The cost changed. Review it and confirm again. Nothing was paid.");
+    expect(startErrorText(appError("name.taken"), amount, false, true)).toBe("Username taken. Choose another one.");
+    expect(platformRefusalText(appError("platform.unavailable"), amount)).toBeNull();
   });
 });
 

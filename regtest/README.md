@@ -507,6 +507,39 @@ DISPLAY=:<n> TAURI_DRIVER=<tauri-driver> DWD_PYTHON=~/.cache/dwd-dashcore/func-v
 Screenshots, the app's log and `result.json` go to `DW_E2E_OUT`. One pass takes about 4 minutes on
 agentbox once built.
 
+### Suite `governance_added_key_ui` (MG-10 §1.4)
+
+`functional/dwd_governance_added_key_ui.py` is the same network with a masternode the wallet did not
+derive: Core makes a fresh voting key in a legacy wallet of node0 (`getnewaddress`, `dumpprivkey`)
+and gives it to masternode 2 (`protx update_registrar`), then submits a proposal. It runs
+`apps/desktop/e2e-tauri/regtest-vote-added-key.ts`, which tracks masternode 2 by ProTx hash, adds
+the key in Add keys (passed by environment, typed only into the masked field, never in a capture),
+checks the vote sheet lists it with "key you added", and votes Yes. Back in the suite, every node
+must hold that masternode's Yes, and no file of the run or of the app's data may hold the key in
+plain text. `apps/desktop/scripts/e2e-regtest-vote-added-key.sh` builds and runs it, with the same
+needs as `governance_ui`:
+
+```sh
+DISPLAY=:<n> TAURI_DRIVER=<tauri-driver> DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 apps/desktop/scripts/e2e-regtest-vote-added-key.sh
+```
+
+### Suite `update_registrar_ui` (MG-10 S3)
+
+`functional/dwd_update_registrar_ui.py` is Change keys or payout's acceptance on the real app
+(MG-10 S3's GL `--part update`). The network is `dwd_protx.py`'s. dwcli registers masternode F
+(`FundNew`, Core's operator key, the keychain's owner key 0), so the wallet holds F's registration.
+The suite then runs `apps/desktop/e2e-tauri/regtest-update-registrar.ts` (tauri-driver), which opens
+Change keys or payout on F, sets the keychain's next voting key and Core's address as the payout,
+and sends. Back in the suite, `protx info` must show that payout and voting key 1, with the owner
+and operator keys unchanged. `apps/desktop/scripts/e2e-regtest-update-registrar.sh` builds and runs
+it, with the same needs as `governance_ui`:
+
+```sh
+DISPLAY=:<n> TAURI_DRIVER=<tauri-driver> DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 apps/desktop/scripts/e2e-regtest-update-registrar.sh
+```
+
 ## Layout
 
 ```
@@ -534,5 +567,6 @@ regtest/
     ├── dwd_governance.py    dwcli governance / gov against 4 MNs: govsync, proposals, votes
     ├── dwd_protx.py         dwcli mn ProRegTx / ProUpRegTx owner flows (regular + v24)
     ├── dwd_shared.py        dwcli mn shared v24 registration, key change, standby, dissolution
-    └── dwd_governance_ui.py the desktop app votes and creates a proposal through its UI
+    ├── dwd_governance_ui.py the desktop app votes and creates a proposal through its UI
+    └── dwd_update_registrar_ui.py   the desktop app changes a masternode's payout and voting key
 ```

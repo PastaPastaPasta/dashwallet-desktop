@@ -156,7 +156,7 @@ pub(crate) enum ReplayNote {
         from: u32,
     },
     /// Tests: answered once every note before it is applied.
-    #[cfg(test)]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     Settled(tokio::sync::oneshot::Sender<()>),
 }
 
@@ -193,6 +193,9 @@ pub(crate) struct ReplayRecords {
     /// Tests: holds the next commit's note before it is applied.
     #[cfg(test)]
     pub(crate) pause_commit: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next truncation's note before it is applied.
+    #[cfg(test)]
+    pub(crate) pause_truncated: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: a close clears nothing, as a crash.
     #[cfg(test)]
     pub(crate) crash_on_close: std::sync::atomic::AtomicBool,
@@ -206,6 +209,12 @@ pub(crate) struct ReplayRecords {
     /// Tests: every read fails.
     #[cfg(test)]
     pub(crate) fail_reads: std::sync::atomic::AtomicBool,
+}
+
+/// Whether `wallet` has a replay record stored, read from `appdb` alone
+/// (an open, before its session's records are read).
+pub(crate) fn stored_in(appdb: &AppDb, wallet: WalletId) -> Result<bool, dw_appdb::AppDbError> {
+    Ok(appdb.setting(&wallet.to_string(), KEY)?.is_some())
 }
 
 impl ReplayRecords {
@@ -223,6 +232,8 @@ impl ReplayRecords {
             lifts: Default::default(),
             #[cfg(test)]
             pause_commit: Default::default(),
+            #[cfg(test)]
+            pause_truncated: Default::default(),
             #[cfg(test)]
             crash_on_close: Default::default(),
             #[cfg(test)]
@@ -250,7 +261,7 @@ impl ReplayRecords {
                 .entry(wallet)
                 .or_default()
                 .push((height, from)),
-            #[cfg(test)]
+            #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             ReplayNote::Settled(_) => {}
         }
         let _ = self.notes.send(note);
@@ -277,6 +288,7 @@ impl ReplayRecords {
         hub.wallet_state(&wallet)
             .is_some_and(|s| s.replay_cancelled.is_some() || s.loading)
             || (hub.rescan().as_ref()).is_some_and(|r| r.replaying(&wallet))
+            || hub.abandon_batch_pending(&wallet)
     }
 
     /// After a clean shutdown of the manager, whose persistence adapter
@@ -367,7 +379,7 @@ impl ReplayRecords {
                         records.committed(wallet, height, &manager, &hub).await
                     }
                     ReplayNote::Truncated { wallet, .. } => records.truncated(wallet).await,
-                    #[cfg(test)]
+                    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
                     ReplayNote::Settled(done) => {
                         let _ = done.send(());
                     }
@@ -377,7 +389,7 @@ impl ReplayRecords {
     }
 
     /// Tests: waits until the notes queued so far are applied.
-    #[cfg(test)]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) async fn settled(&self) {
         let (done, applied) = tokio::sync::oneshot::channel();
         self.note(ReplayNote::Settled(done));
@@ -873,6 +885,8 @@ impl ReplayRecords {
 
     /// Applies the truncations noted for `wallet` (its record's read does).
     async fn truncated(&self, wallet: WalletId) {
+        #[cfg(test)]
+        crate::coins::pause_at(&self.pause_truncated).await;
         let mut records = self.records.lock().await;
         if let Err(e) = self.load(&mut records, wallet).await {
             tracing::error!(error = %e, wallet = %wallet, "could not apply the replay record of a fork: a reopen may scan from the old chain's checkpoint");

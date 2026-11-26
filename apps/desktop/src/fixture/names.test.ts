@@ -129,7 +129,7 @@ describe("fixture contested names", () => {
   });
 
   it("builds every names scenario", async () => {
-    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails", "names-still-unconfirmed", "names-ending-odd"] as ScenarioName[]) {
+    for (const s of ["names-empty", "names-no-voters", "names-ending", "names-ended", "names-partial", "names-watch-only", "names-check-fails", "names-still-unconfirmed", "names-ending-odd", "names-labelled"] as ScenarioName[]) {
       install(s);
       await cmd.governanceContestedNames(W);
     }
@@ -139,5 +139,8 @@ describe("fixture contested names", () => {
     expect((await a11ce()).contendersComplete).toBe(false);
     install("names-watch-only");
     expect((await cmd.listWallets())[0].watchOnly).toBe(true);
+    install("names-labelled");
+    const rows = new Map((await cmd.mnList(W)).masternodes.map((r) => [r.proTxHash, r.label]));
+    expect([rows.get(VOTER_A), rows.get(VOTER_B), rows.has(VOTER_C)]).toEqual(["Home node", null, false]);
   });
 });

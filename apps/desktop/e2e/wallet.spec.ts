@@ -113,10 +113,7 @@ test.describe("Home", () => {
     await page.getByTestId("shortcut-send").click();
     await expect(page.getByTestId("pay-address-form")).toBeVisible();
     await page.getByTestId("sidebar-home").click();
-    // Scan QR: no camera on the desktop, so the address field takes a pasted code.
-    await page.getByTestId("shortcut-scan").click();
-    await expect(page.getByTestId("pay-address")).toBeFocused();
-    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("shortcut-card").locator(".shortcut-item")).toHaveText(["Receive", "Send", "Transfer", "Back up"]);
     const backup = page.getByTestId("shortcut-backup");
     await expect(backup).toHaveAttribute("aria-disabled", "true");
     await expect(backup).toHaveAttribute("title", /not available yet/);
@@ -530,7 +527,7 @@ test.describe("Pay", () => {
       const restored = wallet.coins[0];
       const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
       wallet.coins = [single];
-      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, catchingUp: false };
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, withheld: 0, catchingUp: false, heldUnfinished: 0, heldUnvalued: 0, heldAwaiting: false };
       w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
       w.coinjoin.mixers[wallet.summary.walletId] = {
         state: "idle",
@@ -822,12 +819,104 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.",
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+  });
+
+  test("warns about paying twice for a payment whose spent coins are not known yet", async ({ page }) => {
+    const errors = await open(page, "abandon-debit-unknown");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"d0".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Dash Wallet stops counting it, and the coins it spent come back to your balance unless something else has already spent them. If it still goes through, it counts again, so sending the same payment again could pay twice.",
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test("Abandon isn't offered for a payment a settled later payment spends from", async ({ page }) => {
+    const errors = await open(page, "abandon-settled-child-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5d".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a settledDescendant refusal says why the payment can't be abandoned", async ({ page }) => {
+    const errors = await open(page, "abandon-settled-child");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5c".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "This transaction can't be abandoned because a later transaction that depends on it is already locked or confirmed.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("Abandon isn't offered for a payment that funds an unfinished Platform top-up", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding-hidden");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"57".repeat(32)}"]`).first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Waiting for confirmation");
+    await expect(page.getByTestId("tx-resend")).toBeVisible();
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("a platformFunding refusal says why the payment can't be abandoned", async ({ page }) => {
+    const errors = await open(page, "abandon-platform-funding");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"58".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "This payment can't be abandoned, because it pays for a Platform transfer, credit top-up or username registration that hasn't finished. Dash Wallet sends it again until that finishes.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("a rescanFirst refusal shows the catalog's steps", async ({ page }) => {
+    const errors = await open(page, "abandon-rescan-first");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5e".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("an Abandon refused while the wallet catches up after a fork says to wait", async ({ page }) => {
+    const errors = await open(page, "abandon-catching-up");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5b".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The wallet is catching up with the network. You can abandon this payment once it has finished.");
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
+  });
+
+  test("a recordUnreadable refusal says a saved transaction doesn't read, and what to do", async ({ page }) => {
+    const errors = await open(page, "abandon-record-unreadable-two-wallets");
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(`.tx-row[data-txid="${"5f".repeat(32)}"]`).first().click();
+    await page.getByTestId("tx-abandon").click();
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-action-note")).toHaveText(
+      "Dash Wallet can't read one of the transaction records in Main, so Abandon and Remove Unconfirmed are unavailable in every wallet until it's fixed. To fix it, you'll remove Main and restore it from its recovery phrase. First make sure you have that phrase and your own copies of any masternode keys or shared-masternode standbys you added, because the phrase doesn't restore them. Then, in Settings ▸ Wallet, remove Main and restore it with Add wallet… and its phrase. Its coins come back once it syncs. Wait until it has finished syncing before you use Abandon or Remove Unconfirmed in any wallet.",
+    );
+    await expect(page.getByTestId("tx-detail")).not.toContainText("Abandoned");
+    expect(errors).toEqual([]);
   });
 
   test("abandons an unconfirmed incoming payment with its own warning and no Resend", async ({ page }) => {
@@ -839,7 +928,7 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-resend")).toHaveCount(0);
     await page.getByTestId("tx-abandon").click();
     await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
-      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.",
+      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again. If this is a payment you sent, sending it again could pay twice.",
     );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");

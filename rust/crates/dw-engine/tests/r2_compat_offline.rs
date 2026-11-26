@@ -501,9 +501,21 @@ fn test_qt_106_import_checks_network_range_locks_and_loose_keys() {
     assert!(
         matches!(
             &account,
-            Err(EngineError::Compat(CompatFailure::UnsupportedFormat(d))) if d.contains("account 1")
+            Err(EngineError::Compat(CompatFailure::ExtraHdAccount {
+                account: 1
+            }))
         ),
         "{account:?}"
+    );
+    let inspected = dw_engine::inspect_wallet_file(&testdata("compat/walletdat/bdb_account1.dat"));
+    assert!(
+        matches!(
+            &inspected,
+            Err(EngineError::Compat(CompatFailure::ExtraHdAccount {
+                account: 1
+            }))
+        ),
+        "{inspected:?}"
     );
 }
 

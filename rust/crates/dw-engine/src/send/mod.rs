@@ -317,6 +317,9 @@ pub struct TxEstimate {
     pub change: Option<u64>,
     /// What the recipients receive, after any subtract-fee share.
     pub total_sent: u64,
+    /// The part of `fee` beyond the draft's rate for `size_bytes`: a
+    /// CoinJoin payment's change and a dust remainder (U-06b).
+    pub left_over: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -491,6 +494,23 @@ impl PendingSpends {
             claims.entry(*o).or_default().insert(owner);
         }
         Ok(())
+    }
+
+    /// Whether an owner other than `owner` claims one of `outpoints`.
+    pub(crate) fn held_by_other(
+        &self,
+        wallet: &WalletId,
+        owner: SpendOwner,
+        outpoints: &[OutPoint],
+    ) -> bool {
+        let map = self.map();
+        map.get(wallet).is_some_and(|claims| {
+            outpoints.iter().any(|o| {
+                claims
+                    .get(o)
+                    .is_some_and(|owners| owners.iter().any(|w| *w != owner))
+            })
+        })
     }
 
     /// Removes every claim of `owner`.
@@ -671,6 +691,11 @@ pub(crate) trait TestBroadcaster: Send + Sync {
     /// A wait before the library is entered (the manager guard, the SPV
     /// configuration); the permit's deadline bounds it.
     fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// A wait after a contact payment's lock row (if any) is stored, before
+    /// the sent mark is written.
+    fn after_record(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
+    }
     /// The library's hand-off of `tx`, entered: its result.
     fn broadcast(
         &self,
@@ -1044,8 +1069,8 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let plan =
-            plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
+        let plan = plan::plan_with(choice, &outputs, state.fee, change_len, height, coinjoin)
+            .map_err(|e| match e {
                 // The CoinJoin page's own message (dash-qt "Insufficient
                 // mixed funds").
                 PlanError::AmountExceedsBalance { available }
@@ -1087,6 +1112,7 @@ impl TxDraft {
                     input_count: r.plan.inputs.len() as u32,
                     change: r.plan.change,
                     total_sent: r.plan.total_sent(),
+                    left_over: r.plan.left_over(r.fee_rate),
                 })
             })
             .await
@@ -1590,6 +1616,13 @@ impl TxDraft {
         if first {
             self.record_contact(&prepared).await?;
         }
+        #[cfg(test)]
+        {
+            let seam = self.broadcaster.lock().unwrap().clone();
+            if let Some(seam) = seam {
+                seam.after_record().await;
+            }
+        }
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
@@ -1940,16 +1973,8 @@ pub(crate) enum HandoffOutcome {
 }
 
 /// Refusal codes newer than the migration that rewrote the inherited ones.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
-)]
 pub(crate) const REFUSED_SINCE_INHERITED: &[&str] = &["send.held_until_restart"];
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
-)]
 pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
     if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) || REFUSED_SINCE_INHERITED.contains(&code)
     {
@@ -2269,11 +2294,11 @@ impl PreparedTx {
                 .table
                 .unbind_spend(lease.id(), lease.wallet(), *artifact);
         }
-        session.spends.release(&self.wallet_id, self.owner);
         let signed = self.signed().take();
         if let (Some(signed), Ok(wallet)) = (signed, session.wallet(&self.wallet_id).await) {
             wallet.core().abandon_transaction(&signed).await;
         }
+        session.spends.release(&self.wallet_id, self.owner);
     }
 }
 
@@ -2281,6 +2306,9 @@ impl PreparedTx {
 /// outcome is unknown releases nothing: it may be on the network, so its
 /// inputs stay reserved until the wallet sees them spent or the session
 /// closes (platform-wallet's pending-spend fence holds them the same way).
+/// The engine's claim goes only after key-wallet's reservation (#745): a
+/// coin read in between still reads reserved, so no plan takes a coin
+/// key-wallet's build would then drop.
 impl Drop for PreparedTx {
     fn drop(&mut self) {
         if *self.phase() != Phase::Pending {
@@ -2293,20 +2321,48 @@ impl Drop for PreparedTx {
         }
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
-        let signed = self.signed().take();
-        session.spends.release(&wallet_id, self.owner);
-        let Some(signed) = signed else { return };
+        let owner = self.owner;
+        let Some(signed) = self.signed().take() else {
+            session.spends.release(&wallet_id, owner);
+            return;
+        };
+        let claim = ReleaseClaim {
+            session: Arc::clone(&session),
+            wallet_id,
+            owner,
+        };
         let rt = session.rt.clone();
         rt.spawn(async move {
+            let _claim = claim;
             // Admitted like any operation, so a close in progress is not
             // raced; after the close there is no wallet left to release in.
-            let Ok(_op) = session.enter().await else {
-                return;
-            };
-            if let Ok(wallet) = session.wallet(&wallet_id).await {
+            if let Ok(_op) = session.enter().await
+                && let Ok(wallet) = session.wallet(&wallet_id).await
+            {
+                #[cfg(test)]
+                let pause = session.hub.pause_release.lock().unwrap().take();
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause.mark_reached();
+                    pause.release.notified().await;
+                }
                 wallet.core().abandon_transaction(&signed).await;
             }
         });
+    }
+}
+
+/// The engine's claim of a dropped payment, released when its task ends,
+/// panics or is dropped unpolled at shutdown.
+struct ReleaseClaim {
+    session: Arc<NetworkSession>,
+    wallet_id: WalletId,
+    owner: SpendOwner,
+}
+
+impl Drop for ReleaseClaim {
+    fn drop(&mut self) {
+        self.session.spends.release(&self.wallet_id, self.owner);
     }
 }
 

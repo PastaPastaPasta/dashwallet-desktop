@@ -28,6 +28,10 @@ pub enum MasternodesError {
     /// The key isn't the masternode's key for `role` (MG-00 D13).
     #[error("the key does not belong to this masternode ({role:?})")]
     KeyMismatch { role: AttachedKeyRole },
+    /// A key is already attached for `role`: `attach_key` never replaces one
+    /// (`detach_key` first).
+    #[error("a key is already attached for this role ({role:?})")]
+    KeyExists { role: AttachedKeyRole },
     #[error("not an evonode")]
     NotEvonode,
     /// Platform has no identity for the evonode.
@@ -101,6 +105,14 @@ pub enum MasternodesError {
     /// loaded wallet's), saved no earlier, would undo (MG-04 D43).
     #[error("operation {operation} came after this update: resending it would undo that one")]
     UpdateSuperseded { operation: String },
+    /// Signing or resending a ProUpRegTx while `operation`, an update of
+    /// this masternode whose transaction the wallet abandoned, is neither
+    /// `confirmed` nor `conflicted`: Core may still mine it after this one,
+    /// and it would undo it (MG-10 §1.10, D49).
+    #[error(
+        "abandoned operation {operation} on this masternode may still be mined and undo this update: spend one of its coins first"
+    )]
+    UpdateAbandonedPending { operation: String },
     /// No shared-masternode session of the wallet has this id (MG-04b §10).
     #[error("unknown shared masternode session")]
     SharedSessionNotFound,
@@ -200,6 +212,7 @@ impl MasternodesError {
             Self::AlreadyTracked => "masternodes.already_tracked",
             Self::NotTracked => "masternodes.not_tracked",
             Self::KeyMismatch { .. } => "masternodes.key_mismatch",
+            Self::KeyExists { .. } => "masternodes.key_exists",
             Self::NotEvonode => "masternodes.not_evonode",
             Self::NoIdentity => "masternodes.no_identity",
             Self::PlatformUnavailable { .. } => "masternodes.platform_unavailable",
@@ -215,6 +228,7 @@ impl MasternodesError {
             Self::NoOwnerKey => "masternodes.no_owner_key",
             Self::UpdatePending { .. } => "masternodes.update_pending",
             Self::UpdateSuperseded { .. } => "masternodes.update_superseded",
+            Self::UpdateAbandonedPending { .. } => "masternodes.update_abandoned_pending",
             Self::SharedSessionNotFound => "masternodes.shared_session_not_found",
             Self::SharedStage { .. } => "masternodes.shared_stage",
             Self::SharedMessage { .. } => "masternodes.shared_message",

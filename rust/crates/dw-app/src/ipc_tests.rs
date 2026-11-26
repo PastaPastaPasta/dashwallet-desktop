@@ -286,6 +286,15 @@ fn a_failed_engine_build_rejects_bad_network_without_retrying_and_closes_false()
     }
 }
 
+/// About and Information read the stamped build version from
+/// `launch_info`'s `buildVersion`.
+#[test]
+fn launch_info_returns_the_stamped_build_version() {
+    let demo = Demo::new();
+    let launch = demo.ok("launch_info", json!({}));
+    assert_eq!(launch["buildVersion"], dw_engine::BUILD_VERSION, "{launch}");
+}
+
 #[test]
 fn engine_and_session_commands_over_ipc() {
     let demo = Demo::new();
@@ -2104,6 +2113,13 @@ fn files_go_through_the_dialog_the_user_answers() {
     }));
     let choose = |path: Option<&std::path::Path>| *answer.lock().unwrap() = path.map(Into::into);
 
+    // A shared-masternode file never reaches the renderer: refused before any dialog.
+    demo.err(
+        "open_file",
+        json!({ "purpose": "sharedMasternodeMessage" }),
+        "invalid_argument",
+    );
+    assert!(asked.lock().unwrap().is_empty());
     // Cancelled.
     assert_eq!(
         demo.ok("open_file", json!({ "purpose": "psbt" })),
@@ -2543,8 +2559,8 @@ fn nothing_changed(demo: &Demo, wallet: &Value, draft: &Value, grant: &Value) {
 }
 
 /// Row 74 r1: the engine's own refusals of the close (a wallet still
-/// opening, a shielded spend not resolved) refuse the switch, named, and
-/// change nothing.
+/// opening, a shielded spend not resolved, a transfer waiting on its
+/// wallet's start-up) refuse the switch, named, and change nothing.
 #[test]
 fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
     use dw_engine::test_support::{CloseFence, hold_close_fence};
@@ -2557,6 +2573,11 @@ fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
             CloseFence::ShieldedSpend,
             "shielded_spend_unresolved",
             "shieldedSpendUnresolved",
+        ),
+        (
+            CloseFence::Preparing,
+            "app.transfer_preparing",
+            "transferPreparing",
         ),
     ] {
         let grant = platform_grant(&demo, &wallet);
@@ -2681,6 +2702,45 @@ fn a_switch_refuses_while_a_flow_holds_a_lease() {
     assert_eq!(demo.active(), "testnet");
 }
 
+/// A reset of chain data is refused, as a network switch is, while a wallet
+/// mixes and while a mixing session is still open after mixing stopped. It
+/// goes ahead once mixing has stopped and its sessions have closed.
+#[test]
+fn a_reset_of_chain_data_refuses_while_mixing_a_session_is_open_or_inputs_are_held() {
+    let demo = launched_on_mainnet();
+    let (wallet, _) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let id = crate::state::parse_wallet_id(wallet.as_str().unwrap()).unwrap();
+    demo.ok("stop_spv", json!({}));
+
+    dw_engine::test_support::set_mixing(&session, id, true);
+    let e = demo.err("reset_chain_data", json!({}), "app.network_busy");
+    assert_eq!(e["data"]["mixing"], true, "{e}");
+
+    dw_engine::test_support::set_mixing(&session, id, false);
+    dw_engine::test_support::set_open_mixing_session(&session, id, true);
+    let e = demo.err("reset_chain_data", json!({}), "app.network_busy");
+    assert_eq!(e["data"]["mixing"], true, "{e}");
+
+    dw_engine::test_support::set_open_mixing_session(&session, id, false);
+    dw_engine::test_support::hold_signed_round_input(&session, id);
+    assert!(!session.mixing_busy());
+    demo.err("reset_chain_data", json!({}), "coinjoin.inputs_held");
+}
+
+#[test]
+fn a_reset_of_chain_data_runs_once_mixing_stopped() {
+    let demo = launched_on_mainnet();
+    let (wallet, _) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let id = crate::state::parse_wallet_id(wallet.as_str().unwrap()).unwrap();
+    demo.ok("stop_spv", json!({}));
+    dw_engine::test_support::set_mixing(&session, id, true);
+    demo.err("reset_chain_data", json!({}), "app.network_busy");
+    demo.ok("stop_mixing", json!({ "walletId": wallet }));
+    demo.ok("reset_chain_data", json!({}));
+}
+
 /// Row 74 r1: a wallet mixing refuses the switch.
 #[test]
 fn a_switch_refuses_while_a_wallet_mixes() {
@@ -2800,4 +2860,41 @@ fn every_broadcast_command_counts_while_it_runs() {
             0
         );
     }
+}
+
+/// The Platform addresses' mainnet flag crosses as its own feature: on
+/// mainnet the balance says `sendsOff: "platform_address_sends"` (and
+/// `sendsActive: false`), and a move's or a send's quote is
+/// `platform.feature_off` with that feature, not `platform_addresses`'s
+/// protocol refusal; regtest has neither.
+#[test]
+fn platform_address_sends_are_off_on_mainnet_as_their_own_feature() {
+    let off = json!({ "kind": "feature", "feature": "platform_address_sends" });
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert_eq!(balance["sendsActive"], false, "{balance}");
+    assert_eq!(balance["sendsOff"], "platform_address_sends", "{balance}");
+    let all = json!({ "kind": "all" });
+    let e = demo.err(
+        "platform_move_to_core_quote",
+        json!({ "walletId": wallet, "amount": all }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+    let e = demo.err(
+        "platform_send_quote",
+        json!({ "walletId": wallet, "to": "checked after the flag", "amount": all, "retryOf": null }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let balance = demo.ok("platform_addresses", json!({ "walletId": wallet }));
+    assert!(balance["sendsOff"].is_null(), "{balance}");
 }

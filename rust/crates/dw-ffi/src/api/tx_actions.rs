@@ -16,6 +16,9 @@ pub struct TxDetailExtras {
     /// Sum of this wallet's inputs ("Total debit"); `None` when an input
     /// value is unknown.
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen.
+    pub inputs_unresolved: bool,
     /// "Net amount".
     pub net: i64,
     /// Immature coinbase: blocks until mature ("matures in %n more block(s)").
@@ -26,7 +29,12 @@ pub struct TxDetailExtras {
     pub in_mempool: Option<bool>,
     pub abandoned: bool,
     /// dash-qt "Abandon transaction" enablement (§4.5 item 8): not abandoned,
-    /// unconfirmed, no InstantSend lock, and not known to be in a mempool.
+    /// unconfirmed, not coinbase, and no InstantSend lock unless the
+    /// ChainLock exception `abandon_transaction` describes holds and its
+    /// plan would not refuse as `InstantLocked`, and no settled later
+    /// transaction spends from it (`SettledDescendant`). One whose plan
+    /// refuses with `RescanFirst` or `RecordUnreadable` stays enabled: that
+    /// refusal says what to do.
     pub can_abandon: bool,
     /// dash-qt "Resend transaction" enablement (§4.5 item 9): unconfirmed,
     /// not abandoned, not coinbase, no InstantSend lock, sent by this wallet.
@@ -49,6 +57,19 @@ pub enum TxActionRefusal {
     InMempool,
     /// The wallet did not fund it (resend only).
     NotSentByWallet,
+    /// Abandon can go through after a restart and a rescan from the
+    /// wallet's birth.
+    RescanFirst,
+    /// A later transaction that spends from it is already locked or
+    /// confirmed, so this one will confirm too.
+    SettledDescendant,
+    /// A saved transaction of a loaded wallet didn't read at its load, so
+    /// what descends from this one is unknown: removing and restoring that
+    /// wallet clears it.
+    RecordUnreadable,
+    /// It, or a later transaction that spends from it, funds a Platform
+    /// transfer that hasn't finished, which the wallet sends again.
+    PlatformFunding,
 }
 
 /// One row of a transaction notification (QT-031): one per dash-qt record,
@@ -136,6 +157,10 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
             R::Coinbase => Self::Coinbase,
             R::InMempool => Self::InMempool,
             R::NotSentByWallet => Self::NotSentByWallet,
+            R::RescanFirst => Self::RescanFirst,
+            R::SettledDescendant => Self::SettledDescendant,
+            R::RecordUnreadable(_) => Self::RecordUnreadable,
+            R::PlatformFunding => Self::PlatformFunding,
         }
     }
 }
@@ -175,6 +200,7 @@ impl NetworkSession {
             is_coinbase: x.is_coinbase,
             total_credit: x.total_credit,
             total_debit: x.total_debit,
+            inputs_unresolved: x.inputs_unresolved,
             net: x.net,
             matures_in: x.matures_in,
             in_mempool: x.in_mempool,
@@ -187,11 +213,34 @@ impl NetworkSession {
     }
 
     /// dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
-    /// its inputs for new payments and excludes it from balances (status
+    /// the inputs no processed block spent for new payments and excludes it
+    /// from balances (status
     /// `Abandoned`, amount in brackets). Its recorded descendants are
     /// abandoned with it. SPV cannot prove the transaction is in no mempool,
     /// so it may still confirm; the engine then shows it confirmed again.
     /// The spent coins return through a rescan of their funding blocks.
+    /// An InstantSend-locked transaction is refused (`InstantLocked`)
+    /// unless a transaction in a block of the SPV header chain, at or below
+    /// the wallet's ChainLock whose block that chain holds, spends one of
+    /// its inputs, nothing descending from it is in a block, locked or
+    /// finalized, the wallet holds no record of it in a block or locked (in
+    /// the session it was locked in, until a restart; #329), the history
+    /// load was complete and the scan has passed the ChainLock with no
+    /// replay pending. Then it is abandoned: inputs a
+    /// recorded block of that chain spends stay spent, and only inputs the
+    /// wallet holds unspent from a scanned block are released.
+    /// `RescanFirst` instead when all of that holds and the only inputs
+    /// missing are held by its own spend claim restored at load: a restart
+    /// and a rescan give that evidence.
+    /// Any transaction is refused (`InstantLocked`, or `Confirmed`) when
+    /// abandoning it would also take one the history holds as InstantSend-
+    /// locked (or in a block). One that is not InstantSend-locked itself is
+    /// refused (`SettledDescendant`) when a later transaction spending from
+    /// it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+    /// spend of one of its inputs beat it and those are only locked (#446).
+    /// One not under the ChainLock exception is refused (`RecordUnreadable`)
+    /// while a saved transaction of any loaded wallet didn't read at its
+    /// load (#611).
     /// Emits `HistoryChanged` and `Balances`.
     pub async fn abandon_transaction(
         &self,
@@ -217,9 +266,16 @@ impl NetworkSession {
     }
 
     /// iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-    /// unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
-    /// `wallet_id` (all wallets when `None`), then rescans from the lowest
-    /// funding height of the coins they spent. Needs a running SPV client.
+    /// unconfirmed, not yet abandoned transaction of `wallet_id` (all
+    /// wallets when `None`) that `abandon_transaction` would: not
+    /// InstantSend-locked, unless under its ChainLock exception, which
+    /// releases only the inputs proven unspent. Then it rescans once, from
+    /// the lowest funding height of the coins they all spent. One the
+    /// exception refuses (`InstantLocked` or `RescanFirst`, as
+    /// `abandon_transaction` says), or that a settled later transaction
+    /// holds (`SettledDescendant`), is skipped. One refused as
+    /// `RecordUnreadable` is kept too, and the call then fails with that
+    /// refusal. Needs a running SPV client.
     /// Returns how many transactions were dropped.
     pub async fn drop_unconfirmed(&self, wallet_id: Option<String>) -> Result<u32, TxActionError> {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;

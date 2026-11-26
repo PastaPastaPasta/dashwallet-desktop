@@ -7,11 +7,18 @@
 //! is restored. The runner's records are by outpoint ([`locks::record`]);
 //! 0.1's by txid are kept for a lock alone in its transaction, so 0.1's
 //! pending shields agree. Platform's "already consumed" for a restored
-//! lock's exact outpoint is kept ([`Mark::Reported`]): the kind takes it as
-//! finished elsewhere, as type 4 does, so it leaves the card. This device's
-//! own lock keeps 0.1's Checking (SR1), as its pending shield does.
+//! lock's exact outpoint counts only when Platform's proved state says the
+//! same ([`locks::SpentRead::Consumed`], [`ShieldedLib::spent`]); then it is
+//! kept ([`Mark::Used`]): the kind takes it as finished elsewhere, as type 4
+//! does, so it leaves the card. Otherwise, and for this device's own lock
+//! (0.1's Checking, SR1, as its pending shield), the lock reads Checking.
+//! After any signed apply Platform did not prove, the proved state is read:
+//! a lock it shows partly used (a shield refused after a penalty) is kept
+//! with what is left ([`Mark::Remaining`]); it lists Recoverable, or too
+//! small, and is never applied as a shield again
+//! (`unfinished_remainder` moves it).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use dashcore::{OutPoint, ScriptBuf, Txid};
@@ -24,7 +31,7 @@ use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::{self as pool, Applied, ShieldedLib};
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, LockOrigin, Mark,
-    Marks, Minimum, Readiness,
+    Marks, Minimum, Readiness, SpentRead,
 };
 use crate::{NetworkSession, PlatformChange, WalletId};
 
@@ -81,7 +88,18 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     }
 
     async fn reported_locks(&self) -> HashSet<OutPoint> {
-        self.marks(Mark::Reported).await
+        self.marks(Mark::Used).await
+    }
+
+    async fn remaining_locks(&self) -> HashMap<OutPoint, u64> {
+        locks::remaining_of(self.session, self.wallet, LockKindId::Shielded).await
+    }
+
+    /// A recover's fee: an address funding of no input and one output, at
+    /// the version the SDK holds.
+    fn remainder_floor(&self) -> Option<u64> {
+        let rules = PlatformVersion::get(self.lib.protocol_version()).ok()?;
+        Some(super::platform_fund::fee_credits(rules))
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
@@ -100,8 +118,8 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
             Err(e) => return Readiness::Held(e.code().into()),
         }
         match self.lib.bind().await {
-            Ok(true) => Readiness::Ready,
-            Ok(false) => Readiness::Held(
+            Ok(a) if a.is_bound() => Readiness::Ready,
+            Ok(_) => Readiness::Held(
                 ShieldedError::not_synced(ShieldedSyncWait::Account)
                     .code()
                     .into(),
@@ -130,12 +148,19 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         let duffs = fee / CREDITS_PER_DUFF + 1;
         Some(Minimum {
             duffs,
-            code: ShieldedError::BelowMinimum { min: duffs }.code(),
+            code: ShieldedError::BelowMinimum {
+                min: duffs,
+                max: None,
+            }
+            .code(),
         })
     }
 
     fn caught_up(&self) -> bool {
-        self.lib.funding_hold().is_none()
+        let hold = self.lib.funding_hold();
+        (self.session.platform)
+            .ask_on_startup_hold(self.wallet, hold)
+            .is_none()
     }
 
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
@@ -153,16 +178,30 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     ) -> Result<ApplyReply, PlatformError> {
         let applied = self.lib.apply(outpoint, signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::Shielded]);
-        let reply = match applied? {
+        let taken = matches!(applied, Ok(Applied::Taken));
+        let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
+        if signer.signed() && !matches!(applied, Ok(Applied::Done)) {
+            // Platform's answer after the signature is unproved; its proved
+            // state says whether the lock is used, or partly used (#402).
+            match read_unproved(session, wallet, self.lib, outpoint).await {
+                SpentRead::Remaining { .. } => {}
+                SpentRead::Consumed if taken && self.restored(outpoint).await => {
+                    locks::record(session, wallet, kind, Mark::Used, outpoint).await;
+                }
+                spent => {
+                    tracing::warn!(%outpoint, ?spent, ?taken, "a shield lock's apply unproved: Checking");
+                }
+            }
+        } else if taken && self.restored(outpoint).await {
+            // Before the signature, the library's own row, which only a
+            // proved apply makes `Consumed`.
+            locks::record(session, wallet, kind, Mark::Used, outpoint).await;
+        }
+        Ok(match applied? {
             Applied::Done => ApplyReply::Done,
             Applied::Taken => ApplyReply::AlreadyConsumed,
             Applied::Unknown => ApplyReply::Unknown,
-        };
-        if reply == ApplyReply::AlreadyConsumed && self.restored(outpoint).await {
-            let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
-            locks::record(session, wallet, kind, Mark::Reported, outpoint).await;
-        }
-        Ok(reply)
+        })
     }
 
     async fn settle(&self, lock: &KindLock) {
@@ -176,6 +215,26 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         // The shielded note is the library's once a pass finds it.
         self.lib.sync_now().await;
     }
+}
+
+/// Platform's proved state of the shield lock at `outpoint` after an apply
+/// it did not prove (a shield, its "Check again", or a finish): a lock it
+/// shows partly used, a shield refused after a penalty, is kept with what is
+/// left ([`Mark::Remaining`]); it is then no pending shield and lists
+/// Recoverable, or too small.
+pub(crate) async fn read_unproved(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    outpoint: OutPoint,
+) -> SpentRead {
+    let spent = lib.spent(outpoint).await;
+    if let SpentRead::Remaining { credits } = spent {
+        tracing::warn!(%outpoint, credits, "a shield lock Platform proved partly used");
+        let kind = LockKindId::Shielded;
+        locks::record_remaining(session, wallet, kind, outpoint, credits).await;
+    }
+    spent
 }
 
 impl<L: ShieldedLib> ShieldLocks<'_, L> {

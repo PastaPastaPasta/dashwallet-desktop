@@ -133,6 +133,221 @@ pub struct TxStatus {
     pub instant_locked: bool,
     pub chain_locked: bool,
     pub matures_in: Option<u32>,
+    /// Set on an `Abandoned` transaction this app dropped itself, as one
+    /// that can never confirm, rather than one the user abandoned.
+    pub dropped: Option<TxDrop>,
+}
+
+/// Why this app dropped a transaction as one that can never confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DropCause {
+    /// It spends what a transaction that was never valid paid (#739).
+    InvalidSource,
+    /// It is that never-valid transaction: it spends a coin of the wallet
+    /// its owner never signed for.
+    InvalidClaim,
+    /// It spends what a payment another transaction beat paid (#170 cases
+    /// 3 and 4).
+    Replaced,
+}
+
+/// Where the wallet's own coins a dropped transaction spent are. The
+/// variants are in precedence order, lowest first: a row takes the highest
+/// state any of its coins needs ([`row_state`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DropState {
+    /// Each is back: unspent in the wallet, or spent by a block or by
+    /// another transaction the wallet counts.
+    Released,
+    /// One is not back yet, and a scan that brings it back is running.
+    Releasing,
+    /// One is not back, and no scan is running that would bring it back:
+    /// a rescan from the wallet's birth would.
+    RescanNeeded,
+    /// One is not back and its funding block is below the wallet's birth:
+    /// the birth must be lowered to `height` (the lowest such block) or
+    /// below.
+    RescanFromHeight { height: u32 },
+    /// One came from a transaction that is not in a block yet: it is back
+    /// once that confirms.
+    AwaitingFunding,
+    /// The drop holds some for good: the wallet can't tell whether they
+    /// were spent elsewhere.
+    Held,
+}
+
+/// A transaction this app dropped as one that can never confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TxDrop {
+    pub cause: DropCause,
+    pub state: DropState,
+}
+
+/// What the history keeps of a transaction this app dropped: why, and the
+/// coins its drop holds for good.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DropInfo {
+    pub cause: DropCause,
+    pub held: BTreeSet<OutPoint>,
+}
+
+impl DropInfo {
+    pub(crate) fn new(cause: DropCause) -> Self {
+        Self {
+            cause,
+            held: BTreeSet::new(),
+        }
+    }
+}
+
+/// The resolved drop of each dropped transaction a view shows.
+pub(crate) type DropStates = BTreeMap<Txid, TxDrop>;
+
+/// What a view shows of the transactions this app dropped: each one's
+/// resolved drop, and the own inputs of those listed from their marks
+/// alone (shown, never spent or released by them).
+#[derive(Debug, Default)]
+pub(crate) struct Drops {
+    pub states: DropStates,
+    pub inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+}
+
+/// A view that shows no transaction as dropped.
+#[cfg(test)]
+pub(crate) static NO_DROPS: Drops = Drops {
+    states: BTreeMap::new(),
+    inputs: BTreeMap::new(),
+};
+
+/// What [`drop_states`] reads of key-wallet and the scan.
+pub(crate) struct DropFacts<'a> {
+    /// A coin key-wallet holds unspent in a funding account.
+    pub unspent: &'a dyn Fn(&OutPoint) -> bool,
+    /// A coin key-wallet saw a block spend.
+    pub block_spent: &'a dyn Fn(&OutPoint) -> bool,
+    /// The checkpoint of the wallet's running scan: one below its target
+    /// and not cancelled. It brings back a coin funded above it.
+    pub scan_at: Option<u32>,
+    /// A drop's batch has not finished, or the wallet is opening: the
+    /// rewinds they owe are not made yet.
+    pub pending: bool,
+    /// The wallet's birth height: a rescan from it finds no coin funded
+    /// below it.
+    pub birth: u32,
+}
+
+/// What [`DropFacts`] says of the scan, from the wallet's scan state and
+/// whether a drop's batch is in progress (`batch`): the checkpoint of a
+/// scan that is running (below its target and not cancelled), and whether
+/// rewinds are owed and not made yet (the batch, or the wallet opening).
+pub(crate) fn scan_facts(
+    state: Option<&crate::events::WalletState>,
+    batch: bool,
+) -> (Option<u32>, bool) {
+    let scan_at = state
+        .filter(|s| s.replay_cancelled.is_none() && s.synced_height < s.scan_target)
+        .map(|s| s.synced_height);
+    (scan_at, batch || state.is_some_and(|s| s.loading))
+}
+
+/// The state one coin a dropped transaction waits for needs, when it is
+/// not back: its funding transaction's block height (`None` when it is in
+/// none).
+pub(crate) fn coin_state(funded_at: Option<u32>, facts: &DropFacts<'_>) -> DropState {
+    match funded_at {
+        None => DropState::AwaitingFunding,
+        Some(h) if facts.scan_at.is_some_and(|c| c < h) => DropState::Releasing,
+        Some(h) if h < facts.birth => DropState::RescanFromHeight { height: h },
+        Some(_) if facts.pending => DropState::Releasing,
+        Some(_) => DropState::RescanNeeded,
+    }
+}
+
+/// A dropped row's one state: `Held` when its drop holds coins for good,
+/// else the highest state of those of its coins not back (`Released` when
+/// all are), with the lowest height among `RescanFromHeight` ones.
+pub(crate) fn row_state(held: bool, coins: impl IntoIterator<Item = DropState>) -> DropState {
+    if held {
+        return DropState::Held;
+    }
+    let coins: Vec<DropState> = coins.into_iter().collect();
+    let lowest = (coins.iter())
+        .filter_map(|c| match c {
+            DropState::RescanFromHeight { height } => Some(*height),
+            _ => None,
+        })
+        .min();
+    match coins.into_iter().max() {
+        Some(DropState::RescanFromHeight { .. }) => DropState::RescanFromHeight {
+            height: lowest.unwrap_or_default(),
+        },
+        Some(state) => state,
+        None => DropState::Released,
+    }
+}
+
+/// The state of each of `drops` whose transaction `txs` holds abandoned.
+/// The coins a drop waits for are its inputs that pay an `owned` script of
+/// a transaction the history holds, counts (not abandoned) and did not
+/// drop, or that settled (a block or an InstantSend lock) since its drop:
+/// what an unsettled dropped or never-valid parent paid never comes back. A coin
+/// is back when it is unspent, spent by a block, or spent by another
+/// transaction of the history that is not abandoned. One pass over the
+/// history's inputs only when some coin is not found otherwise.
+pub(crate) fn drop_states(
+    txs: &HashMap<Txid, TxEntry>,
+    drops: &HashMap<Txid, DropInfo>,
+    owned: &HashMap<ScriptBuf, Owned>,
+    facts: &DropFacts<'_>,
+) -> DropStates {
+    let waited = |e: &TxEntry| -> Vec<OutPoint> {
+        (e.tx.input.iter())
+            .map(|i| i.previous_output)
+            .filter(|o| {
+                (txs.get(&o.txid)).is_some_and(|f| {
+                    !(drops.contains_key(&o.txid)
+                        && f.context.block_info().is_none()
+                        && !instant_locked(f))
+                        && !f.is_abandoned()
+                        && (f.tx.output.get(o.vout as usize))
+                            .is_some_and(|out| owned.contains_key(&out.script_pubkey))
+                })
+            })
+            .collect()
+    };
+    let mut spent_by_live: Option<HashSet<OutPoint>> = None;
+    let mut out = DropStates::new();
+    for (t, info) in drops {
+        let Some(e) = txs.get(t).filter(|e| e.is_abandoned()) else {
+            continue;
+        };
+        let mut missing: Vec<OutPoint> = (waited(e).into_iter())
+            .filter(|o| !(facts.unspent)(o) && !(facts.block_spent)(o))
+            .collect();
+        if !missing.is_empty() {
+            let live = spent_by_live.get_or_insert_with(|| {
+                (txs.values())
+                    .filter(|e| !e.is_abandoned())
+                    .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+                    .collect()
+            });
+            missing.retain(|o| !live.contains(o));
+        }
+        let coins = missing.iter().map(|o| {
+            let funded_at =
+                (txs.get(&o.txid)).and_then(|f| f.context.block_info().map(|b| b.height()));
+            coin_state(funded_at, facts)
+        });
+        let state = row_state(!info.held.is_empty(), coins);
+        out.insert(
+            *t,
+            TxDrop {
+                cause: info.cause,
+                state,
+            },
+        );
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +542,46 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
+/// Whether another transaction in a block the SPV header chain proves
+/// final ([`proven_final`] under the wallet's own `chainlock`, `active`
+/// the chain's block hash at each height it has) spends one of `txid`'s
+/// inputs: a ChainLock outranks an InstantSend lock (DIP-10, as
+/// key-wallet's conflict sweep orders them), so `txid` can never confirm.
+/// A record's ChainLocked context can come from its height alone, and a
+/// record of a block a fork replaced comes back from wallet.sqlite after a
+/// restart.
+pub(crate) fn chainlock_beaten(
+    txs: &HashMap<Txid, TxEntry>,
+    txid: &Txid,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    active: &HashMap<u32, dashcore::BlockHash>,
+) -> bool {
+    let Some(e) = txs.get(txid) else {
+        return false;
+    };
+    let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+    (txs.iter()).any(|(w, we)| {
+        w != txid
+            && (we.context.block_info())
+                .is_some_and(|b| proven_final((b.height(), b.block_hash()), chainlock, active))
+            && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+    })
+}
+
+/// Heights of the blocks holding a transaction that spends an input of a
+/// transaction out of a block: the headers [`chainlock_beaten`] reads.
+pub(crate) fn rival_heights(txs: &HashMap<Txid, TxEntry>) -> BTreeSet<u32> {
+    let unmined: HashSet<OutPoint> = (txs.values())
+        .filter(|e| e.context.block_info().is_none())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    (txs.values())
+        .filter_map(|e| Some((e, e.context.block_info()?.height())))
+        .filter(|(e, _)| (e.tx.input.iter()).any(|i| unmined.contains(&i.previous_output)))
+        .map(|(_, h)| h)
+        .collect()
+}
+
 /// The outpoints the wallet's transactions spend by Dash Core's
 /// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
 /// spender is in a block, or out of one (depth 0, :4072-4082) and not
@@ -398,10 +653,6 @@ pub(crate) fn unmined_own_spends(
     if sent.is_empty() {
         return Vec::new();
     }
-    let beats = |winner: &TxEntry, payment: &TxEntry| match instant_locked(payment) {
-        true => chain_locked(&winner.context, chainlock),
-        false => winner.context.block_info().is_some() || instant_locked(winner),
-    };
     let candidates: Vec<(&Txid, &BTreeSet<OutPoint>, &TxEntry)> = (sent.iter())
         .filter_map(|(t, mark)| Some((t, &mark.coins, txs.get(t)?)))
         .filter(|(_, _, e)| e.context.block_info().is_none() && !e.is_abandoned())
@@ -415,11 +666,33 @@ pub(crate) fn unmined_own_spends(
     let beaten = |t: &Txid, e: &TxEntry| {
         (e.tx.input.iter()).any(|i| {
             (spenders.get(&i.previous_output))
-                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e)))
+                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e, chainlock)))
         })
     };
+    // A beaten payment's descendants out of a block can never confirm either
+    // (#170 case 4), as `spent_outpoints` treats them; an InstantSend-locked
+    // one stays live, since only a ChainLocked block can beat it. A locked
+    // payment a ChainLock beat keeps its children's claims: Abandon owns
+    // it (#170 case 14).
+    let unmined = |e: &TxEntry| e.context.block_info().is_none() && !e.is_abandoned();
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| unmined(e) && !instant_locked(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+    }
+    let mut todo: Vec<Txid> = (txs.iter())
+        .filter(|(t, e)| unmined(e) && beaten(t, e))
+        .map(|(t, _)| *t)
+        .collect();
+    let mut dead = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if dead.insert(t) && !txs.get(&t).is_some_and(instant_locked) {
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+    }
     (candidates.into_iter())
-        .filter(|(t, _, e)| !beaten(t, e))
+        .filter(|(t, _, _)| !dead.contains(*t))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -434,6 +707,597 @@ pub(crate) fn unmined_own_spends(
                 .flat_map(|(t, m)| m.coins.iter().map(move |o| (*o, *t))),
         )
         .collect()
+}
+
+/// Key-wallet's finality order: a block or an InstantSend lock beats a
+/// payment without a lock, and only a block `chainlock` covers beats an
+/// InstantSend-locked one.
+fn beats(winner: &TxEntry, payment: &TxEntry, chainlock: Option<u32>) -> bool {
+    match instant_locked(payment) {
+        true => chain_locked(&winner.context, chainlock),
+        false => winner.context.block_info().is_some() || instant_locked(winner),
+    }
+}
+
+/// What beat a transaction out of a block, as far as the wallet knows: the
+/// winner's txid, and the height of the block that spent one of the
+/// loser's coins when the wallet processed it. Its inputs are known when
+/// the history holds it, or when it is mined: key-wallet observes every
+/// spend of a block it processes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Winner {
+    pub txid: Option<Txid>,
+    pub mined: Option<u32>,
+}
+
+/// The payments out of a block and not abandoned that key-wallet holds no
+/// record of (`recorded`), so its conflict handling cannot reach them
+/// (#170 case 3), beaten on an input by [`beats`]'s order: by another
+/// transaction of the history that is mined or that key-wallet holds (a
+/// restored lock may itself have lost to a ChainLock, #170 case 14), or by
+/// a block key-wallet processed
+/// (`observed`). Each with what beat it; an InstantSend-locked one only
+/// under a ChainLock, which the drop leaves to Abandon all the same (#170
+/// case 14). Only those paying the wallet (`pays_wallet`): key-wallet keeps
+/// no record of a payment without change mined after a restart, and the
+/// block `observed` names is then its own.
+pub(crate) fn beaten_unrecorded(
+    txs: &HashMap<Txid, TxEntry>,
+    recorded: impl Fn(&Txid) -> bool,
+    observed: &BTreeMap<OutPoint, u32>,
+    chainlock: Option<u32>,
+    mut pays_wallet: impl FnMut(&Transaction) -> bool,
+) -> Vec<(Txid, Winner)> {
+    let candidates: Vec<(&Txid, &TxEntry)> = (txs.iter())
+        .filter(|(t, e)| e.context.block_info().is_none() && !e.is_abandoned() && !recorded(t))
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let wanted: HashSet<OutPoint> = (candidates.iter())
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    let mut spenders: HashMap<OutPoint, Vec<(&Txid, &TxEntry)>> = HashMap::new();
+    for (w, we) in txs {
+        for i in we
+            .tx
+            .input
+            .iter()
+            .filter(|i| wanted.contains(&i.previous_output))
+        {
+            spenders.entry(i.previous_output).or_default().push((w, we));
+        }
+    }
+    let mut beaten = Vec::new();
+    for (t, e) in candidates {
+        let in_history = (e.tx.input.iter()).find_map(|i| {
+            let (w, we) = (spenders.get(&i.previous_output)?.iter()).find(|(w, we)| {
+                *w != t
+                    && (we.context.block_info().is_some() || recorded(w))
+                    && beats(we, e, chainlock)
+            })?;
+            Some(Winner {
+                txid: Some(**w),
+                mined: we.context.block_info().map(|b| b.height()),
+            })
+        });
+        let in_block = || {
+            (e.tx.input.iter()).find_map(|i| {
+                let h = *observed.get(&i.previous_output)?;
+                (!instant_locked(e) || chainlock.is_some_and(|cl| cl >= h)).then_some(Winner {
+                    txid: None,
+                    mined: Some(h),
+                })
+            })
+        };
+        if let Some(w) = in_history.or_else(in_block)
+            && pays_wallet(&e.tx)
+        {
+            beaten.push((*t, w));
+        }
+    }
+    beaten
+}
+
+/// The transactions of the history out of a block, neither abandoned nor
+/// InstantSend-locked, that descend from `parents` by any output: they can
+/// never confirm once `parents` cannot.
+pub(crate) fn unmined_children(txs: &HashMap<Txid, TxEntry>, parents: &[Txid]) -> BTreeSet<Txid> {
+    let open: Vec<(&Txid, &TxEntry)> = (txs.iter())
+        .filter(|(_, e)| {
+            e.context.block_info().is_none() && !e.is_abandoned() && !instant_locked(e)
+        })
+        .collect();
+    let mut dead: HashSet<Txid> = parents.iter().copied().collect();
+    let mut todo = parents.to_vec();
+    let mut children = BTreeSet::new();
+    while let Some(p) = todo.pop() {
+        for (t, e) in &open {
+            if !dead.contains(*t) && e.tx.input.iter().any(|i| i.previous_output.txid == p) {
+                dead.insert(**t);
+                children.insert(**t);
+                todo.push(**t);
+            }
+        }
+    }
+    children
+}
+
+/// The stored transactions (`stored`) out of a block, neither abandoned nor
+/// InstantSend-locked, that spend a coin of the wallet whose transaction
+/// the store holds no row of and the history no live entry of (#170 case
+/// 4): its parent was swept or dropped, so they can never confirm. The
+/// store keeps every row once final, so a missing one is not a pruned
+/// funding. One that spends a transaction the store dropped as an unsigned
+/// claim, or one key-wallet swept as a claim (`orphan_exempt`), is the claim
+/// rule's to judge (#739), and is left.
+pub(crate) fn orphaned_unmined(
+    txs: &HashMap<Txid, TxEntry>,
+    stored: &HashSet<Txid>,
+    orphan_exempt: &HashSet<Txid>,
+) -> Vec<Txid> {
+    let gone = |p: &Txid| !stored.contains(p) && !txs.get(p).is_some_and(|e| !e.is_abandoned());
+    let exempt =
+        |e: &TxEntry| (e.tx.input.iter()).any(|i| orphan_exempt.contains(&i.previous_output.txid));
+    (txs.iter())
+        .filter(|(t, e)| {
+            stored.contains(*t)
+                && e.context.block_info().is_none()
+                && !e.is_abandoned()
+                && !instant_locked(e)
+                && !exempt(e)
+                && (e.own_inputs.keys())
+                    .filter_map(|i| e.tx.input.get(*i as usize))
+                    .any(|i| gone(&i.previous_output.txid))
+        })
+        .map(|(t, _)| *t)
+        .collect()
+}
+
+/// The parents of the `orphans` ([`orphaned_unmined`]) that are gone: no
+/// stored row and no live entry, the evidence that they never confirm.
+pub(crate) fn gone_parents(
+    txs: &HashMap<Txid, TxEntry>,
+    stored: &HashSet<Txid>,
+    orphans: &[Txid],
+) -> BTreeSet<Txid> {
+    let gone = |p: &Txid| !stored.contains(p) && !txs.get(p).is_some_and(|e| !e.is_abandoned());
+    (orphans.iter().filter_map(|t| txs.get(t)))
+        .flat_map(|e| (e.own_inputs.keys()).filter_map(|i| e.tx.input.get(*i as usize)))
+        .map(|i| i.previous_output.txid)
+        .filter(gone)
+        .collect()
+}
+
+/// What the coins the drops still hold (`held`, [`still_held`]) add up to,
+/// as the wallet's balances report them (#749): the sum of those whose
+/// value it knows, and how many are held whose value it does not. A
+/// coin's value comes from the output that made it when the history holds
+/// that transaction and the wallet owns the output (`owns`), else from a
+/// held payment's record of its own inputs. A coin known neither way is
+/// counted as of unknown value, never guessed, and only when an input
+/// spending it in the history is signed with a key of the wallet
+/// ([`p2pkh_signer`]): a beaten incoming payment, or the other inputs of a
+/// beaten mix, hold coins that are not the wallet's.
+pub(crate) fn held_total(
+    held: &BTreeSet<OutPoint>,
+    txs: &HashMap<Txid, TxEntry>,
+    owns: impl Fn(&ScriptBuf) -> bool,
+) -> (u64, u32) {
+    let mut own_inputs: HashMap<OutPoint, u64> = HashMap::new();
+    let mut signed_by_own = HashSet::new();
+    for e in txs.values() {
+        for i in &e.tx.input {
+            if held.contains(&i.previous_output)
+                && p2pkh_signer(&i.script_sig).is_some_and(|s| owns(&s))
+            {
+                signed_by_own.insert(i.previous_output);
+            }
+        }
+        for (index, (value, _)) in &e.own_inputs {
+            if let Some(i) =
+                (e.tx.input.get(*index as usize)).filter(|i| held.contains(&i.previous_output))
+            {
+                own_inputs.insert(i.previous_output, *value);
+            }
+        }
+    }
+    let (mut sum, mut unvalued) = (0u64, 0u32);
+    for o in held {
+        let output = (txs.get(&o.txid)).and_then(|e| e.tx.output.get(o.vout as usize));
+        match (output, own_inputs.get(o)) {
+            (Some(out), _) if owns(&out.script_pubkey) => sum = sum.saturating_add(out.value),
+            (_, Some(value)) => sum = sum.saturating_add(*value),
+            (Some(_), None) => {}
+            (None, None) if signed_by_own.contains(o) => unvalued += 1,
+            (None, None) => {}
+        }
+    }
+    (sum, unvalued)
+}
+
+/// Of the coins the drops hold (`holds`), those still held: none a
+/// processed block (`observed`) or a mined transaction of the history
+/// spent, or that `left_out` names (a final spend's note, or an output of
+/// a parent a load found gone).
+pub(crate) fn still_held(
+    holds: &BTreeSet<OutPoint>,
+    txs: &HashMap<Txid, TxEntry>,
+    observed: &BTreeMap<OutPoint, u32>,
+    left_out: impl Fn(&OutPoint) -> bool,
+) -> BTreeSet<OutPoint> {
+    let mined: HashSet<OutPoint> = (txs.values())
+        .filter(|e| e.context.block_info().is_some())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .filter(|o| holds.contains(o))
+        .collect();
+    (holds.iter())
+        .filter(|o| !observed.contains_key(*o) && !mined.contains(*o) && !left_out(o))
+        .copied()
+        .collect()
+}
+
+/// What a drop noted of what beat its transactions (`drop_winner:`), to
+/// judge when the coins it holds are settled ([`held_awaiting`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DropOrigin {
+    /// The transaction that beat the drop's roots, when known.
+    pub winner: Option<Txid>,
+    /// The coins the winner took from them: the inputs of the drop's
+    /// roots, and of the payments a sweep took for it that the history
+    /// held.
+    pub contested: BTreeSet<OutPoint>,
+    /// The parents a load found gone (#170 case 4): an orphan's drop, which
+    /// nothing beat. Their outputs never exist.
+    pub gone: BTreeSet<Txid>,
+}
+
+impl DropOrigin {
+    /// `winner|contested|gone`, each list comma-separated.
+    pub(crate) fn encode(&self) -> String {
+        let join = |i: Vec<String>| i.join(",");
+        format!(
+            "{}|{}|{}",
+            self.winner.map(|w| w.to_string()).unwrap_or_default(),
+            join(self.contested.iter().map(|o| o.to_string()).collect()),
+            join(self.gone.iter().map(|t| t.to_string()).collect()),
+        )
+    }
+
+    /// `None` for a value [`Self::encode`] did not write.
+    pub(crate) fn decode(value: &str) -> Option<Self> {
+        use std::str::FromStr;
+        let mut parts = value.split('|');
+        let (Some(winner), Some(contested), Some(gone), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        fn items(list: &str) -> impl Iterator<Item = &str> {
+            list.split(',').filter(|i| !i.is_empty())
+        }
+        Some(Self {
+            winner: match winner {
+                "" => None,
+                w => Some(Txid::from_str(w).ok()?),
+            },
+            contested: (items(contested).map(OutPoint::from_str))
+                .collect::<Result<_, _>>()
+                .ok()?,
+            gone: (items(gone).map(Txid::from_str))
+                .collect::<Result<_, _>>()
+                .ok()?,
+        })
+    }
+}
+
+/// By dropped transaction, the coins its `drop_holds:` note holds and its
+/// origin, when its `drop_winner:` note reads.
+pub(crate) type HeldDrops = BTreeMap<Txid, (BTreeSet<OutPoint>, Option<DropOrigin>)>;
+
+/// The origin of a drop with no `drop_winner:` note (an older drop, #749
+/// Q81c C2): its winner unknown, and as what it
+/// contested the inputs of its roots, read from the bytes (`copy_of`) of
+/// its transaction `t` and of each dead transaction (`dead`: dropped or
+/// swept) it descends from. An input made by a dead transaction is never
+/// spent on chain, and is left out. With no bytes, it contests nothing, so
+/// it awaits.
+pub(crate) fn older_origin<'a>(
+    t: Txid,
+    copy_of: impl Fn(&Txid) -> Option<&'a Transaction>,
+    dead: impl Fn(&Txid) -> bool,
+) -> DropOrigin {
+    let mut origin = DropOrigin::default();
+    let (mut todo, mut seen) = (vec![t], HashSet::from([t]));
+    while let Some(t) = todo.pop() {
+        for i in copy_of(&t).into_iter().flat_map(|tx| &tx.input) {
+            let parent = i.previous_output.txid;
+            match dead(&parent) {
+                true if seen.insert(parent) => todo.push(parent),
+                true => {}
+                false => {
+                    origin.contested.insert(i.previous_output);
+                }
+            }
+        }
+    }
+    origin
+}
+
+/// A block's spend of a coin the drops hold or contest (`drop_spent:`),
+/// noted while key-wallet still observed it: it counts once the SPV header
+/// chain proves the block final ([`proven_final`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpendNote {
+    pub height: u32,
+    pub block: dashcore::BlockHash,
+    /// The spending transaction, when the history holds it.
+    pub spender: Option<Txid>,
+}
+
+impl SpendNote {
+    /// `height,block,spender`, the spender empty when unknown.
+    pub(crate) fn encode(&self) -> String {
+        let spender = self.spender.map(|t| t.to_string()).unwrap_or_default();
+        format!("{},{},{spender}", self.height, self.block)
+    }
+
+    /// `None` for a value [`Self::encode`] did not write.
+    pub(crate) fn decode(value: &str) -> Option<Self> {
+        use std::str::FromStr;
+        let mut parts = value.split(',');
+        let (Some(height), Some(block), Some(spender), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        Some(Self {
+            height: height.parse().ok()?,
+            block: dashcore::BlockHash::from_str(block).ok()?,
+            spender: match spender {
+                "" => None,
+                t => Some(Txid::from_str(t).ok()?),
+            },
+        })
+    }
+}
+
+/// How a sweep removed a transaction (`swept_by:`, #749 Q81d S1-S5): with
+/// the transaction's bytes, read before the history forgot them, its
+/// winner, and the winner's block once a block names it. Only a conflict
+/// sweep's final winner proves the transaction dead ([`dead_for_good`]):
+/// in a claim sweep the winner's finality proves nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SweptBy {
+    pub claim: bool,
+    pub winner: Txid,
+    /// The winner's block: from the sweep's event or a block record of the
+    /// winner, never from an InstantSend lock.
+    pub block: Option<(u32, dashcore::BlockHash)>,
+    pub tx: Transaction,
+}
+
+impl SweptBy {
+    /// `kind|winner|height,block|hex`, the block empty when unknown.
+    pub(crate) fn encode(&self) -> String {
+        let block = (self.block)
+            .map(|(h, b)| format!("{h},{b}"))
+            .unwrap_or_default();
+        format!(
+            "{}|{}|{block}|{}",
+            if self.claim { "claim" } else { "conflict" },
+            self.winner,
+            dashcore::consensus::encode::serialize_hex(&self.tx),
+        )
+    }
+
+    /// `None` for a value [`Self::encode`] did not write, or whose
+    /// transaction is not `txid`: such a note counts as absent.
+    pub(crate) fn decode(txid: &Txid, value: &str) -> Option<Self> {
+        use std::str::FromStr;
+        let mut parts = value.split('|');
+        let (Some(kind), Some(winner), Some(block), Some(hex), None) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
+            return None;
+        };
+        let claim = match kind {
+            "claim" => true,
+            "conflict" => false,
+            _ => return None,
+        };
+        let block = match block.split_once(',') {
+            None if block.is_empty() => None,
+            None => return None,
+            Some((h, b)) => Some((h.parse().ok()?, dashcore::BlockHash::from_str(b).ok()?)),
+        };
+        let bytes = hex::decode(hex).ok()?;
+        let tx: Transaction = dashcore::consensus::encode::deserialize(&bytes).ok()?;
+        (tx.txid() == *txid).then_some(Self {
+            claim,
+            winner: Txid::from_str(winner).ok()?,
+            block,
+            tx,
+        })
+    }
+}
+
+/// The block a conflict sweep's note (`note`) keeps for its winner (Q81d
+/// S4, S5): none once the header chain (`headers`) names another block at
+/// its height or a fork truncated at or below it (`fork`); filled from a
+/// block record of the winner (`mined`) the header chain doesn't
+/// contradict. A claim sweep's note keeps none.
+pub(crate) fn swept_by_block(
+    note: &SweptBy,
+    mined: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+    fork: Option<u32>,
+) -> Option<(u32, dashcore::BlockHash)> {
+    let stands = |(h, b): &(u32, dashcore::BlockHash)| {
+        headers.get(h).is_none_or(|x| x == b) && fork.is_none_or(|f| f > *h)
+    };
+    match note.claim {
+        true => None,
+        false => (note.block.filter(stands)).or(mined.filter(stands)),
+    }
+}
+
+/// What can prove a gone parent of an orphan's drop dead for good
+/// ([`dead_for_good`]).
+#[derive(Debug, Default)]
+pub(crate) struct Deaths {
+    /// The transactions whose `dropped:` mark is a never-valid verdict, as
+    /// the strict reader reads it at this evaluation.
+    pub never_valid: BTreeSet<Txid>,
+    /// Each swept transaction's `swept_by:` note that reads.
+    pub swept_by: BTreeMap<Txid, SweptBy>,
+    /// Each abandoned transaction's copy that reads back.
+    pub copies: BTreeMap<Txid, Transaction>,
+}
+
+impl Deaths {
+    /// The inputs of `t`, from its abandoned copy or its sweep's note.
+    pub(crate) fn inputs_of(&self, t: &Txid) -> impl Iterator<Item = OutPoint> + '_ {
+        (self.copies.get(t).or(self.swept_by.get(t).map(|s| &s.tx)))
+            .into_iter()
+            .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+    }
+}
+
+/// Whether `parent`, a gone parent of an orphan's drop, is dead for good
+/// (#749 Q81c §2, Q81d): it is not live in the history, and (a) its
+/// `dropped:` mark is a never-valid verdict, (b) a conflict sweep removed
+/// it for a winner whose block the header chain proves final (`proven`),
+/// or (c) another transaction spent one of its inputs
+/// ([`Deaths::inputs_of`]) in a block the header chain proves final: a
+/// spend note naming that spender (`spent`), or a transaction of the
+/// history. A claim sweep's parent dies only by (a) (S3). Its abandoned
+/// mark alone proves nothing, nor does a note with no spender: a mined
+/// parent spends its own inputs.
+pub(crate) fn dead_for_good(
+    parent: &Txid,
+    deaths: &Deaths,
+    txs: &HashMap<Txid, TxEntry>,
+    spent: &BTreeMap<OutPoint, SpendNote>,
+    proven: impl Fn((u32, dashcore::BlockHash)) -> bool,
+) -> bool {
+    if txs.get(parent).is_some_and(|e| !e.is_abandoned()) {
+        return false;
+    }
+    if deaths.never_valid.contains(parent) {
+        return true;
+    }
+    let swept = deaths.swept_by.get(parent);
+    if swept.is_some_and(|s| s.claim) {
+        return false;
+    }
+    let spent_finally = |o: OutPoint| {
+        (spent.get(&o))
+            .is_some_and(|n| n.spender.is_some_and(|s| s != *parent) && proven((n.height, n.block)))
+            || (txs.iter()).any(|(t, e)| {
+                t != parent
+                    && !e.is_abandoned()
+                    && (e.context.block_info())
+                        .is_some_and(|b| proven((b.height(), b.block_hash())))
+                    && e.tx.input.iter().any(|i| i.previous_output == o)
+            })
+    };
+    swept.is_some_and(|s| s.block.is_some_and(&proven))
+        || deaths.inputs_of(parent).any(spent_finally)
+}
+
+/// What [`held_awaiting`] reads beside the drops and the history.
+pub(crate) struct HeldEvidence<'a> {
+    /// The header chain proves a transaction's block final
+    /// ([`proven_final`]): a stored context or a height alone never does,
+    /// since a record of a block a fork replaced comes back after a
+    /// restart.
+    pub chain_final: &'a dyn Fn(&TxEntry) -> bool,
+    /// A coin has a final spend: a processed block's at or below the
+    /// ChainLock, or a proven note.
+    pub final_spend: &'a dyn Fn(&OutPoint) -> bool,
+    /// A key-wallet record spends the coin.
+    pub spent_by_record: &'a dyn Fn(&OutPoint) -> bool,
+    /// An InstantSend lock of a transaction the wallet holds no copy of may
+    /// spend the coin: one heard this session, or noted
+    /// (`drop_locked:`, Q81c C1).
+    pub unknown_lock: &'a dyn Fn(&OutPoint) -> bool,
+    /// A gone parent of an orphan's drop is dead for good
+    /// ([`dead_for_good`]).
+    pub dead_for_good: &'a dyn Fn(&Txid) -> bool,
+}
+
+/// Whether a coin the drops still hold (`held`, [`still_held`]) awaits
+/// what spends it (#749, Q81b S2): the way out is offered only when none
+/// does. Judged per coin, from each drop that holds it (`drops`: what each
+/// dropped transaction's note holds, and its origin's note): a coin is
+/// settled when no live transaction of the history or key-wallet record
+/// spends it, no InstantSend lock of a transaction the wallet holds no
+/// copy of may spend it, and every drop holding it is settled. A drop is
+/// settled when its winner is in the history and its block proven final
+/// (`chain_final`); when the history doesn't hold it, or it is unknown,
+/// when one of the coins it contested has a final spend: the evidence's,
+/// or a spend by a transaction of the history in a block proven final. An
+/// orphan's drop, which nothing beat, is settled once each parent a load
+/// found gone is dead for good (Q81c §2). A drop with no origin note
+/// awaits.
+pub(crate) fn held_awaiting(
+    held: &BTreeSet<OutPoint>,
+    drops: &HeldDrops,
+    txs: &HashMap<Txid, TxEntry>,
+    evidence: &HeldEvidence<'_>,
+) -> bool {
+    let contested: HashSet<OutPoint> = (drops.values())
+        .filter_map(|(_, o)| o.as_ref())
+        .flat_map(|o| o.contested.iter().copied())
+        .collect();
+    let (mut live, mut locked) = (HashSet::new(), HashSet::new());
+    for e in txs.values().filter(|e| !e.is_abandoned()) {
+        for o in e.tx.input.iter().map(|i| i.previous_output) {
+            if held.contains(&o) {
+                live.insert(o);
+            }
+            if contested.contains(&o) && (evidence.chain_final)(e) {
+                locked.insert(o);
+            }
+        }
+    }
+    let settled_drop = |origin: &DropOrigin| match origin {
+        DropOrigin {
+            winner: None, gone, ..
+        } if !gone.is_empty() => gone.iter().all(evidence.dead_for_good),
+        _ => match (origin.winner.and_then(|w| txs.get(&w))).filter(|e| !e.is_abandoned()) {
+            Some(winner) => (evidence.chain_final)(winner),
+            None => {
+                (origin.contested.iter()).any(|o| locked.contains(o) || (evidence.final_spend)(o))
+            }
+        },
+    };
+    held.iter().any(|coin| {
+        live.contains(coin)
+            || (evidence.spent_by_record)(coin)
+            || (evidence.unknown_lock)(coin)
+            || (drops.values())
+                .filter(|(holds, _)| holds.contains(coin))
+                .any(|(_, origin)| !origin.as_ref().is_some_and(settled_drop))
+    })
+}
+
+/// The P2PKH script of the key a `[signature, key]` input script pushes.
+fn p2pkh_signer(script: &dashcore::Script) -> Option<ScriptBuf> {
+    use dashcore::blockdata::script::Instruction;
+    let mut pushes = script.instructions();
+    let (Some(Ok(Instruction::PushBytes(_))), Some(Ok(Instruction::PushBytes(key))), None) =
+        (pushes.next(), pushes.next(), pushes.next())
+    else {
+        return None;
+    };
+    let key = dashcore::PublicKey::from_slice(key.as_bytes()).ok()?;
+    Some(ScriptBuf::new_p2pkh(&key.pubkey_hash()))
 }
 
 /// Whether the history knows an InstantSend lock of `e`: its flag or its
@@ -487,19 +1351,36 @@ pub(crate) fn proven_settled(
     chainlock: Option<(u32, dashcore::BlockHash)>,
     headers: &HashMap<u32, dashcore::BlockHash>,
 ) -> Vec<Txid> {
-    let locked = chainlock.is_some_and(|(height, hash)| headers.get(&height) == Some(&hash));
     (candidates.into_iter())
-        .filter(|(_, block)| match block {
-            None => true,
-            Some((height, hash)) => locked && headers.get(height) == Some(hash),
-        })
+        .filter(|(_, block)| block.is_none_or(|b| proven_final(b, chainlock, headers)))
         .map(|(t, _)| t)
         .collect()
+}
+
+/// Whether the SPV header chain `headers` proves the block `(height, hash)`
+/// final: it holds that block, at or below the block of the wallet's own
+/// `chainlock`, which it holds too. A stored context, a height or a
+/// missing header proves nothing.
+pub(crate) fn proven_final(
+    (height, hash): (u32, dashcore::BlockHash),
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+) -> bool {
+    chainlock.is_some_and(|(cl_height, cl_hash)| {
+        height <= cl_height && headers.get(&cl_height) == Some(&cl_hash)
+    }) && headers.get(&height) == Some(&hash)
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
+    /// The transactions this app dropped as ones that can never confirm,
+    /// from their `dropped:` marks and as each drop runs.
+    pub drops: HashMap<Txid, DropInfo>,
+    /// The own inputs of dropped transactions listed from their abandoned
+    /// marks alone, as their `dropped:` marks keep them: what their rows
+    /// show, which nothing spends or releases.
+    pub drop_inputs: BTreeMap<Txid, crate::tx_actions::OwnInputs>,
     /// Transactions a conflict sweep removed this session: a load whose
     /// marks were read before the sweep restores none of them.
     pub swept: HashSet<Txid>,
@@ -514,15 +1395,33 @@ pub(crate) struct WalletHistory {
     /// Payments whose spend claims a load restored this session, from their
     /// sent marks: their marks may be all that holds those coins.
     pub claimed_at_load: HashSet<Txid>,
+    /// The sent marks the last load chose its spend claims from, when it
+    /// restored them: a lock the wallet learns of later chooses again from
+    /// them ([`HistoryStore::note_instant_lock`]).
+    pub claim_marks: Option<crate::tx_actions::Sent>,
     /// The wallet's coins each payment restored from its sent mark
     /// (`add_unrecorded_sends`) signed, which a later record of it may not
     /// name.
     pub marked: HashMap<Txid, BTreeSet<OutPoint>>,
+    /// The coins abandons and drops gave back that wait for their rescan
+    /// (`crate::rescan_hold`), from their marks at the open and as each
+    /// gives one back; one released goes.
+    pub rescan_holds: BTreeMap<OutPoint, crate::rescan_hold::RescanHold>,
     /// Transactions key-wallet held this session: its records when the
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// The last load of the history missed a stored record or mark.
+    pub load_incomplete: bool,
+    /// A load filled the history: until then it may lack any record.
+    pub loaded: bool,
+    /// Transactions with a verified InstantSend lock stored and no record
+    /// at the last load, by the transactions their lock names inputs of.
+    pub lock_parents: HashMap<Txid, Vec<Txid>>,
+    /// The spend claims restored this session, by coin, with the payment
+    /// each names.
+    pub claimed: HashMap<OutPoint, Txid>,
     /// A ProRegTx, or an output one names as its collateral, was merged
     /// since the masternode follower last locked this wallet's collaterals
     /// (MG-00 D9).
@@ -581,7 +1480,10 @@ impl WalletHistory {
     /// Drops a transaction upstream deleted, seen or kept out of sight.
     pub fn forget(&mut self, txid: &Txid) {
         self.txs.remove(txid);
+        self.drops.remove(txid);
+        self.drop_inputs.remove(txid);
         self.hidden_registrations.remove(txid);
+        self.lock_parents.remove(txid);
     }
 
     /// The ProRegTxs kept out of sight that the history has no own entry
@@ -652,6 +1554,20 @@ impl WalletHistory {
                     abandoned: true,
                 })
                 .abandoned = true;
+        }
+    }
+
+    /// Notes, for each abandoned entry listed from its mark alone (so with no
+    /// own inputs), those its drop mark keeps: its row shows the payment it
+    /// was. Its entry stays without them, so nothing releases them.
+    pub(crate) fn fill_dropped_inputs(
+        &mut self,
+        inputs: &BTreeMap<Txid, crate::tx_actions::OwnInputs>,
+    ) {
+        for (txid, own) in inputs {
+            if (self.txs.get(txid)).is_some_and(|e| e.abandoned && e.own_inputs.is_empty()) {
+                self.drop_inputs.insert(*txid, own.clone());
+            }
         }
     }
 
@@ -904,6 +1820,23 @@ impl HistoryStore {
         }
     }
 
+    /// Marks `txid` InstantSend-locked in each loaded history but those of
+    /// `skip` that holds it out of a block without a known lock: key-wallet
+    /// tells only the wallets holding its record or coins (#828). The
+    /// wallets marked.
+    pub(crate) fn note_instant_lock(&self, txid: &Txid, skip: &HashSet<WalletId>) -> Vec<WalletId> {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        (map.iter_mut())
+            .filter(|(id, h)| {
+                !skip.contains(*id)
+                    && h.loaded
+                    && (h.txs.get(txid))
+                        .is_some_and(|e| e.context.block_info().is_none() && !instant_locked(e))
+            })
+            .filter_map(|(id, h)| h.set_instant_locked(txid).then_some(*id))
+            .collect()
+    }
+
     /// Forgets a load's claims of `txids` once their marks are gone or
     /// they're abandoned (WalletHistory's `claimed_at_load`).
     pub(crate) fn drop_claims(&self, wallet: &WalletId, txids: impl IntoIterator<Item = Txid>) {
@@ -997,6 +1930,8 @@ pub(crate) struct ChainView<'a> {
     pub network: Network,
     /// Who the wallet's DashPay payments are with.
     pub payees: &'a Payees,
+    /// The transactions this app dropped, resolved ([`drop_states`]).
+    pub drops: &'a Drops,
 }
 
 fn depth(context: &TransactionContext, tip: u32) -> u32 {
@@ -1026,8 +1961,18 @@ pub(crate) fn resolve_own_input(
 }
 
 fn own_input(view: &ChainView<'_>, entry: &TxEntry, index: usize) -> Option<(u64, Address)> {
+    let marked = || {
+        (entry.abandoned && entry.own_inputs.is_empty() && !view.drops.inputs.is_empty())
+            .then(|| {
+                view.drops
+                    .inputs
+                    .get(&entry.tx.txid())?
+                    .get(&(index as u32))
+            })
+            .flatten()
+    };
     resolve_own_input(
-        entry.own_inputs.get(&(index as u32)),
+        entry.own_inputs.get(&(index as u32)).or_else(marked),
         entry
             .tx
             .input
@@ -1076,6 +2021,7 @@ pub(crate) fn status_of(
             instant_locked,
             chain_locked,
             matures_in,
+            dropped: None,
         },
         counts,
     )
@@ -1416,7 +2362,10 @@ pub(crate) fn records_of(
 ) -> (Vec<TxRecord>, Decomposed, TxStatus) {
     let txid_s = txid.to_string();
     let d = decompose_with(entry, view, labels.coinjoin_sends.contains(&txid_s));
-    let (status, counts) = status_of(entry, view, d.all_from_me);
+    let (mut status, counts) = status_of(entry, view, d.all_from_me);
+    if status.kind == TxStatusKind::Abandoned {
+        status.dropped = view.drops.states.get(txid).copied();
+    }
     let tx_label = labels.tx.get(&txid_s).cloned();
     let sides = view.payees.sides(txid, &entry.tx, &d.parts);
     let records = d
@@ -1916,6 +2865,7 @@ mod tests {
                 chainlock_height: None,
                 network: NET,
                 payees: &self.payees,
+                drops: &crate::history::NO_DROPS,
             }
         }
 
@@ -1928,6 +2878,26 @@ mod tests {
 
     fn foreign_input(n: u8) -> TxIn {
         input(Txid::from_byte_array([n; 32]), 0)
+    }
+
+    fn test_key(n: u8) -> dashcore::PublicKey {
+        let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([n; 32]).unwrap();
+        dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret))
+    }
+
+    fn key_script(n: u8) -> ScriptBuf {
+        ScriptBuf::new_p2pkh(&test_key(n).pubkey_hash())
+    }
+
+    /// An input spending `o` whose script pushes a signature-shaped blob
+    /// and key `n`'s public key, as a P2PKH spend does.
+    fn signed_input(o: OutPoint, n: u8) -> TxIn {
+        let mut i = input(o.txid, o.vout);
+        i.script_sig = dashcore::blockdata::script::Builder::new()
+            .push_slice([0x30; 71])
+            .push_key(&test_key(n))
+            .into_script();
+        i
     }
 
     #[test]
@@ -2527,6 +3497,7 @@ mod tests {
                 instant_locked: false,
                 chain_locked: false,
                 matures_in: None,
+                dropped: None,
             },
             timestamp: ts,
             block_height: Some(1),
@@ -2788,6 +3759,1080 @@ mod tests {
         assert_eq!(amounts, vec![50, 20, -70]);
     }
 
+    /// #170 case 4: a payment that spends the change of a beaten payment can
+    /// never confirm either, so it claims nothing: its other coins are free
+    /// or the winner's. A child that is InstantSend-locked keeps its claims,
+    /// as only a ChainLocked block can beat it.
+    #[test]
+    fn unmined_own_spends_give_a_beaten_payments_children_no_claim() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let mark = |coins: &[OutPoint]| crate::tx_actions::SentMark {
+            inputs: Default::default(),
+            coins: coins.iter().copied().collect(),
+            tx: None,
+            kept: false,
+        };
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let mut txs = HashMap::new();
+        let mut sent = crate::tx_actions::Sent::new();
+        let parent = spend(1, &[coin(20)], TransactionContext::Mempool);
+        let p = parent.tx.txid();
+        txs.insert(p, parent);
+        sent.insert(p, mark(&[coin(20)]));
+        let winner = spend(2, &[coin(20)], in_block(10, 0));
+        txs.insert(winner.tx.txid(), winner);
+        let change = OutPoint::new(p, 0);
+        let child = spend(3, &[change, coin(21)], TransactionContext::Mempool);
+        let c = child.tx.txid();
+        txs.insert(c, child);
+        sent.insert(c, mark(&[change, coin(21)]));
+        let grandchild = spend(
+            4,
+            &[OutPoint::new(c, 0), coin(22)],
+            TransactionContext::Mempool,
+        );
+        let g = grandchild.tx.txid();
+        txs.insert(g, grandchild);
+        sent.insert(g, mark(&[OutPoint::new(c, 0), coin(22)]));
+        let mut locked = spend(
+            5,
+            &[OutPoint::new(p, 1), coin(23)],
+            TransactionContext::Mempool,
+        );
+        locked.instant_locked = true;
+        let l = locked.tx.txid();
+        txs.insert(l, locked);
+        sent.insert(l, mark(&[coin(23)]));
+
+        let mut claims = unmined_own_spends(&txs, &sent, None);
+        claims.sort();
+        assert_eq!(claims, vec![(coin(23), l)], "only the locked child claims");
+    }
+
+    /// #170 case 3: a payment out of a block that key-wallet holds no record
+    /// of and that pays the wallet is beaten by a mined or locked rival of
+    /// the history, or by a block key-wallet saw spend its coin; by
+    /// key-wallet's finality order, so an InstantSend-locked one only under
+    /// a ChainLock. A recorded, abandoned or change-less one is left, and so
+    /// is one only a restored lock key-wallet holds no record of beats.
+    #[test]
+    fn beaten_unrecorded_finds_the_restored_payments_a_rival_beat() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let pays = |coins: &[OutPoint], to: u8, context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(10, &hash_addr(to))],
+                ),
+                context,
+            )
+        };
+        let wallet = hash_addr(9).script_pubkey();
+        let pays_wallet = |t: &Transaction| t.output.iter().any(|o| o.script_pubkey == wallet);
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            t
+        };
+        let p = add(pays(&[coin(1), coin(2)], 9, TransactionContext::Mempool));
+        let winner = add(pays(&[coin(2)], 3, in_block(10, 0)));
+        let recorded = add(pays(&[coin(4)], 9, TransactionContext::Mempool));
+        add(pays(&[coin(4)], 3, in_block(10, 0)));
+        let mut gone = pays(&[coin(5)], 9, TransactionContext::Mempool);
+        gone.abandoned = true;
+        add(gone);
+        add(pays(&[coin(5)], 3, in_block(10, 0)));
+        add(pays(&[coin(6)], 3, TransactionContext::Mempool));
+        let by_block = add(pays(&[coin(7)], 9, TransactionContext::Mempool));
+        add(pays(&[coin(8)], 3, TransactionContext::Mempool));
+        let mut locked = pays(&[coin(11)], 9, TransactionContext::Mempool);
+        locked.instant_locked = true;
+        let locked = add(locked);
+        add(pays(&[coin(6), coin(12)], 9, TransactionContext::Mempool));
+        add(pays(&[coin(13)], 9, TransactionContext::Mempool));
+        let mut restored_lock = pays(&[coin(13)], 3, TransactionContext::Mempool);
+        restored_lock.instant_locked = true;
+        add(restored_lock);
+        let observed = BTreeMap::from([(coin(7), 11), (coin(8), 11), (coin(11), 12)]);
+        let txs = txs;
+
+        let found = |chainlock| {
+            let mut found =
+                beaten_unrecorded(&txs, |t| *t == recorded, &observed, chainlock, pays_wallet);
+            found.sort();
+            found
+        };
+        let mut want = vec![
+            (
+                p,
+                Winner {
+                    txid: Some(winner),
+                    mined: Some(10),
+                },
+            ),
+            (
+                by_block,
+                Winner {
+                    txid: None,
+                    mined: Some(11),
+                },
+            ),
+        ];
+        want.sort();
+        assert_eq!(
+            found(Some(11)),
+            want,
+            "the locked one only under a ChainLock"
+        );
+        want.push((
+            locked,
+            Winner {
+                txid: None,
+                mined: Some(12),
+            },
+        ));
+        want.sort();
+        assert_eq!(found(Some(12)), want);
+    }
+
+    /// #170 case 4: a swept payment's children, and theirs, out of a block;
+    /// a locked, mined or abandoned one is not followed.
+    #[test]
+    fn unmined_children_follow_every_output_out_of_a_block() {
+        let spend = |parents: &[(Txid, u32)], n: u8| {
+            entry(
+                tx(
+                    parents.iter().map(|(t, v)| input(*t, *v)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                TransactionContext::Mempool,
+            )
+        };
+        let p = Txid::from_byte_array([1; 32]);
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            t
+        };
+        let c = add(spend(&[(p, 1)], 1));
+        let g = add(spend(&[(c, 0)], 2));
+        let mut locked = spend(&[(p, 2)], 3);
+        locked.instant_locked = true;
+        let l = add(locked);
+        add(spend(&[(l, 0)], 4));
+        let mut mined = spend(&[(p, 3)], 5);
+        mined.context = in_block(10, 0);
+        add(mined);
+        let mut gone = spend(&[(p, 4)], 6);
+        gone.abandoned = true;
+        add(gone);
+        add(spend(&[(Txid::from_byte_array([2; 32]), 0)], 7));
+
+        assert_eq!(unmined_children(&txs, &[p]), BTreeSet::from([c, g]));
+    }
+
+    /// #749: the held total sums the held coins whose value the wallet
+    /// knows (from the output that made them, or a held payment's record
+    /// of its own inputs) and counts apart the one it doesn't but spent
+    /// with its own key; a coin a block spent since, and an output the
+    /// wallet doesn't own, are left.
+    #[test]
+    fn held_total_sums_the_valued_coins_and_counts_the_unvalued() {
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            t
+        };
+        let funding = add(entry(
+            tx(
+                vec![foreign_input(1)],
+                vec![
+                    out(700, &hash_addr(1)),
+                    out(900, &hash_addr(3)),
+                    out(50, &hash_addr(1)),
+                ],
+            ),
+            in_block(10, 0),
+        ));
+        let (valued, foreign, settled) = (
+            OutPoint::new(funding, 0),
+            OutPoint::new(funding, 1),
+            OutPoint::new(funding, 2),
+        );
+        add(entry(
+            tx(vec![input(funding, 2)], vec![out(40, &hash_addr(3))]),
+            in_block(11, 0),
+        ));
+        let unknown = OutPoint::new(Txid::from_byte_array([8; 32]), 0);
+        let recorded = OutPoint::new(Txid::from_byte_array([9; 32]), 1);
+        let mut held = entry(
+            tx(
+                vec![signed_input(unknown, 4), input(recorded.txid, 1)],
+                vec![out(10, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        held.own_inputs.insert(1, (300, hash_addr(2)));
+        add(held);
+        let observed_coin = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
+        let owned = HashSet::from([
+            hash_addr(1).script_pubkey(),
+            hash_addr(2).script_pubkey(),
+            key_script(4),
+        ]);
+        let holds = BTreeSet::from([valued, foreign, settled, unknown, recorded, observed_coin]);
+        let observed = BTreeMap::from([(observed_coin, 12)]);
+
+        assert_eq!(
+            held_total(&still_held(&holds, &txs, &observed, |_| false), &txs, |s| {
+                owned.contains(s)
+            }),
+            (700 + 300, 1)
+        );
+        assert_eq!(
+            held_total(&BTreeSet::from([valued, unknown]), &txs, |s| owned
+                .contains(s)),
+            (700, 1),
+            "one valued and one unvalued"
+        );
+    }
+
+    /// #749 (Q81 C2): the coins a beaten incoming payment, or the other
+    /// inputs of a beaten mix, held are other people's: neither valued nor
+    /// counted. The mix's own input still counts by its record, as does a
+    /// coin whose output in the history the wallet doesn't own.
+    #[test]
+    fn held_total_leaves_out_coins_others_spent() {
+        let owned: HashSet<ScriptBuf> =
+            HashSet::from([hash_addr(1).script_pubkey(), key_script(4)]);
+        let mut txs = HashMap::new();
+        let (theirs, unsigned) = (
+            OutPoint::new(Txid::from_byte_array([8; 32]), 0),
+            OutPoint::new(Txid::from_byte_array([8; 32]), 1),
+        );
+        let incoming = entry(
+            tx(
+                vec![signed_input(theirs, 5), input(unsigned.txid, 1)],
+                vec![out(500, &hash_addr(1))],
+            ),
+            TransactionContext::Mempool,
+        );
+        txs.insert(incoming.tx.txid(), incoming);
+        let (mine, other) = (
+            OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+            OutPoint::new(Txid::from_byte_array([9; 32]), 1),
+        );
+        let mut mix = entry(
+            tx(
+                vec![signed_input(mine, 4), signed_input(other, 6)],
+                vec![out(100, &hash_addr(1)), out(100, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        mix.own_inputs.insert(0, (100, hash_addr(1)));
+        txs.insert(mix.tx.txid(), mix);
+        let made = entry(
+            tx(vec![foreign_input(2)], vec![out(900, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        let recorded = OutPoint::new(made.tx.txid(), 0);
+        txs.insert(made.tx.txid(), made);
+        let mut spent = entry(
+            tx(vec![input(recorded.txid, 0)], vec![out(10, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        spent.own_inputs.insert(0, (250, hash_addr(1)));
+        txs.insert(spent.tx.txid(), spent);
+        let holds = BTreeSet::from([theirs, unsigned, mine, other, recorded]);
+
+        assert_eq!(
+            held_total(&holds, &txs, |s| owned.contains(s)),
+            (100 + 250, 0),
+            "an own-input record values a coin whose output isn't owned"
+        );
+    }
+
+    /// #170 case 4 at load: a stored payment out of a block whose own coin's
+    /// transaction has no stored row and no live entry is orphaned; a
+    /// parent stored, or live in the history, keeps it.
+    #[test]
+    fn orphaned_unmined_are_the_children_of_a_parent_the_store_lost() {
+        let spend = |parent: Txid, n: u8, own: bool| {
+            let mut e = entry(
+                tx(vec![input(parent, 0)], vec![out(n.into(), &hash_addr(9))]),
+                TransactionContext::Mempool,
+            );
+            if own {
+                e.own_inputs.insert(0, (10, hash_addr(1)));
+            }
+            e
+        };
+        let (gone, kept) = (
+            Txid::from_byte_array([1; 32]),
+            Txid::from_byte_array([2; 32]),
+        );
+        let mut txs = HashMap::new();
+        let mut stored = HashSet::from([kept]);
+        let mut add = |e: TxEntry, store: bool| {
+            let t = e.tx.txid();
+            txs.insert(t, e);
+            if store {
+                stored.insert(t);
+            }
+            t
+        };
+        let orphan = add(spend(gone, 1, true), true);
+        add(spend(kept, 2, true), true);
+        add(spend(gone, 3, false), true);
+        add(spend(gone, 4, true), false);
+        let live = add(spend(gone, 5, false), false);
+        add(spend(live, 6, true), true);
+        let mut dead = spend(gone, 7, false);
+        dead.abandoned = true;
+        let dead = add(dead, false);
+        let under_dead = add(spend(dead, 8, true), true);
+        let mut locked = spend(gone, 9, true);
+        locked.instant_locked = true;
+        add(locked, true);
+        let mut mined = spend(gone, 10, true);
+        mined.context = in_block(10, 0);
+        add(mined, true);
+
+        let mut found = orphaned_unmined(&txs, &stored, &HashSet::new());
+        found.sort();
+        let mut want = vec![orphan, under_dead];
+        want.sort();
+        assert_eq!(found, want);
+        assert_eq!(
+            orphaned_unmined(&txs, &stored, &HashSet::from([gone])),
+            vec![under_dead],
+            "a claim the store dropped is the claim rule's"
+        );
+    }
+
+    /// #749 (Q81b): a drop's origin note reads back as written, with or
+    /// without a winner and with any number of coins; a value it did not
+    /// write reads as none.
+    #[test]
+    fn a_drop_origin_reads_back_and_refuses_what_it_did_not_write() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let beaten = DropOrigin {
+            winner: Some(t(1)),
+            contested: BTreeSet::from([
+                OutPoint::new(t(2), 0),
+                OutPoint::new(t(2), 3),
+                OutPoint::new(t(4), 1),
+            ]),
+            gone: BTreeSet::from([t(5), t(6)]),
+        };
+        let orphan = DropOrigin {
+            winner: None,
+            contested: BTreeSet::from([OutPoint::new(t(2), 0)]),
+            gone: BTreeSet::from([t(7)]),
+        };
+        for origin in [beaten, orphan, DropOrigin::default()] {
+            assert_eq!(DropOrigin::decode(&origin.encode()), Some(origin));
+        }
+        assert_eq!(DropOrigin::default().encode(), "||");
+        let w = t(1).to_string();
+        for bad in [
+            String::new(),
+            format!("{w}|"),
+            format!("{w}|||"),
+            "nope||".to_owned(),
+            format!("|{w}|"),
+            format!("||{w}:0"),
+        ] {
+            assert_eq!(DropOrigin::decode(&bad), None, "{bad:?}");
+        }
+    }
+
+    /// #749 (Q81b S3): a spend note reads back as written, with or without
+    /// its spender; a value it did not write reads as none.
+    #[test]
+    fn a_spend_note_reads_back_and_refuses_what_it_did_not_write() {
+        let block = BlockHash::from_byte_array([3; 32]);
+        let spender = Txid::from_byte_array([4; 32]);
+        for note in [
+            SpendNote {
+                height: 12,
+                block,
+                spender: Some(spender),
+            },
+            SpendNote {
+                height: 0,
+                block,
+                spender: None,
+            },
+        ] {
+            assert_eq!(SpendNote::decode(&note.encode()), Some(note));
+        }
+        let unknown = SpendNote {
+            height: 7,
+            block,
+            spender: None,
+        };
+        assert_eq!(unknown.encode(), format!("7,{block},"));
+        for bad in [
+            String::new(),
+            format!("7,{block}"),
+            format!("7,{block},,"),
+            format!("x,{block},"),
+            format!("-1,{block},"),
+            "7,nope,".to_owned(),
+            format!("7,{block},nope"),
+        ] {
+            assert_eq!(SpendNote::decode(&bad), None, "{bad:?}");
+        }
+    }
+
+    /// #749: of the coins the drops hold, those `left_out` names (a final
+    /// spend's note, an output of a gone parent) are no longer held; the
+    /// rest are.
+    #[test]
+    fn still_held_leaves_out_the_coins_left_out_names() {
+        let gone = Txid::from_byte_array([1; 32]);
+        let other = Txid::from_byte_array([2; 32]);
+        let (noted, kept, orphaned) = (
+            OutPoint::new(other, 0),
+            OutPoint::new(other, 1),
+            OutPoint::new(gone, 0),
+        );
+        let holds = BTreeSet::from([noted, kept, orphaned]);
+        let (txs, observed) = (HashMap::new(), BTreeMap::new());
+        let left_out = |o: &OutPoint| *o == noted || o.txid == gone;
+        assert_eq!(
+            still_held(&holds, &txs, &observed, left_out),
+            BTreeSet::from([kept])
+        );
+        assert_eq!(still_held(&holds, &txs, &observed, |_| false), holds);
+    }
+
+    /// #170 case 4 (#749): an orphan's gone parents are the parents of its
+    /// own inputs with no stored row and no live entry (none, or
+    /// abandoned); a stored parent, a live one, and the parent of an input
+    /// not its own are not, nor is anything of a txid the history lacks.
+    #[test]
+    fn gone_parents_are_the_own_inputs_parents_with_no_row_and_no_live_entry() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (gone, stored_parent, not_own) = (t(1), t(2), t(5));
+        let mut txs = HashMap::new();
+        let live = entry(
+            tx(vec![foreign_input(9)], vec![out(10, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        );
+        let live_parent = live.tx.txid();
+        txs.insert(live_parent, live);
+        let mut dead = entry(
+            tx(vec![foreign_input(8)], vec![out(20, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        );
+        dead.abandoned = true;
+        let dead_parent = dead.tx.txid();
+        txs.insert(dead_parent, dead);
+        let mut orphan = entry(
+            tx(
+                vec![
+                    input(gone, 0),
+                    input(stored_parent, 0),
+                    input(live_parent, 0),
+                    input(dead_parent, 0),
+                    input(not_own, 0),
+                ],
+                vec![out(5, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        for i in 0..4 {
+            orphan.own_inputs.insert(i, (10, hash_addr(1)));
+        }
+        let orphan_id = orphan.tx.txid();
+        txs.insert(orphan_id, orphan);
+        let stored = HashSet::from([stored_parent, orphan_id]);
+
+        assert_eq!(
+            gone_parents(&txs, &stored, &[orphan_id, t(6)]),
+            BTreeSet::from([gone, dead_parent])
+        );
+    }
+
+    /// #749 (Q81b S1, S2): whether a held coin awaits, rule by rule. R,
+    /// dropped, spent a and b; W, its winner, spends a, mined at 10; W2
+    /// spends b, InstantSend-locked and out of a block. b awaits W2 though
+    /// W is ChainLocked, awaits W above the ChainLock, and is settled once W
+    /// is ChainLocked and nothing live spends it. A winner the history
+    /// doesn't hold settles on a contested coin's final spend only. A
+    /// record spending the coin, or a second drop holding it unsettled,
+    /// keeps it awaiting; nothing held awaits nothing.
+    #[test]
+    fn held_awaiting_judges_each_held_coin() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (a, b) = (OutPoint::new(t(1), 0), OutPoint::new(t(1), 1));
+        let mut txs = HashMap::new();
+        let mut r = entry(
+            tx(
+                vec![input(t(1), 0), input(t(1), 1)],
+                vec![out(10, &hash_addr(3))],
+            ),
+            TransactionContext::Mempool,
+        );
+        r.abandoned = true;
+        let r_id = r.tx.txid();
+        txs.insert(r_id, r);
+        let w = entry(
+            tx(vec![input(t(1), 0)], vec![out(20, &hash_addr(3))]),
+            in_block(10, 0),
+        );
+        let w_id = w.tx.txid();
+        txs.insert(w_id, w);
+        let mut w2 = entry(
+            tx(vec![input(t(1), 1)], vec![out(30, &hash_addr(3))]),
+            TransactionContext::Mempool,
+        );
+        w2.instant_locked = true;
+        let mut with_w2 = txs.clone();
+        with_w2.insert(w2.tx.txid(), w2);
+        let origin = |winner: Txid| {
+            Some(DropOrigin {
+                winner: Some(winner),
+                contested: BTreeSet::from([a, b]),
+                gone: BTreeSet::new(),
+            })
+        };
+        let dropped =
+            |origin: Option<DropOrigin>| HeldDrops::from([(r_id, (BTreeSet::from([b]), origin))]);
+        let held = BTreeSet::from([b]);
+        let awaits = |drops: &HeldDrops, txs: &HashMap<Txid, TxEntry>, chainlock: Option<u32>| {
+            held_awaiting(&held, drops, txs, &no_evidence(chainlock))
+        };
+
+        assert!(
+            awaits(&dropped(origin(w_id)), &with_w2, Some(10)),
+            "b awaits W2 though W is ChainLocked"
+        );
+        assert!(
+            awaits(&dropped(origin(w_id)), &txs, Some(9)),
+            "W mined above the ChainLock"
+        );
+        assert!(
+            !awaits(&dropped(origin(w_id)), &txs, Some(10)),
+            "W ChainLocked, nothing live spends b"
+        );
+        let unheld = t(9);
+        assert!(
+            !held_awaiting(
+                &held,
+                &dropped(origin(unheld)),
+                &txs,
+                &HeldEvidence {
+                    final_spend: &|o| *o == a,
+                    ..no_evidence(Some(9))
+                },
+            ),
+            "a contested coin's final spend settles a winner the history doesn't hold"
+        );
+        assert!(
+            awaits(&dropped(origin(unheld)), &txs, Some(9)),
+            "a winner the history doesn't hold, and no final spend"
+        );
+        assert!(
+            !awaits(&dropped(origin(unheld)), &txs, Some(10)),
+            "a ChainLocked transaction of the history spends a contested coin"
+        );
+        assert!(
+            held_awaiting(
+                &held,
+                &dropped(origin(w_id)),
+                &txs,
+                &HeldEvidence {
+                    spent_by_record: &|o| *o == b,
+                    ..no_evidence(Some(10))
+                },
+            ),
+            "a key-wallet record spends b"
+        );
+        let mut two = dropped(origin(w_id));
+        let elsewhere = DropOrigin {
+            winner: Some(unheld),
+            contested: BTreeSet::from([OutPoint::new(t(2), 0)]),
+            gone: BTreeSet::new(),
+        };
+        two.insert(t(8), (BTreeSet::from([b]), Some(elsewhere)));
+        assert!(
+            awaits(&two, &txs, Some(10)),
+            "another drop holding b awaits"
+        );
+        assert!(
+            !held_awaiting(
+                &BTreeSet::new(),
+                &dropped(origin(w_id)),
+                &with_w2,
+                &HeldEvidence {
+                    spent_by_record: &|_| true,
+                    unknown_lock: &|_| true,
+                    ..no_evidence(None)
+                },
+            ),
+            "nothing held"
+        );
+        assert!(
+            held_awaiting(
+                &held,
+                &dropped(origin(w_id)),
+                &txs,
+                &HeldEvidence {
+                    unknown_lock: &|o| *o == b,
+                    ..no_evidence(Some(10))
+                },
+            ),
+            "a lock of a transaction the wallet holds no copy of may spend b"
+        );
+    }
+
+    /// #907: a drop's winner W, or a ChainLocked transaction spending a
+    /// coin it contested, settles the drop only once the header chain
+    /// proves its block final: W stored in block B at 10, under a ChainLock
+    /// of 11, while the header chain holds B' at 10, is no proof; W in B'
+    /// is.
+    #[test]
+    fn held_awaiting_does_not_settle_on_a_winner_whose_block_the_header_chain_replaced() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (a, b) = (OutPoint::new(t(1), 0), OutPoint::new(t(1), 1));
+        let (replaced, kept, lock) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+            BlockHash::from_byte_array([3; 32]),
+        );
+        let headers = HashMap::from([(10, kept), (11, lock)]);
+        let chain_final = |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| {
+                proven_final((b.height(), b.block_hash()), Some((11, lock)), &headers)
+            })
+        };
+        let evidence = HeldEvidence {
+            chain_final: &chain_final,
+            ..no_evidence(None)
+        };
+        let in_hash = |hash: BlockHash| TransactionContext::InBlock(BlockInfo::new(10, hash, 0));
+        let spend_of_a_in = |hash| {
+            entry(
+                tx(vec![input(t(1), 0)], vec![out(20, &hash_addr(3))]),
+                in_hash(hash),
+            )
+        };
+        let held = BTreeSet::from([b]);
+        for (name, winner_in_history) in [
+            ("the winner", true),
+            ("a spender of a contested coin", false),
+        ] {
+            for (hash, awaits) in [(replaced, true), (kept, false)] {
+                let w = spend_of_a_in(hash);
+                let w_id = w.tx.txid();
+                let txs = HashMap::from([(w_id, w)]);
+                let winner = match winner_in_history {
+                    true => w_id,
+                    false => t(9),
+                };
+                let drops = HeldDrops::from([(
+                    t(5),
+                    (
+                        held.clone(),
+                        Some(DropOrigin {
+                            winner: Some(winner),
+                            contested: BTreeSet::from([a, b]),
+                            gone: BTreeSet::new(),
+                        }),
+                    ),
+                )]);
+                assert_eq!(
+                    held_awaiting(&held, &drops, &txs, &evidence),
+                    awaits,
+                    "{name} in {hash}"
+                );
+            }
+        }
+    }
+
+    /// [`HeldEvidence`] of nothing, under `chainlock`, whose header chain
+    /// proves every block at or below it.
+    fn no_evidence(chainlock: Option<u32>) -> HeldEvidence<'static> {
+        let final_under = move |e: &TxEntry| {
+            (e.context.block_info()).is_some_and(|b| chainlock.is_some_and(|cl| b.height() <= cl))
+        };
+        HeldEvidence {
+            chain_final: Box::leak(Box::new(final_under)),
+            final_spend: &|_| false,
+            spent_by_record: &|_| false,
+            unknown_lock: &|_| false,
+            dead_for_good: &|_| false,
+        }
+    }
+
+    /// A sweep note reads back as written, its block known or not, and
+    /// counts as absent when it does not read, or its bytes are not those
+    /// of the transaction its key names (Q81d S2).
+    #[test]
+    fn a_swept_by_note_reads_back_and_refuses_what_it_did_not_write() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let p = tx(vec![input(t(1), 0)], vec![out(10, &hash_addr(3))]);
+        let block = (7, BlockHash::from_byte_array([5; 32]));
+        for (claim, block) in [(false, Some(block)), (false, None), (true, None)] {
+            let note = SweptBy {
+                claim,
+                winner: t(2),
+                block,
+                tx: p.clone(),
+            };
+            assert_eq!(SweptBy::decode(&p.txid(), &note.encode()), Some(note));
+        }
+        let note = SweptBy {
+            claim: false,
+            winner: t(2),
+            block: Some(block),
+            tx: p.clone(),
+        }
+        .encode();
+        assert_eq!(SweptBy::decode(&t(9), &note), None, "another's bytes");
+        let parts: Vec<&str> = note.split('|').collect();
+        for bad in [
+            String::new(),
+            format!("replaced|{}|{}|{}", parts[1], parts[2], parts[3]),
+            format!("{}|{}|7|{}", parts[0], parts[1], parts[3]),
+            format!("{}|{}|{}|{}00", parts[0], parts[1], parts[2], parts[3]),
+            format!("{}|{}|{}|zz", parts[0], parts[1], parts[2]),
+            format!("{note}|"),
+        ] {
+            assert_eq!(SweptBy::decode(&p.txid(), &bad), None, "{bad:?}");
+        }
+    }
+
+    /// A conflict sweep's note keeps its winner's block while the header
+    /// chain agrees, fills it from the winner's block record, and drops it
+    /// when the header chain names another block at its height or a fork
+    /// truncated at or below it (Q81d S4, S5); a claim sweep's keeps none.
+    #[test]
+    fn a_sweep_notes_block_follows_the_header_chain() {
+        let p = tx(vec![input(Txid::all_zeros(), 0)], Vec::new());
+        let (x, y) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+        );
+        let note = |block| SweptBy {
+            claim: false,
+            winner: Txid::from_byte_array([9; 32]),
+            block,
+            tx: p.clone(),
+        };
+        let none = HashMap::new();
+        let says_x = HashMap::from([(7, x)]);
+        let says_y = HashMap::from([(7, y)]);
+        let at_x = Some((7, x));
+        assert_eq!(swept_by_block(&note(at_x), None, &none, None), at_x);
+        assert_eq!(swept_by_block(&note(at_x), None, &says_x, None), at_x);
+        assert_eq!(swept_by_block(&note(at_x), None, &says_y, None), None);
+        assert_eq!(swept_by_block(&note(at_x), None, &none, Some(7)), None);
+        assert_eq!(swept_by_block(&note(at_x), None, &none, Some(6)), None);
+        assert_eq!(swept_by_block(&note(at_x), None, &none, Some(8)), at_x);
+        assert_eq!(swept_by_block(&note(None), at_x, &says_x, None), at_x);
+        assert_eq!(swept_by_block(&note(None), at_x, &says_y, None), None);
+        assert_eq!(swept_by_block(&note(None), None, &says_x, None), None);
+        let claim = SweptBy {
+            claim: true,
+            ..note(at_x)
+        };
+        assert_eq!(swept_by_block(&claim, at_x, &says_x, None), None);
+    }
+
+    /// An orphan's drop (Q81c §2, Q81d): its gone parent P's death is final
+    /// only by (a) a never-valid verdict, (b) a conflict sweep's winner in
+    /// a proven block, or (c) another transaction's final spend of one of
+    /// P's inputs. P's abandoned copy alone, an IS-only winner, a block the
+    /// header chain doesn't prove, a claim sweep's final winner, a spend
+    /// note with no spender or P's own, and a P live again prove nothing.
+    /// A swept descendant of P settles through its own note.
+    #[test]
+    fn an_orphans_drop_settles_only_on_each_gone_parents_final_death() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let a = OutPoint::new(t(1), 0);
+        let p = tx(vec![input(t(1), 0)], vec![out(10, &hash_addr(3))]);
+        let p_id = p.txid();
+        let q = tx(vec![input(p_id, 0)], vec![out(9, &hash_addr(3))]);
+        let q_id = q.txid();
+        let d = OutPoint::new(t(4), 0);
+        let c_id = t(5);
+        let (x, y) = (
+            BlockHash::from_byte_array([1; 32]),
+            BlockHash::from_byte_array([2; 32]),
+        );
+        let proven = |b: (u32, BlockHash)| b == (7, x);
+        let orphan = |gone: &[Txid]| {
+            HeldDrops::from([(
+                c_id,
+                (
+                    BTreeSet::from([d]),
+                    Some(DropOrigin {
+                        winner: None,
+                        contested: BTreeSet::from([d]),
+                        gone: gone.iter().copied().collect(),
+                    }),
+                ),
+            )])
+        };
+        let held = BTreeSet::from([d]);
+        let awaits = |deaths: &Deaths,
+                      txs: &HashMap<Txid, TxEntry>,
+                      spent: &BTreeMap<OutPoint, SpendNote>,
+                      gone: &[Txid]| {
+            let dead = |g: &Txid| dead_for_good(g, deaths, txs, spent, proven);
+            held_awaiting(
+                &held,
+                &orphan(gone),
+                txs,
+                &HeldEvidence {
+                    dead_for_good: &dead,
+                    ..no_evidence(None)
+                },
+            )
+        };
+        let none = HashMap::new();
+        let no_notes = BTreeMap::new();
+        let swept = |claim, block| SweptBy {
+            claim,
+            winner: t(2),
+            block,
+            tx: p.clone(),
+        };
+        let with_note = |note: SweptBy| Deaths {
+            swept_by: BTreeMap::from([(p_id, note)]),
+            ..Deaths::default()
+        };
+
+        let copied = Deaths {
+            copies: BTreeMap::from([(p_id, p.clone())]),
+            ..Deaths::default()
+        };
+        assert!(awaits(&copied, &none, &no_notes, &[p_id]), "copy alone");
+        let never_valid = Deaths {
+            never_valid: BTreeSet::from([p_id]),
+            ..Deaths::default()
+        };
+        assert!(!awaits(&never_valid, &none, &no_notes, &[p_id]), "(a)");
+        let mut live = none.clone();
+        live.insert(p_id, entry(p.clone(), TransactionContext::Mempool));
+        assert!(awaits(&never_valid, &live, &no_notes, &[p_id]), "P live");
+
+        assert!(
+            awaits(&with_note(swept(false, None)), &none, &no_notes, &[p_id]),
+            "IS-only"
+        );
+        let final_note = with_note(swept(false, Some((7, x))));
+        assert!(!awaits(&final_note, &none, &no_notes, &[p_id]), "(b)");
+        let other_block = with_note(swept(false, Some((7, y))));
+        assert!(
+            awaits(&other_block, &none, &no_notes, &[p_id]),
+            "unproven block"
+        );
+        let claim = with_note(swept(true, Some((7, x))));
+        assert!(awaits(&claim, &none, &no_notes, &[p_id]), "claim sweep");
+
+        let spend = |spender| {
+            BTreeMap::from([(
+                a,
+                SpendNote {
+                    height: 7,
+                    block: x,
+                    spender,
+                },
+            )])
+        };
+        let in_note = with_note(swept(false, None));
+        assert!(
+            !awaits(&in_note, &none, &spend(Some(t(2))), &[p_id]),
+            "(c) by note"
+        );
+        assert!(
+            !awaits(&copied, &none, &spend(Some(t(2))), &[p_id]),
+            "(c) by copy"
+        );
+        assert!(awaits(&in_note, &none, &spend(None), &[p_id]), "no spender");
+        assert!(
+            awaits(&in_note, &none, &spend(Some(p_id)), &[p_id]),
+            "P's own"
+        );
+        let unproven = BTreeMap::from([(
+            a,
+            SpendNote {
+                height: 7,
+                block: y,
+                spender: Some(t(2)),
+            },
+        )]);
+        assert!(
+            awaits(&in_note, &none, &unproven, &[p_id]),
+            "unproven spend"
+        );
+        let mut chainlocked = none.clone();
+        let w = entry(
+            tx(vec![input(t(1), 0)], vec![out(5, &hash_addr(3))]),
+            TransactionContext::InChainLockedBlock(BlockInfo::new(7, x, 0)),
+        );
+        chainlocked.insert(w.tx.txid(), w);
+        assert!(
+            !awaits(&copied, &chainlocked, &no_notes, &[p_id]),
+            "(c) by the history"
+        );
+
+        assert!(
+            awaits(&final_note, &none, &no_notes, &[p_id, q_id]),
+            "a swept descendant with no note of its own"
+        );
+        let mut both = with_note(swept(false, Some((7, x))));
+        both.swept_by.insert(
+            q_id,
+            SweptBy {
+                tx: q.clone(),
+                ..swept(false, Some((7, x)))
+            },
+        );
+        assert!(
+            !awaits(&both, &none, &no_notes, &[p_id, q_id]),
+            "each by its note"
+        );
+        assert!(
+            !awaits(&both, &none, &no_notes, &[q_id]),
+            "the descendant alone"
+        );
+    }
+
+    /// Q81d: a parent whose `dropped:` mark is no verdict by its bytes (a
+    /// replaced transaction's, or one that doesn't read) leaves the orphan
+    /// waiting until (b) or (c) holds; a claim sweep's parent waits for (a)
+    /// alone, however final its winner or a spend of its input. A child of
+    /// a payment the claim rule kept as built on a never-valid claim
+    /// settles with no ChainLock, as the claim rule's own drop of it would.
+    #[test]
+    fn an_orphan_of_a_parent_with_no_verdict_waits_for_its_death() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let p = tx(vec![input(t(1), 0)], vec![out(10, &hash_addr(3))]);
+        let p_id = p.txid();
+        let x = BlockHash::from_byte_array([1; 32]);
+        let proven = |b: (u32, BlockHash)| b == (7, x);
+        let none = HashMap::new();
+        let dead = |deaths: &Deaths, spent: &BTreeMap<OutPoint, SpendNote>| {
+            dead_for_good(&p_id, deaths, &none, spent, proven)
+        };
+        let replaced_or_garbage = Deaths {
+            copies: BTreeMap::from([(p_id, p.clone())]),
+            ..Deaths::default()
+        };
+        assert!(!dead(&replaced_or_garbage, &BTreeMap::new()), "no verdict");
+        let spent = BTreeMap::from([(
+            OutPoint::new(t(1), 0),
+            SpendNote {
+                height: 7,
+                block: x,
+                spender: Some(t(2)),
+            },
+        )]);
+        assert!(dead(&replaced_or_garbage, &spent), "(c)");
+        let conflict = Deaths {
+            swept_by: BTreeMap::from([(
+                p_id,
+                SweptBy {
+                    claim: false,
+                    winner: t(2),
+                    block: Some((7, x)),
+                    tx: p.clone(),
+                },
+            )]),
+            ..Deaths::default()
+        };
+        assert!(dead(&conflict, &BTreeMap::new()), "(b)");
+        let claim = Deaths {
+            swept_by: BTreeMap::from([(
+                p_id,
+                SweptBy {
+                    claim: true,
+                    winner: t(2),
+                    block: Some((7, x)),
+                    tx: p.clone(),
+                },
+            )]),
+            ..Deaths::default()
+        };
+        assert!(
+            !dead(&claim, &BTreeMap::new()),
+            "a claim sweep's final winner"
+        );
+        assert!(
+            !dead(&claim, &spent),
+            "a claim sweep's parent dies by (a) only"
+        );
+
+        let mut path3 = none.clone();
+        let mut kept = entry(p.clone(), TransactionContext::Mempool);
+        kept.abandoned = true;
+        path3.insert(p_id, kept);
+        let built_on_a_claim = Deaths {
+            never_valid: BTreeSet::from([p_id]),
+            copies: BTreeMap::from([(p_id, p.clone())]),
+            ..claim
+        };
+        assert!(dead_for_good(
+            &p_id,
+            &built_on_a_claim,
+            &path3,
+            &BTreeMap::new(),
+            |_| false
+        ));
+    }
+
+    /// An older drop (no `drop_winner:` note, Q81c C2) contests the inputs
+    /// of its roots, read through the copies of the dead transactions it
+    /// descends from, never an output of one; with no copy it contests
+    /// nothing. It settles once one has a final spend, and awaits before.
+    #[test]
+    fn an_older_drop_settles_on_a_final_spend_of_a_root_input() {
+        let t = |n: u8| Txid::from_byte_array([n; 32]);
+        let (a, d) = (OutPoint::new(t(1), 0), OutPoint::new(t(1), 1));
+        let r = tx(vec![input(t(1), 0)], vec![out(10, &hash_addr(3))]);
+        let r_id = r.txid();
+        let c = tx(
+            vec![input(r_id, 0), input(t(1), 1)],
+            vec![out(9, &hash_addr(3))],
+        );
+        let c_id = c.txid();
+        let copies = BTreeMap::from([(r_id, r), (c_id, c)]);
+        let dropped = |p: &Txid| *p == r_id || *p == c_id;
+        let origin = older_origin(c_id, |t| copies.get(t), dropped);
+        assert_eq!(origin.winner, None);
+        assert_eq!(origin.contested, BTreeSet::from([a, d]));
+        assert!(origin.gone.is_empty());
+        let no_copy = older_origin(t(9), |t| copies.get(t), dropped);
+        assert_eq!(no_copy, DropOrigin::default());
+
+        let drops = HeldDrops::from([(c_id, (BTreeSet::from([d]), Some(origin)))]);
+        let held = BTreeSet::from([d]);
+        let none = HashMap::new();
+        assert!(held_awaiting(&held, &drops, &none, &no_evidence(Some(9))));
+        let evidence = HeldEvidence {
+            final_spend: &|o| *o == a,
+            ..no_evidence(Some(9))
+        };
+        assert!(!held_awaiting(&held, &drops, &none, &evidence));
+    }
+
     /// #88: the claims restored at load are the inputs of each payment this
     /// app sent that is out of a block and not abandoned (a lock outranks
     /// the abandon), never those of a pending spend it did not send nor of
@@ -3028,6 +5073,83 @@ mod tests {
         );
     }
 
+    /// #170 case 14: only another transaction that spends one of a
+    /// payment's inputs in a block of the header chain at or below the
+    /// wallet's ChainLock overrides its InstantSend lock; a block above it,
+    /// a record's own ChainLocked context or another lock does not.
+    #[test]
+    fn only_a_chainlocked_spend_of_an_input_beats_a_payment() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let payment = spend(1, &[coin(1), coin(2)], locked());
+        let txid = payment.tx.txid();
+        let active = HashMap::from([(12, BlockHash::all_zeros())]);
+        let beaten_on =
+            |winner: TxEntry, chainlock: Option<u32>, active: &HashMap<u32, BlockHash>| {
+                let mut active = active.clone();
+                let chainlock = chainlock.map(|h| {
+                    (
+                        h,
+                        *active
+                            .entry(h)
+                            .or_insert(BlockHash::from_byte_array([7; 32])),
+                    )
+                });
+                let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
+                chainlock_beaten(&txs, &txid, chainlock, &active)
+            };
+        let beaten = |winner, chainlock| beaten_on(winner, chainlock, &active);
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), Some(12)));
+        assert!(
+            !beaten(spend(2, &[coin(2)], chainlocked.clone()), None),
+            "a ChainLocked context alone"
+        );
+        assert!(beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(12)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(11)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), None));
+        assert!(!beaten(spend(2, &[coin(2)], locked()), Some(12)));
+        assert!(!beaten(spend(2, &[coin(3)], chainlocked.clone()), Some(12)));
+        let forked = HashMap::from([(12, BlockHash::from_byte_array([1; 32]))]);
+        let winner = || spend(2, &[coin(2)], chainlocked.clone());
+        assert!(
+            !beaten_on(winner(), Some(12), &forked),
+            "a fork replaced it"
+        );
+        assert!(!beaten_on(winner(), Some(12), &HashMap::new()), "no header");
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        let lock = Some((13, BlockHash::from_byte_array([7; 32])));
+        assert!(
+            !chainlock_beaten(&txs, &txid, lock, &active),
+            "the ChainLock's header is not known"
+        );
+        let alone = HashMap::from([(txid, payment.clone())]);
+        let lock = Some((12, BlockHash::all_zeros()));
+        assert!(!chainlock_beaten(&alone, &txid, lock, &active));
+        let mut mined = payment.clone();
+        mined.context = in_block(12, 0);
+        let alone = HashMap::from([(txid, mined)]);
+        assert!(
+            !chainlock_beaten(&alone, &txid, lock, &active),
+            "not by itself"
+        );
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        assert_eq!(rival_heights(&txs), BTreeSet::from([12]));
+        let unrelated = spend(3, &[coin(3)], in_block(7, 0));
+        let txs = HashMap::from([(txid, payment.clone()), (unrelated.tx.txid(), unrelated)]);
+        assert!(rival_heights(&txs).is_empty());
+    }
+
     /// #170 case 1: a payment whose mark holds its transaction and that
     /// no record holds stays marked, gets a pending entry unless the store
     /// holds it, and then claims the coins the app signed.
@@ -3113,5 +5235,300 @@ mod tests {
         let mut both = vec![damaged, old];
         both.sort();
         assert_eq!(gone(&HashSet::from([damaged])), both);
+    }
+
+    /// A dropped row's state, by precedence: the drop's hold, then the
+    /// highest state any coin not back needs (#790).
+    #[test]
+    fn a_dropped_row_takes_the_highest_state_its_coins_need() {
+        use DropState::*;
+        let from = |height| RescanFromHeight { height };
+        let cases: [(bool, Vec<DropState>, DropState); 12] = [
+            (false, vec![], Released),
+            (false, vec![Releasing], Releasing),
+            (false, vec![Releasing, RescanNeeded], RescanNeeded),
+            (false, vec![RescanNeeded, from(90)], from(90)),
+            (false, vec![from(90), from(70), Releasing], from(70)),
+            (false, vec![from(90), AwaitingFunding], AwaitingFunding),
+            (
+                false,
+                vec![AwaitingFunding, Releasing, RescanNeeded],
+                AwaitingFunding,
+            ),
+            (true, vec![], Held),
+            (true, vec![AwaitingFunding], Held),
+            (true, vec![from(5), RescanNeeded, Releasing], Held),
+            (false, vec![Releasing, Releasing], Releasing),
+            (
+                false,
+                vec![RescanNeeded, Releasing, RescanNeeded],
+                RescanNeeded,
+            ),
+        ];
+        for (held, coins, want) in cases {
+            assert_eq!(
+                row_state(held, coins.clone()),
+                want,
+                "held {held}, coins {coins:?}"
+            );
+        }
+    }
+
+    fn facts<'a>(
+        unspent: &'a dyn Fn(&OutPoint) -> bool,
+        scan_at: Option<u32>,
+        pending: bool,
+        birth: u32,
+    ) -> DropFacts<'a> {
+        DropFacts {
+            unspent,
+            block_spent: &|_| false,
+            scan_at,
+            pending,
+            birth,
+        }
+    }
+
+    /// What one coin not back needs: its funding unmined, a running scan
+    /// below its block, a block below the birth, owed rewinds, or else a
+    /// rescan.
+    #[test]
+    fn a_coin_not_back_needs_what_its_block_and_the_scan_say() {
+        use DropState::*;
+        let no = |_: &OutPoint| false;
+        let cases = [
+            (None, None, false, 100, AwaitingFunding),
+            (None, Some(10), true, 100, AwaitingFunding),
+            (Some(150), Some(120), false, 100, Releasing),
+            (Some(150), Some(150), false, 100, RescanNeeded),
+            (Some(150), Some(160), false, 100, RescanNeeded),
+            (Some(150), None, true, 100, Releasing),
+            (Some(150), None, false, 100, RescanNeeded),
+            (Some(80), None, false, 100, RescanFromHeight { height: 80 }),
+            (Some(80), None, true, 100, RescanFromHeight { height: 80 }),
+            (Some(80), Some(60), false, 100, Releasing),
+            (Some(100), None, false, 100, RescanNeeded),
+        ];
+        for (funded_at, scan_at, pending, birth, want) in cases {
+            let f = facts(&no, scan_at, pending, birth);
+            assert_eq!(
+                coin_state(funded_at, &f),
+                want,
+                "funded {funded_at:?}, scan {scan_at:?}, pending {pending}, birth {birth}"
+            );
+        }
+    }
+
+    /// The scan the state reads: a cancelled replay, or a rewind that never
+    /// lowered the checkpoint (it failed), runs no scan; a rewind's replay
+    /// does until it is back at its target; an open owes its rewinds.
+    #[test]
+    fn the_scan_a_drop_reads_runs_only_below_its_target_and_not_cancelled() {
+        let state = |synced, target, cancelled: Option<u32>, loading| crate::events::WalletState {
+            synced_height: synced,
+            scan_target: target,
+            replay_cancelled: cancelled,
+            loading,
+            ..Default::default()
+        };
+        assert_eq!(scan_facts(None, false), (None, false));
+        assert_eq!(scan_facts(None, true), (None, true));
+        assert_eq!(
+            scan_facts(Some(&state(90, 200, None, false)), false),
+            (Some(90), false),
+            "a rewind's replay"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(90, 200, Some(90), false)), false),
+            (None, false),
+            "a cancelled replay"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(200, 200, None, false)), false),
+            (None, false),
+            "back at its target, or never lowered"
+        );
+        assert_eq!(
+            scan_facts(Some(&state(200, 200, None, true)), false),
+            (None, true),
+            "an open owes its rewinds"
+        );
+    }
+
+    /// A dropped payment's coins: one spent from a dropped or abandoned
+    /// parent, or a never-valid one's, is never waited for; one unspent,
+    /// spent by a block or by a transaction the history counts is back.
+    #[test]
+    fn a_drop_waits_only_for_the_wallets_own_coins_of_counted_parents() {
+        let mut f = Fixture::new();
+        let fund = |n: u8, v| {
+            tx(
+                vec![foreign_input(n)],
+                vec![out(v, &hash_addr(1)), out(v, &hash_addr(60))],
+            )
+        };
+        let a = f.add(entry(fund(40, 1_000), in_block(150, 1)));
+        let b = f.add(entry(fund(41, 2_000), in_block(160, 1)));
+        let mut gone = entry(fund(42, 3_000), TransactionContext::Mempool);
+        gone.abandoned = true;
+        let gone = f.add(gone);
+        let claim = f.add(entry(fund(43, 4_000), TransactionContext::Mempool));
+        let mut s = entry(
+            tx(
+                vec![
+                    input(a, 0),
+                    input(b, 0),
+                    input(gone, 0),
+                    input(claim, 0),
+                    input(a, 1),
+                ],
+                vec![out(9_000, &hash_addr(70))],
+            ),
+            TransactionContext::Mempool,
+        );
+        s.abandoned = true;
+        let s = f.add(s);
+        let drops = HashMap::from([
+            (s, DropInfo::new(DropCause::InvalidSource)),
+            (claim, DropInfo::new(DropCause::InvalidClaim)),
+        ]);
+        let (a0, b0) = (OutPoint::new(a, 0), OutPoint::new(b, 0));
+        let state = |unspent: &dyn Fn(&OutPoint) -> bool, scan_at| {
+            let facts = facts(unspent, scan_at, false, 100);
+            drop_states(&f.history, &drops, &f.owned, &facts)
+        };
+        let back = |o: &OutPoint| *o == a0 || *o == b0;
+        assert_eq!(
+            state(&back, None).get(&s),
+            Some(&TxDrop {
+                cause: DropCause::InvalidSource,
+                state: DropState::Released
+            }),
+            "only a and b, the wallet's own coins of counted parents, are waited for"
+        );
+        assert!(
+            !state(&back, None).contains_key(&claim),
+            "the claim isn't abandoned: no row"
+        );
+        let only_a = |o: &OutPoint| *o == a0;
+        assert_eq!(
+            state(&only_a, Some(155)).get(&s).map(|d| d.state),
+            Some(DropState::Releasing),
+            "a scan below b's block"
+        );
+        assert_eq!(
+            state(&only_a, None).get(&s).map(|d| d.state),
+            Some(DropState::RescanNeeded)
+        );
+        let spender = f.add(entry(
+            tx(vec![input(b, 0)], vec![out(1_500, &hash_addr(71))]),
+            TransactionContext::Mempool,
+        ));
+        let facts = facts(&only_a, None, false, 100);
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Released),
+            "b is spent by a transaction the history counts"
+        );
+        f.history.get_mut(&spender).unwrap().abandoned = true;
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::RescanNeeded),
+            "not by an abandoned one"
+        );
+        let birth_above = super::tests::facts(&only_a, None, false, 170);
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &birth_above)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::RescanFromHeight { height: 160 }),
+        );
+        let block_spent = |o: &OutPoint| *o == b0;
+        let by_block = DropFacts {
+            block_spent: &block_spent,
+            ..super::tests::facts(&only_a, None, false, 100)
+        };
+        assert_eq!(
+            drop_states(&f.history, &drops, &f.owned, &by_block)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Released)
+        );
+        let mut held = drops.clone();
+        held.get_mut(&s).unwrap().held.insert(b0);
+        assert_eq!(
+            drop_states(&f.history, &held, &f.owned, &facts)
+                .get(&s)
+                .map(|d| d.state),
+            Some(DropState::Held)
+        );
+        f.history.get_mut(&claim).unwrap().context = in_block(165, 1);
+        let mined_claim = |unspent: &dyn Fn(&OutPoint) -> bool| {
+            let facts = super::tests::facts(unspent, None, false, 100);
+            (drop_states(&f.history, &drops, &f.owned, &facts).get(&s)).map(|d| d.state)
+        };
+        assert_eq!(
+            mined_claim(&back),
+            Some(DropState::RescanNeeded),
+            "a dropped parent mined since is waited for: its coin isn't back"
+        );
+        let claim0 = OutPoint::new(claim, 0);
+        let all_back = |o: &OutPoint| *o == a0 || *o == b0 || *o == claim0;
+        assert_eq!(mined_claim(&all_back), Some(DropState::Released));
+    }
+
+    /// A dropped row's status names its drop; a user's abandon, or a row
+    /// mined since, names none.
+    #[test]
+    fn only_an_abandoned_row_the_app_dropped_says_dropped() {
+        let mut f = Fixture::new();
+        let fund = f.add(entry(
+            tx(vec![foreign_input(50)], vec![out(5_000, &hash_addr(1))]),
+            in_block(150, 1),
+        ));
+        let mut s = entry(
+            tx(vec![input(fund, 0)], vec![out(4_000, &hash_addr(70))]),
+            TransactionContext::Mempool,
+        );
+        s.abandoned = true;
+        let s = f.add(s);
+        let mut user = entry(
+            tx(vec![foreign_input(51)], vec![out(4_000, &hash_addr(71))]),
+            TransactionContext::Mempool,
+        );
+        user.abandoned = true;
+        let user = f.add(user);
+        let mined = f.add(entry(
+            tx(vec![input(fund, 0)], vec![out(3_000, &hash_addr(72))]),
+            in_block(151, 1),
+        ));
+        let drop = TxDrop {
+            cause: DropCause::InvalidSource,
+            state: DropState::Released,
+        };
+        let drops = Drops {
+            states: [(s, drop), (mined, drop)].into_iter().collect(),
+            ..Drops::default()
+        };
+        let mut view = f.view(160);
+        view.drops = &drops;
+        let status = |t: Txid| records_of(&t, &f.history[&t], &view, &Labels::default()).2;
+        let dropped = records_of(&s, &f.history[&s], &view, &Labels::default());
+        assert_eq!(dropped.0[0].status.dropped, Some(drop));
+        assert!(
+            !dropped.0[0].counts_toward_balance,
+            "a dropped row never counts"
+        );
+        assert_eq!(status(user).dropped, None, "the user's abandon");
+        assert_eq!(status(mined).kind, TxStatusKind::Confirmed);
+        assert_eq!(
+            status(mined).dropped,
+            None,
+            "mined since: its ordinary status"
+        );
     }
 }

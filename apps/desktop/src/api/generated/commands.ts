@@ -31,11 +31,18 @@ import type { CoinJoinSettings } from "./CoinJoinSettings";
 import type { CoinJoinStatus } from "./CoinJoinStatus";
 import type { CoinSelectionSummary } from "./CoinSelectionSummary";
 import type { CoinSource } from "./CoinSource";
+import type { ConnectChoice } from "./ConnectChoice";
+import type { ConnectDone } from "./ConnectDone";
+import type { ConnectQuote } from "./ConnectQuote";
+import type { ConnectSheet } from "./ConnectSheet";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
 import type { ContactDetailInfo } from "./ContactDetailInfo";
 import type { ContactList } from "./ContactList";
+import type { ContactPayArgs } from "./ContactPayArgs";
+import type { ContactPayOutcomeInfo } from "./ContactPayOutcomeInfo";
+import type { ContactPayQuoteInfo } from "./ContactPayQuoteInfo";
 import type { ContactQueryArgs } from "./ContactQueryArgs";
 import type { ContactRecipient } from "./ContactRecipient";
 import type { ContactRequestOutcome } from "./ContactRequestOutcome";
@@ -62,6 +69,7 @@ import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
 import type { DissolvePreview } from "./DissolvePreview";
 import type { DissolveRequest } from "./DissolveRequest";
+import type { DroppedNoticeRow } from "./DroppedNoticeRow";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
 import type { EvonodeCredits } from "./EvonodeCredits";
@@ -109,12 +117,15 @@ import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
 import type { MasternodeListState } from "./MasternodeListState";
 import type { MasternodeOverview } from "./MasternodeOverview";
 import type { MasternodePayout } from "./MasternodePayout";
+import type { MasternodeTypeName } from "./MasternodeTypeName";
 import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
 import type { MixedShieldQuote } from "./MixedShieldQuote";
+import type { MnRegistrationPreview } from "./MnRegistrationPreview";
+import type { MnRegistrationRequest } from "./MnRegistrationRequest";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
 import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
@@ -140,6 +151,7 @@ import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
+import type { PlatformAddressRow } from "./PlatformAddressRow";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -151,8 +163,10 @@ import type { PlatformShieldQuote } from "./PlatformShieldQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
+import type { ProTxKeys } from "./ProTxKeys";
 import type { ProTxOperation } from "./ProTxOperation";
 import type { ProfileEditArgs } from "./ProfileEditArgs";
+import type { ProjectLinkName } from "./ProjectLinkName";
 import type { ProposalDetail } from "./ProposalDetail";
 import type { ProposalDraft } from "./ProposalDraft";
 import type { ProposalPreview } from "./ProposalPreview";
@@ -169,6 +183,7 @@ import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
+import type { RecoverQuote } from "./RecoverQuote";
 import type { RegistrationQuote } from "./RegistrationQuote";
 import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
@@ -194,6 +209,7 @@ import type { ShieldedAddress } from "./ShieldedAddress";
 import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
 import type { ShieldedStatus } from "./ShieldedStatus";
+import type { ShieldedSyncInfo } from "./ShieldedSyncInfo";
 import type { SpvStateName } from "./SpvStateName";
 import type { Standby } from "./Standby";
 import type { StandbyVariantName } from "./StandbyVariantName";
@@ -206,6 +222,8 @@ import type { SyncLoopStatus } from "./SyncLoopStatus";
 import type { SyncPassReport } from "./SyncPassReport";
 import type { SyncStatus } from "./SyncStatus";
 import type { TimedHistoryRows } from "./TimedHistoryRows";
+import type { TopUpFromPlatformOutcome } from "./TopUpFromPlatformOutcome";
+import type { TopUpFromPlatformQuote } from "./TopUpFromPlatformQuote";
 import type { TopUpOutcome } from "./TopUpOutcome";
 import type { TopUpQuote } from "./TopUpQuote";
 import type { TxDetailExtrasInfo } from "./TxDetailExtrasInfo";
@@ -215,6 +233,8 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UnreadableSession } from "./UnreadableSession";
+import type { UnshieldToPlatformOutcome } from "./UnshieldToPlatformOutcome";
 import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UpdateRegistrarPreview } from "./UpdateRegistrarPreview";
 import type { UpdateRegistrarRequest } from "./UpdateRegistrarRequest";
@@ -230,6 +250,7 @@ import type { VoteCast } from "./VoteCast";
 import type { VoteOutcomeName } from "./VoteOutcomeName";
 import type { VotingMasternode } from "./VotingMasternode";
 import type { WalletFileInfo } from "./WalletFileInfo";
+import type { WalletHistoryGap } from "./WalletHistoryGap";
 import type { WalletLoadStatus } from "./WalletLoadStatus";
 import type { WalletSummary } from "./WalletSummary";
 import type { WatchOnlyOptions } from "./WatchOnlyOptions";
@@ -307,6 +328,14 @@ export function openReleasesPage(): Promise<null> {
 }
 
 /**
+ * Opens one of the project pages About links to, in the system browser.
+ * The renderer names the page; its URL is fixed in Rust.
+ */
+export function openProjectLink(link: ProjectLinkName): Promise<null> {
+  return invoke<null>("open_project_link", { link });
+}
+
+/**
  * Registered but granted by no capability: the U6 probe that the ACL
  * refuses an unlisted command (`api::UNGRANTED`).
  */
@@ -339,7 +368,8 @@ export function openNetwork(network: string | null, settings: SessionSettings | 
  * checked before and after the operations already running finish
  * (`draining` when they do not within 2 s); then the engine's own
  * refusals (`wallet` while a wallet is still opening,
- * `shielded_spend_unresolved`, both with
+ * `shielded_spend_unresolved`, `app.transfer_preparing` while a
+ * transfer waits on its wallet's start-up, each with
  * [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
  * the session, its drafts, the window and the choice stay, and the
  * paused operations run. Once closed, its vault is locked and its
@@ -905,9 +935,19 @@ export function warnings(): Promise<Array<NodeWarning>> {
 }
 
 /**
+ * The open wallets whose history starts before this install's block
+ * data, for the notice on Home; `null` when there are none.
+ */
+export function historyGap(): Promise<WalletHistoryGap | null> {
+  return invoke<WalletHistoryGap | null>("history_gap");
+}
+
+/**
  * "Rebuild index": deletes the SPV chain data and keeps wallets, vault
  * and app data. SPV must be stopped; the next `startSpv` syncs headers
- * again and rescans each wallet from its birth height.
+ * again and rescans each wallet from its birth height. Refused with
+ * `app.network_busy` while mixing, as a network switch is, and with
+ * `coinjoin.inputs_held` while a signed round's inputs are held.
  */
 export function resetChainData(): Promise<null> {
   return invoke<null>("reset_chain_data");
@@ -1010,10 +1050,29 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
 }
 
 /**
- * dash-qt "Abandon transaction": marks it abandoned, releases its
- * inputs and excludes it from balances. SPV cannot prove it is in no
- * mempool, so it may still confirm; the history then shows it
- * confirmed again.
+ * dash-qt "Abandon transaction": marks it abandoned, releases the
+ * inputs no processed block spent and excludes it from balances. SPV
+ * cannot prove it is in no mempool, so it may still confirm; the
+ * history then shows it confirmed again. An InstantSend-locked
+ * transaction is refused (`instantLocked`) unless a transaction in a
+ * ChainLocked block of the SPV header chain spends one of its inputs,
+ * nothing descending from it is in a block, locked or finalized, the
+ * wallet holds no record of it in a block or locked (in the session it
+ * was locked in, until a restart; #329), the history load was complete
+ * and the scan has passed the ChainLock with no replay pending; then
+ * only inputs proven unspent are released.
+ * `rescanFirst` instead when all of that holds and the only inputs
+ * missing are held by its own spend claim restored at load: a restart
+ * and a rescan give that evidence.
+ * Any transaction is refused (`instantLocked`, or `confirmed`) when
+ * abandoning it would also take one the history holds as InstantSend-
+ * locked (or in a block). One that is not InstantSend-locked itself is
+ * refused (`settledDescendant`) when a later transaction spending from
+ * it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+ * spend of one of its inputs beat it and those are only locked (#446).
+ * One not under the ChainLock exception is refused (`recordUnreadable`)
+ * while a saved transaction of any loaded wallet didn't read at its
+ * load (#611).
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1029,9 +1088,14 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 }
 
 /**
- * "Remove unconfirmed": abandons every unconfirmed, not
- * InstantSend-locked transaction of the wallet (every wallet when
- * `walletId` is `null`) and rescans from the lowest funding height.
+ * "Remove unconfirmed": abandons every unconfirmed transaction of the
+ * wallet (every wallet when `walletId` is `null`) that Abandon would,
+ * InstantSend-locked ones only under its ChainLock exception, then
+ * rescans once, from the lowest funding height of them all. One the
+ * exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+ * or that a settled later transaction holds (`settledDescendant`), is
+ * skipped. One refused as `recordUnreadable` is kept too, and the call
+ * then fails with that refusal.
  * Needs a running SPV client. Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
@@ -1054,6 +1118,21 @@ export function exportHistoryCsv(walletId: string, filter: HistoryFilterRequest,
  */
 export function txNotices(walletId: string, txids: Array<string>): Promise<Array<TxNoticeRow>> {
   return invoke<Array<TxNoticeRow>>("tx_notices", { walletId, txids });
+}
+
+/**
+ * The notices of payments Dash Wallet dropped because what they spent
+ * came from a transaction that was never valid, not yet dismissed.
+ */
+export function droppedNotices(walletId: string): Promise<Array<DroppedNoticeRow>> {
+  return invoke<Array<DroppedNoticeRow>>("dropped_notices", { walletId });
+}
+
+/**
+ * Dismisses the notices of the dropped payments `txids` for good.
+ */
+export function dismissDroppedNotices(walletId: string, txids: Array<string>): Promise<null> {
+  return invoke<null>("dismiss_dropped_notices", { walletId, txids });
 }
 
 /**
@@ -1120,6 +1199,15 @@ export function automaticBackupFailures(): Promise<Array<AutomaticBackupFailure>
  */
 export function backupDirectory(): Promise<string> {
   return invoke<string>("backup_directory");
+}
+
+/**
+ * Shows the network's automatic-backup folder in the system file
+ * manager (Settings ▸ Backups ▸ Show folder). The folder is the
+ * session's own, never an argument; one not written yet is refused.
+ */
+export function openBackupDirectory(): Promise<null> {
+  return invoke<null>("open_backup_directory");
 }
 
 /**
@@ -1644,8 +1732,9 @@ export function registrationQuote(walletId: string, request: RegistrationRequest
 }
 
 /**
- * An invitation claim row's resume grant: no duffs, and the credits
- * of the steps it has left, from the row (DP5-03 D20).
+ * An invitation claim row's or a Platform-funded row's resume grant:
+ * no duffs, and the credits of the steps it has left, from the row
+ * (DP5-03 D20).
  */
 export function registrationResumeGrant(walletId: string, draft: string): Promise<GrantRequest> {
   return invoke<GrantRequest>("registration_resume_grant", { walletId, draft });
@@ -1845,6 +1934,23 @@ export function creditsWithdrawToPlatform(walletId: string, identity: string, to
 }
 
 /**
+ * What topping the identity up with `amount` of the Platform
+ * addresses' credits takes.
+ */
+export function creditsTopUpFromPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<TopUpFromPlatformQuote> {
+  return invoke<TopUpFromPlatformQuote>("credits_top_up_from_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Tops the identity up with `amount` of the Platform addresses'
+ * credits under `grant`. `fee_input`: the quote's input 0; a plan
+ * with another fee source or claim is `credits.quote_changed`.
+ */
+export function creditsTopUpFromPlatform(walletId: string, identity: string, amount: WithdrawAmount, feeInput: PlatformAddressRow | null, grant: string): Promise<TopUpFromPlatformOutcome> {
+  return invoke<TopUpFromPlatformOutcome>("credits_top_up_from_platform", { walletId, identity, amount, feeInput, grant });
+}
+
+/**
  * The identity's recent withdrawals on Platform, the most recently
  * updated first (at most 20).
  */
@@ -1891,9 +1997,10 @@ export function platformShieldQuote(walletId: string, amount: WithdrawAmount): P
 /**
  * Moves `amount` of the Platform addresses' credits to `to` (the
  * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ * `exit_of`: the quote's, the held top-up this move is the exit of.
  */
-export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
-  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, exitOf: string | null, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, exitOf, grant });
 }
 
 /**
@@ -2097,6 +2204,14 @@ export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
 }
 
 /**
+ * Where the wallet's Shielded sync stands, for the status bar, Sync
+ * progress and Receive; answers while a pass runs.
+ */
+export function shieldedSyncInfo(walletId: string): Promise<ShieldedSyncInfo> {
+  return invoke<ShieldedSyncInfo>("shielded_sync_info", { walletId });
+}
+
+/**
  * Runs a shielded sync pass now; returns the status after.
  */
 export function shieldedSync(walletId: string): Promise<ShieldedStatus> {
@@ -2189,6 +2304,22 @@ export function unshieldToCore(walletId: string, credits: string, to: string | n
 }
 
 /**
+ * What moving `credits` from Shielded to the wallet's own Platform
+ * address `to` costs (`null` for its receive address).
+ */
+export function unshieldToPlatformQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_to_platform_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Platform: unshields `credits` to the wallet's own Platform
+ * address `to` under `grant`.
+ */
+export function unshieldToPlatform(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<UnshieldToPlatformOutcome> {
+  return invoke<UnshieldToPlatformOutcome>("unshield_to_platform", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
  * The wallet's shielded history for Activity, pending first, then
  * newest first (`limit` at most 500).
  */
@@ -2210,6 +2341,24 @@ export function unfinishedTransfers(walletId: string): Promise<UnfinishedTransfe
  */
 export function finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish> {
   return invoke<LockFinish>("finish_transfer", { walletId, kind, txid, vout, grant });
+}
+
+/**
+ * What a recover of the partly used transfer to Shielded at
+ * `txid`:`vout` would move, read from Platform's proved state now.
+ */
+export function recoverTransferQuote(walletId: string, txid: string, vout: number): Promise<RecoverQuote> {
+  return invoke<RecoverQuote>("recover_transfer_quote", { walletId, txid, vout });
+}
+
+/**
+ * Recovers what is left on the partly used transfer to Shielded at
+ * `txid`:`vout` to the wallet's own Platform address under `grant`,
+ * whose credits cap is the quote's `credits`; only a proved apply
+ * finishes it.
+ */
+export function recoverTransfer(walletId: string, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("recover_transfer", { walletId, txid, vout, grant });
 }
 
 /**
@@ -2321,6 +2470,23 @@ export function resolveContactPaymentLock(walletId: string, identity: string, co
 }
 
 /**
+ * What paying `credits` to `contact` from the Shielded or Platform
+ * balance takes and pays; `core` is a send draft's.
+ */
+export function contactPayQuote(walletId: string, identity: string, contact: string, credits: string, source: PaymentSourceName): Promise<ContactPayQuoteInfo> {
+  return invoke<ContactPayQuoteInfo>("contact_pay_quote", { walletId, identity, contact, credits, source });
+}
+
+/**
+ * Pays `credits` to `contact` from the Shielded or Platform balance
+ * under `grant`, a `platformOp` grant or a `contactPayFromBalance`
+ * lease; `note` stays in this wallet.
+ */
+export function contactPay(walletId: string, identity: string, contact: string, payment: ContactPayArgs, grant: string): Promise<ContactPayOutcomeInfo> {
+  return invoke<ContactPayOutcomeInfo>("contact_pay", { walletId, identity, contact, payment, grant });
+}
+
+/**
  * The payments with `contact`, newest first; `cursor` is the previous
  * page's `nextCursor`.
  */
@@ -2423,6 +2589,63 @@ export function loadContactPictures(): Promise<boolean> {
  */
 export function setLoadContactPictures(on: boolean): Promise<null> {
   return invoke<null>("set_load_contact_pictures", { on });
+}
+
+/**
+ * The approval sheet of the App Connect request `link_id` for the
+ * wallet `wallet_id`. A refusal answers the request (its status goes
+ * back with the return link).
+ */
+export function appConnectSheet(walletId: string, linkId: string): Promise<ConnectSheet> {
+  return invoke<ConnectSheet>("app_connect_sheet", { walletId, linkId });
+}
+
+/**
+ * What approving `choice` costs and the `appConnect` grant to ask
+ * for, bound to what this quote read.
+ */
+export function appConnectQuote(walletId: string, linkId: string, choice: ConnectChoice): Promise<ConnectQuote> {
+  return invoke<ConnectQuote>("app_connect_quote", { walletId, linkId, choice });
+}
+
+/**
+ * Approves `choice` under `grant` (an `appConnect` grant from this
+ * request's quote): adds the keys and sends the app its response.
+ */
+export function appConnectApprove(walletId: string, linkId: string, choice: ConnectChoice, grant: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_approve", { walletId, linkId, choice, grant });
+}
+
+/**
+ * Sends the response an approval could not send.
+ */
+export function appConnectRetrySend(walletId: string, linkId: string): Promise<ConnectDone> {
+  return invoke<ConnectDone>("app_connect_retry_send", { walletId, linkId });
+}
+
+/**
+ * The user denied the request: nothing is read, derived or signed.
+ * Refused once an approval started (`connect.answered`).
+ */
+export function appConnectDeny(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_deny", { linkId });
+}
+
+/**
+ * Opens the return link of an answered request the OS delivered, with
+ * its answer, in the system browser, after the user's click. A request
+ * typed, pasted or scanned, or not answered yet, opens nothing:
+ * `invalid_argument`.
+ */
+export function appConnectReturn(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_return", { linkId });
+}
+
+/**
+ * Forgets the request: the sheet closed.
+ */
+export function appConnectDismiss(linkId: string): Promise<null> {
+  return invoke<null>("app_connect_dismiss", { linkId });
 }
 
 /**
@@ -2906,6 +3129,70 @@ export function mnDiscardOperation(walletId: string, operation: string): Promise
 }
 
 /**
+ * The keychain keys a registration of `kind` would use by default.
+ * Public keys and addresses only; needs the synced list.
+ */
+export function mnRegistrationKeys(walletId: string, kind: MasternodeTypeName): Promise<ProTxKeys> {
+  return invoke<ProTxKeys>("mn_registration_keys", { walletId, kind });
+}
+
+/**
+ * Checks a registration with Core's rules and plans its transaction.
+ * Locks, reserves and issues nothing.
+ */
+export function mnPreviewRegistration(walletId: string, request: MnRegistrationRequest): Promise<MnRegistrationPreview> {
+  return invoke<MnRegistrationPreview>("mn_preview_registration", { walletId, request });
+}
+
+/**
+ * Registers a masternode with a fund-new or existing-coin collateral
+ * under a `masternodeOp` grant, which the call consumes. The result is
+ * the saved operation, `sent` or `not_sent` with its `lastError`.
+ */
+export function mnRegister(walletId: string, request: MnRegistrationRequest, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_register", { walletId, request, grant });
+}
+
+/**
+ * Prepares an external-collateral registration: locks its fee inputs
+ * and saves it as `needs_signature` with the message the collateral's
+ * key signs. No grant; signs nothing.
+ */
+export function mnPrepareExternalRegistration(walletId: string, request: MnRegistrationRequest): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_prepare_external_registration", { walletId, request });
+}
+
+/**
+ * Re-plans an external registration whose fee inputs were spent: new
+ * inputs and a new message, the same terms.
+ */
+export function mnRefreshExternalRegistration(walletId: string, operation: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_refresh_external_registration", { walletId, operation });
+}
+
+/**
+ * Finishes an external registration with the collateral key's
+ * `signmessage` signature (base64), under a `masternodeOp` grant.
+ */
+export function mnSubmitExternalRegistration(walletId: string, operation: string, signature: string, grant: string): Promise<ProTxOperation> {
+  return invoke<ProTxOperation>("mn_submit_external_registration", { walletId, operation, signature, grant });
+}
+
+/**
+ * Unlocks a masternode's collateral coin and remembers it. Sends nothing.
+ */
+export function mnReleaseCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_release_collateral", { walletId, proTxHash });
+}
+
+/**
+ * Locks a released collateral coin again.
+ */
+export function mnLockCollateral(walletId: string, proTxHash: string): Promise<null> {
+  return invoke<null>("mn_lock_collateral", { walletId, proTxHash });
+}
+
+/**
  * What the wallet can do with shared masternodes: v24 as far as it can
  * tell, shared evonodes (always off), and whether sending is on.
  */
@@ -2918,6 +3205,14 @@ export function mnSharedCapability(walletId: string): Promise<SharedCapability> 
  */
 export function mnSharedSessions(walletId: string): Promise<Array<SharedSession>> {
   return invoke<Array<SharedSession>>("mn_shared_sessions", { walletId });
+}
+
+/**
+ * Sessions whose stored record no longer reads, newest first: each can
+ * be discarded while nothing of it may be out.
+ */
+export function mnSharedUnreadable(walletId: string): Promise<Array<UnreadableSession>> {
+  return invoke<Array<UnreadableSession>>("mn_shared_unreadable", { walletId });
 }
 
 /**
@@ -2995,6 +3290,53 @@ export function mnSharedUnlock(walletId: string, session: string): Promise<Share
  */
 export function mnSharedApprove(walletId: string, session: string, consentHash: string, grant: string): Promise<SharedOutcome> {
   return invoke<SharedOutcome>("mn_shared_approve", { walletId, session, consentHash, grant });
+}
+
+/**
+ * Spends every reserved coin of a session that may be out back to the
+ * wallet, so it can't confirm (`SharedSession.abandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
+ */
+export function mnSharedAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_abandon", { walletId, session, grant });
+}
+
+/**
+ * The latest abandon spend's saved bytes handed off again, while the
+ * spend may be out (`SharedSession.resendAbandonCharge`). Takes a
+ * `masternodeOp` grant of exactly that charge. Every network.
+ */
+export function mnSharedResendAbandon(walletId: string, session: string, grant: string): Promise<SharedSession> {
+  return invoke<SharedSession>("mn_shared_resend_abandon", { walletId, session, grant });
+}
+
+/**
+ * The same for a session whose stored record no longer reads
+ * (`UnreadableSession.abandonCharge`).
+ */
+export function mnSharedAbandonUnreadable(walletId: string, session: string, grant: string): Promise<UnreadableSession> {
+  return invoke<UnreadableSession>("mn_shared_abandon_unreadable", { walletId, session, grant });
+}
+
+/**
+ * A participant at `combined` signs its funding inputs into the
+ * registration, charged its `debit`. Takes a `masternodeOp` grant of
+ * exactly that `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSign(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_sign", { walletId, session, grant });
+}
+
+/**
+ * The coordinator signs its own inputs last and sends the registration
+ * at `combined`, or sends the saved registration again at `sent`,
+ * charged its `debit`. Takes a `masternodeOp` grant of exactly that
+ * `debit`. Refused on mainnet before the engine is called
+ * (`app.shared_send_off`).
+ */
+export function mnSharedSend(walletId: string, session: string, grant: string): Promise<SharedOutcome> {
+  return invoke<SharedOutcome>("mn_shared_send", { walletId, session, grant });
 }
 
 /**
@@ -3261,6 +3603,7 @@ export type CommandArgs = {
   ui_settings: {  };
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
+  open_project_link: { link: ProjectLinkName };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -3332,6 +3675,7 @@ export type CommandArgs = {
   cancel_rescan: {  };
   node_info: {  };
   warnings: {  };
+  history_gap: {  };
   reset_chain_data: {  };
   set_birth_height: { walletId: string; height: number };
   start_spv: {  };
@@ -3351,6 +3695,8 @@ export type CommandArgs = {
   drop_unconfirmed: { walletId: string | null };
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
+  dropped_notices: { walletId: string };
+  dismiss_dropped_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
   open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
@@ -3358,6 +3704,7 @@ export type CommandArgs = {
   automatic_backups: { walletId: string | null };
   automatic_backup_failures: {  };
   backup_directory: {  };
+  open_backup_directory: {  };
   backup_policy: {  };
   set_backup_policy: { keep: number };
   read_backup_header: { path: string };
@@ -3448,13 +3795,15 @@ export type CommandArgs = {
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_top_up_from_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_top_up_from_platform: { walletId: string; identity: string; amount: WithdrawAmount; feeInput: PlatformAddressRow | null; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
-  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
@@ -3480,6 +3829,7 @@ export type CommandArgs = {
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
   shielded_status: { walletId: string };
+  shielded_sync_info: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
   shield_quote: { walletId: string; amount: FundAmount };
@@ -3492,9 +3842,13 @@ export type CommandArgs = {
   shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
   unshield_quote: { walletId: string; credits: string; to: string | null };
   unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_to_platform_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_platform: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
   shielded_history: { walletId: string; offset: number; limit: number };
   unfinished_transfers: { walletId: string };
   finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
+  recover_transfer_quote: { walletId: string; txid: string; vout: number };
+  recover_transfer: { walletId: string; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -3509,6 +3863,8 @@ export type CommandArgs = {
   dashpay_verify_scanned: { walletId: string; text: string };
   contact_payment_lock: { walletId: string; identity: string; contact: string };
   resolve_contact_payment_lock: { walletId: string; identity: string; contact: string };
+  contact_pay_quote: { walletId: string; identity: string; contact: string; credits: string; source: PaymentSourceName };
+  contact_pay: { walletId: string; identity: string; contact: string; payment: ContactPayArgs; grant: string };
   contact_activity: { walletId: string; identity: string; contact: string; cursor: string | null; filter: ActivityFilterName };
   frequent_contacts: { walletId: string; identity: string; limit: number };
   dashpay_events: { walletId: string; identity: string; cursor: number | null; limit: number };
@@ -3523,6 +3879,13 @@ export type CommandArgs = {
   dashpay_avatar: { walletId: string; identity: string; size: AvatarSizeName };
   load_contact_pictures: {  };
   set_load_contact_pictures: { on: boolean };
+  app_connect_sheet: { walletId: string; linkId: string };
+  app_connect_quote: { walletId: string; linkId: string; choice: ConnectChoice };
+  app_connect_approve: { walletId: string; linkId: string; choice: ConnectChoice; grant: string };
+  app_connect_retry_send: { walletId: string; linkId: string };
+  app_connect_deny: { linkId: string };
+  app_connect_return: { linkId: string };
+  app_connect_dismiss: { linkId: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -3579,8 +3942,17 @@ export type CommandArgs = {
   mn_operations: { walletId: string };
   mn_resend_operation: { walletId: string; operation: string; grant: string };
   mn_discard_operation: { walletId: string; operation: string };
+  mn_registration_keys: { walletId: string; kind: MasternodeTypeName };
+  mn_preview_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_register: { walletId: string; request: MnRegistrationRequest; grant: string };
+  mn_prepare_external_registration: { walletId: string; request: MnRegistrationRequest };
+  mn_refresh_external_registration: { walletId: string; operation: string };
+  mn_submit_external_registration: { walletId: string; operation: string; signature: string; grant: string };
+  mn_release_collateral: { walletId: string; proTxHash: string };
+  mn_lock_collateral: { walletId: string; proTxHash: string };
   mn_shared_capability: { walletId: string };
   mn_shared_sessions: { walletId: string };
+  mn_shared_unreadable: { walletId: string };
   mn_shared_session: { walletId: string; session: string };
   mn_shared_shares: { walletId: string; proTxHash: string };
   mn_shared_standby: { walletId: string; proTxHash: string };
@@ -3591,6 +3963,11 @@ export type CommandArgs = {
   mn_shared_lock: { walletId: string; session: string; revision: number; grant: string };
   mn_shared_unlock: { walletId: string; session: string };
   mn_shared_approve: { walletId: string; session: string; consentHash: string; grant: string };
+  mn_shared_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_resend_abandon: { walletId: string; session: string; grant: string };
+  mn_shared_abandon_unreadable: { walletId: string; session: string; grant: string };
+  mn_shared_sign: { walletId: string; session: string; grant: string };
+  mn_shared_send: { walletId: string; session: string; grant: string };
   mn_shared_discard: { walletId: string; session: string };
   mn_shared_import: { walletId: string; text: string; target: string | null };
   mn_shared_import_file: { walletId: string; target: string | null };
@@ -3628,6 +4005,7 @@ export type CommandResults = {
   ui_settings: UiSettings;
   set_ui_settings: UiSettings;
   open_releases_page: null;
+  open_project_link: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -3699,6 +4077,7 @@ export type CommandResults = {
   cancel_rescan: boolean;
   node_info: NodeSummary;
   warnings: Array<NodeWarning>;
+  history_gap: WalletHistoryGap | null;
   reset_chain_data: null;
   set_birth_height: null;
   start_spv: null;
@@ -3718,6 +4097,8 @@ export type CommandResults = {
   drop_unconfirmed: number;
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
+  dropped_notices: Array<DroppedNoticeRow>;
+  dismiss_dropped_notices: null;
   is_coinjoin_internal: boolean;
   open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
@@ -3725,6 +4106,7 @@ export type CommandResults = {
   automatic_backups: Array<BackupSummary>;
   automatic_backup_failures: Array<AutomaticBackupFailure>;
   backup_directory: string;
+  open_backup_directory: null;
   backup_policy: BackupPolicyInfo;
   set_backup_policy: BackupPolicyInfo;
   read_backup_header: BackupFileHeader;
@@ -3815,6 +4197,8 @@ export type CommandResults = {
   credits_withdraw: WithdrawOutcome;
   credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
   credits_withdraw_to_platform: WithdrawToPlatformOutcome;
+  credits_top_up_from_platform_quote: TopUpFromPlatformQuote;
+  credits_top_up_from_platform: TopUpFromPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3847,6 +4231,7 @@ export type CommandResults = {
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
   shielded_status: ShieldedStatus;
+  shielded_sync_info: ShieldedSyncInfo;
   shielded_sync: ShieldedStatus;
   shielded_receive_address: ShieldedAddress;
   shield_quote: ShieldQuote;
@@ -3859,9 +4244,13 @@ export type CommandResults = {
   shielded_send: ShieldedSpendOutcome;
   unshield_quote: ShieldedSpendQuote;
   unshield_to_core: ShieldedSpendOutcome;
+  unshield_to_platform_quote: ShieldedSpendQuote;
+  unshield_to_platform: UnshieldToPlatformOutcome;
   shielded_history: Array<ShieldedActivity>;
   unfinished_transfers: UnfinishedTransfers;
   finish_transfer: LockFinish;
+  recover_transfer_quote: RecoverQuote;
+  recover_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -3876,6 +4265,8 @@ export type CommandResults = {
   dashpay_verify_scanned: ScannedContactInfo;
   contact_payment_lock: PaymentLockInfo | null;
   resolve_contact_payment_lock: LockResolutionName;
+  contact_pay_quote: ContactPayQuoteInfo;
+  contact_pay: ContactPayOutcomeInfo;
   contact_activity: ContactActivityPage;
   frequent_contacts: Array<ContactSummaryInfo>;
   dashpay_events: DashPayEventPage;
@@ -3890,6 +4281,13 @@ export type CommandResults = {
   dashpay_avatar: AvatarThumbnail | null;
   load_contact_pictures: boolean;
   set_load_contact_pictures: null;
+  app_connect_sheet: ConnectSheet;
+  app_connect_quote: ConnectQuote;
+  app_connect_approve: ConnectDone;
+  app_connect_retry_send: ConnectDone;
+  app_connect_deny: null;
+  app_connect_return: null;
+  app_connect_dismiss: null;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -3946,8 +4344,17 @@ export type CommandResults = {
   mn_operations: Array<ProTxOperation>;
   mn_resend_operation: ProTxOperation;
   mn_discard_operation: null;
+  mn_registration_keys: ProTxKeys;
+  mn_preview_registration: MnRegistrationPreview;
+  mn_register: ProTxOperation;
+  mn_prepare_external_registration: ProTxOperation;
+  mn_refresh_external_registration: ProTxOperation;
+  mn_submit_external_registration: ProTxOperation;
+  mn_release_collateral: null;
+  mn_lock_collateral: null;
   mn_shared_capability: SharedCapability;
   mn_shared_sessions: Array<SharedSession>;
+  mn_shared_unreadable: Array<UnreadableSession>;
   mn_shared_session: SharedSession;
   mn_shared_shares: SharedShares;
   mn_shared_standby: Array<Standby>;
@@ -3958,6 +4365,11 @@ export type CommandResults = {
   mn_shared_lock: SharedOutcome;
   mn_shared_unlock: SharedOutcome;
   mn_shared_approve: SharedOutcome;
+  mn_shared_abandon: SharedSession;
+  mn_shared_resend_abandon: SharedSession;
+  mn_shared_abandon_unreadable: UnreadableSession;
+  mn_shared_sign: SharedOutcome;
+  mn_shared_send: SharedOutcome;
   mn_shared_discard: null;
   mn_shared_import: SharedImport;
   mn_shared_import_file: Array<SharedImport> | null;
@@ -3997,6 +4409,7 @@ export const COMMANDS: Record<CommandName, string> = {
   ui_settings: "app",
   set_ui_settings: "app",
   open_releases_page: "app",
+  open_project_link: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -4068,6 +4481,7 @@ export const COMMANDS: Record<CommandName, string> = {
   cancel_rescan: "chain",
   node_info: "chain",
   warnings: "chain",
+  history_gap: "chain",
   reset_chain_data: "chain",
   set_birth_height: "chain",
   start_spv: "chain",
@@ -4087,6 +4501,8 @@ export const COMMANDS: Record<CommandName, string> = {
   drop_unconfirmed: "history",
   export_history_csv: "history",
   tx_notices: "history",
+  dropped_notices: "history",
+  dismiss_dropped_notices: "history",
   is_coinjoin_internal: "history",
   open_tx_in_explorer: "history",
   backup_wallet: "backup",
@@ -4094,6 +4510,7 @@ export const COMMANDS: Record<CommandName, string> = {
   automatic_backups: "backup",
   automatic_backup_failures: "backup",
   backup_directory: "backup",
+  open_backup_directory: "backup",
   backup_policy: "backup",
   set_backup_policy: "backup",
   read_backup_header: "backup",
@@ -4184,6 +4601,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw: "identity",
   credits_withdraw_to_platform_quote: "identity",
   credits_withdraw_to_platform: "identity",
+  credits_top_up_from_platform_quote: "identity",
+  credits_top_up_from_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -4216,6 +4635,7 @@ export const COMMANDS: Record<CommandName, string> = {
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
   shielded_status: "identity",
+  shielded_sync_info: "identity",
   shielded_sync: "identity",
   shielded_receive_address: "identity",
   shield_quote: "identity",
@@ -4228,9 +4648,13 @@ export const COMMANDS: Record<CommandName, string> = {
   shielded_send: "identity",
   unshield_quote: "identity",
   unshield_to_core: "identity",
+  unshield_to_platform_quote: "identity",
+  unshield_to_platform: "identity",
   shielded_history: "identity",
   unfinished_transfers: "identity",
   finish_transfer: "identity",
+  recover_transfer_quote: "identity",
+  recover_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -4245,6 +4669,8 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_verify_scanned: "social",
   contact_payment_lock: "social",
   resolve_contact_payment_lock: "social",
+  contact_pay_quote: "social",
+  contact_pay: "social",
   contact_activity: "social",
   frequent_contacts: "social",
   dashpay_events: "social",
@@ -4259,6 +4685,13 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_avatar: "social",
   load_contact_pictures: "social",
   set_load_contact_pictures: "social",
+  app_connect_sheet: "connect",
+  app_connect_quote: "connect",
+  app_connect_approve: "connect",
+  app_connect_retry_send: "connect",
+  app_connect_deny: "connect",
+  app_connect_return: "connect",
+  app_connect_dismiss: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",
@@ -4315,8 +4748,17 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_operations: "masternodes",
   mn_resend_operation: "masternodes",
   mn_discard_operation: "masternodes",
+  mn_registration_keys: "masternodes",
+  mn_preview_registration: "masternodes",
+  mn_register: "masternodes",
+  mn_prepare_external_registration: "masternodes",
+  mn_refresh_external_registration: "masternodes",
+  mn_submit_external_registration: "masternodes",
+  mn_release_collateral: "masternodes",
+  mn_lock_collateral: "masternodes",
   mn_shared_capability: "masternodes",
   mn_shared_sessions: "masternodes",
+  mn_shared_unreadable: "masternodes",
   mn_shared_session: "masternodes",
   mn_shared_shares: "masternodes",
   mn_shared_standby: "masternodes",
@@ -4327,6 +4769,11 @@ export const COMMANDS: Record<CommandName, string> = {
   mn_shared_lock: "masternodes",
   mn_shared_unlock: "masternodes",
   mn_shared_approve: "masternodes",
+  mn_shared_abandon: "masternodes",
+  mn_shared_resend_abandon: "masternodes",
+  mn_shared_abandon_unreadable: "masternodes",
+  mn_shared_sign: "masternodes",
+  mn_shared_send: "masternodes",
   mn_shared_discard: "masternodes",
   mn_shared_import: "masternodes",
   mn_shared_import_file: "masternodes",
@@ -4379,6 +4826,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.backup_folder_missing",
+  "app.folder_open",
   "app.updates_unavailable",
   "app.update_check",
   "app.update_not_published",
@@ -4387,6 +4836,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.update_install",
   "app.update_state",
   "app.update_busy",
+  "app.transfer_preparing",
   "app.shared_send_off",
   "app.shared_send_unsupported",
   "invalid_config",
@@ -4492,6 +4942,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "compat.invalid_key_material",
   "compat.watch_only",
   "compat.destination_unwritable",
+  "compat.wallet_too_large",
+  "compat.extra_hd_account",
   "backup.vault_locked",
   "backup.passphrase_required",
   "backup.wrong_passphrase",
@@ -4522,6 +4974,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.broadcast_rejected",
   "coinjoin.mixing_active",
   "coinjoin.move_running",
+  "coinjoin.inputs_held",
   "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
@@ -4569,6 +5022,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_unknown_recent",
   "registration.shielded_not_ready",
   "registration.quote_changed",
+  "registration.refunded",
+  "registration.payment_consumed",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4588,6 +5043,20 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "invitation.claimed",
   "invitation.expired",
   "invitation.already_has_identity",
+  "connect.network",
+  "connect.mainnet_off",
+  "connect.unsupported",
+  "connect.invalid",
+  "connect.stale",
+  "connect.protocol",
+  "connect.no_identity",
+  "connect.hint",
+  "connect.owner",
+  "connect.answered",
+  "connect.credits",
+  "connect.plan_changed",
+  "connect.send_failed",
+  "connect.failed",
   "avatar.too_large",
   "avatar.unsupported",
   "avatar.fetch_failed",
@@ -4608,6 +5077,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.coins_changed",
   "credits.mixing_active",
   "credits.move_running",
+  "credits.preflight_refused",
+  "credits.rules_unsupported",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",
@@ -4643,6 +5114,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.already_tracked",
   "masternodes.not_tracked",
   "masternodes.key_mismatch",
+  "masternodes.key_exists",
   "masternodes.not_evonode",
   "masternodes.no_identity",
   "masternodes.platform_unavailable",
@@ -4658,6 +5130,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "masternodes.no_owner_key",
   "masternodes.update_pending",
   "masternodes.update_superseded",
+  "masternodes.update_abandoned_pending",
   "masternodes.shared_session_not_found",
   "masternodes.shared_stage",
   "masternodes.shared_message",

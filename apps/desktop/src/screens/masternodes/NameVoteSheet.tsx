@@ -3,7 +3,7 @@
 // `governance_vote_name`; the result lists each masternode's vote, an `unconfirmed` one as not
 // confirmed until Check again re-reads Platform and finds its choice there (MG-07 D7).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { ContestedName } from "../../api/generated/ContestedName";
 import type { ContestedNames } from "../../api/generated/ContestedNames";
@@ -34,6 +34,7 @@ import {
 import { timeOfDay } from "../../format/tx";
 import { failureText } from "../pay/model";
 import { t as tr, useT } from "../../i18n";
+import { useNodeNames } from "../../masternodes/queries";
 import { StatusChip, useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
 
@@ -68,7 +69,7 @@ export function NameVoteSheet({
   return (
     <Sheet title={t("masternodes.names.sheet.title", { label: contest.label })} width="medium" testId="name-vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : "form"}>
       {result ? (
-        <NameVoteResult {...result} contest={contest} names={names} reread={reread} onDone={onClose} />
+        <NameVoteResult {...result} contest={contest} names={names} walletId={wallet.walletId} reread={reread} onDone={onClose} />
       ) : (
         <NameVoteForm
           contest={contest}
@@ -114,13 +115,15 @@ function NameVoteForm({
   const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
+  const choicesTitle = useId();
+  const nodeNames = useNodeNames(wallet.walletId);
   const now = useNowSecs();
   const { label } = contest;
   const allowed = names.votesAllowed;
   // No choice is preset: the present one would only be refused as `already_voted` (D10).
   const [choice, setChoice] = useState<NameChoice | null>(null);
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => defaultVoters(names.voters, label, allowed));
-  const rows = useMemo(() => nameVoterRows(names.voters, label, choice, allowed), [names.voters, label, choice, allowed, t.language]);
+  const rows = useMemo(() => nameVoterRows(names.voters, contest, choice, allowed, nodeNames), [names.voters, contest, choice, allowed, nodeNames, t.language]);
   const picked = pickedVoters(rows, checked);
   const last = lastVoteNotice(picked);
   // The sheet keeps its read, but not past the end: Vote goes off when the contest ends under it,
@@ -182,15 +185,17 @@ function NameVoteForm({
       }}
     >
       <p className="mg-muted mg-small mg-flush">{endsText(contest, now)}</p>
-      <fieldset className="mg-choices" disabled={busy} data-testid="name-vote-choices">
-        <legend className="mg-section-title">{t("masternodes.names.sheet.yourVote")}</legend>
+      <div className="mg-choices" role="group" aria-labelledby={choicesTitle} data-testid="name-vote-choices">
+        <span id={choicesTitle} className="mg-section-title">
+          {t("masternodes.names.sheet.yourVote")}
+        </span>
         {choiceOptions(contest).map((o) => {
           const key = choiceKey(o.choice);
           return (
             <label key={key} className="mg-choice" data-testid={`name-choice-${key}`}>
-              <input type="radio" name="name-choice" value={key} checked={sameChoice(choice, o.choice)} onChange={() => setChoice(o.choice)} />
+              <input type="radio" name="name-choice" value={key} checked={sameChoice(choice, o.choice)} disabled={busy} onChange={() => setChoice(o.choice)} />
               <span className="mg-choice-text">
-                <span className={o.identity ? "mono" : undefined} title={o.identity ?? undefined}>
+                <span className={o.identity && !o.named ? "mono" : undefined} title={o.identity ?? undefined}>
                   {o.title}
                 </span>
                 <span className="mg-muted mg-small">{t("masternodes.names.sheet.choiceLine", { note: t(`masternodes.names.sheet.choiceNote.${o.choice.kind}`), count: o.votes })}</span>
@@ -198,9 +203,9 @@ function NameVoteForm({
             </label>
           );
         })}
-      </fieldset>
+      </div>
       {!contest.contendersComplete && <p className="mg-muted mg-small mg-flush">{NameText.partial}</p>}
-      <ul className="mg-nodes card-l1" aria-label={t("masternodes.names.sheet.voteWith")} data-testid="name-vote-nodes">
+      <ul className="mg-nodes mg-nodes-names card-l1" aria-label={t("masternodes.names.sheet.voteWith")} data-testid="name-vote-nodes">
         <li className="mg-node mg-node-head" aria-hidden="true">
           <span />
           <span>{t("masternodes.names.sheet.voteWith")}</span>
@@ -260,7 +265,7 @@ function NameVoteForm({
             {t("masternodes.names.sheet.cancel")}
           </DashButton>
           <DashButton type="submit" variant="filledBlue" size="medium" data-testid="name-vote-send" disabled={busy || closed || choice === null || picked.length === 0 || !credential.ready}>
-            {busy ? t("masternodes.names.sheet.voting") : voteButtonText(choice)}
+            {busy ? t("masternodes.names.sheet.voting") : voteButtonText(choice, contest)}
           </DashButton>
         </span>
       </footer>
@@ -273,11 +278,13 @@ function NameVoteResult({
   choice,
   contest,
   names,
+  walletId,
   reread,
   onDone,
 }: NameVoteDone & {
   contest: ContestedName;
   names: ContestedNames;
+  walletId: string;
   reread: () => Promise<ContestedNames | undefined>;
   onDone: () => void;
 }) {
@@ -289,7 +296,8 @@ function NameVoteResult({
   /** When a Check again read fine but still didn't find the vote (MG-11 review n2). */
   const [stillAt, setStillAt] = useState<Date | null>(null);
   const done = useRef<HTMLButtonElement>(null);
-  const view = nameVoteResult(casts, names.voters, contest.label, choice, after);
+  const nodeNames = useNodeNames(walletId);
+  const view = nameVoteResult(casts, names.voters, contest, choice, after, nodeNames);
   const check = async () => {
     if (checking) return;
     setChecking(true);
@@ -299,7 +307,7 @@ function NameVoteResult({
       const read = (await reread()) ?? after;
       setAfter(read);
       // Check again leaves once nothing is unconfirmed: focus goes to Done, not the page.
-      if (!nameVoteResult(casts, names.voters, contest.label, choice, read).unconfirmed) done.current?.focus();
+      if (!nameVoteResult(casts, names.voters, contest, choice, read).unconfirmed) done.current?.focus();
       else setStillAt(new Date());
     } catch (e) {
       setCheckError(nameErrorText(e) ?? errorMessage(e));

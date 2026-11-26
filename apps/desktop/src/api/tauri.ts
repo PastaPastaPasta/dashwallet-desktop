@@ -69,6 +69,7 @@ export class IpcBackend implements Backend {
   openNetwork = () => cmd.openNetwork(null, null);
   listWallets = () => cmd.listWallets();
   lockStatus = () => cmd.lockStatus();
+  recentNotices = () => cmd.recentNotices();
   unlock = (passphrase: string) => cmd.unlock(passphrase);
   unlockMixingOnly = (passphrase: string) => cmd.unlockMixingOnly(passphrase);
   lock = () => cmd.lock();
@@ -93,21 +94,28 @@ export class IpcBackend implements Backend {
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
+  droppedNotices = cmd.droppedNotices;
+  dismissDroppedNotices = cmd.dismissDroppedNotices;
   // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
   // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
   networkChoice = () => orAbsent(cmd.getNetworkChoice());
   switchNetwork = (...a: Parameters<typeof cmd.switchNetwork>) => orUnavailable(cmd.switchNetwork(...a));
   shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedSyncInfo = (walletId: string) => orAbsent(cmd.shieldedSyncInfo(walletId));
   shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
   shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
   resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
   unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
   finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
+  recoverTransferQuote = (...a: Parameters<typeof cmd.recoverTransferQuote>) => orUnavailable(cmd.recoverTransferQuote(...a));
+  recoverTransfer = (...a: Parameters<typeof cmd.recoverTransfer>) => orUnavailable(cmd.recoverTransfer(...a));
   shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
   shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
   unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
   unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  unshieldToPlatformQuote = (...a: Parameters<typeof cmd.unshieldToPlatformQuote>) => orUnavailable(cmd.unshieldToPlatformQuote(...a));
+  unshieldToPlatform = (...a: Parameters<typeof cmd.unshieldToPlatform>) => orUnavailable(cmd.unshieldToPlatform(...a));
   shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
   platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
   platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
@@ -128,6 +136,7 @@ export class IpcBackend implements Backend {
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
   openReleasesPage = () => cmd.openReleasesPage();
+  openProjectLink = cmd.openProjectLink;
   protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
@@ -188,6 +197,7 @@ export class IpcBackend implements Backend {
   automaticBackups = cmd.automaticBackups;
   automaticBackupFailures = () => cmd.automaticBackupFailures();
   backupDirectory = () => cmd.backupDirectory();
+  openBackupDirectory = () => cmd.openBackupDirectory();
   backupPolicy = () => cmd.backupPolicy();
   setBackupPolicy = cmd.setBackupPolicy;
   readBackupHeader = cmd.readBackupHeader;
@@ -228,6 +238,8 @@ export class IpcBackend implements Backend {
   contactActivity = cmd.contactActivity;
   frequentContacts = cmd.frequentContacts;
   resolveContactPaymentLock = cmd.resolveContactPaymentLock;
+  contactPayQuote = cmd.contactPayQuote;
+  contactPay = cmd.contactPay;
   grantRequest = cmd.grantRequest;
   creditsCostTable = cmd.creditsCostTable;
   dashpayEligibility = cmd.dashpayEligibility;
@@ -253,6 +265,13 @@ export class IpcBackend implements Backend {
   dismissStashedLink = cmd.dismissStashedLink;
   invitationStatus = cmd.invitationStatus;
   stashInvitation = cmd.stashInvitation;
+  appConnectSheet = cmd.appConnectSheet;
+  appConnectQuote = cmd.appConnectQuote;
+  appConnectApprove = cmd.appConnectApprove;
+  appConnectRetrySend = cmd.appConnectRetrySend;
+  appConnectDeny = cmd.appConnectDeny;
+  appConnectReturn = cmd.appConnectReturn;
+  appConnectDismiss = cmd.appConnectDismiss;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();
@@ -266,6 +285,7 @@ export class IpcBackend implements Backend {
   stopSpv = () => cmd.stopSpv();
   startSpv = () => cmd.startSpv();
   resetChainData = () => cmd.resetChainData();
+  historyGap = () => cmd.historyGap();
   setBirthHeight = cmd.setBirthHeight;
   dropUnconfirmed = cmd.dropUnconfirmed;
   registrations = cmd.registrations;
@@ -307,6 +327,8 @@ export class IpcBackend implements Backend {
   creditsWithdraw = cmd.creditsWithdraw;
   creditsWithdrawToPlatformQuote = cmd.creditsWithdrawToPlatformQuote;
   creditsWithdrawToPlatform = cmd.creditsWithdrawToPlatform;
+  creditsTopUpFromPlatformQuote = cmd.creditsTopUpFromPlatformQuote;
+  creditsTopUpFromPlatform = cmd.creditsTopUpFromPlatform;
   creditsWithdrawals = cmd.creditsWithdrawals;
   // The search is the renderer's (U-05 D13): dash-qt's wildcards over label and address.
   addressBook = (walletId: string, purpose: AddressPurposeName | null) => cmd.addressBook(walletId, purpose, null);
@@ -353,6 +375,14 @@ export class IpcBackend implements Backend {
   mnDetachKey = cmd.mnDetachKey;
   mnKeys = cmd.mnKeys;
   mnRevealKey = cmd.mnRevealKey;
+  mnRegistrationKeys = cmd.mnRegistrationKeys;
+  mnPreviewRegistration = cmd.mnPreviewRegistration;
+  mnRegister = cmd.mnRegister;
+  mnPrepareExternalRegistration = cmd.mnPrepareExternalRegistration;
+  mnRefreshExternalRegistration = cmd.mnRefreshExternalRegistration;
+  mnSubmitExternalRegistration = cmd.mnSubmitExternalRegistration;
+  mnReleaseCollateral = cmd.mnReleaseCollateral;
+  mnLockCollateral = cmd.mnLockCollateral;
   mnPreviewUpdateRegistrar = cmd.mnPreviewUpdateRegistrar;
   mnUpdateRegistrar = cmd.mnUpdateRegistrar;
   mnOperations = cmd.mnOperations;
@@ -360,6 +390,7 @@ export class IpcBackend implements Backend {
   mnDiscardOperation = cmd.mnDiscardOperation;
   mnSharedCapability = cmd.mnSharedCapability;
   mnSharedSessions = cmd.mnSharedSessions;
+  mnSharedUnreadable = cmd.mnSharedUnreadable;
   mnSharedSession = cmd.mnSharedSession;
   mnSharedShares = cmd.mnSharedShares;
   mnSharedStandby = cmd.mnSharedStandby;
@@ -371,6 +402,11 @@ export class IpcBackend implements Backend {
   mnSharedUnlock = cmd.mnSharedUnlock;
   mnSharedApprove = cmd.mnSharedApprove;
   mnSharedDiscard = cmd.mnSharedDiscard;
+  mnSharedAbandon = cmd.mnSharedAbandon;
+  mnSharedResendAbandon = cmd.mnSharedResendAbandon;
+  mnSharedAbandonUnreadable = cmd.mnSharedAbandonUnreadable;
+  mnSharedSign = cmd.mnSharedSign;
+  mnSharedSend = cmd.mnSharedSend;
   mnSharedImport = cmd.mnSharedImport;
   mnSharedImportFile = cmd.mnSharedImportFile;
   mnSharedPreviewDissolve = cmd.mnSharedPreviewDissolve;

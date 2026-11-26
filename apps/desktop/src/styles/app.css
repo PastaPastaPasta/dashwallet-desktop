@@ -8,7 +8,8 @@
    focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
    control. */
 .page h1[tabindex="-1"]:focus,
-.sheet[tabindex="-1"]:focus {
+.sheet[tabindex="-1"]:focus,
+.mg-key-list[tabindex="-1"]:focus {
   outline: none;
 }
 
@@ -550,6 +551,23 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+/* A Shielded outcome can name a Platform address: it wraps rather than widening the sheet. */
+.shielded-outcome-text {
+  overflow-wrap: anywhere;
+}
+
+/* Max from the Dash wallet on Confirm: what it moves, then what stays behind, each its own line. */
+.core-max-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin-block: var(--dw-space-s);
+}
+
+.core-max-confirm p {
+  margin: 0;
+}
+
 /* A banned masternode's notice is a long run in some languages: it wraps rather than widening the pane. */
 .mn-banned-notice {
   overflow-wrap: anywhere;
@@ -1080,10 +1098,16 @@ input[type="radio"]:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  height: var(--dw-layout-hero-height);
+  height: calc(var(--dw-layout-hero-height) + var(--hero-held-line));
   padding: var(--dw-space-l) var(--dw-layout-page-padding-h) 0;
   background: var(--dw-role-hero);
   color: var(--dw-role-text-on-hero);
+  --hero-held-line: 0px;
+}
+
+/* The line of coins a dropped payment holds: the band grows by it while it shows. */
+.hero-band:has(.hero-held) {
+  --hero-held-line: calc(var(--dw-space-s) + var(--dw-type-footnote-line));
 }
 
 .hero {
@@ -1141,30 +1165,57 @@ input[type="radio"]:disabled {
 
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
-  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+  height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line) + var(--hero-held-line));
 }
 
 /* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
    the fiat row and the note of what Core has pending. */
 @media (min-width: 980px) {
   .hero-band:has(.hero[data-breakdown="none"]) {
-    height: var(--dw-layout-hero-height-hidden);
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
   .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line) + var(--hero-held-line));
   }
   .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
-    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line) + var(--hero-held-line));
   }
 }
 
-.hero-note {
+.hero-note,
+.hero-held {
   margin: 0;
   font-size: var(--dw-type-footnote-size);
   font-weight: var(--dw-type-footnote-weight);
   line-height: var(--dw-type-footnote-line);
+}
+
+.hero-note,
+.hero-held-text {
   opacity: var(--dw-opacity-hero-secondary-text);
+}
+
+.hero-held {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs) var(--dw-space-s);
+  align-items: baseline;
+  justify-content: center;
+  margin-top: var(--dw-space-s);
+  text-align: center;
+}
+
+.hero-held-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dw-role-text-on-hero);
+  font: inherit;
+  font-weight: var(--dw-type-footnote-medium-weight);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .hero-fiat {
@@ -1298,7 +1349,7 @@ input[type="radio"]:disabled {
   bottom: 0;
   left: 50%;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   width: calc(100% - 2 * var(--dw-layout-page-padding-h));
   max-width: var(--dw-layout-shortcut-card-max-width);
   padding: var(--dw-space-xxs);
@@ -1448,10 +1499,6 @@ input[type="radio"]:disabled {
   background: var(--dw-role-accent-tint);
 }
 
-.tx-row.is-readonly:hover {
-  background: transparent;
-}
-
 .tx-row-icon {
   width: var(--dw-layout-row-icon-size);
   height: var(--dw-layout-row-icon-size);
@@ -1484,6 +1531,14 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.tx-row-party {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tx-row-party,
 .tx-row-time {
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
@@ -1837,6 +1892,24 @@ input[type="radio"]:disabled {
   color: var(--dw-role-danger);
 }
 
+.tx-detail-note {
+  margin: 0 0 var(--dw-space-l);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+/* Why Dash Wallet dropped the transaction itself, and where its coins are. */
+.tx-detail-dropped {
+  max-width: 34rem;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
 .tx-detail-explorer {
   margin: 0;
   padding: 0;
@@ -1896,6 +1969,14 @@ input[type="radio"]:disabled {
 .detail-value {
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+/* Amounts in a confirm list: tabular digits, aligned on their last digit, so the decimals line up. An amount reads
+ * left to right in any language, so its cell does too, and its end is the right in a right-to-left window as well. */
+.detail-amount {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 
 .detail-note {
@@ -2116,6 +2197,35 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-m);
   padding: var(--dw-layout-card-padding);
   border-radius: var(--dw-radius-card);
+}
+
+/* Pay ▸ added recipients (QT-052). */
+.pay-more-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pay-more-title {
+  margin: 0;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.pay-more-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.pay-scan-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-xs) var(--dw-space-m);
+  margin-top: calc(-1 * var(--dw-space-xs));
 }
 
 .amount-entry {
@@ -2442,6 +2552,21 @@ input[type="radio"]:disabled {
 
 .request-form .placeholder-note,
 .receive-card .form-problem {
+  margin: 0;
+}
+
+/* Receive in Shielded without the viewing key: why, and the unlock. Under the address while the
+   first scan runs: its progress, and that a payment is safe to receive now. */
+.shielded-receive-why,
+.shielded-receive-scan {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+}
+
+.shielded-receive-why p,
+.shielded-receive-scan p {
   margin: 0;
 }
 
@@ -3958,10 +4083,31 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-l);
 }
 
+.notifications:not(:empty) + * {
+  margin-top: var(--dw-space-l);
+}
+
 .notifications .bell-section {
-  padding: var(--dw-layout-card-padding);
+  padding: var(--dw-layout-card-padding) var(--dw-space-xs) var(--dw-space-sm);
   border-radius: var(--dw-radius-card);
   background: var(--dw-role-card);
+}
+
+.notifications .bell-section-title,
+.notifications .bell-more {
+  padding-inline: var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .bell-more {
+  padding-bottom: var(--dw-space-xs);
+}
+
+.notifications .bell-row-open {
+  padding: var(--dw-space-xs) var(--dw-space-transaction-row-horizontal);
+}
+
+.notifications .contact-row-actions {
+  padding-inline-end: var(--dw-space-transaction-row-horizontal);
 }
 
 /* ------------------------------------------------------------------ DashPay status (DP1-08) */
@@ -4055,6 +4201,13 @@ button.bell-row-open:focus-visible {
 
 .dashpay-card-action {
   align-self: center;
+}
+
+.dashpay-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-self: center;
+  gap: var(--dw-space-xs);
 }
 
 .join-intro {
@@ -4497,6 +4650,10 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-xs);
 }
 
+.shielded-card-actions > * {
+  white-space: nowrap;
+}
+
 .platform-card-title {
   margin: 0;
   font-size: var(--dw-type-subhead-medium-size);
@@ -4719,6 +4876,13 @@ button.bell-row-open:focus-visible {
   margin: var(--dw-space-m) 0 0;
 }
 
+.pay-shielded-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-xs);
+  margin-top: calc(-1 * var(--dw-space-s));
+}
+
 /* ------------------------------------------------------------------ Protocol advisory */
 
 .protocol-advisory-banner {
@@ -4782,6 +4946,31 @@ button.bell-row-open:focus-visible {
 
 .protocol-advisory-link:disabled {
   opacity: var(--dw-opacity-disabled);
+}
+
+.history-gap-notice {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.history-gap-title {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.history-gap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dw-space-s);
+  margin-top: var(--dw-space-xs);
+}
+
+.export-staging-path {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* ------------------------------------------------------------------ Prices (MP-01) */
@@ -4966,8 +5155,34 @@ button.bell-row-open:focus-visible {
 }
 
 .coinjoin-subtitle {
-  margin: 0 0 var(--dw-space-l);
+  margin: 0 0 var(--dw-space-s);
   color: var(--dw-role-text-secondary);
+}
+
+.coinjoin-explainer-link {
+  align-self: flex-start;
+  margin-bottom: var(--dw-space-l);
+}
+
+.coinjoin-explainer p {
+  margin: 0 0 var(--dw-space-m);
+  overflow-wrap: anywhere;
+}
+
+.license-text {
+  max-height: 12rem;
+  overflow: auto;
+  margin: var(--dw-space-s) 0;
+  padding: var(--dw-space-m);
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-field-fill);
+  color: var(--dw-role-text-secondary);
+  font-family: var(--dw-font-mono);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .coinjoin-notes,
@@ -5261,6 +5476,20 @@ button.bell-row-open:focus-visible {
   border-color: var(--dw-role-text-link);
 }
 
+/* "Pay with": a source that cannot pay says why under it. */
+.topup-choice[data-disabled] {
+  cursor: default;
+}
+
+.topup-sources {
+  margin-bottom: var(--dw-space-s);
+}
+
+/* A top-up from Platform names the address its fee is taken from: a long run that wraps. */
+.topup-platform-message {
+  overflow-wrap: anywhere;
+}
+
 .topup-choice-amount {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
@@ -5279,6 +5508,38 @@ button.bell-row-open:focus-visible {
 
 .pay-with-source[data-disabled] .topup-choice-amount {
   color: var(--dw-role-text-secondary);
+}
+
+/* "Make your username private": a source's note, balance and reason, one line each. */
+.pay-with-source .topup-choice-buys > span {
+  display: block;
+}
+
+/* The tip shown instead of the sources while the Shielded balance cannot pay; the pool's warning in
+   the warning color. */
+.privacy-tip {
+  padding: var(--dw-space-s) var(--dw-space-m);
+  border-radius: var(--dw-radius-card);
+  background: var(--dw-role-neutral-tint);
+}
+
+.privacy-tip[data-tone="warning"] {
+  background: var(--dw-role-warning-tint);
+}
+
+.privacy-tip-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.privacy-tip[data-tone="warning"] .privacy-tip-title {
+  color: var(--dw-role-warning);
+}
+
+.privacy-tip-text {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .topup-title {
@@ -5458,8 +5719,16 @@ button.bell-row-open:focus-visible {
 
 .mg-header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--dw-space-s);
+  min-width: 0;
+}
+
+/* A disabled action's reason wraps under it, end-aligned, instead of widening the header. */
+.mg-header-actions > .dash-button-why {
+  text-align: end;
 }
 
 .page-masternodes .page-column {
@@ -5607,6 +5876,20 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-s);
 }
 
+/* The pane's actions sit under its title, above everything its reads fill in, with More in a column
+ * of its own at the row's end: nothing that lands later moves it under the pointer. */
+.mg-pane-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--dw-space-s);
+}
+
+/* An action's place, held while the read that decides it is out. */
+.mg-reserved {
+  visibility: hidden;
+}
+
 /* Lines in two columns: the wallet's masternodes and their last votes. */
 .mg-roles {
   display: grid;
@@ -5652,6 +5935,58 @@ button.bell-row-open:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
+}
+
+/* Keys you added: one line per key with its Remove. */
+.mg-keys-added {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-keys-added li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dw-space-m);
+}
+
+/* Masternode keys (MG-10 §1.5): one row per keypair, the open one with its facts. */
+.mg-key-list {
+  margin: var(--dw-space-m) 0;
+  padding: 0 var(--dw-space-m);
+  list-style: none;
+}
+
+.mg-key-row {
+  padding: var(--dw-space-s) 0;
+}
+
+.mg-key-row + .mg-key-row {
+  border-top: 1px solid var(--dw-role-separator);
+}
+
+.mg-key-secret {
+  display: grid;
+  gap: var(--dw-space-xs);
+  justify-items: start;
+}
+
+.mg-key-no-copy {
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-wrap: anywhere;
+}
+
+.mg-key-secret-line {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* Votes bar: yes / no / abstain segments by weight, with the funding threshold as a tick. */
@@ -5812,6 +6147,11 @@ button.bell-row-open:focus-visible {
   min-height: 0;
 }
 
+/* A step shown without the list (Sent) takes the whole width. */
+.mg-wizard > .mg-step:only-child {
+  grid-column: 1 / -1;
+}
+
 .mg-steps {
   display: flex;
   flex-direction: column;
@@ -5964,8 +6304,54 @@ button.bell-row-open:focus-visible {
   flex-wrap: nowrap;
 }
 
+/* The wizard's long steps keep the footer, and the primary action, in view while they scroll. */
+.sheet .mg-sheet-footer-sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  flex-wrap: wrap;
+  background: var(--dw-role-card);
+}
+
+/* The passphrase, with the step's messages, rides in the sticky footer, on its own row above the
+   note and the actions. */
+.mg-sheet-footer-credential {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+/* An empty problem line takes no room there. */
+.mg-sheet-footer-credential .form-problem {
+  margin: 0;
+}
+
+.mg-sheet-footer-credential .form-problem:empty {
+  display: none;
+}
+
+/* Under it, the note shrinks so the actions keep the right end of the same row. */
+.mg-sheet-footer-sticky .mg-sheet-footer-note {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* A 64-hex hash breaks in the middle (its <wbr>), never before its last character. */
+.mg-hash {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
 .sheet .mg-sheet-body {
   padding-top: var(--dw-space-xxs);
+}
+
+/* A checkbox with its sentence beside it. */
+.mg-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
 }
 
 /* Vote sheet: masternodes with a checkbox, their weight and current vote. */
@@ -5996,6 +6382,7 @@ button.bell-row-open:focus-visible {
 
 .mg-node-name {
   font-weight: var(--dw-type-footnote-medium-weight);
+  overflow-wrap: anywhere;
 }
 
 .mg-node-sub {
@@ -6017,6 +6404,17 @@ button.bell-row-open:focus-visible {
 
 .mg-node-result {
   text-align: end;
+}
+
+/* A username vote's present choice names its contender: "Alice (8ZtW…R97P)". */
+.mg-nodes-names .mg-node {
+  grid-template-columns: 20px minmax(0, 1fr) 64px 160px;
+}
+
+/* The masternode list's height line keeps its place while its read is out, failed or unsynced:
+ * nothing below it moves when the read answers. */
+.mg-list-height {
+  min-height: var(--dw-type-footnote-line);
 }
 
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
@@ -6060,6 +6458,22 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-accent);
   color: var(--dw-role-text-on-hero);
   outline: none;
+}
+
+.mg-menu button[aria-disabled="true"] {
+  color: var(--dw-role-text-secondary);
+  cursor: default;
+}
+
+.mg-menu button[aria-disabled="true"]:hover,
+.mg-menu button[aria-disabled="true"]:focus-visible {
+  background: none;
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-menu button[aria-disabled="true"]:focus-visible {
+  outline: 2px solid var(--dw-role-accent);
+  outline-offset: -2px;
 }
 
 /* mg-00.css's helpers (its "Empty state" section's tail). */
@@ -6188,13 +6602,17 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-text-tertiary);
 }
 
+/* A radio group, not a fieldset, as on Restore options (issue 108): a flex fieldset's legend could
+   move the centred sheet under the first click on WebKitGTK. */
 .mg-choices {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-xxs);
+}
+
+.mg-choices > .mg-section-title {
   margin: 0;
-  padding: 0;
-  border: 0;
+  padding-inline: 2px;
 }
 
 .mg-choice {
@@ -6666,4 +7084,136 @@ button.bell-row-open:focus-visible {
 /* The selected row's tint under a "PoSe banned" chip keeps the text at AA, as with .chip-warning (axe). */
 .mg-row .chip-danger {
   background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
+}
+
+.sync-phase-active {
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ Sign in to an app (App Connect) */
+
+.connect-body,
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-m);
+}
+
+.connect-form .form-problem {
+  margin: 0;
+}
+
+.connect-form .form-problem:empty {
+  margin-top: calc(-1 * var(--dw-space-m));
+}
+
+.connect-terms {
+  padding: 0;
+}
+
+.connect-critical {
+  margin: var(--dw-space-xs) 0 0;
+  margin-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
+}
+
+.connect-app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  padding-bottom: var(--dw-space-m);
+  border-bottom: 1px solid var(--dw-role-separator);
+}
+
+/* The app's own name for itself: plain text colour, never an accent or a check mark. */
+.connect-claim {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+  overflow-wrap: anywhere;
+}
+
+.connect-app-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+}
+
+.connect-app-id-value {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--dw-space-xs);
+  min-width: 0;
+}
+
+.connect-asks-title {
+  margin: 0 0 var(--dw-space-xs);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.connect-bindings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.connect-binding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+}
+
+.connect-binding .check-row {
+  align-items: flex-start;
+}
+
+.connect-binding-detail,
+.connect-group {
+  margin: 0;
+  padding-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
+  color: var(--dw-role-text-secondary);
+}
+
+.connect-group-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxxs);
+  margin-top: var(--dw-space-xxs);
+}
+
+.connect-group-row dd {
+  margin: 0;
+}
+
+.connect-loading,
+.connect-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-s);
+}
+
+.connect-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--dw-role-text-secondary);
+}
+
+.connect-step[data-current] {
+  color: var(--dw-role-text-primary);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.connect-step:not([data-current])::before {
+  content: "";
+  width: var(--dw-space-l);
 }

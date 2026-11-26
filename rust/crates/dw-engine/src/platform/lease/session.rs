@@ -19,6 +19,7 @@ use super::lock::{Freeze, Scope};
 use super::table::{Issued, Signers};
 use super::{Lease, LeaseError, LockReport, parse_lease};
 use crate::platform::flows::{FlowKind, RevokeCause};
+use crate::platform::payments::PaymentSource;
 use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -42,8 +43,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::SharedMasternode
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
-        // No source's key class is issued before its slice (C5a, C5b).
-        FlowKind::ContactPayFromBalance => &[],
+        FlowKind::AppConnect => &[GrantKind::AppConnect],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -55,6 +55,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::EnableDashPayKeys
         | FlowKind::PlatformAddressMove
         | FlowKind::PlatformAddressSend
+        | FlowKind::ContactPayFromBalance
         | FlowKind::Shield
         | FlowKind::PlatformAddressFund
         | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
@@ -76,16 +77,24 @@ pub(crate) type HeldKey = (DerivationPath, Vec<u8>);
 
 /// §4.1 step 2 on the blocking pool: checks every grant before consuming
 /// any, redeems them, moves an own key into one `KeyHold`, issues every
-/// signer the purposes need, and drops the tokens. With `keys`, the
+/// signer the purposes need, and drops the tokens. With `platform_address`,
+/// a `Registration` lease with credits also carries the Platform-address
+/// signer (a registration paid from the Platform addresses, C-funding F5).
+/// With `keys`, the
 /// `PlatformOp` grant is redeemed only while the vault holds one of them
 /// (dw-vault `redeem_grant_holding_key`), else `KeysNotHeld` with every
 /// grant unused (none given included).
+/// `source`: a `ContactPayFromBalance` payment's (C-funding P15), whose
+/// lease carries that source's key class alone; `Shielded` for a
+/// `Registration` paid from the Shielded balance (F5), whose lease carries
+/// the shielded spend key beside the identity signer and no funding signer.
 pub(crate) fn issue(
     vault: &Vault,
     wallet: &WalletId,
-    flow: FlowKind,
+    (flow, source): (FlowKind, Option<PaymentSource>),
     grants: &[String],
     keys: Option<&[HeldKey]>,
+    platform_address: bool,
 ) -> Result<Issued, LeaseError> {
     let epoch_before = vault.epoch();
     let allowed = kinds_for(flow);
@@ -110,12 +119,23 @@ pub(crate) fn issue(
     vault
         .window_lease_allowed(grants)
         .map_err(|_| LeaseError::Invalid)?;
+    // A Shielded payout's grant must cap credits; refused before it is
+    // redeemed.
+    if flow == FlowKind::ContactPayFromBalance && source == Some(PaymentSource::Shielded) {
+        for g in grants {
+            let purpose = vault.grant_purpose(g, GrantKind::PlatformOp, Some(&wallet.0));
+            if !matches!(purpose, Ok(GrantPurpose::PlatformOp { max_credits, .. }) if max_credits > 0)
+            {
+                return Err(LeaseError::Invalid);
+            }
+        }
+    }
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
-    order.sort_by_key(|(_, k)| **k != GrantKind::PlatformOp);
+    order.sort_by_key(|(_, k)| !matches!(**k, GrantKind::PlatformOp | GrantKind::AppConnect));
     let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
-        (GrantKind::PlatformOp, Some(keys)) => vault
+        (GrantKind::PlatformOp | GrantKind::AppConnect, Some(keys)) => vault
             .redeem_grant_holding_key(g, &wallet.0, keys)?
             .ok_or(VaultError::NoSecret),
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
@@ -150,17 +170,39 @@ pub(crate) fn issue(
             GrantPurpose::PlatformOp { max_credits, .. }
                 if matches!(
                     flow,
-                    FlowKind::PlatformAddressMove | FlowKind::PlatformAddressSend
-                ) =>
+                    FlowKind::PlatformAddressMove
+                        | FlowKind::PlatformAddressSend
+                        | FlowKind::ContactPayFromBalance
+                ) && source != Some(PaymentSource::Shielded) =>
             {
-                // "Move to Dash wallet" (release 0.1) and a send to a
-                // Platform address (0.2): the DIP-17 payment keys alone, no
+                // "Move to Dash wallet" (release 0.1), a send to a Platform
+                // address (0.2) and a contact payout from the Platform
+                // balance (C-funding P15): the DIP-17 payment keys alone, no
                 // identity key and no contact crypto.
                 out.credits = max_credits;
                 if max_credits > 0 {
                     out.signers.platform_address =
                         Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
                 }
+            }
+            GrantPurpose::PlatformOp { max_credits, .. }
+                if flow == FlowKind::ContactPayFromBalance =>
+            {
+                // A contact payment from the Shielded balance (C-funding
+                // P15): the shielded spend key and the contact crypto its
+                // address reservation drains through; no identity key, no
+                // funding signer.
+                if source != Some(PaymentSource::Shielded) || max_credits == 0 {
+                    return Err(LeaseError::Invalid);
+                }
+                out.credits = max_credits;
+                out.crypto = true;
+                let spend_key = match &key {
+                    Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                    None => vault.shielded_spend_key(&wallet.0, token),
+                };
+                out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
             }
             GrantPurpose::PlatformOp { max_duffs, .. } if flow == FlowKind::PlatformAddressFund => {
                 // "Add from Dash wallet" (0.2): the asset-lock credit keys
@@ -170,6 +212,27 @@ pub(crate) fn issue(
                     out.signers.funding =
                         Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
                 }
+            }
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits,
+            } if flow == FlowKind::Registration && source == Some(PaymentSource::Shielded) => {
+                // A registration paid from the Shielded balance (C-funding
+                // F5): the identity signer, the shielded spend key and the
+                // contact crypto; never a funding signer.
+                if max_duffs > 0 || max_credits == 0 || platform_address {
+                    return Err(LeaseError::Invalid);
+                }
+                out.credits = max_credits;
+                out.crypto = true;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                let spend_key = match &key {
+                    Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                    None => vault.shielded_spend_key(&wallet.0, token),
+                };
+                out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
             }
             GrantPurpose::PlatformOp {
                 max_duffs,
@@ -192,6 +255,10 @@ pub(crate) fn issue(
                 } else if max_credits > 0 {
                     out.signers.identity =
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                    if platform_address && flow == FlowKind::Registration {
+                        out.signers.platform_address =
+                            Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                    }
                 }
                 out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
             }
@@ -240,6 +307,20 @@ pub(crate) fn issue(
                 };
                 out.signers.withdrawal = Some(signer.map_err(issuing)?);
             }
+            GrantPurpose::AppConnect {
+                max_credits,
+                request,
+                ..
+            } if flow == FlowKind::AppConnect => {
+                // An App Connect login: the identity keys (the MASTER key's
+                // update, the document key's response) and the request's
+                // application keys; no funding signer, no contact crypto.
+                out.credits = max_credits;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
+                out.signers.app_connect =
+                    Some(scoped(SignerScope::AppConnect { request }).map_err(issuing)?);
+            }
             GrantPurpose::Governance => {
                 out.voting = true;
                 let signer = match &key {
@@ -275,7 +356,49 @@ impl NetworkSession {
         flow: FlowKind,
         grants: &[String],
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing(wallet, flow, grants, None).await
+        self.begin_issuing((wallet, flow, None), grants, None, false)
+            .await
+    }
+
+    /// A `Registration` lease; `from_platform`: it also carries the
+    /// Platform-address signer (C-funding F5).
+    pub(crate) async fn begin_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+        from_platform: bool,
+    ) -> Result<Lease, LeaseError> {
+        let flow = FlowKind::Registration;
+        self.begin_issuing((wallet, flow, None), grants, None, from_platform)
+            .await
+    }
+
+    /// A `Registration` lease paid from the Shielded balance: the identity
+    /// signer and the shielded spend key, no funding signer (C-funding F5).
+    pub(crate) async fn begin_shielded_registration_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        grants: &[String],
+    ) -> Result<Lease, LeaseError> {
+        let scope = (
+            wallet,
+            FlowKind::Registration,
+            Some(PaymentSource::Shielded),
+        );
+        self.begin_issuing(scope, grants, None, false).await
+    }
+
+    /// [`Self::begin_lease`] for a `ContactPayFromBalance` payment from
+    /// `source` (C-funding P15).
+    pub(crate) async fn begin_payout_lease(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        source: PaymentSource,
+        grants: &[String],
+    ) -> Result<Lease, LeaseError> {
+        let flow = FlowKind::ContactPayFromBalance;
+        self.begin_issuing((wallet, flow, Some(source)), grants, None, false)
+            .await
     }
 
     /// [`Self::begin_lease`] for a write that signs with one of `keys`:
@@ -288,15 +411,16 @@ impl NetworkSession {
         grants: &[String],
         keys: Vec<HeldKey>,
     ) -> Result<Lease, LeaseError> {
-        self.begin_issuing(wallet, flow, grants, Some(keys)).await
+        self.begin_issuing((wallet, flow, None), grants, Some(keys), false)
+            .await
     }
 
     async fn begin_issuing(
         self: &Arc<Self>,
-        wallet: WalletId,
-        flow: FlowKind,
+        (wallet, flow, source): (WalletId, FlowKind, Option<PaymentSource>),
         grants: &[String],
         keys: Option<Vec<HeldKey>>,
+        platform_address: bool,
     ) -> Result<Lease, LeaseError> {
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
@@ -305,20 +429,42 @@ impl NetworkSession {
             .begin(
                 wallet,
                 flow,
-                move || issue(&vault, &wallet, flow, &grants, keys.as_deref()),
+                move || {
+                    let (scope, keys) = ((flow, source), keys.as_deref());
+                    issue(&vault, &wallet, scope, &grants, keys, platform_address)
+                },
                 move || epoch_vault.epoch(),
             )
             .await
     }
 
-    /// §4.3's rebind of a lease in `NeedsGrant` with fresh grants.
+    /// §4.3's rebind of a lease in `NeedsGrant` with fresh grants. A
+    /// contact payout's lease pays once and is never rebound: `Invalid`
+    /// before the grants are redeemed (a host begins another flow).
     pub async fn rebind_lease(&self, lease: &Lease, grants: &[String]) -> Result<(), LeaseError> {
+        self.rebind_lease_scoped(lease, grants, (false, None)).await
+    }
+
+    /// [`Self::rebind_lease`]; `platform_address` and `source` as
+    /// [`issue`] takes them.
+    pub(crate) async fn rebind_lease_scoped(
+        &self,
+        lease: &Lease,
+        grants: &[String],
+        (platform_address, source): (bool, Option<PaymentSource>),
+    ) -> Result<(), LeaseError> {
+        if lease.flow == FlowKind::ContactPayFromBalance {
+            return Err(LeaseError::Invalid);
+        }
         let vault = self.vault.clone();
         let epoch_vault = self.vault.clone();
         let (wallet, flow, grants) = (lease.wallet, lease.flow, grants.to_vec());
         lease
             .rebind(
-                move || issue(&vault, &wallet, flow, &grants, None),
+                move || {
+                    let scope = (flow, source);
+                    issue(&vault, &wallet, scope, &grants, None, platform_address)
+                },
                 move || epoch_vault.epoch(),
             )
             .await

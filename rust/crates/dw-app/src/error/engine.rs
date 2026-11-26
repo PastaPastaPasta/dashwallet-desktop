@@ -178,6 +178,10 @@ impl From<EngineError> for AppError {
                 EngineCode::TxActionRefused.into(),
                 Some(ErrorData::TxAction {
                     refusal: refusal.into(),
+                    wallet_id: match refusal {
+                        dw_engine::TxActionRefusal::RecordUnreadable(w) => Some(w.to_string()),
+                        _ => None,
+                    },
                 }),
             ),
             E::NoPeers => (EngineCode::NoPeers.into(), None),
@@ -348,6 +352,35 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({ "kind": "outpoint", "txid": "0".repeat(64), "vout": u32::MAX })
+        );
+    }
+
+    /// A refusal rides in data; the one a restart and a rescan clear says
+    /// so in its message, the others name the refusal.
+    #[test]
+    fn a_tx_action_refusal_rides_in_data_with_its_message() {
+        let e = |r| serde_json::to_value(AppError::from(EngineError::TxActionRefused(r))).unwrap();
+        let rescan = e(TxActionRefusal::RescanFirst);
+        assert_eq!(
+            rescan["data"],
+            serde_json::json!({ "kind": "txAction", "refusal": "rescanFirst", "walletId": null })
+        );
+        let wallet = dw_engine::WalletId([7; 32]);
+        assert_eq!(
+            e(TxActionRefusal::RecordUnreadable(wallet))["data"],
+            serde_json::json!({
+                "kind": "txAction",
+                "refusal": "recordUnreadable",
+                "walletId": wallet.to_string(),
+            })
+        );
+        assert_eq!(
+            rescan["message"],
+            "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+        );
+        assert_eq!(
+            e(TxActionRefusal::InstantLocked)["message"],
+            "transaction action refused: InstantLocked"
         );
     }
 

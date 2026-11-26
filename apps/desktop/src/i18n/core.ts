@@ -218,9 +218,11 @@ function longText(message: string): string {
 
 /** The right-to-left pseudo-locale's text: each literal run drawn right to left (U+202E … U+202C),
  * placeholders left as their values read. */
+/** The RTL pseudo-locale: every run of text right to left, in every paragraph of it (an override
+ * ends at a paragraph separator). */
 function rtlText(message: string): string {
   return tokenize(message)
-    .map((t) => (t.kind === "text" ? `‮${t.text}‬` : t.kind === "param" ? `{${t.name}}` : `<${t.kind === "close" ? "/" : ""}${t.tag}>`))
+    .map((t) => (t.kind === "text" ? `‮${acrossParagraphs(t.text, "‮", "‬")}‬` : t.kind === "param" ? `{${t.name}}` : `<${t.kind === "close" ? "/" : ""}${t.tag}>`))
     .join("");
 }
 

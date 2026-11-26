@@ -21,7 +21,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
     for (const id of POOL_CARDS) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
-    expect(await platformMoveWhy(page)).toBe("0.004005 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
+    expect(await platformMoveWhy(page)).toBe("0.00400500 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
   });
 
   test(`Unfinished transfers keeps both Finish paths, with no pool card (${theme})`, async ({ page }) => {
@@ -236,4 +236,48 @@ test("a failed Platform refetch after a good read keeps the last balance", async
   await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
   await expect(page.getByTestId("breakdown-platform")).not.toContainText("not available");
   await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+});
+
+// DP1-09 D4 reversed: the voting card's instant username while the own contest is open.
+test.describe("the voting card's instant username", () => {
+  const card = (page: Page) => page.getByTestId("dashpay-card");
+  const action = (page: Page) => page.getByTestId("dashpay-card-action");
+
+  test("no temporary name: the hint, and Create instant username opens the instant form", async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-contest-no-temporary", "light"));
+    await expect(card(page)).toHaveAttribute("data-state", "voting");
+    await expect(card(page)).toContainText("While “alice” is out for a vote, you can create an instant username to use now.");
+    await expect(action(page)).toHaveText("Create instant username");
+    await expect(page.getByTestId("dashpay-card-secondary")).toHaveText("What is username voting?");
+    await action(page).click();
+    await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+    await expect(page.getByTestId("registration-name")).toContainText("Create instant username");
+  });
+
+  test("credits short: the short line, and Top up opens the top-up sheet", async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-contest-instant-short", "light"));
+    await expect(card(page)).toContainText("Not enough credits for an instant username.");
+    await expect(action(page)).toHaveText("Top up");
+    await action(page).click();
+    await expect(page.getByTestId("page-profile")).toBeVisible();
+    await expect(page.getByTestId("topup-body")).toBeVisible();
+  });
+
+  test("the registration's temporary name: iOS's success line, or its failure with Try again prefilled", async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-instant-ok", "light"));
+    await expect(card(page)).toContainText("In the meantime you are reachable at “alice2”, which is yours to keep.");
+    await expect(action(page)).toHaveAttribute("data-kind", "votingInfo");
+    await page.goto(fixtureUrl("dashpay-instant-failed", "light"));
+    await expect(card(page)).toContainText("The instant username “alice2” could not be registered, so you have no username to use while the vote runs.");
+    await expect(action(page)).toHaveText("Try again");
+    await action(page).click();
+    await expect(page.getByTestId("registration-name-field")).toHaveValue("alice2");
+  });
+
+  test("a temporary name held: no offer", async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-contest-pending", "light"));
+    await expect(card(page)).toContainText("Until then you are @alice007.");
+    await expect(action(page)).toHaveAttribute("data-kind", "votingInfo");
+    await expect(page.getByTestId("dashpay-card-secondary")).toHaveCount(0);
+  });
 });

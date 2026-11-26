@@ -25,6 +25,7 @@ import { keys, scanHeightsStale } from "./queries";
 import { showShellToast } from "../components/toast";
 import { t } from "../i18n";
 import { announceable, feedSync } from "./syncDisplay";
+import { isExportStagingNotice, onExportStagingNotice, readExportStagingNotices } from "../app/exportStaging";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -55,16 +56,24 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
-      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
-      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId)];
+      // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7). The
+      // masternode overview lists collateral-shaped coins, which Show Masternodes' Auto counts.
+      // A dropped payment's coins coming back, or the scan that brings them stopping, moves what
+      // its details and notice say; the engine sends no history change for it.
+      return [keys.balance(event.walletId), keys.wallets, keys.coinsAll(event.walletId), dashpayKeys.quote(event.walletId), keys.coinjoinStatus(event.walletId), mnKeys.list(event.walletId), keys.droppedNotices(event.walletId), keys.txDetailAll(event.walletId)];
     case "historyChanged":
       return [
         keys.historyAll(event.walletId),
         keys.txDetailAll(event.walletId),
+        keys.droppedNotices(event.walletId),
         keys.receiveAll(event.walletId),
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),
         mnKeys.payoutsAll(event.walletId),
+        // A shared session reads its stage and `abandonable` from the wallet's history (an abandon in Activity).
+        mnKeys.sharedSessions(event.walletId),
+        mnKeys.sharedSessionAll(event.walletId),
+        mnKeys.sharedUnreadable(event.walletId),
       ];
     // A registration parks for an unlock or an authorization without writing its row, so
     // without a Platform signal (DP1-08 D19).
@@ -72,7 +81,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
       // A lock drops the wallet's queries (lockGate.ts): only the lock screen's are read again.
       if (event.state === "locked") return [keys.lockStatus, keys.lockReconcile];
       // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
+      // A full unlock lets Shielded bind its viewing key: its status and address are read again.
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll, keys.shieldedAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
@@ -229,6 +239,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // A notice's detail can name a wallet or an asset lock: not while locked.
     if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
     if (event.kind === "notice" && event.code === "backupFailed") showShellToast(t("settings.backups.automaticFailed.toast"));
+    if (event.kind === "notice" && isExportStagingNotice(event.code)) onExportStagingNotice(event.code, event.detail);
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
     if (event.kind === "sync") feedSync(backend, event.status);
@@ -306,6 +317,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   // A finished transfer leaves the unfinished list and joins the Shielded balance.
   const stopRecovery = onRecoverySettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  void readExportStagingNotices(() => backend.recentNotices(), network).catch(() => undefined);
   return () => {
     stopReconcile();
     stopHeldNews();

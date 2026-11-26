@@ -6,6 +6,7 @@ import type { Tree } from "./core";
 import { activity } from "./catalog/activity";
 import { app } from "./catalog/app";
 import { coinjoin } from "./catalog/coinjoin";
+import { coins } from "./catalog/coins";
 import { common } from "./catalog/common";
 import { components } from "./catalog/components";
 import { contacts } from "./catalog/contacts";
@@ -17,6 +18,7 @@ import { network } from "./catalog/network";
 import { notifications } from "./catalog/notifications";
 import { onboarding } from "./catalog/onboarding";
 import { pay } from "./catalog/pay";
+import { platform } from "./catalog/platform";
 import { rates } from "./catalog/rates";
 import { receive } from "./catalog/receive";
 import { routes } from "./catalog/routes";
@@ -40,6 +42,8 @@ export const en = {
   activity,
   receive,
   pay,
+  coins,
+  platform,
   contacts,
   dashpay,
   coinjoin,

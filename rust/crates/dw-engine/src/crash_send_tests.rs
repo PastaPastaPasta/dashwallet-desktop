@@ -9,7 +9,8 @@ use std::sync::Arc;
 use dashcore::{OutPoint, Transaction, Txid};
 
 use super::own_spend_disk_tests::{
-    COIN, TIP, abandon, assert_holds, coins, send, spendable, synced, wallet_funded_unmined,
+    COIN, TIP, abandon, assert_holds, assert_holds_waiting, coins, send, spendable, synced,
+    wallet_funded_unmined,
 };
 use super::{instant_lock, mempool, mined, reopen, rows, wait_stored_locked};
 use crate::send::CoinSource;
@@ -488,8 +489,9 @@ fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid]);
     let own = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    // Not [7; 32], whose output 0 the test wallet's funding spends.
     let coin = OutPoint::new(
-        <Txid as dashcore::hashes::Hash>::from_byte_array([7; 32]),
+        <Txid as dashcore::hashes::Hash>::from_byte_array([0x5c; 32]),
         0,
     );
     let payment = super::spend_of(
@@ -606,10 +608,7 @@ fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
     assert!(!held(&engine, &session, id).contains(&a), "A is out");
     assert!(!held(&engine, &session, id).contains(&b), "B is out");
 
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
     let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
     assert_eq!(dropped, 1, "the damaged payment is counted");
     assert!(
@@ -638,6 +637,67 @@ fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
         !held(&engine, &session, id).contains(&b),
         "B after a restart"
     );
+}
+
+/// As above, but another record of the wallet doesn't read at its load:
+/// what descends from the damaged payment is unknown, so Remove
+/// Unconfirmed keeps its mark and its coin out, and fails with
+/// `RecordUnreadable` naming the wallet (#611).
+#[test]
+fn remove_unconfirmed_keeps_a_damaged_payment_while_a_record_does_not_read() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let kept = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![b]),
+        COIN / 2,
+        false,
+    );
+    let damaged = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &kept);
+    super::instant_lock(&engine, &session, id, &kept);
+    wait_stored_locked(&session, id, kept.txid());
+    {
+        let (appdb, scope) = (&session.live().unwrap().appdb, id.to_string());
+        let txid = damaged.txid();
+        appdb
+            .set_setting(&scope, &format!("senttx:{txid}"), Some("zz"))
+            .unwrap();
+        appdb
+            .set_setting(&scope, &format!("sent:{txid}"), Some(&format!("{a},{b}")))
+            .unwrap();
+    }
+    let session = reopen(&engine, session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    session.hub.unreadable_record.lock().unwrap().0 = Some(kept.txid());
+    engine.block_on(session.load_wallet(id)).unwrap();
+
+    super::own_spend_disk_tests::start_offline_spv(&engine, &session);
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id)));
+    assert!(
+        matches!(
+            dropped,
+            Err(crate::EngineError::TxActionRefused(
+                crate::tx_actions::TxActionRefusal::RecordUnreadable(w)
+            )) if w == id
+        ),
+        "{dropped:?}"
+    );
+    assert!(
+        sent_marks(&session, id).contains(&damaged.txid()),
+        "the damaged payment's mark stays"
+    );
+    assert!(!held(&engine, &session, id).contains(&a), "A is counted");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
 }
 
 /// A restored payment of a coin funded without a record, relayed back
@@ -1109,11 +1169,13 @@ fn an_abandoned_payment_seen_again_after_a_restart_applies_its_balance() {
 
     let session = reopen(&engine, session);
     let before = held(&engine, &session, id);
-    assert_holds(&engine, &session, id, &before, "reopened");
+    // A waits for the abandon's rescan (#818).
+    let waiting = BTreeSet::from([a]);
+    assert_holds_waiting(&engine, &session, id, &before, &waiting, "reopened");
     mempool(&engine, &session, id, &payment);
     let after = held(&engine, &session, id);
     assert_ne!(before, after, "key-wallet didn't count it again");
-    assert_holds(&engine, &session, id, &after, "seen again");
+    assert_holds_waiting(&engine, &session, id, &after, &waiting, "seen again");
 }
 
 /// A height-only row without a height (an unconfirmed coin's) beside a
@@ -1435,8 +1497,5 @@ fn damaged_payment_whose_marks_did_not_delete() -> (
 }
 
 fn spv_running(engine: &Engine, session: &Arc<NetworkSession>) {
-    engine.block_on(session.start_spv()).unwrap();
-    super::own_spend_disk_tests::eventually("SPV runs", || {
-        session.spv_state().unwrap() == crate::SpvState::Running
-    });
+    super::own_spend_disk_tests::start_offline_spv(engine, session);
 }

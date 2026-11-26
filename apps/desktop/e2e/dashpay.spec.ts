@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_WALLET_ID } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { CARDS } from "./dashpay";
+import { CARDS, payFromDashWallet, setShielded } from "./dashpay";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-08: the DashPay status card on Home, the identity chip, the Join DashPay page, the voting
@@ -221,7 +221,10 @@ test("IOS-065 J1: the intro and the cost; Create username opens the wizard's fir
   );
   await expect(page.getByTestId("join-shortfall")).toHaveCount(0);
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
+  await page.getByTestId("registration-back").click();
+  await expect(page.getByTestId("registration-pay-with")).toBeVisible();
   await page.getByTestId("registration-cancel").click();
   await expect(page.getByTestId("join-create")).toBeVisible();
   expect(errors).toEqual([]);
@@ -229,7 +232,13 @@ test("IOS-065 J1: the intro and the cost; Create username opens the wizard's fir
 
 test("IOS-065 J1 a shortfall, J3 watch-only, J2 held until synced, J7 a failed quote", async ({ page }) => {
   await openJoin(page, "empty");
-  await expect(page.getByTestId("join-shortfall")).toHaveText("You need at least 0.031 tDASH to create a username.");
+  // C-funding F16: no shortfall while the Shielded balance can pay; one naming both once it cannot.
+  await expect(page.getByTestId("join-cost")).toBeVisible();
+  await expect(page.getByTestId("join-shortfall")).toHaveCount(0);
+  await setShielded(page, { balance: "0", notes: undefined });
+  await expect(page.getByTestId("join-shortfall")).toHaveText(
+    "You need at least 0.031 tDASH to create a username. Your Dash wallet has 0.00 tDASH. Your Shielded balance has 0.00 tDASH.",
+  );
 
   await openJoin(page, "dashpay-watch-only");
   await expect(page.getByTestId("join-readiness")).toHaveAttribute("data-kind", "watchOnly");
@@ -284,3 +293,26 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+// DP1-09 D4 reversed: the Join page's voting card offers the instant username too, on mainnet as
+// on testnet (registration from the Dash wallet is live on both); the offer says the network's
+// vote length.
+test("the Join page's voting card offers Create instant username, on mainnet too", async ({ page }) => {
+  for (const network of ["", "&network=mainnet"]) {
+    await page.goto(fixtureUrl("dashpay-contest-no-temporary", "light", network));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+    const card = page.getByTestId("page-joinDashPay").getByTestId("dashpay-card");
+    await expect(card.getByTestId("dashpay-card-action")).toHaveText("Create instant username");
+  }
+  // The wizard's offer on mainnet says two weeks.
+  await page.goto(fixtureUrl("dashpay-no-identity", "light", "&network=mainnet"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+  await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
+  await page.getByTestId("registration-name-field").fill("alice");
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await expect(page.getByTestId("instant-offer")).toContainText("will be voted on for 2 weeks.");
+});

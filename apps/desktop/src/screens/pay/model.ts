@@ -37,6 +37,33 @@ export interface Advanced {
   changeAddress: string | null;
 }
 
+/** A mixed payment of this many coins or more warns about privacy (U-06b D3, dash-qt sendcoinsdialog.cpp). */
+export const MIXED_INPUT_WARNING = 10;
+
+/** A mixed payment whose left-over reaches this many duffs (0.01 DASH) warns, unless the 10% fee warning shows. */
+export const MIXED_LEFT_OVER_WARNING = 1_000_000;
+
+export interface MixedSendNotes {
+  inputCount: number;
+  manyCoins: boolean;
+  /** What the fee holds beyond the rate (the estimate's `leftOver`); `null` when nothing is left over. */
+  leftOver: number | null;
+  /** The left-over reaches `MIXED_LEFT_OVER_WARNING` and the fee warning is not showing: the
+   * warning takes the left-over note's place. */
+  largeLeftOver: boolean;
+}
+
+/** What the confirm sheet says about a payment from fully mixed coins (U-06b); `null` for any other source. */
+export function mixedSendNotes(coins: CoinChoice, estimate: Pick<TxEstimate, "inputCount" | "leftOver">, feeWarned: boolean): MixedSendNotes | null {
+  if (coins !== "mixed") return null;
+  return {
+    inputCount: estimate.inputCount,
+    manyCoins: estimate.inputCount >= MIXED_INPUT_WARNING,
+    leftOver: estimate.leftOver > 0 ? estimate.leftOver : null,
+    largeLeftOver: estimate.leftOver >= MIXED_LEFT_OVER_WARNING && !feeWarned,
+  };
+}
+
 /** dash-qt's default confirmation target (6 blocks), the engine draft's too. */
 export const DEFAULT_TARGET_BLOCKS = 6;
 
@@ -58,6 +85,7 @@ export function outpointOf(key: string): OutPoint {
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
   if (u.spendable) return null;
+  if (u.excluded === "pendingUnproven") return t("coins.pendingUnproven");
   if (u.reserved) return t("pay.notSelectable.reserved");
   if (u.userLocked) return t("pay.notSelectable.locked");
   if (u.isCoinbase) return t("pay.notSelectable.immature");
@@ -104,6 +132,27 @@ export interface PayInput {
 export type PayRecipient = Recipient | ContactRecipient;
 
 export const isContact = (r: PayRecipient): r is ContactRecipient => "contact" in r;
+
+/** Pay ▸ To an address takes more than one recipient (dash-qt's Add Recipient, QT-052). A funds
+ * flow still waiting on its funds ruling: on for testnet, regtest and devnet, off on mainnet. */
+export const multiRecipientPay = (network: { kind: string }) => network.kind !== "mainnet";
+
+/** Every recipient of a payment: the form's first, then the added ones (address recipients only). */
+export const recipientsOf = (first: PayRecipient, more: readonly Recipient[]): PayRecipient[] => [first, ...more];
+
+/** At most one recipient pays the fee from its amount: then what each receives is exact, the
+ * subtracting one getting the rest of the estimate's total, and the sheet can show it. */
+export const subtractingCount = (rs: readonly PayRecipient[]) => rs.filter(subtractsFee).length;
+
+/** What each recipient receives, in order, from the estimate's total; `null` when more than one
+ * subtracts the fee (the engine splits it, and the sheet could not show each share). */
+export function receivedAmounts(rs: readonly PayRecipient[], totalSent: number): number[] | null {
+  const subtracting = rs.findIndex(subtractsFee);
+  if (subtractingCount(rs) > 1) return null;
+  if (subtracting < 0) return rs.map((r) => r.amount);
+  const others = rs.reduce((n, r, i) => (i === subtracting ? n : n + r.amount), 0);
+  return rs.map((r, i) => (i === subtracting ? totalSent - others : r.amount));
+}
 
 export const subtractsFee = (r: PayRecipient) => (isContact(r) ? r.subtractFee : r.subtractFeeFromAmount);
 
@@ -388,6 +437,8 @@ export function authRefusal(e: AppError): AuthRefusal {
 /** What the confirm sheet showed and the user agreed to. */
 export interface Confirmed {
   recipient: PayRecipient;
+  /** Recipients after the first (Add Recipient): address recipients, paid in the same transaction. */
+  more: Recipient[];
   estimate: TxEstimate;
   /** The custom change address, if any. */
   changeAddress: string | null;
@@ -397,10 +448,22 @@ export interface Confirmed {
   total: number;
 }
 
-export function confirmedOf(recipient: PayRecipient, estimate: TxEstimate, change: ChangePolicy): Confirmed {
+export function confirmedOf(recipient: PayRecipient, estimate: TxEstimate, change: ChangePolicy, more: Recipient[] = []): Confirmed {
   const changeAddress = change.kind === "address" ? change.address : null;
   const total = estimate.totalSent + estimate.fee + (changeAddress === null ? 0 : (estimate.change ?? 0));
-  return { recipient, estimate, changeAddress, total };
+  return { recipient, more, estimate, changeAddress, total };
+}
+
+/** Takes, for each address recipient in order, the one output paying its address exactly what it
+ * receives; the outputs left over, or `null` when one is missing. */
+function takePayments<O extends { address: string | null; amount: number }>(outputs: readonly O[], rs: readonly Recipient[], received: readonly number[]): O[] | null {
+  const rest = [...outputs];
+  for (const [i, r] of rs.entries()) {
+    const at = rest.findIndex((o) => o.address === r.address && o.amount === received[i]);
+    if (at < 0) return null;
+    rest.splice(at, 1);
+  }
+  return rest;
 }
 
 /** The signed transaction keeps the sheet's promise (U-03 D2, D23): every number the sheet showed
@@ -416,6 +479,7 @@ export function confirmedOf(recipient: PayRecipient, estimate: TxEstimate, chang
 const CONTACT_PLACEHOLDERS = ["XagqqFetxiDb9wbartKDrXgnqLah6SqX2S", "yLKSrCjLQFsfVgX8RjdctZ797d54atPjnV"];
 
 export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
+  if (c.more.length > 0) return keepsManyPromise(c, s);
   const { estimate, recipient: r } = c;
   const paysPayee = (o: PreparedTxSummary["outputs"][number]) =>
     isContact(r) ? !o.isMine && o.address !== null && !CONTACT_PLACEHOLDERS.includes(o.address) : o.address === r.address;
@@ -429,7 +493,36 @@ export function keepsPromise(c: Confirmed, s: PreparedTxSummary): boolean {
   const back = sum(s.outputs.filter((o) => o.isMine && (!o.isChange || c.changeAddress !== null)));
   return (
     shown &&
+    // As many coins as the sheet counted: denominations can make the same total from other coins,
+    // ten mixed ones where it showed one (the input count is what the mixed-coin warnings read).
+    s.inputs.length === estimate.inputCount &&
     paid === estimate.totalSent &&
+    s.totalSent === estimate.totalSent &&
+    s.fee === estimate.fee &&
+    change === (estimate.change ?? 0) &&
+    s.totalDebit === c.total - back
+  );
+}
+
+/** `keepsPromise` for several address recipients: each is paid exactly what the sheet showed
+ * (`receivedAmounts`), by one output to its address; every other output is change where the sheet
+ * said; and the fee, the change and the debit are the confirmed ones. Two recipients subtracting
+ * the fee fail closed: the sheet could not show what each receives. */
+function keepsManyPromise(c: Confirmed, s: PreparedTxSummary): boolean {
+  const { estimate, recipient: first } = c;
+  if (isContact(first)) return false;
+  const rs = [first, ...c.more];
+  const received = receivedAmounts(rs, estimate.totalSent);
+  if (!received || new Set(rs.map((r) => r.address)).size !== rs.length) return false;
+  const paidOutputs = s.outputs.filter((o) => !o.isChange);
+  if (paidOutputs.length !== rs.length || takePayments(paidOutputs, rs, received)?.length !== 0) return false;
+  const changeOk = s.outputs.filter((o) => o.isChange).every((o) => (c.changeAddress === null ? o.isMine : o.address === c.changeAddress));
+  const sum = (outputs: PreparedTxSummary["outputs"]) => outputs.reduce((n, o) => n + o.amount, 0);
+  const change = sum(s.outputs.filter((o) => o.isChange));
+  const back = sum(s.outputs.filter((o) => o.isMine && (!o.isChange || c.changeAddress !== null)));
+  return (
+    changeOk &&
+    sum(paidOutputs) === estimate.totalSent &&
     s.totalSent === estimate.totalSent &&
     s.fee === estimate.fee &&
     change === (estimate.change ?? 0) &&
@@ -447,11 +540,15 @@ export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
   const { estimate, recipient } = c;
   // A contact's address exists only once prepared: there is no unsigned contact payment.
   if (isContact(recipient)) return false;
-  // The payment is taken out first, so a custom change address equal to the recipient's still
+  // The payments are taken out first, so a custom change address equal to a recipient's still
   // leaves the change to check.
-  const paid = a.outputs.findIndex((o) => o.address === recipient.address && o.amount === estimate.totalSent);
-  if (paid < 0) return false;
-  const rest = a.outputs.filter((_, i) => i !== paid);
+  const rs = [recipient, ...c.more];
+  const received = receivedAmounts(rs, estimate.totalSent);
+  if (!received || new Set(rs.map((r) => r.address)).size !== rs.length) return false;
+  // The payments add up to what the sheet showed as sent (a planner's estimate that disagrees is no promise kept).
+  if (received.reduce((n, a) => n + a, 0) !== estimate.totalSent) return false;
+  const rest = takePayments(a.outputs, rs, received);
+  if (rest === null) return false;
   const change =
     estimate.change === null
       ? rest.length === 0

@@ -4,13 +4,14 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage } from "../api/backend";
+import { errorMessage, hasCode, isAppError } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
+import type { WalletSummary } from "../api/generated/WalletSummary";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { navigate, ui, useUi } from "../app/ui";
@@ -20,9 +21,12 @@ import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
+import { droppedLine, invalidSourceDetail, recipientOf } from "../history/dropped";
+import { recordUnreadableText, unreadableWallet } from "../history/recordUnreadable";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
+import { t, useT } from "../i18n";
 import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
@@ -35,6 +39,7 @@ const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "con
  * row reads as InstantSend (the activity row's word for it). A count of confirmations is technical
  * and stays in the folded details. */
 export function statusText(s: TxStatusInfo): string {
+  if (s.dropped) return t("activity.status.droppedLabel");
   switch (s.kind) {
     case "abandoned":
       return "Abandoned";
@@ -160,11 +165,73 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
 
 /** The abandon confirmation. Whether the wallet spent inputs decides it (`totalDebit`, the engine's
  * `from_me`), not the amount's sign: a payment to yourself nets only the fee but spends this wallet's
- * coins. An unknown debit takes the spending text. */
-export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
-  return x.totalDebit === 0
-    ? "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again."
-    : "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+ * coins. An unknown debit takes the spending text. A debit of none with an input whose coin the
+ * engine holds no record of (`inputsUnresolved`) may still be a payment sent from this wallet on
+ * another device, so it says what sending it again would do. */
+export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit" | "inputsUnresolved">): string {
+  if (x.totalDebit !== 0) return t("activity.abandon.spending");
+  return x.inputsUnresolved ? t("activity.abandon.unknownInputs") : t("activity.abandon.notSpending");
+}
+
+/** What a failed Abandon or Resend says: the engine's message, but the steps of a `rescanFirst`
+ * refusal, why a `settledDescendant` or `platformFunding` one can't be abandoned, which open wallet (of `wallets`)
+ * a `recordUnreadable` one names, and that an Abandon refused while the wallet catches up can be
+ * tried once it has, from the catalog. */
+export function actionProblem(e: unknown, wallets: readonly WalletSummary[] = [], what: "abandon" | "resend" = "abandon"): string {
+  const unreadable = unreadableWallet(e);
+  if (unreadable !== undefined) return recordUnreadableText(unreadable, wallets);
+  if (what === "abandon" && hasCode(e, "rescan_in_progress")) return t("activity.abandon.catchingUp");
+  if (isAppError(e) && e.data?.kind === "txAction") {
+    if (e.data.refusal === "rescanFirst") return t("activity.abandon.rescanFirst");
+    if (e.data.refusal === "settledDescendant") return t("activity.abandon.settledChild");
+    if (e.data.refusal === "platformFunding") return t("activity.abandon.platformFunding");
+  }
+  return errorMessage(e);
+}
+
+/** Whether the engine withholds an output of this transaction: it, or a payment it was built on,
+ * may never confirm, so its coin is pending (`coins.pendingUnproven`). */
+export const withholds = (x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined): boolean => (x?.withheldOutputs.length ?? 0) > 0;
+
+/** The pending coin's line, under the status, while the engine withholds it. */
+export function PendingUnprovenLine({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs"> | undefined }) {
+  if (!withholds(x)) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-pending-unproven">
+      {t("coins.pendingUnproven")}
+    </p>
+  );
+}
+
+/** Abandon's hint on a payment whose coin is pending, while Abandon is offered. */
+export function UnprovenAbandonHint({ x }: { x: Pick<TxDetailExtrasInfo, "withheldOutputs" | "canAbandon"> }) {
+  if (!x.canAbandon || !withholds(x)) return null;
+  return (
+    <p className="tx-actions-question" data-testid="tx-abandon-unproven-hint">
+      {t("activity.abandon.unprovenParentHint")}
+    </p>
+  );
+}
+
+/** An abandoned payment's line while the engine's rescan checks a coin it spent before giving it
+ * back; it goes when the engine reports the check done. */
+export function CheckingSpentCoinsLine({ x }: { x: Pick<TxDetailExtrasInfo, "abandoned" | "checkingSpentCoins"> | undefined }) {
+  if (!x?.abandoned || !x.checkingSpentCoins) return null;
+  return (
+    <p className="tx-detail-dropped" data-testid="tx-detail-checking-spent-coins">
+      {t("activity.abandon.checkingSpentCoins")}
+    </p>
+  );
+}
+
+function CoinLines({ walletId, txid }: { walletId: string; txid: string }) {
+  const x = useTxDetailExtras(walletId, txid).data;
+  return (
+    <>
+      <PendingUnprovenLine x={x} />
+      <CheckingSpentCoinsLine x={x} />
+    </>
+  );
 }
 
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
@@ -190,7 +257,8 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       await client.invalidateQueries({ queryKey: keys.txDetailAll(walletId) });
       await client.invalidateQueries({ queryKey: keys.historyAll(walletId) });
     } catch (e) {
-      setNote({ text: errorMessage(e), problem: true });
+      const wallets = await b.listWallets().catch(() => []);
+      setNote({ text: actionProblem(e, wallets, what), problem: true });
     } finally {
       setBusy(false);
     }
@@ -227,6 +295,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
           </span>
         )
       )}
+      {!confirming && <UnprovenAbandonHint x={x} />}
       {note && (
         <p className={note.problem ? "form-problem" : "placeholder-note"} role={note.problem ? "alert" : "status"} data-testid="tx-action-note">
           {note.text}
@@ -303,6 +372,7 @@ function ContactFact({
 }
 
 function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: NetworkInfo; walletId: string; onViewContact: () => void }) {
+  const t = useT();
   const backend = useBackend();
   const row = d.rows[0];
   const amount = d.rows.reduce((sum, r) => sum + r.amount, 0);
@@ -330,6 +400,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   // A stamp is history, shown while prices are on, today's price or not; off hides every value.
   const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
   const confirmations = confirmationDetail(d.status);
+  const recipient = row ? recipientOf({ ...row, address: counterparty }) : null;
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
@@ -353,6 +424,14 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             {statusText(d.status)}
           </span>
         </div>
+        {d.status.dropped && (
+          <p className="tx-detail-dropped" data-testid="tx-detail-dropped">
+            {invalidSourceDetail(d.status.dropped) && recipient && amount < 0
+              ? t("activity.invalidSource.detail", { recipient })
+              : droppedLine(d.status.dropped)}
+          </p>
+        )}
+        <CoinLines walletId={walletId} txid={d.txid} />
         <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
@@ -386,6 +465,11 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             <CopyValue value={d.txid} label="transaction ID" mono />
           </DetailRow>
           <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
+          {d.rawHex && (
+            <DetailRow label={t("activity.detail.rawTransaction")} testId="tx-detail-raw">
+              <CopyValue value={d.rawHex} action={t("activity.detail.copyRawTransaction")} mono display={d.rawHex.length > 32 ? `${d.rawHex.slice(0, 32)}…` : d.rawHex} />
+            </DetailRow>
+          )}
         </dl>
         <p className="io-heading">Inputs ({d.inputs.length})</p>
         <ul role="list" className="io-list" data-testid="tx-detail-inputs">

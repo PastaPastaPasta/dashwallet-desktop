@@ -8,7 +8,7 @@
 //! the moment they arrive and never logged.
 
 mod credits;
-mod flows;
+pub(crate) mod flows;
 mod invitations;
 mod keys;
 mod names;
@@ -21,29 +21,31 @@ mod unfinished;
 use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
-    CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
+    CostTable, PendingTopUp, StuckTopUpFunding, TopUpFromPlatformOutcome, TopUpFromPlatformQuote,
+    TopUpOutcome, TopUpQuote, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
-use self::platform_addresses::{
-    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
-    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
-};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
+use self::platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
+    PlatformAddressBalance, PlatformAddressRow, PlatformFundOutcome, PlatformFundQuote,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::shielded::{
-    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
-    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
+    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress,
+    ShieldedSpendOutcome, ShieldedSpendQuote, ShieldedStatus, ShieldedSyncInfo, StuckShieldFunding,
+    UnshieldToPlatformOutcome,
 };
 use self::startup::{
     DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
 };
-use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
+use self::unfinished::{LockFinish, LockKind, RecoverQuote, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::api::social::PaymentSourceName;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
@@ -170,8 +172,9 @@ commands! {
         Ok(quote.into())
     }
 
-    /// An invitation claim row's resume grant: no duffs, and the credits
-    /// of the steps it has left, from the row (DP5-03 D20).
+    /// An invitation claim row's or a Platform-funded row's resume grant:
+    /// no duffs, and the credits of the steps it has left, from the row
+    /// (DP5-03 D20).
     #[facade("DashPay::registration_resume_grant")]
     fn registration_resume_grant(state, wallet_id: String, draft: String) -> GrantRequest {
         let dashpay = state.dashpay(&wallet_id).await?;
@@ -453,6 +456,42 @@ commands! {
         Ok(out.into())
     }
 
+    /// What topping the identity up with `amount` of the Platform
+    /// addresses' credits takes.
+    #[facade("DashPay::top_up_from_platform_quote")]
+    fn credits_top_up_from_platform_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> TopUpFromPlatformQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay
+            .top_up_from_platform_quote(identity, amount.into())
+            .await?
+            .into())
+    }
+
+    /// Tops the identity up with `amount` of the Platform addresses'
+    /// credits under `grant`. `fee_input`: the quote's input 0; a plan
+    /// with another fee source or claim is `credits.quote_changed`.
+    #[facade("DashPay::top_up_from_platform")]
+    fn credits_top_up_from_platform(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
+        grant: String,
+    ) -> TopUpFromPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
+        let out = dashpay
+            .top_up_from_platform(identity, amount.into(), fee_input.map(Into::into), grant)
+            .await?;
+        Ok(out.into())
+    }
+
     /// The identity's recent withdrawals on Platform, the most recently
     /// updated first (at most 20).
     #[facade("DashPay::withdrawals")]
@@ -510,16 +549,18 @@ commands! {
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
+    /// `exit_of`: the quote's, the held top-up this move is the exit of.
     #[facade("DashPay::move_to_core")]
     fn platform_move_to_core(
         state,
         wallet_id: String,
         amount: WithdrawAmount,
         to: String,
+        exit_of: Option<String>,
         grant: String,
     ) -> MoveToCoreOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
+        Ok(dashpay.move_to_core(amount.into(), to, exit_of, grant).await?.into())
     }
 
     /// The wallet's Platform receive address: the lowest unused one.
@@ -765,6 +806,13 @@ commands! {
         Ok(state.dashpay(&wallet_id).await?.shielded_status().await?.into())
     }
 
+    /// Where the wallet's Shielded sync stands, for the status bar, Sync
+    /// progress and Receive; answers while a pass runs.
+    #[facade("DashPay::shielded_sync_info")]
+    fn shielded_sync_info(state, wallet_id: String) -> ShieldedSyncInfo {
+        Ok(state.dashpay(&wallet_id).await?.shielded_sync_info().await?.into())
+    }
+
     /// Runs a shielded sync pass now; returns the status after.
     #[facade("DashPay::shielded_sync")]
     fn shielded_sync(state, wallet_id: String) -> ShieldedStatus {
@@ -895,6 +943,39 @@ commands! {
             .into())
     }
 
+    /// What moving `credits` from Shielded to the wallet's own Platform
+    /// address `to` costs (`null` for its receive address).
+    #[facade("DashPay::unshield_to_platform_quote")]
+    fn unshield_to_platform_quote(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_to_platform_quote(credits, to).await?.into())
+    }
+
+    /// Shielded → Platform: unshields `credits` to the wallet's own Platform
+    /// address `to` under `grant`.
+    #[facade("DashPay::unshield_to_platform")]
+    fn unshield_to_platform(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> UnshieldToPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay
+            .unshield_to_platform(credits, to, grant, confirm_unrecorded)
+            .await?
+            .into())
+    }
+
     /// The wallet's shielded history for Activity, pending first, then
     /// newest first (`limit` at most 500).
     #[facade("DashPay::shielded_history")]
@@ -932,5 +1013,34 @@ commands! {
     ) -> LockFinish {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
+    }
+
+    /// What a recover of the partly used transfer to Shielded at
+    /// `txid`:`vout` would move, read from Platform's proved state now.
+    #[facade("DashPay::recover_transfer_quote")]
+    fn recover_transfer_quote(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+    ) -> RecoverQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer_quote(txid, vout).await?.into())
+    }
+
+    /// Recovers what is left on the partly used transfer to Shielded at
+    /// `txid`:`vout` to the wallet's own Platform address under `grant`,
+    /// whose credits cap is the quote's `credits`; only a proved apply
+    /// finishes it.
+    #[facade("DashPay::recover_transfer")]
+    fn recover_transfer(
+        state,
+        wallet_id: String,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.recover_transfer(txid, vout, grant).await?.into())
     }
 }

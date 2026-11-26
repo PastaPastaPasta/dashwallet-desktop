@@ -21,7 +21,8 @@ pub(crate) use self::events::DashPayEventInfo;
 use self::events::DashPayEventPage;
 pub(crate) use self::payments::PaymentSourceName;
 use self::payments::{
-    ActivityFilterName, ContactActivityPage, LockResolutionName, PaymentLockInfo,
+    ActivityFilterName, ContactActivityPage, ContactPayArgs, ContactPayOutcomeInfo, ContactPayQuoteInfo,
+    LockResolutionName, PaymentLockInfo,
 };
 use self::profile::{
     AvatarCandidateInfo, AvatarSizeName, AvatarSourceArgs, AvatarThumbnail, DashPayProfile,
@@ -30,16 +31,7 @@ use self::profile::{
 use crate::dto::platform::EligibilityName;
 use crate::ipc::commands;
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[
-    (
-        "DashPay::contact_pay_quote",
-        "every source refuses `platform.feature_off` until its slice; bound when one lands (C-funding C5a, C5b)",
-    ),
-    (
-        "DashPay::contact_pay",
-        "every source refuses `platform.feature_off` until its slice; bound when one lands (C-funding C5a, C5b)",
-    ),
-];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 commands! {
     /// The contacts of `identity` in the sections `query` selects.
@@ -209,6 +201,59 @@ commands! {
         Ok(dashpay.resolve_payment_lock(identity, contact).await?.into())
     }
 
+    /// What paying `credits` to `contact` from the Shielded or Platform
+    /// balance takes and pays; `core` is a send draft's.
+    #[facade("DashPay::contact_pay_quote")]
+    fn contact_pay_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        contact: String,
+        credits: String,
+        source: PaymentSourceName,
+    ) -> ContactPayQuoteInfo {
+        let credits = parse_credits(&credits)?;
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let quote = dashpay
+            .contact_pay_quote(identity, contact, credits, source.into())
+            .await?;
+        Ok(quote.into())
+    }
+
+    /// Pays `credits` to `contact` from the Shielded or Platform balance
+    /// under `grant`, a `platformOp` grant or a `contactPayFromBalance`
+    /// lease; `note` stays in this wallet.
+    #[facade("DashPay::contact_pay")]
+    fn contact_pay(
+        state,
+        wallet_id: String,
+        identity: String,
+        contact: String,
+        payment: ContactPayArgs,
+        grant: String,
+    ) -> ContactPayOutcomeInfo {
+        let ContactPayArgs {
+            credits,
+            source,
+            note,
+            confirm_unrecorded,
+        } = payment;
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
+        let paid = dashpay
+            .contact_pay(
+                identity,
+                contact,
+                credits,
+                source.into(),
+                note,
+                grant,
+                confirm_unrecorded,
+            )
+            .await?;
+        Ok(paid.into())
+    }
+
     /// The payments with `contact`, newest first; `cursor` is the previous
     /// page's `nextCursor`.
     #[facade("DashPay::contact_activity")]
@@ -352,6 +397,15 @@ commands! {
     fn set_load_contact_pictures(state, on: bool) -> () {
         Ok(state.session().await?.set_load_contact_pictures(on).await?)
     }
+}
+
+/// A credits amount as the renderer sends it (a decimal string).
+fn parse_credits(credits: &str) -> Result<u64, crate::error::AppError> {
+    credits.trim().parse().map_err(|_| {
+        crate::error::AppError::from(dw_engine::platform::PlatformError::InvalidArgument {
+            detail: "credits is not a whole number".into(),
+        })
+    })
 }
 
 #[cfg(test)]

@@ -19,6 +19,8 @@ import { OnboardingModel, type OnboardingStep } from "../onboarding/onboarding";
 import { useT } from "../i18n";
 import { PassphraseText } from "../onboarding/passphrase";
 import { RecoveryText } from "../onboarding/recovery";
+import { chooseFilePath, fileErrorText } from "../app/files";
+import type { WalletFileInfo } from "../api/generated/WalletFileInfo";
 import { useLockTimer } from "./LockScreen";
 
 const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
@@ -28,6 +30,7 @@ const BACK_STEPS: ReadonlySet<OnboardingStep> = new Set([
   "verifyPhrase",
   "restorePhrase",
   "restoreOptions",
+  "restoreFile",
 ]);
 
 export function Onboarding({
@@ -45,7 +48,7 @@ export function Onboarding({
 }) {
   const t = useT();
   const backend = useBackend();
-  const [model] = useState(() => new OnboardingModel(backend, network.kind));
+  const [model] = useState(() => new OnboardingModel(backend, network.kind, { files: { api: backend, network: network.dirName } }));
   useModel(model);
   useLockTimer(model.lock);
   const { step } = model;
@@ -65,7 +68,7 @@ export function Onboarding({
   useEffect(() => {
     const target = body.current?.querySelector<HTMLElement>("[data-autofocus]") ?? body.current?.querySelector<HTMLElement>("h1");
     target?.focus();
-  }, [step, ready]);
+  }, [step, ready, model.file?.step]);
 
   return (
     <div className="onboarding" data-testid="onboarding" inert={inert}>
@@ -172,6 +175,8 @@ function Step({
       );
     case "restoreOptions":
       return <RestoreOptions model={model} />;
+    case "restoreFile":
+      return <RestoreFile model={model} network={network.dirName} />;
     case "working":
       return (
         <>
@@ -219,7 +224,20 @@ function Done({ model, network, onDone }: { model: OnboardingModel; network: Net
   return (
     <>
       <Title>{t("onboarding.ready.title")}</Title>
-      <p className="onboarding-text">{model.flow === "restore" ? t("onboarding.ready.restored") : t("onboarding.ready.created")}</p>
+      <p className="onboarding-text">
+        {model.flow === "file" && model.restoredCount > 1
+          ? t("onboarding.ready.restoredMany", { count: model.restoredCount })
+          : model.flow === "create"
+            ? t("onboarding.ready.created")
+            : t("onboarding.ready.restored")}
+      </p>
+      {model.restoredSkipped && (
+        <p className="onboarding-text" role="status" data-testid="onboarding-file-skipped">
+          {model.restoredSkipped.keys > 0 && t("onboarding.file.keysSkipped", { count: model.restoredSkipped.keys })}
+          {model.restoredSkipped.keys > 0 && model.restoredSkipped.scripts > 0 && " "}
+          {model.restoredSkipped.scripts > 0 && t("onboarding.file.scriptsSkipped", { count: model.restoredSkipped.scripts })}
+        </p>
+      )}
       {consent.needed && <OnboardingRatesChoice consent={consent} on={ratesOn} setOn={setRatesOn} />}
       {listFailed && (
         <p className="form-problem" role="alert" data-testid="onboarding-list-error">
@@ -255,6 +273,11 @@ function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() =>
         <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore" onClick={() => void model.startRestore()}>
           {t("onboarding.welcome.restore")}
         </DashButton>
+        {model.file && (
+          <DashButton variant="plainBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-restore-file" onClick={() => void model.startFileRestore()}>
+            {t("onboarding.welcome.restoreFile")}
+          </DashButton>
+        )}
         {onCancel && (
           <DashButton variant="plainBlue" size="large" fill data-testid="onboarding-cancel" onClick={onCancel}>
             {t("common.cancel")}
@@ -273,6 +296,199 @@ function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() =>
           {t("onboarding.welcome.words24")}
         </label>
       </details>
+    </>
+  );
+}
+
+/** What the file is, in the catalog's words (the Settings sheet's plan, U-04 D21). */
+function fileKindText(t: ReturnType<typeof useT>, info: WalletFileInfo): string {
+  switch (info.kind) {
+    case "dwBackup":
+      return t("onboarding.file.kind.dwBackup", { count: info.walletCount });
+    case "dumpWallet":
+      return t("onboarding.file.kind.dumpWallet");
+    case "walletDatSqlite":
+      return t(info.encrypted ? "onboarding.file.kind.walletDatEncrypted" : "onboarding.file.kind.walletDat");
+    case "walletDatBdb":
+      return t(info.encrypted === true ? "onboarding.file.kind.walletDatEncrypted" : "onboarding.file.kind.walletDat");
+    case "psbt":
+      return t("onboarding.file.kind.psbt");
+    case "unknown":
+      return t("onboarding.file.kind.unknown");
+  }
+}
+
+/** Why the file stops here, in the catalog's words (the plan's own sentence is Settings' English). */
+function refusalText(t: ReturnType<typeof useT>, info: WalletFileInfo, network: string): string {
+  if (info.kind === "psbt") return t("onboarding.file.psbtRefusal");
+  if (info.kind === "unknown") return t("onboarding.file.unknownRefusal");
+  if (info.kind === "dwBackup" && info.network === null) return t("onboarding.file.unknownNetwork");
+  const theirs = info.kind === "dwBackup" || info.kind === "dumpWallet" ? info.network?.dirName : undefined;
+  if (theirs && theirs !== network) return t("onboarding.file.otherNetwork", { network: theirs });
+  return t("onboarding.file.emptyBackup");
+}
+
+/** Restore from a file: a path (typed or chosen), then the file's passphrase or a name when it
+ * needs one. The passphrase lives in this step's state only until Restore takes it. */
+function RestoreFile({ model, network }: { model: OnboardingModel; network: string }) {
+  const t = useT();
+  const backend = useBackend();
+  const id = useId();
+  const file = model.file!;
+  const [path, setPath] = useState(file.path);
+  const [chooseError, setChooseError] = useState<string | null>(null);
+  const reading = file.step === "inspecting";
+  const plan = file.plan;
+  const choose = async () => {
+    setChooseError(null);
+    const generation = file.generation;
+    try {
+      const chosen = await chooseFilePath(backend, "walletFile", false, null);
+      // The user left this selection while the dialog was open.
+      if (chosen === null || generation !== file.generation || model.step !== "restoreFile") return;
+      setPath(chosen);
+      await file.inspect(chosen);
+    } catch (e) {
+      setChooseError(fileErrorText(e));
+    }
+  };
+  if (file.step === "path" || reading || !plan || !file.info)
+    return (
+      <>
+        <Title>{t("onboarding.file.title")}</Title>
+        <p className="onboarding-text">{t("onboarding.file.text")}</p>
+        <form
+          className="onboarding-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void file.inspect(path);
+          }}
+        >
+          <DashButton type="button" variant="tintedBlue" size="large" fill data-autofocus data-testid="restore-file-choose" disabled={reading} onClick={() => void choose()}>
+            {t("onboarding.file.choose")}
+          </DashButton>
+          <div className="form-field">
+            <label htmlFor={`${id}-path`}>{t("onboarding.file.path")}</label>
+            <input
+              id={`${id}-path`}
+              className="mono"
+              data-testid="restore-file-path"
+              autoComplete="off"
+              spellCheck={false}
+              value={path}
+              disabled={reading}
+              aria-describedby={`${id}-path-help`}
+              onChange={(e) => setPath(e.target.value)}
+            />
+            <p id={`${id}-path-help`} className="form-hint">
+              {t("onboarding.file.pathHelp")}
+            </p>
+          </div>
+          {(file.error || chooseError) && (
+            <p className="form-problem" role="alert" data-testid="restore-file-error">
+              {chooseError ?? file.error}
+            </p>
+          )}
+          <DashButton type="submit" variant="filledBlue" size="large" fill data-testid="restore-file-inspect" disabled={reading || path.trim() === ""}>
+            {reading ? t("onboarding.file.inspecting") : t("onboarding.file.inspect")}
+          </DashButton>
+        </form>
+      </>
+    );
+  return <FileDetails key={`${file.generation} ${file.path}`} model={model} network={network} />;
+}
+
+/** The inspected file: what it is, then its passphrase or a name. Keyed by the selection, so a
+ * passphrase typed for one file is never sent for another. */
+function FileDetails({ model, network }: { model: OnboardingModel; network: string }) {
+  const t = useT();
+  const id = useId();
+  const file = model.file!;
+  const plan = file.plan!;
+  const info = file.info!;
+  const [passphrase, setPassphrase] = useState("");
+  const [name, setName] = useState("");
+  const backup = plan.kind === "dwBackup";
+  return (
+    <>
+      <Title>{t("onboarding.file.title")}</Title>
+      <p className="onboarding-text" data-testid="restore-file-kind">
+        {fileKindText(t, info)}
+      </p>
+      <p className="form-hint mono" data-testid="restore-file-chosen">
+        {file.path}
+      </p>
+      <form
+        className="onboarding-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const p = plan.passphrase ? passphrase : null;
+          setPassphrase("");
+          void model.restoreFromFile(p, name);
+        }}
+      >
+        {plan.refusal ? (
+          <p className="form-problem" role="alert" data-testid="restore-file-refusal">
+            {refusalText(t, info, network)}
+          </p>
+        ) : (
+          <>
+            {plan.passphrase && (
+              <div className="form-field">
+                <label htmlFor={`${id}-pass`}>{t(backup ? "onboarding.file.backupPassphrase" : "onboarding.file.walletDatPassphrase")}</label>
+                <input
+                  id={`${id}-pass`}
+                  type="password"
+                  data-testid="restore-file-passphrase"
+                  data-autofocus
+                  autoComplete="off"
+                  value={passphrase}
+                  aria-describedby={backup ? `${id}-pass-help` : undefined}
+                  onChange={(e) => {
+                    setPassphrase(e.target.value);
+                    file.edited();
+                  }}
+                />
+                {backup && (
+                  <p id={`${id}-pass-help`} className="form-hint">
+                    {t("onboarding.file.backupPassphraseHelp")}
+                  </p>
+                )}
+              </div>
+            )}
+            {plan.named && (
+              <div className="form-field">
+                <label htmlFor={`${id}-name`}>{t("onboarding.file.name")}</label>
+                <input
+                  id={`${id}-name`}
+                  data-testid="restore-file-name"
+                  autoComplete="off"
+                  maxLength={64}
+                  value={name}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    file.edited();
+                  }}
+                />
+              </div>
+            )}
+          </>
+        )}
+        {file.error && (
+          <p className="form-problem" role="alert" data-testid="restore-file-error">
+            {file.error}
+          </p>
+        )}
+        {plan.refusal ? (
+          <DashButton type="button" variant="filledBlue" size="large" fill data-autofocus data-testid="restore-file-other" onClick={() => file.back()}>
+            {t("onboarding.file.otherFile")}
+          </DashButton>
+        ) : (
+          <DashButton type="submit" variant="filledBlue" size="large" fill data-testid="restore-file-restore" disabled={model.busy}>
+            {t("onboarding.file.restore")}
+          </DashButton>
+        )}
+      </form>
     </>
   );
 }
@@ -436,9 +652,16 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
             {model.birthDateError}
           </p>
         ) : (
-          <p className="form-hint" data-testid="restore-scan-start">
-            {birthHeight ? t("onboarding.options.startsAt", { height: birthHeight }) : t("onboarding.options.startsAtFirst")}
-          </p>
+          <>
+            <p className="form-hint" data-testid="restore-scan-start">
+              {birthHeight ? t("onboarding.options.startsAt", { height: birthHeight }) : t("onboarding.options.startsAtFirst")}
+            </p>
+            {!birthHeight && (
+              <p className="form-hint" data-testid="restore-first-block-slow">
+                {t("onboarding.options.firstBlockSlow")}
+              </p>
+            )}
+          </>
         )}
       </div>
       <DashButton

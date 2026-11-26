@@ -8,7 +8,9 @@
 //! a `platform.*` code reaches the host whichever domain the call belongs to;
 //! `platform()` finds it again.
 
+use super::app_connect::ConnectFailure;
 use super::contacts::Eligibility;
+use super::credits::CoreMaxShort;
 use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
@@ -259,10 +261,26 @@ pub enum RegistrationError {
     /// nothing was written or signed; quote again.
     #[error("the cost changed since the quote")]
     QuoteChanged,
+    /// A row's failure, never returned by a call: its create from the
+    /// Platform addresses failed inside a block (C-funding F10), which took
+    /// their nonces and a penalty and made no identity. What is left stays
+    /// on the addresses; nothing retries.
+    #[error("the registration's payment was taken without an identity")]
+    Refunded,
+    /// A row's failure, never returned by a call: the notes its create of
+    /// two or more notes selected read spent and the identity it named
+    /// reads absent above that (C-funding F12). Another install of the seed
+    /// may have spent them, so nothing says Platform refunded this create;
+    /// nothing retries.
+    #[error("the registration's payment notes were spent without an identity")]
+    PaymentConsumed,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
     Invitation(InvitationError),
+    /// A Platform-funded plan's refusal (`credits.move_pending`).
+    #[error(transparent)]
+    Credits(CreditsError),
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -283,8 +301,11 @@ impl RegistrationError {
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
             Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
             Self::QuoteChanged => "registration.quote_changed",
+            Self::Refunded => "registration.refunded",
+            Self::PaymentConsumed => "registration.payment_consumed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
+            Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }
@@ -293,6 +314,7 @@ impl RegistrationError {
         match self {
             Self::Name(e) => e.platform(),
             Self::Invitation(e) => e.platform(),
+            Self::Credits(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }
@@ -315,6 +337,15 @@ impl From<InvitationError> for RegistrationError {
         match e {
             InvitationError::Platform(p) => Self::Platform(p),
             other => Self::Invitation(other),
+        }
+    }
+}
+
+impl From<CreditsError> for RegistrationError {
+    fn from(e: CreditsError) -> Self {
+        match e {
+            CreditsError::Platform(p) => Self::Platform(p),
+            other => Self::Credits(other),
         }
     }
 }
@@ -389,8 +420,36 @@ pub enum ContactError {
     /// `contactInfo` holds (DIP-15 `privateData`, DP2-04).
     #[error("private details too long: {bytes} bytes, at most {max}")]
     DetailsTooLong { bytes: u32, max: u32 },
+    /// A payment from the Shielded balance refused by the pool's side (its
+    /// gate, its notes, its floor), with the pool's code (C-funding P3).
+    #[error(transparent)]
+    Shielded(ShieldedError),
+    /// A payment from the Platform balance refused by the move's own rules
+    /// (C-funding P3): another move pending, the withdrawal range.
+    #[error(transparent)]
+    Credits(Box<CreditsError>),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+/// The pool's `Platform` variant becomes this enum's own, so one code has
+/// one representation.
+impl From<ShieldedError> for ContactError {
+    fn from(e: ShieldedError) -> Self {
+        match e {
+            ShieldedError::Platform(p) => Self::Platform(p),
+            other => Self::Shielded(other),
+        }
+    }
+}
+
+impl From<CreditsError> for ContactError {
+    fn from(e: CreditsError) -> Self {
+        match e {
+            CreditsError::Platform(p) => Self::Platform(p),
+            e => Self::Credits(Box::new(e)),
+        }
+    }
 }
 
 impl ContactError {
@@ -406,12 +465,15 @@ impl ContactError {
             Self::ScanUnverified => "contact.scan_unverified",
             Self::NoUsername => "contact.no_username",
             Self::DetailsTooLong { .. } => "contact.details_too_long",
+            Self::Shielded(e) => e.code(),
+            Self::Credits(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }
 
     pub fn platform(&self) -> Option<&PlatformError> {
         match self {
+            Self::Shielded(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }
@@ -448,6 +510,103 @@ impl InvitationError {
             Self::Platform(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+/// App Connect (DASHPAY F24): a refusal before anything is signed, or how
+/// an approved login stopped.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectError {
+    #[error("the request is for another network")]
+    Network,
+    #[error("app connect is off on mainnet")]
+    MainnetOff,
+    #[error("the request asks for what this wallet does not support")]
+    Unsupported,
+    #[error("the request breaks the protocol's rules")]
+    Invalid,
+    #[error("the request is too old or from the future")]
+    Stale,
+    #[error("the network's protocol is older than app connect")]
+    Protocol,
+    #[error("no identity with a username")]
+    NoIdentity,
+    #[error("the request names an identity this wallet does not hold")]
+    Hint,
+    #[error("the request names contracts its app's owner does not own")]
+    Owner,
+    #[error("the request was answered already")]
+    Answered,
+    #[error("insufficient credits: {needed} needed, {available} available")]
+    Credits { needed: u64, available: u64 },
+    /// What the grant was quoted on changed: the sheet reads again.
+    #[error("the request's facts changed since the quote")]
+    PlanChanged,
+    /// The keys are on the identity; the response is not out yet.
+    #[error("the response was not sent")]
+    SendFailed,
+    #[error("app connect failed: {failure:?}")]
+    Failed { failure: ConnectFailure },
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ConnectError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Network => "connect.network",
+            Self::MainnetOff => "connect.mainnet_off",
+            Self::Unsupported => "connect.unsupported",
+            Self::Invalid => "connect.invalid",
+            Self::Stale => "connect.stale",
+            Self::Protocol => "connect.protocol",
+            Self::NoIdentity => "connect.no_identity",
+            Self::Hint => "connect.hint",
+            Self::Owner => "connect.owner",
+            Self::Answered => "connect.answered",
+            Self::Credits { .. } => "connect.credits",
+            Self::PlanChanged => "connect.plan_changed",
+            Self::SendFailed => "connect.send_failed",
+            Self::Failed { .. } => "connect.failed",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The inbox reopens the request: a refusal that answers the app
+    /// nothing and kept no response for "Retry sending".
+    pub fn keeps_open(&self) -> bool {
+        self.status().is_none() && *self != Self::SendFailed
+    }
+
+    /// The status the app's return link carries for this refusal (DIP
+    /// "Status Codes"), for a refusal of the request itself or a login that
+    /// cannot finish; `None` for what the user can still fix or retry
+    /// (`plan_changed`, `credits`, `send_failed`, `not_confirmed`, which a
+    /// new approval re-reads the identity for, a Platform error) and for
+    /// `answered`, which Platform already holds.
+    pub fn status(&self) -> Option<dw_uri::connect::Status> {
+        use dw_uri::connect::Status;
+        Some(match self {
+            Self::Unsupported | Self::Protocol | Self::MainnetOff => Status::Unsupported,
+            Self::Invalid | Self::Owner => Status::Invalid,
+            Self::Stale => Status::Stale,
+            Self::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            }
+            | Self::PlanChanged
+            | Self::Credits { .. }
+            | Self::SendFailed
+            | Self::Answered
+            | Self::Platform(_) => return None,
+            Self::Network | Self::NoIdentity | Self::Hint | Self::Failed { .. } => Status::Failed,
+        })
     }
 }
 
@@ -496,9 +655,9 @@ impl AvatarError {
 pub enum CreditsError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
-    /// Below `CostTable.top_up_min_duffs`.
+    /// Below `CostTable.top_up_min_duffs`; `max` is a Core Max's figures.
     #[error("below the minimum of {min} duffs")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding accounts hold back (a user's lock, the dust
     /// protection, a send's reservation) would be selected: the pinned
     /// asset-lock builder cannot exclude it (as `registration.coins_locked`).
@@ -566,6 +725,15 @@ pub enum CreditsError {
     /// a consolidation, a drain).
     #[error("another move of the wallet's coins is running")]
     MoveRunning,
+    /// Platform's structure check refused the move, send or top-up before
+    /// anything was signed, recorded or redeemed: the planner and
+    /// Platform's rules disagree. The check's error is logged, not carried.
+    #[error("Platform's structure check refused the transfer before signing")]
+    PreflightRefused,
+    /// As [`Self::PreflightRefused`], while the proved network protocol
+    /// version is above every version this build plans at.
+    #[error("Platform's rules are newer than this build: refused before signing")]
+    RulesUnsupported,
     /// A move between the Platform addresses and Shielded refused by the
     /// pool's side (its gate, its key state), with the pool's code.
     #[error(transparent)]
@@ -603,6 +771,8 @@ impl CreditsError {
             Self::CoinsChanged => "credits.coins_changed",
             Self::MixingActive => "credits.mixing_active",
             Self::MoveRunning => "credits.move_running",
+            Self::PreflightRefused => "credits.preflight_refused",
+            Self::RulesUnsupported => "credits.rules_unsupported",
             Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
@@ -649,9 +819,9 @@ pub enum ShieldedError {
     #[error("insufficient funds: {needed} duffs needed, {available} available")]
     FundingInsufficient { needed: u64, available: u64 },
     /// The amount does not clear Platform's fee: at least `min` (duffs for a
-    /// shield, credits for a spend).
+    /// shield, credits for a spend); `max` is a Core Max's figures.
     #[error("below the minimum of {min}")]
-    BelowMinimum { min: u64 },
+    BelowMinimum { min: u64, max: Option<CoreMaxShort> },
     /// A coin the funding account holds back would be selected (as
     /// `credits.coins_locked`).
     #[error("a locked coin of the funding accounts blocks the asset lock")]

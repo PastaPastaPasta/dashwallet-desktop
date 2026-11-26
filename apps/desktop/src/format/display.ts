@@ -1,5 +1,6 @@
 // The display settings applied to amounts (U-04 D4): dash-qt's unit everywhere at once. A balance
-// is never cut short: Home shows the exact amount, trailing zeros trimmed to two (`compact`). The engine's `NetworkInfo.unitName` names DASH
+// is never cut short: Home shows the exact amount, trailing zeros trimmed to the Decimal places
+// setting, two by default (`compact`). The engine's `NetworkInfo.unitName` names DASH
 // only; the other units' names come from `unitName` here, as dash-qt's `BitcoinUnits::name`.
 
 import { useMemo } from "react";
@@ -36,6 +37,14 @@ export interface Display {
   invalidAmount: string;
 }
 
+/** The Decimal places setting (QT-036), 2 to 8: the fewest decimals a compact amount shows, in
+ * the chosen unit and at most its own decimals. It never cuts digits off (DEC-1058). */
+export const DECIMAL_PLACES = [2, 3, 4, 5, 6, 7, 8] as const;
+
+export function decimalPlaces(n: number): number {
+  return Math.min(8, Math.max(2, Math.trunc(n) || 2));
+}
+
 export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, network: NetworkInfo): Display {
   const unit = UNIT_OF[prefs.unit];
   const chain = chainOf(network);
@@ -46,7 +55,7 @@ export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, netwo
     chain,
     name: unitName(unit, chain),
     full: (amount, signed = false) => full(amount, signed, unit),
-    compact: (amount, signed = false) => compact(amount, signed, unit),
+    compact: (amount, signed = false) => compact(amount, signed, unit, decimalPlaces(prefs.decimalDigits)),
     masked: () => masked(undefined, unit),
     withUnit: (amount) => formatWithUnit(unit, amount, false, "standard", chain),
     placeholder: duffs ? "0" : "0.00",

@@ -26,4 +26,10 @@ signingWindowRemainingDuffs: number | null,
 /**
  * How long that window lasts, in seconds.
  */
-signingWindowSecs: number, };
+signingWindowSecs: number,
+/**
+ * The sealed spending limit can't be read (it no longer authenticates):
+ * `spendLimitDuffs` is 0, every payment asks and quick unlock is off
+ * until the limit is set again. Known only while unlocked.
+ */
+spendLimitUnreadable: boolean, };

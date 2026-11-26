@@ -2,12 +2,16 @@
 //! recent withdrawals (DP1-06, DP6-02), and the transfer to the wallet's
 //! own Platform address (C-routes D-C6).
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::credit_transfer;
 use super::dashpay::DashPay;
 use super::errors::CreditsError;
 use super::flows::{DispatchState, GrantRequest};
+use super::platform_addresses::{PlatformActivityState, PlatformAddressRow};
+use super::platform_moves;
 use super::topup;
 use super::withdrawal::{self, SdkWithdrawals};
 
@@ -172,6 +176,22 @@ pub struct CoreMax {
     pub arriving_duffs: u64,
 }
 
+/// What a Core Max refused below the lock's floor would move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreMaxShort {
+    /// The account's final coins less the lock's fee bound: the figure
+    /// held against the floor.
+    pub duffs: u64,
+    /// As [`CoreMax`]'s: spendable coins of the wallet's other accounts.
+    pub left_duffs: u64,
+    /// As [`CoreMax`]'s: coins of the account not final yet.
+    pub arriving_duffs: u64,
+    /// Whether the plan would clear the floor were every arriving coin
+    /// final: none held, within the input cap, worth the floor plus the
+    /// lock's fee bound over all the coins. False with nothing arriving.
+    pub arriving_clears: bool,
+}
+
 /// What a withdrawal of `amount` takes and pays out, at the network's
 /// protocol version (`withdrawal.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +238,47 @@ pub struct WithdrawToPlatformQuote {
     pub to: String,
     /// `max_credits` = `credits + fee_credits`.
     pub grant: GrantRequest,
+}
+
+/// What topping an identity up from the Platform addresses takes
+/// (C-routes D-C3): an address move to the identity, its fee from input 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpFromPlatformQuote {
+    /// What the identity gains: the claims of the inputs.
+    pub credits: u64,
+    /// dpp's minimum fee for the plan's inputs, an estimate ("about"):
+    /// Platform meters the fee at execution and takes it from input 0's
+    /// remainder, with no cap.
+    pub fee_credits: u64,
+    /// `credits` plus all that input 0 keeps (at least three times the
+    /// estimate), which the fee can take: the most it debits, the grant's
+    /// cap; not what the copy shows.
+    pub debit_credits: u64,
+    /// Each address (bech32m) with its claim, input 0 (the fee source)
+    /// first, in `PlatformAddress` order.
+    pub inputs: Vec<PlatformAddressRow>,
+    /// `max_credits` = `debit_credits`.
+    pub grant: GrantRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopUpFromPlatformOutcome {
+    /// The record's id, as its `toIdentity` activity row names it.
+    pub id: String,
+    /// What the identity gains.
+    pub credits: u64,
+    /// Once done: the fee the inputs' proved balances show it took.
+    pub fee_credits: Option<u64>,
+    /// `Done` only once a proof shows every input at its signed nonce;
+    /// `Pending` when that is not known yet (it holds the next move), or
+    /// `Failed`.
+    pub state: PlatformActivityState,
+    /// It may still execute: until its nonces are taken it holds the next
+    /// move, send, shield or top-up from Platform.
+    pub may_land: bool,
+    /// The identity's balance Platform answered, proved; shown only, never
+    /// evidence (the proof does not bind execution).
+    pub balance: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,7 +462,7 @@ impl DashPay {
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkWithdrawals(manager.sdk_arc());
             let network = session.vault.network();
-            credit_transfer::quote(&net, &wallet, network, &identity, amount).await
+            credit_transfer::quote(&net, &session, &wallet, network, &identity, amount).await
         })
         .await
     }
@@ -421,6 +482,50 @@ impl DashPay {
             let what = (to.as_str(), amount);
             let who = (wallet_id, identity.as_str());
             credit_transfer::transfer(&net, &session, &wallet, who, what, &grant).await
+        })
+        .await
+    }
+
+    /// What topping `identity` up with `amount` of the Platform addresses'
+    /// credits takes (C-routes D-C3, `platform_moves.rs`).
+    pub async fn top_up_from_platform_quote(
+        &self,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> Result<TopUpFromPlatformQuote, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (identity.as_str(), amount);
+            platform_moves::top_up_quote(&net, &session, &wallet, wallet_id, ask).await
+        })
+        .await
+    }
+
+    /// Tops `identity` up with `amount` of the Platform addresses' credits
+    /// under `grant` (a `PlatformOp` grant or a `PlatformAddressMove`
+    /// lease): an address move to the identity (`platform_moves.rs`).
+    /// `fee_input`: the quote's input 0; a plan that takes the fee from
+    /// another address or claims another amount of it is
+    /// `credits.quote_changed`, and the grant is kept.
+    pub async fn top_up_from_platform(
+        &self,
+        identity: String,
+        amount: WithdrawAmount,
+        fee_input: Option<PlatformAddressRow>,
+        grant: String,
+    ) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (identity.as_str(), amount, fee_input.as_ref());
+            platform_moves::top_up(&net, &session, &wallet, wallet_id, ask, &grant).await
         })
         .await
     }

@@ -29,7 +29,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   autohideBalance: false,
   autoLockSecs: null,
   subtractFeeByDefault: false,
-  showMasternodes: false,
+  masternodesItem: "auto",
   masternodesTab: "myMasternodes",
   // dw-app's default is false (the first-run notice); the fixture starts past it so a scenario
   // opens on its screen, and `pre-release-notice` is the one that shows it.
@@ -63,6 +63,9 @@ export const FIXTURE_FILES = {
   walletDat: "/home/user/Documents/core-sqlite-wallet.dat",
   walletDatBdb: "/home/user/Documents/core-berkeley-wallet.dat",
   walletDatBdbLocked: "/home/user/Documents/core-berkeley-locked.dat",
+  /** Legacy wallet.dat files the import reads and refuses on purpose (#81 item 1). */
+  walletDatTooLarge: "/home/user/Documents/core-mixing-for-years.dat",
+  walletDatTwoAccounts: "/home/user/Documents/core-two-accounts.dat",
   psbt: "/home/user/Documents/unsigned-payment.psbt",
   unknown: "/home/user/Documents/shopping-list.txt",
   mainnetDump: "/home/user/Documents/mainnet-dumpwallet.txt",
@@ -78,11 +81,19 @@ export interface FixtureFile {
   /** A backup's wallets and their phrases (`null`: watch-only). */
   wallets?: { walletId: string; name: string; phrase: string | null }[];
   automatic?: boolean;
+  /** A wallet.dat read and refused on purpose: inspecting it fails with this code. */
+  refusal?: "compat.wallet_too_large" | "compat.extra_hd_account";
   /** What a Dash Core import reports for it. */
   report?: Pick<CoreImportReport, "labelsImported" | "keysNotImported" | "scriptsNotImported">;
 }
 
 export interface SettingsWorld {
+  /** `open_backup_directory` calls the fixture took (it opens nothing). */
+  foldersOpened?: number;
+  /** No automatic backup has created the backup folder yet (a pruned last backup leaves it). */
+  backupFolderMissing?: boolean;
+  /** `open_backup_directory` finds the folder but no file manager opens it. */
+  folderOpenFails?: boolean;
   /** `<data root>/settings.json` (U-04 D2). */
   ui: UiSettings;
   /** Registered wallets `unload_wallet` closed: still in `World.wallets`, but every
@@ -139,10 +150,22 @@ export function newSettingsWorld(): SettingsWorld {
         info: { kind: "walletDatBdb", encrypted: true },
         passphrase: CORE_WALLET_PASSPHRASE,
       },
+      [FIXTURE_FILES.walletDatTooLarge]: { info: { kind: "walletDatBdb", encrypted: true }, refusal: "compat.wallet_too_large" },
+      [FIXTURE_FILES.walletDatTwoAccounts]: { info: { kind: "walletDatBdb", encrypted: false }, refusal: "compat.extra_hd_account" },
       [FIXTURE_FILES.psbt]: { info: { kind: "psbt" } },
       [FIXTURE_FILES.unknown]: { info: { kind: "unknown" } },
     },
   };
+}
+
+/** The backup a first run restores from (onboarding's Restore from a file). */
+export const FIXTURE_RESTORE_BACKUP = "/home/user/Documents/Main and Savings.dwbackup";
+export const FIXTURE_RESTORE_BACKUP_PASSPHRASE = "backup-pass";
+
+/** A manual backup of `wallets` at FIXTURE_RESTORE_BACKUP. */
+export function withRestoreBackup(s: SettingsWorld, wallets: NonNullable<FixtureFile["wallets"]>): SettingsWorld {
+  s.files[FIXTURE_RESTORE_BACKUP] = backupFile(wallets, FIXTURE_RESTORE_BACKUP_PASSPHRASE, secs(FIXTURE_NOW) - 30 * 86_400, false);
+  return s;
 }
 
 /** Two automatic backups of the first wallet, newest first (Backups tab). */
@@ -350,6 +373,12 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     automatic_backup_failures: (_, { world }) =>
       world.settings.backupFailures.filter((f) => world.wallets.some((w) => w.summary.walletId === f.walletId)),
     backup_directory: () => FIXTURE_BACKUP_DIR,
+    open_backup_directory: (_, { world }) => {
+      if (world.settings.backupFolderMissing) throw fail("app.backup_folder_missing", "fixture: the backup folder is missing");
+      if (world.settings.folderOpenFails) throw fail("app.folder_open", "fixture: the file manager did not open");
+      world.settings.foldersOpened = (world.settings.foldersOpened ?? 0) + 1;
+      return null;
+    },
     backup_policy: (_, { world }) => ({ keep: world.settings.keep, directory: FIXTURE_BACKUP_DIR }),
     set_backup_policy: ({ keep }, { world }) => {
       if (!Number.isInteger(keep) || keep < 0 || keep > MAX_KEEP) throw fail("invalid_argument", "keep 0 to 10 backups");
@@ -386,7 +415,11 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
 
     // Dash Core imports and exports (QT-106 to QT-109)
-    inspect_wallet_file: ({ path }, { world }) => file(world, path, "compat.file_unreadable").info,
+    inspect_wallet_file: ({ path }, { world }) => {
+      const f = file(world, path, "compat.file_unreadable");
+      if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
+      return f.info;
+    },
     import_dump_wallet: ({ path, options }, ctx) => {
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "dumpWallet") throw fail("compat.unsupported_format", "not a dumpwallet file");
@@ -398,6 +431,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     import_wallet_dat: ({ path, walletPassphrase, options }, ctx) => {
       const f = file(ctx.world, path, "compat.file_unreadable");
       if (f.info.kind !== "walletDatSqlite" && f.info.kind !== "walletDatBdb") throw fail("compat.unsupported_format", "not a wallet.dat");
+      if (f.refusal) throw fail(f.refusal, "fixture: refused on purpose");
       const encrypted = f.info.kind === "walletDatSqlite" ? f.info.encrypted : f.info.encrypted === true;
       if (encrypted) {
         if (walletPassphrase === null) throw fail("compat.passphrase_required", "the wallet.dat is encrypted");

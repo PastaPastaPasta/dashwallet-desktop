@@ -89,7 +89,7 @@ owner updates the State column as items land and reports against it daily.
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
 | 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
 | 0.9 (RC) | Mon 11-30 | security review fixes in; QA pass on three OSes |
-| 1.0 | Wed 12-02 | RC fixes; release checklist; signed if the certificates exist |
+| 1.0 | Wed 12-02 | RC fixes; release checklist; signed locally by pasta (#780) |
 
 ## Lanes
 
@@ -111,7 +111,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | all three merged on 11-19 (#25, #37, #57); what is left of unlock once was #78, fixed and merged (#160, 11-20); what that leaves is listed in #173 |
 | P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation merged (#146, 11-20): the catalog, the language choice, plurals and two fixture-only pseudo-locales, with the shell, the lock screen and Settings ▸ General converted; what must be fixed before the first translation and the first right-to-left language ship is listed in #155; the per-area conversions start 11-21 |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
-| M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 merged (#149, 11-20): ten fuzz targets, a seed replay in the test suite and a nightly job, with its gaps listed in #166; a PSBT defect its fuzzing found is fixed (#130, 11-20). H-09 merged (#334, 11-23): contact payments and masternode withdrawals refuse on unverified Platform data. H-06 merged (#343, 11-23; probe fixes #355, 11-23): the contacts query passes (p50 34 ms at 1,000 contacts); `history_page(200)` (p95 120 ms on 40k records, 4.6× over), wallet open and engine memory miss, filed for 1.0.x as #296–#299. A withdrawal-test flake (#344) is fixed (#349, 11-23). H-03 and H-01 not started |
+| M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 merged (#149, 11-20): ten fuzz targets, a seed replay in the test suite and a nightly job, with its gaps listed in #166; a PSBT defect its fuzzing found is fixed (#130, 11-20). H-09 merged (#334, 11-23): contact payments and masternode withdrawals refuse on unverified Platform data. H-06 merged (#343, 11-23; probe fixes #355, 11-23): the contacts query passes (p50 34 ms at 1,000 contacts); `history_page(200)` (p95 120 ms on 40k records, 6× the 20 ms budget), wallet open and engine memory miss, filed for 1.0.x as #296–#298; the contacts read's per-row rebuild is a 1.0.x follow-up (#299). A withdrawal-test flake (#344) is fixed (#349, 11-23). H-03 under way, not merged: the kill -9 matrix's harness and rows for registration, contact requests, profile edits, a reserved contact payment, sync apply, top-up, a `.dwbackup` restore and a phrase import; its findings are filed for 1.0.x (#358 avatar files, #381 bell rows). H-01 not started (from 11-27) |
 | N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; 0.3.0 published 11-22, the first release that can update itself; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak merged (#56) |
 | O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites merged (#129, 11-20), with the harness gaps listed in #168; their nightly on testnet is not installed yet, because where its failure messages go is not decided; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and the #152 review items closed in #280 and #281 (11-22); the v0.3.0 fixture for #101 is captured from the tagged release; the by-hand H-08 script for macOS and Windows is written (`docs/qa/H-08-macos-windows.md`, #278, for pasta around 11-28); keyboard-only DashPay journeys merged (#289), and the defects they found (#286, #287, #288, #291) are the H-05 fixes; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
 
@@ -231,7 +231,7 @@ working days with tests and review, from reading the code; nothing was built exc
 | 16: the same payment when the winner pays only other addresses, so nothing the wallet keeps proves it lost | needs rust-dashcore, so it goes with the fork pin batch; if it cannot make the release candidate's pins, the release owner decides on 11-25, in writing, with its notes line | not sized; sized by 11-25 | not started |
 | 17: a shared masternode registration's marker names the other participants' inputs, so a co-participant can get a coin the wallet has not found yet hidden until the registration is abandoned | closed by #159 at load: its start-up repair drops a claim whose input script is not the coin owner's signature, at the first start after the coin is stored (the fork lane's answer on 11-20, with a test). If #159 is not in the release candidate, the marker has to name only the outpoints this wallet signed. Checking the other participants' signatures when the registration is built is for 1.0.x | with #159; the marker change is not sized | closed at load by #159, merged 11-21 |
 | 11, the finality order: a spent coin can be offered | promised | under 1 | starts 11-21 |
-| 5: abandon, and a winner the store has no row for | promised; a targeted fix closes it partly | 1.5 to 2.5 | not started |
+| 5: abandon, and a winner the store has no row for | parked for 1.0.x; the release candidate's notes carry the disclosure | 1.5 to 2.5 | parked for 1.0.x: #250 closed unmerged; the root fix is #237; the RC release-notes disclosure is [#237 comment](https://github.com/PastaPastaPasta/dashwallet-desktop/issues/237#issuecomment-7128932297) |
 | 1: a crash during a send | promised | 2.5 to 3.5 | not started |
 | 7: unreadable evidence at load | promised. Its pull request first closes the two ways #134 still counts a load as complete when it is not (a skipped malformed row, and an abandoned mark that was never written) | 1.5 to 2.5 | not started |
 | 3 and 4 together: phantom change of a beaten payment, and its restored child (also when the winner is in the history and the child still claims its other coin) | attempted | 4.5 to 6.5 | not started |
@@ -333,18 +333,23 @@ shielded-note sync. It is an RC item in lane C, sized and scheduled by the relea
 
 ## What only pasta can unblock
 
-Without these the release still ships on 12-02, in the reduced form the release plan already allows.
+Without these the release still ships on 12-02, in the reduced form the release plan already allows, except for
+signing: without it the final tag waits (first row).
 No longer on this list: partner credentials and Explore database access (lane L is cut), and Transifex access
 (the translations are made in this repository).
 
 | Needed | For | By | If it does not arrive |
 |---|---|---|---|
-| Apple Developer ID and notarization, Windows signing certificate | signed installers, auto-update | 11-27 | 1.0 ships unsigned and says so; auto-update ships off |
-| A release key, and the choice of PGP or Sigstore | signed checksums | 11-27 | build attestations only, as today |
+| Signing 1.0 on pasta's own machines with Dash Core's identities: the Apple Developer ID with notarization, the Windows Authenticode certificate on pasta's YubiKey, pasta's PGP key over `SHA256SUMS`, and a stable updater key that stays local | signed installers, `SHA256SUMS.asc`, the signed update feed | 11-27 | the final tag fails closed and doesn't publish (#780); shipping 1.0 unsigned needs a written ruling. Release candidates are unsigned either way |
 | Up to 0.5 DASH on mainnet and an iOS user for an hour | mainnet canary (H-07) | 11-28 | canary runs on testnet only |
 | A funded testnet wallet created on iOS and one on Android | same-seed restore test | 11-24 | checked by code comparison only |
 | A real-Mac session and a real Windows PC | Touch ID, VoiceOver, Narrator, first notarized launch | 11-28 | passphrase unlock only on macOS; screen-reader checks on Linux only |
 | Go-ahead for the upstream platform pull request (E0-04.P3/P4), or agreement to drop it | Mode A dispatch | 11-21 | dropped as superseded by item 0's hook |
+
+Signing follows Dash Core's detached-signatures model (#780; the runbook is `docs/release/SIGNING.md`, which lands
+with it). CI builds the unsigned files and `SHA256SUMS` and holds no signing secrets. pasta signs on pasta's own
+machines, and CI attaches the detached signatures, checks them and publishes. Release candidates (`-rc.N`) stay
+unsigned.
 
 ## Risks
 

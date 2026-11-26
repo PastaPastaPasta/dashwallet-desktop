@@ -68,6 +68,7 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.shared_shares",
     "standby_file_transactions",
     "Masternodes.shared_sessions",
+    "Masternodes.unreadable_shared_sessions",
     "Masternodes.shared_session",
     "Masternodes.start_shared",
     "Masternodes.set_shared_fee",
@@ -80,6 +81,8 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.sign_shared_funding",
     "Masternodes.send_shared_registration",
     "Masternodes.abandon_shared_session",
+    "Masternodes.resend_shared_abandon",
+    "Masternodes.abandon_unreadable_shared_session",
     "Masternodes.discard_shared_session",
     "Masternodes.preview_update_share",
     "Masternodes.update_share",
@@ -768,6 +771,9 @@ fn error_codes_match_the_contract() {
             MasternodesError::KeyMismatch {
                 role: AttachedKeyRole::Voting,
             },
+            MasternodesError::KeyExists {
+                role: AttachedKeyRole::Voting,
+            },
             MasternodesError::NotEvonode,
             MasternodesError::NoIdentity,
             MasternodesError::PlatformUnavailable { detail: hash() },
@@ -789,6 +795,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::NoOwnerKey,
             MasternodesError::UpdatePending { operation: hash() },
             MasternodesError::UpdateSuperseded { operation: hash() },
+            MasternodesError::UpdateAbandonedPending { operation: hash() },
             MasternodesError::SharedSessionNotFound,
             MasternodesError::SharedStage { stage: hash() },
             MasternodesError::SharedMessage {
@@ -1212,6 +1219,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             (Activation::Unknown, Activation::Inactive, true)
         );
         assert!(mn.shared_sessions(wallet).await.unwrap().is_empty());
+        assert!(
+            mn.unreadable_shared_sessions(wallet)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         for refused in [
             mn.shared_session(wallet, "zz".into()).await.map(drop),
             mn.start_shared(wallet, StartSharedRequest { fee: 0, ..shared() })
@@ -1239,6 +1252,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
                 .await
                 .map(drop),
             mn.abandon_shared_session(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.resend_shared_abandon(wallet, "zz".into(), "g".into())
+                .await
+                .map(drop),
+            mn.abandon_unreadable_shared_session(wallet, "zz".into(), "g".into())
                 .await
                 .map(drop),
             mn.discard_shared_session(wallet, "zz".into()).await,
@@ -1376,6 +1395,12 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.discard_shared_session(wallet, hash.clone()).await,
             // Sending is on (slice 1c) and abandoning has no v24 gate.
             mn.abandon_shared_session(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.resend_shared_abandon(wallet, hash.clone(), "g".into())
+                .await
+                .map(drop),
+            mn.abandon_unreadable_shared_session(wallet, hash.clone(), "g".into())
                 .await
                 .map(drop),
         ] {
@@ -1650,6 +1675,18 @@ fn errors_never_quote_a_secret_shaped_argument() {
             (
                 "abandon_shared_session",
                 mn.abandon_shared_session(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "resend_shared_abandon",
+                mn.resend_shared_abandon(as_wallet, secret(), secret())
+                    .await
+                    .map(drop),
+            ),
+            (
+                "abandon_unreadable_shared_session",
+                mn.abandon_unreadable_shared_session(as_wallet, secret(), secret())
                     .await
                     .map(drop),
             ),

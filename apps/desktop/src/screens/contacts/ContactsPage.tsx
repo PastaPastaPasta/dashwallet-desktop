@@ -35,7 +35,7 @@ import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
 import { AddContact } from "./AddContact";
 import { ContactPane } from "./ContactPane";
-import { useActionToast, useRefocus } from "./afterAction";
+import { dropDetailFocusUnless, useActionToast, useRefocus } from "./afterAction";
 import { RequestButtons } from "./RequestButtons";
 
 /** Opens Add contact's slot (D12), in place of a selection or a link's card. */
@@ -155,6 +155,9 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const sort = useUi((s) => s.contactSort);
   const selectedId = useUi((s) => s.contact);
+  // A pending Show's focus is the selected contact's only: another selection or leaving drops it.
+  useEffect(() => dropDetailFocusUnless(selectedId), [selectedId]);
+  useEffect(() => () => dropDetailFocusUnless(null), []);
   const intent = useUi((s) => s.addContact);
   const prefill = useUi((s) => s.contactPrefill);
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);

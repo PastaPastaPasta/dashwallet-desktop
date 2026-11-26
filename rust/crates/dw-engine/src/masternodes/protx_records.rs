@@ -257,6 +257,9 @@ pub enum ProTxOperationState {
     Confirmed { height: u32 },
     /// An input was spent by another transaction in a block.
     Conflicted,
+    /// A sent registration or key change whose transaction the wallet
+    /// abandoned (MG-10 §1.10, D49): its fee inputs released, never resent.
+    Abandoned,
 }
 
 /// What the collateral key must sign (External).

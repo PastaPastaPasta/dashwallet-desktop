@@ -42,6 +42,12 @@ describe("the evonode withdrawal held by an unconfirmed payout change", () => {
     expect(destinationNote(checking("payout_change_pending"))).toBeNull();
   });
 
+  it("says under the destination that an abandoned payout change holds withdrawals (P16)", () => {
+    expect(destinationNote(checking("payout_change_abandoned"))).toBe(
+      "An abandoned change to this masternode's payout address may still confirm, so withdrawals wait. To end the wait, send one of that change's coins to yourself. Withdrawals resume once that payment is in a block.",
+    );
+  });
+
   it("refuses with waiting first, then when abandoning is safe", () => {
     const e = err("masternodes.withdrawal_destination_checking");
     expect(payoutUnconfirmedRefusal(e, checking("payout_change_unconfirmed"))).toEqual([WAIT, ABANDON]);
@@ -49,5 +55,14 @@ describe("the evonode withdrawal held by an unconfirmed payout change", () => {
     expect(payoutUnconfirmedRefusal(e, fixed)).toBeNull();
     expect(payoutUnconfirmedRefusal(e)).toBeNull();
     expect(payoutUnconfirmedRefusal(err("masternodes.withdrawal_unverified"), checking("payout_change_unconfirmed"))).toBeNull();
+  });
+});
+
+describe("the owner-key withdrawal of an evonode whose payout is P2SH", () => {
+  it("says why the owner key can't withdraw and what to do", () => {
+    expect(destinationNote(checking("owner_payout_p2sh"))).toBe(
+      "Owner-key withdrawals don't work with this evonode's payout address, because it's a P2SH address: Platform would send the credits to an address nobody can spend. To withdraw with the owner key, change the payout to a regular address first. You can withdraw once that change confirms.",
+    );
+    expect(payoutUnconfirmedRefusal(err("masternodes.withdrawal_destination_checking"), checking("owner_payout_p2sh"))).toBeNull();
   });
 });

@@ -158,10 +158,12 @@ On every machine, in the clean account, before anything else has been installed.
 - [ ] Create a wallet with a passphrase. Write the recovery phrase on paper only. Expected: Home with a zero
       balance, syncing.
 - [ ] Fund it from the faucet. Expected: the payment shows in Activity, then confirms.
-- [ ] Settings ▸ About shows version `X.Y.Z` (the candidate's version without `-rc.N`; the exact candidate is the
-      file you verified in section 1). Tools ▸ Information shows a warning banner (a candidate is a pre-release
-      build; a higher-priority warning, such as the network one, may be the one shown). Note its text.
-- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About.
+- [ ] Settings ▸ About shows the candidate's tag without its `v` (`X.Y.Z-rc.N`; the release workflow stamps the
+      tag's version into the build). Tools ▸ Information shows a warning banner (a candidate is a pre-release
+      build; a higher-priority warning, such as a stalled sync, may be the one shown). Note its text. If it is not
+      the test-build warning, clear it and look again (an unclean-shutdown warning clears only after a normal
+      quit and relaunch).
+- [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About, Tools ▸ Information.
 
 **Fail if:** the OS blocked the app and the documented way to open it does not work; Windows asks for administrator
 rights; the app runs under Rosetta on Apple silicon; the timed second launch takes more than 5 seconds; the notice
@@ -223,7 +225,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - run E: the lock screen, not Welcome, and the passphrase unlocks. Run S: the wallet opens with no
          passphrase. A macOS Keychain prompt to let Dash Wallet use its own item is a finding if **Always Allow**
          makes it go away, and a failure if it does not or the wallet reports a missing key;
-       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z`;
+       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z-rc.N`;
        - everything in baseline 1 is the same (statuses may have moved on to more confirmations or ChainLocked);
        - Tools ▸ Sign/Verify verifies the baseline signature, and signing `h08 upgrade` with the same address gives
          the same signature.
@@ -682,6 +684,21 @@ the focus.
 
 **Fail if:** a setting is read without its label or its state; a tab cannot be reached or chosen by keyboard.
 
+### 8.8 My Profile
+
+- [ ] Tab to the identity chip in the toolbar. Expected: it is read as "My profile, @<name>" and a button. Choose it.
+      Expected: **My Profile** opens and its heading "My Profile" is read.
+- [ ] Read the page through. Expected: the display name (or @<name> when there is none) as a heading, @<name> under
+      it, **Edit Profile** and **Share Username** as buttons; "Usernames" and "Identity", each read with its value,
+      and **Copy identity ID**; the heading "Credit balance" with the balance, then **Top up** and **Withdraw**.
+- [ ] Choose **Edit Profile**. Expected: the sheet "Edit Profile" is announced and takes the focus; Tab reaches
+      "Display Name" and "About me", each read with its label and its counter ("<n>/<max> characters"), then
+      **Cancel** and **Save Changes**, and never the page behind the sheet. Change nothing and press Escape. Expected:
+      the sheet closes and the focus is back on **Edit Profile**.
+
+**Fail if:** the chip has no name or does not include the username; a field of Edit Profile is read without its
+label; Escape does not close the sheet or the focus is lost after it.
+
 ## 9. Flows only fixture tests cover: the real app on testnet, by hand
 
 The browser suite (`apps/desktop/e2e/`) runs these flows against fixture data; nothing runs them in the real app
@@ -848,10 +865,10 @@ makes these cells incomplete; only 7.6's own rerun rule does:
 
 Screen readers, one row per reader (section 8), with the OS and reader versions and real or VM:
 
-| Machine, OS, reader | Real or VM | Lock (8.1) | Onboarding (8.2) | Home, Activity, detail (8.3) | Pay (8.4) | Receive (8.5) | Contacts and bell (8.6) | Settings (8.7) |
-|---|---|---|---|---|---|---|---|---|
-| Mac …, macOS …, VoiceOver | | | | | | | | |
-| PC …, Windows 11 …, Narrator | | | | | | | | |
+| Machine, OS, reader | Real or VM | Lock (8.1) | Onboarding (8.2) | Home, Activity, detail (8.3) | Pay (8.4) | Receive (8.5) | Contacts and bell (8.6) | Settings (8.7) | My Profile (8.8) |
+|---|---|---|---|---|---|---|---|---|---|
+| Mac …, macOS …, VoiceOver | | | | | | | | | |
+| PC …, Windows 11 …, Narrator | | | | | | | | | |
 
 Fixture-only flows in the real app (section 9), one row per OS:
 

@@ -24,6 +24,12 @@ vi.mock("../../app/ui", async (original) => ({
   useUi: (select: (state: unknown) => unknown) => select({ discreet: false, prefs: { unit: "dash", decimalDigits: 8, language: null } }),
 }));
 
+// The session sheet's hand-off check reads SPV's state: running, with a peer.
+vi.mock("../../api/queries", async (original) => ({
+  ...(await original<typeof import("../../api/queries")>()),
+  useSyncStatus: () => ({ data: { running: true, connectedPeers: 8 } }),
+}));
+
 const TESTNET: NetworkInfo = { kind: "testnet", dirName: "testnet", unitName: "tDASH" };
 const MAINNET: NetworkInfo = { kind: "mainnet", dirName: "mainnet", unitName: "DASH" };
 const W = "fixture";

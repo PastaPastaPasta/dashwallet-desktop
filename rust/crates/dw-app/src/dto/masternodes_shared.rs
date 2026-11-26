@@ -237,6 +237,40 @@ pub enum DeadReasonName {
 
 mirror_enum!(engine::DeadReason => DeadReasonName { InputsSpent, Delisted, Abandoned });
 
+/// Where the latest abandon spend stands while it is pending (MG-10 §2.3.3,
+/// D50).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonSpendStateName {
+    /// Its first hand-off was definitely refused.
+    Refused,
+    /// It may be on the network.
+    Uncertain,
+    /// The wallet recorded it, unconfirmed.
+    InHistory,
+    /// The wallet recorded it and the user abandoned it in Activity.
+    AbandonedInActivity,
+    /// Saved by an earlier version and not in the wallet's history.
+    Legacy,
+}
+
+mirror_enum!(engine::AbandonSpendState => AbandonSpendStateName {
+    Refused, Uncertain, InHistory, AbandonedInActivity, Legacy,
+});
+
+/// The latest abandon spend this wallet signed of a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AbandonSpendView {
+    pub txid: String,
+    /// Only while the spend is pending and the session isn't settled.
+    pub state: Option<AbandonSpendStateName>,
+    /// Advisory: three hours of tip time since it was signed.
+    pub overdue: bool,
+    /// The code its latest failed hand-off recorded.
+    pub code: Option<String>,
+}
+
 /// The wallet's view of a session, derived on every read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -425,6 +459,9 @@ pub struct SharedSession {
     pub next: SharedNextName,
     /// `mn_shared_discard` would delete it now and release its coins.
     pub discardable: bool,
+    /// The session may be out, not settled, and holds a reserved coin. The
+    /// renderer offers Abandon only while `abandon_charge` is set too.
+    pub abandonable: bool,
     pub warnings: Vec<SharedWarning>,
     /// The terms this wallet last approved: the consent diff's base.
     pub approved_terms: Option<ShareTermsView>,
@@ -434,13 +471,156 @@ pub struct SharedSession {
     pub created_at: u64,
     pub updated_at: u64,
     pub last_error: Option<String>,
+    /// The engine's recovery read lists Abandon: `mn_shared_abandon` spends
+    /// every reserved coin back to the wallet now, charged exactly this, its
+    /// grant cap. `null` while it isn't listed.
+    pub abandon_charge: Option<u64>,
+    /// Advisory: out, the list current with the tip, and three hours of tip
+    /// time since it went out (MG-10 §4.2).
+    pub overdue: bool,
+    /// The latest abandon spend, once this wallet signed one.
+    pub abandon_spend: Option<AbandonSpendView>,
+    /// The recovery read lists `mn_shared_resend_abandon`: the latest abandon
+    /// spend's saved bytes again, charged exactly this, its grant cap.
+    pub resend_abandon_charge: Option<u64>,
+    /// The recorded transactions Activity can abandon now: the spend back,
+    /// or this wallet's own transaction spending a reserved coin.
+    pub activity_abandon_txids: Vec<String>,
+    /// The recorded transactions Activity can send again now: the spend
+    /// back, when the session holds no bytes of its own to replay.
+    pub activity_resend_txids: Vec<String>,
 }
 
-mirror_struct!(engine::SharedSession => SharedSession {
-    id, code, message_code, kind: into, role: into, stage: into, revision, consent_hash,
-    rows: vec, terms: into, node_run_by, fee, debit, pro_tx_hash, txid, reserved, next: into,
-    discardable, warnings: vec, approved_terms: opt, base_keys: opt, key_change: opt, actor_fee,
-    created_at, updated_at, last_error,
+/// The txids of Activity's Abandon and Send again in the engine's recovery
+/// actions, each once, in the engine's order.
+fn activity_txids(actions: &[engine::RecoveryAction]) -> (Vec<String>, Vec<String>) {
+    let (mut abandon, mut resend) = (Vec::new(), Vec::new());
+    for a in actions {
+        let (list, txid) = match a {
+            engine::RecoveryAction::AbandonWalletTx { txid } => (&mut abandon, txid),
+            engine::RecoveryAction::ResendWalletTx { txid } => (&mut resend, txid),
+            _ => continue,
+        };
+        if !list.contains(txid) {
+            list.push(txid.clone());
+        }
+    }
+    (abandon, resend)
+}
+
+impl From<engine::SharedSession> for SharedSession {
+    fn from(x: engine::SharedSession) -> Self {
+        let engine::SharedSession {
+            id,
+            code,
+            message_code,
+            kind,
+            role,
+            stage,
+            revision,
+            consent_hash,
+            rows,
+            terms,
+            node_run_by,
+            fee,
+            debit,
+            pro_tx_hash,
+            txid,
+            reserved,
+            next,
+            discardable,
+            abandonable,
+            warnings,
+            approved_terms,
+            base_keys,
+            key_change,
+            actor_fee,
+            created_at,
+            updated_at,
+            last_error,
+            recovery,
+        } = x;
+        let abandon_charge = recovery.actions.iter().find_map(|a| match a {
+            engine::RecoveryAction::Abandon { charge, .. } => Some(*charge),
+            _ => None,
+        });
+        let resend_abandon_charge = recovery.actions.iter().find_map(|a| match a {
+            engine::RecoveryAction::ResendAbandon { charge } => Some(*charge),
+            _ => None,
+        });
+        let (activity_abandon_txids, activity_resend_txids) = activity_txids(&recovery.actions);
+        let handoff_code = recovery
+            .handoff_error
+            .filter(|e| e.tx == engine::HandoffTx::Abandon)
+            .and_then(|e| e.code);
+        let abandon_spend = recovery.abandon_spend.map(|a| AbandonSpendView {
+            txid: a.txid,
+            state: a.state.map(Into::into),
+            overdue: a.overdue,
+            code: handoff_code,
+        });
+        SharedSession {
+            id,
+            code,
+            message_code,
+            kind: kind.into(),
+            role: role.into(),
+            stage: stage.into(),
+            revision,
+            consent_hash,
+            rows: rows.into_iter().map(Into::into).collect(),
+            terms: terms.into(),
+            node_run_by,
+            fee,
+            debit,
+            pro_tx_hash,
+            txid,
+            reserved,
+            next: next.into(),
+            discardable,
+            abandonable,
+            warnings: warnings.into_iter().map(Into::into).collect(),
+            approved_terms: approved_terms.map(Into::into),
+            base_keys: base_keys.map(Into::into),
+            key_change: key_change.map(Into::into),
+            actor_fee,
+            created_at,
+            updated_at,
+            last_error,
+            abandon_charge,
+            overdue: recovery.overdue,
+            abandon_spend,
+            resend_abandon_charge,
+            activity_abandon_txids,
+            activity_resend_txids,
+        }
+    }
+}
+
+/// A session whose stored record this wallet can no longer read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadableSession {
+    /// 64 lower-case hex.
+    pub id: String,
+    /// The id's first six characters, upper-case.
+    pub code: String,
+    pub kind: SharedKindName,
+    pub role: SharedRoleName,
+    /// `mn_shared_discard` would delete it now: nothing of it may be out.
+    pub discardable: bool,
+    /// `mn_shared_abandon_unreadable` would spend every reserved coin back
+    /// to the wallet now, charged `abandon_charge`.
+    pub abandonable: bool,
+    /// What that spend charges, exactly its grant cap; `null` while it
+    /// isn't `abandonable`.
+    pub abandon_charge: Option<u64>,
+    pub reserved: Vec<String>,
+    pub updated_at: u64,
+}
+
+mirror_struct!(engine::UnreadableSession => UnreadableSession {
+    id, code, kind: into, role: into, discardable, abandonable, abandon_charge, reserved, updated_at,
 });
 
 /// The message to copy or save now.
@@ -771,5 +951,24 @@ impl From<engine::MaintenanceSent> for MaintenanceSent {
                 session: Box::new((*session).into()),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_txids_keep_each_action_once_in_order() {
+        let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+        let actions = [
+            engine::RecoveryAction::AbandonWalletTx { txid: b.clone() },
+            engine::RecoveryAction::ResendAbandon { charge: 193 },
+            engine::RecoveryAction::AbandonWalletTx { txid: a.clone() },
+            engine::RecoveryAction::ResendWalletTx { txid: a.clone() },
+            engine::RecoveryAction::AbandonWalletTx { txid: b.clone() },
+        ];
+        assert_eq!(activity_txids(&actions), (vec![b, a.clone()], vec![a]));
+        assert_eq!(activity_txids(&[]), (vec![], vec![]));
     }
 }

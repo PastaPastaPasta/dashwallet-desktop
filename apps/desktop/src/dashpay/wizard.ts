@@ -6,18 +6,21 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
+import type { AppError } from "../api/generated/commands";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { FinishReport } from "../api/generated/FinishReport";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { NameOutcome } from "../api/generated/NameOutcome";
+import type { PlatformRegistrationQuote } from "../api/generated/PlatformRegistrationQuote";
+import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import { Model } from "../onboarding/model";
 import { GrantModel } from "../tools/grant";
 import { CLAIM_KEPT, claimFoundIdentity } from "./claim";
 import { LIVE_SOURCES, type PaySource } from "./payWith";
-import { QUOTE_REQUEST } from "./status";
+import { checksAgain, QUOTE_REQUEST } from "./status";
 
 export type WizardApi = Pick<
   Backend,
@@ -47,18 +50,47 @@ export type WizardMode =
   | { kind: "credits"; identity: string; instant?: boolean }
   | { kind: "invitation"; linkId: string; contestedAllowed: boolean; inviter: InvitationInviter | null };
 
-/** `source`: the "Pay with" step before the name (C-funding F19). */
-export type WizardStep = "source" | "name" | "confirm";
+/** `source`: "Make your username private", the step before the name (C-funding F19); `instant`:
+ * the instant username beside a contested one (D4 reversed), between the name and Confirm. */
+export type WizardStep = "source" | "name" | "instant" | "confirm";
 
 export type RunningCall = "start" | "resume" | "discard" | "finish" | "name";
 
 /** A Core-funded request for `label` (DP1-02's `CoreBalance` funding; no profile, D4/F2). */
-export const coreRequest = (label: string): RegistrationRequest => ({
+export const coreRequest = (label: string, temporaryLabel: string | null = null): RegistrationRequest => ({
   label,
-  temporaryLabel: null,
+  temporaryLabel,
   funding: { kind: "coreBalance" },
   initialProfile: null,
 });
+
+/** C-funding F4: a request paid from the Platform balance for `label`, with the numbers its quote
+ * showed (the start refuses `registration.quote_changed` for others). A quote of the source passes
+ * zeros: the engine plans its own. */
+export const platformRequest = (
+  label: string,
+  quote: Pick<PlatformRegistrationQuote, "fundingCredits" | "feeReserveCredits"> = { fundingCredits: "0", feeReserveCredits: "0" },
+  temporaryLabel: string | null = null,
+): RegistrationRequest => ({
+  label,
+  temporaryLabel,
+  funding: { kind: "platformAddresses", fundingCredits: quote.fundingCredits, feeReserveCredits: quote.feeReserveCredits },
+  initialProfile: null,
+});
+
+/** C-funding F5: a request paid from the Shielded balance for `label`, at the denomination its
+ * quote showed (the start refuses `registration.quote_changed` for another). A quote of the source
+ * passes zero: the engine picks its own. */
+export const shieldedRequest = (label: string, denomination = "0", temporaryLabel: string | null = null): RegistrationRequest => ({
+  label,
+  temporaryLabel,
+  funding: { kind: "shielded", denomination },
+  initialProfile: null,
+});
+
+/** What Confirm starts under: the quote's grant, and its Platform numbers or Shielded readiness
+ * when it is one. */
+export type ConfirmQuote = Pick<RegistrationQuote, "grant" | "platform" | "readiness">;
 
 /** DP5-03: the claim of the stashed invitation `linkId` for `label`; `requestInviter: false` asks
  * no one (D7). */
@@ -82,12 +114,17 @@ export class RegistrationWizard extends Model {
   /** `null` while the wizard is not open: the Join page shows its intro or a row's screen. */
   step: WizardStep | null = null;
   mode: WizardMode = { kind: "core" };
-  /** Where a new identity is paid from: Dash wallet each time the wizard opens, never the last
-   * choice (C-funding F18). Only a source this build can start is ever chosen (`LIVE_SOURCES`). */
-  source: PaySource = "core";
-  /** The wizard was opened on the "Pay with" step: Back from the name returns there. */
+  /** Where a new identity is paid from: nothing each time the wizard opens, never the last choice
+   * (C-funding F18, mobile parity). Only a source this build can start is ever chosen
+   * (`LIVE_SOURCES`); the name step is not reached without one. */
+  source: PaySource | null = null;
+  /** The wizard was opened on the source step: Back from the name returns there. */
   picked = false;
   label = "";
+  /** The instant offer shows over the name step (D4 reversed): the label is contested. */
+  offer = false;
+  /** The instant username the start registers beside the contested label; `null` for none. */
+  temporaryLabel: string | null = null;
   /** The claim's "Send a contact request" check (DP5-03 D7). */
   requestInviter = true;
   /** The draft this session started or resumed: its result screen shows until Done. */
@@ -102,6 +139,9 @@ export class RegistrationWizard extends Model {
   wedge: string[] | null = null;
   /** Finish transfers' report, once it ran. */
   finished: FinishReport | null = null;
+  /** When the last plan was refused, at the start or at run time (F4, F22): Confirm pays only a
+   * quote read since. */
+  requoteAt: number | null = null;
   readonly grants: GrantModel;
 
   constructor(
@@ -113,18 +153,22 @@ export class RegistrationWizard extends Model {
     this.grants.subscribe(() => this.changed());
   }
 
-  /** Opens step 1, or "Pay with" first, on Dash wallet (C-funding F18, F19). */
+  /** Opens step 1, or the source step first with nothing chosen (C-funding F18, F19). A new
+   * identity's name step without the source step pays from the Dash wallet. */
   begin(mode: WizardMode, step: "name" | "source" = "name") {
     this.mode = mode;
     this.step = step;
-    this.source = "core";
+    this.source = step === "source" ? null : "core";
     this.picked = step === "source";
     this.label = "";
+    this.offer = false;
+    this.temporaryLabel = null;
     this.requestInviter = true;
     this.draft = null;
     this.named = null;
     this.error = null;
     this.wedge = null;
+    this.requoteAt = null;
     this.changed();
   }
 
@@ -133,16 +177,27 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** "Pay with" → the name, for a source this build can start. */
+  /** The source step → the name, for a chosen source this build can start. */
   pickSource() {
-    if (!LIVE_SOURCES.has(this.source)) return;
+    if (this.source === null || !LIVE_SOURCES.has(this.source)) return;
     this.step = "name";
     this.error = null;
     this.changed();
   }
 
+  /** "Continue without privacy": the Dash wallet, then the name. */
+  withoutPrivacy() {
+    this.source = "core";
+    this.pickSource();
+  }
+
   setLabel(label: string) {
     this.label = label;
+    this.changed();
+  }
+
+  setTemporaryLabel(label: string) {
+    this.temporaryLabel = label;
     this.changed();
   }
 
@@ -151,23 +206,82 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** What Confirm starts: the claim in invitation mode, else a Core-funded registration. */
-  request(): RegistrationRequest {
-    const m = this.mode;
-    return m.kind === "invitation" ? invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null) : coreRequest(this.label);
+  /** Whether Confirm pays from the Platform balance: a new identity whose source step chose it. */
+  get fromPlatform(): boolean {
+    return this.mode.kind === "core" && this.source === "platform";
   }
 
-  /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). */
-  next() {
+  /** Whether Confirm pays from the Shielded balance: a new identity whose source step chose it. */
+  get fromShielded(): boolean {
+    return this.mode.kind === "core" && this.source === "shielded";
+  }
+
+  /** What Confirm starts: the claim in invitation mode, else a registration paid from the chosen
+   * source, with the numbers of `quote` when that is the Platform balance. */
+  request(quote: ConfirmQuote | null = null): RegistrationRequest {
+    const m = this.mode;
+    if (m.kind === "invitation") return invitationRequest(this.label, m.linkId, this.requestInviter && m.inviter !== null);
+    const temp = this.temporaryLabel;
+    if (this.fromPlatform) return platformRequest(this.label, quote?.platform ?? undefined, temp);
+    if (this.fromShielded) return shieldedRequest(this.label, quote?.readiness?.denomination ?? undefined, temp);
+    return coreRequest(this.label, temp);
+  }
+
+  /** The wizard offers an instant username beside a contested one: a new identity, which owns no
+   * name yet. A name from credits is one `register_name`, and a claim's invitation pays for one
+   * name: the voting card offers theirs once the contest is open. */
+  get offersInstant(): boolean {
+    return this.mode.kind === "core";
+  }
+
+  /** Step 1 → 2, for the label the screen has checked (`canChoose`, on the trimmed label). A
+   * contested label the wizard offers an instant username beside asks first (`offer`). */
+  next(contested = false) {
     this.label = this.label.trim();
+    this.temporaryLabel = null;
+    this.error = null;
+    if (contested && this.offersInstant) this.offer = true;
+    else this.step = "confirm";
+    this.changed();
+  }
+
+  /** The offer's "Create instant username": the form, prefilled with `suggestion`. */
+  createInstant(suggestion: string) {
+    this.offer = false;
+    this.temporaryLabel = suggestion;
+    this.step = "instant";
+    this.changed();
+  }
+
+  /** The offer's "No, thanks": Confirm, for the contested label alone. */
+  declineInstant() {
+    this.offer = false;
+    this.temporaryLabel = null;
+    this.step = "confirm";
+    this.changed();
+  }
+
+  /** The offer closed: back to the name. */
+  dismissOffer() {
+    this.offer = false;
+    this.changed();
+  }
+
+  /** The instant form → Confirm, for the name the screen has checked (`instantCheck`). */
+  confirmInstant() {
+    if (this.temporaryLabel === null) return;
+    this.temporaryLabel = this.temporaryLabel.trim();
     this.step = "confirm";
     this.error = null;
     this.changed();
   }
 
   back() {
-    if (this.step === "confirm") this.step = "name";
-    else if (this.step === "name" && this.picked) this.step = "source";
+    if (this.step === "confirm") this.step = this.temporaryLabel !== null ? "instant" : "name";
+    else if (this.step === "instant") {
+      this.step = "name";
+      this.temporaryLabel = null;
+    } else if (this.step === "name" && this.picked) this.step = "source";
     else this.step = null;
     this.error = null;
     this.wedge = null;
@@ -197,21 +311,35 @@ export class RegistrationWizard extends Model {
 
   /** Confirm & pay (D8: one start per Confirm). The quote's grant, then `start_registration`. A
    * refusal naming another registration shows that one; one past a wedged funding asks first. */
-  async confirm(grant: GrantRequest, past: string[] = []): Promise<void> {
-    const request = this.request();
+  async confirm(quote: ConfirmQuote, past: string[] = []): Promise<void> {
+    // A Platform start takes its numbers from a Platform quote; a quote without them authorizes
+    // nothing (F4).
+    if ((this.fromPlatform && quote.platform === null) || (this.fromShielded && (quote.readiness?.denomination ?? null) === null)) {
+      this.error = { code: "registration.quote_changed", message: "not a quote of the chosen source", data: null } satisfies AppError;
+      this.requoteAt = Date.now();
+      this.changed();
+      return;
+    }
+    const request = this.request(quote);
     await this.#call("start", async () => {
-      const draft = await this.#withGrant(grant, (g) =>
-        past.length === 0
-          ? this.api.startRegistration(this.walletId, request, g.id)
-          : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
-      );
-      if (draft !== null) this.#started(draft);
+      try {
+        const draft = await this.#withGrant(quote.grant, (g) =>
+          past.length === 0
+            ? this.api.startRegistration(this.walletId, request, g.id)
+            : this.api.startRegistrationPastUnknownFunding(this.walletId, request, g.id, past),
+        );
+        if (draft !== null) this.#started(draft);
+      } catch (e) {
+        // The refused quote is never paid again: Pay waits for one read since.
+        if (hasCode(e, "registration.quote_changed")) this.requoteAt = Date.now();
+        throw e;
+      }
     });
   }
 
   /** The wedge copy was confirmed: start past every blocker named so far. */
-  async confirmWedge(grant: GrantRequest): Promise<void> {
-    if (this.wedge !== null) await this.confirm(grant, this.wedge);
+  async confirmWedge(quote: ConfirmQuote): Promise<void> {
+    if (this.wedge !== null) await this.confirm(quote, this.wedge);
   }
 
   dismissWedge() {
@@ -219,14 +347,22 @@ export class RegistrationWizard extends Model {
     this.changed();
   }
 
-  /** Continue (R2, R6): the row's label quoted again for the grant (no call sizes a resume's),
-   * then `resume_registration`. */
+  /** Continue (R2, R6): the row's label quoted again for the grant, or a claim's or a
+   * Platform-funded row's own grant (`registration_resume_grant`), then `resume_registration`. */
   async resume(row: RegistrationStatus): Promise<void> {
     await this.#call("resume", async () => {
+      // A Shielded payment no run is checking is checked again by its evidence alone: no grant.
+      if (checksAgain(row)) {
+        await this.api.resumeRegistration(this.walletId, row.draft, null);
+        this.draft = row.draft;
+        return;
+      }
       // A claim row's grant is the row's (D20): its invitation's quote refuses a claim that landed.
-      const grant = row.invitation
+      // A Platform-funded row's too: a quote of its addresses refuses while its payment
+      // holds them, and a Core quote's grant carries duffs; a Shielded-funded row's lease takes none.
+      const grant = row.invitation || row.fromPlatform || row.fromShielded
         ? await this.api.registrationResumeGrant(this.walletId, row.draft)
-        : (await this.api.registrationQuote(this.walletId, { ...coreRequest(row.label), temporaryLabel: row.temporaryLabel })).grant;
+        : (await this.api.registrationQuote(this.walletId, coreRequest(row.label, row.temporaryLabel))).grant;
       const done = await this.#withGrant(grant, (g) => this.api.resumeRegistration(this.walletId, row.draft, g.id).then(() => true));
       if (done) this.draft = row.draft;
     });
@@ -254,8 +390,29 @@ export class RegistrationWizard extends Model {
       // A claim discarded goes back to its invitation's screen, which reads the link again (D1).
       if (row?.invitation && row.phase !== "done") return this.close();
       const identity = row?.phase === "done" ? row.identity : null;
-      this.begin(identity ? { kind: "credits", identity } : { kind: "core" });
+      if (identity) this.begin({ kind: "credits", identity });
+      else this.begin({ kind: "core" }, "source");
     });
+  }
+
+  /** Back to Confirm for `row`'s name and source with a new quote (F22), its row discarded
+   * while nothing is committed. Nothing plans until the user confirms again. */
+  async reconfirm(row: RegistrationStatus): Promise<void> {
+    if (row.fundsCommitted) return;
+    await this.#call("discard", async () => {
+      await this.api.discardRegistration(this.walletId, row.draft);
+      this.begin({ kind: "core" }, "source");
+      this.source = row.fromPlatform ? "platform" : row.fromShielded ? "shielded" : "core";
+      this.label = row.label;
+      this.temporaryLabel = row.temporaryLabel;
+      this.step = "confirm";
+      this.requoteAt = Date.now();
+    });
+  }
+
+  /** Whether a quote read at `readAt` may be paid: after a refused plan, only one read since. */
+  quoteStands(readAt: number): boolean {
+    return this.requoteAt === null || readAt >= this.requoteAt;
   }
 
   /** Finish transfers (R5, D10). */

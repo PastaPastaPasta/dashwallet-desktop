@@ -82,7 +82,7 @@ impl WalletView {
             Arc::clone(&session.hub),
         );
         let (owned, operator_keys, tracked, tracked_owned, owner_ids, voting_ids) =
-            tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || -> Result<_, EngineError> {
                 let (owned, operator_index) =
                     wallet_masternodes(&m, &hub.history, &wallet).unwrap_or_default();
                 let service = m.tracked_masternodes_service();
@@ -105,16 +105,16 @@ impl WalletView {
                         .map(|o| (o.record.pro_tx_hash, o))
                         .collect()
                 };
-                (
+                Ok((
                     owned,
                     operator_index.into_keys().collect::<HashSet<_>>(),
                     tracked,
                     tracked_owned,
-                    derived_key_ids(&w, ProviderKeyKind::Owner),
-                    derived_key_ids(&w, ProviderKeyKind::Voting),
-                )
+                    derived_key_ids(&w, ProviderKeyKind::Owner)?,
+                    derived_key_ids(&w, ProviderKeyKind::Voting)?,
+                ))
             })
-            .await?;
+            .await??;
 
         let hashes: Vec<[u8; 32]> = tracked.iter().map(|t| t.pro_tx_hash).collect();
         let attached = attached_roles(session, hashes).await?;
@@ -605,19 +605,24 @@ impl WalletView {
 }
 
 /// hash160s of a wallet's derived keys of `kind` at indexes 0–19. A wallet
-/// that can't derive them (no provider account) has none. Blocking.
+/// with no provider account (`AddressNotFound`) has none; the walk stops
+/// there. `WalletNotFound` (the wallet left the manager) is returned.
+/// Blocking.
 fn derived_key_ids(
     wallet: &platform_wallet::PlatformWallet,
     kind: ProviderKeyKind,
-) -> HashSet<[u8; 20]> {
-    (0..DERIVED_KEYS)
-        .map_while(|i| {
-            wallet
-                .derive_provider_key_at_index(kind, i, None, false)
-                .ok()
-        })
-        .map(|k| hash160::Hash::hash(&k.public_key_bytes).to_byte_array())
-        .collect()
+) -> Result<HashSet<[u8; 20]>, EngineError> {
+    let mut ids = HashSet::new();
+    for i in 0..DERIVED_KEYS {
+        match wallet.derive_provider_key_at_index(kind, i, None, false) {
+            Ok(k) => {
+                ids.insert(hash160::Hash::hash(&k.public_key_bytes).to_byte_array());
+            }
+            Err(platform_wallet::PlatformWalletError::AddressNotFound(_)) => break,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(ids)
 }
 
 /// The attached roles of each tracked masternode; `None` while the vault
@@ -648,7 +653,9 @@ async fn attached_roles(
     .await?;
     match roles {
         Ok(roles) => Ok(Some(roles)),
-        Err(dw_vault::VaultError::Locked) => Ok(None),
+        // Unlocked for mixing only, the record ids are out of reach as when
+        // locked: the rows still list, without their attached keys.
+        Err(dw_vault::VaultError::Locked | dw_vault::VaultError::MixingOnly) => Ok(None),
         Err(e) => Err(EngineError::from(e).into()),
     }
 }
@@ -1023,6 +1030,7 @@ mod tests {
                 instant_locked: false,
                 chain_locked: true,
                 matures_in: None,
+                dropped: None,
             },
             timestamp: Some(NOW - 1000),
             block_height: Some(100),

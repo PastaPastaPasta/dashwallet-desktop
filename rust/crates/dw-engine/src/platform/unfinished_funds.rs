@@ -15,9 +15,12 @@
 //! (made then for a restored lock, paying that address), and disarmed
 //! again if none was released. After a proved apply the settle records the
 //! rise as the fund's, at most the lock's credits. Platform's "already
-//! consumed" for the exact outpoint is kept ([`Mark::Reported`]) apart from
-//! an unknown outcome: the kind takes the lock as finished elsewhere, so it
-//! leaves the lists ([`locks::LockFinish::ReportedUsed`]), and the record ends as
+//! consumed" for the exact outpoint is unproved: any node can say it. It
+//! counts only when Platform's proved state says the same
+//! ([`locks::SpentRead::Consumed`], [`FundLib::spent`]); then it is kept
+//! ([`Mark::Used`]) apart from an unknown outcome: the kind takes the lock as
+//! finished elsewhere, so it leaves the lists
+//! ([`locks::LockFinish::ReportedUsed`]), and the record ends as
 //! `platform_moves::fund_used` says (completed with its estimate only for an
 //! own fund whose apply released a signature; a restored lock's record is
 //! removed). Neither settles the lock.
@@ -41,7 +44,7 @@ use super::platform_moves::{self, FundEvidence, FundHold};
 use super::registration_flow::LockStatus;
 use super::unfinished_locks::{
     self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, Mark, Marks, Minimum,
-    Readiness, reply_from,
+    Readiness, SpentRead, reply_from,
 };
 use crate::{NetworkSession, PlatformChange, WalletId};
 
@@ -151,11 +154,17 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
     }
 
     async fn reported_locks(&self) -> HashSet<OutPoint> {
-        self.marks(Mark::Reported).await
+        self.marks(Mark::Used).await
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
         self.record(Mark::Unknown, lock).await;
+    }
+
+    async fn await_start_up(&self) {
+        (self.session.platform)
+            .settle_startup_hold(self.wallet, || self.lib.funding_hold())
+            .await;
     }
 
     async fn readiness(&self) -> Readiness {
@@ -165,7 +174,8 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 e => Readiness::Held(e.code().into()),
             };
         }
-        match self.lib.funding_hold() {
+        let hold = self.lib.funding_hold();
+        match self.session.platform.ask_on_startup_hold(self.wallet, hold) {
             Some(wait) => Readiness::Held(super::topup::held(wait).code().into()),
             None => Readiness::Ready,
         }
@@ -185,12 +195,19 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         let duffs = fund::minimum_duffs(rules);
         Some(Minimum {
             duffs,
-            code: CreditsError::BelowMinimum { min: duffs }.code(),
+            code: CreditsError::BelowMinimum {
+                min: duffs,
+                max: None,
+            }
+            .code(),
         })
     }
 
     fn caught_up(&self) -> bool {
-        self.lib.funding_hold().is_none()
+        let hold = self.lib.funding_hold();
+        (self.session.platform)
+            .ask_on_startup_hold(self.wallet, hold)
+            .is_none()
     }
 
     fn wallet_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
@@ -218,14 +235,13 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
         let estimate = fund::estimate(self.lib, duffs);
         // Until the settle says what the rise is (module doc).
         let hold = platform_moves::hold_fund(self.session, self.wallet, address.clone()).await;
-        let signer = ArmingSigner {
-            inner: signer,
-            session: self.session,
-            wallet: self.wallet,
-            lock: (outpoint, duffs),
-            fund: (&address, estimate),
-            arming: tokio::sync::OnceCell::new(),
-        };
+        let signer = ArmingSigner::new(
+            signer,
+            self.session,
+            self.wallet,
+            (outpoint, duffs),
+            (&address, estimate),
+        );
         let applied = self.lib.apply(outpoint, to, &signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::PlatformAddresses]);
         let gained = applied.as_ref().ok().copied().flatten();
@@ -247,12 +263,23 @@ impl<L: FundLib> LockKind for FundLocks<'_, L> {
                 });
             }
             Ok(ApplyReply::AlreadyConsumed) => {
+                // After the signature the answer is Platform's, unproved;
+                // before it, the library's own row, which only a proved
+                // apply makes `Consumed`.
+                let spent = match signer.inner.signed() {
+                    true => self.lib.spent(outpoint).await,
+                    false => SpentRead::Consumed,
+                };
+                if spent != SpentRead::Consumed {
+                    tracing::warn!(%outpoint, ?spent, "Platform's unproved \"already consumed\" for a fund lock: Checking");
+                    return reply;
+                }
                 // Kept first: a failed record write is retried from it.
                 locks::record(
                     self.session,
                     self.wallet,
                     LockKindId::PlatformAddress,
-                    Mark::Reported,
+                    Mark::Used,
                     outpoint,
                 )
                 .await;
@@ -343,8 +370,7 @@ pub(crate) async fn fund_evidence(
             .chain(settled)
             .chain(alone)
             .collect(),
-        reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Reported)
-            .await,
+        reported: locks::marks_of(session, wallet, LockKindId::PlatformAddress, Mark::Used).await,
         tracked: rows.iter().map(|l| l.info.outpoint).collect(),
         caught_up: super::registration_flow::wallet_synced(session, wallet),
     }
@@ -373,17 +399,49 @@ fn persisted_consumed(
 }
 
 /// The apply's signer: [`LockKeySigner`], arming the fund's record
-/// ([`platform_moves::arm_fund`]) durably before the first signature it
-/// asks for, and refusing to sign when that write fails.
-struct ArmingSigner<'s, 'a> {
+/// ([`platform_moves::arm_fund`]) durably before the first signature it asks for, and refusing
+/// to sign when that write fails.
+pub(crate) struct ArmingSigner<'s, 'a> {
     inner: &'s LockKeySigner<'a>,
     session: &'s NetworkSession,
     wallet: WalletId,
     lock: (OutPoint, u64),
     /// The address the apply pays and the fund's estimate.
     fund: (&'s str, u64),
+    /// A recover's record, not a fund's.
+    recovered: bool,
     /// What arming did, once it ran.
-    arming: tokio::sync::OnceCell<platform_moves::Arming>,
+    pub(crate) arming: tokio::sync::OnceCell<platform_moves::Arming>,
+}
+
+impl<'s, 'a> ArmingSigner<'s, 'a> {
+    /// The record of the apply of `lock` pays `fund`: an address, about so
+    /// many credits.
+    pub(crate) fn new(
+        inner: &'s LockKeySigner<'a>,
+        session: &'s NetworkSession,
+        wallet: WalletId,
+        lock: (OutPoint, u64),
+        fund: (&'s str, u64),
+    ) -> Self {
+        Self {
+            inner,
+            session,
+            wallet,
+            lock,
+            fund,
+            recovered: false,
+            arming: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The record is a recover's (`unfinished_remainder`).
+    pub(crate) fn recovering(self) -> Self {
+        Self {
+            recovered: true,
+            ..self
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -410,15 +468,11 @@ impl key_wallet::Signer for ArmingSigner<'_, '_> {
         if self.inner.is_the_lock_key(&key) {
             let (address, credits) = self.fund;
             let arm = || async {
-                platform_moves::arm_fund(
-                    self.session,
-                    self.wallet,
-                    self.lock,
-                    address.into(),
-                    credits,
-                )
-                .await
-                .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
+                let (session, wallet, lock) = (self.session, self.wallet, self.lock);
+                let recovered = self.recovered;
+                platform_moves::arm_fund(session, wallet, lock, address.into(), credits, recovered)
+                    .await
+                    .map_err(|e| SignerError::Vault(VaultError::Storage(e.to_string())))
             };
             self.arming.get_or_try_init(arm).await?;
         }

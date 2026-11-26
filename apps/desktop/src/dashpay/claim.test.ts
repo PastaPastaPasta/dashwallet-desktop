@@ -39,6 +39,8 @@ const row = (r: Partial<RegistrationStatus> = {}): RegistrationStatus => ({
   nameFailure: null,
   profileFailure: null,
   invitation: { linkId: LINK, inviter: BOB, requestFailure: null },
+  fromPlatform: false,
+  fromShielded: false,
   createdAt: 0,
   updatedAt: 0,
   ...r,

@@ -23,4 +23,16 @@ addresses: Array<PlatformAddressRow>,
 /**
  * Unix seconds of this session's last sync pass; `null` before one.
  */
-syncedAt: number | null, syncing: boolean, };
+syncedAt: number | null, syncing: boolean,
+/**
+ * The network has address funds transitions: below protocol version 11
+ * a top-up or send from these addresses is refused.
+ */
+sendsActive: boolean,
+/**
+ * `"platform_address_sends"`: this build keeps sends and moves from
+ * these addresses off on this network (mainnet), whatever its
+ * protocol version (`platform.feature_off` with that feature), and
+ * `sendsActive` is `false`. `null` elsewhere.
+ */
+sendsOff: string | null, };

@@ -203,16 +203,28 @@ test("Mine: a slow Submit says Sending… and keeps the row (D17)", async ({ pag
   await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee paid");
 });
 
-test("the sidebar shows Masternodes only with the setting", async ({ page }) => {
+test("Show Masternodes On shows the sidebar item and offers governance data", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));
   await page.getByTestId("toolbar").waitFor();
   await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
   await command(page, { kind: "navigate", route: "settings" });
-  await page.getByTestId("settings-show-masternodes").check();
+  await page.getByTestId("settings-show-masternodes-on").click();
   await expect(page.getByTestId("settings-governance-ask")).toBeVisible();
   await page.getByTestId("settings-governance-turn-on").click();
   await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
 });
+
+for (const theme of THEMES)
+  test(`Show Masternodes Auto ${theme}: a registration in progress shows the sidebar item`, async ({ page }, info) => {
+    const errors = trackPageErrors(page);
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("mn-registration-only", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await expect(page.getByTestId("sidebar-masternodes")).toBeVisible();
+    await fontsReady(page);
+    await page.screenshot({ path: info.outputPath(`auto-registration-${theme}.png`) });
+    expect(errors).toEqual([]);
+  });
 
 for (const theme of THEMES) {
   test(`create ${theme}: details, payments, review, then pay; Mine shows it`, async ({ page }) => {

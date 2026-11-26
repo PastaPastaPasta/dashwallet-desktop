@@ -17,20 +17,24 @@
 //!   install's, or another device's of the same seed. The journal outlives
 //!   a wallet's removal, so a wallet imported again on the same install
 //!   reads its own locks back as its own.
-//! - **What cannot be told.** For these funding types nothing the wallet
-//!   can read says whether Platform already took a lock: the library keeps
-//!   a restored one "consumption unknown" (`asset_lock/tracked.rs`,
-//!   `RecoveredFromChain`), and Platform answers no query of its spent
-//!   outpoints. So a lock is unfinished until an apply is tried. Trying is
-//!   safe: Platform executes at most one apply of an outpoint (every
-//!   asset-lock transition's proof validation refuses a consumed one,
-//!   rs-drive-abci `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`).
+//! - **What is known before an apply.** The library keeps a restored lock
+//!   "consumption unknown" (`asset_lock/tracked.rs`, `RecoveredFromChain`),
+//!   so a lock is unfinished until an apply is tried, and one read back
+//!   from the chain reads Checking until then: it may already be in the
+//!   balance. Its Check again, and Finish transfers, try it. Trying is safe:
+//!   Platform executes at most one apply of an outpoint (every asset-lock
+//!   transition's proof validation refuses a consumed one, rs-drive-abci
+//!   `common/asset_lock/proof/verify_is_not_spent/v0/mod.rs`). Platform's
+//!   spent outpoints can be read with a proof ([`proved_spent`], its
+//!   `SpentAssetLockTransactions` tree); the runner reads it when an apply
+//!   is answered "already consumed".
 //! - **Outcomes.** Only Platform's proved execution finishes a lock. Its
 //!   "already consumed" for the exact outpoint
 //!   (`PlatformWalletError::AssetLockAlreadyConsumed`, the library's typed
 //!   form of `IdentityAssetLockTransactionOutPointAlreadyConsumedError`
 //!   matched to the outpoint, `error.rs` `is_asset_lock_already_consumed`)
-//!   is unauthenticated: any node can say it. Any other failure after the
+//!   is unauthenticated: any node can say it, so it counts only when the
+//!   proved read says consumed. Any other failure after the
 //!   lock's credit key signed may have executed. Neither settles a lock or
 //!   changes a balance; balances come only from proved reads.
 //! - **Evidence by outpoint.** One lock transaction can carry several
@@ -46,7 +50,7 @@
 //!   at `vout` ≠ 0 lists [`UnfinishedState::Unsupported`] and a finish
 //!   refuses it before its lease.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -163,6 +167,124 @@ pub(crate) fn reply_from(
     }
 }
 
+/// How long [`proved_spent`] waits for Platform's proved answer.
+pub(crate) const SPENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What Platform's proved state says of an asset lock's outpoint: drive's
+/// `SpentAssetLockTransactions` tree, keyed by the 36-byte outpoint,
+/// holds an empty item once the lock is used up and the remaining value
+/// otherwise (`add_asset_lock_outpoint_operations/v0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpentRead {
+    /// No element: not consumed as of the proof's block.
+    Unspent,
+    /// An empty item, or an `AssetLockValue` with nothing left: consumed,
+    /// for good.
+    Consumed,
+    /// Any other item: partly used, `credits` left (dpp's `AssetLockValue`
+    /// `remaining_credit_value`, which drive serializes into the item).
+    Remaining { credits: u64 },
+    /// No proved answer: an error, no proof, a timeout, an item that is not
+    /// an `AssetLockValue`, or an element of another sort.
+    Unread,
+}
+
+/// The tree's key of `outpoint`: its consensus bytes, as drive-abci keys it.
+pub(crate) fn spent_key(outpoint: OutPoint) -> Vec<u8> {
+    <[u8; 36]>::from(outpoint).to_vec()
+}
+
+/// [`SpentRead`] of a verified read of `key`: `None` is the SDK's answer
+/// when nothing at all came back.
+pub(crate) fn read_spent(
+    elements: Option<&dash_sdk::query_types::Elements>,
+    key: &[u8],
+) -> SpentRead {
+    use drive::grovedb::Element;
+    let Some(elements) = elements else {
+        return SpentRead::Unread;
+    };
+    match elements.get(key) {
+        None => SpentRead::Unread,
+        Some(None) => SpentRead::Unspent,
+        Some(Some(Element::Item(bytes, _))) if bytes.is_empty() => SpentRead::Consumed,
+        Some(Some(Element::Item(bytes, _))) => remaining(bytes),
+        Some(Some(_)) => SpentRead::Unread,
+    }
+}
+
+/// [`SpentRead::Remaining`] of a stored `AssetLockValue`'s bytes,
+/// [`SpentRead::Consumed`] when nothing is left; [`SpentRead::Unread`]
+/// when they are not one.
+fn remaining(bytes: &[u8]) -> SpentRead {
+    use dpp::asset_lock::reduced_asset_lock_value::{AssetLockValue, AssetLockValueGettersV0};
+    use dpp::serialization::PlatformDeserializableUntrusted;
+    match AssetLockValue::deserialize_from_bytes_untrusted_exact(bytes) {
+        Ok(value) => match value.remaining_credit_value() {
+            0 => SpentRead::Consumed,
+            credits => SpentRead::Remaining { credits },
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "a spent asset lock's stored value could not be read");
+            SpentRead::Unread
+        }
+    }
+}
+
+/// The path of drive's spent asset-lock tree, built as drive builds it
+/// (`RootTree`'s `&[u8; 1]`, `drive/asset_lock/mod.rs`).
+pub(crate) fn spent_path() -> Vec<Vec<u8>> {
+    let byte: &'static [u8; 1] = drive::drive::RootTree::SpentAssetLockTransactions.into();
+    vec![byte.to_vec()]
+}
+
+/// Platform's proved answer for the lock at `outpoint`
+/// ([`SPENT_READ_TIMEOUT`]); [`SpentRead::Unread`] on any failure, and
+/// from an SDK that does not ask for proofs.
+pub(crate) async fn proved_spent(sdk: &dash_sdk::Sdk, outpoint: OutPoint) -> SpentRead {
+    use dash_sdk::platform::FetchMany;
+    use dash_sdk::query_types::KeysInPath;
+    use drive::grovedb::Element;
+    let key = spent_key(outpoint);
+    let query = KeysInPath {
+        path: spent_path(),
+        keys: vec![key.clone()],
+    };
+    let fetch = || Element::fetch_many(sdk, query);
+    read_fetched(sdk.prove(), outpoint, &key, SPENT_READ_TIMEOUT, fetch).await
+}
+
+/// [`proved_spent`] around its `fetch`: not made without proofs, bounded
+/// by `limit`, and any error or timeout is [`SpentRead::Unread`].
+pub(crate) async fn read_fetched<F, Fut, E>(
+    prove: bool,
+    outpoint: OutPoint,
+    key: &[u8],
+    limit: std::time::Duration,
+    fetch: F,
+) -> SpentRead
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<dash_sdk::query_types::Elements, E>>,
+    E: std::fmt::Display,
+{
+    if !prove {
+        tracing::warn!(%outpoint, "the SDK does not ask for proofs: a lock's spent read is not made");
+        return SpentRead::Unread;
+    }
+    match tokio::time::timeout(limit, fetch()).await {
+        Ok(Ok(elements)) => read_spent(Some(&elements), key),
+        Ok(Err(e)) => {
+            tracing::warn!(%outpoint, error = %e, "a lock's spent read failed");
+            SpentRead::Unread
+        }
+        Err(_) => {
+            tracing::warn!(%outpoint, "a lock's spent read timed out");
+            SpentRead::Unread
+        }
+    }
+}
+
 /// Whether a kind's lock can be applied now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Readiness {
@@ -248,19 +370,42 @@ pub(crate) enum Mark {
     Settled,
     /// An apply that may have executed, unproved.
     Unknown,
-    /// Platform's "already consumed" for the exact outpoint, unproved, by a
-    /// kind that takes it as finished elsewhere
-    /// ([`LockKind::reported_locks`]); neither proved nor settled.
-    Reported,
+    /// Platform's proof that the outpoint is consumed ([`SpentRead::Consumed`]),
+    /// kept by a kind that takes it as finished elsewhere
+    /// ([`LockKind::reported_locks`]); not settled. Earlier versions kept
+    /// an unproved "already consumed" under `reported`, which is no longer
+    /// read: such a lock lists again until a proved read settles it.
+    Used,
+    /// Platform's proof that the lock is partly used
+    /// ([`SpentRead::Remaining`]), with the credits that read left: what
+    /// the list offers for it ([`LockKind::remaining_locks`]). A recover
+    /// reads Platform again before it signs anything.
+    Remaining,
 }
 
 fn mark_prefix(kind: LockKindId, mark: Mark) -> String {
     let sort = match mark {
         Mark::Settled => "settled",
         Mark::Unknown => "unknown",
-        Mark::Reported => "reported",
+        Mark::Used => "used",
+        Mark::Remaining => "remaining",
     };
     format!("recovery.{}.{sort}.", kind.label())
+}
+
+/// `wallet`'s `mark` records of `kind`'s locks, each with its stored value.
+fn mark_rows(
+    db: &AppDb,
+    wallet: WalletId,
+    kind: LockKindId,
+    mark: Mark,
+) -> Result<Vec<(OutPoint, String)>, AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let prefix = mark_prefix(kind, mark);
+    let rows = db.settings_with_prefix(&scope, &prefix)?;
+    Ok((rows.into_iter())
+        .filter_map(|(key, value)| Some((key[prefix.len()..].parse().ok()?, value)))
+        .collect())
 }
 
 /// `wallet`'s `mark` records of `kind`'s locks.
@@ -270,11 +415,8 @@ pub(crate) fn read_marks(
     kind: LockKindId,
     mark: Mark,
 ) -> Result<HashSet<OutPoint>, AppDbError> {
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let prefix = mark_prefix(kind, mark);
-    let rows = db.settings_with_prefix(&scope, &prefix)?;
-    Ok((rows.into_iter())
-        .filter_map(|(key, _)| key[prefix.len()..].parse().ok())
+    Ok((mark_rows(db, wallet, kind, mark)?.into_iter())
+        .map(|(at, _)| at)
         .collect())
 }
 
@@ -286,9 +428,80 @@ pub(crate) fn write_mark(
     mark: Mark,
     outpoint: OutPoint,
 ) -> Result<(), AppDbError> {
+    write_mark_value(db, wallet, kind, mark, outpoint, "1")
+}
+
+fn write_mark_value(
+    db: &AppDb,
+    wallet: WalletId,
+    kind: LockKindId,
+    mark: Mark,
+    outpoint: OutPoint,
+    value: &str,
+) -> Result<(), AppDbError> {
     let scope = dw_appdb::local_scope(&wallet.to_string());
     let key = format!("{}{outpoint}", mark_prefix(kind, mark));
-    db.set_setting_durable(&scope, &key, Some("1"))
+    db.set_setting_durable(&scope, &key, Some(value))
+}
+
+/// `f` on `session`'s `app.sqlite`, off the async threads.
+async fn on_appdb<T: Send + 'static>(
+    session: &NetworkSession,
+    f: impl FnOnce(&AppDb) -> Result<T, AppDbError> + Send + 'static,
+) -> Result<T, PlatformError> {
+    let appdb = session.live()?.appdb;
+    tokio::task::spawn_blocking(move || f(&appdb))
+        .await
+        .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
+        .map_err(|e| PlatformError::Storage {
+            detail: e.to_string(),
+        })
+}
+
+/// `wallet`'s [`Mark::Remaining`] records of `kind`'s locks: the credits
+/// each read left; none when they cannot be read (nothing is then offered a
+/// recover). A record whose value does not parse is skipped.
+pub(crate) async fn remaining_of(
+    session: &NetworkSession,
+    wallet: WalletId,
+    kind: LockKindId,
+) -> HashMap<OutPoint, u64> {
+    let read = on_appdb(session, move |db| {
+        mark_rows(db, wallet, kind, Mark::Remaining)
+    });
+    match read.await {
+        Ok(rows) => (rows.into_iter())
+            .filter_map(|(at, value)| Some((at, value.parse().ok()?)))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, ?kind, error = %e, "could not read a kind's remaining values");
+            HashMap::new()
+        }
+    }
+}
+
+/// Records that `kind`'s lock at `outpoint` has `credits` left
+/// ([`Mark::Remaining`]), durably, over any earlier record of it.
+pub(crate) async fn record_remaining(
+    session: &NetworkSession,
+    wallet: WalletId,
+    kind: LockKindId,
+    outpoint: OutPoint,
+    credits: u64,
+) {
+    let write = on_appdb(session, move |db| {
+        write_mark_value(
+            db,
+            wallet,
+            kind,
+            Mark::Remaining,
+            outpoint,
+            &credits.to_string(),
+        )
+    });
+    if let Err(e) = write.await {
+        tracing::warn!(%outpoint, ?kind, error = %e, "could not record a lock's remaining value");
+    }
 }
 
 /// [`read_marks`] on `session`'s `app.sqlite`, off the async threads; none
@@ -299,15 +512,7 @@ pub(crate) async fn marks_of(
     kind: LockKindId,
     mark: Mark,
 ) -> HashSet<OutPoint> {
-    let read = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || read_marks(&appdb, wallet, kind, mark))
-            .await
-            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-            .map_err(|e| PlatformError::Storage {
-                detail: e.to_string(),
-            })
-    };
+    let read = on_appdb(session, move |db| read_marks(db, wallet, kind, mark));
     read.await.unwrap_or_else(|e| {
         tracing::warn!(wallet_id = %wallet, ?kind, ?mark, error = %e, "could not read a kind's lock records");
         HashSet::new()
@@ -322,15 +527,9 @@ pub(crate) async fn record(
     mark: Mark,
     outpoint: OutPoint,
 ) {
-    let write = async {
-        let appdb = session.live()?.appdb;
-        tokio::task::spawn_blocking(move || write_mark(&appdb, wallet, kind, mark, outpoint))
-            .await
-            .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
-            .map_err(|e| PlatformError::Storage {
-                detail: e.to_string(),
-            })
-    };
+    let write = on_appdb(session, move |db| {
+        write_mark(db, wallet, kind, mark, outpoint)
+    });
     if let Err(e) = write.await {
         tracing::warn!(%outpoint, ?kind, ?mark, error = %e, "could not record a lock");
     }
@@ -367,10 +566,30 @@ pub(crate) trait LockKind: Send + Sync {
     fn reported_locks(&self) -> impl Future<Output = HashSet<OutPoint>> + Send {
         std::future::ready(HashSet::new())
     }
+    /// The locks Platform proved partly used ([`Mark::Remaining`]), with
+    /// the credits left: they list as
+    /// [`UnfinishedState::Recoverable`] (or too small) and are never
+    /// applied again as the kind. None by default.
+    fn remaining_locks(&self) -> impl Future<Output = HashMap<OutPoint, u64>> + Send {
+        std::future::ready(HashMap::new())
+    }
+    /// The least remaining value (credits) a recover of a partly used lock
+    /// takes: Platform's minimum fee for moving it. `None` when it cannot
+    /// be read locally.
+    fn remainder_floor(&self) -> Option<u64> {
+        None
+    }
     /// Records `lock` among [`Self::unknown_locks`] by its outpoint, and
     /// (when the kind keeps 0.1's records) by txid only when
     /// [`KindLock::alone`].
     fn mark_unknown(&self, lock: &KindLock) -> impl Future<Output = ()> + Send;
+    /// Waits, bounded, while the kind's apply is held only by the wallet's
+    /// bring-up and a rerun of it is asked for or runs; before the kind's
+    /// lock is taken, so [`Self::readiness`] reads the answer. Nothing by
+    /// default.
+    fn await_start_up(&self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
     /// Whether an apply may run now: the protocol-version gate, the
     /// destination account bound, the kind's sync.
     fn readiness(&self) -> impl Future<Output = Readiness> + Send;
@@ -523,6 +742,10 @@ pub(crate) struct Evidence<'a> {
     pub(crate) readiness: &'a Readiness,
     /// [`LockKind::minimum`], read.
     pub(crate) minimum: Option<Minimum>,
+    /// [`LockKind::remaining_locks`], read.
+    pub(crate) remaining: &'a HashMap<OutPoint, u64>,
+    /// [`LockKind::remainder_floor`], read.
+    pub(crate) remainder_floor: Option<u64>,
 }
 
 /// Whose `lock` is: this device's when one of the kind's own funding steps
@@ -547,12 +770,21 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
         return None;
     }
     let origin = origin(lock, ev.own);
+    let remaining = ev.remaining.get(&info.outpoint).copied();
     let state = if info.outpoint.vout != 0 {
         UnfinishedState::Unsupported
     } else if !lock.proof || !info.status.has_proof() {
         UnfinishedState::Confirming
     } else if matches!(ev.readiness, Readiness::NotActive(_)) {
         UnfinishedState::NotActive
+    } else if let Some(credits) = remaining {
+        // Partly used, proved: never applied again as the kind, only
+        // recovered, and only above Platform's fee for moving it (unknown
+        // here: the recover's own priced read decides).
+        match ev.remainder_floor {
+            Some(floor) if credits < floor => UnfinishedState::TooSmall,
+            _ => UnfinishedState::Recoverable,
+        }
     } else if ev.unknown.holds(lock)
         // The library's "consumption unknown" for a lock of this device's.
         || (origin == LockOrigin::ThisDevice && info.status == LockStatus::RecoveredFromChain)
@@ -563,6 +795,10 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
         UnfinishedState::Checking
     } else if ev.minimum.is_some_and(|min| min.refuses(lock)) {
         UnfinishedState::TooSmall
+    } else if info.status == LockStatus::RecoveredFromChain {
+        // A restore's lock read back from the chain: Platform may already
+        // have taken it, and nothing the wallet reads says whether it did.
+        UnfinishedState::Checking
     } else {
         UnfinishedState::Ready
     };
@@ -573,6 +809,7 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
         duffs: info.amount,
         origin,
         state,
+        remaining_credits: remaining,
     })
 }
 
@@ -586,6 +823,7 @@ pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, 
     let readiness = kind
         .not_active()
         .map_or(Readiness::Ready, Readiness::NotActive);
+    let remaining = &kind.remaining_locks().await;
     let ev = Evidence {
         own: &own,
         settled: &settled,
@@ -593,6 +831,8 @@ pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, 
         reported_used,
         readiness: &readiness,
         minimum: kind.minimum(),
+        remaining,
+        remainder_floor: kind.remainder_floor(),
     };
     let mut out: Vec<_> = (locks.iter())
         .filter_map(|l| classify(kind.id(), l, &ev))
@@ -603,6 +843,10 @@ pub(crate) async fn detect(kind: &impl LockKind) -> Result<Vec<UnfinishedLock>, 
 
 /// The code a finish of a lock at `vout` ≠ 0 is refused with (module doc).
 pub(crate) const UNSUPPORTED: &str = "recovery.unsupported_output";
+
+/// The code a finish of a lock Platform proved partly used is refused with
+/// ([`Mark::Remaining`]): only a recover moves what is left.
+pub(crate) const PARTLY_USED: &str = "recovery.partly_used";
 
 /// What a lock's apply runs under: its lease, and the funding signer the
 /// lock's credit key signs through ([`LockKeySigner`]).
@@ -653,8 +897,10 @@ impl ApplyAuthority for FundedLease {
 /// credit key ([`LockKeySigner`]), and one call permit sign the kind's
 /// `FromExistingAssetLock` of the same outpoint. It funds and builds
 /// nothing and waits for no missing proof (the library's bounded
-/// InstantSend → ChainLock fallback still runs). Read again under the
-/// kind's wallet lock: a lock finished meanwhile is not applied again.
+/// InstantSend → ChainLock fallback still runs). A tracked lock first
+/// waits on the kind's start-up hold ([`LockKind::await_start_up`]). Read
+/// again under the kind's wallet lock: a lock finished meanwhile is not
+/// applied again.
 ///
 /// `lease_of` is called only once every refusal the runner and the kind
 /// can read beforehand has passed: no proof ([`LockFinish::ProofWaiting`]),
@@ -681,6 +927,9 @@ where
     Fut: Future<Output = Result<A, PlatformError>>,
     A: ApplyAuthority,
 {
+    if (kind.locks().await.iter()).any(|l| l.info.outpoint == outpoint) {
+        kind.await_start_up().await;
+    }
     Ok(run(kind, outpoint, lease_of)
         .await?
         .unwrap_or(LockFinish::Applied))
@@ -712,6 +961,7 @@ where
     let readiness = kind.readiness().await;
     let (settled, unknown) = (kind.settled_locks().await, kind.unknown_locks().await);
     let reported = kind.reported_locks().await;
+    let remaining = kind.remaining_locks().await;
     let ev = Evidence {
         own: &own,
         settled: &settled,
@@ -719,6 +969,8 @@ where
         reported_used: &reported,
         readiness: &readiness,
         minimum: kind.minimum(),
+        remaining: &remaining,
+        remainder_floor: kind.remainder_floor(),
     };
     let Some(unfinished) = classify(kind.id(), &lock, &ev) else {
         // Platform said it is used, nothing proves it: finished elsewhere.
@@ -733,6 +985,12 @@ where
         }
         UnfinishedState::Confirming => return Ok(Some(LockFinish::ProofWaiting)),
         _ => {}
+    }
+    if remaining.contains_key(&outpoint) {
+        // Proved partly used: the kind's apply would fail every time.
+        return Ok(Some(LockFinish::NotApplied {
+            error: PARTLY_USED.into(),
+        }));
     }
     if let Some(min) = ev.minimum.filter(|min| min.refuses(&lock)) {
         return Ok(Some(LockFinish::NotApplied {
@@ -800,12 +1058,14 @@ where
 /// Finishes every unfinished lock of `kind` under the bulk's `lease`, one
 /// at a time (a refusal leaves that lock pending and the next one runs),
 /// and adds what came of them to `report`: its totals and, when the kind
-/// had any, its [`TransfersReport`]. Only a Ready lock is tried. One whose
-/// apply may already have executed (Checking), with no proof, of a kind not
-/// active, at `vout` ≠ 0 or below the apply's minimum is pending, not
-/// tried (a Checking lock's own "Check again" tries it); one Platform
-/// reported already used is counted in `already_used`, not tried. A lock
-/// another finish settled meanwhile counts in no field.
+/// had any, its [`TransfersReport`]. A Ready lock is tried, and so is a
+/// restored one that reads Checking (Platform may already have taken it; an
+/// apply of a taken lock is refused, so trying is how it is told). This
+/// device's own Checking lock, one with no proof, of a kind not active, at
+/// `vout` ≠ 0 or below the apply's minimum is pending, not tried (a Checking
+/// lock's own "Check again" tries it); one Platform reported already used is
+/// counted in `already_used`, not tried. A lock another finish settled
+/// meanwhile counts in no field.
 pub(crate) async fn finish_kind(
     kind: &impl LockKind,
     lease: &Lease,
@@ -825,15 +1085,19 @@ pub(crate) async fn finish_kind(
         completed: 0,
         still_pending: 0,
     };
+    let mut waited = false;
     for lock in &listed {
+        let restored_checking =
+            lock.state == UnfinishedState::Checking && lock.origin == LockOrigin::Restored;
         let tried = match lock.state {
-            UnfinishedState::Checking
-            | UnfinishedState::Confirming
+            UnfinishedState::Checking if !restored_checking => None,
+            UnfinishedState::Confirming
             | UnfinishedState::NotActive
             | UnfinishedState::Unsupported
             | UnfinishedState::TooSmall
+            | UnfinishedState::Recoverable
             | UnfinishedState::ReportedUsed => None,
-            UnfinishedState::Ready => {
+            UnfinishedState::Ready | UnfinishedState::Checking => {
                 let Ok(txid) = lock.txid.parse::<Txid>() else {
                     continue;
                 };
@@ -841,6 +1105,9 @@ pub(crate) async fn finish_kind(
                     txid,
                     vout: lock.vout,
                 };
+                if !std::mem::replace(&mut waited, true) {
+                    kind.await_start_up().await;
+                }
                 match run(kind, outpoint, || async { Ok(lease.clone()) }).await {
                     // Finished meanwhile (another finish): not this run's.
                     Ok(None) => continue,

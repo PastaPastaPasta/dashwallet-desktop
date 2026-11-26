@@ -19,7 +19,7 @@
 //! with the backup's birth height and name, then inserts its app.sqlite
 //! rows. Wallet state is rebuilt by the scan from the birth height.
 
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +30,7 @@ use dw_vault::{Credential, GrantPurpose, LockState, Vault, VaultError, WalletBac
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::compat::{write_new_private, write_new_private_io};
+use crate::compat::{TEMP_MARK, is_staging_name, move_new, publish_new_private, sync_dir};
 use crate::events::unix_now;
 use crate::gate::Lifecycle;
 use crate::keys::{AutoBackup, Checked, Origin};
@@ -55,6 +55,8 @@ pub const MAX_KEEP: u32 = 10;
 pub const BACKUP_DIR: &str = "backups";
 /// File extension.
 pub const EXTENSION: &str = "dwbackup";
+/// The tag of a user's backup's staging file.
+const MANUAL_STAGING_TAG: &str = "dash-wallet-backup";
 /// Largest backup file read back.
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 /// dw-appdb setting holding the automatic backup count.
@@ -355,6 +357,130 @@ fn split_header(bytes: &[u8]) -> Result<(BackupHeader, &[u8], &[u8]), EngineErro
     Ok((header, &rest[..nl], &rest[nl + 1..]))
 }
 
+/// The wallet ids of `body`'s bundles, which must be the header's, in its
+/// order, and of its network.
+fn bundle_ids(header: &BackupHeader, body: &Body) -> Result<Vec<WalletId>, EngineError> {
+    if body.bundles.len() != header.wallet_ids.len() {
+        return Err(BackupFailure::Corrupt("bundle count".into()).into());
+    }
+    body.bundles
+        .iter()
+        .zip(&header.wallet_ids)
+        .map(|(bundle, id_hex)| {
+            let id: WalletId = id_hex.parse()?;
+            if bundle.wallet_id() != Some(id.0) || bundle.network() != header.network {
+                return Err(BackupFailure::Corrupt("bundle does not match header".into()).into());
+            }
+            Ok(id)
+        })
+        .collect()
+}
+
+/// What is at an automatic backup's name.
+enum AtName {
+    Complete(BackupHeader),
+    /// A file that is not a complete automatic backup of the name's wallet.
+    Incomplete,
+    Missing,
+}
+
+/// Checks the file at `path` as an automatic backup of `id` on `network`,
+/// without its passphrase and streaming its body. Complete means: the magic
+/// line, a header line of the same version naming just `id` and
+/// `network`, then a body that is one whole JSON object (no cut of the file
+/// leaves one) holding one bundle of that wallet and network that parses
+/// as restore parses it (every field restore needs, the sealed ones
+/// unopened), the file at most [`MAX_FILE_BYTES`]. Anything but a regular
+/// file (a symlink is followed; a dangling one is there, and incomplete)
+/// is incomplete and never opened, so a FIFO cannot block it. A read error
+/// other than `NotFound` is returned: it says nothing about the file.
+fn check_automatic(path: &Path, id: WalletId, network: &str) -> std::io::Result<AtName> {
+    #[derive(Deserialize)]
+    struct BodyShape {
+        bundles: OneBundle,
+    }
+    struct OneBundle(WalletBackupBundle);
+    impl<'de> Deserialize<'de> for OneBundle {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Visit;
+            impl<'de> serde::de::Visitor<'de> for Visit {
+                type Value = OneBundle;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("exactly one bundle")
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<OneBundle, A::Error> {
+                    use serde::de::Error;
+                    let first = seq
+                        .next_element::<WalletBackupBundle>()?
+                        .ok_or_else(|| A::Error::custom("no bundle"))?;
+                    if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                        return Err(A::Error::custom("more than one bundle"));
+                    }
+                    Ok(OneBundle(first))
+                }
+            }
+            d.deserialize_seq(Visit)
+        }
+    }
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return match path.symlink_metadata() {
+                Ok(_) => Ok(AtName::Incomplete),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AtName::Missing),
+                Err(e) => Err(e),
+            };
+        }
+        Err(e) => return Err(e),
+    };
+    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+        return Ok(AtName::Incomplete);
+    }
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AtName::Missing),
+        Err(e) => return Err(e),
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let mut start = Vec::new();
+    for _ in 0..2 {
+        (&mut reader)
+            .take(64 * 1024)
+            .read_until(b'\n', &mut start)?;
+        if !start.ends_with(b"\n") {
+            return Ok(AtName::Incomplete);
+        }
+    }
+    let header = match split_header(&start) {
+        Ok((header, _, _))
+            if header.network == network
+                && header.wallet_ids.len() == 1
+                && header.wallet_ids[0].parse::<WalletId>().ok() == Some(id) =>
+        {
+            header
+        }
+        _ => return Ok(AtName::Incomplete),
+    };
+    let mut body = serde_json::Deserializer::from_reader(reader);
+    let shape = match BodyShape::deserialize(&mut body).and_then(|b| body.end().map(|()| b)) {
+        Ok(shape) => shape,
+        Err(e) if e.is_io() => return Err(e.into()),
+        Err(_) => return Ok(AtName::Incomplete),
+    };
+    let bundle = &shape.bundles.0;
+    let complete = dw_vault::reads_bundle_version(u64::from(bundle.version()))
+        && bundle.network() == network
+        && bundle.wallet_id() == Some(id.0);
+    Ok(if complete {
+        AtName::Complete(header)
+    } else {
+        AtName::Incomplete
+    })
+}
+
 /// `<wallet id>.YYYY-MM-DD-HH-MM.dwbackup` (UTC), dash-qt's automatic name
 /// with the wallet id for the wallet name.
 fn automatic_name(id: &WalletId, at: u64) -> String {
@@ -571,14 +697,11 @@ impl NetworkSession {
             let created_at = unix_now();
             let size_bytes = bytes.len() as u64;
             let path = dest.clone();
-            tokio::task::spawn_blocking(move || write_new_private(&path, &bytes))
-                .await?
-                .map_err(|e| match e {
-                    EngineError::Compat(f) => {
-                        BackupFailure::DestinationUnwritable(f.to_string()).into()
-                    }
-                    other => other,
-                })?;
+            tokio::task::spawn_blocking(move || {
+                publish_new_private(&path, &bytes, MANUAL_STAGING_TAG)
+            })
+            .await?
+            .map_err(|e| BackupFailure::DestinationUnwritable(e.to_string()))?;
             if this.automatic_backup_failed(wallet_id).await {
                 this.automatic_backup(wallet_id).await;
             }
@@ -643,18 +766,9 @@ impl NetworkSession {
                         return Err(BackupFailure::NetworkMismatch.into());
                     }
                     let body: Body = parse_body(body)?;
-                    if body.bundles.len() != header.wallet_ids.len() {
-                        return Err(BackupFailure::Corrupt("bundle count".into()).into());
-                    }
+                    let ids = bundle_ids(&header, &body)?;
                     let mut out = Vec::new();
-                    for (bundle, id_hex) in body.bundles.iter().zip(&header.wallet_ids) {
-                        let id: WalletId = id_hex.parse()?;
-                        if bundle.wallet_id() != Some(id.0) || bundle.network() != tag {
-                            return Err(BackupFailure::Corrupt(
-                                "bundle does not match header".into(),
-                            )
-                            .into());
-                        }
+                    for (bundle, id) in body.bundles.iter().zip(ids) {
                         let (secret, plain) = open_bundle(
                             &vault,
                             bundle,
@@ -940,9 +1054,9 @@ impl NetworkSession {
         wallet: Option<WalletId>,
     ) -> Result<Vec<BackupInfo>, EngineError> {
         drop(self.try_enter()?);
-        let dir = self.backup_directory();
+        let (dir, network) = (self.backup_directory(), self.network.dir_name());
         self.on_runtime(async move {
-            tokio::task::spawn_blocking(move || list_automatic(&dir, wallet)).await?
+            tokio::task::spawn_blocking(move || list_automatic(&dir, &network, wallet)).await?
         })
         .await
     }
@@ -971,7 +1085,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let _policy = this.backups.hold_policy().await;
             let appdb = this.live()?.appdb;
-            let dir = this.backup_directory();
+            let (dir, network) = (this.backup_directory(), this.network.dir_name());
             tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 let value = keep.to_string();
                 if keep == 0 {
@@ -984,7 +1098,7 @@ impl NetworkSession {
                 } else {
                     appdb.set_setting("", KEEP_SETTING, Some(&value))?;
                 }
-                prune(&dir, None, keep)
+                prune(&dir, &network, None, keep, None)
             })
             .await??;
             Ok(BackupPolicy {
@@ -997,34 +1111,55 @@ impl NetworkSession {
 
     /// Wallets whose latest automatic backup failed, and when (UNIX
     /// seconds). A wallet's entry goes when one succeeds, when automatic
-    /// backups are turned off and with the wallet.
+    /// backups are turned off and with the wallet. A backup still being
+    /// written is not listed, though its failure is recorded before it
+    /// writes (a stop mid-write leaves the record).
     pub async fn automatic_backup_failures(
         self: &Arc<Self>,
     ) -> Result<Vec<(WalletId, u64)>, EngineError> {
         drop(self.try_enter()?);
         let appdb = self.live()?.appdb;
+        let this = Arc::clone(self);
         self.on_runtime(async move {
-            let rows = tokio::task::spawn_blocking(move || {
-                appdb.local_settings_of_key(AUTO_FAILED_SETTING)
+            tokio::task::spawn_blocking(move || {
+                let in_flight = this.backups.in_flight();
+                let rows = appdb.local_settings_of_key(AUTO_FAILED_SETTING)?;
+                Ok(rows
+                    .into_iter()
+                    .filter_map(|(id, at)| Some((id.parse().ok()?, at.parse().ok()?)))
+                    .filter(|(id, _)| !in_flight.contains(id))
+                    .collect())
             })
-            .await??;
-            Ok(rows
-                .into_iter()
-                .filter_map(|(id, at)| Some((id.parse().ok()?, at.parse().ok()?)))
-                .collect())
+            .await?
         })
         .await
     }
 
     /// Whether the latest automatic backup of `id` failed, or its record
-    /// cannot be read.
-    async fn automatic_backup_failed(&self, id: WalletId) -> bool {
-        let Ok(live) = self.live() else { return false };
+    /// cannot be read; not while one is being written.
+    async fn automatic_backup_failed(self: &Arc<Self>, id: WalletId) -> bool {
+        self.automatic_failure(id).await.is_some()
+    }
+
+    /// The failure record of `id`, with its time when it can be read; none
+    /// while a backup of `id` is being written.
+    async fn automatic_failure(self: &Arc<Self>, id: WalletId) -> Option<Option<u64>> {
+        let Ok(live) = self.live() else { return None };
+        let this = Arc::clone(self);
         let scope = dw_appdb::local_scope(&id.to_string());
-        let recorded =
-            tokio::task::spawn_blocking(move || live.appdb.setting(&scope, AUTO_FAILED_SETTING))
-                .await;
-        !matches!(recorded, Ok(Ok(None)))
+        let recorded = tokio::task::spawn_blocking(move || {
+            let in_flight = this.backups.in_flight();
+            if in_flight.contains(&id) {
+                return Ok(None);
+            }
+            live.appdb.setting(&scope, AUTO_FAILED_SETTING)
+        })
+        .await;
+        match recorded {
+            Ok(Ok(None)) => None,
+            Ok(Ok(Some(at))) => Some(at.parse().ok()),
+            _ => Some(None),
+        }
     }
 
     /// Writes an automatic backup of `id` when the policy keeps any and the
@@ -1047,6 +1182,7 @@ impl NetworkSession {
             Ok(0) => {
                 if self.automatic_backup_failed(id).await {
                     self.record_automatic_outcome(id, None).await;
+                    self.emit_backups();
                 }
                 return AutomaticRun::Done;
             }
@@ -1060,10 +1196,55 @@ impl NetworkSession {
             return AutomaticRun::Locked;
         }
         let dir = self.backup_directory();
-        let path = dir.join(automatic_name(&id, unix_now()));
-        if path.exists() {
+        let network = self.network.dir_name();
+        let now = unix_now();
+        let path = dir.join(automatic_name(&id, now));
+        let (p, n) = (path.clone(), network.clone());
+        if let Ok(Ok(AtName::Complete(header))) =
+            tokio::task::spawn_blocking(move || check_automatic(&p, id, &n)).await
+        {
+            let this_minute = header.created_at / 60 == now / 60;
+            let clears = match self.automatic_failure(id).await {
+                None => false,
+                Some(Some(failed_at)) => this_minute || header.created_at >= failed_at,
+                Some(None) => this_minute,
+            };
+            if clears {
+                let (p, d) = (path.clone(), dir.clone());
+                let durable = tokio::task::spawn_blocking(move || {
+                    #[cfg(unix)]
+                    std::fs::File::open(&p)?.sync_all()?;
+                    #[cfg(not(unix))]
+                    let _ = p;
+                    sync_dir(&d)
+                })
+                .await
+                .map_err(std::io::Error::other)
+                .and_then(|r| r);
+                match durable {
+                    Ok(()) => {
+                        self.record_automatic_outcome(id, None).await;
+                        self.emit_backups();
+                    }
+                    Err(e) => {
+                        tracing::warn!(wallet_id = %id, error = %e, "an automatic backup is not durable yet");
+                    }
+                }
+            }
             return AutomaticRun::Done;
         }
+        let flight = match self.start_automatic(id).await {
+            Ok(flight) => flight,
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "automatic backup not started");
+                self.sink.emit(EngineEvent::Notice {
+                    network: Some(self.network.clone()),
+                    code: NoticeCode::BackupFailed,
+                    detail: format!("wallet {id}: {e}"),
+                });
+                return AutomaticRun::Done;
+            }
+        };
         #[cfg(test)]
         crate::coins::pause_at(&self.backups.pause).await;
         let result = async {
@@ -1071,31 +1252,37 @@ impl NetworkSession {
             let (data_dir, d) = (self.data_dir().to_path_buf(), dir.clone());
             tokio::task::spawn_blocking(move || -> Result<bool, EngineError> {
                 crate::fsutil::create_owned_dir(&data_dir, Path::new(BACKUP_DIR))?;
-                match write_new_private_io(&path, &bytes) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
-                    Err(e) => {
-                        return Err(BackupFailure::DestinationUnwritable(e.to_string()).into());
-                    }
+                if !publish_automatic(&path, &bytes, id, &network)
+                    .map_err(|e| BackupFailure::DestinationUnwritable(e.to_string()))?
+                {
+                    return Ok(false);
                 }
-                prune(&d, Some(id), keep)?;
+                prune(&d, &network, Some(id), keep, Some(&path))?;
                 Ok(true)
             })
             .await?
         }
         .await;
         match result {
-            Ok(false) => AutomaticRun::Done,
-            Ok(true) => {
-                self.record_automatic_outcome(id, None).await;
-                self.sink.emit(EngineEvent::Backups {
-                    network: self.network.clone(),
-                });
+            Ok(false) => {
+                let cleared = matches!(flight.previous, Some(Some(_)));
+                self.end_automatic(flight, Some(None)).await;
+                if cleared {
+                    self.emit_backups();
+                }
                 AutomaticRun::Done
             }
-            Err(EngineError::Backup(BackupFailure::VaultLocked)) => AutomaticRun::Locked,
+            Ok(true) => {
+                self.end_automatic(flight, Some(None)).await;
+                self.emit_backups();
+                AutomaticRun::Done
+            }
+            Err(EngineError::Backup(BackupFailure::VaultLocked)) => {
+                self.end_automatic(flight, None).await;
+                AutomaticRun::Locked
+            }
             Err(e) => {
-                self.record_automatic_outcome(id, Some(unix_now().to_string()))
+                self.end_automatic(flight, Some(Some(unix_now().to_string())))
                     .await;
                 tracing::warn!(wallet_id = %id, error = %e, "automatic backup failed");
                 self.sink.emit(EngineEvent::Notice {
@@ -1105,6 +1292,63 @@ impl NetworkSession {
                 });
                 AutomaticRun::Done
             }
+        }
+    }
+
+    /// Marks the automatic backup of `id` in flight and records it as
+    /// failed now, durably, so a stop before it ends (a power loss too)
+    /// leaves the record. A record that cannot be written fails it: the
+    /// backup does not start.
+    async fn start_automatic(self: &Arc<Self>, id: WalletId) -> Result<InFlight, EngineError> {
+        self.backups.in_flight().insert(id);
+        let mut flight = InFlight {
+            session: Arc::clone(self),
+            id,
+            previous: None,
+        };
+        let this = Arc::clone(self);
+        flight.previous = tokio::task::spawn_blocking(move || -> Result<_, EngineError> {
+            let appdb = this.live()?.appdb;
+            let scope = dw_appdb::local_scope(&id.to_string());
+            let previous = appdb.setting(&scope, AUTO_FAILED_SETTING).ok();
+            let now = unix_now().to_string();
+            appdb.set_setting_durable(&scope, AUTO_FAILED_SETTING, Some(&now))?;
+            Ok(previous)
+        })
+        .await??;
+        Ok(flight)
+    }
+
+    /// Sends `Backups`: the backups or their failure records changed.
+    fn emit_backups(&self) {
+        self.sink.emit(EngineEvent::Backups {
+            network: self.network.clone(),
+        });
+    }
+
+    /// Ends `flight`, recording `record` (`Some(None)`: no failure), or the
+    /// record it found (`None`: skipped, the failure it recorded undone).
+    async fn end_automatic(self: &Arc<Self>, flight: InFlight, record: Option<Option<String>>) {
+        let id = flight.id;
+        let Some(record) = record.or_else(|| flight.previous.clone()) else {
+            return;
+        };
+        let this = Arc::clone(self);
+        let recorded = tokio::task::spawn_blocking(move || {
+            let mut in_flight = this.backups.in_flight();
+            let scope = dw_appdb::local_scope(&id.to_string());
+            let recorded = this.live().is_ok_and(|live| {
+                live.appdb
+                    .set_setting(&scope, AUTO_FAILED_SETTING, record.as_deref())
+                    .is_ok()
+            });
+            in_flight.remove(&id);
+            recorded
+        })
+        .await;
+        drop(flight);
+        if !matches!(recorded, Ok(true)) {
+            tracing::warn!(wallet_id = %id, "could not record the automatic backup's outcome");
         }
     }
 
@@ -1179,6 +1423,72 @@ impl NetworkSession {
     }
 }
 
+/// An automatic backup being written; dropped, it is no longer.
+struct InFlight {
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    /// The failure record before it started (`None`: unreadable).
+    previous: Option<Option<String>>,
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.session.backups.in_flight().remove(&self.id);
+    }
+}
+
+/// Publishes the automatic backup `bytes` of `id` at `path`; `false` when a
+/// complete backup is there. A file there that is not one is set aside
+/// first, and kept; one that cannot be read fails the backup.
+fn publish_automatic(
+    path: &Path,
+    bytes: &[u8],
+    id: WalletId,
+    network: &str,
+) -> std::io::Result<bool> {
+    let mut set_aside_once = false;
+    for _ in 0..3 {
+        match publish_new_private(path, bytes, &id.to_string()) {
+            Ok(()) => return Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                match check_automatic(path, id, network)? {
+                    AtName::Complete(_) => return Ok(false),
+                    AtName::Missing => {}
+                    AtName::Incomplete if set_aside_once => return Err(e),
+                    AtName::Incomplete => {
+                        set_aside(path)?;
+                        set_aside_once = true;
+                    }
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+}
+
+/// Renames the file at `path` to `<name>.incomplete` (or
+/// `<name>.incomplete-<n>`), which nothing lists or deletes.
+fn set_aside(path: &Path) -> std::io::Result<()> {
+    let name = path.file_name().unwrap_or_default();
+    for n in 1..=100 {
+        let mut aside = name.to_os_string();
+        aside.push(INCOMPLETE);
+        if n > 1 {
+            aside.push(format!("-{n}"));
+        }
+        match move_new(path, &path.with_file_name(aside)) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            other => return other,
+        }
+    }
+    Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+}
+
+/// The suffix of an automatic backup file set aside as incomplete.
+const INCOMPLETE: &str = ".incomplete";
+
 /// What [`NetworkSession::automatic_backup`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutomaticRun {
@@ -1195,6 +1505,8 @@ pub(crate) struct BackupRuntime {
     started: AtomicBool,
     /// Orders `set_backup_policy` with each automatic backup.
     policy: tokio::sync::Mutex<()>,
+    /// Wallets whose automatic backup is being written.
+    in_flight: std::sync::Mutex<std::collections::HashSet<WalletId>>,
     /// Tests: how often it ran, and how often its run ended.
     #[cfg(test)]
     pub(crate) runs: std::sync::atomic::AtomicUsize,
@@ -1232,7 +1544,22 @@ impl BackupRuntime {
     }
 }
 
-fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo>, EngineError> {
+impl BackupRuntime {
+    fn in_flight(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<WalletId>> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The complete automatic backups of `network` in `dir` (of `wallet` only,
+/// when given), newest first. A file that is not a complete backup of the
+/// wallet its name names is skipped.
+fn list_automatic(
+    dir: &Path,
+    network: &str,
+    wallet: Option<WalletId>,
+) -> Result<Vec<BackupInfo>, EngineError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1248,7 +1575,7 @@ fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo
             continue;
         }
         let path = entry.path();
-        let Ok(header) = read_header(&path) else {
+        let Ok(AtName::Complete(header)) = check_automatic(&path, id, network) else {
             continue;
         };
         out.push(BackupInfo {
@@ -1263,21 +1590,88 @@ fn list_automatic(dir: &Path, wallet: Option<WalletId>) -> Result<Vec<BackupInfo
     Ok(out)
 }
 
-/// Deletes automatic backups beyond the newest `keep` of each wallet (of
-/// `wallet` only, when given).
-fn prune(dir: &Path, wallet: Option<WalletId>, keep: u32) -> Result<(), EngineError> {
-    let all = list_automatic(dir, wallet)?;
+/// Deletes complete automatic backups beyond the newest `keep` of each
+/// wallet (of `wallet` only, when given), then [`sweep_temporaries`]. Files
+/// that are not complete backups are neither counted nor deleted. The
+/// backup `written` (just written) ranks first; one whose header time is
+/// later than now (written while the clock was ahead) ranks after every
+/// other.
+fn prune(
+    dir: &Path,
+    network: &str,
+    wallet: Option<WalletId>,
+    keep: u32,
+    written: Option<&Path>,
+) -> Result<(), EngineError> {
+    let now = unix_now();
+    let mut all = list_automatic(dir, network, wallet)?;
+    let rank = |b: &BackupInfo| (Some(b.path.as_path()) != written, b.created_at > now);
+    all.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then(b.created_at.cmp(&a.created_at))
+            .then(b.path.cmp(&a.path))
+    });
     let mut seen: std::collections::HashMap<WalletId, u32> = std::collections::HashMap::new();
+    let mut newest: std::collections::HashMap<WalletId, u64> = std::collections::HashMap::new();
     for b in all {
         let n = seen.entry(b.wallet_id).or_default();
         *n += 1;
-        if *n > keep
-            && let Err(e) = std::fs::remove_file(&b.path)
-        {
+        if *n <= keep {
+            let at = newest.entry(b.wallet_id).or_default();
+            *at = (*at).max(b.created_at);
+        } else if let Err(e) = std::fs::remove_file(&b.path) {
             tracing::warn!(path = %b.path.display(), error = %e, "could not delete an old automatic backup");
         }
     }
+    sweep_temporaries(dir, wallet, &newest);
     Ok(())
+}
+
+/// How old a temporary file of an automatic backup must be to be swept.
+const TEMP_SWEEP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Deletes the temporary files of automatic backups that are
+/// [`TEMP_SWEEP_AGE`] old when a complete backup of their wallet (`newest`,
+/// UNIX seconds) is newer. Every other is kept.
+fn sweep_temporaries(
+    dir: &Path,
+    wallet: Option<WalletId>,
+    newest: &std::collections::HashMap<WalletId, u64>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(id) = name
+            .strip_prefix('.')
+            .and_then(|n| n.split_once(TEMP_MARK))
+            .and_then(|(tag, _)| tag.parse::<WalletId>().ok())
+            .filter(|id| is_staging_name(&name, &id.to_string()))
+        else {
+            continue;
+        };
+        if wallet.is_some_and(|w| w != id) {
+            continue;
+        }
+        let Ok(written) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        let old = now
+            .duration_since(written)
+            .is_ok_and(|age| age > TEMP_SWEEP_AGE);
+        let written = written
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(u64::MAX, |d| d.as_secs());
+        if old
+            && newest.get(&id).is_some_and(|&at| at > written)
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            tracing::warn!(file = %name, error = %e, "could not delete a stale temporary backup file");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1345,9 +1739,10 @@ mod tests {
         ));
     }
 
-    /// A version 2 automatic backup is listed, so it is rotated too.
+    /// A version 2 header without its wallet's bundle is not a backup: it is
+    /// neither listed nor rotated.
     #[test]
-    fn a_version_2_automatic_backup_is_listed() {
+    fn a_version_2_header_without_its_bundle_is_not_a_backup() {
         let dir = dw_testutil::private_tempdir();
         let id = WalletId([0xab; 32]);
         let header = BackupHeader {
@@ -1364,11 +1759,13 @@ mod tests {
         bytes.extend(b"\n{}\n");
         let path = dir.path().join(automatic_name(&id, 9));
         std::fs::write(&path, bytes).unwrap();
-        let listed = list_automatic(dir.path(), Some(id)).unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!((listed[0].created_at, &listed[0].path), (9, &path));
-        prune(dir.path(), Some(id), 0).unwrap();
-        assert!(!path.exists());
+        assert!(
+            list_automatic(dir.path(), "regtest", Some(id))
+                .unwrap()
+                .is_empty()
+        );
+        prune(dir.path(), "regtest", Some(id), 0, None).unwrap();
+        assert!(path.exists());
     }
 
     #[test]

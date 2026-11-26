@@ -17,12 +17,15 @@ import type { MixedCoinsDestination } from "../api/generated/MixedCoinsDestinati
 import type { MixedCoinsConsolidationPlan } from "../api/generated/MixedCoinsConsolidationPlan";
 import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import { onShieldedSettled, SHIELDED_COPY } from "../shielded/flow";
+import { SHIELDED_SYNC_COPY } from "../shielded/syncing";
+import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import {
   canRetry,
   combineResultText,
   MoveMixedFlow,
   type MoveMixedApi,
   moveErrorText,
+  moveShieldWait,
   MOVE_COPY,
   planFee,
   planReceives,
@@ -319,6 +322,23 @@ describe("Move mixed coins to Shielded", () => {
     expect(moveErrorText(appError("shielded.not_active"))).toBe(SHIELDED_COPY.card.inactive);
     expect(canRetry(appError("shielded.move_running"))).toBe(true);
     expect([moveErrorText(appError("shielded.coins_changed")), canRetry(appError("shielded.coins_changed"))]).toEqual([MOVE_COPY.planChanged, true]);
+  });
+
+  // MG: the card waits as Add does, with the same cause lines, and offers the unlock that lets it run.
+  it("waits on Shielded's cause before the call, and names it on a refusal", () => {
+    const status = (account: ShieldedStatus["account"], ready = false) => ({ active: true, ready, account, syncing: false, lastPassFailed: false }) as ShieldedStatus;
+    expect(moveShieldWait(status("locked"))).toEqual({ why: "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes.", unlock: "unlock" });
+    expect(moveShieldWait(status("mixingOnly"))).toEqual({
+      why: "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes.",
+      unlock: "unlockFully",
+    });
+    expect(moveShieldWait(status("watchOnly"))).toEqual({ why: "Shielded isn't available in a watch-only wallet.", unlock: null });
+    expect(moveShieldWait(status("bound"))).toEqual({ why: SHIELDED_SYNC_COPY.syncing, unlock: null });
+    expect(moveShieldWait(status("bound", true))).toBeNull();
+    expect(moveShieldWait(null)).toBeNull();
+    const notSynced = appError("shielded.not_synced");
+    for (const wait of ["locked", "mixingOnly", "watchOnly", "syncing"] as const) expect(moveErrorText(notSynced, String, wait)).toBe(SHIELDED_SYNC_COPY.wait(wait));
+    expect(moveErrorText(notSynced)).toBe(SHIELDED_SYNC_COPY.syncing);
   });
 
   it("sends a drain that may be out to Tools ▸ Repair, in the Shielded screen's words", () => {

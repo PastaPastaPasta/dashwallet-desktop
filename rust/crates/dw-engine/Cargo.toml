@@ -31,6 +31,9 @@ fuzzing = []
 [dependencies]
 platform-wallet = { workspace = true }
 platform-wallet-storage = { workspace = true }
+# Decodes the InstantSend locks the wallet's store keeps, with the store's
+# own codec (the crate the graph already uses).
+bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 dash-sdk = { workspace = true }
 dash-context-provider = { workspace = true }
 rs-sdk-trusted-context-provider = { workspace = true }
@@ -78,7 +81,7 @@ base64 = "0.22"
 # Read-only enumeration of persisted transaction ids in wallet.sqlite (the
 # persister has no list API); same version dw-appdb and
 # platform-wallet-storage link, so one bundled libsqlite3.
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # DP4-02 avatars: the guarded fetch (the reqwest the trusted context provider
 # already links; its TLS), URL parsing, the bounded decoder and thumbnails
 # (the image features platform-wallet's dHash builds with), the hashes.
@@ -101,9 +104,9 @@ dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim", "
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
 dw-message = { workspace = true }
 serde_json = "1"
-# Encodes the ChainLock a regtest test writes into the wallet's store, as the
-# store's own codec does (the crate the graph already uses).
-bincode = { package = "grovedb-bincode", version = "=2.1.0" }
+# The Orchard note an unshield test spends through dpp's own builder (the
+# pinned platform's grovedb, the crate the graph already uses).
+grovedb-commitment-tree = { git = "https://github.com/PastaPastaPasta/grovedb", rev = "b48a1d5067f33165f5c8880b252da51b79b2fcd1" }
 tempfile = { workspace = true }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }

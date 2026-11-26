@@ -1,13 +1,14 @@
 //! Transaction history, the detail sheet and the actions on a transaction
 //! (abandon, resend, drop, CSV export, notification rows, the explorer).
 
-use dw_engine::{DashNetwork, TxDetailExtras, TxNotice};
+use dw_engine::{DashNetwork, DroppedNotice, TxDetailExtras, TxNotice};
 use dw_units::Unit;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::history::{
-    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxDetails, TxTypeName,
+    HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxCounterparty, TxDetails,
+    TxTypeName,
 };
 use crate::dto::{OutPoint, mirror_enum, parse_txid};
 use crate::error::{AppCode, AppError};
@@ -39,6 +40,9 @@ pub struct TxDetailExtrasInfo {
     pub total_credit: u64,
     /// Sum of this wallet's inputs; `null` when an input value is unknown.
     pub total_debit: Option<u64>,
+    /// Some input spends a coin this wallet holds no record of: another
+    /// party's, or this wallet's whose funding it has not seen.
+    pub inputs_unresolved: bool,
     /// Signed duffs.
     pub net: i64,
     /// Immature coinbase: blocks until it matures.
@@ -51,6 +55,13 @@ pub struct TxDetailExtrasInfo {
     pub can_resend: bool,
     /// Dust-locked outputs of this transaction.
     pub dust_locked_outputs: Vec<OutPoint>,
+    /// Outputs of this transaction shown as pending, kept out of spending
+    /// and every balance while it, or one it was built on, may never
+    /// confirm.
+    pub withheld_outputs: Vec<OutPoint>,
+    /// Abandoned, with a coin it spent still being checked by a rescan
+    /// before it comes back.
+    pub checking_spent_coins: bool,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
 }
@@ -62,6 +73,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,
@@ -69,6 +81,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs,
+            withheld_outputs,
+            checking_spent_coins,
             last_announced_at,
         } = x;
         TxDetailExtrasInfo {
@@ -76,6 +90,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             is_coinbase,
             total_credit,
             total_debit,
+            inputs_unresolved,
             net,
             matures_in,
             in_mempool,
@@ -83,6 +98,8 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             can_abandon,
             can_resend,
             dust_locked_outputs: dust_locked_outputs.into_iter().map(Into::into).collect(),
+            withheld_outputs: withheld_outputs.into_iter().map(Into::into).collect(),
+            checking_spent_coins,
             last_announced_at,
         }
     }
@@ -130,6 +147,45 @@ impl From<TxNotice> for TxNoticeRow {
     }
 }
 
+/// A payment Dash Wallet dropped because the Dash it spent came from an
+/// incoming transaction that was never valid, once the wallet's own coins
+/// it used are back, until dismissed: one per payee.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedNoticeRow {
+    pub txid: String,
+    pub record_index: u32,
+    /// What it paid this payee, in duffs, without the fee.
+    pub amount: u64,
+    pub timestamp: Option<u64>,
+    pub address: Option<String>,
+    pub label: Option<String>,
+    pub counterparty: Option<TxCounterparty>,
+}
+
+impl From<DroppedNotice> for DroppedNoticeRow {
+    fn from(n: DroppedNotice) -> Self {
+        let DroppedNotice {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty,
+        } = n;
+        DroppedNoticeRow {
+            txid,
+            record_index,
+            amount,
+            timestamp,
+            address,
+            label,
+            counterparty: counterparty.map(Into::into),
+        }
+    }
+}
+
 commands! {
     #[facade("NetworkSession::history_page")]
     fn history_page(state, wallet_id: String, request: HistoryRequest) -> HistoryRows {
@@ -153,10 +209,29 @@ commands! {
         Ok(state.session().await?.tx_detail_extras(id, txid).await?.into())
     }
 
-    /// dash-qt "Abandon transaction": marks it abandoned, releases its
-    /// inputs and excludes it from balances. SPV cannot prove it is in no
-    /// mempool, so it may still confirm; the history then shows it
-    /// confirmed again.
+    /// dash-qt "Abandon transaction": marks it abandoned, releases the
+    /// inputs no processed block spent and excludes it from balances. SPV
+    /// cannot prove it is in no mempool, so it may still confirm; the
+    /// history then shows it confirmed again. An InstantSend-locked
+    /// transaction is refused (`instantLocked`) unless a transaction in a
+    /// ChainLocked block of the SPV header chain spends one of its inputs,
+    /// nothing descending from it is in a block, locked or finalized, the
+    /// wallet holds no record of it in a block or locked (in the session it
+    /// was locked in, until a restart; #329), the history load was complete
+    /// and the scan has passed the ChainLock with no replay pending; then
+    /// only inputs proven unspent are released.
+    /// `rescanFirst` instead when all of that holds and the only inputs
+    /// missing are held by its own spend claim restored at load: a restart
+    /// and a rescan give that evidence.
+    /// Any transaction is refused (`instantLocked`, or `confirmed`) when
+    /// abandoning it would also take one the history holds as InstantSend-
+    /// locked (or in a block). One that is not InstantSend-locked itself is
+    /// refused (`settledDescendant`) when a later transaction spending from
+    /// it is InstantSend-locked, in a block or finalized, unless a ChainLocked
+    /// spend of one of its inputs beat it and those are only locked (#446).
+    /// One not under the ChainLock exception is refused (`recordUnreadable`)
+    /// while a saved transaction of any loaded wallet didn't read at its
+    /// load (#611).
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -176,9 +251,14 @@ commands! {
         Ok(session.resend_transaction(id, txid).await?)
     }
 
-    /// "Remove unconfirmed": abandons every unconfirmed, not
-    /// InstantSend-locked transaction of the wallet (every wallet when
-    /// `walletId` is `null`) and rescans from the lowest funding height.
+    /// "Remove unconfirmed": abandons every unconfirmed transaction of the
+    /// wallet (every wallet when `walletId` is `null`) that Abandon would,
+    /// InstantSend-locked ones only under its ChainLock exception, then
+    /// rescans once, from the lowest funding height of them all. One the
+    /// exception refuses (`instantLocked` or `rescanFirst`, as Abandon says),
+    /// or that a settled later transaction holds (`settledDescendant`), is
+    /// skipped. One refused as `recordUnreadable` is kept too, and the call
+    /// then fails with that refusal.
     /// Needs a running SPV client. Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {
@@ -225,6 +305,30 @@ commands! {
             .collect::<Result<Vec<_>, _>>()?;
         let notices = state.session().await?.tx_notices(id, txids).await?;
         Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// The notices of payments Dash Wallet dropped because what they spent
+    /// came from a transaction that was never valid, not yet dismissed.
+    #[facade("NetworkSession::dropped_notices")]
+    fn dropped_notices(state, wallet_id: String) -> Vec<DroppedNoticeRow> {
+        let id = parse_wallet_id(&wallet_id)?;
+        let notices = state.session().await?.dropped_notices(id).await?;
+        Ok(notices.into_iter().map(Into::into).collect())
+    }
+
+    /// Dismisses the notices of the dropped payments `txids` for good.
+    #[facade("NetworkSession::dismiss_dropped_notices")]
+    fn dismiss_dropped_notices(state, wallet_id: String, txids: Vec<String>) -> () {
+        let id = parse_wallet_id(&wallet_id)?;
+        let txids = txids
+            .iter()
+            .map(|t| parse_txid(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(state
+            .session()
+            .await?
+            .dismiss_dropped_notices(id, txids)
+            .await?)
     }
 
     /// Whether a record type is a CoinJoin mixing, denomination or

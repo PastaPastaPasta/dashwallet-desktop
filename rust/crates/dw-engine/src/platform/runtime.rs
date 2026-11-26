@@ -4,7 +4,7 @@
 //! cadence. The bring-up itself is in `bringup.rs`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,7 @@ use dw_vault::{LockState, Vault};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 
+use super::registration::RegistrationWait;
 use super::startup::{StartupStatus, SyncLoop, SyncLoopStatus};
 use super::startup_status::{DashPayStartup, PlatformCadence, SpvState};
 use crate::events::SessionHub;
@@ -124,6 +125,12 @@ pub(crate) struct PlatformRuntime {
     startup: RwLock<HashMap<WalletId, DashPayStartup>>,
     /// Where a changed bring-up outcome is signalled ([`StartupWrite`]).
     hub: Arc<SessionHub>,
+    /// Bumped when a wallet's bring-up outcome changes or a rerun a flow
+    /// asked for ends: what [`Self::await_bring_up`] waits on.
+    startup_seen: watch::Sender<u64>,
+    /// Flows inside [`Self::await_bring_up`]: an in-app close they refuse
+    /// names them ([`Self::preparing`]).
+    bring_up_waiters: AtomicUsize,
     cadence: Mutex<PlatformCadence>,
     pub(super) lock: watch::Sender<LockView>,
     /// Each wallet's bring-up or unlock task in flight, ended when the
@@ -146,6 +153,8 @@ pub(crate) struct PlatformRuntime {
     /// Unix seconds a periodic pass last proved the shielded pool unchanged
     /// and skipped its scan; `0` before one did.
     pub(crate) shielded_checked_at: AtomicU64,
+    /// App Connect responses sealed and not yet published.
+    pub(crate) app_connect: super::app_connect::PendingSends,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
@@ -175,6 +184,22 @@ pub(crate) struct PlatformRuntime {
     /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
     #[cfg(test)]
     pub(crate) crash_before_ack: AtomicBool,
+    /// A test's proved reads for the release of refused shielded spends
+    /// (`shielded_release`); the network's while `None`.
+    #[cfg(test)]
+    pub(crate) release_net: Mutex<Option<Arc<dyn super::shielded_release::ReleaseNet>>>,
+    /// A test's pause of the next release between its reads and its
+    /// second look at the held spends.
+    #[cfg(test)]
+    pub(crate) release_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's failure of the library's dispositions listing as history
+    /// reads it (`shielded_release::mark_refused`).
+    #[cfg(test)]
+    pub(crate) fail_disposition_listing: AtomicBool,
+    /// Refused shielded spends whose anchor a read found still recorded, by
+    /// transition hash, with when to read them again (in memory: a new
+    /// session reads at its first pass).
+    pub(crate) release_backoff: Mutex<HashMap<[u8; 32], std::time::Instant>>,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -218,6 +243,22 @@ pub(crate) struct PlatformRuntime {
     /// The addresses each wallet's running fund applies hold
     /// (`platform_moves::FundHold`).
     pub(crate) fund_holds: super::platform_moves::FundHolds,
+    /// Each wallet's unshield to a Platform address about to sign
+    /// (`shielded_pool::UnshieldIntent`).
+    pub(crate) unshield_intents:
+        std::sync::Mutex<std::collections::HashMap<WalletId, super::shielded_pool::UnshieldIntent>>,
+    /// Each wallet's Shielded-funded registration create about to sign
+    /// (`registration_shielded::CreateIntent`).
+    pub(crate) registration_intents: std::sync::Mutex<
+        std::collections::HashMap<WalletId, super::registration_shielded::CreateIntent>,
+    >,
+    /// A test's faults of a Shielded-funded create's hook steps.
+    #[cfg(test)]
+    pub(crate) registration_faults:
+        std::sync::Mutex<super::registration_shielded::RegistrationFaults>,
+    /// Platform's last proved shielded note count and when it was proved
+    /// (unix seconds), for the registration's pool check (C-funding F16).
+    pub(crate) pool_notes: std::sync::Mutex<Option<(u64, u64)>>,
     /// The shield locks of unknown consumption marked this session, kept
     /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
     pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -272,6 +313,14 @@ pub(crate) struct PlatformRuntime {
     /// running (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_before_running: Mutex<Option<Arc<TestPause>>>,
+    /// Tests: [`Self::await_bring_up`]'s queued and running waits in place
+    /// of [`super::bringup::FLOW_QUEUE_WAIT`] and [`super::bringup::FLOW_WAIT`].
+    #[cfg(test)]
+    pub(super) bring_up_waits: Mutex<Option<(Duration, Duration)>>,
+    /// Tests: holds the next [`Self::await_bring_up`] after it read the
+    /// hold and before it waits for a change.
+    #[cfg(test)]
+    pub(super) pause_bring_up_wait: Mutex<Option<Arc<TestPause>>>,
     /// The queued-account drains asked of the supervisor (#84).
     contact_drains: Mutex<ContactDrains>,
     /// Tests: how many contact-crypto drains ran (`bringup.rs`).
@@ -293,6 +342,7 @@ pub(super) struct StartupWrite<'a> {
     map: Option<RwLockWriteGuard<'a, HashMap<WalletId, DashPayStartup>>>,
     before: HashMap<WalletId, (StartupStatus, Option<String>)>,
     hub: &'a SessionHub,
+    seen: &'a watch::Sender<u64>,
 }
 
 impl std::ops::Deref for StartupWrite<'_> {
@@ -318,9 +368,28 @@ impl Drop for StartupWrite<'_> {
             .collect();
         changed.extend(self.before.keys().filter(|id| !map.contains_key(id)));
         drop(map);
+        if !changed.is_empty() {
+            self.seen.send_modify(|n| *n = n.wrapping_add(1));
+        }
         for id in changed {
             self.hub.pump.mark_platform(id, [PlatformChange::Startup]);
         }
+    }
+}
+
+/// One flow counted in [`PlatformRuntime::bring_up_waiters`] while it lives.
+pub(crate) struct Waiting<'a>(&'a AtomicUsize);
+
+impl<'a> Waiting<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -435,6 +504,8 @@ struct StartupRetry {
     runs: u32,
     /// None is requested before this.
     next: Instant,
+    /// The last rerun asked for has not ended.
+    asked: bool,
 }
 
 /// The pause after the `runs`th rerun of a bring-up before the next:
@@ -498,6 +569,8 @@ impl PlatformRuntime {
             lifecycle: tokio::sync::Mutex::new(()),
             startup: RwLock::new(HashMap::new()),
             hub,
+            startup_seen: watch::Sender::new(0),
+            bring_up_waiters: AtomicUsize::new(0),
             cadence: Mutex::new(PlatformCadence::default()),
             lock: watch::Sender::new(LockView {
                 state: lock,
@@ -508,6 +581,7 @@ impl PlatformRuntime {
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
             shielded_checked_at: AtomicU64::new(0),
+            app_connect: Default::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             #[cfg(test)]
@@ -524,6 +598,13 @@ impl PlatformRuntime {
             passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
+            #[cfg(test)]
+            release_net: Mutex::new(None),
+            #[cfg(test)]
+            release_pause: Mutex::new(None),
+            #[cfg(test)]
+            fail_disposition_listing: AtomicBool::new(false),
+            release_backoff: Mutex::default(),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
             wallet_loads: tokio::sync::RwLock::new(()),
@@ -537,6 +618,11 @@ impl PlatformRuntime {
             hold_settle_retain: std::sync::Mutex::default(),
             shielded_calls: std::sync::Mutex::default(),
             fund_holds: Arc::default(),
+            unshield_intents: std::sync::Mutex::default(),
+            registration_intents: std::sync::Mutex::default(),
+            #[cfg(test)]
+            registration_faults: std::sync::Mutex::default(),
+            pool_notes: std::sync::Mutex::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
@@ -562,6 +648,10 @@ impl PlatformRuntime {
             pause_after_keys: Mutex::new(None),
             #[cfg(test)]
             pause_before_running: Mutex::new(None),
+            #[cfg(test)]
+            bring_up_waits: Mutex::new(None),
+            #[cfg(test)]
+            pause_bring_up_wait: Mutex::new(None),
             contact_drains: Mutex::default(),
             #[cfg(test)]
             contact_drains_run: AtomicU64::new(0),
@@ -755,6 +845,7 @@ impl PlatformRuntime {
             map: Some(map),
             before,
             hub: &self.hub,
+            seen: &self.startup_seen,
         }
     }
 
@@ -767,10 +858,139 @@ impl PlatformRuntime {
     }
 
     pub(super) fn record(&self, id: WalletId, startup: DashPayStartup) {
-        if !startup.startup.awaits_rerun() {
-            guard(&self.startup_retries).remove(&id);
-        }
+        let unasked = {
+            let mut retries = guard(&self.startup_retries);
+            if !startup.startup.awaits_rerun() {
+                retries.remove(&id).is_some_and(|r| r.asked)
+            } else if let Some(retry) = retries.get_mut(&id) {
+                std::mem::replace(&mut retry.asked, false)
+            } else {
+                false
+            }
+        };
         self.write_startup().insert(id, startup);
+        if unasked {
+            self.startup_seen.send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    /// The rerun of wallet `id`'s bring-up that a flow asked for ended, or
+    /// the supervisor dropped it: whatever it recorded, it no longer runs.
+    pub(super) fn rerun_ended(&self, id: WalletId) {
+        if let Some(retry) = guard(&self.startup_retries).get_mut(&id) {
+            retry.asked = false;
+        }
+        self.startup_seen.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// A rerun of wallet `id`'s bring-up was asked for and has not ended,
+    /// or a bring-up of it runs.
+    pub(super) fn bring_up_pending(&self, id: &WalletId) -> bool {
+        guard(&self.startup_retries)
+            .get(id)
+            .is_some_and(|r| r.asked)
+            || self.starting(id)
+    }
+
+    fn starting(&self, id: &WalletId) -> bool {
+        self.startup_of(id)
+            .is_some_and(|s| s.startup == StartupStatus::Starting)
+    }
+
+    /// A flow about to act on wallet `id` whose library holds it at
+    /// `hold()`: on a [`RegistrationWait::Startup`] hold, waits for the
+    /// bring-up's rerun ([`Self::await_bring_up`]). The caller reads its
+    /// hold again after: this decides nothing.
+    pub(crate) async fn settle_startup_hold(
+        &self,
+        id: WalletId,
+        hold: impl Fn() -> Option<RegistrationWait>,
+    ) {
+        let on_startup = || hold() == Some(RegistrationWait::Startup);
+        if on_startup() {
+            self.await_bring_up(id, on_startup).await;
+        }
+    }
+
+    /// `hold`, a read of wallet `id`'s funding hold, after asking for the
+    /// bring-up's rerun ([`Self::retry_startup`]) when it is
+    /// [`RegistrationWait::Startup`]: nothing else runs it again before the
+    /// next start.
+    pub(crate) fn ask_on_startup_hold(
+        &self,
+        id: WalletId,
+        hold: Option<RegistrationWait>,
+    ) -> Option<RegistrationWait> {
+        if hold == Some(RegistrationWait::Startup) {
+            self.retry_startup(id);
+        }
+        hold
+    }
+
+    /// A flow held on wallet `id`'s bring-up (`held`): asks for the rerun
+    /// ([`Self::retry_startup`]) and waits while one is asked for or runs,
+    /// until `held` lifts or the supervisor stops; at most
+    /// [`super::bringup::FLOW_QUEUE_WAIT`] for the rerun to start, then
+    /// [`super::bringup::FLOW_WAIT`] from its start. Nothing while SPV is
+    /// stopped.
+    async fn await_bring_up(&self, id: WalletId, held: impl Fn() -> bool) {
+        // Subscribed before any read below: a change from here on wakes it.
+        let mut seen = self.startup_seen.subscribe();
+        let Some(mut cancel) = guard(&self.supervisor)
+            .as_ref()
+            .filter(|s| s.running)
+            .map(|s| s.cancel.subscribe())
+        else {
+            return;
+        };
+        let _waiting = Waiting::new(&self.bring_up_waiters);
+        let (queued, running) = self.bring_up_waits();
+        let mut deadline = Instant::now() + queued;
+        let mut started = false;
+        self.retry_startup(id);
+        while held() && self.bring_up_pending(&id) && !*cancel.borrow() {
+            if !started && self.starting(&id) {
+                started = true;
+                deadline = Instant::now() + running;
+            }
+            #[cfg(test)]
+            {
+                let pause = guard(&self.pause_bring_up_wait).take();
+                if let Some(pause) = pause {
+                    pause.reached.store(true, Ordering::SeqCst);
+                    pause.release.notified().await;
+                }
+            }
+            tokio::select! {
+                biased;
+                () = super::bringup::until(&mut cancel, |c| *c) => return,
+                changed = tokio::time::timeout_at(deadline.into(), seen.changed()) => {
+                    if !matches!(changed, Ok(Ok(()))) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// A flow waits on a wallet's bring-up ([`Self::await_bring_up`]).
+    pub(crate) fn preparing(&self) -> bool {
+        self.bring_up_waiters.load(Ordering::SeqCst) > 0
+    }
+
+    /// Counts as a flow waiting on a bring-up while it lives.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) fn waiting(&self) -> Waiting<'_> {
+        Waiting::new(&self.bring_up_waiters)
+    }
+
+    /// [`Self::await_bring_up`]'s waits: queued, then running.
+    fn bring_up_waits(&self) -> (Duration, Duration) {
+        #[cfg(test)]
+        if let Some(waits) = *guard(&self.bring_up_waits) {
+            return waits;
+        }
+        (super::bringup::FLOW_QUEUE_WAIT, super::bringup::FLOW_WAIT)
     }
 
     /// A flow is held on wallet `id`'s bring-up (`StartupStatus::awaits_rerun`;
@@ -779,7 +999,8 @@ impl PlatformRuntime {
     /// [`startup_retry_pause`], from 30 s doubling to 10 minutes, for as long
     /// as flows keep asking and the outcome keeps holding them. Nothing while
     /// SPV is stopped (the next start runs it), for a wallet without keys,
-    /// or while a bring-up of it runs. `true` when it asked.
+    /// while a bring-up of it runs, or while one asked for has not ended.
+    /// `true` when it asked.
     pub(crate) fn retry_startup(&self, id: WalletId) -> bool {
         self.retry_startup_at(id, Instant::now())
     }
@@ -800,17 +1021,23 @@ impl PlatformRuntime {
         }
         {
             let mut retries = guard(&self.startup_retries);
-            let retry = retries
-                .entry(id)
-                .or_insert(StartupRetry { runs: 0, next: now });
-            if now < retry.next {
+            let retry = retries.entry(id).or_insert(StartupRetry {
+                runs: 0,
+                next: now,
+                asked: false,
+            });
+            if retry.asked || now < retry.next {
                 return false;
             }
             retry.runs += 1;
             retry.next = now + startup_retry_pause(retry.runs);
+            // Before the send: a rerun that ends at once clears it after.
+            retry.asked = true;
         }
         tracing::info!(wallet_id = %id, "a flow waits on the DashPay bring-up: running it again");
-        self.signal(PlatformSignal::RetryStartup(id));
+        if !self.send_signal(self.stamp(), PlatformSignal::RetryStartup(id)) {
+            self.rerun_ended(id);
+        }
         true
     }
 

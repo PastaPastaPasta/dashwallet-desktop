@@ -111,6 +111,8 @@ fn links() {
         let kind = match &got {
             DeepLink::DashConnectKey(_) => "dashconnect_key",
             DeepLink::DashConnectSt(_) => "dashconnect_st",
+            DeepLink::DashConnect(_) => "dashconnect",
+            DeepLink::NeedsNewerWallet => "needs_newer_wallet",
             DeepLink::Integration(_) => "integration",
             DeepLink::ScanQr => "scan_qr",
             DeepLink::AddressRequest { .. } => "address_request",

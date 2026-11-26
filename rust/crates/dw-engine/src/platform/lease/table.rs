@@ -80,6 +80,8 @@ pub(crate) struct Signers {
     pub(crate) life: Option<SignerLife>,
     /// `MasternodeWithdrawal`, single use (MG-13 P3, P12).
     pub(crate) withdrawal: Option<VaultSigner>,
+    /// `AppConnect`: one request's application keys.
+    pub(crate) app_connect: Option<VaultSigner>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -964,6 +966,17 @@ impl Lease {
         self.signer(
             BudgetPurpose::Credits,
             |s| s.platform_address.as_ref(),
+            |e| e.credits.granted(),
+        )
+    }
+
+    /// The App Connect signer a call's permit hands out (an `AppConnect`
+    /// lease's application keys): the permit's J step already charged the
+    /// call's quote.
+    pub(crate) fn call_app_connect_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Credits,
+            |s| s.app_connect.as_ref(),
             |e| e.credits.granted(),
         )
     }

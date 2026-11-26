@@ -29,7 +29,10 @@ use self::build::{
     Collateral, Funding, decode_signature, existing_coin, finish_registration, plan_funding,
     sign_message, summarize, to_sign, unsigned_registration,
 };
-use self::ops::{Delivery, encode_inputs, kind_name, kind_of, operation_of, state_name, state_of};
+use self::ops::{
+    Delivery, abandon_settled, encode_inputs, kind_name, kind_of, operation_of, state_name,
+    state_of,
+};
 use super::protx_records::{
     CollateralChoice, ProTxKeys, ProTxOperation, ProTxOperationKind, ProTxOperationState,
     RegistrationPreview, RegistrationRequest, UpdateRegistrarPreview, UpdateRegistrarRequest,
@@ -45,6 +48,23 @@ use crate::{EngineError, NetworkSession, WalletId};
 
 /// Change pays a P2PKH script (a fresh BIP44 internal address, D2).
 pub(crate) const CHANGE_LEN: usize = 25;
+
+/// ProRegTx and ProUpRegTx sends, the shared masternode's among them, stay
+/// off on mainnet until #438's conditions are met: every call that locks a
+/// coin, takes a grant or hands such a transaction off refuses there
+/// first, with
+/// `masternodes.unsupported{feature: "protx_sending", field: "mainnet"}`.
+/// Previews, discards and the exits (abandon, dissolution, standby) are not
+/// affected.
+pub(super) fn require_protx_sending(s: &NetworkSession) -> Result<(), MasternodesError> {
+    if s.network.core_network() == dashcore::Network::Mainnet {
+        return Err(MasternodesError::Unsupported {
+            feature: "protx_sending".into(),
+            field: Some("mainnet".into()),
+        });
+    }
+    Ok(())
+}
 
 impl Masternodes {
     /// [`Self::op`], with a `wallet_not_found` that doesn't repeat the
@@ -124,6 +144,7 @@ impl Masternodes {
         request: RegistrationRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         if matches!(request.collateral, CollateralChoice::External { .. }) {
             return Err(EngineError::InvalidArgument(
                 "an external collateral is registered with prepare_external_registration".into(),
@@ -283,6 +304,7 @@ impl Masternodes {
         wallet: WalletId,
         request: RegistrationRequest,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         if !matches!(request.collateral, CollateralChoice::External { .. }) {
             return Err(EngineError::InvalidArgument(
                 "only an external collateral is prepared; register the others".into(),
@@ -319,6 +341,7 @@ impl Masternodes {
         signature: String,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
@@ -426,6 +449,7 @@ impl Masternodes {
         wallet: WalletId,
         operation: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let _flight = s.claim_operation(wallet, &operation)?;
@@ -563,6 +587,7 @@ impl Masternodes {
         request: UpdateRegistrarRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             update::check_update_request(&request, s.network.core_network())?;
@@ -665,12 +690,14 @@ impl Masternodes {
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
             let (history, unspent) = s.op_view(wallet).await?;
+            let abandoned = s.abandoned_txids(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
                 .map(|r| {
+                    let state = list_settled(r, state_of(r, &history, &unspent), &view);
                     operation_of(
                         r,
-                        list_settled(r, state_of(r, &history, &unspent), &view),
+                        abandon_settled(r, state, &history, &abandoned),
                         &s.hub.tracker(),
                     )
                 })
@@ -704,6 +731,9 @@ impl Masternodes {
             if shared {
                 sending?;
             }
+            if kind_of(&row.kind) != ProTxOperationKind::Dissolve {
+                require_protx_sending(&s)?;
+            }
             // An update resends only while no other update of its
             // masternode would race it, held against a new update (D43, D49;
             // MG-04b D23 for the shared ones).
@@ -712,17 +742,7 @@ impl Masternodes {
                 true => Some(s.masternodes.update_lock().await),
                 false => None,
             };
-            let state = s.op_state(wallet, &row).await?;
-            if !matches!(
-                state,
-                ProTxOperationState::Signed
-                    | ProTxOperationState::NotSent
-                    | ProTxOperationState::Sent
-            ) {
-                return Err(MasternodesError::OperationState {
-                    state: state_name(state).into(),
-                });
-            }
+            s.require_resendable(wallet, &row).await?;
             if update && let Some(conflict) = s.resend_conflict(&row).await? {
                 return Err(conflict);
             }
@@ -753,6 +773,11 @@ impl Masternodes {
                 let (charge, _) = charge_fee(&lease, debit)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
                 let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await?;
+                // Read again, held against an abandon through the hand-off:
+                // one since the check released its coins, and its bytes stay
+                // unsent (D49).
+                let _gate = s.abandon_gate(wallet).read_owned().await;
+                s.require_resendable(wallet, &row).await?;
                 s.deliver(
                     wallet,
                     Delivery {

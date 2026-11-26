@@ -635,6 +635,33 @@ describe("onboarding view model: restore", () => {
     model.setScanDate("2026-10-15");
     expect(model.birthDateError).not.toBeNull();
     model.setScanDate("");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    expect(model.options.birthHeight).toBe(0);
+  });
+
+  it("refusesAnEmptyOrImpossibleDateAndKeepsAValidOne", async () => {
+    // #686: the date option with no date, or a day the month does not have, scanned from the
+    // first block without saying so (2023-02-31 rolled over to 2023-03-03).
+    const world = unlockedWorld();
+    const now = new Date(2026, 9, 14, 12, 0);
+    const model = new OnboardingModel(world, "mainnet", { random: seeded(42n), now: () => now });
+    await model.startRestore();
+    await model.updateRestoreText(PHRASE);
+    model.continueRestore();
+    model.setScanStart("date");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    await model.finishRestore();
+    expect(model.step).toBe("restoreOptions");
+
+    model.setScanDate("2023-02-31");
+    expect(model.birthDateError).toBe(OnboardingText.birthDateMissing);
+    expect(model.options.birthHeight).toBe(0);
+
+    model.setScanDate("2023-02-28");
+    expect(model.birthDateError).toBeNull();
+    expect(model.options.birthHeight).toBe(birthHeightFor(new Date(2023, 1, 28), "mainnet"));
+
+    model.setScanStart("genesis");
     expect(model.birthDateError).toBeNull();
     expect(model.options.birthHeight).toBe(0);
   });
@@ -695,7 +722,7 @@ describe("onboarding view model: restore", () => {
 
 describe("failureText: Close Wallet and the network close (DEC-1046)", () => {
   it("names an unresolved shielded payment, and shows a wallet still opening in the engine's words", () => {
-    expect(failureText(appError("shielded_spend_unresolved"))).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(failureText(appError("shielded_spend_unresolved"))).toBe("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     expect(failureText({ code: "wallet", message: "a wallet is still opening; close the network once it is open", data: null })).toBe("A wallet is still opening; close the network once it is open.");
     // Any other `wallet` failure stays generic: the code is shared.
     expect(failureText({ code: "wallet", message: "disk full", data: null })).toBe("Something went wrong (wallet).");

@@ -24,9 +24,11 @@
 # - swift-linux: the Linux Swift tests (the headless suites of scripts/linux-docker-test.sh
 #   plus DashUICrossTests: the UI T0 tier) with Swift 6.3.3, then the SwiftCrossUI app launched
 #   under Xvfb with a screenshot.
-# - macos: engine tests, every Swift suite (MacUITests render the screens offscreen),
-#   the macOS app built with XcodeGen + xcodebuild, installed to /Applications and launched,
-#   with screenshots.
+# - macos: engine tests (`cargo test --workspace`). macos-swift, alongside it: the Rust core bundle,
+#   every Swift suite (MacUITests render the screens offscreen), the macOS app built with XcodeGen +
+#   xcodebuild, installed to /Applications and launched, with screenshots.
+# - windows-cross-check: on Linux, `cargo clippy --workspace --all-targets` for x86_64-pc-windows-gnu
+#   (MinGW-w64), so a pull request lints the Windows code paths before it merges.
 # - windows: engine build, tests and clippy (MSVC). windows-swift builds the Swift side and
 #   dash-wallet (WinUIBackend), whose launch still crashes; it does not fail the run
 #   (docs/ci.md, "Known gaps").
@@ -43,6 +45,28 @@ name: CI
 on:
   push:
     branches: [main]
+    # A docs-only merge runs nothing, as a docs-only pull request does (the `changes` job): docs/ and *.md,
+    # except the docs that tests read (and Vendor/, whose PATCHES.md the Swift repo checks read). The 02:47
+    # UTC run still runs everything. On a very large push GitHub matches only part of the changed files.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "docs/contracts/**"
+      - "docs/design/E0-13-facade-coverage.md"
+      - "Vendor/**"
+      - "docs/**/*.rs"
+      - "docs/**/*.swift"
+      - "docs/**/*.ts"
+      - "docs/**/*.tsx"
+      - "docs/**/*.js"
+      - "docs/**/*.mjs"
+      - "docs/**/*.json"
+      - "docs/**/*.toml"
+      - "docs/**/*.yml"
+      - "docs/**/*.yaml"
+      - "docs/**/*.sh"
+      - "docs/**/*.py"
   pull_request:
   schedule:
     - cron: "47 2 * * *"
@@ -55,11 +79,14 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's or pull request's running CI. Main runs one at a time and is never
-# cancelled; a newer main run replaces a pending one, so a burst of merges queues one run behind the running one.
+# A new push cancels its ref's running CI, main included: the newest main commit's run covers the merges
+# before it, so a burst of merges no longer queues behind a superseded ~100-minute run. The event is in the
+# group, so a merge never cancels the 02:47 UTC run or a dispatch. A re-run (attempt 2+) gets its own group,
+# so re-running an older commit never cancels the newest commit's run. main-result.yml reports a cancelled
+# main run that already had a failed job as red.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.run_attempt > 1 && format('-rerun-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -78,7 +105,7 @@ jobs:
   # - docs/ or *.md only (not docs/contracts or the generated E0-13 coverage table): nothing.
   # - only apps/desktop (not the paths Rust tests read, below): desktop-renderer (tokens, tsc, vitest,
   #   and dw-protx's no_operator_signing scan of apps/desktop/src).
-  # - anything else, unknown paths included: lint, rust-linux and desktop-renderer.
+  # - anything else, unknown paths included: lint, rust-linux, windows-cross-check (not required yet) and desktop-renderer.
   # With FUNDS_FULL_SUITE true, a funds path (any renderer file but i18n catalogs and stylesheets, any
   # Rust or Swift file, or a path naming a funds word) runs every required job.
   # Skipped required jobs report success. Every other event, and any failure here, runs them all.
@@ -153,6 +180,9 @@ jobs:
       - name: Tracked paths are valid on Windows
         working-directory: .
         run: ci/github/windows-paths.py
+      - name: Funds review gate and ci/funds-paths.txt (docs/ci.md, "Funds review gate")
+        working-directory: .
+        run: python3 ci/github/funds-gate-test.py
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
         # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
@@ -183,6 +213,40 @@ jobs:
         run: env -u CARGO_TARGET_DIR cargo install cargo-deny --version 0.20.2 --locked
       - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
         run: cargo deny --locked check advisories
+
+  # Main's Windows job lints the Windows code paths, but only after a merge. This lints them on every
+  # pull request that runs the Rust jobs, cross-compiled from Linux with MinGW-w64: the same command as
+  # the Windows job's clippy, for the GNU target instead of MSVC.
+  windows-cross-check:
+    name: Windows cross-check (mingw)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.rust == 'false') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: MinGW-w64 compilers
+        working-directory: .
+        env:
+          DW_APT_DOWNLOAD_DEADLINE: "60"
+        run: ci/github/linux-host-deps.sh mingw
+      # Only that toolchain, as in Rust lint, plus the Windows GNU target.
+      - name: Rust toolchain (rust-toolchain.toml) and x86_64-pc-windows-gnu
+        run: ../ci/github/rust-toolchain-only.sh && rustup target add x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-mingw-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/pinned-sources
+      - run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
+      - run: cargo clippy -p dw-app --all-targets --features selftest --locked --target x86_64-pc-windows-gnu -- -D warnings
 
   rust-linux:
     name: Rust tests (Linux)
@@ -656,11 +720,13 @@ jobs:
           path: screenshots/
           if-no-files-found: warn
 
+  # The engine tests and the Swift side run as two jobs at once: in one job the Swift steps waited
+  # for `cargo test` and added 10 to 30 minutes to every main run (docs/ci.md, "Main CI wall time").
   macos:
-    name: macOS (engine, Swift, app)
+    name: macOS (engine)
+    timeout-minutes: 150
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
-    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -683,6 +749,31 @@ jobs:
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
+
+  macos-swift:
+    name: macOS (Swift, app)
+    timeout-minutes: 120
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+          df -h /System/Volumes/Data
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
+      - uses: ./.github/actions/pinned-sources
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       - name: swift build

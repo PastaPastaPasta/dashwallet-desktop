@@ -44,7 +44,14 @@ pub(crate) struct WalletStore {
     /// Tests: runs once, after the store of a wallet's registration.
     #[cfg(test)]
     pub(crate) on_register: std::sync::Mutex<Option<RegisterHook>>,
+    /// Tests: the next store the predicate matches waits at the first
+    /// barrier, then at the second, before it reaches the persister.
+    #[cfg(test)]
+    pub(crate) hold_store: std::sync::Mutex<Option<StoreHold>>,
 }
+
+#[cfg(test)]
+pub(crate) type StoreHold = (StoreFailure, Arc<(std::sync::Barrier, std::sync::Barrier)>);
 
 #[cfg(test)]
 pub(crate) type StoreFailure = Box<dyn Fn(&PlatformWalletChangeSet) -> bool + Send>;
@@ -69,6 +76,8 @@ impl WalletStore {
             fail_store: Default::default(),
             #[cfg(test)]
             on_register: Default::default(),
+            #[cfg(test)]
+            hold_store: Default::default(),
         }
     }
 
@@ -163,6 +172,16 @@ impl PlatformWalletPersistence for WalletStore {
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
         let replay = || self.replay.get().and_then(std::sync::Weak::upgrade);
+        #[cfg(test)]
+        {
+            let mut held = self.hold_store.lock().unwrap();
+            if (held.as_ref()).is_some_and(|(matches, _)| matches(&changeset)) {
+                let (_, barriers) = held.take().unwrap();
+                drop(held);
+                barriers.0.wait();
+                barriers.1.wait();
+            }
+        }
         #[cfg(test)]
         if (self.fail_store.lock().unwrap().as_ref()).is_some_and(|fails| fails(&changeset)) {
             if changeset.core.is_some()
@@ -317,80 +336,6 @@ pub(crate) fn stored_heights(
     )?;
     let height = |h: Option<i64>| h.and_then(|h| u32::try_from(h).ok());
     Ok((height(synced), height(birth)))
-}
-
-/// Whether `wallet.sqlite` (read-only) shows wallet `id`'s CoinJoin
-/// accounts used, or cannot rule it out. Use is positive evidence only: a
-/// CoinJoin pool row, live or retired, of either chain and any account
-/// index, marked used; a stored coin, spent or not, paying a CoinJoin pool
-/// address; a stored transaction record of a CoinJoin account. A coin whose
-/// script no stored pool row owns, a record that cannot be read, and a
-/// transaction stored without a record and without a coin it funds cannot be
-/// classified and count as use.
-/// Releases 0.1.0 and 0.2.0 stored no `used` flags, but kept every confirmed
-/// coin's row and each transaction's record.
-pub(crate) fn coinjoin_used(
-    db_path: &std::path::Path,
-    id: &RawWalletId,
-    persister: &SqlitePersister,
-) -> Result<bool, rusqlite::Error> {
-    use dashcore::hashes::Hash as _;
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let pooled_or_unowned: bool = conn.query_row(
-        "WITH pool AS ( \
-             SELECT account_type, script, used FROM core_address_pool WHERE wallet_id = ?1 \
-             UNION ALL \
-             SELECT account_type, script, used FROM core_address_pool_retired WHERE wallet_id = ?1) \
-         SELECT EXISTS (SELECT 1 FROM pool WHERE account_type = 'coinjoin' AND used = 1) \
-             OR EXISTS (SELECT 1 FROM core_utxos u \
-                        WHERE u.wallet_id = ?1 AND u.is_sweep_placeholder = 0 AND ( \
-                            u.script IN (SELECT script FROM pool WHERE account_type = 'coinjoin') \
-                            OR u.script NOT IN (SELECT script FROM pool)))",
-        [&id[..]],
-        |r| r.get(0),
-    )?;
-    if pooled_or_unowned {
-        return Ok(true);
-    }
-    // The store writes a coin's funding transaction without a record beside
-    // the coin; that coin, classified above, is its evidence.
-    let mut stmt = conn.prepare(
-        "SELECT t.txid, t.record_blob IS NULL, EXISTS (SELECT 1 FROM core_utxos u \
-             WHERE u.wallet_id = ?1 AND u.is_sweep_placeholder = 0 \
-             AND substr(u.outpoint, 2, 32) = t.txid) \
-         FROM core_transactions t WHERE t.wallet_id = ?1",
-    )?;
-    let mut rows = stmt.query([&id[..]])?;
-    while let Some(row) = rows.next()? {
-        let (txid, recordless, funds_coin) = (
-            row.get::<_, Vec<u8>>(0)?,
-            row.get::<_, bool>(1)?,
-            row.get::<_, bool>(2)?,
-        );
-        if recordless {
-            if funds_coin {
-                continue;
-            }
-            return Ok(true);
-        }
-        let Ok(txid) = Txid::from_slice(&txid) else {
-            return Ok(true);
-        };
-        match persister.get_core_tx_record(*id, &txid) {
-            Ok(Some(r))
-                if r.txid == txid
-                    && !matches!(
-                        r.account_type,
-                        key_wallet::account::AccountType::CoinJoin { .. }
-                    ) => {}
-            _ => return Ok(true),
-        }
-    }
-    Ok(false)
 }
 
 /// Ids of every wallet registered in `wallet.sqlite` (read-only).

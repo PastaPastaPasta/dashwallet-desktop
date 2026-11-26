@@ -86,8 +86,8 @@ use super::shield_drain::DrainCoin;
 use super::shielded_pool::{MAX_LOCK_INPUTS, shield_funding};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
-    self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, UnfinishedLock,
-    UnfinishedState,
+    self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, SpentRead,
+    UnfinishedLock, UnfinishedState,
 };
 use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
@@ -113,6 +113,9 @@ pub(crate) trait FundLib: Send + Sync {
     /// The script of the tracked lock's credit output at `outpoint` (its
     /// payload's `credit_outputs[vout]`); `None` when it is not tracked.
     fn credit_script(&self, outpoint: OutPoint) -> impl Future<Output = Option<ScriptBuf>> + Send;
+    /// Platform's proved answer whether the lock at `outpoint` is spent
+    /// ([`super::unfinished_locks::proved_spent`]).
+    fn spent(&self, outpoint: OutPoint) -> impl Future<Output = SpentRead> + Send;
     /// The values of the coins a funding may select (those
     /// [`Spendable::duffs`] counts).
     fn coin_values(&self) -> impl Future<Output = Result<Vec<u64>, PlatformError>> + Send;
@@ -149,6 +152,22 @@ pub(crate) trait FundLib: Send + Sync {
     /// with the credits its proof shows `to` gained (`None` when it does not
     /// say).
     fn apply<S>(
+        &self,
+        outpoint: OutPoint,
+        to: PlatformAddress,
+        signer: &S,
+    ) -> impl Future<Output = Result<Option<u64>, PlatformWalletError>> + Send
+    where
+        S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = SignerError> + Send + Sync;
+    /// The wallet's tracked `AssetLockShieldedAddressTopUp` locks (type 5),
+    /// as the shield kind lists them.
+    fn shield_lock_rows(&self) -> impl Future<Output = Vec<KindLock>> + Send;
+    /// The library's `fund_from_shielded_remainder_asset_lock` of the
+    /// tracked type-5 lock at `outpoint` to `to`, one of the wallet's own
+    /// addresses (the only recipient), its asset-lock proof signed through
+    /// `signer`: what [`Self::apply`] returns. On a proved apply the
+    /// library records the lock `Consumed`.
+    fn apply_remainder<S>(
         &self,
         outpoint: OutPoint,
         to: PlatformAddress,
@@ -216,7 +235,7 @@ pub(crate) async fn gate(lib: &impl FundLib) -> Result<&'static PlatformVersion,
 
 /// Platform's fee estimate for an apply: dpp's minimum fee for no input and
 /// one output.
-fn fee_credits(rules: &PlatformVersion) -> u64 {
+pub(crate) fn fee_credits(rules: &PlatformVersion) -> u64 {
     calculate_address_funding_from_asset_lock_min_required_fee(0, 1, rules)
 }
 
@@ -302,7 +321,7 @@ async fn plan(
     let fee = fee_credits(rules);
     let min = minimum_duffs(rules);
     if duffs < min {
-        return Err(CreditsError::BelowMinimum { min });
+        return Err(CreditsError::BelowMinimum { min, max: None });
     }
     no_open_fund(session, wallet, lib).await?;
     let fee_duffs = lib.fee_bound().await?;
@@ -404,6 +423,7 @@ pub(crate) async fn quote(
     lib: &impl FundLib,
     amount: FundAmount,
 ) -> Result<PlatformFundQuote, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
     match amount {
         FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
         FundAmount::All => {
@@ -484,6 +504,10 @@ pub(crate) async fn fund(
     amount: FundAmount,
     grant: &str,
 ) -> Result<PlatformFundOutcome, CreditsError> {
+    platform_moves::address_sends_open(lib.network())?;
+    (session.platform)
+        .settle_startup_hold(wallet, || lib.funding_hold())
+        .await;
     if let Some(wait) = lib.funding_hold() {
         if wait == RegistrationWait::Startup {
             session.platform.retry_startup(wallet);
@@ -575,7 +599,7 @@ pub(crate) async fn fund(
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => CreditsError::CoinsLocked,
             Err(FundError::CoinsChanged) => CreditsError::CoinsChanged,
-            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min },
+            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min, max: None },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => CreditsError::TooManyInputs {
                 inputs: max + 1,
@@ -645,7 +669,9 @@ pub(crate) async fn resume(
         state,
     };
     if pending.state == UnfinishedState::Confirming
-        && lib.wait_proof(outpoint, RESUME_PROOF_WAIT).await.is_err()
+        && !session
+            .proved_unless_closed(lib.wait_proof(outpoint, RESUME_PROOF_WAIT))
+            .await
     {
         return Ok(outcome(PlatformFundState::ProofWaiting));
     }
@@ -802,6 +828,10 @@ impl FundLib for PwFund {
         credit_script_of(&locks, outpoint)
     }
 
+    async fn spent(&self, outpoint: OutPoint) -> SpentRead {
+        locks::proved_spent(&self.pw.sdk, outpoint).await
+    }
+
     async fn coin_values(&self) -> Result<Vec<u64>, PlatformError> {
         let session = &self.pw.session;
         let fence = session.coin_fence(self.pw.wallet_id).await?;
@@ -865,13 +895,10 @@ impl FundLib for PwFund {
     }
 
     async fn receive_address(&self) -> Result<PlatformAddress, PlatformError> {
-        let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
-            account: ACCOUNT,
-            key_class: 0,
-        };
-        Ok((self.pw.wallet.platform())
-            .next_unused_receive_address(key)
-            .await?)
+        let (session, wallet) = (&self.pw.session, &self.pw.wallet);
+        Ok(super::platform_moves::next_receive(session, wallet)
+            .await?
+            .0)
     }
 
     async fn apply<S>(
@@ -893,6 +920,48 @@ impl FundLib for PwFund {
                 ACCOUNT,
                 BTreeMap::from([(to, None)]),
                 Vec::new(),
+                &NoInputs,
+                signer,
+                None,
+            )
+            .await?;
+        let after = (changes.addresses.iter())
+            .find(|e| PlatformAddress::P2pkh(e.address.to_bytes()) == to)
+            .map(|e| e.funds.balance);
+        Ok(after.map(|a| a.saturating_sub(before)))
+    }
+
+    async fn shield_lock_rows(&self) -> Vec<KindLock> {
+        (self
+            .pw
+            .wallet
+            .asset_locks()
+            .list_tracked_locks()
+            .await
+            .iter())
+        .filter(|l| l.funding_type == AssetLockFundingType::AssetLockShieldedAddressTopUp)
+        .map(KindLock::of_row)
+        .collect()
+    }
+
+    async fn apply_remainder<S>(
+        &self,
+        outpoint: OutPoint,
+        to: PlatformAddress,
+        signer: &S,
+    ) -> Result<Option<u64>, PlatformWalletError>
+    where
+        S: key_wallet::ExtendedPubKeySigner + key_wallet::Signer<Error = SignerError> + Send + Sync,
+    {
+        let platform = self.pw.wallet.platform();
+        let before = (platform.addresses_with_balances().await.into_iter())
+            .find(|(a, _)| *a == to)
+            .map_or(0, |(_, c)| c);
+        let changes = platform
+            .fund_from_shielded_remainder_asset_lock(
+                outpoint,
+                ACCOUNT,
+                BTreeMap::from([(to, None)]),
                 &NoInputs,
                 signer,
                 None,

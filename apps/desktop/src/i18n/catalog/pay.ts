@@ -11,6 +11,8 @@ export const pay = {
   mixedFeeUnknown: "Fully mixed coins are spent in whole denominations, so what is left over would go to fees.",
   address: {
     shielded: "This is a shielded address. This wallet cannot pay shielded addresses yet.",
+    /** A Shielded address while the wallet can send from Shielded: the button below opens that sheet with it. */
+    shieldedRoute: "This is a shielded address. Pay it from your Shielded balance with Send from Shielded.",
     otherNetwork: "This address is not valid on this network.",
   },
   available: {
@@ -96,6 +98,17 @@ export const pay = {
     enterRate: "Enter a custom fee rate.",
     enterChangeAddress: "Enter the custom change address.",
   },
+  /** Added recipients (QT-052): one payment to several addresses. */
+  more: {
+    add: "Add recipient",
+    /** `number`: its place in the payment, 2 for the first added one. */
+    recipient: "Recipient {number}",
+    remove: "Remove",
+    platform: "A Dash Platform address can't be added to a payment. Pay it on its own.",
+    shielded: "A shielded address can't be one of several recipients. Pay it on its own with Send from Shielded.",
+    /** Shown under Add recipient while the feature is testnet-only. */
+    testnetOnly: "Paying several recipients at once is available on test networks only in this version.",
+  },
   toAddress: {
     form: "Pay to an address",
     linkUsername: "The link names the payee {username}. The name is not verified.",
@@ -107,6 +120,16 @@ export const pay = {
     message: "Message",
     messageHint: "Kept with the transaction in this wallet; not sent to the payee.",
     reviewPsbt: "Review PSBT",
+  },
+  /** Pay ▸ To an address: a QR code from an image or the screen (IOS-043 on a desktop without a camera). */
+  scan: {
+    openImage: "Open QR Code Image…",
+    screen: "Scan a Screen Region",
+    cancel: "Cancel",
+    hint: "You can also paste or drop a QR code image into Pay to.",
+    reading: "Reading the image…",
+    capturing: "Select a region of the screen…",
+    noPayment: "There is no Dash address or payment link in this QR code.",
   },
   psbt: {
     summary: "Advanced: unsigned transaction (PSBT)",
@@ -167,7 +190,18 @@ export const pay = {
     changeTo: "Change to",
     total: "Total",
     subtractNote: "The fee is subtracted from the amount: the payee receives the amount above.",
+    /** A payment to several recipients: one of them may pay the fee from its amount. */
+    /** `amount`: what was taken from that recipient's entered amount. */
+    subtractNoteMany: "{amount} of the fee is subtracted from {address}'s amount: each recipient receives the amount shown.",
+    /** The row of each recipient in a payment to several. */
+    recipients: { one: "{count} recipient", other: "{count} recipients" },
     changeNote: "The total includes the change: the custom change address may not belong to this wallet.",
+    mixed: {
+      coins: { one: "This payment spends {count} mixed coin.", other: "This payment spends {count} mixed coins." },
+      manyCoins: "Spending 10 or more mixed coins in one payment can link them together and weaken your privacy. Consider paying a smaller amount.",
+      noChange: "Mixed payments have no change: the {amount} left over after the payment goes to the network fee.",
+      largeLeftOver: "The {amount} left over after this payment goes to the network fee, because mixed payments have no change. To lose less, raise the amount so more of it goes to the recipient.",
+    },
     unmixed: "This payment uses coins that aren't mixed, so it can be traced back to where they came from. To pay privately, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).",
     checkingPolicy: "Checking the payment settings",
     passphrase: "Passphrase",
@@ -230,6 +264,8 @@ export const pay = {
       notContacts: "You can pay this user once you are contacts.",
       enableThenAccept: "Enable DashPay first. Then you can accept and pay.",
       paymentLock: "A payment to this contact may have been sent. Check it again before you pay again.",
+      paymentLockPlatform: "A payment to this contact from your Platform balance may have been sent.",
+      paymentLockShielded: "A payment to this contact from your Shielded balance may have been sent.",
       mixingOnly: "The wallet is unlocked for mixing only. Unlock it fully to pay.",
       request: "This user sent you a contact request. Accept and pay accepts it and pays in one step.",
     },
@@ -273,6 +309,35 @@ export const pay = {
     pay: "Pay {name}",
     acceptAndPay: "Accept and pay",
     unverified: "Unverified",
+    /** The "From" step (C-funding D-C5, P16): Dash wallet each time, never remembered. */
+    from: {
+      title: "From",
+      core: "Dash wallet",
+      shielded: "Shielded balance",
+      platform: "Platform balance",
+      notOffered: "Not available on this network yet.",
+      empty: "No balance to pay with.",
+      acceptsToo: "Accept and pay can only use your Dash wallet balance.",
+      /** `name` the payee, `amount` and `received` with their unit, `source` a row's label. */
+      confirm: "Pay {name} {amount} from your {source}. They receive about {received}. Network fee {fee}.",
+      /** `total` the amount and the network fee, with its unit. */
+      total: "About {total} leaves your {source}: {amount} to {contact} and about {fee} in Platform fees.",
+      sent: "Payment sent. It arrives in {name}’s wallet once the Dash network processes it. This can take a while.",
+      unknown: "We could not confirm this payment. It may still go through. Do not pay again until this is settled.",
+      notSent: "The payment was not sent. You can pay this contact again.",
+      belowMinimum: "The smallest payment from here is {min}. Pay a smaller amount from your Dash wallet.",
+      movePending: "Another Platform transfer is still being confirmed. Try again when it is done.",
+      shieldedPending: "An earlier shielded payment is still being checked. Try again when it is settled.",
+      /** `shieldedPending` while what holds the payment back is a hold: no "Try again". */
+      shieldedHeld: "An earlier shielded payment may still go through, so part of your Shielded balance is held and can't be used yet. You can pay from Shielded once that payment goes through, or once the network shows it can no longer go through. Dash Wallet keeps checking while it's open.",
+    },
+  },
+  /** As `transfer.status`, for a payment from the Platform addresses. */
+  status: {
+    settledUnknown: {
+      title: "Settled with another payment or move",
+      text: "This payment and another payment or move from the same Platform addresses couldn't both go through, and only one did. Dash Wallet can't tell which. Before paying again, check whether the recipient was paid.",
+    },
   },
   platform: {
     title: "Pay from Platform",

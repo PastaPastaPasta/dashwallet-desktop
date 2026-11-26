@@ -27,6 +27,9 @@ import {
   DEFAULT_ADVANCED,
   feeMode,
   keepsPromise,
+  MIXED_INPUT_WARNING,
+  MIXED_LEFT_OVER_WARNING,
+  mixedSendNotes,
   unsignedKeepsPromise,
   outpointKey,
   outpointOf,
@@ -34,6 +37,8 @@ import {
   mixedFeeText,
   sendErrorText,
   settleNotSent,
+  multiRecipientPay,
+  receivedAmounts,
   withSubtractFee,
 } from "./model";
 
@@ -49,7 +54,7 @@ const lock = (over: Partial<LockStatus> = {}): LockStatus => ({
 });
 const PAYEE = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
 const recipient = recipientOf({ address: PAYEE, amount: 50_000_000, subtractFee: false, label: "  Alice ", message: " " });
-const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000 };
+const estimate = { fee: 226, sizeBytes: 226, inputCount: 1, change: 10, totalSent: 50_000_000, leftOver: 0 };
 const confirmed = confirmedOf(recipient, estimate, { kind: "auto" });
 
 const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
@@ -57,7 +62,7 @@ const summary = (over: Partial<PreparedTxSummary> = {}): PreparedTxSummary => ({
   fee: 226,
   feeRatePerKb: 1000,
   sizeBytes: 226,
-  inputs: [],
+  inputs: [{ outpoint: { txid: "cd".repeat(32), vout: 0 }, address: null, amount: 50_000_236 }],
   outputs: [
     { address: PAYEE, amount: 50_000_000, isChange: false, label: null, isMine: false },
     { address: "yChange", amount: 10, isChange: true, label: null, isMine: true },
@@ -281,6 +286,15 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
 });
 
 describe("the confirm sheet's promise (U-03 D2)", () => {
+  it("is broken by a payment re-planned with other coins of the same total", () => {
+    // Ten 0.100001 denominations make the same total as one 1.00001: Send must not quietly spend
+    // ten mixed coins where the sheet showed one.
+    expect(keepsPromise(confirmed, summary())).toBe(true);
+    const input = summary().inputs[0];
+    const ten = Array.from({ length: 10 }, (_, vout) => ({ ...input, outpoint: { ...input.outpoint, vout }, amount: 5_000_023 }));
+    expect(keepsPromise(confirmed, summary({ inputs: [...ten, { ...input, amount: 6 }] }))).toBe(false);
+  });
+
   it("caps the grant at the amount plus the fee", () => {
     expect(confirmed.total).toBe(50_000_226);
   });
@@ -448,6 +462,39 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
   });
 });
 
+describe("mixedSendNotes (U-06b)", () => {
+  const est = (inputCount: number, leftOver = 0) => ({ inputCount, leftOver });
+
+  it("warns from 10 coins, as dash-qt does", () => {
+    expect(MIXED_INPUT_WARNING).toBe(10);
+    expect(mixedSendNotes("mixed", est(9), false)).toEqual({ inputCount: 9, manyCoins: false, leftOver: null, largeLeftOver: false });
+    expect(mixedSendNotes("mixed", est(10), false)?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(11), false)?.manyCoins).toBe(true);
+    expect(mixedSendNotes("mixed", est(1), false)?.manyCoins).toBe(false);
+  });
+
+  it("names the left-over only when there is one", () => {
+    expect(mixedSendNotes("mixed", est(2, 0), false)?.leftOver).toBeNull();
+    expect(mixedSendNotes("mixed", est(2, 49_999_660), false)?.leftOver).toBe(49_999_660);
+  });
+
+  it("warns about a left-over from 0.01 DASH (#668)", () => {
+    expect(MIXED_LEFT_OVER_WARNING).toBe(1_000_000);
+    expect(mixedSendNotes("mixed", est(2, 999_999), false)?.largeLeftOver).toBe(false);
+    expect(mixedSendNotes("mixed", est(2, 1_000_000), false)?.largeLeftOver).toBe(true);
+    expect(mixedSendNotes("mixed", est(2), false)?.largeLeftOver).toBe(false);
+  });
+
+  it("leaves the left-over to the note while the 10% fee warning shows", () => {
+    expect(mixedSendNotes("mixed", est(2, 1_000_000), true)).toEqual({ inputCount: 2, manyCoins: false, leftOver: 1_000_000, largeLeftOver: false });
+  });
+
+  it("says nothing for any other coin source", () => {
+    expect(mixedSendNotes("any", est(11, 500), false)).toBeNull();
+    expect(mixedSendNotes("selected", est(11, 500), false)).toBeNull();
+  });
+});
+
 describe("paysWithUnmixed", () => {
   const status = (state: CoinJoinStatus["state"], fullyMixed: number) =>
     ({ state, balances: { fullyMixed }, amountAndRounds: { rounds: 4 } }) as unknown as CoinJoinStatus;
@@ -478,5 +525,100 @@ describe("paysWithUnmixed", () => {
     expect(paysWithUnmixed(selected(3), coins, status("mixing", 5))).toBe(false);
     expect(paysWithUnmixed(selected(4), coins, status("mixing", 5))).toBe(false);
     expect(paysWithUnmixed(selected(3, 4, 0), coins, status("mixing", 5))).toBe(true);
+  });
+});
+
+describe("a payment to several recipients (QT-052)", () => {
+  const BOB = "yBobBobBobBobBobBobBobBobBobBobBob";
+  const CAROL = "yCarolCarolCarolCarolCarolCarolCa";
+  const bob = recipientOf({ address: BOB, amount: 20_000_000, subtractFee: false, label: "Bob", message: "" });
+  const carol = recipientOf({ address: CAROL, amount: 5_000_000, subtractFee: true, label: "", message: "" });
+  // Alice 50 000 000, Bob 20 000 000, Carol 5 000 000 less the 300 fee.
+  const est = { fee: 300, sizeBytes: 300, inputCount: 1, change: 10, totalSent: 74_999_700, leftOver: 0 };
+  const many = confirmedOf(recipient, est, { kind: "auto" }, [bob, carol]);
+  const outputs = [
+    { address: PAYEE, amount: 50_000_000, isChange: false, label: null, isMine: false },
+    { address: BOB, amount: 20_000_000, isChange: false, label: "Bob", isMine: false },
+    { address: CAROL, amount: 4_999_700, isChange: false, label: null, isMine: false },
+    { address: "yChange", amount: 10, isChange: true, label: null, isMine: true },
+  ];
+  const prepared = (over: Partial<PreparedTxSummary> = {}) =>
+    summary({ fee: 300, outputs, totalSent: 74_999_700, totalDebit: 75_000_000, externalSent: 74_999_700, ...over });
+
+  it("is off on mainnet only", () => {
+    expect(multiRecipientPay({ kind: "mainnet" })).toBe(false);
+    expect(multiRecipientPay({ kind: "testnet" })).toBe(true);
+    expect(multiRecipientPay({ kind: "regtest" })).toBe(true);
+  });
+
+  it("shows what each receives: the one subtracting gets the rest of the total; two subtracting can't be shown", () => {
+    expect(receivedAmounts([recipient, bob, carol], est.totalSent)).toEqual([50_000_000, 20_000_000, 4_999_700]);
+    expect(receivedAmounts([recipient, bob], 70_000_000)).toEqual([50_000_000, 20_000_000]);
+    expect(receivedAmounts([recipient, carol, { ...bob, subtractFeeFromAmount: true }], est.totalSent)).toBeNull();
+    expect(many.total).toBe(75_000_000);
+  });
+
+  it("holds when each recipient is paid exactly its amount, in any output order", () => {
+    expect(keepsPromise(many, prepared())).toBe(true);
+    expect(keepsPromise(many, prepared({ outputs: [outputs[2], outputs[3], outputs[0], outputs[1]] }))).toBe(true);
+  });
+
+  it("fails on a recipient missing, paid twice, an amount moved between recipients, or an output the sheet didn't show", () => {
+    expect(keepsPromise(many, prepared({ outputs: [outputs[0], outputs[1], outputs[3]] }))).toBe(false);
+    // The same total, but Bob gets Alice's share and Alice Bob's.
+    const swapped = [{ ...outputs[0], amount: 20_000_000 }, { ...outputs[1], amount: 50_000_000 }, outputs[2], outputs[3]];
+    expect(keepsPromise(many, prepared({ outputs: swapped }))).toBe(false);
+    // Carol's share paid to a stranger instead.
+    expect(keepsPromise(many, prepared({ outputs: [outputs[0], outputs[1], { ...outputs[2], address: "yStranger" }, outputs[3]] }))).toBe(false);
+    expect(keepsPromise(many, prepared({ outputs: [...outputs, { address: "yExtra", amount: 1, isChange: false, label: null, isMine: false }] }))).toBe(false);
+    expect(keepsPromise(many, prepared({ fee: 301 }))).toBe(false);
+    expect(keepsPromise(many, prepared({ totalDebit: 75_000_001 }))).toBe(false);
+  });
+
+  it("fails closed when two recipients subtract the fee, or one address is paid twice", () => {
+    const two = confirmedOf(recipient, est, { kind: "auto" }, [{ ...bob, subtractFeeFromAmount: true }, carol]);
+    expect(keepsPromise(two, prepared())).toBe(false);
+    const dup = confirmedOf(recipient, est, { kind: "auto" }, [{ ...bob, address: PAYEE }, carol]);
+    expect(keepsPromise(dup, prepared({ outputs: [outputs[0], { ...outputs[1], address: PAYEE }, outputs[2], outputs[3]] }))).toBe(false);
+  });
+
+  it("checks Create Unsigned's PSBT the same way", () => {
+    const psbt = (out: PsbtAnalysis["outputs"]): PsbtAnalysis => ({
+      outputs: out,
+      fee: 300,
+      total: 75_000_000,
+      unsignedInputs: 1,
+      status: "needsSignatures",
+      signability: "canSign",
+      externalSent: 74_999_700,
+      unsignedTxid: "cd".repeat(32),
+    });
+    const ok = outputs.map(({ address, amount, isMine }) => ({ address, amount, isMine }));
+    expect(unsignedKeepsPromise(many, psbt(ok))).toBe(true);
+    expect(unsignedKeepsPromise(many, psbt([ok[0], { ...ok[1], amount: 50_000_000 }, { ...ok[2], amount: 19_999_700 }, ok[3]]))).toBe(false);
+    expect(unsignedKeepsPromise(many, psbt(ok.slice(0, 3)))).toBe(false);
+  });
+
+  it("refuses a PSBT whose payments add up to more than the sheet showed as sent (one and several recipients)", () => {
+    const psbt = (out: PsbtAnalysis["outputs"], fee = 226): PsbtAnalysis => ({
+      outputs: out,
+      fee,
+      total: 0,
+      unsignedInputs: 1,
+      status: "needsSignatures",
+      signability: "canSign",
+      externalSent: 0,
+      unsignedTxid: "cd".repeat(32),
+    });
+    // An estimate that says 0.9 is sent for a 1 DASH entry: a PSBT paying 1 DASH is not what the sheet showed.
+    const one = confirmedOf({ ...recipient, amount: 100_000_000 }, { ...estimate, totalSent: 90_000_000 }, { kind: "auto" });
+    expect(unsignedKeepsPromise(one, psbt([{ address: PAYEE, amount: 100_000_000, isMine: false }, { address: "yOwnChange", amount: 10, isMine: true }]))).toBe(false);
+    const noSubtract = confirmedOf(recipient, { ...est, totalSent: 69_000_000 }, { kind: "auto" }, [bob]);
+    const paid = [
+      { address: PAYEE, amount: 50_000_000, isMine: false },
+      { address: BOB, amount: 20_000_000, isMine: false },
+      { address: "yOwnChange", amount: 10, isMine: true },
+    ];
+    expect(unsignedKeepsPromise(noSubtract, psbt(paid, 300))).toBe(false);
   });
 });

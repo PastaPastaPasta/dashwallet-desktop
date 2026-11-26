@@ -12,7 +12,6 @@ import {
   keyChangeLines,
   renderSession,
   S5_SLICE,
-  S6_SLICE,
   sessionNeedsAction,
   sessionsInProgress,
   sharedSendsOn,
@@ -24,6 +23,8 @@ import {
 } from "./shared";
 
 const MAINNET = sliceFor({ kind: "mainnet" });
+/** S6 where sends are on. */
+const S6_SLICE = sliceFor({ kind: "testnet" });
 
 describe("dissolve together under S6", () => {
   it("approves, copies the approval, then sends the combined dissolution", () => {
@@ -85,14 +86,14 @@ describe("key change under S6", () => {
   });
 });
 
-describe("registrations keep S5's rule under S6", () => {
-  it("offers no signing or sending", () => {
-    for (const slice of [S6_SLICE, MAINNET])
-      for (const stage of ["combined", "funding_signed"] as const) {
-        const v = renderSession(participantSession(stage, { next: "sign" }), slice);
-        expect(v.primary).toBeNull();
-        expect(renderSession(participantSession(stage, { role: "coordinator", next: "send" }), slice).primary).toBeNull();
-      }
+describe("registrations keep S5b's rule under S6", () => {
+  it("sign and send where sends are on, and not on mainnet", () => {
+    for (const stage of ["combined", "funding_signed"] as const) {
+      expect(renderSession(participantSession(stage, { role: "coordinator", next: "send" }), S6_SLICE).primary).toBe("send");
+      expect(renderSession(participantSession(stage, { role: "coordinator", next: "send" }), MAINNET).primary).toBeNull();
+    }
+    expect(renderSession(participantSession("combined", { next: "sign" }), S6_SLICE).primary).toBe("sign");
+    expect(renderSession(participantSession("combined", { next: "sign" }), MAINNET).primary).toBeNull();
   });
 });
 
@@ -101,7 +102,7 @@ describe("final stages (F4)", () => {
   for (const stage of finals)
     it(`${stage.kind}: not in progress and no Discard once the engine reads it not discardable`, () => {
       const sessions = [
-        { ...participantSession("signing"), stage, discardable: false },
+        ...(stage.kind === "dead" ? [] : [{ ...participantSession("signing"), stage, discardable: false }]),
         { ...togetherSession("participant", "signing"), stage, discardable: false },
         { ...keyChangeSession("coordinator", "combined"), stage, discardable: false },
       ];
@@ -144,7 +145,7 @@ describe("the mainnet ruling", () => {
     expect(sharedSendsOn({ kind: "mainnet" })).toBe(false);
     for (const kind of ["testnet", "regtest", "devnet"] as const) {
       expect(sharedSendsOn({ kind })).toBe(true);
-      expect(sliceFor({ kind })).toMatchObject({ maintenance: true, maintenanceSend: true, sign: false, send: false });
+      expect(sliceFor({ kind })).toMatchObject({ maintenance: true, maintenanceSend: true, sign: true, send: true });
     }
     expect(MAINNET).toMatchObject({ maintenance: true, maintenanceSend: false, sign: false, send: false });
   });

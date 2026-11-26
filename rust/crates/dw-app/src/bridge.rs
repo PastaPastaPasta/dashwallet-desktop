@@ -259,7 +259,8 @@ pub enum PlatformChangeName {
     Startup,
     /// The wallet's Platform-address balances or their activity.
     PlatformAddresses,
-    /// The wallet's shielded account (`shielded_status`, `shielded_history`).
+    /// The wallet's shielded account (`shielded_status`, `shielded_sync_info`,
+    /// `shielded_history`).
     Shielded,
 }
 
@@ -316,12 +317,18 @@ pub enum NoticeCodeName {
     /// proof citing it is refused with `platform.trust_mismatch`. Once per
     /// quorum and session; the detail names the quorum.
     PlatformTrustMismatch,
+    /// A Dash Core export that did not end had left its unencrypted staging
+    /// file; the session's open deleted it. The detail is its path.
+    ExportStagingDeleted,
+    /// As `exportStagingDeleted`, but it could not be deleted: the detail is
+    /// its path, for the user to delete. Again at each open until deleted.
+    ExportStagingNotDeleted,
 }
 
 mirror_enum!(NoticeCode => NoticeCodeName {
     PlatformContextUnavailable, SpvError, UncleanShutdown, SyncStalled, BackupFailed,
     WalletSecretNotDeleted, DashPayStartupIncomplete, DispatchRecordMissing, UnscopedDispatch,
-    DispatchJournalUnavailable, PlatformTrustMismatch
+    DispatchJournalUnavailable, PlatformTrustMismatch, ExportStagingDeleted, ExportStagingNotDeleted
 });
 
 impl From<EngineEvent> for AppEvent {
@@ -866,7 +873,11 @@ mod tests {
                         locked: u64::MAX,
                         total: u64::MAX,
                         coinjoin: u64::MAX,
+                        withheld: u64::MAX,
                         catching_up: true,
+                        held_unfinished: u64::MAX,
+                        held_unvalued: u32::MAX,
+                        held_awaiting: true,
                     }),
                 },
                 EngineEvent::HistoryChanged {

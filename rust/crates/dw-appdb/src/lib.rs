@@ -21,10 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
-use crate::conn::AppConn;
-
 mod avatar;
-mod conn;
 mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
@@ -106,6 +103,81 @@ pub fn local_scope(wallet_id: &str) -> String {
 /// (a `.dwbackup` restore), so its source record's absence proves nothing.
 pub fn dp_payout_marker(reference: &str) -> String {
     format!("dp_payout/{reference}")
+}
+
+/// The `local:` key written with a Shielded-funded registration's created
+/// identity (`AppDb::set_registration_funding_durable`): a row naming an
+/// identity without it was not named on this install (a `.dwbackup`
+/// restore), so the journal's silence about it proves nothing. Its value is
+/// the height of the Platform address activity's baseline when it was
+/// written, before the create could execute.
+pub fn dp_registration_named(identity: &str) -> String {
+    format!("dp_registration_named/{identity}")
+}
+
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// Shielded-funded registration's create artifact is in the journal and
+/// before the library may send it: with it, a missing artifact proves
+/// nothing (a lost or older journal), so the row waits (C-funding F12).
+pub fn dp_registration_dispatched(identity: &str) -> String {
+    format!("dp_registration_dispatched/{identity}")
+}
+
+/// The `local:` key holding the highest height of a proved read that saw
+/// the anchor of a Shielded-funded registration's create, by the hex of its
+/// transition hash, still recorded: only an absence read above it proves
+/// the anchor pruned (C-funding F12). By transition, not identity: a create
+/// signed again over the same notes names the same identity.
+pub fn dp_registration_anchor_seen(st_hash: &str) -> String {
+    format!("dp_registration_anchor_seen/{st_hash}")
+}
+
+/// The `local:` key the engine writes, durably and before it settles the
+/// journal, once it proves what a Shielded-funded registration's create,
+/// by the hex of its transition hash, did although the library left it
+/// unresolved: `executed` or `pruned` (never executes). This is the
+/// engine's own proof; the journal's disposition columns hold only the
+/// library's strings (C-funding F12).
+pub fn dp_registration_proved(st_hash: &str) -> String {
+    format!("dp_registration_proved/{st_hash}")
+}
+
+/// The `local:` keys, by address (bech32m), of the fallbacks the wallet's
+/// Shielded-funded registrations were given (C-funding F13), each valued
+/// its index in the Platform payment account: written durably before its
+/// registration may name it, and kept after the registration is gone, so
+/// the address is never handed out as a receive address. One no row names
+/// and never published ([`DP_REGISTRATION_PUBLISHED_PREFIX`]) is given to
+/// the next registration again.
+pub const DP_REGISTRATION_FALLBACK_PREFIX: &str = "dp_registration_fallback/";
+
+/// The `local:` keys, by address (bech32m), of the fallbacks a create named
+/// (C-funding F13): written durably by the dispatch hook before it names
+/// the create in its row, so before the create may leave. Such a fallback
+/// is never given to a registration again.
+pub const DP_REGISTRATION_PUBLISHED_PREFIX: &str = "dp_registration_published/";
+
+/// [`DP_REGISTRATION_PUBLISHED_PREFIX`]'s key of `address`.
+pub fn dp_registration_published(address: &str) -> String {
+    format!("{DP_REGISTRATION_PUBLISHED_PREFIX}{address}")
+}
+
+/// The `local:` key of the highest index of the Platform payment account
+/// the wallet handed out as a receive address (C-funding F13), written
+/// durably before the address is: no fallback is taken at or below it.
+pub const DP_PLATFORM_RECEIVE_HANDED_OUT: &str = "dp_platform_receive_handed_out";
+
+/// [`DP_REGISTRATION_FALLBACK_PREFIX`]'s key of `address`.
+pub fn dp_registration_fallback(address: &str) -> String {
+    format!("{DP_REGISTRATION_FALLBACK_PREFIX}{address}")
+}
+
+/// The `local:` key the shielded dispatch hook writes, durably, once a
+/// payout's artifact is in the journal and before the library may send
+/// it: with it, a missing artifact proves nothing (a lost or older
+/// journal), so the payout stays held (C-funding P6).
+pub fn dp_payout_dispatched(reference: &str) -> String {
+    format!("dp_payout_dispatched/{reference}")
 }
 
 /// The lock file next to the database at `path` (`<file>.lock`), never the
@@ -555,7 +627,7 @@ impl LockRow {
 }
 
 pub struct AppDb {
-    conn: Mutex<AppConn>,
+    conn: Mutex<Connection>,
     /// A shared lock on the database's lock file for as long as this
     /// instance lives, a job still holding it after its session closed
     /// included: while it is held, no open forgets the removed wallets
@@ -613,7 +685,7 @@ impl AppDb {
         }
         // No URI and no symlink. The database file itself is never opened
         // here: closing a descriptor of it would drop SQLite's POSIX locks.
-        let conn = AppConn::open(
+        let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -661,10 +733,10 @@ impl AppDb {
 
     /// A private in-memory database (tests, fixture tooling).
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(AppConn::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(mut conn: AppConn) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -672,7 +744,7 @@ impl AppDb {
             .set_abort_divergent(true)
             .set_abort_missing(true)
             .set_grouped(true)
-            .run(&mut *conn)?;
+            .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             _alive: None,
@@ -680,7 +752,7 @@ impl AppDb {
         })
     }
 
-    fn conn(&self) -> MutexGuard<'_, AppConn> {
+    fn conn(&self) -> MutexGuard<'_, Connection> {
         // A panic while holding the guard cannot leave SQLite half-written
         // (each statement or transaction is atomic), so a poisoned lock is
         // still a usable connection.
@@ -1551,9 +1623,19 @@ impl AppDb {
     /// transaction, durable as [`Self::set_setting_durable`] when it returns
     /// `Ok`: all of them or none.
     pub fn set_settings_durable(&self, scope: &str, writes: &[(&str, Option<&str>)]) -> Result<()> {
+        let writes: Vec<_> = writes
+            .iter()
+            .map(|(key, value)| (scope, *key, *value))
+            .collect();
+        self.set_scoped_settings_durable(&writes)
+    }
+
+    /// [`Self::set_settings_durable`] across scopes: each `(scope, key,
+    /// value)` in one transaction, all of them or none.
+    pub fn set_scoped_settings_durable(&self, writes: &[(&str, &str, Option<&str>)]) -> Result<()> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
-            for (key, value) in writes {
+            for (scope, key, value) in writes {
                 Self::put_setting(&tx, scope, key, *value)?;
             }
             tx.commit()?;
@@ -2043,6 +2125,28 @@ impl AppDb {
         })
     }
 
+    /// Names `st_hash` (hex) as the transition of the `pending` shielded
+    /// payout `reference`, durable as
+    /// [`Self::insert_dp_contact_payout_durable`] (C-funding P6): whether
+    /// the row now names it. A row that is not pending, not shielded, or
+    /// names another transition is left as it is (`false`).
+    pub fn set_dp_contact_payout_st_hash_durable(
+        &self,
+        wallet_id: &str,
+        reference: &str,
+        st_hash: &str,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            let n = conn.execute(
+                "UPDATE dp_contact_payout SET st_hash = ?3
+                 WHERE wallet_id = ?1 AND reference = ?2 AND state = 'pending'
+                     AND source = 'shielded' AND (st_hash IS NULL OR st_hash = ?3)",
+                params![wallet_id, reference, st_hash],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     /// Settles a `pending` payout as `state` (`sent` or `not_sent`);
     /// whether it was pending.
     pub fn settle_dp_contact_payout(
@@ -2403,6 +2507,52 @@ mod tests {
         assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![settled]);
     }
 
+    /// C-funding P6: the hook names a pending shielded payout's transition
+    /// once; never another transition, a settled row or a Platform one.
+    #[test]
+    fn a_shielded_payout_names_one_transition_while_pending() {
+        let db = AppDb::open_in_memory().unwrap();
+        let row = |c: &str, reference: &str, source: &str| DpContactPayoutRow {
+            reference: reference.into(),
+            identity: "me".into(),
+            contact: c.into(),
+            source: source.into(),
+            st_hash: None,
+            address: "yaddr".into(),
+            credits: 5_000,
+            expected_duffs: 4,
+            note: None,
+            state: "pending".into(),
+            since: 10,
+        };
+        let st_hash = |reference: &str| {
+            (db.dp_contact_payouts(W).unwrap().into_iter())
+                .find(|r| r.reference == reference)
+                .and_then(|r| r.st_hash)
+        };
+        let hash = |digit: &str| digit.repeat(64);
+        let name = |reference: &str, digit: &str| {
+            db.set_dp_contact_payout_st_hash_durable(W, reference, &hash(digit))
+                .unwrap()
+        };
+        db.insert_dp_contact_payout_durable(W, &row("bob", "sh-1", "shielded"))
+            .unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("carol", "move-1", "platform"))
+            .unwrap();
+        assert!(!name("sh-0", "a"), "no such payout");
+        assert!(!name("move-1", "a"), "a Platform payout has no st_hash");
+        assert!(name("sh-1", "a"));
+        assert!(name("sh-1", "a"), "the same transition again");
+        assert!(!name("sh-1", "b"), "never a second transition");
+        assert_eq!(st_hash("sh-1"), Some(hash("a")));
+        db.settle_dp_contact_payout(W, "sh-1", "sent").unwrap();
+        db.insert_dp_contact_payout_durable(W, &row("dave", "sh-2", "shielded"))
+            .unwrap();
+        db.settle_dp_contact_payout(W, "sh-2", "not_sent").unwrap();
+        assert!(!name("sh-2", "c"), "a settled payout");
+        assert_eq!(st_hash("sh-2"), None);
+    }
+
     /// MG-03 D34: a durable setting survives power loss, with every commit
     /// before it; a plain one after it doesn't; with the barrier skipped
     /// the durable one doesn't either. Debug builds only, as the simulator
@@ -2484,6 +2634,38 @@ mod tests {
         assert!(refused.is_err());
         assert_eq!(db.setting("g", "a").unwrap().as_deref(), Some("1"));
         assert_eq!(db.setting("g", "bad").unwrap(), None);
+    }
+
+    /// Settings of two scopes commit together or not at all, durably.
+    #[test]
+    fn settings_of_several_scopes_commit_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let value =
+            |scope: &str, key: &str| AppDb::open(&path).unwrap().setting(scope, key).unwrap();
+
+        durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.set_scoped_settings_durable(&[("w", "a", Some("1")), ("local:w", "b", Some("2"))])
+            .unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("w", "a").as_deref(), Some("1"));
+        assert_eq!(value("local:w", "b").as_deref(), Some("2"));
+
+        let db = AppDb::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER no_bad BEFORE UPDATE ON settings_kv WHEN NEW.scope = 'local:w'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let refused =
+            db.set_scoped_settings_durable(&[("w", "a", Some("9")), ("local:w", "b", Some("8"))]);
+        assert!(refused.is_err());
+        assert_eq!(db.setting("w", "a").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.setting("local:w", "b").unwrap().as_deref(), Some("2"));
     }
 
     /// D27: the durable write commits under `synchronous=FULL` (a trigger
@@ -2959,7 +3141,7 @@ mod tests {
         let in_file_alone = |key: &str| {
             let copy = dir.path().join("copy.sqlite");
             std::fs::copy(&path, &copy).unwrap();
-            let conn = AppConn::open(&copy, OpenFlags::default()).unwrap();
+            let conn = Connection::open_with_flags(&copy, OpenFlags::default()).unwrap();
             let found: Option<String> = conn
                 .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
                     r.get(0)
@@ -2975,7 +3157,7 @@ mod tests {
         db.checkpoint_full().unwrap();
         assert!(in_file_alone("wal_only"));
 
-        let reader = AppConn::open(&path, OpenFlags::default()).unwrap();
+        let reader = Connection::open_with_flags(&path, OpenFlags::default()).unwrap();
         reader
             .execute_batch("BEGIN; SELECT * FROM settings_kv;")
             .unwrap();
@@ -3112,5 +3294,14 @@ mod tests {
         assert_eq!(db.wallet_names().unwrap(), vec![(W2.into(), "n".into())]);
         assert_eq!(db.address_book(W2, None).unwrap().len(), 1);
         assert_eq!(db.locks(W2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+        assert!(
+            rusqlite::version_number() >= 3_051_002,
+            "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+            rusqlite::version()
+        );
     }
 }

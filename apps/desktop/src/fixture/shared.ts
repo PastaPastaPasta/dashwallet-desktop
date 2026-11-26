@@ -19,7 +19,9 @@ import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareRow } from "../api/generated/ShareRow";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { StandbyDescription } from "../api/generated/StandbyDescription";
+import type { UnreadableSession } from "../api/generated/UnreadableSession";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { TxRow } from "../api/generated/TxRow";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureWallet, World } from "./scenarios";
 import { roles, row } from "./masternodes";
@@ -56,6 +58,14 @@ export interface SharedWorld {
   saved: string[];
   /** Standbys this wallet holds, by txid. */
   standbys: string[];
+  /** Sessions whose stored record no longer reads. */
+  unreadable: UnreadableSession[];
+  /** Sent sessions this wallet abandoned: no Send again (D72). */
+  abandoned: string[];
+  /** The `last_error` the next registration hand-off leaves: `null` when it went out. */
+  handoff: string | null;
+  /** How the next abandon spend's hand-off ends: `null` when it went out and the wallet recorded it. */
+  abandonHandoff: "uncertain" | "refused" | null;
   /** EP 5's answer by ProTx hash; absent: `shared_registration_unknown`. */
   shares: Record<string, SharedShares>;
   /** Stored standbys by ProTx hash. */
@@ -71,6 +81,8 @@ export interface SharedWorld {
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 const copy = <T>(v: T): T => structuredClone(v);
 const refuse = (reason: string, share: number | null = null) => fail("masternodes.shared_message", `shared masternode message refused: ${reason}`, { kind: "sharedMessage", reason, share });
+/** The stage `abandon_shared_session` names when the session is out and no reserved coin is left to spend. */
+const outStage = (role: SharedSession["role"]) => (role === "coordinator" ? "sent" : "funding_signed");
 const stageRefusal = (stage: string) => fail("masternodes.shared_stage", `the shared session is ${stage}`, { kind: "sharedStage", stage });
 const changed = ({ world, emit }: Ctx) => emit({ kind: "masternodes", network: world.launch.network.dirName });
 
@@ -107,8 +119,15 @@ const messageCode = (tag: string) => {
   return `${s.slice(0, 4)}-${s.slice(4)}`;
 };
 
+/** The relay minimum of an abandon spend of `inputs` P2PKH coins to one P2PKH output, as the
+ * engine's coin test charges it. */
+export const abandonFee = (inputs: number): number => 45 + 148 * inputs;
+
+/** The recovery read's Abandon charge: every reserved coin spent, while Abandon is offered. */
+const withCharge = <T extends { abandonable: boolean; reserved: string[]; abandonCharge: number | null }>(s: T): T => ({ ...s, abandonCharge: s.abandonable ? abandonFee(s.reserved.length) : null });
+
 function session(id: string, role: SharedSession["role"], patch: Partial<SharedSession>): SharedSession {
-  return {
+  return withCharge({
     id,
     code: code(id),
     messageCode: messageCode(`${id.slice(6, 10)}${patch.revision ?? 1}`),
@@ -127,6 +146,7 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     reserved: [],
     next: "copy",
     discardable: true,
+    abandonable: false,
     warnings: [],
     approvedTerms: null,
     baseKeys: null,
@@ -135,8 +155,14 @@ function session(id: string, role: SharedSession["role"], patch: Partial<SharedS
     createdAt: NOW - 2 * DAY,
     updatedAt: NOW - DAY,
     lastError: null,
+    overdue: false,
+    abandonCharge: null,
+    abandonSpend: null,
+    resendAbandonCharge: null,
+    activityAbandonTxids: [],
+    activityResendTxids: [],
     ...patch,
-  };
+  });
 }
 
 /** Alice (this wallet) coordinates Alice 400 · Bob 300 · Carol 300. `joined` rows are in. */
@@ -164,6 +190,9 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
     shareRow(1, "Bob", 300),
     shareRow(2, "Dana", 300, joined ? { mine: true } : { ownerAddress: null, refundAddress: null, contributed: false }),
   ];
+  // From `combined` on, every party approved the locked terms (the engine's combine needs them all).
+  const out = stage === "funding_signed" || stage === "sent" || stage === "confirmed" || stage === "conflicted";
+  if (stage === "combined" || out) for (const r of rows) r.approved = true;
   const next: SharedSession["next"] = (
     {
       invited: "join",
@@ -178,7 +207,7 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
       stale: "nothing",
     } as const
   )[stage];
-  const out = stage === "funding_signed" || stage === "sent" || stage === "confirmed" || stage === "conflicted";
+  const settled = stage === "confirmed" || stage === "conflicted";
   const stageValue: SharedSession["stage"] =
     stage === "confirmed" ? { kind: "confirmed", height: 1_214_800 } : stage === "dead" ? { kind: "dead", reason: "inputs_spent" } : ({ kind: stage } as SharedSession["stage"]);
   return session(SH_PART, "participant", {
@@ -190,6 +219,7 @@ export function participantSession(stage: SharedSession["stage"]["kind"], patch:
     debit: joined ? 300 * COIN : null,
     reserved: joined ? [`${h("d0")}-1`] : [],
     discardable: !out,
+    abandonable: out && !settled && joined,
     fee: null,
     ...patch,
   });
@@ -260,7 +290,7 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], shares: {}, standby: {}, exportCancel: false, exported: [], sent: [] };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null, abandonHandoff: null, shares: {}, standby: {}, exportCancel: false, exported: [], sent: [] };
 }
 
 // ---------------------------------------------------------------- a confirmed shared masternode (S6)
@@ -368,6 +398,22 @@ const bump = (s: SharedSession) => {
   s.revision += 1;
   s.messageCode = messageCode(`${s.id.slice(6, 10)}${s.revision}`);
 };
+
+/** `abandon_shared_session`'s `unsupported` while sending is off. */
+function requireSending(world: World) {
+  if (!world.shared.capability.canSend) throw fail("masternodes.unsupported", "shared sending is off", { kind: "unsupported", feature: "shared_masternodes", field: null });
+}
+
+/** MG's ruling, as dw-app's binding refuses it: before the engine, naming the network. */
+function requireSends(world: World) {
+  const n = world.launch.network;
+  if (n.kind === "mainnet") throw fail("app.shared_send_off", "this version sends shared-masternode transactions on test networks only", { kind: "sharedSendNetwork", network: n.dirName });
+}
+
+/** The engine's mainnet refusal for every call that locks a coin or takes a grant (`require_protx_sending`). */
+function requireProtxSending(world: World) {
+  if (world.launch.network.kind === "mainnet") throw fail("masternodes.unsupported", "protx sending is off on mainnet", { kind: "unsupported", feature: "protx_sending", field: "mainnet" });
+}
 
 function requireV24(world: World) {
   if (world.shared.capability.v24 !== "active") throw fail("masternodes.unsupported", "v24 is not active", { kind: "unsupported", feature: "v24", field: null });
@@ -490,12 +536,6 @@ function importText(world: World, text: string): SharedImport {
 
 const MAX_DISSOLVE_FEE = 1_000_000;
 const DUST = 546;
-
-/** MG's ruling, as dw-app's binding refuses it: before the engine, naming the network. */
-function requireSends(world: World) {
-  const n = world.launch.network;
-  if (n.kind === "mainnet") throw fail("app.shared_send_off", "this version sends shared-masternode transactions on test networks only", { kind: "sharedSendNetwork", network: n.dirName });
-}
 
 /** EP 5's eligibility as the maintenance calls refuse by it (`v24_context`'s order). */
 function eligible(world: World, hash: string): SharedShares {
@@ -674,6 +714,10 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       return copy(world.shared.sessions).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     },
+    mn_shared_unreadable: ({ walletId }, { world }) => {
+      wallet(world, walletId);
+      return copy(world.shared.unreadable).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    },
     mn_shared_session: ({ walletId, session: id }, { world }) => {
       wallet(world, walletId);
       return copy(find(world, id));
@@ -692,6 +736,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_start: ({ walletId, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const n = request.shares.length;
       const labels = request.shares.map((s) => s.label.trim());
@@ -717,6 +762,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_set_fee: ({ walletId, session: id, fee }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
       if (s.rows.slice(1).some((r) => r.contributed)) throw stageRefusal("replied");
@@ -730,6 +776,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_join: ({ walletId, session: id, request }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.stage.kind !== "invited") throw stageRefusal(s.stage.kind);
@@ -752,6 +799,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       const s = find(world, id);
       if (s.stage.kind === "invited") throw stageRefusal("invited");
+      if (s.abandonSpend) throw stageRefusal("abandoning");
       const m = message(s, messageName(s));
       world.shared.saved.push(m.text);
       return m;
@@ -759,6 +807,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_lock: ({ walletId, session: id, revision, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "coordinator" || s.stage.kind !== "draft") throw stageRefusal(s.stage.kind);
@@ -791,6 +840,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_approve: ({ walletId, session: id, consentHash, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       requireV24(world);
       const s = find(world, id);
       if (s.role !== "participant" || s.stage.kind !== "signing") throw stageRefusal(s.stage.kind);
@@ -805,14 +855,137 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       changed(ctx);
       return out;
     },
+    mn_shared_sign: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSends(world);
+      requireV24(world);
+      const s = find(world, id);
+      if (s.role !== "participant") throw stageRefusal("coordinator");
+      if (s.stage.kind !== "combined") throw stageRefusal(s.stage.kind);
+      const mine = s.rows.find((r) => r.mine);
+      if (!mine?.approved) throw refuse("conflict");
+      capped(world, walletId, grantId, s.debit ?? 0);
+      mine.fundingSigned = true;
+      s.stage = { kind: "funding_signed" };
+      s.next = "copy";
+      s.discardable = false;
+      bump(s);
+      const out = outcome(put(world, s));
+      changed(ctx);
+      return out;
+    },
+    mn_shared_send: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      const w = wallet(world, walletId);
+      requireSends(world);
+      requireV24(world);
+      const s = find(world, id);
+      if (s.role !== "coordinator") throw stageRefusal("participant");
+      if (s.stage.kind === "combined") {
+        if (s.rows.some((r) => !r.mine && !r.fundingSigned)) throw stageRefusal("unsigned");
+        capped(world, walletId, grantId, s.debit ?? 0);
+        s.rows = s.rows.map((r) => ({ ...r, fundingSigned: true }));
+        s.stage = { kind: "sent" };
+        s.next = "wait";
+        s.txid = h("7e");
+        s.proTxHash = h("7e");
+        s.discardable = false;
+        w.rows = [registrationRow(s.txid, s.debit ?? 0), ...w.rows];
+      } else if (s.stage.kind === "sent") {
+        if (world.shared.abandoned.includes(s.id)) throw stageRefusal("abandoned");
+        capped(world, walletId, grantId, s.debit ?? 0);
+      } else throw stageRefusal(s.stage.kind);
+      s.lastError = world.shared.handoff;
+      const out = outcome(put(world, s));
+      changed(ctx);
+      return out;
+    },
     mn_shared_discard: ({ walletId, session: id }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      if (lost) {
+        if (!lost.discardable) throw stageRefusal("sent");
+        world.shared.unreadable = world.shared.unreadable.filter((x) => x.id !== id);
+        changed(ctx);
+        return null;
+      }
       const s = find(world, id);
       if (!s.discardable) throw stageRefusal(s.stage.kind);
       world.shared.sessions = world.shared.sessions.filter((x) => x.id !== id);
       changed(ctx);
       return null;
+    },
+    /** The engine's order: the session, its kind, its stage, a coin to spend, then the grant. */
+    mn_shared_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      if (!HEX64.test(id)) throw fail("invalid_argument", "a session id is 64 lower-case hex");
+      wallet(world, walletId);
+      requireSending(world);
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      if (lost?.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      if (lost) throw fail("internal", "a stored shared session does not parse");
+      const s = find(world, id);
+      if (s.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      const st = s.stage.kind;
+      if (s.kind === "key_change") {
+        if (s.role !== "coordinator") throw stageRefusal("participant");
+        if (st === "confirmed" || st === "conflicted" || st === "dead") throw stageRefusal(st);
+      } else if (s.discardable || st === "confirmed" || st === "conflicted") throw stageRefusal(st);
+      if (!s.abandonable || s.abandonCharge === null) throw stageRefusal(s.abandonSpend ? "abandoning" : outStage(s.role));
+      const fee = s.abandonCharge;
+      capped(world, walletId, grantId, fee);
+      // The engine's recovery read after the spend's hand-off: the spend recorded (its coins spent),
+      // its outcome unknown (no new spend while it may be out), or definitely refused (Try again).
+      const outcome = world.shared.abandonHandoff;
+      world.shared.abandonHandoff = null;
+      const state = outcome ?? "in_history";
+      s.abandonSpend = { txid: h(outcome === "refused" ? "a9" : "a8"), state, overdue: false, code: outcome === "refused" ? "send.broadcast_rejected" : outcome === "uncertain" ? "send.broadcast_unknown" : null };
+      s.abandonable = outcome !== null;
+      s.abandonCharge = outcome === "refused" ? fee : null;
+      s.resendAbandonCharge = state === "refused" ? null : fee;
+      s.activityAbandonTxids = state === "in_history" ? [s.abandonSpend.txid] : [];
+      if (s.next === "copy" || s.next === "send" || s.next === "sign" || s.next === "wait") s.next = "nothing";
+      if (st === "sent") world.shared.abandoned.push(s.id);
+      const out = put(world, s);
+      changed(ctx);
+      return out;
+    },
+    /** The latest abandon spend's saved bytes again, while it may be out: recorded once it reaches the network. */
+    mn_shared_resend_abandon: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSending(world);
+      const s = find(world, id);
+      if (!s.abandonSpend) throw stageRefusal(outStage(s.role));
+      if (s.abandonSpend.state === "refused") throw stageRefusal("abandon_refused");
+      if (s.resendAbandonCharge === null) throw stageRefusal("abandoning");
+      capped(world, walletId, grantId, s.resendAbandonCharge);
+      s.abandonSpend = { ...s.abandonSpend, state: "in_history", code: null };
+      s.abandonable = false;
+      s.activityAbandonTxids = [s.abandonSpend.txid];
+      const out = put(world, s);
+      changed(ctx);
+      return out;
+    },
+    mn_shared_abandon_unreadable: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      if (!HEX64.test(id)) throw fail("invalid_argument", "a session id is 64 lower-case hex");
+      wallet(world, walletId);
+      requireSending(world);
+      const lost = world.shared.unreadable.find((x) => x.id === id);
+      const row = lost ?? world.shared.sessions.find((x) => x.id === id);
+      if (!row) throw fail("masternodes.shared_session_not_found", "no such shared session");
+      if (row.kind === "dissolve_together") throw fail("invalid_argument", "not a registration session");
+      if (!lost) throw fail("invalid_argument", "the session reads: abandon_shared_session");
+      if (lost.discardable || !lost.abandonable) throw stageRefusal(outStage(lost.role));
+      capped(world, walletId, grantId, lost.abandonCharge ?? 0);
+      lost.abandonable = false;
+      lost.abandonCharge = null;
+      lost.updatedAt = Math.max(lost.updatedAt + 1, NOW);
+      changed(ctx);
+      return copy(lost);
     },
     mn_shared_import: ({ walletId, text }, ctx) => {
       const { world } = ctx;
@@ -996,7 +1169,7 @@ type Base = (theme: ThemeName | null) => World;
 
 function shBase(base: Base, theme: ThemeName | null, set: (s: SharedWorld, w: World) => void = () => {}): World {
   const w = base(theme);
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true };
+  w.settings.ui = { ...w.settings.ui, masternodesItem: "on" };
   set(w.shared, w);
   return w;
 }
@@ -1027,6 +1200,28 @@ export function sharedScenarios(base: Base) {
         t,
         withSessions(coordinatorSession(["Bob", "Carol"], { stage: { kind: "combined" }, next: "copy", consentHash: h("cd"), revision: 5, rows: [0, 1, 2].map((i) => shareRow(i, ["Alice", "Bob", "Carol"][i], i ? 300 : 400, { mine: i === 0, approved: true })) })),
       ),
+    /** Coordinator, every other contribution signed: Send (S5b). */
+    "sh-coordinator-send": (t: ThemeName | null) => shBase(base, t, withSessions(readyToSend())),
+    /** The same on mainnet: no Send, the mainnet note in its place. */
+    "sh-coordinator-send-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [readyToSend()]))),
+    /** Sent, waiting for its confirmation: Send again. */
+    "sh-coordinator-sent": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration())),
+    /** Out; the next Abandon's hand-off times out, so the spend back may be on the network. */
+    "sh-close-out-abandon-uncertain": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "uncertain"))),
+    /** Out; the network definitely refuses the next Abandon's spend back. */
+    "sh-close-out-abandon-refused": (t: ThemeName | null) => shBase(base, t, (s) => ((s.sessions = [participantSession("funding_signed")]), (s.abandonHandoff = "refused"))),
+    /** Sent three hours of tip time ago and still unconfirmed: the way out opens expanded (D49). */
+    "sh-coordinator-sent-overdue": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ overdue: true }))),
+    /** Sent, the hand-off's outcome unknown. */
+    "sh-coordinator-sent-unknown": (t: ThemeName | null) => shBase(base, t, withSessions(sentRegistration({ lastError: "send.broadcast_unknown" }))),
+    /** Sent, then abandoned: Send again is refused. */
+    "sh-coordinator-sent-abandoned": (t: ThemeName | null) =>
+      shBase(base, t, (s) => {
+        s.sessions = [sentRegistration()];
+        s.abandoned = [SH_COORD];
+      }),
+    /** Participant at `combined` on mainnet: no Sign. */
+    "sh-participant-combined-mainnet": (t: ThemeName | null) => shBase(base, t, (s, w) => (onMainnet(w), (s.sessions = [participantSession("combined")]))),
     "sh-participant-invited": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("invited"))),
     /** Invited with two shares open (Bob's and Dana's): Join waits for a pick. */
     "sh-participant-invited-two": (t: ThemeName | null) =>
@@ -1164,7 +1359,57 @@ export function sharedScenarios(base: Base) {
         s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "stale")];
         withSharedMasternode(w, sharedShares({}), [standbyPair()]);
       }),
+    /** Out, with no coin left for this wallet to spend: no Abandon and no line naming it. */
+    "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
+    /** Sessions this wallet can't read: one it may discard, one that may be out (Abandon), and one
+     * out whose locks the follower already released (not listed). */
+    "sh-unreadable": (t: ThemeName | null) =>
+      shBase(base, t, (s) => {
+        s.sessions = [coordinatorSession(["Bob"])];
+        s.unreadable = [unreadable("7c", true, 2), unreadable("9e", false, 3), { ...unreadable("5a", false, 4), abandonable: false, abandonCharge: null, reserved: [] }];
+      }),
     /** Both sessions, for the In progress list and the badge. */
     "sh-sessions": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob", "Carol"]), participantSession("signing"))),
   };
+}
+
+/** The registration in Activity: unconfirmed, so Activity offers to abandon it. */
+function registrationRow(txid: string, debit: number): TxRow {
+  return {
+    txid,
+    recordIndex: 0,
+    txType: "masternodeRegistration",
+    category: "masternode",
+    status: { kind: "unconfirmed", confirmations: 0, instantLocked: false, chainLocked: false, maturesIn: null },
+    timestamp: secs(FIXTURE_NOW),
+    blockHeight: null,
+    amount: -debit,
+    fee: null,
+    address: null,
+    label: null,
+    countsTowardBalance: true,
+    involvesWatchOnly: false,
+  };
+}
+
+/** Alice coordinates; everyone approved, Bob and Carol signed their contributions. */
+function readyToSend(patch: Partial<SharedSession> = {}): SharedSession {
+  return coordinatorSession(["Bob", "Carol"], {
+    stage: { kind: "combined" },
+    next: "send",
+    consentHash: h("cd"),
+    revision: 6,
+    reserved: [`${h("a0")}-0`],
+    rows: [shareRow(0, "Alice", 400, { mine: true, approved: true }), shareRow(1, "Bob", 300, { approved: true, fundingSigned: true }), shareRow(2, "Carol", 300, { approved: true, fundingSigned: true })],
+    ...patch,
+  });
+}
+
+function sentRegistration(patch: Partial<SharedSession> = {}): SharedSession {
+  return readyToSend({ stage: { kind: "sent" }, next: "wait", discardable: false, txid: h("7e"), proTxHash: h("7e"), rows: readyToSend().rows.map((r) => ({ ...r, fundingSigned: true })), ...patch });
+}
+
+function unreadable(byte: string, discardable: boolean, ago: number): UnreadableSession {
+  const id = h(byte);
+  return withCharge({ id, code: id.slice(0, 6).toUpperCase(), kind: "registration", role: "participant", discardable, abandonable: !discardable, abandonCharge: null, reserved: [`${h("d" + byte[1])}-0`], updatedAt: NOW - ago * 3_600 });
 }

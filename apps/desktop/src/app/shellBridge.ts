@@ -6,6 +6,7 @@
 import { useEffect, useEffectEvent } from "react";
 import type { Backend } from "../api/backend";
 import { errorMessage } from "../api/backend";
+import type { ConnectRejected } from "../api/generated/ConnectRejected";
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
@@ -13,10 +14,23 @@ import { inTauri, tauriTools } from "../api/tauri";
 import { messageTable, t } from "../i18n";
 import { showShellToast } from "../components/toast";
 import { NetworkText } from "../network/choice";
+import { setLinkDrop } from "./dropGuard";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
 const PAYMENT_REJECTED: Readonly<Record<UriRejected["kind"], string>> = messageTable("app.link.payment", ["doubleSlash", "notDashUri", "unparsable", "bip70Unsupported", "invalidAddress", "invalidAmount"] as const);
+
+const CONNECT_REJECTED: Readonly<Record<ConnectRejected, string>> = {
+  get invalid() {
+    return t("dashpay.connect.err.invalid");
+  },
+  get unsupported() {
+    return t("dashpay.connect.err.unsupported");
+  },
+  get needsNewerWallet() {
+    return t("dashpay.connect.err.newer");
+  },
+};
 
 /** Why a link was not opened, as the window says it; `null` when it opens. */
 export function linkProblem(route: LinkRoute): string | null {
@@ -43,6 +57,8 @@ export function linkProblem(route: LinkRoute): string | null {
           return PAYMENT_REJECTED[route.reason.reason.kind];
         case "notSaved":
           return t("app.link.notSaved");
+        case "connect":
+          return CONNECT_REJECTED[route.reason.reason];
       }
   }
   return null;
@@ -55,7 +71,8 @@ export function traceName(route: LinkRoute): string {
     case "unsupported":
       return `unsupported ${route.what}`;
     case "rejected":
-      return route.reason.kind === "payment" ? `rejected payment ${route.reason.reason.kind}` : `rejected ${route.reason.kind}`;
+      if (route.reason.kind === "payment") return `rejected payment ${route.reason.reason.kind}`;
+      return route.reason.kind === "connect" ? `rejected connect ${route.reason.reason}` : `rejected ${route.reason.kind}`;
     default:
       return route.kind;
   }
@@ -135,11 +152,32 @@ export function applyLink(route: LinkRoute) {
       }
       navigate("joinDashPay", { invitation: { linkId: route.linkId, entry: "join" } });
       break;
+    // A sheet over the page, not a page: it opens once a wallet is open and unlocked (App).
+    case "appConnect": {
+      const request = { linkId: route.linkId, returnsTo: route.returnsTo };
+      const { appConnect, appConnectQueue } = ui.get();
+      if (appConnect === null) ui.set({ appConnect: request, detail: null });
+      else ui.set({ appConnectQueue: [...appConnectQueue, request] });
+      return;
+    }
     default:
       showShellToast(linkProblem(route)!);
       return;
   }
   focusPage();
+}
+
+/** Routes a typed or dropped link (File ▸ Open URI…, a drop on the window, QT-019) as a clicked one
+ * is, and opens it: why it did not open, or `null` when it did. A refusal of the call is said too. */
+export async function openLinkText(backend: Pick<Backend, "routeLink">, network: string, text: string): Promise<string | null> {
+  try {
+    const route = await backend.routeLink(network, text);
+    const why = linkProblem(route);
+    if (!why) applyLink(route);
+    return why;
+  } catch (e) {
+    return errorMessage(e);
+  }
 }
 
 /** Carries out a menu or tray command. A route command closes an open dialog first, as a link
@@ -298,6 +336,25 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       runCommand(command, lockNow);
     };
     if (!inTauri()) window.addEventListener("keydown", onKey);
+    // A payment link dropped on the window opens as Open URI… would; what stops it is said in a
+    // toast. Not during setup or a wipe (routing would save it in the stash) or a switch. The
+    // newest drop wins: an older one's late reply, or one after the page went, is dropped.
+    let dropped = 0;
+    let live = true;
+    setLinkDrop((text) => {
+      const { switching, wiping, onboarding } = ui.get();
+      if (switching || wiping || onboarding) return;
+      const mine = ++dropped;
+      void backend.routeLink(network, text).then(
+        (route) => {
+          if (!live || mine !== dropped || ui.get().switching || ui.get().wiping) return;
+          const why = linkProblem(route);
+          if (why) showShellToast(why);
+          else applyLink(route);
+        },
+        (e) => live && mine === dropped && showShellToast(errorMessage(e)),
+      );
+    });
     let switching = ui.get().switching;
     const stopWatching = ui.subscribe(() => {
       const now = ui.get().switching;
@@ -307,6 +364,8 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
     return () => {
       void unlisten.then((f) => f());
       window.removeEventListener("keydown", onKey);
+      setLinkDrop(null);
+      live = false;
       stopWatching();
     };
   }, [backend, network, trace]);

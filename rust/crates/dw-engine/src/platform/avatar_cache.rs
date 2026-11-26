@@ -26,6 +26,9 @@ const MAX_FILE: u64 = 1 << 20;
 const TMP_PREFIX: &str = ".tmp-";
 /// Thumbnail pairs kept in memory when there is no directory (D10).
 const IN_MEMORY: usize = 64;
+/// Tests: runs once a fetch's thumbnails are in place, before their row.
+#[cfg(test)]
+pub(super) static AFTER_FILES: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
 
 /// The stem of a picture's thumbnail files: the content and the crop
 /// (D15), so two crops of one picture never share a file.
@@ -303,6 +306,10 @@ impl AvatarStore {
                 }
             }
         };
+        #[cfg(test)]
+        if let Some(after) = &*lock(&AFTER_FILES) {
+            after();
+        }
         self.put(&AvatarRow {
             url_sha: url_sha.to_owned(),
             content_sha: Some(hex::encode(ingested.sha)),

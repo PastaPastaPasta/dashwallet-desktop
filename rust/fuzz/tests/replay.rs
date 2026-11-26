@@ -90,3 +90,12 @@ fn invitation_seeds_include_claimable_links() {
         .count();
     assert!(accepted >= 2, "{accepted}");
 }
+
+#[test]
+fn the_linked_sqlite_has_the_wal_close_deadlock_fix() {
+    assert!(
+        rusqlite::version_number() >= 3_051_002,
+        "SQLite {} can deadlock closing a WAL database (#105); 3.51.2 fixes it",
+        rusqlite::version()
+    );
+}

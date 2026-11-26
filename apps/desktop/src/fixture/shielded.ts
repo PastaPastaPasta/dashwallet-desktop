@@ -7,13 +7,17 @@
 import type { AppError } from "../api/generated/AppError";
 import type { PendingShield } from "../api/generated/PendingShield";
 import type { ShieldedActivity } from "../api/generated/ShieldedActivity";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
+import type { ShieldedAccount } from "../api/generated/ShieldedAccount";
 import type { ShieldedAddress } from "../api/generated/ShieldedAddress";
+import type { ShieldedScanProgress } from "../api/generated/ShieldedScanProgress";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldedSpendState } from "../api/generated/ShieldedSpendState";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import type { UnresolvedSpend } from "../api/generated/UnresolvedSpend";
+import type { HeldSpend } from "../api/generated/HeldSpend";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import type { FundAmount } from "../api/generated/FundAmount";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
@@ -21,7 +25,8 @@ import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
 import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
-import { checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import type { PlatformWorld } from "./pending";
 import type { FixtureWallet } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -29,6 +34,9 @@ const CREDITS_PER_DUFF = 1000n;
 /** Platform's flat fee for a shield, a shielded transfer and a withdrawal, in credits. */
 const POOL_FEE_CREDITS = 10_000_000n;
 const TRANSFER_FEE_CREDITS = 20_000_000n;
+/** An unshield to Platform's flat cost on top of the spend's fee (`compute_shielded_unshield_fee`): the
+ * address it credits, 222 bytes at 27,000 + 400 credits a byte. */
+export const UNSHIELD_ADDRESS_FEE_CREDITS = 222n * 27_400n;
 /** The lock's fee bound, in duffs. */
 const LOCK_FEE_DUFFS = 1_000;
 /** The smallest lock whose credits clear the pool fee. */
@@ -45,6 +53,14 @@ export interface ShieldedWorld {
   ready: boolean;
   /** A sync pass is running on a ready account. */
   scanning?: boolean;
+  /** Where the viewing key stands; unset: bound. Not bound, nothing scans and no address reads. */
+  account?: ShieldedAccount;
+  /** The running first scan's progress through the pool's tree. */
+  scan?: ShieldedScanProgress;
+  /** The last pass failed. */
+  lastPassFailed?: boolean;
+  /** `shielded_sync_info` fails (the status bar's read of it). */
+  syncInfoFails?: boolean;
   /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
   lastSyncAt?: number;
   /** The notes the balance is made of (credits): a spend is then priced per action, as the engine's
@@ -53,6 +69,8 @@ export interface ShieldedWorld {
   proverReady: boolean;
   /** Spendable credits. */
   balance: string;
+  /** `false`: this build cannot spend from Shielded, so a send or unshield refuses `platform.unavailable`. Unset: it can. */
+  spendsAvailable?: boolean;
   address: string;
   pendingShields: PendingShield[];
   activity: ShieldedActivity[];
@@ -61,17 +79,25 @@ export interface ShieldedWorld {
   unresolved: UnresolvedSpend[];
   /** Spends of unknown result whose record was lost (DEC-1057). */
   unrecorded: UnrecordedSpend[];
+  /** Spends that may still go through, whose notes are held (out of `balance`). */
+  held?: HeldSpend[];
+  /** Credits the `held` spends hold. */
+  heldCredits?: string;
   /** How a shield ends: applied, the lock waiting for its proof, proved with its apply unknown
    * (`checking`), or locked and refused by Platform (`notApplied`). */
   shield: "applied" | "proofWaiting" | "checking" | "notApplied";
   /** The pool has too few notes to withdraw from (`shielded.pool_too_small`). */
   poolTooSmall: boolean;
+  /** The pool's proved note count a registration's readiness reads (C-funding F16); unset: 120
+   * while `poolTooSmall`, else unknown, which passes. */
+  poolNotes?: number;
   /** The notes are resting until then (Unix seconds; C-funding F17): a registration cannot use
    * them yet. Unset: rested. */
   restingUntil?: number;
   /** A shield from the main balance whose lock signed and got no verdict (`SHIELD_STEP`): Tools ▸
-   * Repair lists it, priced on every spendable coin of the main balance. */
-  shieldUnknown?: boolean;
+   * Repair lists it, priced on every spendable coin of the main balance. `"blocked"`: Repair lists it
+   * and can never settle it (no known lock). */
+  shieldUnknown?: boolean | "blocked";
 }
 
 /** The step of the shield `shieldUnknown` leaves possibly sent. */
@@ -96,6 +122,15 @@ export const newShieldedWorld = (): ShieldedWorld => ({
   poolTooSmall: false,
 });
 
+/** `n` payments that may still go through hold notes of `s`: 0.3 DASH each, sent an hour apart. */
+export function holdShielded(s: ShieldedWorld, n: number): void {
+  const held = Array.from({ length: n }, (_, i) => ({ activityId: `sh-held-${i + 1}`, transition: String(i + 1).repeat(64), credits: "30000000000" }));
+  s.held = held;
+  s.heldCredits = String(30_000_000_000n * BigInt(n));
+  const rows: ShieldedActivity[] = held.map((h, i) => ({ id: h.activityId, kind: "sent", direction: "out", credits: "29980000000", feeCredits: "20000000", counterparty: "tdash1zxyz", memo: null, blockHeight: null, status: i === 0 ? "failed" : "unknown", createdAt: NOW - 3600 * (i + 1) }));
+  s.activity = [...rows, ...s.activity];
+}
+
 const raise = (code: string, message: string, data: unknown = null): never => {
   throw { code, message, data } as unknown as AppError;
 };
@@ -110,9 +145,12 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 }
 
 function status(s: ShieldedWorld): ShieldedStatus {
-  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
+  if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false, spendsAvailable: s.spendsAvailable ?? true, account: null, scan: null, lastPassFailed: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
+  const account = s.account ?? "bound";
+  const established = s.ready && account === "bound";
+  const syncing = account === "bound" && (s.scanning ?? (!established && !s.lastPassFailed));
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: established, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, heldSpends: s.held ?? [], held: s.heldCredits ?? "0", unrecordedSpends: s.unrecorded, syncedIndex: established ? 4096 : null, lastSyncAt: established ? (s.lastSyncAt ?? NOW - 20) : null, syncing, proverReady: s.proverReady, spendsAvailable: s.spendsAvailable ?? true, account, scan: syncing ? (s.scan ?? null) : null, lastPassFailed: !!s.lastPassFailed };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -166,6 +204,46 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
 /** A drain lock's fee bound (`asset_lock_fee_bound`), in duffs. */
 const drainFee = (inputs: number) => 1_000 + 148 * Math.min(inputs, SHIELD_LOCK_INPUTS);
 
+/** A Core Max's plan (`core_max.rs`): one lock of every final coin of the wallet's main account (not
+ * a CoinJoin coin), the fee out of it, no change. The other accounts' coins stay (`leftDuffs`), as do
+ * the main coins not final yet (`arrivingDuffs`). Refused as the engine refuses, each code under
+ * `domain` (the shield's `shielded.*`, the fund's `credits.*`); below `floor` it names what Max would
+ * move, what stays in the other accounts, what is still arriving and whether that plan of the final and arriving
+ * coins together, every arriving coin taken as final, would clear `floor` (`arrivingClears`). */
+export function coreMaxPlan(world: Ctx["world"], walletId: string, domain: "shielded" | "credits", floor: number) {
+  if (mixerBusy(world, walletId)) raise(`${domain}.mixing_active`, "stop mixing first");
+  const w = wallet(world, walletId);
+  const main = w.coins.filter((u) => u.coinjoinRounds === null && !u.coinjoinDenominated && !w.otherAccounts?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`));
+  const final = main.filter((u) => u.confirmations > 0 || u.instantLocked);
+  if (final.some((u) => u.userLocked || u.reserved)) raise(`${domain}.coins_locked`, "coins locked");
+  if (final.length > SHIELD_LOCK_INPUTS) raise(`${domain}.too_many_inputs`, "too many inputs", { kind: "number", value: final.length });
+  const totalDuffs = final.reduce((n, u) => n + u.amount, 0);
+  const feeDuffs = drainFee(final.length);
+  const duffs = Math.max(0, totalDuffs - feeDuffs);
+  const leftDuffs = w.coins.filter((u) => !main.includes(u) && u.spendable && !u.reserved).reduce((n, u) => n + u.amount, 0);
+  // A coin the engine withholds counts nowhere, not even as arriving.
+  const arriving = main.filter((u) => !final.includes(u) && u.excluded === null);
+  const arrivingDuffs = arriving.reduce((n, u) => n + u.amount, 0);
+  if (duffs < floor) {
+    const all = [...final, ...arriving];
+    const arrivingClears = arriving.length > 0 && !all.some((u) => u.userLocked || u.reserved) && all.length <= SHIELD_LOCK_INPUTS && totalDuffs + arrivingDuffs - drainFee(all.length) >= floor;
+    raise(`${domain}.below_minimum`, "below the minimum", { kind: "maxMinimum", min: floor, duffs, leftDuffs, arrivingDuffs, arrivingClears });
+  }
+  return { totalDuffs, feeDuffs, duffs, max: { inputs: final.length, leftDuffs, arrivingDuffs } };
+}
+
+/** A shield's quote of `amount`: an amount with the fee on top, or a Core Max. */
+function shieldQuoteOf(ctx: Ctx, walletId: string, amount: FundAmount): ShieldQuote {
+  if (amount.kind === "duffs") return shieldQuote(ctx, walletId, amount.duffs);
+  const s = shieldedOf(ctx, walletId, "shield_quote");
+  if (!s.ready) raise("platform.unavailable", "the fixture account is not established yet");
+  const blocking = s.pendingShields.find((p) => !p.consumptionUnknown);
+  if (blocking) raise(SHIELDED_CODES.shieldPending, "an earlier shield is pending", { kind: "txid", txid: blocking.txid });
+  const min = Number(POOL_FEE_CREDITS / CREDITS_PER_DUFF) + 1;
+  const p = coreMaxPlan(ctx.world, walletId, "shielded", min);
+  return { duffs: p.duffs, feeDuffs: p.feeDuffs, totalDuffs: p.totalDuffs, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(p.duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: p.totalDuffs, maxCredits: "0" }, max: p.max };
+}
+
 /** "Move mixed coins" to Shielded (`shield_drain.rs`): the drain's checks, then `plan_of` over every
  * coin of the CoinJoin account, which the lock takes all of. */
 function drainQuote(ctx: Ctx, walletId: string, call: string): { quote: MixedShieldQuote; coins: Utxo[] } {
@@ -200,7 +278,7 @@ const actionsFee = (notes: number) => ACTION_FEE_CREDITS * BigInt(Math.max(notes
  * out (note_selection.rs): largest notes first, from the fee of `MIN_ACTIONS`, re-selected with the
  * fee of the notes taken. A shortfall names `amount` plus the fee it had reached, not the fee of every
  * note. Throws `{ needed }`. */
-export function noteSelectionFee(notes: readonly bigint[], amount: bigint): bigint {
+export function noteSelectionFee(notes: readonly bigint[], amount: bigint, flat = 0n): bigint {
   const sorted = [...notes].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   const all = sorted.reduce((n, v) => n + v, 0n);
   const select = (fee: bigint) => {
@@ -215,10 +293,10 @@ export function noteSelectionFee(notes: readonly bigint[], amount: bigint): bigi
     }
     return { sum, taken };
   };
-  let estimate = actionsFee(MIN_ACTIONS);
+  let estimate = actionsFee(MIN_ACTIONS) + flat;
   for (let i = 0; i < 6; i++) {
     const { sum, taken } = select(estimate);
-    const exact = actionsFee(taken);
+    const exact = actionsFee(taken) + flat;
     if (sum >= amount + exact) return exact;
     estimate = exact;
   }
@@ -233,17 +311,17 @@ function notesOf(s: ShieldedWorld): bigint[] | null {
   return extra > 0n ? [...notes, extra] : notes;
 }
 
-function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boolean, call: string): ShieldedSpendQuote {
+function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boolean, call: string, flat = 0n): ShieldedSpendQuote {
   const s = shieldedOf(ctx, walletId, call);
   ready(s);
   const c = BigInt(credits);
   if (c <= 0n) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: 1 });
   const short = (needed: bigint) => raise(SHIELDED_CODES.insufficientFunds, "insufficient funds", { kind: "credits", needed: String(needed), available: s.balance });
   const notes = notesOf(s);
-  let fee = TRANSFER_FEE_CREDITS;
+  let fee = TRANSFER_FEE_CREDITS + flat;
   if (notes) {
     try {
-      fee = noteSelectionFee(notes, c);
+      fee = noteSelectionFee(notes, c, flat);
     } catch (e) {
       short((e as { needed: bigint }).needed);
     }
@@ -253,11 +331,27 @@ function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boole
   return { credits, feeCredits: String(fee), totalCredits: String(total), expectedDuffs: expected ? Number(c / CREDITS_PER_DUFF) : null, grant: grantFor(total) };
 }
 
+/** Holds back the notes a spend of `total` takes, largest first, as the engine reserves them while the
+ * spend is unresolved: they leave the spendable balance, change and all. */
+function reserve(s: ShieldedWorld, total: bigint) {
+  const notes = notesOf(s);
+  if (!notes) {
+    s.balance = String(BigInt(s.balance) - total);
+    return;
+  }
+  const left = [...notes].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  let held = 0n;
+  while (held < total && left.length) held += left.shift()!;
+  s.notes = left.map(String);
+  s.balance = String(left.reduce((n, v) => n + v, 0n));
+}
+
 /** A spend's end: refused, `pending` (it went out and its result is not confirmed: the notes stay
  * reserved, the row stays `pending` and the wallet re-sends it itself), or done with the balance debited. */
 function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "id" | "createdAt" | "blockHeight" | "status">): { state: ShieldedSpendState; unresolved: UnresolvedSpend | null } {
   if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the spend");
   if (s.next === "unknown") {
+    reserve(s, total);
     addRow(s, { ...row, status: "pending" });
     const unresolved = { activityId: s.activity[0].id, transition: `ab${String(s.activity.length).padStart(62, "0")}`, attempts: 1 };
     s.unresolved = [...s.unresolved, unresolved];
@@ -267,6 +361,37 @@ function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "
   if (s.notes) s.notes = s.balance === "0" ? [] : [s.balance];
   addRow(s, { ...row, status: "confirmed" });
   return { state: "done", unresolved: null };
+}
+
+/** The engine's flag for Shielded → Platform: off on mainnet. */
+export const UNSHIELD_TO_PLATFORM = "unshield_to_platform";
+
+function refuseOnMainnet(ctx: Ctx) {
+  if (ctx.world.launch.network.kind === "mainnet") raise("platform.feature_off", UNSHIELD_TO_PLATFORM, { kind: "feature", feature: UNSHIELD_TO_PLATFORM });
+}
+
+/** The quote of an unshield to the wallet's own Platform address `to` (its receive address when `null`):
+ * off on mainnet first, then the gates, then the own-address rule, then the spend's refusals. */
+function toPlatformQuote(ctx: Ctx, walletId: string, credits: string, to: string | null, call: string): { quote: ShieldedSpendQuote; platform: PlatformWorld; address: string } {
+  refuseOnMainnet(ctx);
+  shieldedOf(ctx, walletId, call);
+  const p = ctx.world.pending.platform;
+  if (!p) return raise("platform.unavailable", "the fixture has no Platform addresses");
+  const address = to?.trim() ?? p.receive.address;
+  if (address !== p.receive.address && !p.addresses.some((a) => a.address === address)) raise(SHIELDED_CODES.invalidAddress, "not this wallet's Platform address", { kind: "reason", reason: "not this wallet's Platform address" });
+  return { quote: spendQuote(ctx, walletId, credits, false, call, UNSHIELD_ADDRESS_FEE_CREDITS), platform: p, address };
+}
+
+function creditPlatform(p: PlatformWorld, address: string, credits: bigint) {
+  const held = p.addresses.find((a) => a.address === address);
+  if (held) held.credits = String(BigInt(held.credits) + credits);
+  else p.addresses = [...p.addresses, { address, credits: String(credits) }];
+  p.activity = [{ id: `unshield-${p.activity.length + 1}`, kind: "incoming", state: "done", credits: String(credits), address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000), mayLand: false, estimated: false }, ...p.activity];
+}
+
+/** Where this build cannot spend from Shielded, a spend is refused before anything is proved or sent. */
+function refuseSpendsOff(ctx: Ctx, walletId: string, call: string) {
+  if (shieldedOf(ctx, walletId, call, false).spendsAvailable === false) raise("platform.unavailable", "this build cannot spend from Shielded");
 }
 
 /** While the wallet holds an unrecorded spend, a send or unshield needs the user's confirmation (DEC-1057). */
@@ -305,20 +430,39 @@ function shieldEnd(s: ShieldedWorld, txid: string, duffs: number): ShieldOutcome
 
 export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
   shielded_status: ({ walletId }: { walletId: string }, ctx: Ctx) => status(shieldedOf(ctx, walletId, "shielded_status", false)),
+  // The engine's reads with no read of the note store (shielded_pool.rs `sync_info`).
+  shielded_sync_info: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedSyncInfo => {
+    const s = shieldedOf(ctx, walletId, "shielded_sync_info", false);
+    if (s.syncInfoFails) raise("storage", "the fixture's sync read failed");
+    const st = status(s);
+    return { active: st.active, account: st.account, established: st.ready, syncing: st.syncing, scan: st.scan, lastPassFailed: st.lastPassFailed, spendsAvailable: st.spendsAvailable };
+  },
   shielded_receive_address: ({ walletId }: { walletId: string }, ctx: Ctx): ShieldedAddress => {
+    // No address while this build cannot spend from Shielded: the engine refuses it first.
+    refuseSpendsOff(ctx, walletId, "shielded_receive_address");
     const s = shieldedOf(ctx, walletId, "shielded_receive_address");
-    ready(s);
+    // The viewing key's address: it reads once bound, before the first scan ends.
+    if ((s.account ?? "bound") !== "bound") raise(SHIELDED_CODES.notSynced, "the fixture account's viewing key is not bound");
     return { address: s.address, account: 0 };
   },
-  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuote(ctx, walletId, fundDuffs(amount)),
+  // A new move into the pool is the engine's `keyset_closed` refusal where this build cannot spend from it; `resume_shield` is not.
+  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "shield_quote");
+    return shieldQuoteOf(ctx, walletId, amount);
+  },
   shield_from_core: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): ShieldOutcome => {
-    const duffs = fundDuffs(amount);
-    const q = shieldQuote(ctx, walletId, duffs);
+    refuseSpendsOff(ctx, walletId, "shield_from_core");
+    const q = shieldQuoteOf(ctx, walletId, amount);
+    const duffs = q.duffs;
     const s = ctx.world.pending.shielded!;
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") return raise("platform.grant_invalid", "grant invalid");
     if (g.grant.purpose.maxDuffs < q.totalDuffs) raise("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "duffs", needed: String(q.totalDuffs), remaining: String(g.grant.purpose.maxDuffs) });
+    // A Core Max's grant is its quote's coins' sum: coins read again to another sum are not the quote's.
+    if (amount.kind === "all" && g.grant.purpose.maxDuffs !== q.totalDuffs) raise(SHIELDED_CODES.coinsChanged, "the coins changed since the quote");
     useGrant(ctx.world, grant);
+    // The engine's funding gate: a shield's asset lock waits while Core sync is not caught up.
+    if (ctx.world.sync.running && !ctx.world.sync.caughtUp) raise(SHIELDED_CODES.notSynced, "Core sync is not caught up", { kind: "reason", reason: "core" });
     if (s.next === "refused") raise("platform.unavailable", "the fixture refuses the shield");
     return shieldEnd(s, `lock${(s.activity.length + 1).toString(16).padStart(8, "0")}`, duffs);
   },
@@ -332,9 +476,13 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     s.shield = "applied";
     return shieldEnd(s, txid, pending.duffs);
   },
-  shield_mixed_quote: ({ walletId }: { walletId: string }, ctx: Ctx): MixedShieldQuote => drainQuote(ctx, walletId, "shield_mixed_quote").quote,
+  shield_mixed_quote: ({ walletId }: { walletId: string }, ctx: Ctx): MixedShieldQuote => {
+    refuseSpendsOff(ctx, walletId, "shield_mixed_quote");
+    return drainQuote(ctx, walletId, "shield_mixed_quote").quote;
+  },
   // The lock spends every coin of the CoinJoin account under a `spend` grant of their sum.
   shield_mixed_coins: ({ walletId, grant }: { walletId: string; grant: string }, ctx: Ctx): ShieldOutcome => {
+    refuseSpendsOff(ctx, walletId, "shield_mixed_coins");
     const { quote, coins } = drainQuote(ctx, walletId, "shield_mixed_coins");
     const unknown = () => raise("platform.broadcast_unknown", "funding outcome unknown", { kind: "artifact", artifact: DRAIN_STEP });
     if (ctx.world.coinjoin.drainUnknown === "stuck") unknown();
@@ -362,9 +510,11 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     return shieldEnd(s, `drain${(s.activity.length + 1).toString(16).padStart(8, "0")}`, quote.duffs);
   },
   shielded_send_quote: ({ walletId, to, credits }: { walletId: string; to: string; credits: string }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "shielded_send_quote");
     return sendQuote(ctx, walletId, to, credits);
   },
   shielded_send: ({ walletId, to, credits, memo, grant, confirmUnrecorded }: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseSpendsOff(ctx, walletId, "shielded_send");
     gateUnrecorded(ctx, walletId, "shielded_send", confirmUnrecorded);
     if (memo !== null && new TextEncoder().encode(memo).length > 36) raise("invalid_argument", "memo too long", { kind: "reason", reason: "memo over 36 bytes" });
     const q = sendQuote(ctx, walletId, to, credits);
@@ -373,16 +523,39 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "sent", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo });
     return { credits, balance: s.balance, to, ...end };
   },
-  unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => spendQuote(ctx, walletId, credits, true, "unshield_quote"),
+  unshield_quote: ({ walletId, credits }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
+    refuseSpendsOff(ctx, walletId, "unshield_quote");
+    return spendQuote(ctx, walletId, credits, true, "unshield_quote");
+  },
   unshield_to_core: ({ walletId, credits, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseSpendsOff(ctx, walletId, "unshield_to_core");
     gateUnrecorded(ctx, walletId, "unshield_to_core", confirmUnrecorded);
     const q = spendQuote(ctx, walletId, credits, true, "unshield_to_core");
     const s = ctx.world.pending.shielded!;
-    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool too small", { kind: "poolNotes", notes: 120, required: 250 });
+    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
     spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
     const to = HANDLERS.current_receive_address!({ walletId }, ctx).address;
     const end = endSpend(s, BigInt(q.totalCredits), { kind: "withdrawal", direction: "out", credits, feeCredits: q.feeCredits, counterparty: to, memo: null });
     return { credits, balance: s.balance, to, ...end };
+  },
+  unshield_to_platform_quote: ({ walletId, credits, to }: { walletId: string; credits: string; to: string | null }, ctx: Ctx) => {
+    refuseOnMainnet(ctx);
+    refuseSpendsOff(ctx, walletId, "unshield_to_platform_quote");
+    return toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform_quote").quote;
+  },
+  unshield_to_platform: ({ walletId, credits, to, grant, confirmUnrecorded }: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean }, ctx: Ctx): ShieldedSpendOutcome => {
+    refuseOnMainnet(ctx);
+    refuseSpendsOff(ctx, walletId, "unshield_to_platform");
+    gateUnrecorded(ctx, walletId, "unshield_to_platform", confirmUnrecorded);
+    const { quote: q, platform: p, address } = toPlatformQuote(ctx, walletId, credits, to, "unshield_to_platform");
+    const s = ctx.world.pending.shielded!;
+    // As the engine: the grant is redeemed before Platform's pool floor refuses, so a floor refusal uses it up.
+    spendGrant(ctx, walletId, grant, BigInt(q.totalCredits));
+    if (s.poolTooSmall) raise(SHIELDED_CODES.poolTooSmall, "pool below the spend floor", { kind: "poolNotes", notes: 120, required: 250 });
+    const end = endSpend(s, BigInt(q.totalCredits), { kind: "unshield", direction: "out", credits, feeCredits: q.feeCredits, counterparty: address, memo: null });
+    // Until the From Shielded attribution lands, the address's rise reads as an incoming row.
+    if (end.state === "done") creditPlatform(p, address, BigInt(credits));
+    return { credits, balance: s.balance, to: address, ...end };
   },
   shielded_history: ({ walletId, offset, limit }: { walletId: string; offset: number; limit: number }, ctx: Ctx) => {
     const s = shieldedOf(ctx, walletId, "shielded_history");

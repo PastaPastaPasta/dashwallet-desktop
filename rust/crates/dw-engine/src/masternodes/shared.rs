@@ -21,6 +21,7 @@ mod flow;
 mod import;
 mod key_change;
 mod reads;
+mod recovery;
 mod send;
 mod standby;
 pub use standby::standby_file_transactions;
@@ -47,16 +48,17 @@ use self::flow::{
 };
 use self::store::{
     Approved, Loaded, bad_signature, envelope_refusal, may_discard, message_name, message_refusal,
-    stage_refusal, terms_view, view,
+    parses, settled_by_columns, stage_refusal, terms_view, unparsed, view,
 };
 use super::protx::build::{Context, invalid, shared_voting};
 use super::protx::ops::InFlight;
+use super::protx::require_protx_sending;
 use super::protx_records::{OperatorChoice, ProTxOperation, VotingChoice};
 use super::shared_records::{
     Activation, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyChangeRequest,
     MaintenanceSent, RewardChoice, SharedCapability, SharedImport, SharedMessage, SharedOutcome,
     SharedRole, SharedSession, SharedStage, SharedWarning, Standby, StandbyFile, StandbyVariant,
-    StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
+    StartSharedRequest, UnreadableSession, UpdateSharePreview, UpdateShareRequest,
 };
 use super::{Masternodes, MasternodesError, display_hex, parse_pro_tx_hash};
 use crate::platform::lease::Lease;
@@ -228,6 +230,7 @@ impl Masternodes {
         &self,
         wallet: WalletId,
     ) -> Result<Vec<SharedSession>, MasternodesError> {
+        let can_send = self.shared_can_send();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let rows = s.shared_rows(wallet).await?;
@@ -262,7 +265,37 @@ impl Masternodes {
                 }
             }
             sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+            s.fill_recovery(wallet, &mut sessions, can_send).await;
             Ok(sessions)
+        })
+        .await
+    }
+
+    /// The wallet's sessions whose envelope no longer parses (D57), newest
+    /// first. `shared_sessions` skips them and `shared_session` refuses
+    /// them, yet each may hold reserved coins: read from its row, it is
+    /// `discardable` exactly when `discard_shared_session` accepts it, and
+    /// `abandonable` when `abandon_unreadable_shared_session` would spend.
+    pub async fn unreadable_shared_sessions(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<UnreadableSession>, MasternodesError> {
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            let network = s.network.core_network();
+            let w = wallet.to_string();
+            let rows = s.appdb_op(move |db| db.shared_sessions(&w)).await?;
+            let rows: Vec<_> = rows.into_iter().filter(|r| !parses(r, network)).collect();
+            if rows.is_empty() {
+                return Ok(Vec::new());
+            }
+            let chain = s.shared_chain(wallet).await?;
+            let mut out = Vec::with_capacity(rows.len());
+            for row in &rows {
+                out.push(s.unreadable_listing(wallet, row, &chain).await);
+            }
+            out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
+            Ok(out)
         })
         .await
     }
@@ -274,15 +307,10 @@ impl Masternodes {
         session: String,
     ) -> Result<SharedSession, MasternodesError> {
         check_session_id(&session)?;
+        let can_send = self.shared_can_send();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
-            if s.is_together(wallet, &session).await? {
-                return Ok(s.together_outcome(wallet, &session).await?.session);
-            }
-            if s.is_key_change(wallet, &session).await? {
-                return Ok(s.key_change_outcome(wallet, &session).await?.session);
-            }
-            s.shared_view(wallet, &session).await
+            s.recovered(wallet, &session, can_send).await
         })
         .await
     }
@@ -296,6 +324,7 @@ impl Masternodes {
         wallet: WalletId,
         request: StartSharedRequest,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         build::check_slots(request.shares.len())?;
         let service = coordinator_services(&request.terms.service);
         if service == Err(ServiceProblem::Invalid) {
@@ -396,6 +425,7 @@ impl Masternodes {
         session: String,
         fee: u64,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         build::check_fee(fee)?;
         self.protx_op(move |s| async move {
@@ -417,6 +447,7 @@ impl Masternodes {
                     stage: "replied".into(),
                 });
             }
+            let revision = build::next_revision(&l.session)?;
             let target = rec.amount.saturating_add(fee);
             let reuse = rec.change.as_ref().map(|c| c.address.clone());
             let fence = s.coin_fence(wallet).await?;
@@ -433,7 +464,7 @@ impl Masternodes {
             );
             let mut next = l.session.clone();
             put_own_side(&mut next, &new)?;
-            next.revision += 1;
+            next.revision = revision;
             s.replace_contribution(wallet, &l, &next, &new).await?;
             drop(fence);
             outcome(&s, wallet, &session).await
@@ -497,12 +528,20 @@ impl Masternodes {
                         .await?;
                     true
                 }
-                Some(l) => match import::apply(l, &theirs)? {
-                    Some(new) => {
+                Some(l) => match import::apply(l, &theirs) {
+                    Ok(Some(new)) => {
                         s.save_shared(wallet, l, &new, l.approved.as_ref()).await?;
                         true
                     }
-                    None => false,
+                    Ok(None) => false,
+                    Err(e) => {
+                        // MG-10 EP 4: a refused copy carrying our signature
+                        // may still go out, so the session reads out.
+                        if let Some(tx) = s.own_signed_copy(wallet, l, &theirs).await? {
+                            s.mark_possibly_out(wallet, l, &tx).await?;
+                        }
+                        return Err(e);
+                    }
                 },
             };
             let session = s.shared_view(wallet, &id).await?;
@@ -529,6 +568,7 @@ impl Masternodes {
         session: String,
         request: JoinSharedRequest,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             let network = s.network.core_network();
@@ -551,6 +591,7 @@ impl Masternodes {
             if !participant_services_ok(&l.session.terms.core_p2p_addrs) {
                 return Err(unsupported(Some("service")));
             }
+            let revision = build::next_revision(&l.session)?;
             // `inferMyShare`: the requested row, else the single empty one.
             let empty: Vec<usize> = (l.session.shares.iter().enumerate())
                 .filter(|(_, r)| r.owner_address.is_empty())
@@ -577,7 +618,7 @@ impl Masternodes {
                 .await?;
             let rec = recorded_of(index, &own, &row, &selected, change, None);
             put_own_side(&mut next, &rec)?;
-            next.revision += 1;
+            next.revision = revision;
             next.check_labels().map_err(envelope_refusal)?;
             #[cfg(test)]
             crate::coins::pause_at(&s.coin_fences.pause_row_write).await;
@@ -589,7 +630,10 @@ impl Masternodes {
     }
 
     /// The message to copy or save now: its text, code, name and Core's
-    /// file name `shared-mn-session-<CODE>.json`.
+    /// file name `shared-mn-session-<CODE>.json`. Once this wallet signed an
+    /// abandon spend of a registration or key change,
+    /// `shared_stage{stage: "abandoning"}`: the message would let the
+    /// registration compete with the cancellation.
     pub async fn shared_message(
         &self,
         wallet: WalletId,
@@ -604,9 +648,11 @@ impl Masternodes {
             }
             if s.is_key_change(wallet, &session).await? {
                 let k = s.key_change_loaded(wallet, &session).await?;
+                store::check_no_abandon(&k.row)?;
                 return Ok(k.message(s.network.core_network()));
             }
             let l = s.shared_loaded(wallet, &session).await?;
+            store::check_no_abandon(&l.row)?;
             message_of(&l)
         })
         .await
@@ -625,6 +671,7 @@ impl Masternodes {
         revision: u32,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
@@ -686,7 +733,7 @@ impl Masternodes {
                 )
                 .await?;
             let mut next = l.session.clone();
-            build::unfreeze(&mut next);
+            build::unfreeze(&mut next)?;
             s.save_shared(wallet, &l, &next, None).await?;
             outcome(&s, wallet, &session).await
         })
@@ -706,6 +753,7 @@ impl Masternodes {
         consent_hash: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         // The record's `consent_hash`: 64 hex, compared ignoring case.
         if consent_hash.len() != 64 || !consent_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -755,6 +803,7 @@ impl Masternodes {
         session: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -803,6 +852,7 @@ impl Masternodes {
         session: String,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         check_session_id(&session)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -839,14 +889,18 @@ impl Masternodes {
     }
 
     /// The exit from a session that may be out (§9.3, D26) †: `unsupported`
-    /// while sending is off ([`SHARED_SENDING`]). Spends the
-    /// largest of its reserved coins the wallet holds unspent to a fresh
-    /// address of its own under its own lease (charged the fee), through
-    /// the fence, `abandon_txid` saved first. The row is kept and reads
+    /// while sending is off ([`SHARED_SENDING`]). Refused `abandoning`
+    /// while its last abandon spend may be out; then spends every reserved
+    /// coin the wallet holds unspent, when they include every input that
+    /// spend took (MG-10 §4.4 changes 2 and 4), to a fresh address of its
+    /// own under its own lease (charged the fee), through the fence,
+    /// `abandon_txid` saved first. The row is kept and reads
     /// `conflicted` once that spend is in a block (`confirmed` if the
     /// registration won); its locks are released then (§11). A session not
     /// out is discarded instead (`shared_stage{stage}`), as is one already
-    /// settled.
+    /// settled. One whose envelope no longer parses is refused before
+    /// anything is spent, as `shared_session` refuses it: its record can't
+    /// be returned, so `abandon_unreadable_shared_session` is its exit.
     pub async fn abandon_shared_session(
         &self,
         wallet: WalletId,
@@ -855,6 +909,7 @@ impl Masternodes {
     ) -> Result<SharedSession, MasternodesError> {
         check_session_id(&session)?;
         let sending = self.require_sending();
+        let can_send = self.shared_can_send();
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             sending?;
@@ -868,21 +923,129 @@ impl Masternodes {
                 // to spend back (D95).
                 return Err(invalid("not a registration session"));
             }
+            if !parses(&row, s.network.core_network()) {
+                return Err(unparsed());
+            }
             if row.kind == key_change::KIND {
-                return s.abandon_key_change(wallet, &grant, row).await;
+                s.abandon_key_change(wallet, &grant, row).await?;
+                return s.recovered(wallet, &session, can_send).await;
             }
             let stage = s.stored_stage(wallet, &row).await?;
-            if row.out_at.is_none()
-                || matches!(
-                    stage,
-                    SharedStage::Confirmed { .. } | SharedStage::Conflicted
-                )
-            {
+            if row.out_at.is_none() || recovery::settled_stage(stage, false) {
                 return Err(stage_refusal(stage));
             }
+            s.check_not_abandoning(wallet, &row).await?;
             let fence = s.coin_fence(wallet).await?;
             s.abandon_session(wallet, &grant, &row, fence).await?;
-            s.shared_view(wallet, &session).await
+            s.recovered(wallet, &session, can_send).await
+        })
+        .await
+    }
+
+    /// The latest abandon spend of a session that may be out, its saved
+    /// bytes handed off again (MG-10 §4.4 change 4) †: `unsupported` while
+    /// sending is off ([`SHARED_SENDING`]). In `abandon_shared_session`'s
+    /// order: a dissolve-together session is `invalid_argument`, a key
+    /// change's approver `shared_stage{stage: "participant"}`; a settled
+    /// session (`confirmed`, `conflicted`, a key change's `dead`) and one
+    /// not out are `shared_stage{stage}`; then with no abandon spend signed
+    /// the out stage (`sent` / `funding_signed`), a legacy spend with no
+    /// bytes `legacy`, one abandoned in Activity `abandon_cancelled`, one
+    /// definitely refused `abandon_refused`; then `legacy` when neither its
+    /// log entry nor the wallet's coins show its fee; then another pending
+    /// spend holding one of its inputs. Charged the spend's fee; the hand-off
+    /// runs as a replay, whose refusal never reads as its first.
+    pub async fn resend_shared_abandon(
+        &self,
+        wallet: WalletId,
+        session: String,
+        grant: String,
+    ) -> Result<SharedSession, MasternodesError> {
+        check_session_id(&session)?;
+        let sending = self.require_sending();
+        let can_send = self.shared_can_send();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            let _flight = s.claim_shared_session(wallet, &session)?;
+            let row = s
+                .shared_row(wallet, &session)
+                .await?
+                .ok_or(MasternodesError::SharedSessionNotFound)?;
+            if row.kind == together::KIND {
+                return Err(invalid("not a registration session"));
+            }
+            let key_change = row.kind == key_change::KIND;
+            let stage = match key_change {
+                true => {
+                    let k = key_change::KeyChange::of(row.clone(), s.network.core_network())?;
+                    if k.funded.is_none() {
+                        return Err(key_change::not_funder());
+                    }
+                    s.key_change_stage(wallet, &k).await?
+                }
+                false => s.stored_stage(wallet, &row).await?,
+            };
+            if row.out_at.is_none() || recovery::settled_stage(stage, key_change) {
+                return Err(stage_refusal(stage));
+            }
+            s.resend_abandon(wallet, &grant, &row).await?;
+            s.recovered(wallet, &session, can_send).await
+        })
+        .await
+    }
+
+    /// `abandon_shared_session` for a session whose envelope no longer
+    /// parses (D57) †: `unsupported` while sending is off. Read from its
+    /// row alone: a registration or key change with `out_at` set
+    /// (`shared_stage` naming the role's out stage otherwise, as an
+    /// unparsed row reads), not settled by its stored columns
+    /// (`shared_stage{stage: "confirmed" | "conflicted"}`), spends every
+    /// reserved coin the wallet holds back to it by `abandon_shared_session`'s
+    /// coin test, charged its fee (`UnreadableSession.abandon_charge`).
+    /// The follower releases its locks once that spend is buried. A
+    /// dissolve-together session is `invalid_argument`, as is one that
+    /// parses (`abandon_shared_session` is its exit). Returns the row's
+    /// listing as `unreadable_shared_sessions` reads it.
+    pub async fn abandon_unreadable_shared_session(
+        &self,
+        wallet: WalletId,
+        session: String,
+        grant: String,
+    ) -> Result<UnreadableSession, MasternodesError> {
+        check_session_id(&session)?;
+        let sending = self.require_sending();
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            sending?;
+            let _flight = s.claim_shared_session(wallet, &session)?;
+            let row = s
+                .shared_row(wallet, &session)
+                .await?
+                .ok_or(MasternodesError::SharedSessionNotFound)?;
+            if row.kind == together::KIND {
+                return Err(invalid("not a registration session"));
+            }
+            if parses(&row, s.network.core_network()) {
+                return Err(invalid("the session reads: abandon_shared_session"));
+            }
+            if row.out_at.is_none() {
+                return Err(stage_refusal(store::out_stage(store::role_of(&row.role))));
+            }
+            if let Some(stage) = settled_by_columns(&row, &s.shared_chain(wallet).await?) {
+                return Err(stage_refusal(stage));
+            }
+            s.check_not_abandoning(wallet, &row).await?;
+            let fence = s.coin_fence(wallet).await?;
+            s.abandon_session(wallet, &grant, &row, fence).await?;
+            let row = s
+                .shared_row(wallet, &session)
+                .await?
+                .ok_or(MasternodesError::SharedSessionNotFound)?;
+            Ok(
+                s.unreadable_listing(wallet, &row, &s.shared_chain(wallet).await?)
+                    .await,
+            )
         })
         .await
     }
@@ -982,6 +1145,7 @@ impl Masternodes {
         request: UpdateShareRequest,
         grant: String,
     ) -> Result<ProTxOperation, MasternodesError> {
+        require_protx_sending(&self.session)?;
         let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
         let sending = self.require_sending();
         self.protx_op(move |s| async move {
@@ -1196,6 +1360,7 @@ impl Masternodes {
         request: KeyChangeRequest,
         grant: String,
     ) -> Result<SharedOutcome, MasternodesError> {
+        require_protx_sending(&self.session)?;
         let hash = parse_pro_tx_hash(&request.pro_tx_hash)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
@@ -1227,6 +1392,7 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             if s.is_key_change(wallet, &session).await? {
+                require_protx_sending(&s)?;
                 return s.approve_key_change(wallet, &session, &grant).await;
             }
             s.approve_together(wallet, &session, &grant, accept_actor_fee)
@@ -1254,6 +1420,7 @@ impl Masternodes {
             s.require_wallet(&wallet)?;
             sending?;
             if s.is_key_change(wallet, &session).await? {
+                require_protx_sending(&s)?;
                 return s.send_key_change(wallet, &session, &grant).await;
             }
             let operation = s.send_together(wallet, &session, &grant).await?;
@@ -1266,6 +1433,25 @@ impl Masternodes {
 }
 
 impl NetworkSession {
+    /// One session of the wallet with its recovery (MG-10 §4.4 EP 4).
+    async fn recovered(
+        &self,
+        wallet: WalletId,
+        id: &str,
+        can_send: bool,
+    ) -> Result<SharedSession, MasternodesError> {
+        let mut session = if self.is_together(wallet, id).await? {
+            self.together_outcome(wallet, id).await?.session
+        } else if self.is_key_change(wallet, id).await? {
+            self.key_change_outcome(wallet, id).await?.session
+        } else {
+            self.shared_view(wallet, id).await?
+        };
+        self.fill_recovery(wallet, std::slice::from_mut(&mut session), can_send)
+            .await;
+        Ok(session)
+    }
+
     /// What a call that signs or changes a stored session begins with, in
     /// §7's order: the session marked in flight, read back, the caller's
     /// role, and the stage it must be at.

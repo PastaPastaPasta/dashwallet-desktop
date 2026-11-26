@@ -21,6 +21,7 @@ pub mod governance;
 pub mod history;
 pub mod masternodes;
 pub mod platform;
+pub mod protx;
 
 use dw_engine::{
     DashNetwork, SyncPhase, SyncPhaseProgress, SyncSnapshot, WalletBalances, WalletInfo,
@@ -136,6 +137,25 @@ pub mod base64 {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let s = String::deserialize(d)?;
         STANDARD.decode(s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Fixed-size bytes as lower-case hex: `#[ts(type = "string")]
+/// #[serde(with = "crate::dto::hex_array")]`.
+pub mod hex_array {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer, const N: usize>(v: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[u8; N], D::Error> {
+        let bytes = hex::decode(String::deserialize(d)?).map_err(D::Error::custom)?;
+        bytes
+            .try_into()
+            .map_err(|_| D::Error::custom(format!("expected {N} bytes")))
     }
 }
 
@@ -273,6 +293,9 @@ pub struct LaunchInfo {
     pub network: NetworkInfo,
     pub app_version: String,
     pub engine_version: String,
+    /// The version the build was stamped with (`0.3.0`, `0.3.0-rc.1`,
+    /// `0.3.0-dev.1230.gb04c5c7`); an unstamped build reads `X.Y.Z-dev`.
+    pub build_version: String,
 }
 
 impl LaunchInfo {
@@ -288,6 +311,7 @@ impl LaunchInfo {
             network: NetworkInfo::from(network),
             app_version: app_version.into(),
             engine_version: dw_engine::ENGINE_VERSION.into(),
+            build_version: dw_engine::BUILD_VERSION.into(),
         }
     }
 }
@@ -304,6 +328,9 @@ pub struct Balances {
     /// The fully mixed CoinJoin balance once computed; before that, the
     /// spendable balance of the CoinJoin accounts.
     pub coinjoin: u64,
+    /// Coins kept out of every bucket above, and out of spending, while
+    /// the payment they come from may never confirm: shown as pending.
+    pub withheld: u64,
     /// The wallet is still catching up (its scan has not reached the birth
     /// block): the buckets hold what it has seen so far, payments seen in
     /// the mempool or locked by InstantSend included, and can miss coins in
@@ -311,6 +338,14 @@ pub struct Balances {
     /// scanned: a wallet born long ago is still behind the tip while the
     /// sync status says so.
     pub catching_up: bool,
+    /// The coins held while what beat a payment that can never confirm is
+    /// unfinished, summed: in no bucket above.
+    pub held_unfinished: u64,
+    /// The held coins whose value is unknown, not in `heldUnfinished`.
+    pub held_unvalued: u32,
+    /// A held coin awaits a transaction that isn't final yet: no way out
+    /// is offered until it is.
+    pub held_awaiting: bool,
 }
 
 impl From<WalletBalances> for Balances {
@@ -322,7 +357,11 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         } = b;
         Balances {
             confirmed,
@@ -331,7 +370,11 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            withheld,
             catching_up,
+            held_unfinished,
+            held_unvalued,
+            held_awaiting,
         }
     }
 }
@@ -345,6 +388,9 @@ pub struct WalletSummary {
     pub watch_only: bool,
     /// The vault holds the wallet's recovery phrase.
     pub has_mnemonic: bool,
+    /// Imported from a Dash Core wallet.dat with legacy issued address
+    /// ranges, which a recovery phrase doesn't restore.
+    pub legacy_issued: bool,
     pub hd: bool,
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
@@ -361,6 +407,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
@@ -371,6 +418,7 @@ impl From<WalletInfo> for WalletSummary {
             name,
             watch_only,
             has_mnemonic,
+            legacy_issued,
             hd,
             birth_height,
             created_at,
@@ -544,6 +592,23 @@ mod tests {
             B::Funding | B::Credits | B::Spend | B::Crypto | B::Masternode | B::Voting => 6,
         };
         assert_eq!(MAX_LEASE_BUDGETS, budgets(B::Funding));
+    }
+
+    /// About shows the version the build was stamped with, not only the
+    /// app's X.Y.Z: a dev build from main reads `X.Y.Z-dev.N.gHASH`.
+    #[test]
+    fn launch_info_carries_the_stamped_build_version() {
+        let info = LaunchInfo::new(&LaunchOptions::default(), &DashNetwork::Testnet, "0.1.0");
+        assert_eq!(info.app_version, "0.1.0");
+        assert_eq!(info.build_version, dw_engine::BUILD_VERSION);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["buildVersion"], dw_engine::BUILD_VERSION);
+        if option_env!("DW_BUILD_VERSION").is_none() {
+            assert_eq!(
+                info.build_version,
+                concat!(env!("CARGO_PKG_VERSION"), "-dev")
+            );
+        }
     }
 
     #[test]

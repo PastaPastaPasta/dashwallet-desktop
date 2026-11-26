@@ -82,16 +82,46 @@ pub struct RescanProgress {
     pub current_height: Option<u32>,
     pub target_height: Option<u32>,
     pub started_at: u64,
+    /// The wallets still rescanning because an older build scanned them
+    /// with narrow CoinJoin pools: their first open after the upgrade
+    /// replays them once from their birth.
+    pub upgrade_wallets: Vec<WalletId>,
+}
+
+/// Open wallets whose history starts below the first block header this
+/// install stores ([`NetworkSession::history_gap`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryGap {
+    /// The first stored header's height, where dash-spv's scans start.
+    pub start_height: u32,
+    /// The open wallets whose scan start is below it, in id order.
+    pub wallets: Vec<WalletId>,
+}
+
+/// The wallets of `births` whose history starts below `start`: at their
+/// birth, or at the network's HD floor `floor` when that is later (dash-spv
+/// anchors no lower than it).
+pub(crate) fn wallets_below_header_start(
+    start: u32,
+    floor: u32,
+    births: impl IntoIterator<Item = (WalletId, u32)>,
+) -> Vec<WalletId> {
+    (births.into_iter())
+        .filter(|(_, birth)| (*birth).max(floor) < start)
+        .map(|(id, _)| id)
+        .collect()
 }
 
 /// One wallet's part of a running rescan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WalletRescan {
     /// The filter checkpoint before the rescan; the rescan is done for the
     /// wallet once the checkpoint is back here.
     pub resume_height: u32,
     /// Latest checkpoint reported since the rescan started.
     pub reached: Option<u32>,
+    /// The replay an upgrade owes ([`RescanProgress::upgrade_wallets`]).
+    pub upgrade: bool,
 }
 
 /// What [`NetworkSession::rewind`] does besides storing the replay record.
@@ -124,6 +154,14 @@ impl RescanState {
     /// Whether `wallet` is in the rescan and not back yet.
     pub(crate) fn replaying(&self, wallet: &WalletId) -> bool {
         (self.wallets.get(wallet)).is_some_and(|w| w.reached.unwrap_or(0) < w.resume_height)
+    }
+
+    /// The wallets still rescanning for their upgrade's replay.
+    fn upgrade_wallets(&self) -> Vec<WalletId> {
+        (self.wallets.iter())
+            .filter(|(_, w)| w.upgrade && w.reached.unwrap_or(0) < w.resume_height)
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// The lowest checkpoint among the wallets still rescanning.
@@ -165,7 +203,7 @@ impl RescanState {
 /// The version this build was released as. The release workflow passes its run's version as
 /// `DW_BUILD_VERSION` (`0.1.0`, `0.1.0-rc.1`, `0.1.0-dev.57.g1a2b3c4`); a build without it (local,
 /// tests, Nightly) is a dev build.
-pub(crate) const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
+pub const BUILD_VERSION: &str = match option_env!("DW_BUILD_VERSION") {
     Some(v) if !v.is_empty() => v,
     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
@@ -282,6 +320,7 @@ impl NetworkSession {
                 .map(|w| w.resume_height)
                 .max(),
             started_at: r.started_at,
+            upgrade_wallets: r.upgrade_wallets(),
         }))
     }
 
@@ -470,22 +509,43 @@ impl NetworkSession {
         if flipped {
             self.hub.pump.mark_balances(wallet);
         }
+        // The scan is at or below `checkpoint` now: the end of its replay
+        // has reprocessed the funding block of each coin given back that
+        // waits from there (`crate::rescan_hold`).
+        let from = checkpoint.min(current);
+        self.hub.history.with_wallet(wallet, |h| {
+            for hold in h.rescan_holds.values_mut() {
+                hold.armed |= hold.checkpoint >= from;
+            }
+        });
         Ok(Some(target))
     }
 
     /// [`Self::record_rewind`], for a caller that holds the manager's
-    /// write lock and `wallet`'s info `info` under it.
+    /// write lock and `wallet`'s info `info` under it. Returns the
+    /// replay's target.
     pub(crate) async fn record_rewind_locked(
         &self,
         wallet: WalletId,
         info: &platform_wallet::PlatformWalletInfo,
         checkpoint: u32,
-    ) -> Result<(), EngineError> {
+    ) -> Result<u32, EngineError> {
         let replay = self.live()?.replay;
         self.hub.detect_truncation(wallet, &info.core_wallet);
-        self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)
-            .await
-            .map(drop)
+        let target = (self.record_locked(&replay, wallet, info, checkpoint, Rewind::Ahead)).await?;
+        // A filter batch in flight applied blocks above the scan: the
+        // record covers them, so an open after a quit keeps the coins this
+        // rewind holds until the scan is past them (#818).
+        let processed = info.core_wallet.last_processed_height();
+        if processed <= target {
+            return Ok(target);
+        }
+        let current = info.core_wallet.synced_height();
+        let birth = info.core_wallet.birth_height().saturating_sub(1);
+        Ok(replay
+            .note_rewind(wallet, checkpoint.min(current), processed, birth)
+            .await?
+            .target)
     }
 
     /// Stores the record of a rewind of `wallet`, whose info `info` the
@@ -582,6 +642,7 @@ impl NetworkSession {
                 s.scan_target = s.scan_target.max(target);
                 s.replay_cancelled = Some(s.replay_cancelled.map_or(reached, |h| h.min(reached)));
             });
+            self.hub.mark_drops(wallet);
         };
         let record = match live.replay.get(wallet).await {
             Ok(Some(record)) => record,
@@ -591,6 +652,7 @@ impl NetworkSession {
                 self.hub.update_wallet_state(wallet, |s| {
                     s.replay_cancelled = Some(s.replay_cancelled.map_or(floor, |h| h.min(floor)));
                 });
+                self.hub.mark_drops(wallet);
                 return;
             }
         };
@@ -629,7 +691,9 @@ impl NetworkSession {
         match resumed {
             Ok(Some(target)) => {
                 self.pause_publish().await;
-                self.publish_replay(wallet, record.reached, target);
+                let upgrade =
+                    self.upgrade_replay(wallet).await == Some(crate::keys::upgrade_mark(&record));
+                self.publish_replay(wallet, record.reached, target, upgrade);
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -645,7 +709,13 @@ impl NetworkSession {
     /// Shows `wallet`'s replay from above `reached` to `target` as a
     /// rescan: spends wait for it, so it reports progress and can be
     /// cancelled.
-    pub(crate) fn publish_replay(&self, wallet: WalletId, reached: u32, target: u32) {
+    pub(crate) fn publish_replay(
+        &self,
+        wallet: WalletId,
+        reached: u32,
+        target: u32,
+        upgrade: bool,
+    ) {
         self.hub.publish_rescan(|rescan| {
             if rescan.as_ref().is_some_and(RescanState::finished) {
                 *rescan = None;
@@ -661,6 +731,7 @@ impl NetworkSession {
                 WalletRescan {
                     resume_height: target,
                     reached: None,
+                    upgrade,
                 },
             );
         });
@@ -768,9 +839,13 @@ impl NetworkSession {
                     });
                 }
             }
+            // Counted under the lock: a rescan started after the cancel
+            // rewinds under it, so it can't pass for the cancelled one.
+            (this.hub.rescan_cancels).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             drop(wm);
             for id in state.wallets.keys() {
                 this.refresh_wallet_state(&manager, *id).await;
+                this.hub.mark_drops(*id);
             }
             this.hub.pump.mark_sync();
             Ok(true)
@@ -778,9 +853,54 @@ impl NetworkSession {
         .await
     }
 
+    /// The open wallets whose history starts below the first block header
+    /// stored under the network's `spv` directory. dash-spv anchors its
+    /// headers once, while its storage is empty, at the checkpoint at or
+    /// below the earliest birth of the wallets open then (raised to the HD
+    /// floor), and never scans a filter below that anchor: a wallet opened
+    /// later with an earlier birth misses its payments there until "Reset
+    /// chain data and resync" downloads the headers again. `None` when no
+    /// header is stored or every open wallet is covered.
+    ///
+    /// A wallet closed while the chain data was reset, and not open at the
+    /// next start, is reported once it is opened although its history was
+    /// scanned under the old anchor: another reset clears it.
+    pub async fn history_gap(self: &Arc<Self>) -> Result<Option<HistoryGap>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let manager = this.manager()?;
+            let dir = this.data_dir().join(SPV_DIR);
+            let start = tokio::task::spawn_blocking(move || stored_header_start(&dir)).await??;
+            let Some(start_height) = start else {
+                return Ok(None);
+            };
+            let floor = {
+                use dashcore::network::constants::NetworkExt;
+                this.network.core_network().hd_wallet_sync_floor()
+            };
+            let births: Vec<(WalletId, u32)> = {
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (manager.list_wallet_ids_blocking().into_iter())
+                    .filter_map(|id| {
+                        let info = wm.get_wallet_info(&id)?;
+                        Some((WalletId(id), info.core_wallet.birth_height()))
+                    })
+                    .collect()
+            };
+            let wallets = wallets_below_header_start(start_height, floor, births);
+            Ok((!wallets.is_empty()).then_some(HistoryGap {
+                start_height,
+                wallets,
+            }))
+        })
+        .await
+    }
+
     /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
-    async fn store_birth_height(
+    pub(crate) async fn store_birth_height(
         &self,
         wallet_id: WalletId,
         height: u32,
@@ -881,7 +1001,7 @@ impl NetworkSession {
                             *id,
                             WalletRescan {
                                 resume_height,
-                                reached: None,
+                                ..Default::default()
                             },
                         );
                     }
@@ -889,6 +1009,9 @@ impl NetworkSession {
             }
         }
         for id in wallets {
+            if self.upgrade_replay(id).await.is_some() {
+                self.set_upgrade_replay(id, None).await;
+            }
             let from = start(&id);
             // Its replay is stored before a lower birth is: a quit in
             // between leaves the rescan owed, not a birth below a checkpoint
@@ -915,7 +1038,11 @@ impl NetworkSession {
     }
 
     /// QT-148 "Rebuild Index" equivalent: deletes the SPV chain data and
-    /// keeps wallets, vault and app data. SPV must be stopped. Every
+    /// keeps wallets, vault and app data, but for the drops' spend notes. SPV must be stopped, no wallet
+    /// mixing or with a session open (`MixingActive`), and no signed
+    /// round's inputs held (`InputsHeld`): the reset would hide that
+    /// round's transaction from the wallet. Mixing does not start while it
+    /// runs. Every
     /// wallet's filter checkpoint goes back below its birth height, so the
     /// next `start_spv` syncs headers again and rescans each wallet.
     pub async fn reset_chain_data(self: &Arc<Self>) -> Result<(), EngineError> {
@@ -927,6 +1054,11 @@ impl NetworkSession {
             if this.platform_spv_state(&manager) != crate::SpvState::Stopped {
                 return Err(EngineError::SpvRunning);
             }
+            // Refused before any replay record is stored.
+            this.expire_all_held();
+            let _coinjoin = this.coinjoin.claim_reset()?;
+            // No wallet opens or closes between the two lists below.
+            let _wallets = this.wallet_lifecycle.hold().await;
             let wallets: Vec<(WalletId, u32)> = (manager.list_wallet_ids_blocking().into_iter())
                 .map(|id| {
                     let wallet = WalletId(id);
@@ -937,6 +1069,16 @@ impl NetworkSession {
             for (wallet, checkpoint) in &wallets {
                 this.record_rewind(&manager, *wallet, *checkpoint).await?;
             }
+            this.record_closed_rewinds().await?;
+            // The drops' spend notes are proven against the header chain
+            // this deletes: none outlives it (#749, Q81b S3).
+            let every: Vec<WalletId> = (wallets.iter().map(|(w, _)| *w))
+                .chain(this.live()?.store.unloaded().into_iter().map(WalletId))
+                .collect();
+            this.appdb_op(move |db| {
+                (every.iter()).try_for_each(|w| crate::tx_actions::forget_spend_notes(db, *w))
+            })
+            .await?;
             let dir = this.data_dir().join(SPV_DIR);
             tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&dir) {
                 Ok(()) => Ok(()),
@@ -958,6 +1100,27 @@ impl NetworkSession {
             Ok(())
         })
         .await
+    }
+
+    /// A reset's replay record for each closed wallet: its next open rescans
+    /// it from its birth height, below the stored checkpoint the old block
+    /// data held it at, as the reset does for an open one.
+    async fn record_closed_rewinds(&self) -> Result<(), EngineError> {
+        let live = self.live()?;
+        for id in live.store.unloaded() {
+            let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+            let (synced, birth) =
+                tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id))
+                    .await?
+                    .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
+            let floor = birth.map_or(0, |b| b.saturating_sub(1));
+            if let Some(synced) = synced.filter(|s| *s > floor) {
+                (live.replay)
+                    .note_rewind(WalletId(id), floor, synced, floor)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// IOS-113 "edit birth height": stores `height` as the wallet's birth
@@ -1038,6 +1201,72 @@ pub(crate) fn better_chainlock(
     }
 }
 
+/// The height of the first block header dash-spv stores under `spv_dir`:
+/// the first slot of the lowest header segment that is not an empty slot.
+/// `None` when no header is stored. dash-spv anchors its headers there once
+/// and never scans a filter below it. It replaces a segment file whole (a
+/// temporary `.segment_….tmp` renamed over it), so this reads a whole file
+/// while SPV runs too.
+pub(crate) fn stored_header_start(spv_dir: &std::path::Path) -> std::io::Result<Option<u32>> {
+    // dash-spv's `Persistable for HashedBlockHeader` (storage/segments.rs):
+    // 10,000 slots of 112 bytes, an 80-byte header and its hash; an empty
+    // slot holds a header of version `i32::MAX` and every other byte 0xFF.
+    const SLOTS: u32 = 10_000;
+    const SLOT_BYTES: usize = 112;
+    let dir = spv_dir.join("block_headers");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut lowest: Option<(u32, std::path::PathBuf)> = None;
+    for entry in entries {
+        let entry = entry?;
+        // dash-spv's layout names segments with six digits or more; files
+        // of its older four-digit layout are migrated when SPV opens them.
+        let id = (entry.file_name().to_str()).and_then(|name| {
+            let digits = name.strip_prefix("segment_")?.strip_suffix(".dat")?;
+            if digits.len() < 6 {
+                return None;
+            }
+            digits.parse::<u32>().ok()
+        });
+        if let Some(id) = id
+            && lowest.as_ref().is_none_or(|(l, _)| id < *l)
+        {
+            lowest = Some((id, entry.path()));
+        }
+    }
+    let Some((id, path)) = lowest else {
+        return Ok(None);
+    };
+    let mut empty = [0xFF_u8; 80];
+    empty[..4].copy_from_slice(&i32::MAX.to_le_bytes());
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        // Deleted since it was listed: dash-spv cleared its store.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let first = (bytes.as_chunks::<SLOT_BYTES>().0.iter()).position(|slot| slot[..80] != empty);
+    Ok(first.and_then(|offset| id.checked_mul(SLOTS)?.checked_add(offset as u32)))
+}
+
+/// Tests: stores `count` copies of the regtest genesis header from `height`
+/// under `spv_dir`, as dash-spv does.
+#[cfg(test)]
+pub(crate) async fn store_test_headers(spv_dir: &std::path::Path, height: u32, count: usize) {
+    use dash_spv::storage::{BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage};
+    let header = dashcore::blockdata::constants::genesis_block(dashcore::Network::Regtest).header;
+    let headers = vec![dash_spv::types::HashedBlockHeader::from(header); count];
+    let mut storage = PersistentBlockHeaderStorage::open(spv_dir).await.unwrap();
+    storage
+        .store_headers_at_height(&headers, height)
+        .await
+        .unwrap();
+    storage.persist(spv_dir).await.unwrap();
+}
+
 /// Tests: wallets whose birth height cannot be stored.
 #[cfg(test)]
 pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1046,6 +1275,48 @@ pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wallet is reported only when its history starts below the stored
+    /// headers: from its birth, or from the HD floor when that is later.
+    #[test]
+    fn wallets_below_the_header_start_count_from_their_birth_or_the_floor() {
+        let (a, b, c) = (WalletId([1; 32]), WalletId([2; 32]), WalletId([3; 32]));
+        let births = [(a, 0), (b, 300_000), (c, 500_000)];
+        assert_eq!(wallets_below_header_start(400_000, 227_121, births), [a, b]);
+        assert_eq!(wallets_below_header_start(200_000, 227_121, births), []);
+        assert_eq!(wallets_below_header_start(500_000, 0, births), [a, b]);
+        assert_eq!(wallets_below_header_start(0, 0, births), []);
+    }
+
+    /// The start height read from dash-spv's files is the one dash-spv
+    /// reads back, for headers stored at a checkpoint, in a later segment
+    /// and across two segments, and none for an empty or missing store.
+    #[test]
+    fn the_stored_header_start_is_the_one_dash_spv_reads() {
+        use dash_spv::storage::{
+            BlockHeaderStorage, PersistentBlockHeaderStorage, PersistentStorage,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for height in [0, 9_999, 200_000, 1_234_567] {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(stored_header_start(dir.path()).unwrap(), None);
+            let read = rt.block_on(async {
+                store_test_headers(dir.path(), height, 2).await;
+                let reopened = PersistentBlockHeaderStorage::open(dir.path())
+                    .await
+                    .unwrap();
+                reopened.get_start_height().await
+            });
+            assert_eq!(read, Some(height));
+            assert_eq!(
+                stored_header_start(dir.path()).unwrap(),
+                read,
+                "at {height}"
+            );
+        }
+    }
 
     #[test]
     fn rescan_state_finishes_when_every_wallet_is_back() {
@@ -1060,6 +1331,7 @@ mod tests {
                     WalletRescan {
                         resume_height: 100,
                         reached: None,
+                        upgrade: false,
                     },
                 ),
                 (
@@ -1067,6 +1339,7 @@ mod tests {
                     WalletRescan {
                         resume_height: 50,
                         reached: None,
+                        upgrade: false,
                     },
                 ),
             ]),

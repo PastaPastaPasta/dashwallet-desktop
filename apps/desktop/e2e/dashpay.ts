@@ -1,5 +1,8 @@
 // DP1-08 fixture states shared by dashpay.spec.ts and visual.spec.ts.
 
+import { expect, type Page } from "@playwright/test";
+import { authorize } from "./helpers";
+
 /** Each Home card state (docs/design/DP1-08-status-card.md S2–S17, DP1-10-my-profile.md S19–S20),
  * its scenario, title and chip. */
 export const CARDS: Record<string, { scenario: string; extra?: string; title: string; chip: string | null }> = {
@@ -16,6 +19,7 @@ export const CARDS: Record<string, { scenario: string; extra?: string; title: st
   creating: { scenario: "dashpay-registering", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingUnlock: { scenario: "dashpay-registering-unlock", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingPaused: { scenario: "dashpay-registering-paused", title: "Creating – @alice", chip: "@alice · Registering" },
+  creatingHeld: { scenario: "dashpay-registering-held", title: "Creating – @alice", chip: "@alice · Registering" },
   creatingRepair: { scenario: "tools-stuck-funding", title: "Creating – @alice", chip: "@alice · Registering" },
   voting: { scenario: "dashpay-contest-pending", title: "Voting – @alice", chip: "@alice · Pending" },
   votingNoEnd: { scenario: "dashpay-contest-pending-no-end", title: "Voting – @alice", chip: "@alice · Pending" },
@@ -43,3 +47,74 @@ export const CHIP_TEXT: Record<string, string> = {
   noUsername: "No username",
   namesUnknown: "Username not loaded",
 };
+
+/** On "Make your username private": the Dash wallet, then the name step. With Shielded able to pay
+ * that is the Dash wallet row and Continue; while it cannot, "Continue without privacy". */
+export async function payFromDashWallet(page: Page) {
+  const step = page.getByTestId("registration-pay-with");
+  await expect(step).toHaveAttribute("data-kind", /^(sources|tip)$/);
+  if ((await step.getAttribute("data-kind")) === "tip") await page.getByTestId("privacy-without").click();
+  else {
+    await page.getByTestId("pay-with-core").getByRole("radio").check();
+    await page.getByTestId("registration-next").click();
+  }
+  await page.getByTestId("registration-name-field").waitFor();
+}
+
+/** On "Make your username private": `source` behind Advanced when it is Platform, then Continue. */
+export async function payFrom(page: Page, source: "shielded" | "platform") {
+  await expect(page.getByTestId("registration-pay-with")).toHaveAttribute("data-kind", /^(sources|tip)$/);
+  if (source === "platform") await page.getByTestId("privacy-advanced").click();
+  await page.getByTestId(`pay-with-${source}`).getByRole("radio").check();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("registration-name-field").waitFor();
+}
+
+/** Changes the fixture's Shielded world by `world`, then lets every screen read it again. */
+export async function setShielded(page: Page, world: Record<string, unknown>) {
+  await page.evaluate((w) => {
+    const f = window.__dwFixture!;
+    f.world.pending.shielded = { ...f.world.pending.shielded!, ...w };
+    f.emit({ kind: "eventsOverflowed" } as never);
+  }, world);
+}
+
+/** From the Join page: the privacy step with the Shielded world changed by `world`, showing the
+ * tip card `kind` (C-funding F16). */
+export async function privacyTip(page: Page, world: Record<string, unknown>, kind: string) {
+  await setShielded(page, world);
+  await page.getByTestId("join-create").click();
+  await expect(page.getByTestId("privacy-tip")).toHaveAttribute("data-kind", kind);
+  await page.mouse.move(0, 0);
+}
+
+/** From the Join page: a registration paid from the Platform balance whose run fails, up to its
+ * failed screen: its create fails in a block (C-funding F10), or its plan changed (F22). */
+export async function platformRunFails(page: Page, label: string, outcome: "paidFailure" | "replanRefused") {
+  await page.evaluate((o) => (window.__dwFixture!.world.dashpay.platformCreates = [o]), outcome);
+  await runFails(page, label, "platform");
+}
+
+/** A run paid from the Shielded balance whose create comes to `outcome` (C-funding F12). */
+export async function shieldedRunFails(page: Page, label: string, outcome: "consumed") {
+  await page.evaluate((o) => (window.__dwFixture!.world.dashpay.shieldedCreates = [o]), outcome);
+  await runFails(page, label, "shielded");
+}
+
+async function runFails(page: Page, label: string, source: "shielded" | "platform") {
+  await page.getByTestId("join-create").click();
+  await payFrom(page, source);
+  await page.getByTestId("registration-name-field").fill(label);
+  await expect(page.getByTestId("registration-next")).toBeEnabled();
+  await page.getByTestId("registration-next").click();
+  await page.getByTestId("registration-fee").waitFor();
+  await page.getByTestId("registration-pay").click();
+  await authorize(page);
+  await page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+  await expect(page.getByTestId("registration-screen")).toHaveAttribute("data-kind", "failed");
+  // No step under the pointer.
+  await page.mouse.move(0, 0);
+}

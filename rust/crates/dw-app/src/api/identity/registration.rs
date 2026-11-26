@@ -77,16 +77,31 @@ pub enum RegistrationFunding {
         link_id: String,
         request_inviter: bool,
     },
-    ExistingIdentity { identity: String },
+    ExistingIdentity {
+        identity: String,
+    },
     /// Developer builds only. `key` is a `prepareFaucetLock` key id and
     /// `proof` the hex `assetLockProof` the faucet returned for its public key.
-    FaucetAssetLock { key: String, proof: String },
+    FaucetAssetLock {
+        key: String,
+        proof: String,
+    },
     /// From the Shielded balance: `denomination`, in credits, is the quote's
     /// `readiness.denomination` (the quote ignores it).
     Shielded {
         #[ts(type = "string")]
         #[serde(with = "crate::dto::credits")]
         denomination: u64,
+    },
+    /// From the Platform balance: the quote's `platform.fundingCredits` and
+    /// `platform.feeReserveCredits`, passed back as shown.
+    PlatformAddresses {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        funding_credits: u64,
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        fee_reserve_credits: u64,
     },
 }
 
@@ -110,6 +125,13 @@ impl From<RegistrationFunding> for engine::RegistrationFunding {
             RegistrationFunding::Shielded { denomination } => {
                 engine::RegistrationFunding::Shielded { denomination }
             }
+            RegistrationFunding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+            } => engine::RegistrationFunding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+            },
         }
     }
 }
@@ -151,6 +173,48 @@ pub struct RegistrationQuote {
     pub grant: GrantRequest,
     /// Shielded funding only: whether the Shielded balance can pay now.
     pub readiness: Option<ShieldedReadiness>,
+    /// Platform funding only: what the Platform balance pays.
+    pub platform: Option<PlatformRegistrationQuote>,
+}
+
+/// What a registration from the Platform balance takes, in credits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformRegistrationQuote {
+    /// What the identity receives, exactly.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub funding_credits: u64,
+    /// The network fee, about: Platform meters it.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// What stays on the first address for that fee.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_reserve_credits: u64,
+    /// The planned debit (the funding and the reserve), which sizes the
+    /// grant; not shown, and not a bound: Platform meters the fee.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub debit_credits: u64,
+}
+
+impl From<engine::PlatformRegistrationQuote> for PlatformRegistrationQuote {
+    fn from(q: engine::PlatformRegistrationQuote) -> Self {
+        let engine::PlatformRegistrationQuote {
+            funding_credits,
+            fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+        } = q;
+        PlatformRegistrationQuote {
+            funding_credits,
+            fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -165,6 +229,15 @@ pub struct ShieldedReadiness {
     pub checks: Vec<ShieldedCheckState>,
     /// While `rested` is not ready: when it will be (unix seconds).
     pub ready_at: Option<u64>,
+    /// The shielded pool's note count, proved; `null` while unknown.
+    pub pool_notes: Option<u64>,
+    /// The count Platform requires before a payment may leave the pool.
+    pub pool_required: u64,
+    /// What returns to this wallet's Shielded balance after the create, in
+    /// credits; `null` while the notes cannot pay.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub change: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -180,6 +253,9 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
             denomination,
             checks,
             ready_at,
+            pool_notes,
+            pool_required,
+            change,
         } = r;
         ShieldedReadiness {
             denomination,
@@ -190,6 +266,9 @@ impl From<engine::ShieldedReadiness> for ShieldedReadiness {
                 })
                 .collect(),
             ready_at,
+            pool_notes,
+            pool_required,
+            change,
         }
     }
 }
@@ -205,6 +284,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             available_duffs,
             grant,
             readiness,
+            platform,
         } = q;
         RegistrationQuote {
             contested,
@@ -215,6 +295,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             available_duffs,
             grant: grant.into(),
             readiness: readiness.map(Into::into),
+            platform: platform.map(Into::into),
         }
     }
 }
@@ -265,10 +346,19 @@ pub enum RegistrationWaitName {
     /// which identity indexes the seed uses: "Waiting for DashPay to
     /// start". The engine runs it again meanwhile.
     Startup,
+    /// A registration paid from the Platform balance may still go through
+    /// and nothing proves it did yet: the next check settles it ("Check
+    /// again").
+    PaymentUnknown,
+    /// A registration paid from the Platform balance did not go through in
+    /// time and still may: "Move to Dash wallet" frees the balance, and a
+    /// resume tries it once more.
+    PaymentHeld,
 }
 
 mirror_enum!(engine::RegistrationWait => RegistrationWaitName {
-    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup
+    Unlock, Authorize, Sync, InstantSend, ChainLock, Network, FundingUnknown, NeedsFinish, Startup,
+    PaymentUnknown, PaymentHeld
 });
 
 /// Why a registration is `failed`.
@@ -340,6 +430,11 @@ pub struct RegistrationStatus {
     pub profile_failure: Option<String>,
     /// Set on an invitation claim's row.
     pub invitation: Option<RegistrationInvitation>,
+    /// A row funded from the Platform addresses: like a claim's, its resume
+    /// takes the grant `registrationResumeGrant` sizes.
+    pub from_platform: bool,
+    /// A row funded from the Shielded balance.
+    pub from_shielded: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -391,6 +486,8 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation,
+            from_platform,
+            from_shielded,
             created_at,
             updated_at,
         } = s;
@@ -410,6 +507,8 @@ impl From<engine::RegistrationStatus> for RegistrationStatus {
             name_failure,
             profile_failure,
             invitation: invitation.map(Into::into),
+            from_platform,
+            from_shielded,
             created_at,
             updated_at,
         }
@@ -503,6 +602,9 @@ mod tests {
                 ready: false,
             }],
             ready_at: Some(7),
+            pool_notes: Some(12),
+            pool_required: 250,
+            change: Some(7_000_000_000),
         });
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -510,6 +612,39 @@ mod tests {
                 "denomination": "3000000000",
                 "checks": [{"check": "noUnsettledSpend", "ready": false}],
                 "readyAt": 7,
+                "poolNotes": 12,
+                "poolRequired": 250,
+                "change": "7000000000",
+            })
+        );
+    }
+
+    #[test]
+    fn platform_funding_and_its_quote_carry_credits_as_strings() {
+        let f: RegistrationFunding = serde_json::from_str(
+            r#"{"kind":"platformAddresses","fundingCredits":"25000000","feeReserveCredits":"64500000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            engine::RegistrationFunding::from(f),
+            engine::RegistrationFunding::PlatformAddresses {
+                funding_credits: 25_000_000,
+                fee_reserve_credits: 64_500_000,
+            }
+        );
+        let q = PlatformRegistrationQuote::from(engine::PlatformRegistrationQuote {
+            funding_credits: 25_000_000,
+            fee_credits: 21_500_000,
+            fee_reserve_credits: 64_500_000,
+            debit_credits: 89_500_000,
+        });
+        assert_eq!(
+            serde_json::to_value(&q).unwrap(),
+            serde_json::json!({
+                "fundingCredits": "25000000",
+                "feeCredits": "21500000",
+                "feeReserveCredits": "64500000",
+                "debitCredits": "89500000",
             })
         );
     }

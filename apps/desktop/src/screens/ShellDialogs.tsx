@@ -1,10 +1,9 @@
 // The dialogs the menus open: File ▸ Open URI… (QT-019) and About.
 
 import { useId, useState, type FormEvent } from "react";
-import { errorMessage } from "../api/backend";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import { useBackend } from "../api/queries";
-import { applyLink, linkProblem } from "../app/shellBridge";
+import { openLinkText } from "../app/shellBridge";
 import { ui } from "../app/ui";
 import { DashButton } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -21,14 +20,8 @@ export function OpenUriSheet({ network }: { network: string }) {
   const [problem, setProblem] = useState<string | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    try {
-      const route = await backend.routeLink(network, text);
-      const why = linkProblem(route);
-      if (why) setProblem(why);
-      else applyLink(route);
-    } catch (err) {
-      setProblem(errorMessage(err));
-    }
+    const why = await openLinkText(backend, network, text);
+    if (why) setProblem(why);
   };
   return (
     <Sheet title={tr("app.openUri.title")} width="small" testId="open-uri" onClose={close}>
@@ -69,9 +62,13 @@ export function AboutSheet({ launch }: { launch: LaunchInfo }) {
     <Sheet title={tr("app.about.title")} width="small" testId="about" onClose={close}>
       <dl className="about-list">
         <dt>{tr("app.about.version")}</dt>
-        <dd data-testid="about-version">{launch.appVersion}</dd>
+        <dd data-testid="about-version">
+          <bdi dir="ltr">{launch.buildVersion}</bdi>
+        </dd>
         <dt>{tr("app.about.engine")}</dt>
-        <dd>{launch.engineVersion}</dd>
+        <dd>
+          <bdi dir="ltr">{launch.engineVersion}</bdi>
+        </dd>
         <dt>{tr("app.about.network")}</dt>
         <dd>{launch.network.dirName}</dd>
       </dl>

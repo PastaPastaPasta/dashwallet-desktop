@@ -126,7 +126,25 @@ pub struct DashPaySyncStatus {
     pub pending_contact_crypto: u32,
     pub loops: Vec<SyncLoopStatus>,
     pub quorum_source: QuorumSource,
+    /// The session runs with Platform (not `--no-platform`): without it no
+    /// bring-up or pass runs, and none is waited on.
+    pub platform_enabled: bool,
+    /// The wallet's last Platform-address pass of this session.
+    pub addresses: AddressSync,
 }
+
+/// A wallet's Platform-address pass, as the status bar waits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum AddressSync {
+    /// No pass has run for the wallet yet this session.
+    Pending,
+    /// Its last pass failed; the next one tries again.
+    Failed,
+    Done,
+}
+
+mirror_enum!(engine::AddressSync => AddressSync { Pending, Failed, Done });
 
 impl From<engine::DashPaySyncStatus> for DashPaySyncStatus {
     fn from(s: engine::DashPaySyncStatus) -> Self {
@@ -136,6 +154,8 @@ impl From<engine::DashPaySyncStatus> for DashPaySyncStatus {
             pending_contact_crypto,
             loops,
             quorum_source,
+            platform_enabled,
+            addresses,
         } = s;
         DashPaySyncStatus {
             startup: startup.into(),
@@ -143,6 +163,8 @@ impl From<engine::DashPaySyncStatus> for DashPaySyncStatus {
             pending_contact_crypto,
             loops: loops.into_iter().map(Into::into).collect(),
             quorum_source: quorum_source.into(),
+            platform_enabled,
+            addresses: addresses.into(),
         }
     }
 }

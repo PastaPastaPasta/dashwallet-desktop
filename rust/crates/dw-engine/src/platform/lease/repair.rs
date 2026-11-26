@@ -72,9 +72,10 @@
 //! self-spend, so the self-spend beats a lost lock only if every such
 //! transaction is settled. The repair is refused while a transaction of
 //! the funding accounts that spends the wallet's coins is not ChainLocked
-//! (an earlier self-spend, a payment, or the lost lock itself, which the
-//! wallet may have seen): it waits for that ChainLock, or the user
-//! abandons the transaction, whose coins come back to the next repair. It
+//! (an earlier self-spend or a payment): it waits for that ChainLock, or
+//! the user abandons the transaction, whose coins come back to the next
+//! repair. The step's own lock is not the user's to abandon: Resolve does
+//! that itself (below). It
 //! is refused unless it spends an input of every tracked `Built` and
 //! `Broadcast` row of the step, so it conflicts with each. And it is
 //! refused while an unattributed row of the step's funding type stands (a
@@ -82,13 +83,29 @@
 //! own, `mode_b`'s "Unattributed rows"): that lock may be the step's, on
 //! the chain whatever the self-spend does.
 //!
+//! **The lock the wallet recorded.** The step's own lock may stand in the
+//! wallet as a payment that is not ChainLocked (dash-spv records what it
+//! sends), and the "When" refusal would then wait for it forever if no
+//! peer took it. While it is only in the mempool (one mined or
+//! InstantSend-locked waits for its ChainLock as any other), Resolve
+//! abandons it first, as an Activity Abandon would, for the step's own
+//! locks only and nothing that spends them (Activity refuses it,
+//! `PlatformFunding`; an abandon that would take anything else is refused
+//! `SpendUnsettled`), and signs nothing: its rebroadcast stops, and the
+//! coins it spent wait for the rescan every abandon runs
+//! (`crate::rescan_hold`), so it is refused `LockAbandoned`. Once they are
+//! back, Resolve again builds the self-spend from them. A resume of the
+//! lock in between sends it again, which lifts the stop; the wallet keeps
+//! it abandoned, and the next Resolve stops it again. The preview prices
+//! nothing for such a step: it is refused `SpendUnsettled`.
+//!
 //! The facade call under Tools ▸ Repair is DP1-02's (m4 contract,
 //! "Tools ▸ Repair ... gets a facade call; engine-internal until then").
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-use dashcore::OutPoint;
+use dashcore::{OutPoint, Txid};
 
 use super::ArtifactId;
 use super::mode_b::StuckFundingRefusal;
@@ -128,17 +145,31 @@ impl NetworkSession {
         step: String,
         grant_id: String,
     ) -> Result<BroadcastOutcome, EngineError> {
-        let draft = self.stuck_funding_draft(wallet_id, &step).await?;
+        let draft = self.stuck_funding_draft_as(wallet_id, &step, true).await?;
         self.send_self_spend(&draft, &step, grant_id).await
     }
 
     /// The self-spend's draft (module doc): the funding accounts' coins
     /// [`funding_repair_coins`] picks to a fresh receive address, the fee
-    /// subtracted, with the tracked locks' inputs exempt.
+    /// subtracted, with the tracked locks' inputs exempt. Abandons nothing:
+    /// a step whose own lock the wallet recorded unsettled is refused
+    /// `SpendUnsettled` here.
     pub(crate) async fn stuck_funding_draft(
         self: &Arc<Self>,
         wallet_id: WalletId,
         step: &str,
+    ) -> Result<Arc<TxDraft>, EngineError> {
+        self.stuck_funding_draft_as(wallet_id, step, false).await
+    }
+
+    /// [`Self::stuck_funding_draft`]; `resolve`: for Resolve itself, which
+    /// abandons the step's own locks the wallet recorded unsettled (module
+    /// doc, "The lock the wallet recorded") and is refused `LockAbandoned`.
+    pub(crate) async fn stuck_funding_draft_as(
+        self: &Arc<Self>,
+        wallet_id: WalletId,
+        step: &str,
+        resolve: bool,
     ) -> Result<Arc<TxDraft>, EngineError> {
         if !is_funding_step(step) {
             return Err(EngineError::InvalidArgument(format!(
@@ -149,6 +180,11 @@ impl NetworkSession {
         let step = step.to_owned();
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Not while a wallet loads, as an Activity Abandon.
+            let _lifecycle = match resolve {
+                true => Some(this.wallet_lifecycle.hold().await),
+                false => None,
+            };
             if !this.leases.refresh_funding(wallet_id).await {
                 return Err(StuckFundingRefusal::RowsUnknown.into());
             }
@@ -158,10 +194,36 @@ impl NetworkSession {
             // them again under its own, so a coin locked in between is
             // refused there (`send.outpoint_unavailable`).
             let fence = this.coin_fence(wallet_id).await?;
-            if let Some(txid) = crate::coins::unsettled_spend(
+            let unsettled = crate::coins::unsettled_spends(
                 &crate::wallet_read::info_of(&wallet).await?.core_wallet,
-            ) {
-                return Err(StuckFundingRefusal::SpendUnsettled(txid).into());
+            );
+            let own: BTreeSet<Txid> = rows.iter().map(|(t, _)| *t).collect();
+            if let Some((txid, _)) =
+                (unsettled.iter()).find(|(t, mempool)| !resolve || !**mempool || !own.contains(*t))
+            {
+                return Err(StuckFundingRefusal::SpendUnsettled(*txid).into());
+            }
+            let locks: BTreeSet<Txid> = unsettled.into_keys().collect();
+            if let Some(lock) = locks.first().copied() {
+                // Refused under the write lock (it settled meanwhile, or
+                // something else of the wallet spends it): wait as for any
+                // unsettled spend.
+                match this.abandon_own_locks(wallet_id, &locks, &own).await {
+                    Err(EngineError::TxActionRefused(_)) => {
+                        return Err(StuckFundingRefusal::SpendUnsettled(lock).into());
+                    }
+                    other => other?,
+                }
+                return Err(StuckFundingRefusal::LockAbandoned(lock).into());
+            }
+            // An own lock abandoned before: its coins wait for the rescan.
+            if resolve {
+                this.restop_abandoned_locks(wallet_id, &own).await?;
+            }
+            let held = this.hub.rescan_held(&wallet_id);
+            if let Some((txid, _)) = (rows.iter()).find(|(_, i)| i.iter().any(|o| held.contains(o)))
+            {
+                return Err(StuckFundingRefusal::LockAbandoned(*txid).into());
             }
             let snapshot = this.coin_snapshot(&fence, &wallet).await?;
             drop(fence);
@@ -237,6 +299,53 @@ impl NetworkSession {
             Ok(draft)
         })
         .await
+    }
+
+    /// Abandons `locks`, the stuck step's own locks the wallet recorded as
+    /// unsettled spends, as an Activity Abandon would but past its
+    /// `PlatformFunding` refusal for the step's locks `own` alone: their
+    /// rebroadcast stops, and the coins they spent wait for the rescan
+    /// (`crate::rescan_hold`). Nothing is signed.
+    async fn abandon_own_locks(
+        &self,
+        wallet_id: WalletId,
+        locks: &BTreeSet<Txid>,
+        own: &BTreeSet<Txid>,
+    ) -> Result<(), EngineError> {
+        let manager = self.manager()?;
+        if !manager.spv().is_started() {
+            return Err(EngineError::SpvNotRunning);
+        }
+        let _batch = self.hub.abandon_batch(wallet_id);
+        let mut done = BTreeSet::new();
+        for lock in locks {
+            if !done.contains(lock) {
+                done.extend((self.abandon_inner_funding(&manager, wallet_id, *lock, own)).await?);
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops again the rebroadcast of the step's own locks the wallet holds
+    /// abandoned: the catch-up resume resends a pending row, which lifts the
+    /// stop phase 1 set, and the stop does not survive SPV's restart.
+    async fn restop_abandoned_locks(
+        &self,
+        wallet_id: WalletId,
+        own: &BTreeSet<Txid>,
+    ) -> Result<(), EngineError> {
+        let abandoned: Vec<Txid> = (own.iter())
+            .filter(|t| (self.hub.history.get(&wallet_id, t)).is_some_and(|e| e.is_abandoned()))
+            .copied()
+            .collect();
+        if abandoned.is_empty() {
+            return Ok(());
+        }
+        let manager = self.manager()?;
+        for txid in abandoned {
+            self.stop_rebroadcast(&manager, wallet_id, txid).await;
+        }
+        Ok(())
     }
 
     /// Prepares `draft`, records its txid against `step`'s marker, then
@@ -384,6 +493,7 @@ mod tests {
             lock_input: false,
             unresolved_lock: false,
             awaiting_history: false,
+            excluded: None,
         }
     }
 

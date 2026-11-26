@@ -200,6 +200,60 @@ pub fn create_owned_file(base: &Path, owned: &Path) -> io::Result<()> {
     }
 }
 
+/// Renames `from` to `to` unless something is at `to`, atomically: an
+/// existing `to` (a symlink too) is never replaced, and the error's kind is
+/// `AlreadyExists`. Linux `renameat2(RENAME_NOREPLACE)`, macOS
+/// `renamex_np(RENAME_EXCL)`, Windows `MoveFileExW` without
+/// `MOVEFILE_REPLACE_EXISTING`. Where the system or file system has no such
+/// rename the error's kind is `Unsupported` and neither path is touched.
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        let unsupported = [Errno::INVAL, Errno::NOSYS, Errno::NOTSUP, Errno::OPNOTSUPP];
+        renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(|e| match e {
+            e if unsupported.contains(&e) => io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("no rename that keeps an existing file here ({e})"),
+            ),
+            e => e.into(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |p: &Path| -> Vec<u16> {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        };
+        let (from, to) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated UTF-16 paths that outlive the call.
+        let moved = unsafe {
+            windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
+        };
+        if moved == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        windows
+    )))]
+    {
+        let _ = (from, to);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no rename that keeps an existing file here",
+        ))
+    }
+}
+
 #[cfg(unix)]
 mod unix {
     use std::ffi::{OsStr, OsString};
@@ -607,6 +661,30 @@ mod unix {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn a_rename_that_keeps_an_existing_file_never_replaces_one() {
+        let tmp = dw_testutil::private_tempdir();
+        let (from, to) = (tmp.path().join("from"), tmp.path().join("to"));
+        std::fs::write(&from, b"new").unwrap();
+        std::fs::write(&to, b"old").unwrap();
+        let refused = rename_noreplace(&from, &to).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+        assert_eq!(std::fs::read(&to).unwrap(), b"old");
+        assert_eq!(std::fs::read(&from).unwrap(), b"new");
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("dangling");
+            std::os::unix::fs::symlink(tmp.path().join("missing"), &link).unwrap();
+            let refused = rename_noreplace(&from, &link).unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
+        std::fs::remove_file(&to).unwrap();
+        rename_noreplace(&from, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"new");
+        assert!(!from.exists());
+    }
+
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
 

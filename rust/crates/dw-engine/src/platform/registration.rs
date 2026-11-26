@@ -1,6 +1,7 @@
 //! Registration: quote, the persisted state machine (§3.4), resume, discard
 //! and stranded asset locks (DP1-02).
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -11,7 +12,9 @@ use dpp::version::PlatformVersion;
 use dw_appdb::{ContestWatch, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{GrantKind, GrantPurpose};
 use platform_wallet::wallet::shielded::ShieldedNote;
-use platform_wallet::wallet::shielded::note_selection::select_notes;
+use platform_wallet::wallet::shielded::note_selection::{
+    select_notes, select_notes_for_denomination,
+};
 use serde::{Deserialize, Serialize};
 
 use super::contest_watch::watch_of;
@@ -26,7 +29,9 @@ use super::lease::{Lease, LeaseError};
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
-use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::registration_platform;
+use super::registration_rows::{Decoded, Funding, Phase, PlatformPlan, ProfileRecord};
+use super::registration_shielded;
 use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::MIN_ACTIONS;
 use super::unfinished::{LockKindId, TransfersReport};
@@ -84,6 +89,30 @@ pub enum RegistrationFunding {
     Shielded {
         denomination: u64,
     },
+    /// Paid from the wallet's Platform addresses (C-funding F4, F8–F10):
+    /// the quote's `platform.funding_credits` and
+    /// `platform.fee_reserve_credits`; the start refuses others
+    /// (`registration.quote_changed`).
+    PlatformAddresses {
+        funding_credits: u64,
+        fee_reserve_credits: u64,
+    },
+}
+
+/// What a registration from the Platform addresses takes (C-funding F9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformRegistrationQuote {
+    /// What the identity receives, exactly.
+    pub funding_credits: u64,
+    /// dpp's minimum fee, shown as "about": Platform meters it from the
+    /// first input.
+    pub fee_credits: u64,
+    /// What the first input keeps for that fee (three times the minimum).
+    pub fee_reserve_credits: u64,
+    /// `funding_credits + fee_reserve_credits`: the planned debit, which
+    /// sizes the grant; not what the copy shows, and not a bound on the
+    /// loss (Platform meters the fee from input 0).
+    pub debit_credits: u64,
 }
 
 /// Whether the Shielded balance can pay a registration now (C-funding F16).
@@ -96,6 +125,14 @@ pub struct ShieldedReadiness {
     pub checks: Vec<ShieldedCheckState>,
     /// While `Rested` is not ready: when it will be, unix seconds.
     pub ready_at: Option<u64>,
+    /// Platform's shielded note count, proved; `None` while unknown.
+    pub pool_notes: Option<u64>,
+    /// The count Platform requires before a create may leave the pool.
+    pub pool_required: u64,
+    /// What the create's notes hold above the denomination, in credits:
+    /// the library pays it back to the wallet's own default shielded
+    /// address. `None` while the notes cannot pay the denomination.
+    pub change: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +158,9 @@ pub enum ShieldedCheck {
     Synced,
     /// 3 hours since the latest incoming shielded activity (F17).
     Rested,
+    /// The shielded pool holds the notes Platform requires before a create
+    /// may leave it; an unknown count passes.
+    PoolSize,
 }
 
 /// An asset-lock key the engine derived for the faucet's
@@ -155,6 +195,8 @@ pub struct RegistrationQuote {
     pub grant: GrantRequest,
     /// `Shielded` funding only.
     pub readiness: Option<ShieldedReadiness>,
+    /// `PlatformAddresses` funding only.
+    pub platform: Option<PlatformRegistrationQuote>,
 }
 
 /// One `dp_registration` row.
@@ -195,6 +237,12 @@ pub struct RegistrationStatus {
     pub profile_failure: Option<String>,
     /// Set for a row funded by an invitation (DP5-03 D8).
     pub invitation: Option<RegistrationInvitation>,
+    /// A row funded from the Platform addresses: its resume takes the grant
+    /// `registration_resume_grant` sizes, as a claim's does.
+    pub from_platform: bool,
+    /// A row funded from the Shielded balance (C-funding F11): its wait
+    /// `payment_unknown` is the shielded create's, settled by the journal.
+    pub from_shielded: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -258,6 +306,13 @@ pub enum RegistrationWait {
     /// for DashPay to start". A run waiting here has the bring-up run again,
     /// on a backoff.
     Startup,
+    /// A Platform-funded create may still execute and no proof says it did
+    /// (C-funding F7): the next proved read settles it; "Check again".
+    PaymentUnknown,
+    /// A Platform-funded create failed by height and may still execute
+    /// (F22): "Move to Dash wallet" frees its addresses; a resume signs it
+    /// once more.
+    PaymentHeld,
 }
 
 /// Why a flow is `Failed`, with the parameters its code carries.
@@ -382,9 +437,9 @@ impl DashPay {
         // Its shields sign as `resume_shield` does: admitted as a signing
         // call (`on_pool_signing`).
         self.run_lib(true, move |session, _, lib| async move {
-            let lease = authority(&session, wallet, &grant).await?;
+            let lease = authority(&session, wallet, &grant, PaidFrom::Other).await?;
             let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
-            super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
+            super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await?;
             super::unfinished::finish_all(&session, wallet, &lease, &mut report).await;
             Ok(report)
         })
@@ -470,6 +525,7 @@ struct Plan {
     /// Coins the funding could spend that the engine keeps from selection.
     protected_coins: usize,
     readiness: Option<ShieldedReadiness>,
+    platform: Option<PlatformRegistrationQuote>,
 }
 
 /// What `req` costs and how it is funded, for the quote and the start.
@@ -500,6 +556,12 @@ async fn plan<L: RegistrationLib>(
     if let RegistrationFunding::FaucetAssetLock { .. } = &req.funding {
         return Err(faucet_off().into());
     }
+    if let RegistrationFunding::PlatformAddresses { .. } = &req.funding {
+        registration_platform::refuse_on_mainnet(&lib.network())?;
+    }
+    if let RegistrationFunding::Shielded { .. } = &req.funding {
+        registration_shielded::refuse_on_mainnet(&lib.network())?;
+    }
     let mut credits = lib.name_credits(&req.label).await?;
     if let Some(temp) = &temp_label {
         credits = credits.saturating_add(lib.name_credits(temp).await?);
@@ -520,6 +582,7 @@ async fn plan<L: RegistrationLib>(
         available_duffs: 0,
         protected_coins: 0,
         readiness: None,
+        platform: None,
     };
     match &req.funding {
         RegistrationFunding::CoreBalance => {
@@ -563,6 +626,49 @@ async fn plan<L: RegistrationLib>(
         } => invitation_plan(lib, link_id, *request_inviter, credits, base).await,
         RegistrationFunding::FaucetAssetLock { .. } => unreachable!("refused above"),
         RegistrationFunding::Shielded { .. } => shielded_plan(lib, base).await,
+        RegistrationFunding::PlatformAddresses { .. } => platform_plan(lib, base).await,
+    }
+}
+
+/// A Platform-funded plan (C-funding F9): the identity receives what its
+/// names and profile take, at least dpp's funding minimum; Platform meters
+/// the create's fee from the first input, which keeps the reserve for it.
+async fn platform_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
+    let planned = lib.platform_plan(base.credits).await?;
+    let quote = PlatformRegistrationQuote {
+        funding_credits: planned.funding_credits,
+        fee_credits: planned.fee_credits,
+        fee_reserve_credits: planned.fee_reserve_credits,
+        debit_credits: planned.debit_credits(),
+    };
+    Ok(Plan {
+        funding: Funding::PlatformAddresses {
+            funding_credits: quote.funding_credits,
+            fee_reserve_credits: quote.fee_reserve_credits,
+            plan: None,
+        },
+        credits_held: quote.funding_credits,
+        platform: Some(quote),
+        ..base
+    })
+}
+
+/// The start of a Platform-funded request, before anything is written:
+/// the numbers the quote showed (C-funding F4).
+fn platform_start(
+    quote: &PlatformRegistrationQuote,
+    funding: &RegistrationFunding,
+) -> Result<(), RegistrationError> {
+    match funding {
+        RegistrationFunding::PlatformAddresses {
+            funding_credits,
+            fee_reserve_credits,
+        } if *funding_credits == quote.funding_credits
+            && *fee_reserve_credits == quote.fee_reserve_credits =>
+        {
+            Ok(())
+        }
+        _ => Err(RegistrationError::QuoteChanged),
     }
 }
 
@@ -588,13 +694,15 @@ pub(crate) struct ShieldedFacts {
     /// notes: when the engine first saw each, or an earlier `created_at`;
     /// none for the notes of the first scan (restored).
     pub(crate) latest_incoming: Option<u64>,
+    /// Platform's shielded note count; `None` while unknown.
+    pub(crate) pool_notes: Option<u64>,
 }
 
 /// A Shielded-funded plan: the smallest denomination of the version that
 /// pays the create's fee and `base.credits` (the names and the profile),
 /// and the readiness the start checks again. The identity starts with the
 /// denomination less the predicted fee; the change returns to the pool.
-/// The fallback address is read by the start's flow step (C4b-2).
+/// The fallback address is the start's to fix (F13), never the caller's.
 async fn shielded_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
     let version = lib.platform_version().await;
     let facts = lib.shielded_facts().await?;
@@ -636,7 +744,8 @@ pub(crate) fn denomination(
         .min()
 }
 
-/// Each check of C-funding F16 and F17 at `now`.
+/// Each check of C-funding F16 and F17 at `now`, the pool's note floor
+/// last.
 pub(crate) fn shielded_readiness(
     version: &PlatformVersion,
     facts: &ShieldedFacts,
@@ -646,6 +755,8 @@ pub(crate) fn shielded_readiness(
     let ready_at = (facts.latest_incoming)
         .map(|at| at.saturating_add(SHIELDED_REST_SECS))
         .filter(|&at| facts.rest_known && at > now);
+    let pool_required = (version.drive_abci.validation_and_processing.event_constants)
+        .minimum_pool_notes_for_outgoing;
     let checks = [
         (
             ShieldedCheck::PoolActive,
@@ -663,6 +774,10 @@ pub(crate) fn shielded_readiness(
             ShieldedCheck::Rested,
             facts.synced && facts.rest_known && ready_at.is_none(),
         ),
+        (
+            ShieldedCheck::PoolSize,
+            facts.pool_notes.is_none_or(|n| n >= pool_required),
+        ),
     ];
     ShieldedReadiness {
         denomination,
@@ -670,19 +785,35 @@ pub(crate) fn shielded_readiness(
             .map(|(check, ready)| ShieldedCheckState { check, ready })
             .collect(),
         ready_at,
+        pool_notes: facts.pool_notes,
+        pool_required,
+        change: denomination.and_then(|d| change(version, &facts.notes, d)),
     }
+}
+
+/// What the notes the library's create selects for `denomination` hold
+/// above it (`select_notes_for_denomination`, as the library calls it).
+pub(crate) fn change(
+    version: &PlatformVersion,
+    notes: &[ShieldedNote],
+    denomination: u64,
+) -> Option<u64> {
+    let keys = registration_specs().len();
+    let (_, total, _) =
+        select_notes_for_denomination(notes, denomination, MIN_ACTIONS, keys, version).ok()?;
+    total.checked_sub(denomination)
 }
 
 /// The start of a Shielded-funded request, before anything is written:
 /// every readiness check again, with no override; then the denomination
-/// the quote showed. No flow step funds it yet (C4b-2).
+/// the quote showed.
 fn shielded_start(
     readiness: &ShieldedReadiness,
     funding: &RegistrationFunding,
 ) -> Result<(), RegistrationError> {
     let off = || {
         PlatformError::FeatureOff {
-            feature: "shielded_registration".into(),
+            feature: registration_shielded::FEATURE.into(),
         }
         .into()
     };
@@ -706,7 +837,7 @@ fn shielded_start(
         RegistrationFunding::Shielded { denomination }
             if readiness.denomination == Some(*denomination) =>
         {
-            Err(off())
+            Ok(())
         }
         _ => Err(RegistrationError::QuoteChanged),
     }
@@ -792,10 +923,11 @@ pub(crate) async fn quote<L: RegistrationLib>(
         Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
         _ => 0,
     };
-    // F5: the notes spent, then the names and the profile.
-    let spent_credits = match plan.funding {
-        Funding::Shielded { denomination, .. } => denomination,
-        _ => 0,
+    // F5: the notes spent, or the addresses' planned debit; then the names
+    // and the profile.
+    let spent_credits = match &plan.funding {
+        Funding::Shielded { denomination, .. } => *denomination,
+        _ => plan.platform.as_ref().map_or(0, |p| p.debit_credits),
     };
     Ok(RegistrationQuote {
         contested: plan.contested,
@@ -809,12 +941,17 @@ pub(crate) async fn quote<L: RegistrationLib>(
             max_credits: plan.credits.saturating_add(spent_credits),
         },
         readiness: plan.readiness,
+        platform: plan.platform,
     })
 }
 
-/// A claim row's resume grant (DP5-03 D20), from the row alone: no duffs,
-/// and the credits of the steps it has left. Never from the invitation's
-/// status, which reads `Claimed` once the row's own claim has landed.
+/// A claim row's, a Platform-funded or a Shielded-funded row's resume grant
+/// (DP5-03 D20; C-funding F5), from the row alone, never a quote: no duffs,
+/// and the credits of the steps it has left. A claim's identity create is
+/// its fee; a Platform row's is the funding and the fee reserve it stored;
+/// a Shielded row's the denomination it stored. Never
+/// from the invitation's status, which reads `Claimed` once the row's own
+/// claim has landed.
 pub(crate) async fn resume_grant<L: RegistrationLib>(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
@@ -822,12 +959,43 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
     draft: &str,
 ) -> Result<GrantRequest, RegistrationError> {
     let row = registration_row(session, wallet, draft).await?;
-    let Ok((phase, Funding::Invitation { inviter, .. })) = flow::interpret(&row) else {
-        return Err(invalid("not an invitation's claim"));
+    let (phase, create, inviter) = match flow::interpret(&row) {
+        Ok((phase, Funding::Invitation { inviter, .. })) => {
+            (phase, flow::IDENTITY_CREATE_CREDITS, inviter)
+        }
+        Ok((
+            phase,
+            Funding::PlatformAddresses {
+                funding_credits,
+                fee_reserve_credits,
+                plan,
+            },
+        )) => {
+            registration_platform::refuse_on_mainnet(&lib.network())?;
+            if plan
+                .as_ref()
+                .is_some_and(|p| !plan_as_made(p, funding_credits))
+            {
+                return Err(invalid("the row's stored plan is not one this wallet made"));
+            }
+            (
+                phase,
+                funding_credits.saturating_add(fee_reserve_credits),
+                None,
+            )
+        }
+        // A Shielded row's create is the denomination its quote took
+        // (C-funding F5).
+        Ok((phase, Funding::Shielded { denomination, .. })) => (phase, denomination, None),
+        _ => {
+            return Err(invalid(
+                "not an invitation's claim or a Platform- or Shielded-funded row",
+            ));
+        }
     };
     let mut credits = 0u64;
     if row.identity.is_none() {
-        credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
+        credits = credits.saturating_add(create);
     }
     if phase < Phase::NameRegistered {
         credits = credits.saturating_add(lib.name_credits(&row.label).await?);
@@ -847,6 +1015,20 @@ pub(crate) async fn resume_grant<L: RegistrationLib>(
     })
 }
 
+/// A stored plan as the funding step makes one: distinct addresses that
+/// parse, each at a nonce past 0 and claiming something, the claims
+/// exactly the funding the row stored, and an identity that parses.
+fn plan_as_made(plan: &PlatformPlan, funding_credits: u64) -> bool {
+    let addresses: BTreeSet<&str> = plan.inputs.iter().map(|(a, _, _)| a.as_str()).collect();
+    let claims = (plan.inputs.iter()).try_fold(0u64, |sum, (_, _, c)| sum.checked_add(*c));
+    !plan.inputs.is_empty()
+        && addresses.len() == plan.inputs.len()
+        && (plan.inputs.iter())
+            .all(|(a, n, c)| *n > 0 && *c > 0 && super::platform_moves::parse(a).is_some())
+        && claims == Some(funding_credits)
+        && Identifier::from_string(&plan.identity, Encoding::Base58).is_ok()
+}
+
 /// The wallet's registration ledger (DP1-02 §5), for the gates.
 async fn ledger<L: RegistrationLib>(
     session: &NetworkSession,
@@ -864,6 +1046,9 @@ pub(super) async fn funding_cap(
     wallet: WalletId,
     grant: &str,
 ) -> Result<u64, PlatformError> {
+    if let Some(lease) = funding_lease(session, wallet, grant) {
+        return Ok(lease?.available(BudgetPurpose::Funding)?);
+    }
     grant_cap(session, wallet, grant, BudgetPurpose::Funding).await
 }
 
@@ -904,7 +1089,7 @@ async fn grant_funds(
     wallet: WalletId,
     grant: &str,
 ) -> Result<bool, PlatformError> {
-    if let Some(lease) = named_lease(session, wallet, grant) {
+    if let Some(lease) = funding_lease(session, wallet, grant) {
         return match lease?.call_funding_signer() {
             Ok(_) => Ok(true),
             Err(LeaseError::NeedsGrant(BudgetPurpose::Funding)) => Ok(false),
@@ -929,21 +1114,106 @@ fn named_lease(
     })
 }
 
+/// [`named_lease`] for a funding or a registration: a contact payout's
+/// lease pays its payout alone, `grant_invalid` (its credits are still
+/// read through [`grant_cap`]).
+fn funding_lease(
+    session: &NetworkSession,
+    wallet: WalletId,
+    grant: &str,
+) -> Option<Result<Lease, PlatformError>> {
+    Some(match named_lease(session, wallet, grant)? {
+        Ok(lease) if lease.flow() == FlowKind::ContactPayFromBalance => {
+            Err(PlatformError::GrantInvalid)
+        }
+        lease => lease,
+    })
+}
+
+/// What a registration is paid from, as its lease needs to know it
+/// (C-funding F5): a row paid from the Platform addresses carries their
+/// signer, one paid from the Shielded balance the shielded spend key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaidFrom {
+    /// The Core balance, an invitation, or an identity the wallet has.
+    Other,
+    Platform,
+    Shielded,
+}
+
+impl PaidFrom {
+    fn of(funding: &Funding) -> Self {
+        match funding {
+            Funding::PlatformAddresses { .. } => Self::Platform,
+            Funding::Shielded { .. } => Self::Shielded,
+            _ => Self::Other,
+        }
+    }
+
+    /// The scope a rebind of the row's lease issues ([`issue`]).
+    ///
+    /// [`issue`]: super::lease::session::issue
+    fn scope(self) -> (bool, Option<super::payments::PaymentSource>) {
+        match self {
+            Self::Other => (false, None),
+            Self::Platform => (true, None),
+            Self::Shielded => (false, Some(super::payments::PaymentSource::Shielded)),
+        }
+    }
+}
+
 /// A facade call's `grant`: a lease of this wallet, or a vault grant
-/// redeemed into a new registration lease.
+/// redeemed into a new registration lease of the row's source (`paid`). A
+/// lease without that source's key is `platform.grant_invalid`.
 async fn authority(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     grant: &str,
+    paid: PaidFrom,
 ) -> Result<Lease, RegistrationError> {
-    let lease = match named_lease(session, wallet, grant) {
-        Some(lease) => lease?,
-        None => session
-            .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
-            .await
-            .map_err(PlatformError::from)?,
+    let lease = match funding_lease(session, wallet, grant) {
+        Some(lease) => {
+            let lease = lease?;
+            let keyless = match paid {
+                PaidFrom::Other => false,
+                PaidFrom::Platform => lease.call_platform_address_signer().is_err(),
+                PaidFrom::Shielded => lease.call_shielded_spend_key().is_err(),
+            };
+            if keyless {
+                return Err(PlatformError::GrantInvalid.into());
+            }
+            lease
+        }
+        None => {
+            let grants = [grant.to_owned()];
+            let begun = match paid {
+                PaidFrom::Shielded => {
+                    session
+                        .begin_shielded_registration_lease(wallet, &grants)
+                        .await
+                }
+                _ => {
+                    let platform = paid == PaidFrom::Platform;
+                    session
+                        .begin_registration_lease(wallet, &grants, platform)
+                        .await
+                }
+            };
+            begun.map_err(PlatformError::from)?
+        }
     };
     Ok(lease)
+}
+
+/// What a row is paid from; [`PaidFrom::Other`] for one this build cannot
+/// run.
+fn paid_from(row: &RegistrationRow) -> PaidFrom {
+    flow::interpret(row).map_or(PaidFrom::Other, |(_, funding)| PaidFrom::of(&funding))
+}
+
+/// A row paid from the Platform addresses.
+fn from_platform(row: &RegistrationRow) -> bool {
+    paid_from(row) == PaidFrom::Platform
 }
 
 pub(crate) async fn start<L: RegistrationLib + 'static>(
@@ -964,9 +1234,12 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     grant: String,
     past: &[String],
 ) -> Result<String, RegistrationError> {
-    let plan = plan(&*lib, &req).await?;
+    let mut plan = plan(&*lib, &req).await?;
     if let Some(readiness) = &plan.readiness {
         shielded_start(readiness, &req.funding)?;
+    }
+    if let Some(quote) = &plan.platform {
+        platform_start(quote, &req.funding)?;
     }
     let past = past
         .iter()
@@ -1019,13 +1292,20 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
         }
     }
     // D8: a claim's grant carries no duffs, so its lease has no funding
-    // signer.
-    if matches!(plan.funding, Funding::Invitation { .. })
+    // signer; nor does a Platform- or Shielded-funded row's (C-funding F5).
+    let paid = PaidFrom::of(&plan.funding);
+    if (paid != PaidFrom::Other || matches!(plan.funding, Funding::Invitation { .. }))
         && grant_funds(session, wallet, &grant).await?
     {
         return Err(PlatformError::GrantInvalid.into());
     }
-    let lease = authority(session, wallet, &grant).await?;
+    let lease = authority(session, wallet, &grant, paid).await?;
+    // F13: the fallback is the wallet's own Platform address, fixed at Draft
+    // and never the caller's; taken only once nothing refuses the start, as
+    // each is kept from every later hand-out.
+    if let Funding::Shielded { fallback, .. } = &mut plan.funding {
+        *fallback = lib.fallback_address().await?;
+    }
     let row = NewRegistration {
         identity_index: None,
         identity: plan.identity,
@@ -1187,6 +1467,18 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             (Some(_), _) if !awaiting => None,
             (None, Some(Phase::Done)) => None,
             _ if state.running() => state.wait,
+            // C-funding F7, F22: what its create's record reads.
+            _ if phase == Some(Phase::KeysPrepared) && flow::platform_committed(row) => Some(
+                match super::platform_moves::register_held(session, wallet, row.id).await {
+                    Ok(true) => RegistrationWait::PaymentHeld,
+                    _ => RegistrationWait::PaymentUnknown,
+                },
+            ),
+            // C-funding F12: its create named an identity; only evidence
+            // settles it.
+            _ if phase == Some(Phase::KeysPrepared) && flow::shielded_committed(row) => {
+                Some(RegistrationWait::PaymentUnknown)
+            }
             _ => Some(idle_wait(session, wallet, lib, row, phase, &ledger)),
         };
         out.push(RegistrationStatus {
@@ -1234,6 +1526,8 @@ pub(crate) async fn statuses<L: RegistrationLib>(
                 }),
                 _ => None,
             },
+            from_platform: from_platform(row),
+            from_shielded: paid_from(row) == PaidFrom::Shielded,
             created_at: row.created_at,
             updated_at: row.updated_at,
         });
@@ -1261,6 +1555,8 @@ pub(crate) async fn statuses<L: RegistrationLib>(
             name_failure: None,
             profile_failure: None,
             invitation: None,
+            from_platform: false,
+            from_shielded: false,
             created_at: 0,
             updated_at: 0,
         });
@@ -1382,8 +1678,28 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     if row.phase == Phase::Done.as_str() && row.error.is_none() {
         return Ok(());
     }
-    // D8 on every grant a claim is given, not only the start's.
-    if let (Ok((_, Funding::Invitation { .. })), Some(grant)) = (flow::interpret(&row), &grant)
+    // D8 on every grant a claim is given, not only the start's; F5 on a
+    // Platform- or Shielded-funded row's. A Platform-funded row, and a
+    // Shielded-funded one not yet funded nor named, are off on mainnet
+    // before any grant is redeemed; a named one still settles by evidence.
+    let paid = paid_from(&row);
+    if paid == PaidFrom::Platform {
+        registration_platform::refuse_on_mainnet(&lib.network())?;
+    }
+    if let Ok((phase, Funding::Shielded { identity: None, .. })) = flow::interpret(&row)
+        && phase.unfunded()
+    {
+        registration_shielded::refuse_on_mainnet(&lib.network())?;
+    }
+    if let (
+        Ok((
+            _,
+            Funding::Invitation { .. }
+            | Funding::PlatformAddresses { .. }
+            | Funding::Shielded { .. },
+        )),
+        Some(grant),
+    ) = (flow::interpret(&row), &grant)
         && grant_funds(session, wallet, grant).await?
     {
         return Err(PlatformError::GrantInvalid.into());
@@ -1410,12 +1726,12 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
                 if session.lease_for(&wallet, &grant).is_none() =>
             {
                 session
-                    .rebind_lease(&lease, &[grant])
+                    .rebind_lease_scoped(&lease, &[grant], paid.scope())
                     .await
                     .map_err(PlatformError::from)?;
                 return Ok(());
             }
-            _ => match flows.offer(key, authority(session, wallet, &grant).await?) {
+            _ => match flows.offer(key, authority(session, wallet, &grant, paid).await?) {
                 Ok(()) => return Ok(()),
                 // The run ended meanwhile: this resume runs the flow.
                 Err(offered) => lease = Some(offered),
@@ -1431,7 +1747,7 @@ pub(crate) async fn resume<L: RegistrationLib + 'static>(
     }
     let lease = match (lease, grant) {
         (Some(lease), _) => Some(lease),
-        (None, Some(grant)) => Some(authority(session, wallet, &grant).await?),
+        (None, Some(grant)) => Some(authority(session, wallet, &grant, paid).await?),
         (None, None) => None,
     };
     flow::spawn(session, lib, claim, lease);
@@ -1455,9 +1771,9 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
     let claim_step = move |leases: &super::lease::LeaseTable, id: i64| {
         leases.call_step(wallet, &flow::identity_step(id)).status
     };
-    if let Some(why) = ledger
-        .discard_refused(current)
+    if let Some(why) = (ledger.discard_refused(current))
         .or_else(|| flow::claim_discard_refused(current, claim_step(&session.leases, row.id)))
+        .or_else(|| flow::platform_discard_refused(current))
     {
         return Err(invalid(why));
     }
@@ -1478,9 +1794,9 @@ pub(crate) async fn discard<L: RegistrationLib + 'static>(
                 return Ok(Err("unknown draft"));
             };
             // The claim taken holds no call: the run it took has none running.
-            if let Some(why) = ledger
-                .discard_refused(&row)
+            if let Some(why) = (ledger.discard_refused(&row))
                 .or_else(|| flow::claim_discard_refused(&row, claim_step(&leases, id)))
+                .or_else(|| flow::platform_discard_refused(&row))
             {
                 return Ok(Err(why));
             }
@@ -1524,7 +1840,7 @@ pub(crate) async fn finish<L: RegistrationLib>(
     lib: &L,
     grant: String,
 ) -> Result<FinishReport, RegistrationError> {
-    let lease = authority(session, wallet, &grant).await?;
+    let lease = authority(session, wallet, &grant, PaidFrom::Other).await?;
     finish_under(session, wallet, lib, &lease).await
 }
 
@@ -1560,8 +1876,12 @@ async fn finish_under<L: RegistrationLib>(
             continue;
         };
         // DP5-02 D8: a claim holds no lock to finish, and runs only under a
-        // grant its resume checked for duffs.
-        if matches!(funding, Funding::Invitation { .. }) {
+        // grant its resume checked for duffs. A Platform-funded row never
+        // runs on mainnet.
+        if matches!(funding, Funding::Invitation { .. })
+            || (matches!(funding, Funding::PlatformAddresses { .. })
+                && registration_platform::refuse_on_mainnet(&lib.network()).is_err())
+        {
             continue;
         }
         let funded = row.asset_lock_outpoint.is_some() || !phase.unfunded();

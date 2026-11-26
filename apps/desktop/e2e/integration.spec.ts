@@ -113,7 +113,7 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     await moveFromPlatform(page);
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
-    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002 tDASH.");
+    await expect(page.getByTestId("platform-move-outcome-text")).toContainText("The network fee was 0.00002000 tDASH.");
   });
 });
 
@@ -164,7 +164,7 @@ test.describe("item 8: closing a wallet that cannot close says why", () => {
 
   test("an unresolved shielded payment: the text names it, and the wallet stays open", async ({ page }) => {
     await closeB(page, "unresolved");
-    await expect(page.getByTestId("settings-wallets-error")).toHaveText("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    await expect(page.getByTestId("settings-wallets-error")).toHaveText("Dash Wallet doesn't know yet whether a Shielded payment from this wallet went through, so closing the wallet now would lose track of it. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.");
     await expect(page.getByTestId(`settings-wallet-${SECOND_WALLET_ID.slice(0, 8)}-state`)).not.toHaveText("Closed");
   });
 
@@ -179,7 +179,7 @@ test.describe("item 9: a lock that may already be applied is 'Checking'", () => 
     await open(page, "shielded-checking");
     const row = page.getByTestId("shielded-checking");
     await expect(row).toContainText("Checking");
-    await expect(row).toContainText("This amount may already be in your shielded balance; we can't confirm it yet.");
+    await expect(row).toContainText("This amount may already be in your shielded balance. Choose Check again to confirm it. If its amount wasn't added yet, Check again tries to add it. If it still shows Checking, try again later.");
     await expect(page.getByTestId("shielded-finish")).toHaveText("Check again");
     await expect(page.getByTestId("shielded-unfinished")).toHaveCount(0);
     // It blocks no new shield.

@@ -9,7 +9,10 @@
 # - release-check: the release legs of dw-engine's tests/mg04b_release_check.rs (MG-04b D71) and
 #   tests/mix_shield_release_check.rs (dwcli's `mix-shield-test`), which PR CI, testing in debug
 #   only, never runs;
-# - fuzz: scripts/fuzz.sh, libFuzzer on the parsers of untrusted input (H-02), 10 minutes a target.
+# - fuzz: scripts/fuzz.sh, libFuzzer on the parsers of untrusted input (H-02), 10 minutes a target;
+# - kill9: dw-engine's kill -9 matrix (H-03), each row a child process killed with SIGKILL and
+#   the data folder opened again; a `kill9_finding_<issue>` row reproduces an open issue and is
+#   skipped until its fix.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -56,12 +59,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
       # only; the release-check job proves it absent from a release build).
@@ -213,12 +220,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: Build the warm-up example
         working-directory: rust
@@ -243,12 +254,16 @@ jobs:
           persist-credentials: false
       - name: Free disk space
         run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: ./.github/actions/pinned-sources
       - name: mg04b_release_check (release)
         working-directory: rust
@@ -303,13 +318,40 @@ jobs:
             .fuzz/logs/
           if-no-files-found: warn
 
+  # Blocking: the kill -9 matrix (H-03). Each row runs an operation in a child process (this test
+  # binary), kills it with SIGKILL at a named point and checks what the relaunch finds.
+  kill9:
+    name: Kill -9 matrix (H-03)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      # Only rust-toolchain.toml's toolchain, as CI installs it: rust-cache hashes every installed
+      # toolchain into its key, so the runner image's stable would miss CI's cache.
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: ../ci/github/rust-toolchain-only.sh
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
+      - uses: ./.github/actions/pinned-sources
+      - name: kill -9 rows
+        working-directory: rust
+        run: cargo test -p dw-engine --lib --locked kill9 -- --ignored --skip kill9_finding
+
   # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
   # the next green run closes it. A cancelled job counts as red: a job that runs out of time may
   # be reported so. crossui-linux is non-blocking and is left out.
   report:
     name: Report the nightly's result
     if: ${{ always() && github.event_name == 'schedule' }}
-    needs: [regtest, shielded, release-check, fuzz]
+    needs: [regtest, shielded, release-check, fuzz, kill9]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

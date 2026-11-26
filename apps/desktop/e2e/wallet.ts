@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import { fixtureUrl, fontsReady, type Theme } from "./helpers";
 
 // The U-03 screens in a fixed state, for axe (wallet.spec.ts) and the visual baselines.
@@ -37,6 +37,9 @@ export async function showWalletView(page: Page, view: WalletView, theme: Theme)
     await page.getByTestId("pay-confirm-passphrase").fill("demo");
     await page.getByTestId("pay-confirm-send").click();
     await page.getByTestId("pay-result-sent").waitFor();
+    // Behind the sheet the form has cleared; its footer passes "Checking the payment…" on the way to
+    // its settled hint, so a capture must wait for that (issue 562).
+    await expect(page.getByTestId("pay-incomplete")).toHaveText("Enter an address and an amount first.");
   }
   if (view === "receive" || view === "requestSheet") {
     await page.getByTestId("sidebar-receive").click();

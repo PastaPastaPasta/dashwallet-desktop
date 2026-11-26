@@ -8,6 +8,7 @@ import { hasCode } from "../api/backend";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { t } from "../i18n";
+import { ImportFileModel, type ImportApi } from "../settings/files";
 import { birthHeightFor } from "./birthHeight";
 import { LockModel } from "./lock";
 import { failureText, Model } from "./model";
@@ -28,11 +29,13 @@ export type OnboardingStep =
   | "restorePhrase"
   /** BIP39 passphrase, Dash Core compatibility, scan start (QT-104, QT-105). */
   | "restoreOptions"
+  /** A backup or Dash Core wallet file: its path, then what it needs (U-04 D21's import). */
+  | "restoreFile"
   | "working"
   | "done"
   | "failed";
 
-export type OnboardingFlow = "create" | "restore";
+export type OnboardingFlow = "create" | "restore" | "file";
 
 /** One word chip on the verify screen. */
 export interface VerifyChip {
@@ -53,6 +56,9 @@ export interface RestoreOptions {
 export const OnboardingText = {
   get birthDateInFuture() {
     return t("onboarding.options.birthDateInFuture");
+  },
+  get birthDateMissing() {
+    return t("onboarding.options.birthDateMissing");
   },
 };
 
@@ -100,14 +106,23 @@ export class OnboardingModel extends Model {
   options: RestoreOptions = { birthHeight: null, coreCompat: false };
 
   walletId: string | null = null;
+  /** How many wallets the file restored (a backup can hold several). */
+  restoredCount = 0;
+  /** What a Dash Core file's import left out: keys outside its HD wallet, and scripts. */
+  restoredSkipped: { keys: number; scripts: number } | null = null;
   failure: string | null = null;
+
+  /** Restore from a file: `null` when the app gave no file commands. */
+  readonly file: ImportFileModel | null;
 
   #phrase: string | null = null;
   #bip39: string | null = null;
   #vaultPassphrase: string | null = null;
   #skipEncryption = false;
+  /** The file's passphrase and the wallet name typed for it, kept from Restore until the vault exists. */
+  #fileInputs: { passphrase: string | null; name: string } | null = null;
   /** What a successful unlock goes on with. */
-  #afterUnlock: "create" | "restore" | "finish" = "create";
+  #afterUnlock: "create" | "restore" | "file" | "finish" = "create";
   /** Bumped when the screen goes away: a reply to a call made before is dropped. Not a flag:
    * StrictMode disposes and mounts the same model again. */
   #epoch = 0;
@@ -119,10 +134,12 @@ export class OnboardingModel extends Model {
   constructor(
     private readonly api: Api,
     private readonly network: NetworkInfo["kind"],
-    opts: { random?: () => number; now?: () => Date } = {},
+    opts: { random?: () => number; now?: () => Date; files?: { api: ImportApi; network: string } } = {},
   ) {
     super();
     this.entry = new PhraseEntry(api.checkMnemonic);
+    this.file = opts.files ? new ImportFileModel(opts.files.api, opts.files.network) : null;
+    this.file?.subscribe(() => this.changed());
     this.lock = new LockModel(api);
     this.#random = opts.random ?? systemRandom;
     this.#now = opts.now ?? (() => new Date());
@@ -241,6 +258,7 @@ export class OnboardingModel extends Model {
       this.vaultState = this.lock.lockState;
       if (this.#afterUnlock === "create") await this.#generate();
       else if (this.#afterUnlock === "restore") this.#go("restorePhrase");
+      else if (this.#afterUnlock === "file") this.#go("restoreFile");
       else await this.#finish();
     });
   }
@@ -261,6 +279,33 @@ export class OnboardingModel extends Model {
       if (this.#needsUnlock()) await this.#askUnlock("restore");
       else this.#go("restorePhrase");
     });
+  }
+
+  // Restore from a file
+
+  /** A `.dwbackup`, or a Dash Core wallet.dat or dumpwallet file, instead of a phrase. */
+  startFileRestore(): Promise<void> {
+    return this.#exclusive(async () => {
+      if (!this.file) return;
+      this.#clear();
+      this.flow = "file";
+      if (!(await this.#readVault())) return;
+      if (this.#needsUnlock()) await this.#askUnlock("file");
+      else this.#go("restoreFile");
+    });
+  }
+
+  /** Restores the inspected file: checks the inputs, then asks for the new vault's passphrase
+   * when there is no vault (last, as a phrase restore does), then imports. */
+  async restoreFromFile(passphrase: string | null, nameText: string) {
+    const file = this.file;
+    if (this.step !== "restoreFile" || this.busy || !file || file.step !== "details") return;
+    if (file.plan?.passphrase && !passphrase) return file.refuse(t("onboarding.file.passphraseMissing"));
+    const problem = file.problem(passphrase, nameText);
+    if (problem) return file.refuse(problem);
+    this.#fileInputs = { passphrase, name: nameText };
+    if (this.vaultState === "noVault") this.#go("choosePassphrase");
+    else await this.#exclusive(() => this.#finish());
   }
 
   /** Checks the typed phrase (D7). */
@@ -300,11 +345,18 @@ export class OnboardingModel extends Model {
   }
 
   /** The date field's text (`YYYY-MM-DD`), read as a local date, so today is never in the
-   * future (an input's `valueAsDate` is UTC midnight). */
+   * future (an input's `valueAsDate` is UTC midnight). A field left empty, or a day the month
+   * does not have, is refused: it would scan from the first block without saying so. */
   setScanDate(text: string) {
     this.scanDate = text;
     const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-    this.setBirthDate(ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null);
+    const date = ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : null;
+    if (date && date.getMonth() === Number(ymd![2]) - 1 && date.getDate() === Number(ymd![3])) this.setBirthDate(date);
+    else {
+      this.options = { ...this.options, birthHeight: 0 };
+      this.birthDateError = OnboardingText.birthDateMissing;
+      this.changed();
+    }
   }
 
   /** The height field's text; anything but a whole, non-negative number scans from genesis
@@ -353,12 +405,23 @@ export class OnboardingModel extends Model {
       case "restoreOptions":
         this.#go("restorePhrase");
         return;
-      case "choosePassphrase":
-        if (this.flow === "restore") this.#go("restoreOptions");
+      case "restoreFile":
+        if (this.file?.step === "details") this.file.back();
         else this.cancel();
         return;
+      case "choosePassphrase":
+        if (this.flow === "restore") this.#go("restoreOptions");
+        else if (this.flow === "file") {
+          this.#fileInputs = null;
+          this.#go("restoreFile");
+        } else this.cancel();
+        return;
       case "unlockVault":
-        if (this.#afterUnlock === "finish" && this.flow === "restore") this.#go("restoreOptions");
+        if (this.#afterUnlock === "finish" && this.flow === "file") {
+          this.#fileInputs = null;
+          this.#go("restoreFile");
+        }
+        else if (this.#afterUnlock === "finish" && this.flow === "restore") this.#go("restoreOptions");
         else if (this.#afterUnlock === "finish") this.#showPhrase();
         else this.cancel();
         return;
@@ -413,7 +476,7 @@ export class OnboardingModel extends Model {
    * without a passphrase only when the user chose that. */
   async #finish() {
     const phrase = this.#activePhrase;
-    if (!phrase || this.step === "working") return;
+    if ((this.flow === "file" ? !this.#fileInputs : !phrase) || this.step === "working") return;
     if (this.vaultState === "noVault" && !this.#vaultPassphrase && !this.#skipEncryption) return this.#go("choosePassphrase");
     this.#go("working");
     if (this.vaultState === "noVault") {
@@ -430,8 +493,9 @@ export class OnboardingModel extends Model {
         this.#dropVaultChoice();
       }
     }
+    if (this.flow === "file") return this.#finishFile();
     try {
-      const id = await this.api.importWallet(phrase, this.#bip39, {
+      const id = await this.api.importWallet(phrase!, this.#bip39, {
         name: null,
         birthHeight: this.options.birthHeight,
         coreCompat: this.options.coreCompat,
@@ -450,6 +514,37 @@ export class OnboardingModel extends Model {
         this.failure = failureText(e);
         this.#go("failed");
       }
+    }
+  }
+
+  /** The vault exists and is unlocked: imports the file. A refusal goes back to the file's
+   * details with its sentence; a locked vault asks for the unlock and comes back here. */
+  async #finishFile() {
+    const file = this.file;
+    const inputs = this.#fileInputs;
+    if (!file || !inputs) return;
+    this.#go("working");
+    await file.run(inputs.passphrase, inputs.name);
+    if (this.#stale) return;
+    if (file.step === "done" && file.done && file.done.walletIds.length > 0) {
+      const { walletIds: ids, report } = file.done;
+      this.#clear();
+      this.walletId = ids[0];
+      this.restoredCount = ids.length;
+      this.restoredSkipped = report && (report.keysNotImported > 0 || report.scriptsNotImported > 0) ? { keys: report.keysNotImported, scripts: report.scriptsNotImported } : null;
+      this.#go("done");
+    } else if (file.step === "done") {
+      // A backup that held no wallet: nothing to open. Back to the file, the vault kept.
+      this.#fileInputs = null;
+      file.back();
+      file.refuse(t("onboarding.file.emptyBackup"));
+      this.#go("restoreFile");
+    } else if (hasCode(file.failure, "vault.locked") || hasCode(file.failure, "vault.mixing_only") || hasCode(file.failure, "backup.vault_locked")) {
+      this.vaultState = "locked";
+      await this.#askUnlock("finish");
+    } else {
+      this.#fileInputs = null;
+      this.#go("restoreFile");
     }
   }
 
@@ -490,6 +585,7 @@ export class OnboardingModel extends Model {
     this.passphraseError = null;
     // A create flow comes back here verified when the vault refused its passphrase.
     if (this.flow === "create" && !this.isVerified) await this.#generate();
+    else if (this.flow === "file" && !this.#fileInputs) this.#go("restoreFile");
     else await this.#finish();
   }
 
@@ -512,7 +608,7 @@ export class OnboardingModel extends Model {
   }
 
   /** The unlock step, with the vault's count and wait read first (D3, D12). */
-  async #askUnlock(next: "create" | "restore" | "finish") {
+  async #askUnlock(next: "create" | "restore" | "file" | "finish") {
     this.#afterUnlock = next;
     this.lock.message = null;
     this.#go("unlockVault");
@@ -546,6 +642,10 @@ export class OnboardingModel extends Model {
   }
 
   #clear() {
+    this.#fileInputs = null;
+    this.restoredCount = 0;
+    this.restoredSkipped = null;
+    this.file?.reset();
     this.#phrase = null;
     this.#bip39 = null;
     this.#dropVaultChoice();

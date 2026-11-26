@@ -96,6 +96,8 @@ codes! {
         InvalidKeyMaterial = "compat.invalid_key_material",
         WatchOnly = "compat.watch_only",
         DestinationUnwritable = "compat.destination_unwritable",
+        WalletTooLarge = "compat.wallet_too_large",
+        ExtraHdAccount = "compat.extra_hd_account",
     }
 }
 
@@ -144,6 +146,7 @@ codes! {
         BroadcastRejected = "coinjoin.broadcast_rejected",
         MixingActive = "coinjoin.mixing_active",
         MoveRunning = "coinjoin.move_running",
+        InputsHeld = "coinjoin.inputs_held",
         PlanChanged = "coinjoin.plan_changed",
     }
 }
@@ -347,6 +350,8 @@ impl From<CompatFailure> for AppError {
             F::InvalidKeyMaterial(_) => (CompatCode::InvalidKeyMaterial.into(), None),
             F::WatchOnly => (CompatCode::WatchOnly.into(), None),
             F::DestinationUnwritable(_) => (CompatCode::DestinationUnwritable.into(), None),
+            F::WalletTooLarge => (CompatCode::WalletTooLarge.into(), None),
+            F::ExtraHdAccount { .. } => (CompatCode::ExtraHdAccount.into(), None),
         };
         build(message, mapped)
     }
@@ -440,6 +445,7 @@ impl From<CoinJoinFailure> for AppError {
             F::NoPeers => (CoinJoinCode::NoPeers.into(), None),
             F::MixingActive => (CoinJoinCode::MixingActive.into(), None),
             F::MoveRunning => (CoinJoinCode::MoveRunning.into(), None),
+            F::InputsHeld => (CoinJoinCode::InputsHeld.into(), None),
             F::PlanChanged => (CoinJoinCode::PlanChanged.into(), None),
             F::BroadcastRejected(reason) => (
                 CoinJoinCode::BroadcastRejected.into(),
@@ -617,6 +623,11 @@ mod tests {
                 CompatFailure::DestinationUnwritable(s()),
                 "compat.destination_unwritable",
             ),
+            (CompatFailure::WalletTooLarge, "compat.wallet_too_large"),
+            (
+                CompatFailure::ExtraHdAccount { account: 1 },
+                "compat.extra_hd_account",
+            ),
         ];
         assert_eq!(compat.len(), CompatCode::ALL.len());
         for (f, expected) in compat {
@@ -698,6 +709,7 @@ mod tests {
             ),
             (CoinJoinFailure::MixingActive, "coinjoin.mixing_active"),
             (CoinJoinFailure::MoveRunning, "coinjoin.move_running"),
+            (CoinJoinFailure::InputsHeld, "coinjoin.inputs_held"),
             (CoinJoinFailure::PlanChanged, "coinjoin.plan_changed"),
         ];
         assert_eq!(coinjoin.len(), CoinJoinCode::ALL.len());

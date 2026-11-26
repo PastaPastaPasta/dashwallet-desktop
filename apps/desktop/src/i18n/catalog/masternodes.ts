@@ -170,10 +170,12 @@ export const masternodes = {
       none: "None",
       banned: "PoSe banned: a banned masternode can't vote",
       recent: "Voted {outcome} {ago} · can change after {time}",
-      eligible: "key in this wallet · voting key {index}",
+      /** The key a masternode votes with: the keychain's, or a key added to a tracked masternode. */
+      keychain: "key in this wallet · voting key {index}",
+      added: "key you added",
       eligibleShared: {
-        one: "key in this wallet · voting key {index} · {count} masternode uses this key",
-        other: "key in this wallet · voting key {index} · {count} masternodes use this key",
+        one: "{custody} · 1 masternode uses this key",
+        other: "{custody} · {count} masternodes use this key",
       },
     },
     /** The vote sheet's footer: the checked masternodes, their weight, and that a vote costs nothing. */
@@ -419,6 +421,8 @@ export const masternodes = {
     loading: "Loading the masternode list…",
     listSyncing: "list syncing",
     failed: "Couldn't read your masternodes.",
+    opsLoading: "Loading the registrations and key changes in progress…",
+    opsFailed: "Couldn't read the registrations and key changes in progress.",
     payoutsFailed: "Couldn't read this masternode's payouts.",
     payoutsFailedWith: "Couldn't read this masternode's payouts. {reason}",
     tryAgain: "Try again",
@@ -456,7 +460,8 @@ export const masternodes = {
     rename: "Rename…",
     renameTitle: "Rename masternode",
     renameName: "Name",
-    renameHelp: "Only this wallet sees it. Leave it empty for the default name.",
+    /** A masternode's name is kept for every wallet on this network (app.sqlite's global settings, or the tracked registry). */
+    renameHelp: "Only Dash Wallet on this computer sees it. Leave it empty for the default name.",
     cancel: "Cancel",
     save: "Save",
     copyHash: "Copy ProTx hash",
@@ -503,7 +508,9 @@ export const masternodes = {
     },
     watched: "{role} (watched)",
     registrar: {
-      registration_unavailable:
+      registration_unavailable: "Changing keys needs this masternode's registration, which this wallet doesn't hold.",
+      /** An evonode with an owner or payout key a dwcli import left (the app adds voting keys only). */
+      registrationUnavailableWithdraw:
         "Changing keys needs this masternode's registration, which this wallet doesn't hold. You can still withdraw evonode credits with an added owner or payout key.",
       no_owner_key: "This wallet doesn't hold this masternode's owner key.",
       vault_locked: "Unlock to check the keys you added.",
@@ -585,6 +592,8 @@ export const masternodes = {
       poseExplain: "It earns nothing until the new operator sends a service update from the node.",
       nothing: "Nothing would change. Choose a new key or a different payout address.",
       ask: "Enter your passphrase to sign this change.",
+      /** Shown in place of Send while this version can't send registrar updates. */
+      held: "You can review this change, but this version can't send it yet. Nothing has been sent.",
       send: "Send change",
       sending: "Sending…",
       sent: "Change sent. It applies once it's in a block.",
@@ -625,6 +634,71 @@ export const masternodes = {
         "This wallet holds neither the owner key nor the collateral. Whoever holds the owner key can replace the operator, and whoever holds the collateral can end the masternode.",
       close: "Close",
     },
+    /** Track a masternode (MG-10 §1.3). */
+    track: {
+      menu: "Track a masternode…",
+      title: "Track a masternode",
+      query: "IP address or ProTx hash",
+      queryHelp: "Find any masternode on the network to follow it here.",
+      find: "Find",
+      results: "Masternodes found",
+      votingAddress: "voting address {address}",
+      alreadyTracked: "Already tracked",
+      label: "Name (optional)",
+      /** A tracked masternode's name is the tracked registry's, which every wallet on this network reads. */
+      labelHelp: "Only Dash Wallet on this computer sees it.",
+      submit: "Track",
+      invalid: "Enter an IP address and port, or a 64-character ProTx hash.",
+      none: "No masternode with this address or ProTx hash is in the masternode list.",
+      already: "Already tracked as {name}.",
+      list_unavailable: "The masternode list is still loading. Try again in a moment.",
+    },
+    /** Add keys and Keys you added (MG-10 §1.4; MG-00 D13, amended for 1.0: the voting key only). */
+    keys: {
+      menu: "Add keys…",
+      title: "Add a key",
+      votingHelp: "Lets this wallet vote on proposals and usernames with this masternode.",
+      input: "Private key",
+      inputHelp:
+        "WIF or 64 hex characters. The wallet keeps it encrypted and never shows it again. Backups don't include keys you add here. Keep your own copy.",
+      submit: "Add key",
+      done: "Done",
+      matched: "Matches this masternode's voting key.",
+      unchecked: "Saved. This masternode isn't in the masternode list now, so the key can't be checked. It can vote once the key matches.",
+      mismatch: "This key doesn't belong to this masternode.",
+      invalid: "Enter the private key as a compressed WIF for this network, or as 64 hex characters.",
+      locked: "Unlock to add a key.",
+      /** A key already attached for the role: Add key never replaces one. `role`: a `roleWord`. */
+      exists: "A {role} key is already added for this masternode on this computer. Remove it first.",
+      added: "Keys you added",
+      addedLocked: "Keys you added: unlock to see",
+      /** A key's role, lower case mid-sentence. */
+      roleWord: { voting: "voting", owner: "owner", payout: "payout" },
+      /** An added key's name in Keys you added. */
+      name: { voting: "Voting key", owner: "Owner key", payout: "Payout key" },
+      /** `role`: a `roleWord`. Remove always asks first: the key is deleted for every wallet here. */
+      removeRow: "Remove {role} key",
+      removeTitle: "Remove the {role} key?",
+      removeText:
+        "This deletes it from Dash Wallet on this computer, for every wallet. It isn't in your backups, so keep your own copy if you'll need it again.",
+      removeConfirm: "Remove key",
+      check: { matched: "matches", unchecked: "not checked", key_mismatch: "doesn't match" },
+      line: "{role} · {check}",
+    },
+    /** Stop tracking (MG-10 §1.2). */
+    untrack: {
+      menu: "Stop tracking",
+      title: "Stop tracking",
+      text: "{name} leaves My masternodes.",
+      keys: {
+        one: "The key you added for it is deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need it again.",
+        other: "The {count} keys you added for it are deleted from Dash Wallet on this computer, in every wallet. Keep your own copy if you'll need them again.",
+      },
+      /** While the vault is locked the added keys aren't read, so their count isn't known. */
+      keysUnknown:
+        "Any keys you added for it are deleted from Dash Wallet on this computer, for every wallet. They aren't in your backups, so keep your own copy if you'll need them again.",
+      submit: "Stop tracking",
+    },
     errors: {
       list_unavailable: "The masternode list isn't loaded yet. Try again once the wallet has synced.",
       not_found: "This masternode isn't in the masternode list.",
@@ -636,13 +710,253 @@ export const masternodes = {
       operation_state: "This item changed since you opened it.",
       update_pending:
         "An earlier change to this masternode hasn't reached the masternode list yet. Wait for it, or discard it in In progress if it was never sent.",
+      update_pending_sent:
+        "An earlier change to this masternode was sent but hasn't reached the masternode list yet. Wait for it to confirm. If it never will, because it was replaced or dropped from the network, abandon it in Activity. That frees its coins, and you can make a new change. Don't abandon a change that may still be on the network.",
       update_superseded: "A newer change to this masternode replaced this one.",
+      update_abandoned_pending:
+        "An abandoned change to this masternode may still confirm, and it would undo this one. To clear it, send one of that change's coins to yourself. You can make this change once that payment is in a block.",
       share_not_mine: "This share isn't held by this wallet.",
       shared_too_early: "Available once the masternode list includes the registration.",
       shared_registration_unknown: "This wallet's history doesn't hold this masternode's registration.",
       no_owner_key: "This wallet doesn't hold this masternode's owner key.",
       vault_locked: "Unlock the wallet first.",
     },
+  },
+  /** The registration wizard (MG-10 §1.6, MG-00 `reg-*`). Amounts and fees are funds copy. */
+  register: {
+    setUp: "Set up a masternode",
+    sendOff: "You can review this registration, but this version can't send it yet. Nothing has been sent.",
+    watchOnly: "To register a masternode, open the wallet that holds its keys. This wallet is watch-only.",
+    titleRegular: "Set up a masternode",
+    titleEvonode: "Set up an evonode",
+    stepOf: "Step {step} of {count}",
+    steps: { type: "Type", collateral: "Collateral", operator: "Operator", keys: "Keys and payout", review: "Review" },
+    cancel: "Cancel",
+    back: "Back",
+    continue: "Continue",
+    register: "Register",
+    registering: "Registering…",
+    done: "Done",
+    discardTitle: "Discard this registration?",
+    discardText: "Nothing was sent.",
+    discard: "Discard",
+    keepEditing: "Keep editing",
+    type: {
+      what: "What are you setting up?",
+      regular: "Masternode",
+      regularText: "{amount} Dash collateral. Runs Dash Core.",
+      evonode: "Evonode",
+      evonodeText: "{amount} Dash collateral. Also runs Dash Platform and earns Platform credits.",
+      who: "Who runs the server?",
+      hosted: "A hosting provider, or someone else",
+      hostedText: "They give you an operator key (a public key), the server's address and their fee. You keep the collateral and the owner key.",
+      self: "I run it myself",
+      selfText: "The wallet fills in the operator key from its masternode keys. You copy the operator secret to your server later, from Masternode keys.",
+    },
+    collateral: {
+      where: "Where is the {amount} Dash collateral?",
+      intro: "The collateral stays yours. While it is unspent the masternode stays registered; spending it ends the masternode.",
+      fundNew: "Send it from this wallet",
+      fundNewText: "Moves {amount} Dash to a new address in this wallet, in the same transaction as the registration.",
+      available: "Available: {amount}",
+      existing: "Use a {amount} Dash output already in this wallet",
+      existingText: "Pick an unspent output of exactly {amount} Dash.",
+      noCoins: "This wallet has no unspent output of exactly {amount} Dash.",
+      confirmations: { one: "{count} confirmation", other: "{count} confirmations" },
+      locked: "Locked",
+      external: "It is in another wallet",
+      externalText: "For example dash-qt or a hardware wallet. Enter the output; before sending you sign a message with that wallet to prove it is yours.",
+      outpoint: "Collateral output (transaction ID and index)",
+      outpointHelp: "As Dash Core shows it in Coin Control, for example 5d0e…7b42:1.",
+      address: "Collateral address",
+      addressHelp: "The address that holds the output. You'll sign a message with it before the registration is sent.",
+    },
+    operator: {
+      hostedTitle: "Your operator's details",
+      hostedIntro: "Copy these from your hosting provider. None of them is secret.",
+      selfTitle: "Your server's details",
+      selfIntro: "You run this masternode, so its operator key comes from this wallet's masternode keys (keypair {index}). After registering, copy the operator secret from Masternode keys to your server.",
+      selfIntroEvo: "You run this evonode, so the operator key and the Platform node key come from this wallet's masternode keys (operator keypair {index}, Platform node keypair {node}). After registering, copy their secrets to the server from Masternode keys.",
+      key: "Operator public key",
+      keyHelp: "The key the server signs with. Your operator keeps the matching secret on the server; never paste a secret here.",
+      enterInstead: "Enter one instead",
+      useWallet: "Use this wallet's key",
+      service: "Server address (IP and port)",
+      serviceHelp: "Ask your operator for it. A masternode registered without an address earns nothing until the operator adds one.",
+      serviceHelpSelf: "Your server's public IPv4 address and port, for example 203.0.113.7:{port}.",
+      share: "Operator's share of payouts",
+      shareHelp: "The operator gets this share of every payout once they set their payout address from the server; until then it stays with you. Leave it at 0 unless you agreed on a share.",
+      nodeId: "Platform node ID",
+      nodeIdHelp: "Identifies the server on Dash Platform. Derived from its Platform node key.",
+      p2pPort: "Platform P2P port",
+      httpPort: "Platform HTTPS port",
+      portDefault: "Leave empty to use the network's default.",
+    },
+    keys: {
+      title: "Keys and payout",
+      owner: "Owner key",
+      ownerValue: "This wallet, owner keypair {index}",
+      ownerHelp: "Controls the registration: changing keys and payout. Always kept in this wallet.",
+      voting: "Voting",
+      votingWallet: "Vote from this wallet",
+      votingWalletText: "Uses voting keypair {index}.",
+      votingOther: "Let someone else vote",
+      votingOtherText: "Enter their voting address. You can change it later.",
+      votingAddress: "Voting address",
+      payout: "Payouts go to",
+      payoutNew: "A new address in this wallet",
+      payoutNewText: "Payouts appear in Activity as \"Masternode reward\".",
+      payoutOther: "Another address",
+      payoutOtherText: "For example a cold wallet. This wallet then can't show the payouts.",
+      payoutAddress: "Payout address",
+    },
+    review: {
+      title: "Review the registration",
+      type: "Type",
+      typeValue: "{kind}, {runner}",
+      runHosted: "run by your operator",
+      runSelf: "run by you",
+      collateral: "Collateral",
+      collateralNew: "{amount}, sent to a new address in this wallet",
+      collateralExisting: "{outpoint}, {amount} in this wallet",
+      collateralExternal: "{outpoint}, in another wallet",
+      collateralLocked: "Locked against spending while the masternode is registered",
+      collateralKeepUnspent: "Keep it unspent in the wallet that holds it. Spending it removes this masternode from the masternode list.",
+      server: "Server",
+      operatorKey: "Operator key",
+      fromOperator: "{key}, from your operator",
+      fromWallet: "{key}, keypair {index} of this wallet",
+      share: "Operator's share",
+      shareValue: "{share}% of each payout",
+      platformNode: "Platform node",
+      voting: "Voting",
+      votingWallet: "This wallet",
+      payout: "Payouts to",
+      payoutNew: "A new address in this wallet",
+      payoutOther: "{address}",
+      fee: "Network fee",
+      feeValue: "{fee}, from this wallet",
+      total: "Leaves this wallet",
+      then: "Then",
+      thenHosted: "Send your operator the ProTx hash. The masternode earns once the server runs and the network accepts it.",
+      thenSelf: "Start your server with the operator secret from Masternode keys. If its setup asks for the ProTx hash, you'll see it after you register. The masternode earns rewards once it's registered and your server is running.",
+      onlyFee: "Only the fee leaves this wallet.",
+      withCollateral: "The collateral moves to a new address in this wallet; only the network fee leaves it.",
+      external: "Next, you sign a message with the wallet that holds the collateral.",
+      checking: "Checking the registration…",
+      changed: "The figures changed. Check them again.",
+      ask: "Enter your passphrase to register.",
+    },
+    prove: {
+      title: "Prove the collateral",
+      heading: "Sign with the wallet that holds the collateral",
+      text: "The collateral {outpoint} is in another wallet. In that wallet, sign this message with the collateral's address (in dash-qt: File ▸ Sign message), then paste the signature here.",
+      address: "Address",
+      message: "Message",
+      signature: "Signature",
+      signatureHelp: "Paste the signature from the other wallet.",
+      note: "The message holds this registration's details. If you go back and change them, sign again.",
+      newMessage: "Get a new message",
+      saved: "Saved in In progress. You can close this and continue later.",
+    },
+    doneScreen: {
+      title: "Registration sent",
+      waiting: "waiting for 1 confirmation",
+      hash: "ProTx hash",
+      stepHosted: "Send your operator the ProTx hash. They start the server with it.",
+      stepSelf: "Copy the operator secret from Masternode keys to your server, then start it. If its setup asks for the ProTx hash, copy it from here.",
+      /** stepSelf for an evonode whose Platform node key is also from this wallet. */
+      stepSelfEvo: "Copy the operator secret and the Platform node secret from Masternode keys to your server, then start it. If its setup asks for the ProTx hash, copy it from here.",
+      /** Beside stepSelf: closes the wizard and opens Masternode keys on the operator role. */
+      openKeys: "Open Masternode keys",
+      stepActive: "The masternode shows Active once the network sees the server.",
+      stepPayouts: "Payouts then arrive in this wallet and show in Activity as \"Masternode reward\".",
+      copyHash: "Copy ProTx hash",
+      notSent: "Not sent: {reason}. Nothing left this wallet.",
+      tryAgain: "Try again",
+    },
+    role: { owner: "owner", voting: "voting", operator: "operator", platform_node: "Platform node" },
+    error: {
+      serviceMissing: "Enter the server's IP address and port.",
+      serviceIpv4: "Use an IPv4 address and port, like 203.0.113.7:19999. IPv6 and Tor addresses aren't supported yet.",
+      servicePort: "{port} is the {otherNetwork} port. This wallet is on {network}, where masternodes use {own}.",
+      port: "Enter a port from 1 to 65535.",
+      samePorts: "The two Platform ports must differ.",
+      operatorKey: "Enter a BLS public key: 96 hexadecimal characters.",
+      share: "Enter a share from 0 to 100%, with at most two decimals.",
+      nodeId: "Enter a Platform node ID: 40 hexadecimal characters.",
+      pickCoin: "Choose an output.",
+      outpoint: "Enter the transaction ID and output index, for example 5d0e…7b42:1.",
+      address: "Enter an address.",
+      collateralInWallet: "This output is in this wallet: choose Use a {amount} Dash output already in this wallet.",
+      votingIsOwner: "The voting address can't be the owner address.",
+    },
+    refused: {
+      dupService: "This server address is already registered.",
+      dupKey: "The operator key is already used by another masternode.",
+      dupNode: "This Platform node ID is already used by another evonode.",
+      pendingDup: "Another registration of yours is using this operator key. Finish or discard it first.",
+      payeeReuse: "The payout address can't be the owner or voting address.",
+      collateral: "This output can't be the collateral: it must be exactly {amount} Dash at a regular address.",
+      collateralUnavailable: "This output isn't available: it's spent, or it's already a masternode's collateral.",
+      exhausted20: "This wallet has no unused {role} key left in its first 20.",
+      exhausted100: "This wallet has no unused {role} key left in its first 100.",
+      signatureMismatch: "This signature isn't from the collateral's address over this message.",
+      inputsSpent: "The coins for the fee were spent. Sign the new message.",
+      rules: "The network refused this registration: {reason}.",
+    },
+  },
+  /** My masternodes ▸ In progress (MG-10 §1.10). */
+  inProgress: {
+    group: "In progress",
+    title: { registration: "Registration", update_registrar: "Key change", update_share: "Payout change", dissolve: "Dissolution" },
+    status: {
+      needsSignature: "Needs signature",
+      inputsSpent: "The coins for the fee were spent",
+      notSent: "Not sent: {reason}",
+      notSentPlain: "Not sent",
+      sent: "{title} · waiting for 1 confirmation",
+      abandoned: "{title} · Abandoned",
+    },
+    chip: "Needs signature",
+    overdue: "If this never confirms: abandon its transaction in Activity, then unlock one of its coins and spend it.",
+    overdueDissolve: "It locks none of your coins. It confirms, or another dissolution replaces it.",
+    abandoned:
+      "The coins this transaction spent are available again. It may still confirm if it reached the network. To make sure it never does, send one of its coins to yourself.",
+    openInActivity: "Open in Activity",
+    continue: "Continue",
+    newMessage: "Get a new message",
+    sendAgain: "Send again",
+    discard: "Discard",
+    resendSent: "Send the same transaction again. It costs at most {debit}.",
+    resendNotSent: "Send it again. It costs at most {debit}.",
+    resendTitle: "Send again",
+    discardTitle: "Discard",
+    discardText: {
+      registration: "Discard this registration? Its reserved coins are released.",
+      update_registrar: "Discard this key change? Its reserved coins are released.",
+      update_share: "Discard this payout change? Its reserved coins are released.",
+      dissolve: "Discard this dissolution? Its reserved coins are released.",
+    },
+    conflicted: "Replaced: a coin it used was spent elsewhere",
+    unknownError: "The wallet couldn't do this: {code}.",
+    activityChip: "{title} transaction",
+    ask: "Enter your passphrase to send it again.",
+    cancel: "Cancel",
+  },
+  /** Release collateral / Lock it again (MG-10 §1.7, MG-00 `upd-release`). */
+  release: {
+    action: "Release collateral…",
+    lockAgain: "Lock it again",
+    title: "Release collateral",
+    text: "{name}'s {amount} Dash collateral is locked so you don't spend it by accident. Releasing it makes it spendable again.",
+    warning: "Spending the collateral ends the masternode at once. It leaves the list, stops earning and can't be brought back; a new masternode needs a new registration.",
+    confirm: "I understand that {name} ends when I spend this collateral",
+    note: "Nothing is sent now. Until you spend the coins you can lock them again from this masternode's details.",
+    release: "Release",
+    cancel: "Cancel",
+    released: "Collateral released: spending it ends this masternode.",
+    unavailable: "This wallet doesn't hold this masternode's collateral.",
   },
   /** Masternodes ▸ Username voting (MG-07). */
   names: {
@@ -721,6 +1035,8 @@ export const masternodes = {
       lock: "Most lock votes",
     },
     noMatch: "No username matches “{search}”",
+    /** A contender by its own spelling of the name and its identity, shortened (F1). */
+    contender: "{name} ({identity})",
     voterLine: "{present} · {left}",
     votesChoice: "Votes {choice}",
     noVoteYet: "No vote yet",
@@ -843,9 +1159,30 @@ export const masternodes = {
         "Anyone can dissolve the masternode alone at any time and everyone gets their share back. In the early period, whoever leaves alone pays a penalty to the others.",
     },
     inProgress: "Sessions in progress",
+    /** Before Create invitation and before Join, on every network. */
+    reservationNote:
+      "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share. This version can't sign or send the registration yet.",
+    /** B7 where sends are on: without its last sentence. */
+    reservationNoteSends:
+      "Your share is paid from whole coins, and every coin chosen for it stays unavailable for other payments until you discard the session, even the part above your share.",
+    /** Where this wallet holds the registration: collapsed until the session is `overdue` (D49), then expanded; expanded it shows `abandon.ownFirst`. Under the spend back's row it shows a `spendBack.wayOut*` sentence instead, expanded once the spend back is overdue. */
+    wayOut: {
+      title: "Changed your mind? Ways to get your coins back ▸",
+    },
+    /** On mainnet, where a sign or send row would be. */
+    mainnetSignNote: "This version can't sign or send a shared masternode registration on mainnet yet.",
+    /** On mainnet, beside a disabled Start, Join, Lock, Approve, Change fee or Unlock. */
+    mainnetOff: "This version can set up and join shared masternodes on test networks only.",
     /** A session's row: its code, then what it is waiting for. */
     sessionRow: "Session {code}",
     sessionStarted: "started {date}",
+    unreadable: {
+      title: "Session {code} can't be read",
+      discardable: "This wallet can't read this session anymore. Discard it to release the coins it reserved.",
+      mayBeOut:
+        "This wallet can't read this session anymore, and part of it may already be on the network. Its coins stay reserved until that transaction confirms. If another transaction spends one of them first, the others come back about 15 minutes later.",
+      discard: "Discard",
+    },
     role: { coordinator: "you coordinate", participant: "you take part" },
     /** Q9: v24 not yet seen on this network. */
     capabilityUnknown: "This wallet hasn't yet seen evidence that v24 is active on {network}. Shared masternodes become available once it has.",
@@ -901,6 +1238,9 @@ export const masternodes = {
       earlyValue: "{blocks} blocks · leaving alone before then costs {penalty}",
       earlyNone: "None",
       fee: "Network fee",
+      /** The Network fee row's value under its own label: the coordinator's, then a participant's. */
+      feeYoursValue: "{fee}, paid by you",
+      feePayerValue: "Paid by {coordinator}",
       checkHelp: "Send each reply back here. If a check code differs from the one the sender sees, the message changed on the way: ask for it again.",
       close: "Close",
       more: "More",
@@ -912,6 +1252,42 @@ export const masternodes = {
       saveFile: "Save to file…",
       pasteReply: "Paste a reply",
       ask: "Enter your passphrase to sign your consent.",
+      /** The button `row.signedOut`'s `{abandon}` names, and the unreadable row's. */
+      abandon: "Abandon",
+    },
+    /** Abandon's confirm (MG-10 §2.3.3): `{charge}` is exactly what the call charges, its grant cap. */
+    abandon: {
+      question: "Abandon this registration? The wallet spends your reserved coins back to itself, paying a {charge} network fee, so the registration can't confirm.",
+      after: "Your coins come back only after that spend confirms. If the registration confirms first, the masternode stands and your share is in it.",
+      understand: "I understand this can't be undone",
+      ask: "Enter your passphrase to abandon this session.",
+      /** Refused: the wallet's own transaction spends the coins first. */
+      ownFirst: "To get your coins back: first abandon the registration transaction in Activity, then abandon here to spend your coins back to this wallet.",
+      openActivity: "Open in Activity",
+    },
+    /** The spend back while it is pending, by state (D50, MG-10 §2.3.3). Each names the spend by its
+     * short txid; none says it didn't go out unless the wallet recorded a definite refusal. */
+    spendBack: {
+      uncertain: "The spend back to this wallet ({txid}) may already be on the network. The wallet couldn't confirm it went out.",
+      refused: "The spend back to this wallet didn't go out: {sentence}.",
+      inHistory: "Abandoning: waiting for the spend back ({txid}) to confirm. Your coins are still reserved.",
+      cancelled: "You cancelled the earlier spend back ({txid}) in Activity.",
+      legacy: "The wallet couldn't confirm the spend back ({txid}) went out. It may still confirm.",
+      sendAgain: "Send again",
+      tryAgain: "Try again",
+      abandonAgain: "Abandon again",
+      /** The way out under the spend back's row, by what Activity offers for the spend back; `{action}` is the sheet's next button. */
+      wayOutBoth: "Activity can send this spend back again or abandon it. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutAbandon: "You can abandon this spend back in Activity. Once it's abandoned there, {action} here makes a new spend of the same coins.",
+      wayOutResend: "Activity can send this spend back again.",
+      /** Cancelled in Activity, but Activity still offers its Abandon: that abandon didn't finish. */
+      wayOutFinish: "Activity didn't finish abandoning this spend back. Open it there and abandon it again.",
+      /** Activity holds this wallet's own transaction spending the coins, not the spend back. */
+      wayOutOwn: "First abandon this wallet's transaction that spends these coins in Activity, then choose {action} here.",
+      /** Send again's confirm: `{charge}` is the replay's grant cap. */
+      resendConfirm: "Send the same spend again. It's the same transaction, so it costs at most {charge}, once.",
+      /** Try again's and Abandon again's confirm adds this to `abandon.question`. */
+      again: "This is a new spend of the same coins and pays the {charge} network fee again.",
     },
     importPanel: {
       received: "You pasted message {code}. Ask the sender to read their code: it should be {code}.",
@@ -920,6 +1296,7 @@ export const masternodes = {
     warning: {
       edited_message: "This message was edited after it was copied. Ask for it again before you approve.",
       unvalued_inputs: "This wallet can't check the amounts of {labels}'s coins. If one is short, the registration can't confirm. Discard this session to release your coins.",
+      unvalued_inputs_out: "This wallet can't check the amounts of the coins from {labels}. If one is short, the registration can't confirm. You can abandon the session to release your coins.",
       empty_service: "The coordinator gave no server address: the masternode starts banned until the operator sends a service update.",
       zero_penalty: "With an early period and no penalty, anyone can leave early for just the network fee.",
       skipped_signatures: { one: "{count} signature for {labels} didn't apply to this session and was skipped.", other: "{count} signatures for {labels} didn't apply to this session and were skipped." },
@@ -928,7 +1305,7 @@ export const masternodes = {
     },
     row: {
       join: "Nothing is sent to the network now.",
-      joinButton: "Join: reserve about {amount}",
+      joinButton: "Join: reserve coins covering {amount}",
       decline: "Decline",
       waitingReplies: "Waiting for replies: {joined} of {total} joined",
       copyInvitation: "Copy invitation",
@@ -943,7 +1320,24 @@ export const masternodes = {
       approvedCount: "{approved} of {total} approved the locked terms",
       copyLocked: "Copy locked terms",
       signText: "Sign your coins into the registration: {debit} leaves this wallet when {coordinator} sends it. After you sign, only Abandon gets them back.",
+      signButton: "Sign my coins",
+      signAsk: "Enter your passphrase to sign your coins into the registration.",
+      sendButton: "Send registration",
+      sendAsk: "Enter your passphrase to send the registration.",
+      resendButton: "Send again",
+      resendText: "Send the same transaction again. It uses the same coins and costs at most {charge}.",
+      handoffRefused: "The wallet couldn't hand the registration to the network: {sentence}.",
+      handoffUnknown: "The wallet couldn't confirm the registration reached the network: {sentence}. It may still confirm.",
+      /** `{sentence}` above for the resend marker; handoffCode for a code with no sentence of its own. */
+      handoffResending: "a resend was still in progress when Dash Wallet last closed",
+      handoffCode: "error {code}",
+      /** `{sentence}` for `send.broadcast_unknown`. */
+      handoffTimeout: "the network didn't answer in time",
+      /** Send and Send again while SPV is stopped or has no peer. */
+      spvStopped: "Available once the wallet is connected.",
       signLater: "Signing comes in a later version of the wallet. Keep this session: nothing has left this wallet, and your coins stay reserved until you discard it.",
+      signedOut:
+        "This wallet may already have sent its funding signature, so this session can't be discarded. Its coins stay reserved until the registration confirms. To cancel it, choose {abandon}: this wallet spends the session's coins back to itself, so the registration can't confirm. They come back once that spend confirms.",
       sendSigned: "Send your signed contribution to {coordinator}. They can send the registration once they have everyone's.",
       copySigned: "Copy signed contribution",
       waitingSigned: "Waiting for signed contributions: {signed} of {total}",
@@ -985,7 +1379,7 @@ export const masternodes = {
       /** Before coins are picked: an estimate. */
       estimate: "About {amount}: your share, plus any change too small to keep.",
       estimateCoordinator:
-        "About {amount} of your {balance} will be reserved: your {share} share and the {fee} network fee, plus any change too small to keep.",
+        "Coins covering about {amount} will be reserved: your {share} share and the {fee} network fee. Coins are reserved whole, so if a coin is larger than needed, all of it stays unavailable for other payments while the session lasts.",
       participant: "{debit} leaves this wallet: your {share} share",
       coordinator: "{debit} leaves this wallet: your {share} share and the {fee} network fee",
       participantDust: "{debit} leaves this wallet: your {share} share, and {dust} of change too small to keep, which goes to the network fee",
@@ -999,7 +1393,7 @@ export const masternodes = {
     },
     close: {
       title: "Keep this session for later?",
-      text: "Keeping it leaves your {debit} reserved so you can carry on where you left off. Discarding releases them; if the others are still waiting for you, they have to start over.",
+      text: "Keeping it leaves the coins covering your {debit} reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
       keep: "Keep and close",
       discard: "Discard and release {debit}",
       cancel: "Cancel",
@@ -1226,14 +1620,76 @@ export const masternodes = {
       grantExceeded: "The amount changed. Check the figures again.",
       notFound: "This session isn't in this wallet any more.",
       /** MG's ruling: the binding's refusal of a send on mainnet. */
-      mainnet_send_off: "This version sends shared-masternode transactions on testnet only.",
+      mainnet_send_off: "This version sends shared-masternode transactions on test networks only.",
       send_unsupported: "This version can't send a key change yet.",
+      /** Send before every other participant's inputs are signed (`shared_stage{unsigned}`). */
+      unsigned: "Not everyone has signed yet. Paste the missing signed contributions, then send.",
+      /** Send again after the registration was abandoned (`shared_stage{abandoned}`). */
+      abandoned: "This registration was abandoned, so it can't be sent again.",
+      unsupported: "This version of Dash Wallet can't do this yet.",
       actor_fee: "This request takes the {fee} network fee from your share. Accept it, then approve again.",
       stale: "The masternode's keys changed since this request was made, so it can't be signed or sent.",
       not_key_change: "This isn't a key change.",
       inputs_hash: "This request's fee coins don't match. Ask for it again.",
       other_masternode: "This request is for another masternode.",
     },
+  },
+  /** Masternode keys (IOS-083, MG-10 §1.5, MG-00 D7): the keychain's keys and the one reveal of a secret. */
+  keys: {
+    title: "Masternode keys",
+    /** The Masternodes tab's More menu item that opens the sheet. */
+    open: "Masternode keys…",
+    intro: "Keys this wallet derives for masternodes it registers.",
+    matchedCount: { one: "{count} matched to a known masternode.", other: "{count} matched to known masternodes." },
+    roles: { owner: "Owner", voting: "Voting", operator: "Operator", platform_node: "Platform node" },
+    rolesLabel: "Key role",
+    loading: "Loading keys…",
+    /** `n` is the keypair's number, from 1. */
+    keypair: "Keypair {n}",
+    /** `name` is the masternode's name, `service` its IP and port. */
+    matchedTo: "Matched to {name}",
+    matchedToService: "Matched to {name} · {service}",
+    notMatched: "Not matched to a known masternode",
+    show: "Show",
+    hide: "Hide",
+    showMore: "Show more",
+    path: "Derivation path",
+    address: "Address",
+    publicKey: "Public key",
+    legacyPublicKey: "Public key, legacy BLS scheme",
+    nodeId: "Node ID",
+    privateKey: "Private key",
+    hidden: "Hidden",
+    reveal: "Reveal…",
+    revealShow: "Show private key",
+    revealing: "Checking…",
+    /** Under the private key before a reveal, per role. */
+    revealNote: {
+      owner: "Anyone with this key controls the masternode's registration: who runs it and where its rewards go.",
+      voting: "Anyone with this key can vote with the masternode.",
+      operator: "Anyone with this key can run the masternode's server. Copy it only to the server that runs this masternode.",
+      platform_node: "Anyone with this key can run the evonode's Platform node. Copy it only to the server that runs this evonode's Platform node.",
+    },
+    needsPassphrase: "Needs your passphrase.",
+    wif: "Private key (WIF)",
+    hex: "Private key (hex)",
+    tenderdash: "Tenderdash key",
+    hideSecret: "Hide private key",
+    /** Under the copy button of a revealed operator or platform node secret. */
+    copyWarning: "Paste this only into your masternode's configuration. Copied text can stay in your clipboard history, and anyone with this key can run the masternode as you.",
+    /** Under a revealed owner or voting secret, where a copy button would be (it has none). */
+    noCopy: "This key can't be copied, so it doesn't end up in your clipboard. Keep it in this wallet unless you're moving the masternode to another wallet.",
+    watchOnly: "This wallet is watch-only, so it can't show masternode keys.",
+    /** A wallet without its secret (Forgot Passphrase left it watch-only) still lists its public keys.
+     * Restoring a backup, which carries the seed, or the phrase with its recovery passphrase brings
+     * Reveal back (dw-engine tests/m3_keychain_offline.rs, test_ios_083_*). */
+    noSeed: "This wallet's private keys are no longer in Dash Wallet, so it shows only the public part of these keys. To reveal a private key, restore the wallet from a backup, or from its recovery phrase with its recovery passphrase if it has one.",
+    /** A key's match line while the known masternodes are still being read, and after a read failed. */
+    checking: "Checking…",
+    checkFailed: "Couldn't check",
+    checkFailedLine: "Couldn't check which known masternodes these keys belong to.",
+    /** Above Reveal: the app can't keep every desktop's screen sharing out (Linux). */
+    screenWarning: "Before you reveal it, stop any screen sharing or recording and make sure no one can see your screen.",
   },
   withdraw: {
     /** An evonode credit withdrawal whose identity data the wallet could not verify (H-09). */
@@ -1243,9 +1699,16 @@ export const masternodes = {
     /** Under "Checking…" while a payout change only the wallet's history holds is unconfirmed. */
     payoutUnconfirmed:
       "A payout change for this evonode hasn't confirmed yet. You can withdraw once it confirms, so the credits go to the new payout address.",
+    /** Under "Checking…" while this wallet's own payout change, abandoned in Activity, may still
+     * confirm (MG-13 P16): its barrier holds until one of its coins is spent in a block. */
+    heldAbandonedChange:
+      "An abandoned change to this masternode's payout address may still confirm, so withdrawals wait. To end the wait, send one of that change's coins to yourself. Withdrawals resume once that payment is in a block.",
     /** The withdrawal refused over that change: first, wait for it. */
     payoutUnconfirmedWait:
       "This evonode's payout is changing, and the change hasn't confirmed yet. Withdraw once it confirms, so the credits go to the new payout address.",
+    /** The owner key's destination while the evonode's payout is a P2SH address. */
+    ownerPayoutP2sh:
+      "Owner-key withdrawals don't work with this evonode's payout address, because it's a P2SH address: Platform would send the credits to an address nobody can spend. To withdraw with the owner key, change the payout to a regular address first. You can withdraw once that change confirms.",
     /** Then when abandoning it is safe, and when it is not. */
     payoutUnconfirmedAbandon:
       "If the change will never confirm, because it was replaced or dropped from the network, you can abandon it in History and withdraw then. Don't abandon a change that may still be on the network: if it confirms after you withdraw, the credits can go to the old payout address.",

@@ -60,10 +60,10 @@
 //! executes. A move is `done` only once a proved read shows every input at
 //! or past its signed nonce (the library's answer is a snapshot of the
 //! addresses, not proof of this transition); `failed` when it can never
-//! execute (not every input was signed, or Platform's structure or signature
-//! check refused it: deterministic, raised before the broadcast or by every
-//! node), or when a proof at a height above the first read after its call
-//! still shows its nonces unused. Nothing else ages a move out: an unknown
+//! execute (not every input was signed), or when a proof at a height above
+//! the first read after its call still shows its nonces unused. A node's
+//! error to a signed move, a consensus error too, settles nothing: it is one
+//! node's answer, not proof. Nothing else ages a move out: an unknown
 //! one stays `pending` and refuses the next move (`credits.move_pending`).
 //! A move `failed` by height may still execute (its transition stays valid
 //! while its nonces are unused), so a later move must sign exactly its
@@ -100,9 +100,12 @@ use dash_sdk::query_types::AddressInfo;
 use dashcore::OutPoint;
 use dpp::address_funds::{AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
-use dpp::consensus::ConsensusError;
 use dpp::dashcore::Network;
+use dpp::identity::Identity;
+use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::core_script::CoreScript;
+use dpp::platform_value::string_encoding::Encoding;
+use dpp::prelude::Identifier;
 use dpp::state_transition::address_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
 use dpp::version::PlatformVersion;
 use key_wallet::PlatformP2PKHAddress;
@@ -112,20 +115,22 @@ use platform_wallet::{PlatformWallet, PlatformWalletError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::credits::WithdrawAmount;
+use super::credits::{TopUpFromPlatformOutcome, TopUpFromPlatformQuote, WithdrawAmount};
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{FlowKind, GrantRequest};
+use super::identity_writes::identity_locks;
 use super::input0::{self, Input0Refused, Input0Rules};
-use super::money_gate::Refusal;
+use super::money_gate::{Refusal, Subject};
 use super::names::{NameAuthority, check_credit_cap};
 use super::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
     PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
     PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
 };
+use super::registration_flow::parse_identity;
 use super::requests::{leased, write_permit};
 use super::shielded_pool;
-use super::signers::VaultPlatformAddressSigner;
+use super::signers::{VaultIdentitySigner, VaultPlatformAddressSigner};
 use super::trust::{self, Rule5};
 use super::withdrawal;
 use crate::events::unix_now;
@@ -147,6 +152,7 @@ const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
 pub(super) const MOVE_PREFIX: &str = "platform_address/move/";
 const FUND_PREFIX: &str = "platform_address/fund/";
+const FROM_SHIELDED_PREFIX: &str = "platform_address/from_shielded/";
 
 /// What a move pays: the wallet's Core address, or a Platform address.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +164,26 @@ pub(crate) enum MoveKind {
     ToCore,
     /// A send to a Platform address (an address funds transfer, 0.2).
     Transfer,
+    /// A payment to a DashPay contact's Core address (an address credit
+    /// withdrawal, C-funding P4), built only by `contact_pay`.
+    ToContact,
+    /// A top-up of one of the wallet's identities (1.0 C3a, an identity
+    /// top-up from addresses): `to` is the identity (base58), the fee comes
+    /// from input 0 and the claims are what the identity gains.
+    ToIdentity,
+    /// A registration's identity create from addresses (1.0 C4a, C-funding
+    /// F9): `to` is the identity its inputs and nonces give (base58), the
+    /// record's id names the registration's draft. Held and exited as a
+    /// top-up is: nonces taken with no exit document settle it.
+    Register,
+}
+
+impl MoveKind {
+    /// It credits an identity from the addresses: a top-up or a
+    /// registration's create, held and exited alike (C-routes C3-9).
+    pub(crate) fn credits_identity(self) -> bool {
+        matches!(self, MoveKind::ToIdentity | MoveKind::Register)
+    }
 }
 
 /// One move as recorded before it is signed.
@@ -176,8 +202,8 @@ pub(crate) struct MoveRecord {
     pub(crate) fee_credits: u64,
     /// A withdrawal's payout on Core; 0 for a transfer.
     pub(crate) expected_duffs: u64,
-    /// The Core address (a withdrawal) or the bech32m Platform address (a
-    /// transfer) it pays.
+    /// The Core address (a withdrawal), the bech32m Platform address (a
+    /// transfer) or the identity (base58, a top-up) it pays.
     pub(crate) to: String,
     /// A transfer whose one output pays the fee (`ReduceOutput`, Max): its
     /// inputs give exactly their amounts and the recipient receives the
@@ -199,6 +225,10 @@ pub(crate) struct MoveRecord {
     /// The proof height of the first read after its call returned.
     #[serde(default)]
     pub(crate) seen_at: Option<u64>,
+    /// Settled in a group whose proof does not say which member executed:
+    /// one of them did, and the history can't name it.
+    #[serde(default)]
+    pub(crate) unattributed: bool,
     /// Done: the fee the proved balances show it took.
     #[serde(default)]
     pub(crate) fee_taken: Option<u64>,
@@ -206,12 +236,18 @@ pub(crate) struct MoveRecord {
     /// (module doc, Moves): what the group took, unattributed.
     #[serde(default)]
     pub(crate) group: Option<GroupOutcome>,
-    /// The protocol version it was signed at (`None` before 0.2): a
-    /// definitive refusal of an identical transition at the same version
-    /// says this one can never execute either.
+    /// The protocol version it was signed at (`None` before 0.2).
     #[serde(default)]
     pub(crate) version: Option<u32>,
+    /// The outcome rule it was written under: [`HOLD_RULE`], or 0 for a
+    /// record from before it, which a node's consensus error to its signed
+    /// transition may have marked unable to land (#471).
+    #[serde(default)]
+    pub(crate) rule: u8,
 }
+
+/// Records written since #471: no error after a signature settles one.
+pub(crate) const HOLD_RULE: u8 = 1;
 
 /// [`MoveRecord::terms`]: the kind and fee rule, the inputs (address,
 /// nonce, credits), the fee estimate, the payout and the destination.
@@ -314,14 +350,25 @@ pub(crate) struct FundRecord {
     /// recorded (a restored one): only a proved apply completes it.
     #[serde(default)]
     pub(crate) restored: bool,
+    /// A recover of a partly used shield lock's remaining value
+    /// (`unfinished_remainder`), not an "Add from Dash wallet".
+    #[serde(default)]
+    pub(crate) recovered: bool,
+    /// When each part of `absorbed` was read: a give-back offers each part
+    /// to the `FromShielded` records armed before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) claims: Vec<Claim>,
     pub(crate) at: u64,
 }
 
 impl FundRecord {
-    fn activity(&self) -> PlatformActivity {
+    pub(crate) fn activity(&self) -> PlatformActivity {
         PlatformActivity {
             id: format!("fund-{}", self.txid),
-            kind: PlatformActivityKind::FromCore,
+            kind: match self.recovered {
+                true => PlatformActivityKind::Recovered,
+                false => PlatformActivityKind::FromCore,
+            },
             state: self.state,
             credits: self.credits,
             address: Some(self.address.clone()),
@@ -331,6 +378,8 @@ impl FundRecord {
             at: self.at,
             may_land: false,
             estimated: self.estimated,
+            contact: None,
+            unattributed: false,
         }
     }
 
@@ -370,6 +419,8 @@ impl FundRecord {
             vout: outpoint.vout,
             armed: false,
             restored: false,
+            recovered: false,
+            claims: Vec::new(),
             at: unix_now(),
         }
     }
@@ -377,8 +428,8 @@ impl FundRecord {
     /// Ended without an apply of this install's (module doc): no rise is
     /// the fund's, and what it absorbed is given back
     /// ([`Self::give_back`]). Its writes.
-    fn close(&mut self) -> Result<Vec<Write>, PlatformError> {
-        let mut writes = self.give_back()?;
+    fn close(&mut self, shielded: &mut [FromShieldedRecord]) -> Result<Vec<Write>, PlatformError> {
+        let mut writes = self.give_back(shielded)?;
         self.state = PlatformActivityState::Failed;
         self.unseen = 0;
         self.armed = false;
@@ -387,28 +438,20 @@ impl FundRecord {
     }
 
     /// What it absorbed of its address's rise (as the fund's, while
-    /// pending), an `incoming` row again, once.
-    fn give_back(&mut self) -> Result<Vec<Write>, PlatformError> {
-        let credits = std::mem::take(&mut self.absorbed);
-        if credits == 0 {
-            return Ok(Vec::new());
-        }
-        let at = unix_now();
-        let row = PlatformActivity {
-            id: format!("released-{at}-{}", self.txid),
-            kind: PlatformActivityKind::Incoming,
-            state: PlatformActivityState::Done,
-            credits,
-            address: Some(self.address.clone()),
-            to: None,
-            expected_duffs: None,
-            fee_credits: None,
-            at,
-            may_land: false,
-            estimated: false,
-        };
-        let key = format!("{ROW_PREFIX}{at:020}/released/{}", self.txid);
-        Ok(vec![(key, Some(json(&row)?))])
+    /// pending): first the `FromShielded` records of the address armed
+    /// before each part was read take what they still lack, the rest is an
+    /// `incoming` row again, once.
+    fn give_back(
+        &mut self,
+        shielded: &mut [FromShieldedRecord],
+    ) -> Result<Vec<Write>, PlatformError> {
+        let claims = std::mem::take(&mut self.claims);
+        let left = std::mem::take(&mut self.absorbed).saturating_sub(reclaim(
+            shielded,
+            &self.address,
+            &claims,
+        ));
+        released(&self.address, left, &self.txid)
     }
 
     /// After Platform's unproved "already consumed" of its lock, its
@@ -417,9 +460,13 @@ impl FundRecord {
     /// signed closes; a restored lock's record is removed, as no fund of
     /// this install's is shown to have reached the address. Closed or
     /// removed, what it absorbed is given back.
-    fn reported(&mut self, estimate: u64) -> Result<(Vec<Write>, bool), PlatformError> {
+    fn reported(
+        &mut self,
+        estimate: u64,
+        shielded: &mut [FromShieldedRecord],
+    ) -> Result<(Vec<Write>, bool), PlatformError> {
         if self.restored {
-            let mut writes = self.give_back()?;
+            let mut writes = self.give_back(shielded)?;
             writes.push(fund_delete(&self.txid));
             return Ok((writes, false));
         }
@@ -427,12 +474,473 @@ impl FundRecord {
             self.complete(estimate, true);
             return Ok((vec![fund_write(self)?], true));
         }
-        Ok((self.close()?, true))
+        Ok((self.close(shielded)?, true))
     }
 
     fn outpoint(&self) -> Option<OutPoint> {
         Some(OutPoint::new(self.txid.parse().ok()?, self.vout))
     }
+}
+
+/// Where a [`FromShieldedRecord`]'s credits come from. Tagged, so a later
+/// source can carry its own fields (C-funding F13's registration refund
+/// names its draft).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum FromShieldedSource {
+    /// `unshield_to_platform`: armed by the dispatch hook's accept, settled
+    /// by the spend's artifact.
+    Unshield,
+    /// The refund of the registration `draft`'s Shielded-funded create
+    /// that executed as Platform's fallback (C-funding F13): written done
+    /// and armed only once its proof is read
+    /// ([`arm_registration_refund`]), `credits` the most it can return.
+    Registration { draft: i64 },
+}
+
+/// Credits on their way from the wallet's shielded notes to one of its
+/// Platform addresses (C-routes C1-9), so the address's rise is no
+/// `incoming` row. Written unarmed before the spend's dispatch artifact
+/// and armed after it, before any send; only an armed record is a row.
+/// Armed, while pending it absorbs a rise of `to` up to `credits`; it is
+/// `done` only once its artifact reads executed (what it did not absorb is
+/// then the first rise's still to read, as an applied fund's), and
+/// `failed` once its artifact reads not executed, what it absorbed going
+/// first to the other records of `to` and the rest given back as
+/// `incoming`. It holds no address nonce and never blocks a move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FromShieldedRecord {
+    /// The spend's shielded activity id, hex: its dispatch artifact's key.
+    pub(crate) activity: String,
+    /// Platform's hash of the spend's transition, hex.
+    pub(crate) st_hash: String,
+    pub(crate) source: FromShieldedSource,
+    /// bech32m.
+    pub(crate) to: String,
+    /// What the transition credits `to`.
+    pub(crate) credits: u64,
+    pub(crate) state: PlatformActivityState,
+    /// Only an armed record absorbs a rise while pending.
+    pub(crate) armed: bool,
+    /// When it was armed (unix nanoseconds): a rise read before then is
+    /// never its own.
+    #[serde(default)]
+    pub(crate) armed_at: u64,
+    /// The rise of `to` read as its own while pending, part by part.
+    #[serde(default)]
+    pub(crate) claims: Vec<Claim>,
+    /// Once done: the rise of `to` still to be read as the record's, up to
+    /// the first comparable read above `done_height`.
+    #[serde(default)]
+    pub(crate) unseen: u64,
+    /// Once done: what that read did not show as its own (another record
+    /// read it first, or it rose in a net fall). Only a give-back of a
+    /// rise read after it was armed is its own again, never a later rise.
+    #[serde(default)]
+    pub(crate) unclaimed: u64,
+    /// The baseline's height when it was settled done.
+    #[serde(default)]
+    pub(crate) done_height: u64,
+    pub(crate) at: u64,
+}
+
+/// A part of an address's rise a record read as its own, and when
+/// (unix nanoseconds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Claim {
+    pub(crate) at: u64,
+    pub(crate) credits: u64,
+}
+
+fn now_nanos() -> u64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// Offers each of `claims`, parts of `address`'s rise another record had
+/// read as its own, to the `FromShielded` records of `address` armed
+/// before that part was read, the oldest first ([`FromShieldedRecord::
+/// take_over`]). What they took.
+fn reclaim(shielded: &mut [FromShieldedRecord], address: &str, claims: &[Claim]) -> u64 {
+    let mut took = 0;
+    for claim in claims {
+        let mut left = claim.credits;
+        for record in shielded.iter_mut().filter(|r| r.to == address) {
+            if left == 0 {
+                break;
+            }
+            let n = record.take_over(Claim {
+                at: claim.at,
+                credits: left,
+            });
+            left -= n;
+            took += n;
+        }
+    }
+    took
+}
+
+impl FromShieldedRecord {
+    /// A pending record of the spend `activity` crediting `to`, not yet
+    /// armed.
+    pub(crate) fn staged(
+        source: FromShieldedSource,
+        (activity, st_hash): ([u8; 32], [u8; 32]),
+        to: String,
+        credits: u64,
+    ) -> Self {
+        Self {
+            activity: hex::encode(activity),
+            st_hash: hex::encode(st_hash),
+            source,
+            to,
+            credits,
+            state: PlatformActivityState::Pending,
+            armed: false,
+            armed_at: 0,
+            claims: Vec::new(),
+            unseen: 0,
+            unclaimed: 0,
+            done_height: 0,
+            at: unix_now(),
+        }
+    }
+
+    /// The `id` of its activity row.
+    pub(crate) fn id(&self) -> String {
+        format!("from-shielded-{}", self.activity)
+    }
+
+    /// What its row shows: a refund only what a read showed of it.
+    fn shown(&self) -> u64 {
+        match self.source {
+            FromShieldedSource::Unshield => self.credits,
+            FromShieldedSource::Registration { .. } => {
+                (self.credits).saturating_sub(self.unseen.saturating_add(self.unclaimed))
+            }
+        }
+    }
+
+    /// Whether it is a row: armed, and a refund only once a read showed it.
+    fn listed(&self) -> bool {
+        self.armed
+            && match self.source {
+                FromShieldedSource::Unshield => true,
+                FromShieldedSource::Registration { .. } => self.shown() > 0,
+            }
+    }
+
+    fn activity(&self) -> PlatformActivity {
+        PlatformActivity {
+            id: self.id(),
+            kind: match self.source {
+                FromShieldedSource::Unshield => PlatformActivityKind::FromShielded,
+                FromShieldedSource::Registration { .. } => PlatformActivityKind::RegistrationRefund,
+            },
+            state: self.state,
+            credits: self.shown(),
+            address: Some(self.to.clone()),
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: self.at,
+            may_land: self.state == PlatformActivityState::Pending,
+            estimated: false,
+            contact: None,
+            unattributed: false,
+        }
+    }
+
+    fn absorbed(&self) -> u64 {
+        self.claims.iter().map(|c| c.credits).sum()
+    }
+
+    fn expects(&self) -> u64 {
+        if self.state == PlatformActivityState::Pending && self.armed {
+            self.credits.saturating_sub(self.absorbed())
+        } else {
+            0
+        }
+    }
+
+    /// Reads `credits` of its address's rise as its own, now.
+    fn absorb(&mut self, credits: u64, at: u64) {
+        if credits > 0 {
+            self.claims.push(Claim { at, credits });
+        }
+    }
+
+    fn executed(&mut self, height: u64) {
+        self.state = PlatformActivityState::Done;
+        self.unseen = self.credits.saturating_sub(self.absorbed());
+        self.done_height = height;
+    }
+
+    /// Failed, what it absorbed given back once: to the records of its
+    /// address armed before each part was read, the rest as `incoming`.
+    /// That row's write.
+    fn not_executed(
+        &mut self,
+        others: &mut [FromShieldedRecord],
+    ) -> Result<Vec<Write>, PlatformError> {
+        self.state = PlatformActivityState::Failed;
+        self.unseen = 0;
+        let claims = std::mem::take(&mut self.claims);
+        let total: u64 = claims.iter().map(|c| c.credits).sum();
+        let left = total - reclaim(others, &self.to, &claims);
+        released(&self.to, left, &self.id())
+    }
+
+    /// Takes up to `claim.credits` of a rise of `to` another record had
+    /// read as its own, if armed before it was read: a pending record up
+    /// to what it still expects, a done one up to what it has still to
+    /// read, then what it never read. What it took.
+    fn take_over(&mut self, claim: Claim) -> u64 {
+        if !self.armed || self.armed_at >= claim.at {
+            return 0;
+        }
+        match self.state {
+            PlatformActivityState::Pending => {
+                let n = self.expects().min(claim.credits);
+                self.absorb(n, claim.at);
+                n
+            }
+            PlatformActivityState::Done => {
+                let seen = self.unseen.min(claim.credits);
+                self.unseen -= seen;
+                let late = self.unclaimed.min(claim.credits - seen);
+                self.unclaimed -= late;
+                seen + late
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// `credits` of `address`'s rise that a record had read as its own, an
+/// `incoming` row again (none for 0), its key unique by `tag`.
+fn released(address: &str, credits: u64, tag: &str) -> Result<Vec<Write>, PlatformError> {
+    if credits == 0 {
+        return Ok(Vec::new());
+    }
+    let at = unix_now();
+    let row = PlatformActivity {
+        id: format!("released-{at}-{tag}"),
+        kind: PlatformActivityKind::Incoming,
+        state: PlatformActivityState::Done,
+        credits,
+        address: Some(address.to_owned()),
+        to: None,
+        expected_duffs: None,
+        fee_credits: None,
+        at,
+        may_land: false,
+        estimated: false,
+        contact: None,
+        unattributed: false,
+    };
+    let key = format!("{ROW_PREFIX}{at:020}/released/{tag}");
+    Ok(vec![(key, Some(json(&row)?))])
+}
+
+/// Writes `record`, unarmed, from the dispatch hook's accept before the
+/// spend's artifact. A record of the spend already there stands, but for
+/// an unarmed one of another transition (the library armed the activity
+/// again before any artifact). Under the move lock, which the hook takes
+/// after the shielded wallet lock (C-routes §0 lock order).
+pub(crate) async fn stage_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    record: FromShieldedRecord,
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if let Some(old) = store.shielded_record(&record.activity).await?
+        && (old.armed || old.st_hash == record.st_hash)
+    {
+        return Ok(());
+    }
+    #[cfg(test)]
+    if tests::outcome_write_fails(&store.appdb) {
+        return Err(PlatformError::Storage {
+            detail: "injected".into(),
+        });
+    }
+    store.commit(vec![from_shielded_write(&record)?]).await
+}
+
+/// Arms the record of the spend `activity`, after its artifact and before
+/// any send of it: from the dispatch hook's accept, and again from its
+/// admission of a re-send, so a spend whose arming a stop cut off is armed
+/// before it leaves (C-routes C1-9). Whether the spend has a record: one
+/// with none was dispatched before records were kept. A record of another
+/// transition than `st_hash` is an error: that send is not the record's.
+pub(crate) async fn arm_from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+) -> Result<bool, PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    let Some(mut record) = store.shielded_record(&hex::encode(activity)).await? else {
+        return Ok(false);
+    };
+    if record.st_hash != hex::encode(st_hash) {
+        return Err(PlatformError::Internal {
+            detail: "the FromShielded record is of another transition".into(),
+        });
+    }
+    if !record.armed && record.state == PlatformActivityState::Pending {
+        #[cfg(test)]
+        if tests::arm_write_fails(&store.appdb) {
+            return Err(PlatformError::Storage {
+                detail: "injected".into(),
+            });
+        }
+        record.armed = true;
+        record.armed_at = now_nanos();
+        store.commit(vec![from_shielded_write(&record)?]).await?;
+    }
+    Ok(true)
+}
+
+/// The height of the wallet's Platform address activity baseline: no rise
+/// above it has been read as anyone's yet. 0 before the first read.
+pub(crate) async fn activity_height(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Result<u64, PlatformError> {
+    let store = Store::of(session, wallet)?;
+    Ok(store.baseline().await?.map_or(0, |b| b.height))
+}
+
+/// Writes the refund record of the registration `draft`'s create, the spend
+/// `activity`, once the create is proved executed as Platform's fallback
+/// (C-funding F13): done and armed, at most `cap` credits of `to`'s rise
+/// still to read as its own, from the first read at or above `executed_by`
+/// (the height its nullifiers were proved spent at) back. Only while no
+/// read since `named_at` (the activity's height when the hook named the
+/// create, before it could execute) may have shown the refund: otherwise
+/// that read showed it as `incoming`, and the record claims nothing. One
+/// record per spend; under the move lock, which callers take after the
+/// shielded wallet lock (C-routes §0).
+pub(crate) async fn arm_registration_refund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    (activity, st_hash): ([u8; 32], [u8; 32]),
+    (draft, to, cap): (i64, String, u64),
+    (named_at, executed_by): (u64, u64),
+) -> Result<(), PlatformError> {
+    let lock = wallet_lock(wallet);
+    let _one = lock.lock().await;
+    let store = Store::of(session, wallet)?;
+    if store
+        .shielded_record(&hex::encode(activity))
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let read = store.baseline().await?.map_or(0, |b| b.height);
+    let unread = read <= named_at;
+    let mut record = FromShieldedRecord::staged(
+        FromShieldedSource::Registration { draft },
+        (activity, st_hash),
+        to,
+        if unread { cap } else { 0 },
+    );
+    record.state = PlatformActivityState::Done;
+    record.armed = true;
+    record.armed_at = now_nanos();
+    record.unseen = record.credits;
+    record.done_height = executed_by.saturating_sub(1);
+    store.commit(vec![from_shielded_write(&record)?]).await
+}
+
+/// The wallet's `FromShielded` records, each pending one settled by its
+/// spend's artifact as the dispatch journal reads it now: executed by the
+/// library's own proof of it, or by the release's proof of a refused first
+/// send that published a padding nullifier (every nullifier it published
+/// proved spent, one of them no other spend can take), `done`; not executed, `failed`, what it
+/// absorbed taken over by the other records of its address armed before
+/// it was read, the oldest first, and the rest given back. An artifact
+/// that cannot be read, or reads anything else (an execution the library
+/// could not tie to this spend among them), settles nothing.
+async fn from_shielded(
+    session: &NetworkSession,
+    wallet: WalletId,
+    store: &Store,
+) -> Result<(Vec<FromShieldedRecord>, bool), PlatformError> {
+    use dw_appdb::dispatch::ArtifactStatus;
+    let mut records = store.shielded_records().await?;
+    let before = records.clone();
+    let height = store.baseline().await?.map_or(0, |b| b.height);
+    let mut writes = Vec::new();
+    for i in 0..records.len() {
+        // An unarmed record's spend never left: nothing settles it.
+        if records[i].state != PlatformActivityState::Pending || !records[i].armed {
+            continue;
+        }
+        let Some(activity) = hex32(&records[i].activity) else {
+            continue;
+        };
+        let artifact = match session.leases.shielded_artifact(wallet, activity).await {
+            Ok(Some(a)) if a.st_hash.map(hex::encode).as_deref() == Some(&records[i].st_hash) => a,
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(%e, "a FromShielded record's artifact could not be read");
+                continue;
+            }
+        };
+        match artifact.status {
+            ArtifactStatus::Executed if super::shielded_release::proves_execution(&artifact) => {
+                records[i].executed(height)
+            }
+            ArtifactStatus::NotExecuted => {
+                let mut record = records[i].clone();
+                records[i].state = PlatformActivityState::Failed;
+                writes.extend(record.not_executed(&mut records)?);
+                records[i] = record;
+            }
+            _ => {}
+        }
+    }
+    writes.extend(shielded_writes(&records, &before)?);
+    let changed = !writes.is_empty();
+    if changed {
+        commit_outcome(store, writes).await?;
+    }
+    Ok((records, changed))
+}
+
+/// The writes of the records of `records` that differ from `before`.
+fn shielded_writes(
+    records: &[FromShieldedRecord],
+    before: &[FromShieldedRecord],
+) -> Result<Vec<Write>, PlatformError> {
+    (records.iter().zip(before))
+        .filter(|(r, was)| r != was)
+        .map(|(r, _)| from_shielded_write(r))
+        .collect()
+}
+
+/// **Test only**: the wallet's `FromShielded` records as stored.
+#[cfg(test)]
+pub(crate) async fn from_shielded_records(
+    session: &NetworkSession,
+    wallet: WalletId,
+) -> Vec<FromShieldedRecord> {
+    Store::of(session, wallet)
+        .unwrap()
+        .shielded_records()
+        .await
+        .unwrap()
+}
+
+fn hex32(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// What a read knows of the wallet's fund locks
@@ -557,13 +1065,14 @@ pub(crate) enum Arming {
 /// Records that an apply of the fund lock at `outpoint` is about to
 /// release a signature: its record armed (module doc), made first for a
 /// lock that has none (a restored one: paying `address`, about
-/// `credits`).
+/// `credits`; `recovered` for a recover's, `unfinished_remainder`).
 pub(crate) async fn arm_fund(
     session: &NetworkSession,
     wallet: WalletId,
     lock: (OutPoint, u64),
     address: String,
     credits: u64,
+    recovered: bool,
 ) -> Result<Arming, PlatformError> {
     let one = wallet_lock(wallet);
     let _one = one.lock().await;
@@ -585,6 +1094,7 @@ pub(crate) async fn arm_fund(
             let r = FundRecord {
                 armed: true,
                 restored: true,
+                recovered,
                 ..FundRecord::pending(lock, address, credits)
             };
             (r, Arming::Made)
@@ -633,7 +1143,10 @@ pub(crate) async fn fund_used(
     let Some(mut record) = pending_fund(&store, txid).await? else {
         return Ok(());
     };
-    let (writes, _) = record.reported(estimate)?;
+    let mut shielded = store.shielded_records().await?;
+    let before = shielded.clone();
+    let (mut writes, _) = record.reported(estimate, &mut shielded)?;
+    writes.extend(shielded_writes(&shielded, &before)?);
     commit_outcome(&store, writes).await
 }
 
@@ -688,6 +1201,8 @@ async fn reconcile(
 ) -> Result<bool, PlatformError> {
     let mut writes = Vec::new();
     let mut removed = HashSet::new();
+    let mut shielded = store.shielded_records().await?;
+    let shielded_before = shielded.clone();
     for fund in funds.iter_mut() {
         let at = (fund.state == PlatformActivityState::Pending && !held.contains(&fund.address))
             .then(|| fund.outpoint())
@@ -699,15 +1214,16 @@ async fn reconcile(
             fund.complete(fund.credits, true);
             writes.push(fund_write(fund)?);
         } else if ev.reported.contains(&at) {
-            let (ended, kept) = fund.reported(fund.credits)?;
+            let (ended, kept) = fund.reported(fund.credits, &mut shielded)?;
             writes.extend(ended);
             if !kept {
                 removed.insert(fund.txid.clone());
             }
         } else if !fund.armed && ev.caught_up && !ev.tracked.contains(&at) {
-            writes.extend(fund.close()?);
+            writes.extend(fund.close(&mut shielded)?);
         }
     }
+    writes.extend(shielded_writes(&shielded, &shielded_before)?);
     funds.retain(|f| !removed.contains(&f.txid));
     let changed = !writes.is_empty();
     if changed {
@@ -723,7 +1239,8 @@ impl MoveRecord {
             None => (
                 self.debit(),
                 Some(self.to.clone()),
-                (self.kind == MoveKind::ToCore).then_some(self.expected_duffs),
+                matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact)
+                    .then_some(self.expected_duffs),
             ),
         };
         PlatformActivity {
@@ -731,6 +1248,8 @@ impl MoveRecord {
             kind: match self.kind {
                 MoveKind::ToCore => PlatformActivityKind::MoveToCore,
                 MoveKind::Transfer => PlatformActivityKind::Send,
+                MoveKind::ToContact => PlatformActivityKind::ContactPayment,
+                MoveKind::ToIdentity | MoveKind::Register => PlatformActivityKind::ToIdentity,
             },
             state: self.state,
             credits,
@@ -741,7 +1260,15 @@ impl MoveRecord {
             at: self.at,
             may_land: self.holds(),
             estimated: self.estimated(),
+            contact: None,
+            unattributed: self.winner_unknown(),
         }
+    }
+
+    /// Settled with no named winner: marked so, or a group's outcome stored
+    /// before the mark existed (only such a group has one).
+    fn winner_unknown(&self) -> bool {
+        self.unattributed || self.group.is_some()
     }
 
     /// What its inputs give: a send's amount (for Max, before the fee).
@@ -749,11 +1276,12 @@ impl MoveRecord {
         self.inputs.iter().map(|i| i.credits).sum()
     }
 
-    /// What it shows as taken: a move what it may take; a send its amount
-    /// until it is done, then what it took: its inputs and, unless the
-    /// output paid it, the fee the balances show or else the estimate.
+    /// What it shows as taken: a move or a contact payout what it may take;
+    /// a send or a top-up its amount until it is done, then what it took: its inputs
+    /// and, unless the output paid it, the fee the balances show or else
+    /// the estimate.
     fn debit(&self) -> u64 {
-        if self.kind != MoveKind::Transfer {
+        if matches!(self.kind, MoveKind::ToCore | MoveKind::ToContact) {
             return self.credits;
         }
         if self.state != PlatformActivityState::Done || self.fee_from_output {
@@ -763,10 +1291,10 @@ impl MoveRecord {
             .saturating_add(self.fee_taken.unwrap_or(self.fee_credits))
     }
 
-    /// A done send whose fee the balances did not show: its debit counts
-    /// the estimate.
+    /// A done send or top-up whose fee the balances did not show: its debit
+    /// counts the estimate.
     fn estimated(&self) -> bool {
-        self.kind == MoveKind::Transfer
+        matches!(self.kind, MoveKind::Transfer | MoveKind::ToIdentity)
             && self.state == PlatformActivityState::Done
             && self.group.is_none()
             && !self.fee_from_output
@@ -841,13 +1369,19 @@ impl MoveRecord {
     }
 
     /// It may still execute and is not known done.
-    fn holds(&self) -> bool {
+    pub(crate) fn holds(&self) -> bool {
         self.can_land && self.state != PlatformActivityState::Done
     }
 
     /// `seen` shows every input at or past its signed nonce.
     fn reached(&self, seen: &Seen) -> bool {
         (self.inputs.iter()).all(|i| seen.nonce(&i.address).is_some_and(|n| n >= i.nonce))
+    }
+
+    /// `seen` shows some input at or past its signed nonce: the move has
+    /// executed, or it never can (another write took that nonce).
+    fn touched(&self, seen: &Seen) -> bool {
+        (self.inputs.iter()).any(|i| seen.nonce(&i.address).is_some_and(|n| n >= i.nonce))
     }
 
     /// `seen` shows every input still below its signed nonce.
@@ -906,13 +1440,30 @@ impl MoveRecord {
 
 /// Settles the moves that hold their inputs against `seen` (module doc);
 /// the indices of those it changed.
+#[cfg(test)]
 pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
+    settle_with(moves, seen, &Exits::new())
+}
+
+/// What the withdrawal document of a "Move to Dash wallet" beside a held
+/// top-up showed (C-routes C3-9), by the move's id: present or absent, read
+/// at or above the proof the nonces were taken in. A move not in it is
+/// undecided.
+pub(crate) type Exits = BTreeMap<String, bool>;
+
+/// [`settle`], a top-up and the "Move to Dash wallet" at its key decided by
+/// `exits` (C-routes C3-9): of the two, the one the exit's document names
+/// is `done` and the other `failed`, never `replaced`; with no evidence
+/// both stay as they were and hold.
+pub(crate) fn settle_with(moves: &mut [MoveRecord], seen: &Seen, exits: &Exits) -> BTreeSet<usize> {
     let mut changed = BTreeSet::new();
     let landed: BTreeSet<Vec<(String, u32)>> = (moves.iter())
         .filter(|m| m.holds() && m.reached(seen))
         .map(MoveRecord::key)
         .collect();
-    for key in landed {
+    // A payout's group settles on its withdrawals' documents (P8).
+    let paying = paying_keys(moves);
+    for key in landed.into_iter().filter(|k| !paying.contains(k)) {
         let group: Vec<usize> = (0..moves.len())
             .filter(|&i| moves[i].holds() && moves[i].key() == key)
             .collect();
@@ -920,6 +1471,66 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
         let Some(newest) = group.iter().copied().max_by_key(|&i| order(i)) else {
             continue;
         };
+        let of = |pick: fn(MoveKind) -> bool| -> Vec<usize> {
+            (group.iter().copied())
+                .filter(|&i| pick(moves[i].kind))
+                .collect()
+        };
+        let (top_ups, exit_moves) = (
+            of(MoveKind::credits_identity),
+            of(|k| k == MoveKind::ToCore),
+        );
+        if !top_ups.is_empty() && !exit_moves.is_empty() {
+            let found: Vec<usize> = (exit_moves.iter().copied())
+                .filter(|&i| exits.get(&moves[i].id) == Some(&true))
+                .collect();
+            let present: Vec<usize> = (exit_moves.iter().copied())
+                .filter(|&i| found.iter().any(|&f| moves[f].to == moves[i].to))
+                .collect();
+            let known = (exit_moves.iter()).all(|&i| exits.contains_key(&moves[i].id));
+            // Exits paying one address share one document: whichever of
+            // them executed, the history is the same (moves' rule for
+            // equal terms).
+            // Exits of other terms share that document too, and it does not
+            // say which of them paid: the newest carries the group's
+            // outcome, unattributed, as moves of other terms do below.
+            let alike = (present.iter()).all(|&i| moves[i].terms() == moves[present[0]].terms());
+            if !present.is_empty() && !alike {
+                let newest = present.iter().copied().max_by_key(|&i| order(i));
+                let newest = newest.expect("present is not empty");
+                let to = Some(moves[newest].to.clone());
+                moves[newest].done_for_group(seen, to);
+                for &i in group.iter().filter(|&&i| i != newest) {
+                    moves[i].state = PlatformActivityState::Failed;
+                    moves[i].can_land = false;
+                }
+                for &i in &present {
+                    moves[i].unattributed = true;
+                }
+                changed.extend(group);
+                continue;
+            }
+            let winner = match present.as_slice() {
+                [] if known => top_ups.iter().copied().max_by_key(|&i| order(i)),
+                [] => None,
+                _ => (present.iter().copied().filter(|&i| moves[i].answered))
+                    .max_by_key(|&i| order(i))
+                    .or_else(|| present.iter().copied().min_by_key(|&i| order(i))),
+            };
+            let Some(winner) = winner else {
+                continue;
+            };
+            for &i in &group {
+                if i == winner {
+                    moves[i].done(seen);
+                } else {
+                    moves[i].state = PlatformActivityState::Failed;
+                    moves[i].can_land = false;
+                }
+            }
+            changed.extend(group);
+            continue;
+        }
         let alike = (group.iter()).all(|&i| moves[i].terms() == moves[newest].terms());
         if alike {
             // Whichever executed, the history is the same.
@@ -934,7 +1545,10 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
                     // as failed (0.1).
                     moves[i].state = match moves[i].kind {
                         MoveKind::Transfer => PlatformActivityState::Replaced,
-                        MoveKind::ToCore => PlatformActivityState::Failed,
+                        MoveKind::ToCore
+                        | MoveKind::ToContact
+                        | MoveKind::ToIdentity
+                        | MoveKind::Register => PlatformActivityState::Failed,
                     };
                     moves[i].can_land = false;
                 }
@@ -950,6 +1564,9 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
             for &i in group.iter().filter(|&&i| i != newest) {
                 moves[i].state = PlatformActivityState::Replaced;
                 moves[i].can_land = false;
+            }
+            for &i in &group {
+                moves[i].unattributed = true;
             }
         }
         changed.extend(group);
@@ -973,6 +1590,162 @@ pub(crate) fn settle(moves: &mut [MoveRecord], seen: &Seen) -> BTreeSet<usize> {
                 }
             }
         }
+    }
+    changed
+}
+
+/// The keys of the holding contact payouts (C-funding P8): their groups
+/// settle on documents, never on nonces alone.
+fn paying_keys(moves: &[MoveRecord]) -> BTreeSet<Vec<(String, u32)>> {
+    (moves.iter())
+        .filter(|m| m.kind == MoveKind::ToContact && m.holds())
+        .map(MoveRecord::key)
+        .collect()
+}
+
+/// Each withdrawal's document by move id (C-funding P8): `true` present,
+/// `false` absent in a proof at or above the nonce proof's height. A move
+/// with no entry is unknown.
+pub(crate) type Documents = BTreeMap<String, bool>;
+
+/// The id of the withdrawal document Drive writes when `record` executes:
+/// from its first input's nonce and address, and its output script
+/// (`rs-drive` `address_credit_withdrawal/v0/transformer.rs:66-82`).
+pub(crate) fn withdrawal_id(
+    record: &MoveRecord,
+    network: Network,
+) -> Option<dpp::prelude::Identifier> {
+    use dpp::document::Document;
+    use dpp::system_data_contracts::withdrawals_contract;
+    use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdrawal as doc;
+    let inputs: BTreeMap<PlatformAddress, u32> = (record.inputs.iter())
+        .map(|i| parse(&i.address).map(|a| (a, i.nonce)))
+        .collect::<Option<_>>()?;
+    let (first, nonce) = inputs.first_key_value()?;
+    let script = withdrawal::destination(network, &record.to).ok()?;
+    let mut entropy = nonce.to_be_bytes().to_vec();
+    entropy.extend_from_slice(&first.to_bytes());
+    entropy.extend_from_slice(script.as_bytes());
+    Some(Document::generate_document_id_v0(
+        &withdrawals_contract::ID,
+        &withdrawals_contract::OWNER_ID,
+        doc::NAME,
+        &entropy,
+    ))
+}
+
+/// A payout's withdrawal document id (hex), kept in its row before it is
+/// signed, so a wallet restored without the move record can still find
+/// the payout executed.
+pub(crate) fn payout_document(record: &MoveRecord, network: Network) -> Option<String> {
+    withdrawal_id(record, network).map(|id| hex::encode(id.to_buffer()))
+}
+
+/// A restored payout's document `id` (hex) read under rule 5: `Some(true)`
+/// once Platform proves it, else `None` (absence proves nothing without
+/// the nonce it was signed at).
+pub(crate) async fn restored_payout(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    id: &str,
+) -> Option<bool> {
+    let bytes: [u8; 32] = hex::decode(id).ok()?.try_into().ok()?;
+    let id = dpp::prelude::Identifier::from(bytes);
+    let provenance = session.live().ok().map(|l| l.provenance);
+    let (read, tally) = trust::scoped(net.withdrawal(id)).await;
+    let gated = session.trust.rule_5() == Rule5::Enforce
+        && provenance.as_ref().is_some_and(|p| p.fallback_used());
+    match read {
+        Ok((true, _)) if !gated || tally.verified() => Some(true),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::info!("reading a restored payout's document: {e}");
+            None
+        }
+    }
+}
+
+/// The documents [`settle_payouts`] needs at `seen`: those of every member
+/// of a holding payout's group with a nonce `seen` shows taken. A read that
+/// fails or does not verify under rule 5 adds nothing, nor does an absence
+/// older than `seen`; a document present is final (the withdrawals
+/// contract owns it, so no user removes it).
+async fn documents(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    moves: &[MoveRecord],
+    seen: &Seen,
+) -> Documents {
+    let network = session.vault.network();
+    let provenance = session.live().ok().map(|l| l.provenance);
+    let mut docs = Documents::new();
+    for key in paying_keys(moves) {
+        let group = (moves.iter()).filter(|m| m.holds() && m.key() == key);
+        if !group.clone().any(|m| m.touched(seen)) {
+            continue;
+        }
+        for m in group {
+            let Some(id) = withdrawal_id(m, network) else {
+                continue;
+            };
+            let (read, tally) = trust::scoped(net.withdrawal(id)).await;
+            let gated = session.trust.rule_5() == Rule5::Enforce
+                && provenance.as_ref().is_some_and(|p| p.fallback_used());
+            match read {
+                Ok(_) if gated && !tally.verified() => {}
+                Ok((present, height)) if present || height >= seen.height => {
+                    docs.insert(m.id.clone(), present);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::info!(id = %m.id, "reading a withdrawal's document: {e}"),
+            }
+        }
+    }
+    docs
+}
+
+/// Settles each holding payout's group with a nonce `seen` shows taken, on
+/// `docs` (C-funding P8): the payout's document present, it is `done` and
+/// the others `failed`; absent, the member whose document is present is
+/// `done`, or with none present every member is `failed`. While a document
+/// it needs is unknown, the group holds. The indices it changed.
+pub(crate) fn settle_payouts(
+    moves: &mut [MoveRecord],
+    seen: &Seen,
+    docs: &Documents,
+) -> BTreeSet<usize> {
+    let mut changed = BTreeSet::new();
+    for key in paying_keys(moves) {
+        let group: Vec<usize> = (0..moves.len())
+            .filter(|&i| moves[i].holds() && moves[i].key() == key)
+            .collect();
+        if !group.iter().any(|&i| moves[i].touched(seen)) {
+            continue;
+        }
+        let doc = |i: usize| docs.get(&moves[i].id).copied();
+        let Some(payout) = group
+            .iter()
+            .copied()
+            .find(|&i| moves[i].kind == MoveKind::ToContact)
+        else {
+            continue;
+        };
+        let present = group.iter().copied().find(|&i| doc(i) == Some(true));
+        let winner = match (doc(payout), present) {
+            (Some(true), _) => Some(payout),
+            (_, Some(exit)) => Some(exit),
+            (Some(false), None) if group.iter().all(|&i| doc(i) == Some(false)) => None,
+            _ => continue,
+        };
+        for &i in &group {
+            if Some(i) == winner {
+                moves[i].done(seen);
+            } else {
+                moves[i].state = PlatformActivityState::Failed;
+                moves[i].can_land = false;
+            }
+        }
+        changed.extend(group);
     }
     changed
 }
@@ -1035,6 +1808,8 @@ pub(crate) fn changes(
             at,
             may_land: false,
             estimated: false,
+            contact: None,
+            unattributed: false,
         };
         if is > was {
             let rose = is - was;
@@ -1104,6 +1879,15 @@ impl Limits {
         })
     }
 
+    /// A contact payout's (C-funding P8): a withdrawal's, its fee source
+    /// keeping [`TRANSFER_FEE_BAND`] times the estimate.
+    pub(crate) fn to_contact_at(version: &PlatformVersion) -> Result<Self, PlatformError> {
+        Ok(Self {
+            band: TRANSFER_FEE_BAND,
+            ..Self::at(version)?
+        })
+    }
+
     /// An address funds transfer's with one output (a Platform send).
     pub(crate) fn transfer_at(version: &PlatformVersion) -> Self {
         let funds = &version.dpp.state_transitions;
@@ -1114,6 +1898,25 @@ impl Limits {
             min: (funds.address_funds.min_output_amount).max(funds.address_funds.min_input_amount),
             max: u64::MAX,
             fee_base: fees.address_funds_transfer_output_cost,
+            fee_per_input: fees.address_funds_transfer_input_cost,
+            band: TRANSFER_FEE_BAND,
+        }
+    }
+
+    /// An identity top-up from addresses' (C-routes C3-3): dpp's
+    /// `calculate_min_required_fee` is the top-up's base cost and the
+    /// per-input cost (no output), input 0 keeps [`TRANSFER_FEE_BAND`]
+    /// times it, every claim is at least the input minimum and they total
+    /// at least `min_identity_funding_amount`.
+    pub(crate) fn top_up_at(version: &PlatformVersion) -> Self {
+        let funds = &version.dpp.state_transitions;
+        let fees = &version.fee_version.state_transition_min_fees;
+        Self {
+            min_input: funds.address_funds.min_input_amount,
+            max_inputs: funds.max_address_inputs as usize,
+            min: (funds.address_funds.min_identity_funding_amount).max(1),
+            max: u64::MAX,
+            fee_base: fees.identity_topup_base_cost,
             fee_per_input: fees.address_funds_transfer_input_cost,
             band: TRANSFER_FEE_BAND,
         }
@@ -1197,13 +2000,16 @@ impl Refused {
             (Refused::Short { needed, available }, _) => {
                 PlatformError::InsufficientCredits { needed, available }.into()
             }
-            (Refused::OutOfRange, MoveKind::ToCore) => CreditsError::WithdrawalOutOfRange {
-                min: limits.min,
-                max: limits.max,
-            },
-            (Refused::OutOfRange, MoveKind::Transfer) => {
-                CreditsError::SendOutOfRange { min: limits.min }
+            (Refused::OutOfRange, MoveKind::ToCore | MoveKind::ToContact) => {
+                CreditsError::WithdrawalOutOfRange {
+                    min: limits.min,
+                    max: limits.max,
+                }
             }
+            (
+                Refused::OutOfRange,
+                MoveKind::Transfer | MoveKind::ToIdentity | MoveKind::Register,
+            ) => CreditsError::SendOutOfRange { min: limits.min },
         }
     }
 }
@@ -1392,6 +2198,121 @@ pub(crate) fn transfer_plan(
     })
 }
 
+/// A top-up's plan (`limits`: [`Limits::top_up_at`]; C-routes C3-3): the
+/// input-0 planner (C1-4), input 0 keeping the band for the plan's inputs
+/// unclaimed, the claims totalling the amount (a short last claim borrows
+/// from the one before). The reserve grows with the inputs, so it plans
+/// again with the count a plan took until that count holds.
+pub(crate) fn top_up_plan(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+) -> Result<Plan, CreditsError> {
+    top_up_plan_from(balances, amount, limits, 1)
+}
+
+/// The plan of `amount` that takes its fee as `quoted` does, when one
+/// exists: a Max over several inputs keeps their band on input 0, and the
+/// same total as an amount fits fewer inputs with a smaller band, so it is
+/// planned again at each larger band. `None`: none claims input 0 as
+/// quoted.
+fn top_up_plan_as(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+    quoted: &Plan,
+) -> Option<Plan> {
+    (2..=limits.max_inputs)
+        .filter_map(|count| top_up_plan_from(balances, amount, limits, count).ok())
+        .find(|planned| quoted.takes_fee_as(planned))
+}
+
+/// [`top_up_plan`] with input 0 keeping at least the band for `count`
+/// inputs.
+fn top_up_plan_from(
+    balances: &BTreeMap<PlatformAddress, u64>,
+    amount: WithdrawAmount,
+    limits: &Limits,
+    mut count: usize,
+) -> Result<Plan, CreditsError> {
+    loop {
+        let rules = Input0Rules {
+            reserve: limits.keep(count),
+            min_input: limits.min_input,
+            max_inputs: limits.max_inputs,
+            min_claim_0: limits.min_input,
+            min_total: limits.min,
+            exact: true,
+        };
+        let planned = input0::plan(balances, amount, &rules).map_err(input0_refusal)?;
+        let taken = planned.inputs.len();
+        if taken > count {
+            count = taken;
+            continue;
+        }
+        // `DeductFromInput(0)` can take all input 0 keeps, not only the
+        // band: that remainder is what the grant covers.
+        let (source, claim) = planned.input_0();
+        let kept = balances.get(&source).copied().unwrap_or(0);
+        return Ok(Plan {
+            fee_source: source,
+            fee: limits.fee(taken),
+            reserve: kept.saturating_sub(claim),
+            inputs: planned.inputs,
+            fee_from_output: false,
+        });
+    }
+}
+
+/// A top-up that may stay held (C3-9) is released only by a "Move to Dash
+/// wallet" of exactly its inputs at its nonces: one the inputs' balances
+/// must be able to pay, else the top-up is refused before anything is
+/// recorded, so no hold is left without a way out.
+fn exit_possible(
+    planned: &Plan,
+    balances: &BTreeMap<PlatformAddress, u64>,
+    version: &PlatformVersion,
+) -> Result<(), CreditsError> {
+    let exit = Limits::at(version)?;
+    let inputs: BTreeMap<PlatformAddress, u64> = (planned.inputs.keys())
+        .filter_map(|a| Some((*a, *balances.get(a)?)))
+        .collect();
+    match plan(&inputs, WithdrawAmount::All, &exit) {
+        Ok(p) if p.inputs.len() == planned.inputs.len() => Ok(()),
+        _ => Err(PlatformError::InsufficientCredits {
+            needed: exit.min.saturating_add(exit.keep(planned.inputs.len())),
+            available: inputs.values().sum(),
+        }
+        .into()),
+    }
+}
+
+/// A read behind one this wallet already settled on: an input's nonce
+/// below one a done record signed. Planning on it would sign a nonce
+/// Platform already took, and the next read would show it "reached".
+fn behind(moves: &[MoveRecord], seen: &Seen) -> Result<(), PlatformError> {
+    let stale = (moves.iter())
+        .filter(|m| m.state == PlatformActivityState::Done)
+        .flat_map(|m| &m.inputs)
+        .any(|i| seen.nonce(&i.address).is_some_and(|n| n < i.nonce));
+    if stale {
+        return Err(PlatformError::Unavailable);
+    }
+    Ok(())
+}
+
+/// An input-0 plan's refusal as the quote returns it.
+fn input0_refusal(refused: Input0Refused) -> CreditsError {
+    match refused {
+        Input0Refused::Short { needed, available } => {
+            PlatformError::InsufficientCredits { needed, available }.into()
+        }
+        Input0Refused::ClaimBelow { min } | Input0Refused::TotalBelow { min } => {
+            CreditsError::SendOutOfRange { min }
+        }
+    }
+}
+
 /// What `balances` (credits) can move: an `All` plan's withdrawal, 0 when
 /// none (a remainder below the least withdrawal and its fee, or dust below
 /// the input minimum, stays where it is).
@@ -1399,18 +2320,134 @@ pub(crate) fn movable(balances: &BTreeMap<PlatformAddress, u64>, limits: &Limits
     plan(balances, WithdrawAmount::All, limits).map_or(0, |p| p.credits())
 }
 
-/// A transition Platform can never take: its structure or a signature
-/// refused (consensus basic and signature errors are stateless, raised by
-/// the SDK's structure check before the broadcast or by every node).
-fn never_valid(e: &PlatformWalletError) -> bool {
-    match e {
-        PlatformWalletError::Sdk(dash_sdk::Error::Protocol(
-            dpp::ProtocolError::ConsensusError(ce),
-        )) => matches!(
-            **ce,
-            ConsensusError::BasicError(_) | ConsensusError::SignatureError(_)
-        ),
-        _ => false,
+/// The witnesses of a move's pre-check: one per input, never a signature.
+/// Platform's structure check counts them and never reads them.
+#[derive(Debug)]
+struct Placeholder;
+
+#[async_trait::async_trait]
+impl dpp::identity::signer::Signer<PlatformAddress> for Placeholder {
+    async fn sign(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::platform_value::BinaryData, dpp::ProtocolError> {
+        Ok(dpp::platform_value::BinaryData::new(vec![0; 65]))
+    }
+
+    async fn sign_create_witness(
+        &self,
+        _: &PlatformAddress,
+        _: &[u8],
+    ) -> Result<dpp::address_funds::AddressWitness, dpp::ProtocolError> {
+        Ok(dpp::address_funds::AddressWitness::P2pkh {
+            signature: dpp::platform_value::BinaryData::new(vec![0; 65]),
+        })
+    }
+
+    fn can_sign_with(&self, _: &PlatformAddress) -> bool {
+        true
+    }
+}
+
+/// The SDK's own structure check of the transition a move will sign, built
+/// by the SDK's builder at the version it signs at, with placeholder
+/// witnesses, before anything is signed. The SDK runs the same check after
+/// signing, before the broadcast, and its error reads exactly as a node's
+/// would; refused here, nothing is signed, and a structure error after the
+/// signature is a node's answer, which settles nothing (#471). A consensus
+/// refusal is [`refused`]; `network` is the proved network protocol
+/// version, if one was read.
+async fn pre_check(
+    target: Target<'_>,
+    inputs: &BTreeMap<PlatformAddress, (u32, u64)>,
+    (script, credits): (Option<&CoreScript>, u64),
+    fee_strategy: AddressFundsFeeStrategy,
+    version: &PlatformVersion,
+    network: Option<u32>,
+) -> Result<(), CreditsError> {
+    use dash_sdk::dash_platform_queries::transition::validation::ensure_valid_state_transition_structure;
+    use dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+    use dpp::state_transition::address_credit_withdrawal_transition::methods::AddressCreditWithdrawalTransitionMethodsV0;
+    use dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+    use dpp::state_transition::address_funds_transfer_transition::methods::AddressFundsTransferTransitionMethodsV0;
+    use dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+    use dpp::state_transition::identity_topup_from_addresses_transition::methods::IdentityTopUpFromAddressesTransitionMethodsV0;
+    let refusal = |e: dpp::ProtocolError| refused(e, target.kind(), version, network);
+    let inputs = inputs.clone();
+    let built = match (target, script) {
+        (Target::Platform(to), _) => {
+            AddressFundsTransferTransition::try_from_inputs_with_signer(
+                inputs,
+                [(to, credits)].into(),
+                fee_strategy,
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Core(_), Some(script)) => {
+            AddressCreditWithdrawalTransition::try_from_inputs_with_signer(
+                inputs,
+                None,
+                fee_strategy,
+                CORE_FEE_PER_BYTE,
+                dpp::withdrawal::Pooling::Never,
+                script.clone(),
+                &Placeholder,
+                0,
+                version,
+            )
+            .await
+        }
+        (Target::Identity(identity), _) => {
+            IdentityTopUpFromAddressesTransition::try_from_inputs_with_signer(
+                identity,
+                inputs,
+                &Placeholder,
+                0,
+                version,
+                None,
+            )
+            .await
+        }
+        // A payout's script is claimed later, and it has its own way out
+        // (C-funding P8).
+        (Target::Core(_), None) | (Target::Contact, _) => return Ok(()),
+    };
+    let transition = built.map_err(refusal)?;
+    ensure_valid_state_transition_structure(&transition, version).map_err(|e| match e {
+        dash_sdk::dash_platform_queries::Error::Protocol(e) => refusal(e),
+        e => PlatformError::from(PlatformWalletError::Sdk(e.into())).into(),
+    })
+}
+
+/// A pre-check's error. A structural consensus refusal is
+/// `credits.rules_unsupported` when the proved network protocol version is
+/// above both `version` and the latest this build knows, and
+/// `credits.preflight_refused` otherwise, an unread version included. The
+/// consensus error goes to the log with the transfer kind, never into the
+/// error. Anything else maps as the SDK's error.
+fn refused(
+    e: dpp::ProtocolError,
+    kind: MoveKind,
+    version: &PlatformVersion,
+    network: Option<u32>,
+) -> CreditsError {
+    let dpp::ProtocolError::ConsensusError(ce) = e else {
+        return PlatformError::from(PlatformWalletError::Sdk(e.into())).into();
+    };
+    if !matches!(*ce, dpp::consensus::ConsensusError::BasicError(_)) {
+        return PlatformError::from(PlatformWalletError::Sdk((*ce).into())).into();
+    }
+    let planned = version.protocol_version;
+    let latest = PlatformVersion::latest().protocol_version;
+    tracing::warn!(?kind, planned, ?network, error = ?ce, "Platform's structure pre-check refused the transfer; nothing was signed");
+    if network.is_some_and(|v| v > planned.max(latest)) {
+        CreditsError::RulesUnsupported
+    } else {
+        CreditsError::PreflightRefused
     }
 }
 
@@ -1442,6 +2479,12 @@ pub(crate) trait MoveNet: Send + Sync {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
+    /// The withdrawal document `id`: whether Platform holds it, and the
+    /// proof's height (C-funding P8).
+    fn withdrawal(
+        &self,
+        id: dpp::prelude::Identifier,
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
     /// Signs the transfer of `inputs` to the one output `to` with `signer`
     /// and broadcasts it; `Ok` once Platform answered with the addresses'
     /// state.
@@ -1452,6 +2495,39 @@ pub(crate) trait MoveNet: Send + Sync {
         fee_strategy: AddressFundsFeeStrategy,
         signer: &VaultPlatformAddressSigner,
     ) -> impl Future<Output = Result<(), PlatformWalletError>> + Send;
+    /// Signs the top-up of `identity` from `inputs` with `signer` (dpp's
+    /// construction at those nonces, the fee from input 0) and broadcasts
+    /// it; `Ok` with the identity's balance Platform answered (shown, never
+    /// evidence: the proof does not bind execution).
+    fn top_up(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        signer: &VaultPlatformAddressSigner,
+    ) -> impl Future<Output = Result<u64, PlatformWalletError>> + Send;
+    /// Whether the withdrawal document `id` exists, proved, with the
+    /// proof's block height.
+    fn withdrawal_document(
+        &self,
+        id: Identifier,
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
+    /// Signs the create of `identity` (its keys, at identity `index`) from
+    /// `inputs` at those nonces with both signers, the fee from input 0, and
+    /// broadcasts it (rs-sdk's `put_with_address_funding`, C-funding F8);
+    /// `Ok` with the proved identity's id: that result binds execution and
+    /// the id is checked against the inputs (F10).
+    fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        index: u32,
+        signers: (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> impl Future<Output = Result<Identifier, PlatformWalletError>> + Send;
+    /// Whether identity `id` exists, proved, with the proof's block height.
+    fn identity_exists(
+        &self,
+        id: Identifier,
+    ) -> impl Future<Output = Result<(bool, u64), PlatformError>> + Send;
 }
 
 /// The SDK and platform-wallet.
@@ -1503,6 +2579,14 @@ impl MoveNet for SdkMoves {
             .map(drop)
     }
 
+    async fn withdrawal(&self, id: dpp::prelude::Identifier) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::Fetch;
+        let query = withdrawal::withdrawal_query(&id)?;
+        let (document, at) =
+            dpp::document::Document::fetch_with_metadata(&self.sdk, query, None).await?;
+        Ok((document.is_some(), at.height))
+    }
+
     async fn transfer(
         &self,
         inputs: BTreeMap<PlatformAddress, (u32, u64)>,
@@ -1522,6 +2606,130 @@ impl MoveNet for SdkMoves {
             .await
             .map(drop)
     }
+
+    async fn top_up(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        signer: &VaultPlatformAddressSigner,
+    ) -> Result<u64, PlatformWalletError> {
+        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
+        let (_, balance, _) = identity
+            .top_up_from_addresses_with_nonce(&self.sdk, inputs, signer, None)
+            .await
+            .map_err(PlatformWalletError::Sdk)?;
+        Ok(balance)
+    }
+
+    async fn withdrawal_document(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::Fetch;
+        let query = withdrawal::withdrawal_query(&id)?;
+        let (document, at) =
+            dpp::document::Document::fetch_with_metadata(&self.sdk, query, None).await?;
+        Ok((document.is_some(), at.height))
+    }
+
+    async fn register(
+        &self,
+        identity: &Identity,
+        inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+        index: u32,
+        (identity_signer, signer): (&VaultIdentitySigner, &VaultPlatformAddressSigner),
+    ) -> Result<Identifier, PlatformWalletError> {
+        use dash_sdk::platform::transition::put_identity::PutIdentity;
+        let (proved, infos, height) = identity
+            .put_with_address_funding(&self.sdk, inputs, None, identity_signer, signer, None)
+            .await
+            .map_err(PlatformWalletError::Sdk)?;
+        let id = proved.id();
+        // The library's follow-ups (C-funding F8): neither decides anything,
+        // and the next sync heals a failure of either.
+        (self.wallet.platform())
+            .reconcile_address_infos(&infos, height, "registration")
+            .await;
+        let wallet_id = self.wallet.wallet_id();
+        match crate::wallet_read::info_mut_of(&self.wallet).await {
+            Ok(mut state) => match (state.identity_manager).add_identity(
+                proved,
+                index,
+                wallet_id,
+                self.wallet.persister(),
+            ) {
+                Ok(()) | Err(PlatformWalletError::IdentityAlreadyExists(_)) => {}
+                Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
+            },
+            Err(e) => tracing::warn!(%id, "recording a registration's identity: {e}"),
+        }
+        Ok(id)
+    }
+
+    async fn identity_exists(&self, id: Identifier) -> Result<(bool, u64), PlatformError> {
+        use dash_sdk::platform::Fetch;
+        let (identity, at) = Identity::fetch_with_metadata(&self.sdk, id, None).await?;
+        Ok((identity.is_some(), at.height))
+    }
+}
+
+/// The id of the withdrawal document a "Move to Dash wallet" creates when it
+/// executes (C-routes C3-9): Drive derives it from the first input's signed
+/// nonce, its address and the payout script (rs-drive
+/// `address_credit_withdrawal/v0/transformer.rs:66-82` at the pin).
+pub(crate) fn exit_document(record: &MoveRecord, network: Network) -> Option<Identifier> {
+    use dpp::document::Document;
+    use dpp::system_data_contracts::withdrawals_contract;
+    use dpp::system_data_contracts::withdrawals_contract::v1::document_types::withdrawal as doc;
+    let (first, nonce) = (record.inputs.iter())
+        .filter_map(|i| Some((parse(&i.address)?, i.nonce)))
+        .min_by_key(|(a, _)| *a)?;
+    let script = withdrawal::destination(network, &record.to).ok()?;
+    let mut entropy = nonce.to_be_bytes().to_vec();
+    entropy.extend_from_slice(&first.to_bytes());
+    entropy.extend_from_slice(script.as_bytes());
+    Some(Document::generate_document_id_v0(
+        &withdrawals_contract::ID,
+        &withdrawals_contract::OWNER_ID,
+        doc::NAME,
+        &entropy,
+    ))
+}
+
+/// The evidence [`settle_with`] needs for each "Move to Dash wallet" that
+/// shares its inputs and nonces with a held top-up and whose nonces `seen`
+/// shows taken: its withdrawal document, read by id at or above `seen`'s
+/// height, under rule 5 when it applies. A read that fails, is behind or
+/// is unverified decides nothing.
+async fn exits(
+    session: &NetworkSession,
+    net: &impl MoveNet,
+    moves: &[MoveRecord],
+    seen: &Seen,
+) -> Exits {
+    let network = session.vault.network();
+    let mut out = Exits::new();
+    let beside_top_up = |m: &MoveRecord| {
+        (moves.iter()).any(|t| t.kind.credits_identity() && t.holds() && t.key() == m.key())
+    };
+    for exit in (moves.iter())
+        .filter(|m| m.kind == MoveKind::ToCore && m.holds() && m.reached(seen) && beside_top_up(m))
+    {
+        let Some(id) = exit_document(exit, network) else {
+            continue;
+        };
+        let (read, tally) = trust::scoped(net.withdrawal_document(id)).await;
+        let gated = session.trust.rule_5() == Rule5::Enforce
+            && session.live().is_ok_and(|l| l.provenance.fallback_used());
+        match read {
+            Ok(_) if gated && !tally.verified() => {
+                tracing::info!(id = %exit.id, "an exit's document read was unverified");
+            }
+            Ok((present, height)) if height >= seen.height => {
+                out.insert(exit.id.clone(), present);
+            }
+            Ok(_) => tracing::info!(id = %exit.id, "an exit's document read was behind"),
+            Err(e) => tracing::info!(id = %exit.id, "reading an exit's document: {e}"),
+        }
+    }
+    out
 }
 
 /// `addresses` read once (module doc, Reads), converted for `network`. With
@@ -1561,7 +2769,7 @@ async fn read(
 }
 
 /// One wallet's moves and activity reads, one at a time.
-fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
+pub(crate) fn wallet_lock(wallet: WalletId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: LazyLock<Mutex<HashMap<WalletId, Arc<tokio::sync::Mutex<()>>>>> =
         LazyLock::new(Mutex::default);
     let mut locks = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1670,6 +2878,38 @@ impl Store {
             .collect())
     }
 
+    /// The `FromShielded` records, oldest first. One whose activity is not
+    /// the 32-byte id its key names can never be settled: it is left out,
+    /// so it absorbs nothing.
+    async fn shielded_records(&self) -> Result<Vec<FromShieldedRecord>, PlatformError> {
+        let mut records: Vec<FromShieldedRecord> = (self.all(FROM_SHIELDED_PREFIX).await?)
+            .into_iter()
+            .filter_map(|(key, r): (String, FromShieldedRecord)| {
+                let named = key.strip_prefix(FROM_SHIELDED_PREFIX) == Some(r.activity.as_str());
+                if named && hex32(&r.activity).is_some() {
+                    return Some(r);
+                }
+                tracing::warn!(%key, "a FromShielded record with a malformed activity id");
+                None
+            })
+            .collect();
+        records.sort_by(|a, b| (a.at, &a.activity).cmp(&(b.at, &b.activity)));
+        Ok(records)
+    }
+
+    async fn shielded_record(
+        &self,
+        activity: &str,
+    ) -> Result<Option<FromShieldedRecord>, PlatformError> {
+        let key = format!("{FROM_SHIELDED_PREFIX}{activity}");
+        let value = self
+            .blocking(move |db, scope| db.setting(scope, &key))
+            .await?;
+        (value.map(|v| serde_json::from_str(&v)).transpose()).map_err(|e| PlatformError::Storage {
+            detail: format!("an unreadable FromShielded record: {e}"),
+        })
+    }
+
     async fn fund(&self, txid: &str) -> Result<Option<FundRecord>, PlatformError> {
         let key = format!("{FUND_PREFIX}{txid}");
         let value = self
@@ -1711,6 +2951,13 @@ type Write = (String, Option<String>);
 
 fn fund_write(record: &FundRecord) -> Result<Write, PlatformError> {
     Ok((format!("{FUND_PREFIX}{}", record.txid), Some(json(record)?)))
+}
+
+fn from_shielded_write(record: &FromShieldedRecord) -> Result<Write, PlatformError> {
+    Ok((
+        format!("{FROM_SHIELDED_PREFIX}{}", record.activity),
+        Some(json(record)?),
+    ))
 }
 
 fn fund_delete(txid: &str) -> Write {
@@ -1776,6 +3023,7 @@ pub(crate) async fn balance(
         .collect();
     addresses.sort_by(|a, b| b.credits.cmp(&a.credits).then(a.address.cmp(&b.address)));
     let sync = manager.platform_address_sync();
+    let off = address_sends_open(network).is_err();
     PlatformAddressBalance {
         credits: cached.values().sum(),
         movable_credits: movable,
@@ -1783,6 +3031,8 @@ pub(crate) async fn balance(
         addresses,
         synced_at: sync.last_sync_unix_seconds(),
         syncing: sync.is_syncing(),
+        sends_active: !off && sends_active(manager.sdk_arc().version()).is_ok(),
+        sends_off: off.then(|| PLATFORM_ADDRESS_SENDS.into()),
     }
 }
 
@@ -1845,20 +3095,33 @@ pub(crate) async fn sync(
 /// compared. Whether anything changed.
 async fn observe(
     store: &Store,
-    (moves, funds): (&mut [MoveRecord], &mut [FundRecord]),
+    (moves, funds, shielded): (
+        &mut [MoveRecord],
+        &mut [FundRecord],
+        &mut [FromShieldedRecord],
+    ),
     held_funds: BTreeSet<String>,
-    seen: &Seen,
+    (seen, exits, docs): (&Seen, &Exits, &Documents),
 ) -> Result<bool, PlatformError> {
     let before = moves.to_vec();
     let funds_before = funds.to_vec();
-    settle(moves, seen);
+    let shielded_before = shielded.to_vec();
+    settle_with(moves, seen, exits);
+    settle_payouts(moves, seen, docs);
     let baseline = store.baseline().await?;
     let mut writes = Vec::new();
     let mut rows = 0;
     // A proof older than the baseline's (a node behind) decides nothing.
     if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
+        // A pending move's inputs, and those of a top-up's group whose
+        // nonces are taken while no evidence names its member yet (C3-9).
+        let top_ups: BTreeSet<_> = (moves.iter())
+            .filter(|m| m.kind.credits_identity())
+            .map(MoveRecord::key)
+            .collect();
+        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen) && top_ups.contains(&m.key());
         let held: BTreeSet<String> = (moves.iter())
-            .filter(|m| m.state == PlatformActivityState::Pending)
+            .filter(|m| m.state == PlatformActivityState::Pending || deciding(m))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
             .chain(held_funds)
             .collect();
@@ -1872,8 +3135,11 @@ async fn observe(
             *arriving.entry(fund.address.clone()).or_default() += fund.unseen;
             *expected.entry(fund.address.clone()).or_default() += fund.expects();
         }
+        for record in shielded.iter() {
+            *expected.entry(record.to.clone()).or_default() += record.expects();
+        }
         let mut expecting = expected.clone();
-        let (found, next) = changes(
+        let (mut found, next) = changes(
             baseline.as_ref().map(|b| &b.balances),
             &seen.balances(),
             &held,
@@ -1889,6 +3155,7 @@ async fn observe(
                 (a, e - left)
             })
             .collect();
+        let now = now_nanos();
         let mut pending: Vec<&mut FundRecord> =
             funds.iter_mut().filter(|f| f.expects() > 0).collect();
         pending.sort_by(|a, b| (a.at, &a.txid).cmp(&(b.at, &b.txid)));
@@ -1896,6 +3163,19 @@ async fn observe(
             if let Some(left) = took.get_mut(&fund.address) {
                 let n = fund.expects().min(*left);
                 fund.absorbed += n;
+                if n > 0 && shielded.iter().any(|r| r.to == fund.address) {
+                    fund.claims.push(Claim {
+                        at: now,
+                        credits: n,
+                    });
+                }
+                *left -= n;
+            }
+        }
+        for record in shielded.iter_mut().filter(|r| r.expects() > 0) {
+            if let Some(left) = took.get_mut(&record.to) {
+                let n = record.expects().min(*left);
+                record.absorb(n, now);
                 *left -= n;
             }
         }
@@ -1911,6 +3191,27 @@ async fn observe(
                 fund.unseen = 0;
             }
         }
+        // A done record's rise still to read is what this read found
+        // incoming on its address, as far as it reaches, the oldest
+        // record's first (they are stored in that order). The first read
+        // above the height it was settled done at that compares its
+        // address shows its credit: what that read did not find is no
+        // later rise's.
+        for record in shielded.iter_mut().filter(|r| r.unseen > 0) {
+            let row = (found.iter_mut()).find(|row| {
+                row.kind == PlatformActivityKind::Incoming
+                    && row.address.as_deref() == Some(record.to.as_str())
+            });
+            if let Some(row) = row {
+                let n = record.unseen.min(row.credits);
+                record.unseen -= n;
+                row.credits -= n;
+            }
+            if seen.height > record.done_height && !held.contains(&record.to) {
+                record.unclaimed += std::mem::take(&mut record.unseen);
+            }
+        }
+        found.retain(|row| row.credits > 0);
         for row in &found {
             let address = row.address.as_deref().unwrap_or("");
             let key = format!("{ROW_PREFIX}{:020}/{:020}/{address}", row.at, seen.height);
@@ -1938,6 +3239,11 @@ async fn observe(
             writes.push(fund_write(f)?);
         }
     }
+    for (r, was) in shielded.iter().zip(&shielded_before) {
+        if r != was {
+            writes.push(from_shielded_write(r)?);
+        }
+    }
     store.commit(writes).await?;
     Ok(changed)
 }
@@ -1955,6 +3261,39 @@ fn covered(
                 .flat_map(|m| m.inputs.iter().filter_map(|i| parse(&i.address))),
         )
         .collect()
+}
+
+/// One proved read of the payment account's addresses under rule 5, for a
+/// plan that signs no other record's terms: `credits.move_pending` while a
+/// move of the wallet holds nonces the read shows unused.
+pub(crate) struct ProvedRead {
+    pub(crate) balances: BTreeMap<PlatformAddress, u64>,
+    /// Platform's stored nonce of each address it holds.
+    pub(crate) nonces: BTreeMap<PlatformAddress, u32>,
+}
+
+pub(crate) async fn proved_read(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+) -> Result<ProvedRead, CreditsError> {
+    let lock = wallet_lock(wallet_id);
+    let _one = lock.lock().await;
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if let Some(m) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: m.id.clone() });
+    }
+    let nonces = (pool.keys())
+        .filter_map(|a| Some((*a, seen.nonce(&bech32m(a, network))?)))
+        .collect();
+    Ok(ProvedRead {
+        balances: proved_balances(&pool, &seen, network),
+        nonces,
+    })
 }
 
 /// The proved balances of the payment account's addresses.
@@ -1976,6 +3315,12 @@ pub(crate) async fn activity(
     wallet: &PlatformWallet,
     wallet_id: WalletId,
 ) -> Result<Vec<PlatformActivity>, CreditsError> {
+    // Every recorded fallback is derived into the pool first, so the read
+    // below covers a refund to one after a reload. Unreadable, the read
+    // goes on without them, as before.
+    if let Err(e) = retire_handed_out(session, wallet).await {
+        tracing::info!("restoring the Platform address records before reading activity: {e}");
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let store = Store::of(session, wallet_id)?;
@@ -1988,15 +3333,22 @@ pub(crate) async fn activity(
         .filter_map(FundRecord::outpoint);
     let ev = super::unfinished_funds::fund_evidence(session, wallet_id, wallet, pending).await;
     let completed = reconcile(&store, &mut funds, &ev, &held).await?;
+    let (mut shielded, settled) = from_shielded(session, wallet_id, &store).await?;
     let observed = match read(session, net, addresses, false).await {
-        Ok(seen) => observe(&store, (&mut moves, &mut funds), held, &seen).await?,
+        Ok(seen) => {
+            let exits = exits(session, net, &moves, &seen).await;
+            let docs = documents(session, net, &moves, &seen).await;
+            let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+            observe(&store, records, held, (&seen, &exits, &docs)).await?
+        }
         Err(e) => {
             // Nothing is known: what is stored stands.
             tracing::info!("reading the Platform addresses for their activity: {e}");
             false
         }
     };
-    let changed = completed || observed;
+    let changed = completed || settled || observed;
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     let mut stored = store.all::<PlatformActivity>(ROW_PREFIX).await?;
     // Keys sort by time: the oldest beyond the kept ones go.
     while stored.len() > ROWS_KEPT {
@@ -2012,18 +3364,30 @@ pub(crate) async fn activity(
     let mut out: Vec<PlatformActivity> = (stored.into_iter().map(|(_, r)| r))
         .chain(moves.iter().map(MoveRecord::activity))
         .chain(funds.iter().map(FundRecord::activity))
+        .chain(
+            shielded
+                .iter()
+                .filter(|r| r.listed())
+                .map(FromShieldedRecord::activity),
+        )
         .collect();
     out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
+    super::contact_payout::name_rows(session, wallet, wallet_id, &mut out).await;
     Ok(out)
 }
 
 /// Where a move pays.
 #[derive(Debug, Clone, Copy)]
-enum Target<'a> {
+pub(crate) enum Target<'a> {
     /// One of the wallet's Core receiving addresses (a withdrawal).
     Core(&'a str),
     /// A Platform address, checked by [`recipient`] (a transfer).
     Platform(PlatformAddress),
+    /// A DashPay contact's Core address, reserved by the contact leg
+    /// inside the same call, never given by the host (C-funding P4).
+    Contact,
+    /// One of the wallet's own identities (a top-up, C-routes C3-2).
+    Identity(&'a Identity),
 }
 
 impl Target<'_> {
@@ -2031,25 +3395,30 @@ impl Target<'_> {
         match self {
             Target::Core(_) => MoveKind::ToCore,
             Target::Platform(_) => MoveKind::Transfer,
+            Target::Contact => MoveKind::ToContact,
+            Target::Identity(_) => MoveKind::ToIdentity,
         }
     }
 
-    fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
+    pub(crate) fn limits(&self, version: &PlatformVersion) -> Result<Limits, PlatformError> {
         match self {
             Target::Core(_) => Limits::at(version),
             Target::Platform(_) => Ok(Limits::transfer_at(version)),
+            Target::Contact => Limits::to_contact_at(version),
+            Target::Identity(_) => Ok(Limits::top_up_at(version)),
         }
     }
 
-    fn plan(
+    pub(crate) fn plan(
         &self,
         balances: &BTreeMap<PlatformAddress, u64>,
         amount: WithdrawAmount,
         limits: &Limits,
     ) -> Result<Plan, CreditsError> {
         match self {
-            Target::Core(_) => plan(balances, amount, limits),
+            Target::Core(_) | Target::Contact => plan(balances, amount, limits),
             Target::Platform(_) => transfer_plan(balances, amount, limits),
+            Target::Identity(_) => return top_up_plan(balances, amount, limits),
         }
         .map_err(|r| r.error(self.kind(), limits))
     }
@@ -2151,6 +3520,13 @@ impl SendOps {
         })
     }
 
+    /// Whether the quoted send `id` of `wallet` is a held send's retry;
+    /// `false` for none.
+    fn retries(&self, id: &str, wallet: WalletId) -> bool {
+        self.with(id, wallet, |ops, at| Ok(ops[at].1.retry_of.is_some()))
+            .unwrap_or(false)
+    }
+
     /// Takes the quoted send `id` of `wallet` to pay under `grant`: each is
     /// sent at most once, and only under the grant issued for it. Any other
     /// grant (one issued for another send, or for none) is
@@ -2226,9 +3602,13 @@ pub(crate) async fn quote(
     amount: WithdrawAmount,
 ) -> Result<MoveToCoreQuote, CreditsError> {
     let network = session.vault.network();
-    let pool = pool(wallet).await?;
     let moves = Store::of(session, wallet_id)?.moves().await?;
+    held_exit_open(network, &moves)?;
+    let pool = pool(wallet).await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if !(moves.iter()).any(|m| m.holds() && !m.reached(&seen)) {
+        address_sends_open(network)?;
+    }
     // As the move will decide, before anything is asked of the user: a
     // send that may still execute holds the next move (it must have the
     // send's exact terms, which no move has).
@@ -2237,10 +3617,34 @@ pub(crate) async fn quote(
     {
         return Err(CreditsError::MovePending { id: h.id.clone() });
     }
+    // A move, contact payment, top-up or registration's create not settled:
+    // the move beside it takes exactly its inputs (C-routes C3-9), as `run`
+    // plans it, so Confirm shows that move; one Platform has not answered
+    // holds the next move, as the move refuses it.
+    let held = (moves.iter())
+        .find(|m| m.kind.credits_identity() && m.holds())
+        .or_else(|| (moves.iter()).find(|m| m.holds() && !m.reached(&seen)));
+    if let Some(h) = held.filter(|h| h.state == PlatformActivityState::Pending) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
     let version = net.version();
     let target = Target::Core("");
     let limits = target.limits(version)?;
-    let planned = target.plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
+    // Its exit signs exactly its inputs, so a plan of only some of them
+    // (an amount) is refused here, as the move would refuse it.
+    if let Some(h) = held {
+        let inputs: BTreeSet<&str> = h.inputs.iter().map(|i| i.address.as_str()).collect();
+        let addresses: Vec<String> = (planned.inputs.keys())
+            .map(|a| bech32m(a, network))
+            .collect();
+        if addresses.len() != inputs.len() || !addresses.iter().all(|a| inputs.contains(a.as_str()))
+        {
+            address_sends_open(network)?;
+            return Err(CreditsError::MovePending { id: h.id.clone() });
+        }
+    }
     let to = session
         .current_receiving_address(wallet_id)
         .await
@@ -2255,7 +3659,42 @@ pub(crate) async fn quote(
             max_duffs: 0,
             max_credits: credits,
         },
+        exit_of: (held.filter(|h| h.kind.credits_identity())).map(|h| h.id.clone()),
     })
+}
+
+/// A contact payout's plan for `credits` and what the contact receives
+/// (C-funding P13, P14), from one proved read under rule 5; refused beside
+/// any record that holds, as the payout will be (C-routes §0).
+pub(crate) async fn contact_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    credits: u64,
+) -> Result<(Plan, u64), CreditsError> {
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    if let Some(h) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    let version = net.version();
+    let target = Target::Contact;
+    let limits = target.limits(version)?;
+    let amount = WithdrawAmount::Credits { credits };
+    let planned = target.plan(&proved_balances(&pool, &seen, network), amount, &limits)?;
+    let duffs = withdrawal::expected_duffs(planned.credits(), version)?;
+    Ok((planned, duffs))
+}
+
+/// The wallet's move records as stored.
+pub(crate) async fn records(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+) -> Result<Vec<MoveRecord>, PlatformError> {
+    Store::of(session, wallet_id)?.moves().await
 }
 
 /// `DashPay::platform_send_quote`.
@@ -2267,6 +3706,7 @@ pub(crate) async fn send_quote(
     (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
 ) -> Result<PlatformSendQuote, CreditsError> {
     let network = session.vault.network();
+    retry_open(session, wallet_id, (to, amount, retry_of)).await?;
     let pool = pool(wallet).await?;
     let address = recipient(network, to, &pool)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -2355,17 +3795,10 @@ pub(crate) async fn shield_quote(
         max_inputs: funds.max_address_inputs as usize,
         min_claim_0: min_input.saturating_sub(pool_fee).max(1),
         min_total: 1,
+        exact: false,
     };
-    let planned = input0::plan(&proved_balances(&pool, &seen, network), amount, &rules).map_err(
-        |r| match r {
-            Input0Refused::Short { needed, available } => {
-                PlatformError::InsufficientCredits { needed, available }.into()
-            }
-            Input0Refused::ClaimBelow { min } | Input0Refused::TotalBelow { min } => {
-                CreditsError::SendOutOfRange { min }
-            }
-        },
-    )?;
+    let planned = input0::plan(&proved_balances(&pool, &seen, network), amount, &rules)
+        .map_err(input0_refusal)?;
     let input_0 = planned.input_0().0;
     let inputs = (planned.inputs.iter())
         .map(|(a, c)| PlatformAddressRow {
@@ -2393,22 +3826,199 @@ pub(crate) async fn shield_quote(
     })
 }
 
+/// The mainnet flag of the top-up from the Platform balance: off on
+/// mainnet until its funds ruling, on every other network.
+pub(crate) const TOP_UP_FROM_PLATFORM: &str = "top_up_from_platform";
+
+/// Refused on mainnet before anything is read, written or redeemed.
+fn top_up_open(network: Network) -> Result<(), PlatformError> {
+    if network == Network::Mainnet {
+        return Err(PlatformError::FeatureOff {
+            feature: TOP_UP_FROM_PLATFORM.into(),
+        });
+    }
+    Ok(())
+}
+
+/// The mainnet flag of the Platform addresses' own funds paths: a send, a
+/// move to the Dash wallet, "Add from Dash wallet", a transfer of an
+/// identity's credits to them and their receive address. Off on mainnet
+/// until a release after their mainnet canary, whatever Platform's
+/// protocol version; on every other network.
+pub(crate) const PLATFORM_ADDRESS_SENDS: &str = "platform_address_sends";
+
+/// Whether [`PLATFORM_ADDRESS_SENDS`] is on for mainnet in this build.
+const ADDRESS_SENDS_ON_MAINNET: bool = false;
+
+/// Refused on mainnet while [`PLATFORM_ADDRESS_SENDS`] is off, before
+/// anything is read, written or redeemed. What settles, finishes or exits
+/// a move signed before is not refused (`held_exit_open`).
+pub(crate) fn address_sends_open(network: Network) -> Result<(), PlatformError> {
+    if network == Network::Mainnet && !ADDRESS_SENDS_ON_MAINNET {
+        return Err(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        });
+    }
+    Ok(())
+}
+
+/// [`address_sends_open`], or, with the flag off, a record of `moves`
+/// that holds the addresses: a move signed before, which only its exit
+/// (a move at its very inputs and nonces) or its exact retry may follow.
+fn held_exit_open(network: Network, moves: &[MoveRecord]) -> Result<(), PlatformError> {
+    match address_sends_open(network) {
+        Err(_) if moves.iter().any(MoveRecord::holds) => Ok(()),
+        open => open,
+    }
+}
+
+/// [`address_sends_open`], or, with the flag off, a send that `retry_of`
+/// names as the exact retry (the same recipient and amount) of a stored
+/// send that still holds; read from the local store only.
+async fn retry_open(
+    session: &NetworkSession,
+    wallet_id: WalletId,
+    (to, amount, retry_of): (&str, WithdrawAmount, Option<&str>),
+) -> Result<(), CreditsError> {
+    let network = session.vault.network();
+    let Err(off) = address_sends_open(network) else {
+        return Ok(());
+    };
+    let Some(id) = retry_of else {
+        return Err(off.into());
+    };
+    let to = parse(to.trim()).map(|a| bech32m(&a, network));
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let exact = (moves.iter()).find(|m| m.id == id).is_some_and(|m| {
+        m.kind == MoveKind::Transfer
+            && m.holds()
+            && to.as_deref().is_some_and(|to| m.retried_by(to, amount))
+    });
+    if exact { Ok(()) } else { Err(off.into()) }
+}
+
+/// `DashPay::top_up_from_platform_quote` (C-routes C3-2, C3-3): the
+/// identity one of the wallet's own, address funds active, one proved read
+/// with rule 5, the hold, and the input-0 plan with the top-up's band.
+pub(crate) async fn top_up_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (identity, amount): (&str, WithdrawAmount),
+) -> Result<TopUpFromPlatformQuote, CreditsError> {
+    top_up_open(session.vault.network())?;
+    let id = parse_identity(identity)?;
+    withdrawal::own(wallet, id).await?;
+    let version = net.sends_version().await;
+    sends_active(version)?;
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let mut moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    // A top-up signs no other record's terms, so any hold refuses it, as
+    // the submit will decide it: settled by this read and its evidence.
+    let evidence = exits(session, net, &moves, &seen).await;
+    let docs = documents(session, net, &moves, &seen).await;
+    settle_with(&mut moves, &seen, &evidence);
+    settle_payouts(&mut moves, &seen, &docs);
+    if let Some(h) = moves.iter().find(|m| m.holds()) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    behind(&moves, &seen)?;
+    let limits = Limits::top_up_at(version);
+    let balances = proved_balances(&pool, &seen, network);
+    let planned = top_up_plan(&balances, amount, &limits)?;
+    exit_possible(&planned, &balances, version)?;
+    let debit = planned.may_lose();
+    Ok(TopUpFromPlatformQuote {
+        credits: planned.credits(),
+        fee_credits: planned.fee,
+        debit_credits: debit,
+        inputs: (planned.inputs.iter())
+            .map(|(a, c)| PlatformAddressRow {
+                address: bech32m(a, network),
+                credits: *c,
+            })
+            .collect(),
+        grant: GrantRequest {
+            max_duffs: 0,
+            max_credits: debit,
+        },
+    })
+}
+
+/// The quote's input 0 (`TopUpFromPlatformQuote::inputs`), as the plan
+/// whose fee source and claim the top-up must keep.
+fn quoted_fee_input(row: &PlatformAddressRow) -> Result<Plan, CreditsError> {
+    let source = parse(&row.address).ok_or_else(|| PlatformError::InvalidArgument {
+        detail: "the quoted fee input is not a Platform address".into(),
+    })?;
+    Ok(Plan {
+        inputs: BTreeMap::from([(source, row.credits)]),
+        fee_source: source,
+        fee: 0,
+        reserve: 0,
+        fee_from_output: false,
+    })
+}
+
+/// `DashPay::top_up_from_platform` (C-routes C3-2 to C3-5, C3-9): the
+/// money gate on the identity, its write lock, then a move to it under
+/// the move lock, recorded before signing and settled by its inputs'
+/// proved nonces, never by the identity's answered balance. With
+/// `fee_input` (the quote's input 0) a plan with another fee source or
+/// claim is `credits.quote_changed`, before the grant is redeemed.
+pub(crate) async fn top_up(
+    net: &impl MoveNet,
+    session: &Arc<NetworkSession>,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (identity, amount, fee_input): (&str, WithdrawAmount, Option<&PlatformAddressRow>),
+    grant: &str,
+) -> Result<TopUpFromPlatformOutcome, CreditsError> {
+    top_up_open(session.vault.network())?;
+    let quoted = fee_input.map(quoted_fee_input).transpose()?;
+    let id = parse_identity(identity)?;
+    withdrawal::own(wallet, id).await?;
+    (session.money_gate(Subject::Identity(wallet_id, id)).await)
+        .map_err(|refusal| CreditsError::from(refusal.platform()))?;
+    let _refresh = session.after_spend(wallet_id, id);
+    let locks = identity_locks(wallet_id, id);
+    let _write = locks.write.lock().await;
+    let (_, me) = withdrawal::own(wallet, id).await?;
+    sends_active(net.sends_version().await)?;
+    let ask = (amount, Target::Identity(&me), None, quoted.as_ref());
+    let (record, balance) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
+    let row = record.activity();
+    Ok(TopUpFromPlatformOutcome {
+        id: record.id.clone(),
+        credits: record.given(),
+        fee_credits: row.fee_credits,
+        state: record.state,
+        may_land: row.may_land,
+        balance,
+    })
+}
+
 /// `DashPay::move_to_core` (module doc).
 pub(crate) async fn move_to_core(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, to): (WithdrawAmount, &str),
+    (amount, to, exit_of): (WithdrawAmount, &str, Option<&str>),
     grant: &str,
 ) -> Result<MoveToCoreOutcome, CreditsError> {
-    let record = run(
+    held_exit_open(session.vault.network(), &records(session, wallet_id).await?)?;
+    let (record, _) = run(
         net,
         session,
         wallet,
         wallet_id,
-        (amount, Target::Core(to), None, None),
+        (amount, Target::Core(to), exit_of, None),
         grant,
+        None,
     )
     .await?;
     let row = record.activity();
@@ -2419,6 +4029,7 @@ pub(crate) async fn move_to_core(
         to: row.to,
         state: record.state,
         fee_credits: row.fee_credits,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -2432,6 +4043,9 @@ pub(crate) async fn send(
     operation: &str,
     grant: &str,
 ) -> Result<PlatformSendOutcome, CreditsError> {
+    if !(session.platform.send_ops).retries(operation, wallet_id) {
+        address_sends_open(session.vault.network())?;
+    }
     let op = (session.platform.send_ops).take(operation, wallet_id, grant)?;
     let address = recipient(session.vault.network(), &op.to, &pool(wallet).await?)
         .map_err(|reason| CreditsError::RecipientInvalid { reason })?;
@@ -2442,7 +4056,7 @@ pub(crate) async fn send(
         op.retry_of.as_deref(),
         Some(&op.plan),
     );
-    let record = run(net, session, wallet, wallet_id, ask, grant).await?;
+    let (record, _) = run(net, session, wallet, wallet_id, ask, grant, None).await?;
     let row = record.activity();
     Ok(PlatformSendOutcome {
         id: record.id.clone(),
@@ -2454,6 +4068,7 @@ pub(crate) async fn send(
         may_land: row.may_land,
         fee_credits: row.fee_credits,
         estimated: row.estimated,
+        unattributed: record.winner_unknown(),
     })
 }
 
@@ -2506,43 +4121,100 @@ fn retried<'m>(
 }
 
 /// One move to `target` (module doc, Moves); the record as it stands when
-/// the call returns.
-async fn run(
+/// the call returns, and a top-up's answered identity balance. `named`: the
+/// held send a send retries, or the held top-up a move is the exit of.
+/// `contact`: a contact payout's leg (`Target::Contact` only), which
+/// reserves and claims its address and writes its payout row after the
+/// lease and before the record (C-funding P2).
+pub(crate) async fn run(
     net: &impl MoveNet,
     session: &Arc<NetworkSession>,
     wallet: &PlatformWallet,
     wallet_id: WalletId,
-    (amount, target, retry_of, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
+    (amount, target, named, quoted): (WithdrawAmount, Target<'_>, Option<&str>, Option<&Plan>),
     grant: &str,
-) -> Result<MoveRecord, CreditsError> {
+    mut contact: Option<&mut super::contact_payout::ContactLeg>,
+) -> Result<(MoveRecord, Option<u64>), CreditsError> {
+    if matches!(target, Target::Contact) != contact.is_some() {
+        return Err(PlatformError::Internal {
+            detail: "a contact payout is the contact target with its leg".into(),
+        }
+        .into());
+    }
     let lock = wallet_lock(wallet_id);
     let _one = lock.lock().await;
     let network = session.vault.network();
     let store = Store::of(session, wallet_id)?;
     let mut moves = store.moves().await?;
     let pool = pool(wallet).await?;
+    // Settled before the read, so a record done here is never expired by
+    // a read taken before it executed.
+    let (mut shielded, _) = from_shielded(session, wallet_id, &store).await?;
     // Rule 5 and the one read every decision below rests on.
     let seen = read(session, net, covered(&pool, &moves), true).await?;
     let mut funds = store.funds().await?;
     let held = fund_holds(session, wallet_id);
-    if observe(&store, (&mut moves, &mut funds), held, &seen).await? {
+    let evidence = exits(session, net, &moves, &seen).await;
+    let docs = documents(session, net, &moves, &seen).await;
+    let records = (&mut moves[..], &mut funds[..], &mut shielded[..]);
+    if observe(&store, records, held, (&seen, &evidence, &docs)).await? {
         session
             .hub
             .pump
             .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     }
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     let version = net.version();
     let limits = target.limits(version)?;
     let balances = proved_balances(&pool, &seen, network);
+    // With the flag off only a held move's exit or a held send's exact
+    // retry signs: anything else is the flag's refusal, never a new plan.
+    let off = matches!(target, Target::Core(_) | Target::Platform(_))
+        && address_sends_open(network).is_err();
+    let flag = || {
+        CreditsError::from(PlatformError::FeatureOff {
+            feature: PLATFORM_ADDRESS_SENDS.into(),
+        })
+    };
+    // A retry of a send that landed pays nothing and signs nothing.
+    if let (Target::Platform(to), Some(id)) = (target, named) {
+        match retry_decision(&moves, id, (&bech32m(&to, network), amount)) {
+            Ok(Some(_)) | Err(CreditsError::Platform(PlatformError::InvalidArgument { .. }))
+                if off =>
+            {
+                return Err(flag());
+            }
+            Ok(Some(settled)) => return Ok((settled.clone(), None)),
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
     // A move that may still execute: the next one draws from its inputs only,
     // so it signs at the same nonces (checked below); a send beside it is
-    // only its exact retry, and a retry of one that landed pays nothing.
-    let (held, planned) = match (target, retry_of) {
-        (Target::Platform(to), Some(id)) => {
-            let to = bech32m(&to, network);
-            if let Some(settled) = retry_decision(&moves, id, (&to, amount))? {
-                return Ok(settled.clone());
-            }
+    // only its exact retry.
+    let retry_of = named.filter(|_| matches!(target, Target::Platform(_)));
+    let exit_of = named.filter(|_| matches!(target, Target::Core(_)));
+    // The exit's quote was planned beside that record: once it no longer
+    // holds, this is not the move Confirm showed, whatever else holds now,
+    // and a lagging read does not hide that.
+    let exited = match exit_of {
+        Some(id) => Some(
+            (moves.iter())
+                .find(|m| m.id == id && m.kind.credits_identity() && m.holds())
+                .ok_or_else(|| {
+                    if off {
+                        flag()
+                    } else {
+                        CreditsError::QuoteChanged
+                    }
+                })?,
+        ),
+        None => None,
+    };
+    // Every spend that may sign, before anything is planned (#533).
+    behind(&moves, &seen)?;
+    let (held, planned) = match (target, named) {
+        (Target::Platform(_), Some(id)) => {
             let held = (moves.iter()).find(|m| m.id == id);
             let planned =
                 (held.and_then(|h| h.replan(&balances))).ok_or(PlatformError::Unavailable)?;
@@ -2556,20 +4228,48 @@ async fn run(
                     id: pending.id.clone(),
                 });
             }
-            let held = moves.iter().find(|m| m.holds());
-            if let (Target::Platform(_), Some(h)) = (target, held) {
-                // A new send: the hold came after its quote.
+            let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
+            // The hold may have settled since the entry's check: with the
+            // flag off nothing new is planned, granted or signed.
+            if held.is_none() && off {
+                return Err(flag());
+            }
+            if let (Target::Platform(_) | Target::Contact | Target::Identity(_), Some(h)) =
+                (target, held)
+            {
+                // A new send: the hold came after its quote. A contact
+                // payout or a top-up signs no other record's terms
+                // (C-routes §0, C3-9).
                 return Err(CreditsError::MovePending { id: h.id.clone() });
             }
-            let planned = plan_beside(&target, balances, amount, &limits, held, network)?;
-            // A new send signs the fee its Confirm showed or nothing: the
-            // read since the quote may pick another fee source.
+            let planned = plan_beside(&target, balances.clone(), amount, &limits, held, network)
+                .map_err(|e| match e {
+                    // The exit sends its quoted amount: inputs that no
+                    // longer carry it are not the move Confirm showed.
+                    CreditsError::Platform(PlatformError::InsufficientCredits { .. })
+                        if exited.is_some() =>
+                    {
+                        CreditsError::QuoteChanged
+                    }
+                    e => e,
+                })?;
+            let planned = match (target, quoted) {
+                (Target::Identity(_), Some(q)) if !q.takes_fee_as(&planned) => {
+                    top_up_plan_as(&balances, amount, &limits, q).unwrap_or(planned)
+                }
+                _ => planned,
+            };
+            // A new send or a top-up signs the fee its Confirm showed or
+            // nothing: the read since the quote may pick another fee source.
             if quoted.is_some_and(|q| !q.takes_fee_as(&planned)) {
                 return Err(CreditsError::QuoteChanged);
             }
             (held, planned)
         }
     };
+    if let Target::Identity(_) = target {
+        exit_possible(&planned, &balances, version)?;
+    }
     let mut inputs = BTreeMap::new();
     for (address, credits) in &planned.inputs {
         let nonce = seen
@@ -2583,9 +4283,21 @@ async fn run(
             withdrawal::expected_duffs(planned.credits(), version)?,
         ),
         Target::Platform(address) => (bech32m(&address, network), 0),
+        // The leg names the address once it is reserved.
+        Target::Contact => (
+            String::new(),
+            withdrawal::expected_duffs(planned.credits(), version)?,
+        ),
+        Target::Identity(identity) => (identity.id().to_string(Encoding::Base58), 0),
     };
+    let mut id = format!("move-{}-{}", seen.height, moves.len());
+    // A payout's row may outlive a record never written (P6), and a reference
+    // is never reused.
+    if matches!(target, Target::Contact) {
+        id = format!("{id}-{:016x}", rand::random::<u64>());
+    }
     let mut record = MoveRecord {
-        id: format!("move-{}-{}", seen.height, moves.len()),
+        id,
         kind: target.kind(),
         inputs: (inputs.iter())
             .map(|(a, (nonce, credits))| {
@@ -2615,7 +4327,9 @@ async fn run(
         seen_at: None,
         fee_taken: None,
         group: None,
+        unattributed: false,
         version: Some(version.protocol_version),
+        rule: HOLD_RULE,
     };
     // A move `failed` by height may still execute: only one at its very
     // inputs and nonces may follow it, and when either pays a Platform
@@ -2626,26 +4340,60 @@ async fn run(
             || ((h.kind == MoveKind::Transfer || record.kind == MoveKind::Transfer)
                 && h.terms() != record.terms())
     };
-    if let Some(held) = held.filter(blocks) {
+    if exit_of.is_some() && held.is_some_and(|h| h.key() != record.key()) {
+        return Err(if off {
+            flag()
+        } else {
+            CreditsError::QuoteChanged
+        });
+    }
+    // Beside an exit, any other hold blocks it as it would block a move.
+    let mut others = (moves.iter()).filter(|m| m.holds() && exit_of.is_some_and(|id| m.id != id));
+    if let Some(held) = held.filter(blocks).or_else(|| others.find(blocks)) {
+        // A held send has no exit but its retry: it holds as before.
+        if off && (retry_of.is_some() || held.kind != MoveKind::Transfer) {
+            return Err(flag());
+        }
         return Err(CreditsError::MovePending {
             id: held.id.clone(),
         });
     }
-    let script = match target {
-        Target::Core(to) => Some(own_core_destination(session, wallet_id, network, to).await?),
-        Target::Platform(_) => None,
+    let mut script = match target {
+        Target::Core(to) => match own_core_destination(session, wallet_id, network, to).await {
+            Err(PlatformError::InvalidArgument { .. }) if off => return Err(flag()),
+            script => Some(script?),
+        },
+        Target::Platform(_) | Target::Contact | Target::Identity(_) => None,
     };
+    let output = (script.as_ref(), planned.credits());
+    let proved_version = (session.platform.enabled())
+        .then(|| session.platform.protocol.observed())
+        .flatten();
+    pre_check(
+        target,
+        &inputs,
+        output,
+        planned.fee_strategy(),
+        version,
+        proved_version,
+    )
+    .await?;
     // The authority before anything is redeemed: a refusal keeps the grant.
     // A send pays someone else: only a fresh grant, redeemed into a lease
     // for this send alone, never a lease another action holds.
     let flow = match target {
-        Target::Core(_) => FlowKind::PlatformAddressMove,
+        Target::Core(_) | Target::Identity(_) => FlowKind::PlatformAddressMove,
         Target::Platform(_) => FlowKind::PlatformAddressSend,
+        Target::Contact => FlowKind::ContactPayFromBalance,
     };
     let authority = match session.lease_for(&wallet_id, grant) {
         Some(lease) => {
             let lease = lease.map_err(PlatformError::from)?;
-            if flow != FlowKind::PlatformAddressMove || lease.flow() != flow {
+            let leased_flow = matches!(
+                flow,
+                FlowKind::PlatformAddressMove | FlowKind::ContactPayFromBalance
+            );
+            if !leased_flow || lease.flow() != flow {
                 return Err(PlatformError::GrantInvalid.into());
             }
             NameAuthority::Lease(lease)
@@ -2669,6 +4417,8 @@ async fn run(
     let label = match target {
         Target::Core(_) => "move_to_core",
         Target::Platform(_) => "platform_send",
+        Target::Contact => "contact_pay",
+        Target::Identity(_) => "top_up_from_platform",
     };
     let permit = write_permit(&lease, label, record.credits)?;
     let signer = match permit.platform_address_signer(paths) {
@@ -2678,10 +4428,29 @@ async fn run(
             return Err(PlatformError::from(e).into());
         }
     };
+    // The contact's address, reserved, claimed and its payout row on disk
+    // before the record (C-funding P2, P6).
+    if let Some(leg) = contact.as_deref_mut() {
+        match leg.claim(&mut record).await {
+            Ok(to) => script = Some(to),
+            Err(e) => {
+                drop(signer);
+                permit.finish(false);
+                return Err(e);
+            }
+        }
+    }
     // Recorded and read back before anything is signed.
-    if let Err(e) = store.commit(vec![move_write(&record)?]).await {
+    let recorded = match move_write(&record) {
+        Ok(write) => store.commit(vec![write]).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = recorded {
         drop(signer);
         permit.finish(false);
+        if let Some(leg) = contact.as_deref_mut() {
+            leg.unrecorded(&record).await;
+        }
         return Err(e.into());
     }
     session
@@ -2689,15 +4458,23 @@ async fn run(
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
     let strategy = planned.fee_strategy();
+    let mut balance = None;
     let call = match (target, script) {
         (Target::Platform(address), _) => {
             let output = (address, planned.credits());
             leased(&lease, net.transfer(inputs, output, strategy, &signer)).await
         }
-        (Target::Core(_), Some(script)) => {
+        (Target::Core(_) | Target::Contact, Some(script)) => {
             leased(&lease, net.withdraw(inputs, script, strategy, &signer)).await
         }
-        (Target::Core(_), None) => unreachable!("a withdrawal has its destination"),
+        (Target::Core(_) | Target::Contact, None) => {
+            unreachable!("a withdrawal has its destination")
+        }
+        (Target::Identity(identity), _) => {
+            // dpp fixes the fee on input 0, the plan's fee source.
+            let answered = leased(&lease, net.top_up(identity, inputs, &signer)).await;
+            answered.map(|b| balance = Some(b))
+        }
     };
     // The testnet smoke's restart (release 0.1, review r2): the process
     // ends between the call and its outcome, as a crash would there.
@@ -2711,26 +4488,13 @@ async fn run(
     permit.finish(call.is_ok());
     record.signed = released > 0;
     record.answered = call.is_ok();
-    let cannot_land =
-        released < record.inputs.len() as u64 || call.as_ref().err().is_some_and(never_valid);
+    // Signed bytes may have reached a node, and a consensus error can be one
+    // node's unproven answer: only evidence settles a signed move (P7, P8,
+    // #471), never the call's error, whatever the version did since its
+    // pre-check. Its exact re-send stays open.
+    let cannot_land = released < record.inputs.len() as u64;
     if let Err(e) = &call {
         tracing::info!(id = %record.id, cannot_land, "a move's call failed: {e}");
-    }
-    // An identical transition at the same protocol version that Platform's
-    // stateless checks refused: the held send it retried never executes
-    // either. A signer's shortfall says nothing about the held one.
-    let identical_refused = released == record.inputs.len() as u64
-        && call.as_ref().err().is_some_and(never_valid)
-        && retry_of.is_some();
-    if identical_refused
-        && let Some(h) = (moves.iter_mut()).find(|m| Some(m.id.as_str()) == retry_of)
-        && h.holds()
-        && h.version == record.version
-        && h.terms() == record.terms()
-    {
-        tracing::info!(id = %h.id, "an identical retry was refused for good: the held send never executes");
-        h.state = PlatformActivityState::Failed;
-        h.can_land = false;
     }
     moves.push(record);
     let at = moves.len() - 1;
@@ -2742,7 +4506,10 @@ async fn run(
         let signed = moves[at].inputs.iter().filter_map(|i| parse(&i.address));
         match read(session, net, signed.collect(), false).await {
             Ok(after) => {
-                settle(&mut moves, &after);
+                let evidence = exits(session, net, &moves, &after).await;
+                let docs = documents(session, net, &moves, &after).await;
+                settle_with(&mut moves, &after, &evidence);
+                settle_payouts(&mut moves, &after, &docs);
             }
             Err(e) => tracing::info!(id = %moves[at].id, "reading a move's nonces: {e}"),
         }
@@ -2753,14 +4520,23 @@ async fn run(
         // land: the next read settles it by its nonces.
         tracing::warn!(id = %moves[at].id, "storing a move's outcome: {e}");
     }
+    // A payout this move's evidence settled (a "Move to Dash wallet" at a
+    // held payout's inputs and nonces, P8).
+    super::contact_payout::settled(session, wallet_id, &moves).await;
     session
         .hub
         .pump
         .mark_platform(wallet_id, [PlatformChange::PlatformAddresses]);
+    if let Some(leg) = contact {
+        // Refused before any signature: the address goes back to the pair
+        // (P5). Once one left, it is consumed.
+        let give_back = released == 0;
+        leg.outcome(&moves[at], give_back).await;
+    }
     if cannot_land && let Err(e) = call {
         return Err(PlatformError::from(e).into());
     }
-    Ok(moves.swap_remove(at))
+    Ok((moves.swap_remove(at), balance))
 }
 
 /// `to` as the script of one of the wallet's Core receiving addresses on
@@ -2796,20 +4572,39 @@ async fn own_core_destination(
 /// public key material; the same one until a sync pass sees it funded).
 pub(crate) async fn receive_address(
     net: &impl MoveNet,
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
+    address_sends_open(network)?;
     sends_active(net.sends_version().await)?;
-    next_receive_address(wallet, network).await
+    next_receive_address(session, wallet, network).await
 }
 
 /// The payment account's lowest unused address, as [`receive_address`]
 /// names it, with no version check.
 pub(crate) async fn next_receive_address(
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
 ) -> Result<PlatformReceiveAddress, PlatformError> {
+    let (address, index) = next_receive(session, wallet).await?;
+    Ok(PlatformReceiveAddress {
+        address: bech32m(&address, network),
+        index,
+    })
+}
+
+/// [`next_receive_address`] with its index. Never the fallback of one of
+/// the wallet's Shielded-funded registrations, and recorded as handed out
+/// before it is returned, so no later fallback is it (C-funding F13;
+/// [`retire_handed_out`]).
+pub(crate) async fn next_receive(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<(PlatformAddress, u32), PlatformError> {
+    let handed_out = retire_handed_out(session, wallet).await?;
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
@@ -2825,10 +4620,218 @@ pub(crate) async fn next_receive_address(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the receive address is not in the payment account".into(),
         })?;
-    Ok(PlatformReceiveAddress {
-        address: bech32m(&address, network),
-        index,
+    if handed_out.is_none_or(|h| index > h) {
+        let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+        (session.appdb_op(move |db| {
+            db.raise_setting_durable(
+                &scope,
+                dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT,
+                u64::from(index),
+            )
+        }))
+        .await
+        .map_err(PlatformError::from)?;
+    }
+    Ok((address, index))
+}
+
+/// Restores, in the payment account, the marks of what the wallet handed
+/// out, which the account keeps in memory only: every index below the
+/// highest receive address handed out (that one stays Receive's until it
+/// is funded) and every fallback the wallet's Shielded-funded registrations
+/// were given ([`fallback_address`]), each derived first if a reload has
+/// not yet. Their durable record is the wallet's local scope of
+/// `app.sqlite`, and the rows' own funding for a fallback given before it.
+/// Returns that highest index.
+async fn retire_handed_out(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<u32>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, handed_out) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        let recorded =
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?;
+        let handed_out = db.setting(&scope, dw_appdb::DP_PLATFORM_RECEIVE_HANDED_OUT)?;
+        Ok((db.registration_rows(&id)?, recorded, handed_out))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let index = |value: &str| {
+        value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })
+    };
+    let handed_out = handed_out.as_deref().map(index).transpose()?;
+    let named = (rows.iter()).filter_map(|row| match Funding::decode(&row.funding) {
+        Decoded::Known(Funding::Shielded { fallback, .. }) => Some(fallback),
+        _ => None,
+    });
+    let deepest = (recorded.iter())
+        .map(|(_, value)| index(value))
+        .collect::<Result<Vec<u32>, _>>()?
+        .into_iter()
+        .chain(handed_out)
+        .max();
+    let given = (recorded.into_iter()).filter_map(|(key, _)| {
+        key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)
+            .map(str::to_owned)
+    });
+    let fallbacks: BTreeSet<PlatformAddress> =
+        named.chain(given).filter_map(|a| parse(&a)).collect();
+    if deepest.is_none() && fallbacks.is_empty() {
+        return Ok(None);
+    }
+    with_payment_pool(wallet, |pool, source| {
+        if let Some(deepest) = deepest {
+            (pool.generate_up_to(deepest, source)).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        }
+        let given: Vec<u32> = (pool.addresses.iter())
+            .filter(|(_, info)| {
+                PlatformP2PKHAddress::from_address(&info.address)
+                    .is_ok_and(|p| fallbacks.contains(&PlatformAddress::P2pkh(p.to_bytes())))
+            })
+            .map(|(index, _)| *index)
+            .collect();
+        for index in (0..handed_out.unwrap_or(0)).chain(given) {
+            pool.mark_index_used(index);
+        }
+        Ok(())
     })
+    .await?;
+    Ok(handed_out)
+}
+
+/// `f` on the payment account's address pool and its public key source,
+/// under one write lock of the wallet.
+async fn with_payment_pool<T>(
+    wallet: &PlatformWallet,
+    f: impl FnOnce(
+        &mut key_wallet::managed_account::address_pool::AddressPool,
+        &key_wallet::KeySource,
+    ) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError> {
+    use key_wallet::account::account_collection::PlatformPaymentAccountKey;
+    let internal = |detail: &str| PlatformError::Internal {
+        detail: detail.into(),
+    };
+    let mut wm = wallet.wallet_manager().write().await;
+    let (core, info) = wm
+        .get_wallet_mut_and_info_mut(&wallet.wallet_id())
+        .ok_or(PlatformError::WalletNotFound)?;
+    let key = PlatformPaymentAccountKey {
+        account: ACCOUNT,
+        key_class: 0,
+    };
+    let xpub = (core.accounts.platform_payment_accounts.get(&key))
+        .map(|a| a.account_xpub)
+        .ok_or_else(|| internal("the wallet has no Platform payment key"))?;
+    let account = (info.core_wallet)
+        .platform_payment_managed_account_at_index_mut(ACCOUNT)
+        .ok_or_else(|| internal("the wallet has no Platform payment account"))?;
+    f(&mut account.addresses, &key_wallet::KeySource::Public(xpub))
+}
+
+/// A new registration's fallback (C-funding F13), published beside the
+/// identity it creates, so never an address handed out before: once the
+/// account's marks of what was handed out are restored, under one lock of
+/// the account its lowest unused address (the one Receive may be showing,
+/// at or above the highest handed out) and the next are marked used, and
+/// the next is the fallback. It is recorded durably, with its index,
+/// before it is returned. A recorded one that never left this install
+/// ([`unpublished_fallback`]) is given again instead, so registrations
+/// dropped before their create was sent take no more of the account.
+pub(crate) async fn fallback_address(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<String, PlatformError> {
+    if let Some(address) = unpublished_fallback(session, wallet).await? {
+        return Ok(address);
+    }
+    retire_handed_out(session, wallet).await?;
+    let (fallback, index) = with_payment_pool(wallet, |pool, source| {
+        let mut take = || -> Result<_, PlatformError> {
+            let next = (pool.next_unused_with_info(source, true)).map_err(|e| {
+                PlatformError::Internal {
+                    detail: e.to_string(),
+                }
+            })?;
+            pool.mark_index_used(next.index);
+            Ok(next)
+        };
+        take()?;
+        let next = take()?;
+        let fallback =
+            PlatformAddress::try_from(next.address).map_err(|e| PlatformError::Internal {
+                detail: e.to_string(),
+            })?;
+        Ok((fallback, next.index))
+    })
+    .await?;
+    let address = bech32m(&fallback, network);
+    let scope = dw_appdb::local_scope(&WalletId(wallet.wallet_id()).to_string());
+    let (key, value) = (
+        dw_appdb::dp_registration_fallback(&address),
+        index.to_string(),
+    );
+    (session
+        .appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(&value)))
+        .await)
+        .map_err(PlatformError::from)?;
+    Ok(address)
+}
+
+/// The lowest recorded fallback that no registration row names and no
+/// create published ([`dw_appdb::dp_registration_published`]): it never
+/// left this install. `None` while any row is of a funding this build does
+/// not read, as its fallback is unknown. A failed read, or a record that
+/// does not read as an index, refuses the hand-out.
+async fn unpublished_fallback(
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+) -> Result<Option<String>, PlatformError> {
+    use super::registration_rows::{Decoded, Funding};
+    let id = WalletId(wallet.wallet_id()).to_string();
+    let (rows, recorded, published) = (session.appdb_op(move |db| {
+        let scope = dw_appdb::local_scope(&id);
+        Ok((
+            db.registration_rows(&id)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX)?,
+            db.settings_with_prefix(&scope, dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX)?,
+        ))
+    }))
+    .await
+    .map_err(PlatformError::from)?;
+    let mut named = HashSet::new();
+    for row in &rows {
+        match Funding::decode(&row.funding) {
+            Decoded::Known(Funding::Shielded { fallback, .. }) => {
+                named.insert(fallback);
+            }
+            Decoded::Known(_) => {}
+            Decoded::Unsupported => return Ok(None),
+        }
+    }
+    let published: HashSet<&str> = (published.iter())
+        .filter_map(|(key, _)| key.strip_prefix(dw_appdb::DP_REGISTRATION_PUBLISHED_PREFIX))
+        .collect();
+    let mut free = Vec::new();
+    for (key, value) in &recorded {
+        let Some(address) = key.strip_prefix(dw_appdb::DP_REGISTRATION_FALLBACK_PREFIX) else {
+            continue;
+        };
+        let index = value.parse::<u32>().map_err(|_| PlatformError::Internal {
+            detail: format!("an unreadable Platform address record {value:?}"),
+        })?;
+        if !named.contains(address) && !published.contains(address) {
+            free.push((index, address.to_owned()));
+        }
+    }
+    Ok(free.into_iter().min().map(|(_, address)| address))
 }
 
 /// The outcome's write; tests make it fail.
@@ -2978,6 +4981,12 @@ impl NetworkSession {
             .await
     }
 }
+
+#[path = "platform_register.rs"]
+mod register;
+pub(crate) use register::{
+    PlanFund, PlanWrite, PlanWriter, RegisterAsk, RegisterOutcome, register_fund, register_held,
+};
 
 #[cfg(test)]
 #[path = "platform_moves_tests.rs"]

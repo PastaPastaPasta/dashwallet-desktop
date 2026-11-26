@@ -11,18 +11,22 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
+import { coreMaxRefusal, fundAmount } from "../api/pending";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { Preparing } from "../transfer/preparing";
+import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 import { moveErrorText, onMoveSettledNotify } from "./move";
 
 export type PlatformFundApi = Pick<Backend, "platformFund" | "resumePlatformFund" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
 export type FundStep = "form" | "confirm" | "running" | "done" | "refused";
 
-/** What the confirm step quotes and sends, or the lock to finish. */
-export type FundRequest = { kind: "add"; duffs: number } | { kind: "resume"; txid: string };
+/** What the confirm step quotes and sends, or the lock to finish. `all`: a Core Max, everything in the
+ * Dash wallet's account 0 with the fee out of it (`duffs` is what its quote said the lock would be). */
+export type FundRequest = { kind: "add"; duffs: number; all?: boolean } | { kind: "resume"; txid: string };
 
 export const FUND_COPY = {
   card: {
@@ -136,6 +140,9 @@ export const FUND_COPY = {
       get text() {
         return t("transfer.fund.done.checking.text");
       },
+      get row() {
+        return t("transfer.fund.done.checking.row");
+      },
     },
     notApplied: {
       get title() {
@@ -194,7 +201,7 @@ export interface FundRowView {
  * can't be finished. */
 export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "consumptionUnknown">, amount: (duffs: number) => string): FundRowView {
   if (p.state === "tooSmall" || p.state === "unsupported") return { kind: "stuck", text: FUND_COPY.card.stuck[p.state](amount(p.duffs)), action: null };
-  if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.text, action: "checkAgain" };
+  if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.row, action: "checkAgain" };
   return { kind: "unfinished", text: FUND_COPY.card.unfinished(amount(p.duffs)), action: "finish" };
 }
 
@@ -229,6 +236,8 @@ export function endedBeforeApply(error: string, amount: string | null): string |
 export function fundErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, ctx: FundContext = { request: null }): string {
   if (!isAppError(e)) return failureText(e);
   const d = e.data;
+  const maxText = coreMaxRefusal(e, ctx.request?.kind === "add" && !!ctx.request.all, duffs);
+  if (maxText) return maxText;
   if (APPROVAL_ENDED.includes(e.code)) {
     const retry = finishAfter(e, ctx);
     if (!retry) return FUND_COPY.approvalEnded.unknown;
@@ -250,7 +259,7 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
     case "credits.fund_pending":
       return t("transfer.fund.error.pending");
     case "platform.feature_off":
-      return t("transfer.fund.error.featureOff");
+      return isAddressSendsOff(e) ? MAINNET_OFF_COPY.add : t("transfer.fund.error.featureOff");
     case "platform.broadcast_unknown":
       return t("transfer.fund.error.broadcastUnknown");
     case "platform.will_be_sent":
@@ -266,12 +275,14 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
 
 /** Back is offered when another amount may pass. */
 export const fundCanChange = (e: unknown): boolean =>
-  isAppError(e) && ["credits.below_minimum", "credits.funding_insufficient", "platform.grant_exceeded", "credits.too_many_inputs"].includes(e.code);
+  isAppError(e) && ["credits.below_minimum", "credits.funding_insufficient", "platform.grant_exceeded", "credits.too_many_inputs", "credits.coins_changed"].includes(e.code);
 
 export class PlatformFundFlow extends Model {
   /** The sheet is shown. */
   open = false;
   step: FundStep = "form";
+  /** An add's call has been pending for a second. */
+  readonly preparing = new Preparing(() => this.changed());
   /** The amount as typed (in the display unit). */
   text = "";
   request: FundRequest | null = null;
@@ -313,9 +324,9 @@ export class PlatformFundFlow extends Model {
     this.changed();
   }
 
-  /** Form → confirm for an amount the screen has checked. */
-  next(duffs: number) {
-    this.request = { kind: "add", duffs };
+  /** Form → confirm for an amount the screen has checked; `all`: Max's, a Core Max. */
+  next(duffs: number, all = false) {
+    this.request = all ? { kind: "add", duffs, all } : { kind: "add", duffs };
     this.step = "confirm";
     this.error = null;
     this.changed();
@@ -363,8 +374,9 @@ export class PlatformFundFlow extends Model {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
+        if (request.kind === "add") this.preparing.start();
         this.changed();
-        return request.kind === "add" ? this.api.platformFund(this.walletId, { kind: "duffs", duffs: request.duffs }, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
+        return request.kind === "add" ? this.api.platformFund(this.walletId, fundAmount(request), g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
       });
       if (got) {
         this.outcome = got.value;
@@ -379,6 +391,7 @@ export class PlatformFundFlow extends Model {
       this.step = "refused";
     } finally {
       this.running = false;
+      this.preparing.stop();
       // A cancelled passphrase ran nothing: nothing to read again.
       if (ran) onMoveSettledNotify();
       this.changed();

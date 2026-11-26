@@ -33,6 +33,8 @@ mod held_writes;
 pub mod history;
 mod history_ops;
 mod keys;
+#[cfg(test)]
+mod kill9;
 mod labels;
 pub mod masternode_keys;
 pub mod masternodes;
@@ -46,6 +48,7 @@ mod pump;
 pub mod rates;
 mod receive;
 mod replay_record;
+mod rescan_hold;
 mod restore;
 #[cfg(all(test, unix))]
 mod restore_order_tests;
@@ -80,6 +83,7 @@ mod tools;
 mod tx_actions;
 mod wallet_read;
 mod wallets;
+mod withhold;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};
 pub use coinjoin::CoinJoinFailure;
@@ -97,8 +101,9 @@ pub use fees::{
     fee_policy,
 };
 pub use history::{
-    AddressChain, HistoryFilter, HistoryPage, HistoryQuery, HistorySort, TxCategory, TxDetail,
-    TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind, TxType, WatchOnlyFilter,
+    AddressChain, DropCause, DropState, HistoryFilter, HistoryPage, HistoryQuery, HistorySort,
+    TxCategory, TxDetail, TxDrop, TxInputDetail, TxOutputDetail, TxRecord, TxStatus, TxStatusKind,
+    TxType, WatchOnlyFilter,
 };
 pub use keys::{CORE_COMPAT_LOOKAHEAD, ImportOptions, MAX_LOOKAHEAD, PaymentAuthentication};
 pub use labels::{BookEntryInfo, LabelsFailure};
@@ -121,8 +126,11 @@ pub use send::{
 pub use session::{CreatedWallet, NetworkSession, SessionOptions, WalletBalances, WalletId};
 pub use sync::{PeerInfo, RescanFrom, SyncPhase, SyncPhaseProgress, SyncSnapshot};
 pub use tools::{
-    ChainLockInfo, ENGINE_VERSION, EngineWarning, MasternodeCount, NodeInfo, RescanProgress,
-    USER_AGENT, WarningCode,
+    BUILD_VERSION, ChainLockInfo, ENGINE_VERSION, EngineWarning, HistoryGap, MasternodeCount,
+    NodeInfo, RescanProgress, USER_AGENT, WarningCode,
 };
-pub use tx_actions::{TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal};
+pub use tx_actions::{
+    DroppedNotice, TxActionRefusal, TxDetailExtras, TxNotice, is_coinjoin_internal,
+};
 pub use wallets::{MAX_WALLET_NAME, WalletInfo};
+pub use withhold::ExclusionReason;

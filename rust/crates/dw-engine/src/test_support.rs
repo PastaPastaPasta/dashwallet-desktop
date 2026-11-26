@@ -136,6 +136,9 @@ pub enum CloseFence {
     ShieldedSpend,
     /// An operation guard, as any operation in flight holds it.
     Operation,
+    /// The close preflight and an operation guard, as a fund or Finish
+    /// waiting on its wallet's start-up holds them.
+    Preparing,
 }
 
 /// A fence held by [`hold_close_fence`]. Dropping it returns once the fence
@@ -154,7 +157,8 @@ impl Drop for HeldCloseFence {
 
 /// Holds `fence` of `session` until the returned guard is dropped, so an
 /// in-app close of it is refused: `wallet` once it waited `load_wait`,
-/// `shielded_spend_unresolved`, or (a switch's close) not drained. Call it
+/// `shielded_spend_unresolved`, or (a switch's close) preparing or not
+/// drained. Call it
 /// off the engine's runtime.
 pub fn hold_close_fence(
     session: &std::sync::Arc<NetworkSession>,
@@ -169,16 +173,19 @@ pub fn hold_close_fence(
     session.rt.spawn(async move {
         let _fence = match fence {
             CloseFence::WalletLoad => Some(s.platform.wallet_loads.read().await),
-            CloseFence::ShieldedSpend => Some(s.platform.close_preflight.read().await),
+            CloseFence::ShieldedSpend | CloseFence::Preparing => {
+                Some(s.platform.close_preflight.read().await)
+            }
             CloseFence::Operation => None,
         };
+        let _waiting = matches!(fence, CloseFence::Preparing).then(|| s.platform.waiting());
         let _op = match fence {
             CloseFence::WalletLoad => None,
             _ => Some(s.enter().await.expect("the session is open")),
         };
         let _ = held_tx.send(());
         let _ = released.await;
-        drop((_fence, _op));
+        drop((_waiting, _fence, _op));
         drop(done_tx);
     });
     held.recv().expect("the fence is held");
@@ -191,6 +198,22 @@ pub fn hold_close_fence(
 /// Marks `wallet` mixing (or not) without starting its loop.
 pub fn set_mixing(session: &NetworkSession, wallet: crate::WalletId, mixing: bool) {
     session.coinjoin.set_mixing_for_test(wallet, mixing);
+}
+
+/// Opens one mixing session of `wallet` with no masternode behind it, or
+/// (`open` false) drops every open session of `wallet`.
+pub fn set_open_mixing_session(session: &NetworkSession, wallet: crate::WalletId, open: bool) {
+    session.coinjoin.set_open_session_for_test(wallet, open);
+}
+
+/// A closed session of `wallet` that signed its round holds an input since
+/// now, reserved to it, until the wallet sees the round or the observation
+/// timeout passes.
+pub fn hold_signed_round_input(session: &NetworkSession, wallet: crate::WalletId) {
+    let input = dashcore::OutPoint::new(dashcore::hashes::Hash::from_byte_array([7; 32]), 0);
+    let owner = crate::send::SpendOwner::mixing_session();
+    session.spends.reserve(wallet, owner, [input]);
+    session.coinjoin.hold_for_test(wallet, input, owner);
 }
 
 /// Holds the next Platform send of `session` (`DashPay::platform_send`)
@@ -218,4 +241,96 @@ pub fn sent_marks(session: &NetworkSession, wallet: crate::WalletId) -> Vec<Stri
         .into_iter()
         .map(|(key, _)| key[prefix.len()..].to_string())
         .collect()
+}
+
+/// Tracks `pro_tx_hash` with no masternode list, as the engine's own
+/// tracking tests do, so another crate can attach keys to it.
+pub fn track_unlisted(session: &NetworkSession, pro_tx_hash: [u8; 32]) {
+    let service = (session.manager())
+        .expect("a live session")
+        .tracked_masternodes_service();
+    service
+        .track_blocking(pro_tx_hash, None)
+        .expect("track the masternode");
+}
+
+/// Ends every wallet's unfinished replay as SPV would with nothing new to
+/// find: its checkpoint back at the replay's target, stored, and the record
+/// settled. For a data root opened offline, which has no blocks to replay.
+/// Each replay must hold the wallet's spends until then. Returns every
+/// wallet with a replay record, cancelled or not.
+pub async fn finish_replays(session: &NetworkSession) -> Vec<FinishedReplay> {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let live = session.live().expect("a live session");
+    let mut finished = Vec::new();
+    for id in live.manager.wallet_ids().await {
+        let record = (live.replay.get(crate::WalletId(id)).await).expect("read the replay record");
+        let wallet = crate::WalletId(id);
+        let Some(record) = record else {
+            continue;
+        };
+        if record.cancelled {
+            finished.push(FinishedReplay {
+                wallet,
+                from_birth: false,
+                processed_rise: 0,
+            });
+            continue;
+        }
+        assert!(
+            session.replay_guard(wallet, 0).await.is_err(),
+            "a spend of {wallet} waits for its replay"
+        );
+        let birth = crate::keys::birth_checkpoint(&live.manager, wallet).await;
+        let height = record.target;
+        let processed_rise = {
+            let wm = live.manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let before =
+                (wm.get_wallet_info(&id)).map_or(height, |i| i.core_wallet.last_processed_height());
+            wm.update_wallet_synced_height(&id, height);
+            wm.update_wallet_last_processed_height(&id, height);
+            height.saturating_sub(before)
+        };
+        (session.hub).apply_wallet_event(
+            &platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+                wallet_id: id,
+                height,
+            },
+        );
+        let core = CoreChangeSet {
+            last_processed_height: Some(height),
+            synced_height: Some(height),
+            ..Default::default()
+        };
+        let changeset = PlatformWalletChangeSet {
+            core: Some(core),
+            ..Default::default()
+        };
+        live.store
+            .store(id, changeset)
+            .expect("store the checkpoint");
+        live.store.flush(id).expect("flush the checkpoint");
+        finished.push(FinishedReplay {
+            wallet,
+            from_birth: record.reached <= birth,
+            processed_rise,
+        });
+    }
+    live.replay.settled().await;
+    finished
+}
+
+/// A replay [`finish_replays`] ended.
+pub struct FinishedReplay {
+    pub wallet: crate::WalletId,
+    /// It ran from the wallet's birth checkpoint or below.
+    pub from_birth: bool,
+    /// How far it raised the wallet's processed height, which coins'
+    /// confirmations count from.
+    pub processed_rise: u32,
 }

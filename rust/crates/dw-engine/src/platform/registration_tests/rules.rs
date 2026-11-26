@@ -73,6 +73,10 @@ impl RegistrationLib for Hooked {
         self.fake.claim_hold()
     }
 
+    fn network(&self) -> DashNetwork {
+        self.fake.network()
+    }
+
     async fn invitation(
         &self,
         link_id: &str,
@@ -108,6 +112,25 @@ impl RegistrationLib for Hooked {
         &self,
     ) -> Result<crate::platform::registration::ShieldedFacts, PlatformError> {
         self.fake.shielded_facts().await
+    }
+
+    async fn platform_plan(
+        &self,
+        funding: u64,
+    ) -> Result<
+        crate::platform::registration_platform::RegisterPlan,
+        crate::platform::errors::CreditsError,
+    > {
+        self.fake.platform_plan(funding).await
+    }
+
+    fn platform_fund<'a>(
+        &'a self,
+        ask: crate::platform::platform_moves::RegisterAsk,
+        lease: Option<&'a Lease>,
+        write_plan: crate::platform::platform_moves::PlanWriter<'a>,
+    ) -> crate::platform::platform_moves::PlanFund<'a> {
+        self.fake.platform_fund(ask, lease, write_plan)
     }
 
     async fn funding_permit(
@@ -232,6 +255,18 @@ impl RegistrationLib for Hooked {
 
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {
         self.fake.credit_balance(identity).await
+    }
+
+    async fn fallback_address(&self) -> Result<String, PlatformError> {
+        self.fake.fallback_address().await
+    }
+
+    async fn shielded_fund(
+        &self,
+        ask: crate::platform::registration_shielded::ShieldedAsk,
+        lease: Option<&Lease>,
+    ) -> Result<crate::platform::registration_shielded::ShieldedOutcome, PlatformError> {
+        self.fake.shielded_fund(ask, lease).await
     }
 }
 

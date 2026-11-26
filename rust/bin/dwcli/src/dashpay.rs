@@ -214,6 +214,20 @@ pub enum ShieldedCmd {
         #[arg(long)]
         confirm_unrecorded: bool,
     },
+    /// Shielded -> Platform: unshield `--credits` to one of the wallet's
+    /// own Platform addresses, or to its Platform receive address.
+    UnshieldToPlatform {
+        #[arg(long)]
+        credits: u64,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+        /// Unshield even though a payment from before a restart may still
+        /// go through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
+    },
     /// The shielded history, pending rows first, then newest first.
     History {
         #[arg(long, default_value_t = 0)]
@@ -411,6 +425,19 @@ pub enum IdentityCmd {
         who: Who,
         #[arg(long)]
         duffs: u64,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Top up an identity's credits from the wallet's Platform addresses.
+    TopUpFromPlatform {
+        #[command(flatten)]
+        who: Who,
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        credits: Option<u64>,
+        /// The usable balance less what the first input keeps for the fee.
+        #[arg(long)]
+        all: bool,
         /// Print the quote only.
         #[arg(long)]
         quote_only: bool,
@@ -898,7 +925,9 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::FundingCancelled
         | R::NotSynced
         | R::CoinsLocked
-        | R::QuoteChanged => json!({}),
+        | R::QuoteChanged
+        | R::Refunded
+        | R::PaymentConsumed => json!({}),
         R::ShieldedNotReady { reason, ready_at } => {
             json!({"reason": reason, "ready_at": ready_at})
         }
@@ -912,6 +941,7 @@ fn registration_params(e: &RegistrationError) -> Value {
         R::Recoverable { draft } => json!({"draft": draft}),
         R::Name(n) => name_params(n),
         R::Invitation(i) => invitation_params(i),
+        R::Credits(c) => credits_params(c),
         R::Platform(p) => platform_params(p),
     }
 }
@@ -929,7 +959,9 @@ fn contact_params(e: &ContactError) -> Value {
         | C::ScanExpired
         | C::ScanUnverified
         | C::NoUsername => json!({}),
+        C::Shielded(s) => shielded_params(s),
         C::Platform(p) => platform_params(p),
+        C::Credits(c) => credits_params(c),
     }
 }
 
@@ -949,12 +981,14 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        CreditsError::BelowMinimum { min } => json!({"min": min}),
+        CreditsError::BelowMinimum { min, .. } => json!({"min": min}),
         CreditsError::CoinsLocked
         | CreditsError::QuoteChanged
         | CreditsError::CoinsChanged
         | CreditsError::MixingActive
-        | CreditsError::MoveRunning => json!({}),
+        | CreditsError::MoveRunning
+        | CreditsError::PreflightRefused
+        | CreditsError::RulesUnsupported => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -990,7 +1024,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         | ShieldedError::FundingInsufficient { needed, available } => {
             json!({"needed": needed, "available": available})
         }
-        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::BelowMinimum { min, .. } => json!({"min": min}),
         ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
         ShieldedError::PoolTooSmall { notes, required } => {
             json!({"notes": notes, "required": required})
@@ -1715,7 +1749,15 @@ fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError>
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.move_to_core(amount, quote.to.clone(), grant))?;
+            // An exit moves exactly its quoted withdrawal, or nothing.
+            let amount = match quote.exit_of {
+                Some(_) => WithdrawAmount::Credits {
+                    credits: quote.credits - quote.fee_credits,
+                },
+                None => amount,
+            };
+            let ask = (quote.to.clone(), quote.exit_of.clone());
+            let outcome = ctx.block_on(dp.move_to_core(amount, ask.0, ask.1, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         #[cfg(feature = "platform-addr-fund")]
@@ -1798,6 +1840,21 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
             let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome =
                 ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::UnshieldToPlatform {
+            credits,
+            to,
+            quote_only,
+            confirm_unrecorded,
+        } => {
+            let quote = ctx.block_on(dp.unshield_to_platform_quote(credits, to.clone()))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome =
+                ctx.block_on(dp.unshield_to_platform(credits, to, grant, confirm_unrecorded))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::History { offset, limit } => {
@@ -1975,6 +2032,30 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
             let outcome = ctx.block_on(dp.top_up(identity, duffs, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        IdentityCmd::TopUpFromPlatform {
+            who,
+            credits,
+            all: _,
+            quote_only,
+        } => {
+            let identity = who.or_main(&dp)?;
+            let amount = credits.map_or(WithdrawAmount::All, |credits| WithdrawAmount::Credits {
+                credits,
+            });
+            let quote = ctx.block_on(dp.top_up_from_platform_quote(identity.clone(), amount))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            // What Confirm showed, Max included: its credits and its fee input.
+            let amount = WithdrawAmount::Credits {
+                credits: quote.credits,
+            };
+            let fee_input = quote.inputs.first().cloned();
+            let outcome =
+                ctx.block_on(dp.top_up_from_platform(identity, amount, fee_input, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         IdentityCmd::TopUpPending => out(ctx.block_on(dp.pending_top_ups())?),
@@ -2650,7 +2731,7 @@ mod tests {
         // Release 0.1 (lane E2): the Platform addresses.
         (
             "platform-addr status",
-            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false,"sends_active":true,"sends_off":null}}"#,
         ),
         ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
         // Offline (DAPI refuses): the pass and the plan's proved read.
@@ -2800,6 +2881,10 @@ mod tests {
             NOT_IDENTIFIER,
         ),
         ("identity withdrawals --identity I", NOT_IDENTIFIER),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            NOT_IDENTIFIER,
+        ),
         ("identity top-up-stuck", r#"{"ok":true,"result":[]}"#),
         (
             "identity top-up-resume abababababababababababababababababababababababababababababababab",
@@ -2830,7 +2915,7 @@ mod tests {
         // address is the random wallet's (see the run below).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":true,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         (
@@ -2854,6 +2939,10 @@ mod tests {
             r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
         ),
         (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Platform address of this network","params":{"detail":"not a Platform address of this network"}}}"#,
+        ),
+        (
             "shielded history --offset 1 --limit 5",
             r#"{"ok":true,"result":[]}"#,
         ),
@@ -2875,7 +2964,7 @@ mod tests {
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
-    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted","platform_enabled":true,"addresses":"pending"}}"#;
 
     /// `I` and `C` are not identity ids.
     const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
@@ -2977,6 +3066,10 @@ mod tests {
         ),
         ("identity costs", "DashPay.cost_table"),
         ("identity withdrawals --identity I", "DashPay.withdrawals"),
+        (
+            "identity top-up-from-platform --identity I --credits 5 --quote-only",
+            "DashPay.top_up_from_platform_quote",
+        ),
         ("identity top-up-pending", "DashPay.pending_top_ups"),
         ("identity top-up-stuck", "DashPay.stuck_top_up_fundings"),
         (
@@ -3093,6 +3186,10 @@ mod tests {
         (
             "shielded unshield --credits 5 --to yA",
             "DashPay.unshield_quote",
+        ),
+        (
+            "shielded unshield-to-platform --credits 5 --to yA",
+            "DashPay.unshield_to_platform_quote",
         ),
         (
             "shielded history --offset 1 --limit 5",
@@ -3749,6 +3846,15 @@ mod tests {
                 assert!(ready.is_boolean(), "{line}");
                 *ready = json!(false);
             }
+            // A build that cannot spend from Shielded reads false; the row is
+            // the same either way.
+            if let Some(spends) = line
+                .get_mut("result")
+                .and_then(|r| r.get_mut("spends_available"))
+            {
+                assert!(spends.is_boolean(), "{args:?}");
+                *spends = json!(true);
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();
@@ -3881,7 +3987,10 @@ mod tests {
         }));
         assert_eq!(e["code"], "platform.will_be_sent");
         assert_eq!(e["params"], json!({"artifact": "topup/1/funding"}));
-        let e = error_json(CreditsError::BelowMinimum { min: 100 });
+        let e = error_json(CreditsError::BelowMinimum {
+            min: 100,
+            max: None,
+        });
         assert_eq!(
             (e["code"].clone(), e["params"].clone()),
             (json!("credits.below_minimum"), json!({"min": 100}))

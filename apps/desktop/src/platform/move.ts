@@ -8,13 +8,15 @@
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
 import type { AuthGrant } from "../api/generated/AuthGrant";
-import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
+import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -70,6 +72,17 @@ export const MOVE_COPY = {
     text: (amount: string, fee: string | null) => (fee === null ? t("transfer.move.done.text", { amount }) : t("transfer.move.done.textWithFee", { amount, fee })),
     /** The engine proved the debit but not what arrives. */
     debitOnly: (taken: string) => t("transfer.move.done.debitOnly", { taken }),
+    /** `debitOnly` when nothing says which member of the move's group went through. */
+    debitUnknown: (taken: string) => t("transfer.move.done.debitUnknown", { taken }),
+  },
+  /** The move's group settled with no evidence of which member went through. */
+  settledUnknown: {
+    get title() {
+      return t("transfer.status.settledUnknown.title");
+    },
+    get text() {
+      return t("transfer.status.settledUnknown.text");
+    },
   },
   pending: {
     get title() {
@@ -77,6 +90,15 @@ export const MOVE_COPY = {
     },
     text: (amount: string) => t("transfer.move.pending.text", { amount }),
     debitOnly: (taken: string) => t("transfer.move.pending.debitOnly", { taken }),
+  },
+  /** A move that cannot execute: the top-up it exits, or an earlier exit, took its credits. */
+  failed: {
+    get title() {
+      return t("transfer.move.failed.title");
+    },
+    get text() {
+      return t("transfer.move.failed.text");
+    },
   },
   /** A move the engine superseded with a retry: not a loss, and nothing to wait for. */
   replaced: {
@@ -129,6 +151,17 @@ export const MOVE_COPY = {
   },
 };
 
+/** What the result sheet says of a move's outcome. `failed`: it failed and can no longer land.
+ * `credits` and `amount` format credits and duffs. */
+export function moveOutcomeCopy(outcome: MoveToCoreOutcome, failed: boolean, credits: (c: string) => string, amount: (duffs: number) => string): { title: string; text: string } {
+  const C = MOVE_COPY;
+  if (outcome.winnerKnown === false) return outcome.state === "done" ? { title: C.settledUnknown.title, text: C.done.debitUnknown(credits(outcome.credits)) } : C.settledUnknown;
+  if (outcome.state === "replaced") return C.replaced;
+  if (failed) return C.failed;
+  if (outcome.state === "done") return { title: C.done.title, text: outcome.expectedDuffs === null ? C.done.debitOnly(credits(outcome.credits)) : C.done.text(amount(outcome.expectedDuffs), outcome.feeCredits === null ? null : credits(outcome.feeCredits)) };
+  return { title: C.pending.title, text: outcome.expectedDuffs === null ? C.pending.debitOnly(credits(outcome.credits)) : C.pending.text(amount(outcome.expectedDuffs)) };
+}
+
 /** What holds Move back: the Activity read has not answered (`checking`) or failed (`failed`), or it names
  * a move Platform has not confirmed (`pending`). `null`: Move may be offered. */
 export type MoveBlock = "checking" | "failed" | "pending";
@@ -150,8 +183,24 @@ export function invalidArgumentText(e: { message: string; data: { kind: string; 
   return detail.trim() === "" ? t("transfer.move.notAccepted") : /[.!?]$/.test(detail) ? detail : `${detail}.`;
 }
 
-/** A move's refusal, by code. `credits` shows a credit figure as Dash. */
-export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null): string {
+/** Platform's structure pre-check refused a move, a send or a top-up before signing. Its consensus
+ * error stays in the log. */
+export function preflightText(code: "credits.rules_unsupported" | "credits.preflight_refused", earlier: "send" | "topUp" | null = null): string {
+  const rules = code === "credits.rules_unsupported";
+  if (earlier === "send") return rules ? t("platform.preflight.rulesUnsupportedRetry") : t("platform.preflight.refusedRetry");
+  if (earlier === "topUp") return rules ? t("platform.preflight.rulesUnsupportedHeldTopUp") : t("platform.preflight.refusedHeldTopUp");
+  return rules ? t("platform.preflight.rulesUnsupported") : t("platform.preflight.refused");
+}
+
+/** Whether the earlier item a refused retry or exit named (`id`) may still have gone or go through. The
+ * engine runs the pre-check for a named call only while that item holds, so it counts as held unless
+ * Activity has since shown it failed for good: one that landed after the refusal changed the balance too. */
+export const stillHeld = (activity: readonly PlatformActivity[] | null | undefined, id: string | null | undefined): boolean =>
+  !!id && !activity?.some((a) => a.id === id && a.state === "failed" && !a.mayLand);
+
+/** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
+ * was the exit of; while it still holds, a pre-check refusal says it may still land. */
+export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, exitOf?: string | null): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":
@@ -175,8 +224,13 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
       return t("transfer.move.error.signerUnavailable");
     case "platform.grant_exceeded":
       return t("transfer.move.error.grantExceeded");
+    case "credits.quote_changed":
+      return t("transfer.move.error.quoteChanged");
     case "platform.feature_off":
-      return t("transfer.move.error.featureOff");
+      return isAddressSendsOff(e) ? MAINNET_OFF_COPY.refused : t("transfer.move.error.featureOff");
+    case "credits.rules_unsupported":
+    case "credits.preflight_refused":
+      return preflightText(e.code, stillHeld(activity, exitOf) ? "topUp" : null);
     case "invalid_argument":
       return invalidArgumentText(e);
     default:
@@ -185,11 +239,13 @@ export function moveErrorText(e: unknown, credits: (c: string) => string, activi
 }
 
 /** Back is offered when a new quote may pass. */
-export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits");
+export const moveCanRetry = (e: unknown) => hasCode(e, "platform.grant_exceeded") || hasCode(e, "platform.insufficient_credits") || hasCode(e, "credits.quote_changed");
 
-/** A move or send Platform has not answered (`pending`) or that may still execute (`mayLand`: also a
- * `failed` one by height). Moves and sends share one hold on the wallet's Platform addresses. */
-export const isHeldOp = (a: PlatformActivity): boolean => (a.kind === "moveToCore" || a.kind === "send") && (a.state === "pending" || a.mayLand);
+/** A move, send, contact payment or top-up from Platform that Platform has not answered (`pending`) or
+ * that may still execute (`mayLand`: also a `failed` one by height). They share one hold on the wallet's
+ * Platform addresses. */
+const holdingKind = (a: PlatformActivity) => a.kind === "moveToCore" || a.kind === "send" || a.kind === "contactPayment" || a.kind === "toIdentity";
+export const isHeldOp = (a: PlatformActivity): boolean => holdingKind(a) && (a.state === "pending" || a.mayLand);
 
 /** Whether a move or send of this wallet holds the Platform addresses: recorded `pending` or able to
  * execute still (it settles within minutes: the engine's `platform_activity` settles it). While one
@@ -199,7 +255,15 @@ export const hasPendingMove = (activity: readonly PlatformActivity[] | null | un
 /** Whether a move or send is recorded `pending`: Platform has not answered, so not even its retry
  * is taken yet. */
 export const hasUnansweredOp = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
-  !!activity?.some((a) => (a.kind === "moveToCore" || a.kind === "send") && a.state === "pending");
+  !!activity?.some((a) => holdingKind(a) && a.state === "pending");
+
+/** The moves, contact payments and top-ups from Platform that hold the addresses and Platform has
+ * answered, the newest first: on mainnet, where new moves are off, Move stays offered as their exit (an
+ * unanswered one holds every move until it settles). A held send's exit is its retry, on Pay. */
+export const heldExitOps = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity[] => activity?.filter((a) => a.kind !== "send" && a.state !== "pending" && isHeldOp(a)) ?? [];
+
+/** The newest of `heldExitOps`, or `null`. */
+export const heldExitOp = (activity: readonly PlatformActivity[] | null | undefined): PlatformActivity | null => heldExitOps(activity)[0] ?? null;
 
 /** Whether a payment (a `send`, not a move) holds the Platform addresses and no move does: the Move card says so. */
 export const sendHolds = (activity: readonly PlatformActivity[] | null | undefined): boolean =>
@@ -225,6 +289,8 @@ export class PlatformMoveFlow extends Model {
   step: MoveStep = "confirm";
   outcome: MoveToCoreOutcome | null = null;
   error: unknown = null;
+  /** The held top-up the last move was the exit of, or `null`. */
+  exitOf: string | null = null;
   running = false;
   readonly grants: GrantModel;
 
@@ -294,20 +360,23 @@ export class PlatformMoveFlow extends Model {
     this.changed();
   }
 
-  /** Confirm & move: the quote's grant, then `platformMoveToCore` for everything to the quote's `to`, one
-   * of the wallet's own receiving addresses (one call at a time). */
-  async move(grant: GrantRequest, to: string): Promise<void> {
+  /** Confirm & move: the quote's grant, then `platformMoveToCore` to the quote's `to`, one of the
+   * wallet's own receiving addresses (one call at a time). Everything, or as the exit of the quote's
+   * `exitOf` exactly its planned withdrawal, so the engine moves what Confirm showed or refuses. */
+  async move({ grant, to, exitOf, credits, feeCredits }: Pick<MoveToCoreQuote, "grant" | "to" | "exitOf" | "credits" | "feeCredits">): Promise<void> {
+    const amount: WithdrawAmount = exitOf === null ? { kind: "all" } : { kind: "credits", credits: plannedWithdrawalCredits({ credits, feeCredits }) };
     if (this.running) return;
     let ran = false;
     this.running = true;
     this.error = null;
+    this.exitOf = exitOf;
     this.changed();
     try {
       const got = await this.grants.withGrant(platformOp(grant), this.walletId, (g: AuthGrant) => {
         ran = true;
         this.step = "running";
         this.changed();
-        return this.api.platformMoveToCore(this.walletId, { kind: "all" }, to, g.id);
+        return this.api.platformMoveToCore(this.walletId, amount, to, exitOf, g.id);
       });
       if (got) {
         this.outcome = got.value;

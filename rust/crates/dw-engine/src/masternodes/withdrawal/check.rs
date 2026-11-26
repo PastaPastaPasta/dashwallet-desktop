@@ -16,8 +16,8 @@ use tokio::time::Instant;
 use super::drive::{Window, identity_key, key_hashes, window};
 use super::net::{MnWithdrawNet, Proved};
 use super::{Env, HeldKey, PayoutChange, WalletKeys, WithdrawalError, on_db};
-use crate::masternodes::WithdrawalCheckingReason;
 use crate::masternodes::protx_records::ProTxOperationState;
+use crate::masternodes::{WithdrawalCheckingReason, WithdrawalKeyChoice};
 use crate::platform::trust::Rule5;
 use crate::platform::withdrawal::{READ_BACK_TRIES, Rules, expected_duffs};
 use crate::platform::{PlatformError, WithdrawAmount};
@@ -116,6 +116,10 @@ pub(crate) struct Seen {
     pub(crate) header_tip: Option<u32>,
     /// `None` when (a)–(c) hold.
     pub(crate) reason: Option<WithdrawalCheckingReason>,
+    /// The latest payout in the wallets' history is P2SH: Drive would pay
+    /// an owner-key withdrawal to the P2PKH of its 20 bytes, which nobody
+    /// can spend.
+    pub(crate) payout_p2sh: bool,
 }
 
 impl Seen {
@@ -135,6 +139,21 @@ impl Seen {
             Some(reason) => Err(WithdrawalError::DestinationChecking { reason }),
         }
     }
+
+    /// [`Self::holds`] for a withdrawal by `key`; an owner key is refused
+    /// too while the payout is P2SH.
+    pub(crate) fn holds_for(&self, key: WithdrawalKeyChoice) -> Result<(), WithdrawalError> {
+        self.holds()?;
+        match self.owner_reason(key) {
+            None => Ok(()),
+            Some(reason) => Err(WithdrawalError::DestinationChecking { reason }),
+        }
+    }
+
+    fn owner_reason(&self, key: WithdrawalKeyChoice) -> Option<WithdrawalCheckingReason> {
+        (key == WithdrawalKeyChoice::Owner && self.payout_p2sh)
+            .then_some(WithdrawalCheckingReason::OwnerPayoutP2sh)
+    }
 }
 
 /// One look (P4): the identity read under rule 5, the barriers' clearing
@@ -151,13 +170,16 @@ pub(crate) async fn look(
     let identity = gated(env.rule_5(), env.waits().probe, || net.identity(id)).await?;
     let header_tip = env.chain().header_tip;
     let pending = pending_barriers(env, pro_tx_hash, &identity).await?;
-    let (unconfirmed, unapplied) = unpaid_changes(&env.payout_changes(pro_tx_hash), &identity.read);
+    let changes = env.payout_changes(pro_tx_hash);
+    let (unconfirmed, unapplied) = unpaid_changes(&changes, &identity.read);
     let core = identity.read.core_height;
     let reason = if header_tip.is_none() {
         Some(WithdrawalCheckingReason::SpvUnsynced)
     } else if !identity.passed {
         Some(WithdrawalCheckingReason::Unverified)
-    } else if pending {
+    } else if pending == Some(Pending::Abandoned) {
+        Some(WithdrawalCheckingReason::PayoutChangeAbandoned)
+    } else if pending.is_some() {
         Some(WithdrawalCheckingReason::PayoutChangePending)
     } else if unconfirmed {
         Some(WithdrawalCheckingReason::PayoutChangeUnconfirmed)
@@ -166,10 +188,12 @@ pub(crate) async fn look(
     } else {
         None
     };
+    let payout_p2sh = owner_payout_p2sh(&changes, identity.read.value.as_ref());
     Ok(Seen {
         identity,
         header_tip,
         reason,
+        payout_p2sh,
     })
 }
 
@@ -185,7 +209,7 @@ pub(super) fn unpaid_changes(
         _ => None,
     };
     let unpaid = || {
-        (changes.iter()).filter(|c| {
+        (changes.iter().filter(|c| !c.registration)).filter(|c| {
             paid.as_ref()
                 .is_none_or(|p| c.script.as_deref() != Some(p.as_bytes()))
         })
@@ -194,6 +218,97 @@ pub(super) fn unpaid_changes(
         unpaid().any(|c| c.height.is_none()),
         unpaid().any(|c| c.height.is_some_and(|h| h > read.core_height)),
     )
+}
+
+/// Whether an owner-key withdrawal would pay a script nobody can spend: the
+/// latest payout of `changes` is P2SH while Drive's window in `identity`
+/// still pays P2PKH (dashpay/platform#5840). Once Drive's window pays the
+/// P2SH script itself, nothing is refused.
+pub(super) fn owner_payout_p2sh(changes: &[PayoutChange], identity: Option<&Identity>) -> bool {
+    latest_is_p2sh(changes)
+        && identity.map(window).is_some_and(|w| {
+            matches!(w, Window::Pays { script, .. }
+                if dashcore::Script::from_bytes(script.as_bytes()).is_p2pkh())
+        })
+}
+
+/// Whether an open owner-key record must stay unsent. Drive takes the
+/// destination at execution, so any P2SH payout in `changes` pays the
+/// P2PKH of that script's 20 bytes until the window has moved on. The hold
+/// lifts only when the window pays a P2SH script, or pays the latest
+/// payout's P2PKH script and [`unpaid_changes`] reports nothing unconfirmed
+/// or above the proof's core height. No window that shows either leaves it
+/// held.
+pub(super) fn owner_key_resend_held(
+    changes: &[PayoutChange],
+    read: &Proved<Option<Identity>>,
+) -> bool {
+    if !any_is_p2sh(changes) {
+        return false;
+    }
+    let Some(Window::Pays { script, .. }) = read.value.as_ref().map(window) else {
+        return true;
+    };
+    if dashcore::Script::from_bytes(script.as_bytes()).is_p2sh() {
+        return false;
+    }
+    if pays_latest_p2pkh(changes, script.as_bytes()) {
+        let (unconfirmed, unapplied) = unpaid_changes(changes, read);
+        if !unconfirmed && !unapplied {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether any payout in `changes` is P2SH.
+pub(super) fn any_is_p2sh(changes: &[PayoutChange]) -> bool {
+    changes
+        .iter()
+        .any(|c| c.script.as_deref().is_some_and(script_is_p2sh))
+}
+
+/// Whether the latest payout of `changes` is P2SH: the unconfirmed
+/// changes, else those in the highest block, else the registration's.
+pub(super) fn latest_is_p2sh(changes: &[PayoutChange]) -> bool {
+    let Some(top) = changes.iter().map(payout_rank).max() else {
+        return false;
+    };
+    (changes.iter().filter(|c| payout_rank(c) == top))
+        .any(|c| c.script.as_deref().is_some_and(script_is_p2sh))
+}
+
+/// The window's `paid` script is every latest payout, and that payout is
+/// P2PKH. Several payouts share the latest rank only when each of them is
+/// that script.
+fn pays_latest_p2pkh(changes: &[PayoutChange], paid: &[u8]) -> bool {
+    let Some(top) = changes.iter().map(payout_rank).max() else {
+        return false;
+    };
+    let mut latest = changes.iter().filter(|c| payout_rank(c) == top);
+    latest.next().is_some_and(|first| {
+        script_is_paid_p2pkh(first, paid) && latest.all(|c| script_is_paid_p2pkh(c, paid))
+    })
+}
+
+fn script_is_paid_p2pkh(change: &PayoutChange, paid: &[u8]) -> bool {
+    change
+        .script
+        .as_deref()
+        .is_some_and(|script| script == paid && dashcore::Script::from_bytes(script).is_p2pkh())
+}
+
+fn script_is_p2sh(script: &[u8]) -> bool {
+    dashcore::Script::from_bytes(script).is_p2sh()
+}
+
+/// Unconfirmed changes outrank a block; a block outranks the registration.
+fn payout_rank(change: &PayoutChange) -> u64 {
+    match (change.registration, change.height) {
+        (true, _) => 0,
+        (false, Some(height)) => u64::from(height) + 1,
+        (false, None) => u64::MAX,
+    }
 }
 
 /// Whether a payout-change barrier of the masternode is still pending
@@ -212,32 +327,44 @@ pub(super) fn unpaid_changes(
 /// conflicted. An operation that can't be read (its wallet deleted or not
 /// loaded) leaves Platform evidence the only term (fail closed). Backfill
 /// not complete (`barriers_ready` false) is pending whatever the table
-/// holds, and counts as an older pending barrier.
+/// holds, and counts as an older pending barrier. `Abandoned` when every
+/// pending one is an operation its wallet abandoned (MG-10 §1.10).
 async fn pending_barriers(
     env: &impl Env,
     pro_tx_hash: &[u8; 32],
     identity: &Gated<Option<Identity>>,
-) -> Result<bool, WithdrawalError> {
+) -> Result<Option<Pending>, WithdrawalError> {
     let shown = crate::masternodes::display_hex(pro_tx_hash);
     let barriers = on_db(env, move |db| db.payout_barriers_of(&shown)).await?;
-    let mut older_pending = !env.barriers_ready();
+    let mut pending = (!env.barriers_ready()).then_some(Pending::Other);
     for barrier in barriers {
-        if clears(env, &barrier, identity, !older_pending).await? {
-            let cleared = on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
-            tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
-        } else {
-            older_pending = true;
+        match clears(env, &barrier, identity, pending.is_none()).await? {
+            None => {
+                let cleared =
+                    on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
+                tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
+            }
+            Some(p) => pending = Some(pending.map_or(p, |q| q.max(p))),
         }
     }
-    Ok(older_pending)
+    Ok(pending)
 }
 
+/// Why a payout-change barrier is still pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Pending {
+    /// Its operation was abandoned in Activity and may still be mined.
+    Abandoned,
+    Other,
+}
+
+/// `None` when `barrier` clears, else why it is pending.
 async fn clears(
     env: &impl Env,
     barrier: &PayoutBarrierRow,
     identity: &Gated<Option<Identity>>,
     evidence: bool,
-) -> Result<bool, WithdrawalError> {
+) -> Result<Option<Pending>, WithdrawalError> {
     let platform = identity.passed.then_some(&identity.read);
     if evidence
         && let Some(read) = platform
@@ -246,15 +373,17 @@ async fn clears(
         && let Window::Pays { script, .. } = window(id)
         && script.as_bytes() == barrier.barrier.payout_script.as_slice()
     {
-        return Ok(true);
+        return Ok(None);
     }
-    Ok(match env.barrier_state(barrier).await? {
+    let clears = match env.barrier_state(barrier).await? {
         Some(ProTxOperationState::Confirmed { height }) => {
             platform.is_some_and(|read| height <= read.core_height)
         }
         Some(ProTxOperationState::Conflicted) => true,
+        Some(ProTxOperationState::Abandoned) => return Ok(Some(Pending::Abandoned)),
         _ => false,
-    })
+    };
+    Ok((!clears).then_some(Pending::Other))
 }
 
 /// The look, again every `poll` until (a)–(c) hold, while only (a) fails
@@ -403,7 +532,12 @@ pub(crate) async fn quote(
         },
     };
     let owner_destination = match (&owner_key, window(identity)) {
-        (Some(_), Window::Pays { script, .. }) => Some(fixed(&script)),
+        (Some(_), Window::Pays { script, .. }) => {
+            Some(match seen.owner_reason(WithdrawalKeyChoice::Owner) {
+                Some(reason) if seen.reason.is_none() => Destination::Checking { reason },
+                _ => fixed(&script),
+            })
+        }
         _ => None,
     };
     let payout_destination = payout_keys.first().and_then(|k| {

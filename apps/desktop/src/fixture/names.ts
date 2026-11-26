@@ -41,8 +41,9 @@ export const FIXTURE_NAMES: ContestedNames = {
       label: "a11ce",
       endsAt: 1_800_003_600,
       contenders: [
-        { identity: ID_1, votes: 9 },
-        { identity: ID_2, votes: 4 },
+        { identity: ID_1, votes: 9, name: "Alice" },
+        // No document came back for it: it shows by its id (MG-11 F1).
+        { identity: ID_2, votes: 4, name: null },
       ],
       lockVotes: 5,
       abstainVotes: 0,
@@ -51,7 +52,7 @@ export const FIXTURE_NAMES: ContestedNames = {
     {
       label: "dash-pay",
       endsAt: 1_800_090_000,
-      contenders: [{ identity: ID_2, votes: 0 }],
+      contenders: [{ identity: ID_2, votes: 0, name: "Dash-Pay" }],
       lockVotes: 0,
       abstainVotes: 4,
       contendersComplete: true,
@@ -264,6 +265,16 @@ export function nameScenarios(base: (theme: ThemeName | null, patch?: (n: NamesW
         n.refuse = { [VOTER_A]: "unconfirmed" };
         n.downAfterVote = true;
       }),
+    /** The wallet's masternode rows hold two of the voters: the regular one labelled "Home node", the
+     * evonode without a label (MG-09 F3); the banned one is no row. */
+    "names-labelled": (t: ThemeName | null) => {
+      const w = base(t);
+      const [home, , club] = w.masternodes.rows;
+      // Only the name, service and kind are this fixture's: the voters own no payouts.
+      const own = { payouts30d: 0, payoutsIncomplete: false, lastPayout: null };
+      w.masternodes.rows.push({ ...home, ...own, proTxHash: VOTER_A }, { ...club, ...own, proTxHash: VOTER_B });
+      return w;
+    },
     /** A watch-only wallet browses. */
     "names-watch-only": (t: ThemeName | null) => {
       const w = base(t);

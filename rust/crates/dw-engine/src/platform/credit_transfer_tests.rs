@@ -42,9 +42,9 @@ impl World {
         amount: WithdrawAmount,
     ) -> Result<WithdrawToPlatformQuote, CreditsError> {
         let me = me();
-        self.call(
-            move |net, s, w| async move { quote(&*net, &w, s.vault.network(), &me, amount).await },
-        )
+        self.call(move |net, s, w| async move {
+            quote(&*net, &s, &w, s.vault.network(), &me, amount).await
+        })
     }
 
     fn transfer_to(
@@ -164,7 +164,7 @@ fn the_quote_is_the_plan_its_address_and_grant() {
     );
     let receive = w
         .call(|_, s, wallet| async move {
-            Ok(next_receive_address(&wallet, s.vault.network())
+            Ok(next_receive_address(&s, &wallet, s.vault.network())
                 .await?
                 .address)
         })
@@ -520,4 +520,37 @@ fn a_restart_keeps_the_decision() {
     w.send(DASH).unwrap();
     assert_eq!(nonce_of(&w.net.sent()[2]), k + 1);
     assert_eq!(w.executed(), 2);
+}
+
+/// The mainnet flag (`platform_address_sends`): on mainnet, at a protocol
+/// with address funds, the quote and the transfer are refused before the
+/// identity, a read, a nonce or the grant; a test network moves as before.
+#[test]
+fn a_transfer_to_the_platform_addresses_is_off_on_mainnet() {
+    let off = |r: Result<(), CreditsError>| match r {
+        Err(CreditsError::Platform(PlatformError::FeatureOff { feature }))
+            if feature == "platform_address_sends" => {}
+        other => panic!("{other:?}"),
+    };
+    let w = World::on(crate::DashNetwork::Mainnet, 3 * DASH);
+    let to = w
+        .call(|_, s, wallet| async move {
+            Ok(next_receive_address(&s, &wallet, s.vault.network())
+                .await?
+                .address)
+        })
+        .unwrap();
+    let grant = w.f.grant(4 * DASH);
+    off(w.transfer_quote(WithdrawAmount::All).map(drop));
+    off(w
+        .transfer_to(&to, WithdrawAmount::Credits { credits: DASH }, &grant)
+        .map(drop));
+    assert!(w.net.sent().is_empty(), "nothing broadcast");
+    assert_eq!(w.executed(), 0);
+    assert!(w.f.unused(&grant), "the grant is not redeemed");
+
+    let t = World::on(crate::DashNetwork::Testnet, 3 * DASH);
+    t.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+    t.send(DASH).unwrap();
+    assert_eq!(t.executed(), 1);
 }

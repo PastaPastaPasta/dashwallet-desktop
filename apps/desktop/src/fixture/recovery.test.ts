@@ -32,7 +32,7 @@ describe("fixture unfinished transfers", () => {
 
   it("a kind that can't be read is unread, neither listed nor finished; the other kind is both", async () => {
     open("paddr-recovery-shielded-unread");
-    fixture.world.pending.recovery.locks.push({ txid: "ab".repeat(32), vout: 0, kind: "shielded", duffs: 1_000_000, origin: "restored", state: "ready" });
+    fixture.world.pending.recovery.locks.push({ txid: "ab".repeat(32), vout: 0, kind: "shielded", duffs: 1_000_000, origin: "restored", state: "ready", remainingCredits: null });
     const listed = await cmd.unfinishedTransfers(W);
     expect(listed.unread).toEqual(["shielded"]);
     expect(listed.locks.map((l) => l.kind)).toEqual(["platformAddress"]);
@@ -120,17 +120,58 @@ describe("fixture unfinished transfers", () => {
     expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
-  it("Finish transfers counts as the engine does: ready applied, checking not tried and pending", async () => {
+  it("Finish transfers counts as the engine does: ready applied, a restored checking one tried and still checking", async () => {
     open("recovery-restored-mixed");
     expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
-      resumed: 2,
+      resumed: 3,
       completed: 2,
       stillPending: 1,
       alreadyUsed: 0,
-      byKind: [{ kind: "shielded", resumed: 2, completed: 2, stillPending: 1 }],
+      byKind: [{ kind: "shielded", resumed: 3, completed: 2, stillPending: 1 }],
       unread: [],
     });
     expect((await cmd.unfinishedTransfers(W)).locks.map((l) => l.state)).toEqual(["checking"]);
+  });
+
+  it("a restored lock Platform already took reads checking; Check again is answered already used, adds nothing and leaves the list", async () => {
+    for (const scenario of ["recovery-restored-finished", "paddr-recovery-restored-finished"] as const) {
+      open(scenario);
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect([l.origin, l.state]).toEqual(["restored", "checking"]);
+      const shielded = (await cmd.shieldedStatus(W)).balance;
+      const credits = (await cmd.platformAddresses(W))?.credits;
+      expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "reportedUsed" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+      expect((await cmd.shieldedStatus(W)).balance).toBe(shielded);
+      expect((await cmd.platformAddresses(W))?.credits).toBe(credits);
+      expect((await cmd.platformActivity(W))?.filter((a) => a.id === `fund-${l.txid}`)).toEqual([]);
+    }
+  });
+
+  it("Finish transfers tries a restored lock Platform already took and counts it already used", async () => {
+    open("recovery-restored-finished");
+    expect(await cmd.finishAssetLocks(W, await grant())).toEqual({
+      resumed: 1,
+      completed: 0,
+      stillPending: 0,
+      alreadyUsed: 1,
+      byKind: [{ kind: "shielded", resumed: 1, completed: 0, stillPending: 0 }],
+      unread: [],
+    });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+  });
+
+  it("a restored checking lock Platform never took is applied by Check again, and by Finish transfers", async () => {
+    open("recovery-restored-unapplied");
+    const [l] = (await cmd.unfinishedTransfers(W)).locks;
+    expect([l.origin, l.state]).toEqual(["restored", "checking"]);
+    const before = BigInt((await cmd.shieldedStatus(W)).balance);
+    expect(await cmd.finishTransfer(W, l.kind, l.txid, l.vout, await grant())).toEqual({ kind: "applied" });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+    expect(BigInt((await cmd.shieldedStatus(W)).balance)).toBe(before + 50_000_000n * 1000n - 10_000_000n);
+    open("recovery-restored-unapplied");
+    expect(await cmd.finishAssetLocks(W, await grant())).toMatchObject({ resumed: 1, completed: 1, stillPending: 0, alreadyUsed: 0 });
+    expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
   });
 
   it("Finish transfers does not try confirming or not-active locks, and lists their kind", async () => {
@@ -197,6 +238,41 @@ describe("fixture unfinished transfers", () => {
       const [l] = (await cmd.unfinishedTransfers(W)).locks;
       expect(await code(cmd.finishTransfer(W, "shielded", l.txid, l.vout, await grant()))).toBe("invalid_argument");
       expect((await cmd.unfinishedTransfers(W)).locks).toHaveLength(1);
+    });
+  });
+
+  describe("a refused transfer to Shielded (#402)", () => {
+    const creditsGrant = async (maxCredits: string) => (await cmd.authorize({ kind: "platformOp", maxDuffs: 1, maxCredits }, W, PASS)).id;
+
+    it("lists this device's lock as recoverable, quotes what is left, and recovers it under a grant of exactly that", async () => {
+      open("recovery-recoverable");
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect([l.origin, l.state, l.remainingCredits]).toEqual(["thisDevice", "recoverable", "30000000000"]);
+      expect(await cmd.recoverTransferQuote(W, l.txid, l.vout)).toEqual({ kind: "ready", credits: "30000000000", feeCredits: "56000000" });
+      expect(await code(cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("299999999999")))).toBe("platform.grant_invalid");
+      expect(await cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("30000000000"))).toEqual({ kind: "applied" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toEqual([]);
+      const rows = (await cmd.platformActivity(W))!.filter((a) => a.kind === "recovered");
+      expect(rows.map((a) => [a.state, a.credits])).toEqual([["done", String(30_000_000_000n - 56_000_000n)]]);
+    });
+
+    it("is off on mainnet: the quote and the recover are refused, and the lock stays", async () => {
+      open("recovery-recoverable-mainnet");
+      const [l] = (await cmd.unfinishedTransfers(W)).locks;
+      expect(await cmd.recoverTransferQuote(W, l.txid, l.vout)).toEqual({ kind: "notApplied", error: "platform.feature_off" });
+      expect(await cmd.recoverTransfer(W, l.txid, l.vout, await creditsGrant("30000000000"))).toEqual({ kind: "notApplied", error: "platform.feature_off" });
+      expect((await cmd.unfinishedTransfers(W)).locks).toHaveLength(2);
+    });
+
+    it("quotes a below-fee lock too small and never recovers it; a lock that is not partly used is not recoverable", async () => {
+      open("recovery-recoverable-small");
+      const [, small] = (await cmd.unfinishedTransfers(W)).locks;
+      expect(small.state).toBe("tooSmall");
+      expect(await cmd.recoverTransferQuote(W, small.txid, small.vout)).toEqual({ kind: "tooSmall", credits: "40000000", feeCredits: "56000000" });
+      expect(await cmd.recoverTransfer(W, small.txid, small.vout, await creditsGrant("40000000"))).toEqual({ kind: "notApplied", error: "credits.below_minimum" });
+      open("recovery-one");
+      const [plain] = (await cmd.unfinishedTransfers(W)).locks;
+      expect(await cmd.recoverTransferQuote(W, plain.txid, plain.vout)).toEqual({ kind: "notApplied", error: "recovery.not_recoverable" });
     });
   });
 

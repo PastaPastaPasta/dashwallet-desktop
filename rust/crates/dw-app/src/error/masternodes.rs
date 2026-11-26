@@ -16,6 +16,8 @@ codes! {
         NotTracked = "masternodes.not_tracked",
         /// `data` gives the role.
         KeyMismatch = "masternodes.key_mismatch",
+        /// `data` gives the role.
+        KeyExists = "masternodes.key_exists",
         NotEvonode = "masternodes.not_evonode",
         NoIdentity = "masternodes.no_identity",
         PlatformUnavailable = "masternodes.platform_unavailable",
@@ -33,6 +35,7 @@ codes! {
         NoOwnerKey = "masternodes.no_owner_key",
         UpdatePending = "masternodes.update_pending",
         UpdateSuperseded = "masternodes.update_superseded",
+        UpdateAbandonedPending = "masternodes.update_abandoned_pending",
         SharedSessionNotFound = "masternodes.shared_session_not_found",
         SharedStage = "masternodes.shared_stage",
         SharedMessage = "masternodes.shared_message",
@@ -68,6 +71,10 @@ impl From<MasternodesError> for AppError {
                 C::KeyMismatch,
                 Some(ErrorData::MasternodeKey { role: role.into() }),
             ),
+            M::KeyExists { role } => (
+                C::KeyExists,
+                Some(ErrorData::MasternodeKey { role: role.into() }),
+            ),
             M::Unsupported { feature, field } => (
                 C::Unsupported,
                 Some(ErrorData::Unsupported { feature, field }),
@@ -84,12 +91,23 @@ impl From<MasternodesError> for AppError {
             M::CollateralUnavailable => (C::CollateralUnavailable, None),
             M::SignatureMismatch => (C::SignatureMismatch, None),
             M::OperationNotFound => (C::OperationNotFound, None),
-            M::OperationState { .. } => (C::OperationState, None),
+            M::OperationState { state } => {
+                (C::OperationState, Some(ErrorData::OperationState { state }))
+            }
             M::InFlight => (C::InFlight, None),
-            M::KeysExhausted { .. } => (C::KeysExhausted, None),
+            M::KeysExhausted { role } => (C::KeysExhausted, Some(ErrorData::KeyRole { role })),
             M::NoOwnerKey => (C::NoOwnerKey, None),
-            M::UpdatePending { .. } => (C::UpdatePending, None),
-            M::UpdateSuperseded { .. } => (C::UpdateSuperseded, None),
+            M::UpdatePending { operation } => {
+                (C::UpdatePending, Some(ErrorData::Operation { operation }))
+            }
+            M::UpdateSuperseded { operation } => (
+                C::UpdateSuperseded,
+                Some(ErrorData::Operation { operation }),
+            ),
+            M::UpdateAbandonedPending { operation } => (
+                C::UpdateAbandonedPending,
+                Some(ErrorData::Operation { operation }),
+            ),
             M::SharedSessionNotFound => (C::SharedSessionNotFound, None),
             M::SharedStage { stage } => (C::SharedStage, Some(ErrorData::SharedStage { stage })),
             M::SharedMessage { reason, share } => (
@@ -145,6 +163,9 @@ mod tests {
             M::KeyMismatch {
                 role: AttachedKeyRole::Owner,
             },
+            M::KeyExists {
+                role: AttachedKeyRole::Voting,
+            },
             M::NotEvonode,
             M::NoIdentity,
             M::PlatformUnavailable { detail: s() },
@@ -166,6 +187,7 @@ mod tests {
             M::NoOwnerKey,
             M::UpdatePending { operation: s() },
             M::UpdateSuperseded { operation: s() },
+            M::UpdateAbandonedPending { operation: s() },
             M::SharedSessionNotFound,
             M::SharedStage { stage: s() },
             M::SharedMessage {
@@ -247,6 +269,24 @@ mod tests {
                 operation: None
             }),
             serde_json::json!({ "kind": "reason", "reason": "bad-protx-payee-reuse" })
+        );
+        assert_eq!(
+            data(MasternodesError::OperationState {
+                state: "sent".into()
+            }),
+            serde_json::json!({ "kind": "operationState", "state": "sent" })
+        );
+        assert_eq!(
+            data(MasternodesError::KeysExhausted {
+                role: "owner".into()
+            }),
+            serde_json::json!({ "kind": "keyRole", "role": "owner" })
+        );
+        assert_eq!(
+            data(MasternodesError::UpdatePending {
+                operation: "op2".into()
+            }),
+            serde_json::json!({ "kind": "operation", "operation": "op2" })
         );
         assert_eq!(
             data(MasternodesError::SharedMessage {

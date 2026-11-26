@@ -30,9 +30,9 @@ async function typed(page: Page, route: TransferRoute, amount: string) {
   await expect(page.getByTestId("transfer-fee")).toContainText(/\p{Nd}/u);
 }
 
-const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
-const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
-const BODY = { coreToShielded: "shielded-body", shieldedToCore: "shielded-body", coreToPlatform: "platform-fund-body", platformToCore: "platform-move-body" } as const;
+const AMOUNT = { coreToShielded: "0.001", shieldedToCore: "0.5", shieldedToPlatform: "0.5", coreToPlatform: "0.5", platformToCore: "" } as const;
+const GO = { coreToShielded: "shielded-go", shieldedToCore: "shielded-go", shieldedToPlatform: "shielded-go", coreToPlatform: "platform-fund-go", platformToCore: "platform-move-go" } as const;
+const BODY = { coreToShielded: "shielded-body", shieldedToCore: "shielded-body", shieldedToPlatform: "shielded-body", coreToPlatform: "platform-fund-body", platformToCore: "platform-move-body" } as const;
 
 /** Through Continue to the route's own confirmation, its quote read. */
 async function confirm(page: Page, route: TransferRoute) {
@@ -45,6 +45,29 @@ async function confirm(page: Page, route: TransferRoute) {
   await page.getByTestId("transfer-continue").click();
   await expect(page.getByTestId(BODY[route])).toHaveAttribute("data-step", "confirm");
   await expect(page.getByTestId(GO[route])).toBeEnabled();
+}
+
+/** A Dash wallet Max through Continue: its confirmation with what it moves and leaves behind. */
+async function maxConfirm(page: Page, route: "coreToShielded" | "coreToPlatform") {
+  await openTransfer(page, route);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+  await page.getByTestId("transfer-continue").click();
+  await expect(page.getByTestId(BODY[route])).toHaveAttribute("data-step", "confirm");
+  await expect(page.getByTestId("core-max-note")).toHaveCount(2);
+  await expect(page.getByTestId(GO[route])).toBeEnabled();
+}
+
+/** A Dash wallet Max below the smallest amount: its refusal in the fee line, with a figure unless
+ * Max has nothing to move and names none (`figure`). */
+async function maxBelow(page: Page, route: "coreToShielded" | "coreToPlatform", figure = true) {
+  await openTransfer(page, route);
+  await page.getByTestId("transfer-max").click();
+  await expect(page.getByTestId("transfer-fee")).toHaveAttribute("role", "status");
+  await expect(page.getByTestId("transfer-fee")).toHaveClass(/form-problem/);
+  if (figure) await expect(page.getByTestId("transfer-fee")).toContainText(/\p{Nd}/u);
+  else await expect(page.getByTestId("transfer-fee")).not.toBeEmpty();
+  await expect(page.getByTestId("transfer-amount")).toHaveValue("");
 }
 
 /** Confirm, the passphrase, and the route's result. */
@@ -114,12 +137,22 @@ const STATES: Record<string, State> = {
   unsupported: {
     scenario: "funded",
     go: async (page) => {
+      await openTransfer(page, "platformToCore");
+      await page.getByTestId("transfer-to").click();
+      await page.getByTestId("transfer-picker-shielded").click();
+      await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
+    },
+  },
+  "unsupported-mainnet": {
+    scenario: "transfer-mainnet",
+    go: async (page) => {
       await openTransfer(page, "shieldedToCore");
       await page.getByTestId("transfer-to").click();
       await page.getByTestId("transfer-picker-platform").click();
       await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
     },
   },
+  "form-shieldedToPlatform": { scenario: "funded", go: (page) => typed(page, "shieldedToPlatform", "0.5") },
   "none-absent": {
     scenario: "pools-absent",
     go: async (page) => {
@@ -143,12 +176,26 @@ const STATES: Record<string, State> = {
     },
   },
   "shielded-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToShielded") },
+  "shielded-max-confirm": { scenario: "coinjoin-move", routeHeader: true, go: (page) => maxConfirm(page, "coreToShielded") },
+  "shielded-max-below": { scenario: "transfer-max-dust", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded") },
+  "shielded-max-below-left": { scenario: "transfer-max-dust-left", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded") },
+  "shielded-max-all-arriving": { scenario: "transfer-max-arriving", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded") },
+  "shielded-max-arriving-too-small": { scenario: "transfer-max-arriving-small", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded") },
+  "shielded-max-incoming": { scenario: "transfer-max-incoming", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded") },
+  "shielded-max-mixed-only": { scenario: "transfer-max-mixed-only", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
+  "shielded-max-nothing": { scenario: "transfer-max-nothing", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
+  "shielded-max-empty": { scenario: "transfer-max-tiny", routeHeader: true, go: (page) => maxBelow(page, "coreToShielded", false) },
+  "shielded-max-none": { scenario: "transfer-max-none", routeHeader: true, go: async (page) => { await openTransfer(page, "coreToShielded"); await expect(page.getByTestId("transfer-max")).toBeDisabled(); } },
   "shielded-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-refused": { scenario: "transfer-shielded-refused", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "shielded-waiting": { scenario: "transfer-shield-waiting", routeHeader: true, go: (page) => run(page, "coreToShielded") },
   "out-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToCore") },
   "out-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToCore") },
+  "toPlatform-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "shieldedToPlatform") },
+  "toPlatform-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
+  "toPlatform-may-be-out": { scenario: "funded", extra: "&fail=unshield_to_platform:artifact", routeHeader: true, go: (page) => run(page, "shieldedToPlatform") },
   "fund-confirm": { scenario: "funded", routeHeader: true, go: (page) => confirm(page, "coreToPlatform") },
+  "fund-max-confirm": { scenario: "coinjoin-move", routeHeader: true, go: (page) => maxConfirm(page, "coreToPlatform") },
   "fund-progress": {
     scenario: "funded",
     routeHeader: true,
@@ -158,8 +205,18 @@ const STATES: Record<string, State> = {
       await page.getByTestId("platform-fund-go").click();
       await authorize(page);
       await expect(page.getByTestId("platform-fund-progress")).toBeVisible();
+      await expect(page.getByTestId("transfer-preparing")).toBeVisible();
     },
   },
+  "fund-max-below": { scenario: "transfer-max-dust", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform") },
+  "fund-max-below-left": { scenario: "transfer-max-dust-left", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform") },
+  "fund-max-all-arriving": { scenario: "transfer-max-arriving", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform") },
+  "fund-max-arriving-too-small": { scenario: "transfer-max-arriving-small", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform") },
+  "fund-max-incoming": { scenario: "transfer-max-incoming", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform") },
+  "fund-max-mixed-only": { scenario: "transfer-max-mixed-only", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
+  "fund-max-nothing": { scenario: "transfer-max-nothing", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
+  "fund-max-empty": { scenario: "transfer-max-tiny", routeHeader: true, go: (page) => maxBelow(page, "coreToPlatform", false) },
+  "fund-max-none": { scenario: "transfer-max-none", routeHeader: true, go: async (page) => { await openTransfer(page, "coreToPlatform"); await expect(page.getByTestId("transfer-max")).toBeDisabled(); } },
   "fund-done": { scenario: "funded", routeHeader: true, go: (page) => run(page, "coreToPlatform") },
   "fund-not-applied": { scenario: "transfer-fund-not-applied", routeHeader: true, go: (page) => run(page, "coreToPlatform") },
   "fund-earlier-lock": {

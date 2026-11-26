@@ -8,7 +8,7 @@
 
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::fault_points::{MN_BARRIER_DISCARD, MN_BARRIER_WRITE};
+use crate::fault_points::{MN_BARRIER_DISCARD, MN_BARRIER_WRITE, MN_OP_ABANDON};
 use crate::payout_barriers::{NewPayoutBarrier, write_barrier};
 use crate::{AppDb, AppDbError, Holder, Result, fault_before, sql_u64, write_transaction};
 
@@ -440,6 +440,42 @@ impl AppDb {
         Ok(tx.commit()?)
     }
 
+    /// The release of a sent operation whose transaction the wallet
+    /// abandoned (MG-10 §1.10, D49), one synced transaction: its
+    /// `fee_inputs` cleared and the locks of its fee `inputs` released (a
+    /// coin another row holds stays locked, BL-346), or neither. Only while
+    /// the row still holds inputs: a second release (another caller's stale
+    /// read) changes nothing and returns `false`. The row stays, as its
+    /// bytes may be out (D6), and so do its payout-change barriers, which
+    /// clear on P16's terms (MG-13).
+    pub fn release_abandoned_masternode_op_durable(
+        &self,
+        wallet_id: &str,
+        id: &str,
+        inputs: &[(String, u32)],
+        now: u64,
+    ) -> Result<bool> {
+        let released = self.durably(|conn| {
+            let tx = write_transaction(conn)?;
+            let cleared = tx.execute(
+                "UPDATE masternode_ops SET fee_inputs = '[]'
+                 WHERE wallet_id = ?1 AND id = ?2 AND fee_inputs != '[]'",
+                params![wallet_id, id],
+            )? == 1;
+            if cleared {
+                for (txid, vout) in inputs {
+                    let holder = Holder::Operation(id);
+                    Self::release_lock_on(&tx, wallet_id, holder, txid, *vout, now)?;
+                }
+            }
+            fault_before(&tx, MN_OP_ABANDON)?;
+            tx.commit()?;
+            Ok(cleared)
+        })?;
+        self.fault_after(MN_OP_ABANDON)?;
+        Ok(released)
+    }
+
     /// Forgets the inputs an operation locked, once the engine unlocked
     /// them (its transaction is in a block or conflicted).
     pub fn clear_masternode_op_inputs(&self, wallet_id: &str, id: &str) -> Result<()> {
@@ -508,6 +544,50 @@ mod tests {
         assert_eq!(db.masternode_op(W, "a").unwrap().unwrap().sent_at, Some(5));
         assert!(!db.delete_unsent_masternode_op(W, "a").unwrap());
         assert!(db.masternode_op(W, "a").unwrap().is_some());
+    }
+
+    /// An abandoned operation's release (MG-10 D49): its own coins unlock,
+    /// one another row also holds stays locked (BL-346), its barrier goes
+    /// with them, and a second release (a stale caller) changes nothing.
+    #[test]
+    fn an_abandoned_operations_release_happens_once() {
+        let db = AppDb::open_in_memory().unwrap();
+        let locked = |db: &AppDb| -> Vec<(String, u32)> {
+            (db.locks(W).unwrap().into_iter())
+                .filter(|r| r.is_locked())
+                .map(|r| (r.txid, r.vout))
+                .collect()
+        };
+        let a = MasternodeOpRow {
+            fee_inputs: r#"["c:0","c:1"]"#.into(),
+            txid: Some("aa".repeat(32)),
+            pro_tx_hash: Some("bb".repeat(32)),
+            ..row("a", true)
+        };
+        let inputs = [("c".to_owned(), 0), ("c".to_owned(), 1)];
+        db.insert_masternode_op_with_barrier_durable(W, &a, &inputs, 1, Some(&[9]))
+            .unwrap();
+        let b = MasternodeOpRow {
+            fee_inputs: r#"["c:1"]"#.into(),
+            ..row("b", true)
+        };
+        db.insert_masternode_op_durable(W, &b, &[], 1).unwrap();
+
+        assert!(
+            db.release_abandoned_masternode_op_durable(W, "a", &inputs, 2)
+                .unwrap()
+        );
+        assert_eq!(locked(&db), [("c".to_owned(), 1)], "b's coin");
+        assert_eq!(db.masternode_op(W, "a").unwrap().unwrap().fee_inputs, "[]");
+        assert_eq!(db.payout_barriers().unwrap().len(), 1, "the barrier stays");
+
+        db.delete_unsent_masternode_op(W, "b").unwrap();
+        db.lock_manual(W, "c", 0, 3).unwrap();
+        assert!(
+            !db.release_abandoned_masternode_op_durable(W, "a", &inputs, 4)
+                .unwrap()
+        );
+        assert_eq!(locked(&db).len(), 2, "the user's lock and c:1 stay");
     }
 
     #[test]

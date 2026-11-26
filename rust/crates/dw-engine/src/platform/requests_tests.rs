@@ -29,7 +29,7 @@ use super::super::errors::{ContactError, PlatformError};
 use super::super::flows::{BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, KEY_UPDATE_CREDITS};
 use super::super::identity_writes::identity_locks;
 use super::super::journal_tests::{
-    Recorder, b58, engine, grant_unused, id, platform_grant, request, session,
+    Recorder, b58, engine, grant_unused, id, platform_grant, request, session_on,
 };
 use super::super::keys_policy::registration_specs;
 use super::super::private_details_tests::FakeInfos;
@@ -125,6 +125,8 @@ pub(crate) struct FakeRequests {
     writes: AtomicU32,
     /// Runs inside each write, before it lands.
     pub(crate) during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Runs as a failed write's request is read back, before the answer.
+    pub(crate) reading: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// What a key upgrade costs.
     fee: u64,
     /// The `contactInfo` documents a write publishes.
@@ -246,6 +248,9 @@ impl RequestNet for FakeRequests {
         recipient: Identifier,
     ) -> Result<Option<ContactRequest>, PlatformError> {
         self.up()?;
+        if let Some(reading) = &*self.reading.lock().unwrap() {
+            reading();
+        }
         let landed = self.landed.load(Ordering::SeqCst);
         Ok(landed.then(|| ContactRequest::new(sender, recipient, 0, 0, 0, vec![1; 96], 1, 9_000)))
     }
@@ -416,12 +421,17 @@ impl Fixture {
     }
 
     pub(crate) fn with_keys(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, true, |_| {})
+        Self::build(mine, balance, true, true, |_| {})
+    }
+
+    /// [`Self::new`] with the session on `network`.
+    pub(crate) fn on(network: crate::DashNetwork, balance: u64) -> Self {
+        Self::build_on(network, keys(true), balance, true, true, |_| {})
     }
 
     /// Our identity with `mine` as they are: keys the vault does not hold.
     pub(crate) fn foreign(mine: BTreeMap<KeyID, IdentityPublicKey>, balance: u64) -> Self {
-        Self::build(mine, balance, false, |_| {})
+        Self::build(mine, balance, false, true, |_| {})
     }
 
     /// Our identity with the keys the vault holds, then `adjust`ed (a
@@ -430,19 +440,44 @@ impl Fixture {
         balance: u64,
         adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
     ) -> Self {
-        Self::build(keys(true), balance, true, adjust)
+        Self::build(keys(true), balance, true, true, adjust)
+    }
+
+    /// [`Self::new`] on a session with Platform on, so starting SPV runs
+    /// the DashPay bring-up.
+    pub(crate) fn with_platform() -> Self {
+        Self::build(keys(true), 0, true, false, |_| {})
     }
 
     fn build(
         mine: BTreeMap<KeyID, IdentityPublicKey>,
         balance: u64,
         held: bool,
+        no_platform: bool,
+        adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
+    ) -> Self {
+        Self::build_on(
+            crate::DashNetwork::Regtest,
+            mine,
+            balance,
+            held,
+            no_platform,
+            adjust,
+        )
+    }
+
+    fn build_on(
+        network: crate::DashNetwork,
+        mine: BTreeMap<KeyID, IdentityPublicKey>,
+        balance: u64,
+        held: bool,
+        no_platform: bool,
         adjust: impl FnOnce(&mut BTreeMap<KeyID, IdentityPublicKey>),
     ) -> Self {
         let dir = dw_testutil::private_tempdir();
         let events = Arc::new(Recorder::default());
         let engine = engine(dir.path(), Arc::clone(&events) as Arc<dyn EventSink>);
-        let (s, wallet) = session(&engine, true);
+        let (s, wallet) = session_on(&engine, network, no_platform);
         let mut mine = if held {
             vault_keys(&engine, &s, wallet, mine)
         } else {
@@ -1562,6 +1597,10 @@ fn t2_testnet_requests() {
     eprintln!("T2 established after {seen:?} passes (A, C)");
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+#[cfg(unix)]
+#[path = "requests_tests/kill9.rs"]
+mod kill9;
 
 /// The contract vector of `dashpay_accept_request`'s grant rules (U-07, Sol
 /// r1 #3), in the step language `apps/desktop/src/fixture/accept.test.ts`

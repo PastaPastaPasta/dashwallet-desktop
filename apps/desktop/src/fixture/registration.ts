@@ -10,12 +10,18 @@
 // its identity the claim's answer (the link wiped then), and the request to the inviter at the
 // end, refused when `DashPayWorld.requestRefusal` says so. `World.invitations` sets a stashed
 // invitation's status; one not set there is valid, from Bob.
-// Not modelled: profiles (F2), temporary names (D4), the funding's coin selection and its debit
+// A start from the Platform balance (C-funding F4) stores its plan (`DashPayWorld.platformPlans`)
+// and writes a row that commits nothing until its create; `DashPayWorld.platformCreates` says what
+// each create comes to.
+// A temporary name beside a contested label (D4 reversed) is priced with it and registered right
+// after its contest starts, unless `DashPayWorld.temporaryRefused` (the engine only logs that).
+// Not modelled: profiles (F2), the funding's coin selection and its debit
 // from the balance, InstantSend timeouts, and proofs (a resumed `fundingSent` row waits for its
 // InstantSend lock again).
 
 import type { AppError, AppEvent } from "../api/generated/commands";
 import type { FlowKindName } from "../api/generated/FlowKindName";
+import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { InvitationInviter } from "../api/generated/InvitationInviter";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { Lease } from "../api/generated/Lease";
@@ -33,6 +39,8 @@ import type { UsernameRuleName } from "../api/generated/UsernameRuleName";
 import { IDENTITY, type DashPayWorld } from "./dashpay";
 import type { Ctx, Handlers } from "./handlers";
 import { finishRestored, reportOf } from "./recovery";
+import { isHeldOp } from "../platform/move";
+import type { PlatformWorld } from "./pending";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import type { ShieldedWorld } from "./shielded";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -97,6 +105,8 @@ export const NETWORK_NAMES: Record<string, NameAvailability> = {
   "ma11ory": { kind: "taken", owner: IDENTITY.mallory },
   car01: { kind: "contestOpen", endsAt: secs(FIXTURE_NOW) + 5 * 24 * 3600, contenders: 2 },
   "sat0sh1": { kind: "locked" },
+  // A plain name taken, for the instant username's form (DP1-09 D4 reversed).
+  a11ce3: { kind: "taken", owner: IDENTITY.mallory },
 };
 
 /** dpp's `convert_to_homograph_safe_chars`: lower case, `o` → `0`, `i` and `l` → `1`. */
@@ -126,6 +136,10 @@ const fail = (code: AppError["code"], message: string, data: AppError["data"] = 
 /** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94). */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
+/** shielded_pool.rs `registration_facts`: while this build cannot spend from Shielded (m4 item 112). */
+export const shieldedSpendsOff = (s: ShieldedWorld | null | undefined): AppError | null =>
+  s?.spendsAvailable === false ? fail("platform.unavailable", "this build cannot spend from Shielded") : null;
+const platformOff = () => fail("platform.feature_off", "platform_registration", { kind: "feature", feature: "platform_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
 
 /** `name.invalid` with the rules `label` breaks, if it breaks one. */
@@ -156,6 +170,8 @@ function runLease(world: World, walletId: string): Lease | undefined {
  * change) revokes its lease and parks it. A scenario's run without any lease counts as running. */
 function active(world: World, walletId: string, dp: DashPayWorld, draft: string): boolean {
   if (!dp.runs.includes(draft)) return false;
+  // F12: a named Shielded payment's check runs on its evidence alone, with no lease.
+  if (dp.registrations.some((r) => r.draft === draft && r.fromShielded && r.waiting === "paymentUnknown")) return true;
   return runLease(world, walletId) !== undefined || !world.leases.some((l) => l.walletId === walletId && l.flow === "registration");
 }
 
@@ -171,7 +187,8 @@ export function reported(world: World, walletId: string, dp: DashPayWorld, r: Re
   // A failed row that still owns an outstanding funding step (the engine's `Awaiting` standing)
   // keeps that step's wait; any other failed row waits for nothing (f1, Sol r1 P2).
   if (r.phase === "failed") return { ...r, waiting: awaitingWait(r.waiting), holdsKey: false, running: false };
-  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown";
+  // A Platform-funded row's payment reads its create's record (C-funding F7, F22).
+  const kept = r.waiting === "needsFinish" || r.waiting === "fundingUnknown" || (r.fromPlatform && (r.waiting === "paymentHeld" || r.waiting === "paymentUnknown")) || (r.fromShielded && r.waiting === "paymentUnknown");
   // A parked run (its lease revoked or parked, D14) says what it parks for; an idle row its proof.
   const proofless = !dp.runs.includes(r.draft) && (r.phase === "fundingSent" || r.phase === "proofWaiting");
   const keyless = world.lock.state === "locked" || world.lock.state === "unlockedMixingOnly";
@@ -222,27 +239,52 @@ export const SHIELDED_DENOMINATION = 3_000_000_000n;
 /** registration_flow.rs `IDENTITY_CREATE_CREDITS`: the create's fee bound the quote takes from it. */
 const CREATE_CREDITS = 300_000_000n;
 
+/** Platform's floor of pool notes before a payment may leave it (`minimum_pool_notes_for_outgoing`). */
+export const POOL_REQUIRED = 250;
+
+/** What the notes a create selects for `denomination` hold above it, in credits: the notes in order
+ * until they cover it (one note of the whole balance when the world lists none). */
+function changeOf(s: ShieldedWorld, denomination: bigint): bigint | null {
+  const notes = (s.notes ?? [s.balance]).map(BigInt);
+  let total = 0n;
+  for (const n of notes) {
+    total += n;
+    if (total >= denomination) return total - denomination;
+  }
+  return null;
+}
+
 /** registration.rs `shielded_readiness` over the fixture's Shielded world (C-funding F16, F17). */
 export function shieldedReadiness(s: ShieldedWorld | null | undefined): ShieldedReadiness {
   const active = s?.active === true;
   const synced = active && s.ready && s.scanning !== true;
   const resting = s?.restingUntil !== undefined && s.restingUntil > secs(FIXTURE_NOW) ? s.restingUntil : null;
+  const poolNotes = s?.poolNotes ?? (s?.poolTooSmall ? 120 : null);
+  const change = active ? changeOf(s, SHIELDED_DENOMINATION) : null;
   const checks: [ShieldedCheckName, boolean][] = [
     ["poolActive", active],
     ["featureOn", true],
     ["denomination", active],
     ["balance", active && BigInt(s.balance) >= SHIELDED_DENOMINATION],
-    ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0],
+    ["noUnsettledSpend", active && s.unresolved.length === 0 && s.unrecorded.length === 0 && (s.held ?? []).length === 0],
     ["synced", synced],
     ["rested", synced && resting === null],
+    ["poolSize", poolNotes === null || poolNotes >= POOL_REQUIRED],
   ];
-  return { denomination: active ? String(SHIELDED_DENOMINATION) : null, checks: checks.map(([check, ready]) => ({ check, ready })), readyAt: resting };
+  return {
+    denomination: active ? String(SHIELDED_DENOMINATION) : null,
+    checks: checks.map(([check, ready]) => ({ check, ready })),
+    readyAt: resting,
+    poolNotes,
+    poolRequired: POOL_REQUIRED,
+    change: change === null ? null : String(change),
+  };
 }
 
 /** A Shielded-funded quote (registration.rs `shielded_plan`): nothing in duffs; the grant covers
  * the denomination and the names. */
-export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined): RegistrationQuote {
-  const { contested, credits } = costs(label);
+export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined, temporaryLabel: string | null = null): RegistrationQuote {
+  const { contested, credits } = costs(label, temporaryLabel);
   const readiness = shieldedReadiness(s);
   const denomination = readiness.denomination === null ? 0n : BigInt(readiness.denomination);
   const held = denomination > CREATE_CREDITS ? denomination - CREATE_CREDITS : 0n;
@@ -255,15 +297,187 @@ export function shieldedQuote(label: string, s: ShieldedWorld | null | undefined
     availableDuffs: 0,
     grant: { maxDuffs: 0, maxCredits: String(credits + denomination) },
     readiness,
+    platform: null,
   };
 }
 
-/** The fixture quote's costs for `label` (handlers.ts `registration_quote`). */
-export function costs(label: string) {
+/** dpp's minimum fee for an identity create from `inputs` addresses with six keys (2,000,000 +
+ * 500,000 per input + 6 × 6,500,000), and its funding rules: the least an input claims, the least
+ * the identity receives, and the most inputs one transition takes. */
+const registerFee = (inputs: number) => 2_000_000n + 500_000n * BigInt(inputs) + 6n * 6_500_000n;
+const MIN_INPUT = 100_000n;
+const MIN_IDENTITY_FUNDING = 200_000n;
+const MAX_INPUTS = 16;
+/** registration_platform.rs `REGISTER_FEE_BAND`: input 0 keeps three fees. */
+const FEE_BAND = 3n;
+
+/** One input of a plan: the address and the credits it claims. */
+type PlanInput = { address: string; claim: bigint };
+
+/** A Platform-funded row's stored funding (C-funding F3): what the identity receives, what input 0
+ * keeps for the fee, and each input's claim in address order, input 0 first. */
+export interface PlatformRegisterPlan {
+  funding: bigint;
+  fee: bigint;
+  reserve: bigint;
+  inputs: PlanInput[];
+}
+
+/** `registered`: the create's proved result; `unknown`: no answer (F7); `held`: failed by height
+ * and able to land still (F22); `paidFailure`: executed and failed in a block, and nothing
+ * retries (F10, F12); `replanRefused`: a new plan no longer gives the quoted numbers, refused
+ * before anything is signed (platform_register.rs `new_plan`). */
+export type PlatformCreateOutcome = "registered" | "unknown" | "held" | "paidFailure" | "replanRefused";
+
+/** What a Shielded-funded identity create comes to (C-funding F12): proved, unknown (waits),
+ * executed without the identity (`registration.refunded`), or its notes spent with no identity
+ * (`registration.payment_consumed`). */
+export type ShieldedCreateOutcome = "registered" | "unknown" | "refunded" | "consumed";
+
+const short = (needed: bigint, available: bigint) =>
+  fail("platform.insufficient_credits", "insufficient credits", { kind: "credits", needed: String(needed), available: String(available) });
+
+/** input0.rs `plan` for `funding` with input 0 keeping `reserve`: the first funded address above
+ * the reserve, then the later ones that hold at least an input's minimum. */
+function input0Plan(addresses: [string, bigint][], funding: bigint, reserve: bigint): PlanInput[] {
+  const funded = addresses.filter(([, c]) => c > 0n);
+  const first = funded.findIndex(([, c]) => c > reserve);
+  const usable = first < 0 ? [] : [funded[first], ...funded.slice(first + 1).filter(([, c]) => c >= MIN_INPUT)].slice(0, MAX_INPUTS);
+  const held = usable.reduce((n, [, c]) => n + c, 0n);
+  if (usable.length === 0 || funding > held - reserve) {
+    throw short(funding + reserve, usable.length === 0 ? funded.reduce((n, [, c]) => (c > n ? c : n), 0n) : held);
+  }
+  const inputs: PlanInput[] = [];
+  let left = funding;
+  for (const [i, [address, balance]] of usable.entries()) {
+    if (left === 0n) break;
+    const room = i === 0 ? balance - reserve : balance;
+    const claim = room < left ? room : left;
+    left -= claim;
+    inputs.push({ address, claim: i === 0 || claim >= MIN_INPUT ? claim : MIN_INPUT });
+  }
+  if (inputs[0].claim < MIN_INPUT) throw short(MIN_INPUT + reserve, usable[0][1]);
+  const total = inputs.reduce((n, x) => n + x.claim, 0n);
+  if (total < MIN_IDENTITY_FUNDING) throw short(MIN_IDENTITY_FUNDING + reserve, funded.reduce((n, [, c]) => n + c, 0n));
+  return inputs;
+}
+
+/** registration_platform.rs `register_plan` over the addresses in address order (the fixture's
+ * addresses have no bytes: their strings' order stands in for `PlatformAddress`'s): the identity
+ * receives at least `funding`; input 0 keeps three fees for exactly the inputs the plan takes. The
+ * engine's walk, then any count and input 0 that pays with that count's reserve, fewest first. */
+function registerPlan(addresses: PlatformWorld["addresses"], funding: bigint): PlatformRegisterPlan {
+  const ordered: [string, bigint][] = [...addresses].sort((a, b) => (a.address < b.address ? -1 : 1)).map((a) => [a.address, BigInt(a.credits)]);
+  const wanted = funding > MIN_IDENTITY_FUNDING ? funding : MIN_IDENTITY_FUNDING;
+  const planned = (from: [string, bigint][], inputs: number) => {
+    const reserve = FEE_BAND * registerFee(inputs);
+    const taken = input0Plan(from, wanted, reserve);
+    return { taken, reserve };
+  };
+  const done = ({ taken, reserve }: { taken: PlanInput[]; reserve: bigint }): PlatformRegisterPlan => ({
+    funding: taken.reduce((n, x) => n + x.claim, 0n),
+    fee: registerFee(taken.length),
+    reserve,
+    inputs: taken,
+  });
+  let candidates = ordered;
+  let inputs = 1;
+  let refusal: unknown = null;
+  const tried = new Set<string>();
+  for (;;) {
+    let plan;
+    try {
+      plan = planned(candidates, inputs);
+    } catch (e) {
+      refusal = e;
+      break;
+    }
+    if (plan.taken.length === inputs) return done(plan);
+    // A reserve sized for more inputs left the addresses before input 0 out: plan again for fewer
+    // without them, so input 0 stays the same address.
+    if (plan.taken.length < inputs) candidates = candidates.filter(([a]) => a >= plan.taken[0].address);
+    const key = `${inputs}:${candidates.length}`;
+    if (tried.has(key)) {
+      refusal = short(wanted + plan.reserve, ordered.reduce((n, [, c]) => n + c, 0n));
+      break;
+    }
+    tried.add(key);
+    inputs = plan.taken.length;
+  }
+  for (let n = 1; n <= MAX_INPUTS; n++) {
+    for (let i = 0; i < ordered.length; i++) {
+      try {
+        const plan = planned(ordered.slice(i), n);
+        if (plan.taken.length === n) return done(plan);
+      } catch {
+        // Another count or input 0 may pay.
+      }
+    }
+  }
+  throw refusal;
+}
+
+/** A Platform-funded row whose create may still execute: its `Register` move holds the addresses
+ * until the create settles (C-funding F9, F10). */
+const creating = (r: RegistrationStatus) => r.fromPlatform && r.phase === "keysPrepared" && r.fundsCommitted;
+
+/** registration_platform.rs `register_quote`: the plan of a Platform-funded registration of
+ * `label`, whose identity receives the name's credits, at least dpp's minimum, from one or more
+ * addresses. Refused while a move, or a registration's create, holds the addresses, and off on
+ * mainnet (registration_platform.rs `FEATURE`). */
+function platformPlan(label: string, p: PlatformWorld | null, mainnet: boolean, dp: DashPayWorld): PlatformRegisterPlan {
+  validLabel(label);
+  if (mainnet) throw platformOff();
+  if (p === null) throw fail("platform.feature_off", "platform", { kind: "feature", feature: "platform" });
+  const held = p.activity.find(isHeldOp)?.id ?? dp.registrations.find(creating)?.draft;
+  if (held !== undefined) throw fail("credits.move_pending", "a move is pending", { kind: "artifact", artifact: held });
+  return registerPlan(p.addresses, costs(label).credits);
+}
+
+/** A Platform-funded quote: nothing in duffs; the grant covers the planned debit and the names. */
+export function platformQuote(label: string, p: PlatformWorld | null, mainnet: boolean, dp: DashPayWorld): RegistrationQuote {
+  const plan = platformPlan(label, p, mainnet, dp);
+  const { contested, credits } = costs(label);
+  const debit = plan.funding + plan.reserve;
+  return {
+    contested,
+    lockDuffs: 0,
+    feeDuffs: 0,
+    totalDuffs: 0,
+    remainingCredits: String(plan.funding - credits),
+    availableDuffs: 0,
+    grant: { maxDuffs: 0, maxCredits: String(debit + credits) },
+    readiness: null,
+    platform: { fundingCredits: String(plan.funding), feeCredits: String(plan.fee), feeReserveCredits: String(plan.reserve), debitCredits: String(debit) },
+  };
+}
+
+/** What a Platform-funded row's create takes from the addresses (its stored funding and reserve); a
+ * scenario's row without a stored plan, one input's. */
+function platformDebit(dp: DashPayWorld, row: RegistrationStatus) {
+  const stored = dp.platformPlans?.[row.draft];
+  const { credits } = costs(row.label);
+  const funding = stored?.funding ?? (credits > MIN_IDENTITY_FUNDING ? credits : MIN_IDENTITY_FUNDING);
+  const reserve = stored?.reserve ?? FEE_BAND * registerFee(1);
+  return { funding, reserve, debit: funding + reserve };
+}
+
+/** The fixture quote's costs for `label` (handlers.ts `registration_quote`), and for the temporary
+ * name beside it (registration.rs `plan`: only a contested label takes one). The contested lock
+ * floor covers both names' credits, so the total does not change. */
+export function costs(label: string, temporaryLabel: string | null = null) {
   const contested = checkUsername(label).contested;
   const lockDuffs = contested ? 25_000_000 : 3_000_000;
   const totalDuffs = lockDuffs + 2_260;
-  return { contested, lockDuffs, feeDuffs: 2_260, totalDuffs, credits: NAME_CREDITS };
+  const credits = contested && temporaryLabel !== null ? 2n * NAME_CREDITS : NAME_CREDITS;
+  return { contested, lockDuffs, feeDuffs: 2_260, totalDuffs, credits };
+}
+
+/** names.rs `check_temporary_name` as registration.rs `plan` applies it: valid, not contested. */
+export function checkTemporary(request: RegistrationRequest) {
+  const temp = request.temporaryLabel;
+  if (temp === null || !checkUsername(request.label).contested) return;
+  if (validLabel(temp).contested) throw invalid("the temporary name must not be contested");
 }
 
 function changed({ world, emit }: Ctx, walletId: string, draft: string | null) {
@@ -295,11 +509,20 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const dp = d.dashpay(world, walletId);
     if (request.funding.kind === "invitation") return startClaim(ctx, walletId, request, grantId);
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
-    if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
+    checkTemporary(request);
+    if (request.funding.kind === "shielded") return startFromShielded(ctx, walletId, request, grantId, request.funding.denomination);
+    let plan: PlatformRegisterPlan | null = null;
+    if (request.funding.kind === "platformAddresses") {
+      plan = platformPlan(request.label, world.pending.platform, world.launch.network.kind === "mainnet", dp);
+      // F4: the numbers the quote showed, or nothing is written.
+      if (String(plan.funding) !== request.funding.fundingCredits || String(plan.reserve) !== request.funding.feeReserveCredits)
+        throw fail("registration.quote_changed", "the quote changed");
+    }
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
-    const { totalDuffs, credits } = costs(request.label);
+    if (plan) return startFromPlatform(ctx, walletId, request, grantId, plan);
+    const { totalDuffs, credits } = costs(request.label, request.temporaryLabel);
     const g = d.grant(world, grantId, walletId, ["platformOp"]);
     if (g?.grant.purpose.kind !== "platformOp") throw fail("platform.grant_invalid", "grant invalid");
     const { maxDuffs, maxCredits } = g.grant.purpose;
@@ -335,6 +558,109 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         nameFailure: null,
         profileFailure: null,
         invitation: null,
+        fromPlatform: false,
+        fromShielded: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    dp.runs = [...dp.runs, draft];
+    settleStatus(dp);
+    changed(ctx, walletId, draft);
+    return draft;
+  }
+
+  /** registration.rs `start` from the Shielded balance (C-funding F5, F16): every readiness check
+   * again, the quote's denomination, a grant with no duffs that covers it and the names, and a row
+   * that commits nothing until its create is named. */
+  function startFromShielded(ctx: Ctx, walletId: string, request: RegistrationRequest, grantId: string, denomination: string): string {
+    const { world } = ctx;
+    // registration_shielded.rs `FEATURE`: off on mainnet before any read, grant or write.
+    if (world.launch.network.kind === "mainnet") throw shieldedOff();
+    const spendsOff = shieldedSpendsOff(world.pending.shielded);
+    if (spendsOff) throw spendsOff;
+    const dp = d.dashpay(world, walletId);
+    const readiness = shieldedReadiness(world.pending.shielded);
+    const failed = readiness.checks.find((c) => !c.ready);
+    if (failed && ["poolActive", "featureOn", "denomination"].includes(failed.check)) throw shieldedOff();
+    if (failed)
+      throw fail("registration.shielded_not_ready", "shielded readiness failed", { kind: "shieldedNotReady", reason: failed.check, readyAt: failed.check === "rested" ? readiness.readyAt : null });
+    if (denomination !== readiness.denomination) throw fail("registration.quote_changed", "the quote changed");
+    const credits = BigInt(denomination) + costs(request.label, request.temporaryLabel).credits;
+    const g = d.grant(world, grantId, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0) throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < credits)
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(credits), remaining: g.grant.purpose.maxCredits });
+    const blocker = dp.registrations.find(blocks);
+    if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });
+    d.newLease(ctx, walletId, "registration", [g]);
+    const draft = `reg-${dp.assetLocks + dp.registrations.length + 1}`;
+    const now = secs(FIXTURE_NOW);
+    dp.registrations = [
+      ...dp.registrations,
+      {
+        draft,
+        phase: "draft",
+        label: request.label,
+        temporaryLabel: request.temporaryLabel,
+        identity: null,
+        txid: null,
+        waiting: null,
+        holdsKey: g.ownKey,
+        running: true,
+        fundsCommitted: false,
+        contestEndsAt: null,
+        failure: null,
+        nameFailure: null,
+        profileFailure: null,
+        invitation: null,
+        fromPlatform: false,
+        fromShielded: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+    dp.runs = [...dp.runs, draft];
+    settleStatus(dp);
+    changed(ctx, walletId, draft);
+    return draft;
+  }
+
+  /** registration.rs `start` from the Platform balance (C-funding F4, F5): a grant with no duffs
+   * that covers the planned debit and the names, and a row whose funding and plan are stored and
+   * commit nothing until its create is signed. */
+  function startFromPlatform(ctx: Ctx, walletId: string, request: RegistrationRequest, grantId: string, plan: PlatformRegisterPlan): string {
+    const { world } = ctx;
+    const dp = d.dashpay(world, walletId);
+    const credits = plan.funding + plan.reserve + costs(request.label).credits;
+    const g = d.grant(world, grantId, walletId, ["platformOp"]);
+    if (g?.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0) throw fail("platform.grant_invalid", "grant invalid");
+    if (BigInt(g.grant.purpose.maxCredits) < credits)
+      throw fail("platform.grant_exceeded", "grant exceeded", { kind: "budget", purpose: "credits", needed: String(credits), remaining: g.grant.purpose.maxCredits });
+    d.newLease(ctx, walletId, "registration", [g]);
+    const draft = `reg-${dp.assetLocks + dp.registrations.length + 1}`;
+    const now = secs(FIXTURE_NOW);
+    dp.platformPlans = { ...dp.platformPlans, [draft]: plan };
+    dp.registrations = [
+      ...dp.registrations,
+      {
+        draft,
+        phase: "draft",
+        label: request.label,
+        temporaryLabel: request.temporaryLabel,
+        identity: null,
+        txid: null,
+        waiting: null,
+        holdsKey: g.ownKey,
+        running: true,
+        fundsCommitted: false,
+        contestEndsAt: null,
+        failure: null,
+        nameFailure: null,
+        profileFailure: null,
+        invitation: null,
+        fromPlatform: true,
+        fromShielded: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -378,6 +704,8 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
         nameFailure: null,
         profileFailure: null,
         invitation: { linkId: plan.linkId, inviter: plan.inviter, requestFailure: null },
+        fromPlatform: false,
+        fromShielded: false,
         createdAt: now,
         updatedAt: now,
       },
@@ -410,10 +738,25 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       const dp = d.dashpay(world, walletId);
       const row = dp.registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
+      // F5: a Platform-funded row is off on mainnet before anything else, its grant unredeemed.
+      if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
+      // A Shielded-funded row whose create is not yet named too; a named one settles from its evidence.
+      if (row.fromShielded && !row.fundsCommitted && world.launch.network.kind === "mainnet") throw shieldedOff();
       if (row.phase === "failed" && !row.failure?.retryable) throw invalid(`registration ${draft} failed for good (${row.failure?.code})`);
-      if (row.phase === "done" || active(world, walletId, dp, draft) || grant === null) return null;
+      if (row.phase === "done" || active(world, walletId, dp, draft)) return null;
+      // F12: a named Shielded payment's check runs again from its evidence alone, with no grant.
+      if (grant === null && row.fromShielded && row.waiting === "paymentUnknown" && !row.failure) {
+        Object.assign(row, { running: true, updatedAt: secs(FIXTURE_NOW) });
+        dp.runs = [...dp.runs.filter((x) => x !== draft), draft];
+        settleStatus(dp);
+        changed(ctx, walletId, draft);
+        return null;
+      }
+      if (grant === null) return null;
+      // F5: a Platform-funded row's grant carries no duffs.
       const g = d.grant(world, grant, walletId, ["platformOp"]);
       if (!g) throw fail("platform.grant_invalid", "grant invalid");
+      if (row.fromPlatform && (g.grant.purpose.kind !== "platformOp" || g.grant.purpose.maxDuffs !== 0)) throw fail("platform.grant_invalid", "grant invalid");
       // A parked run takes the grant (a new lease); an idle row runs again.
       d.newLease(ctx, walletId, "registration", [g]);
       const phase = row.phase === "failed" ? row.failure!.phase : row.phase;
@@ -423,16 +766,17 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // registration.rs `resume_grant` (DP5-03 D20): a claim row's grant from the row alone, no
-    // duffs and the credits of the steps it has left.
+    // registration.rs `resume_grant` (DP5-03 D20): a claim row's or a Platform-funded row's
+    // grant from the row alone, no duffs and the credits of the steps it has left.
     registration_resume_grant: ({ walletId, draft }, { world }) => {
       const row = d.dashpay(world, walletId).registrations.find((r) => r.draft === draft);
       if (!row) throw invalid("unknown draft");
-      if (!row.invitation) throw invalid("not an invitation's claim");
+      if (!row.invitation && !row.fromPlatform) throw invalid("not an invitation's claim or a Platform-funded row");
+      if (row.fromPlatform && world.launch.network.kind === "mainnet") throw platformOff();
       const at = PHASE_ORDER.indexOf(row.phase === "failed" ? row.failure!.phase : row.phase);
-      let credits = row.identity ? 0n : IDENTITY_CREDITS;
+      let credits = row.identity ? 0n : row.fromPlatform ? platformDebit(d.dashpay(world, walletId), row).debit : IDENTITY_CREDITS;
       if (at < PHASE_ORDER.indexOf("nameRegistered")) credits += NAME_CREDITS;
-      if (row.invitation.inviter && at < PHASE_ORDER.indexOf("done")) credits += REQUEST_CREDITS;
+      if (row.invitation?.inviter && at < PHASE_ORDER.indexOf("done")) credits += REQUEST_CREDITS;
       return { maxDuffs: 0, maxCredits: String(credits) };
     },
     // registration.rs `discard`: only a row whose funds are not committed.
@@ -449,7 +793,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
       changed(ctx, walletId, draft);
       return null;
     },
-    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again, and so does every ready restored Shielded lock.
+    // Tools ▸ Repair "Finish transfers": every row whose funds wait for a decision runs again, and so does every ready lock and every restored checking one.
     finish_asset_locks: ({ walletId, grant }, ctx) => {
       const { world } = ctx;
       const dp = d.dashpay(world, walletId);
@@ -504,11 +848,84 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
   const network = world.launch.network.dirName;
   // A claim checks its invitation (draft), then claims it (keysPrepared): no lock, no proof.
   const claim = row.invitation !== null;
-  switch (claim && row.phase === "keysPrepared" ? "proofWaiting" : row.phase) {
+  // A Platform-funded row's funding step is its identity create (C-funding F9, F10).
+  const step = row.phase === "keysPrepared" ? (claim ? "proofWaiting" : row.fromPlatform ? "platformCreate" : row.fromShielded ? "shieldedCreate" : row.phase) : row.phase;
+  switch (step) {
     case "draft":
-      if (claim) row.phase = "keysPrepared";
+      if (claim || row.fromPlatform || row.fromShielded) row.phase = "keysPrepared";
       else Object.assign(row, { phase: "proofWaiting", waiting: runningWait("proofWaiting") });
       break;
+    case "platformCreate": {
+      const outcome = dp.platformCreates?.shift() ?? "registered";
+      const plan = dp.platformPlans?.[row.draft];
+      const p = world.pending.platform;
+      if (outcome === "paidFailure") {
+        // registration_flow.rs `PaidFailure` with no identity at the row's index: the fee leaves
+        // input 0 (dpp's penalty is not modelled) and the row is cleared with `registration.refunded`.
+        if (plan && p) {
+          const source = plan.inputs[0].address;
+          p.addresses = p.addresses.map((a) => (a.address === source ? { ...a, credits: String(BigInt(a.credits) - plan.fee) } : a));
+          ctx.emit({ kind: "platform", network, walletId, change: { domain: "platformAddresses" } });
+        }
+        const failure: RegistrationFailure = { phase: row.phase, code: "registration.refunded", retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
+      if (outcome === "replanRefused") {
+        const failure: RegistrationFailure = { phase: row.phase, code: "registration.quote_changed", retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
+      if (outcome !== "registered") {
+        // F7: an unknown answer waits and reads again; F22: one failed by height parks for the user.
+        Object.assign(row, { waiting: outcome === "unknown" ? "paymentUnknown" : "paymentHeld", fundsCommitted: true });
+        if (outcome === "held") park(ctx, walletId, dp, row, d);
+        break;
+      }
+      if (plan && p) {
+        // Drive takes each claim, and the fee from input 0.
+        const taken = new Map(plan.inputs.map((x, i) => [x.address, x.claim + (i === 0 ? plan.fee : 0n)]));
+        p.addresses = p.addresses.map((a) => (taken.has(a.address) ? { ...a, credits: String(BigInt(a.credits) - taken.get(a.address)!) } : a));
+        ctx.emit({ kind: "platform", network, walletId, change: { domain: "platformAddresses" } });
+      }
+      Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null, fundsCommitted: true });
+      dp.identities = [createdIdentity(String(platformDebit(dp, row).funding))];
+      ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
+      break;
+    }
+    case "shieldedCreate": {
+      // registration_shielded.rs: the denomination leaves the pool once the create is named; the
+      // change returns to the balance. Unknown waits; executed without the identity is refunded; its
+      // notes spent with no identity (two or more notes) is consumed, with no refund claimed.
+      const outcome = dp.shieldedCreates?.shift() ?? "registered";
+      const s = world.pending.shielded;
+      // A named create's check spends nothing again.
+      if (s && !row.fundsCommitted) {
+        s.balance = String(BigInt(s.balance) - SHIELDED_DENOMINATION);
+        if (s.notes) s.notes = [s.balance];
+        ctx.emit({ kind: "platform", network, walletId, change: { domain: "shielded" } });
+      }
+      if (outcome === "unknown") {
+        Object.assign(row, { waiting: "paymentUnknown", fundsCommitted: true });
+        break;
+      }
+      if (outcome === "refunded" || outcome === "consumed") {
+        const code = outcome === "refunded" ? "registration.refunded" : "registration.payment_consumed";
+        const failure: RegistrationFailure = { phase: row.phase, code, retryable: false, needed: null, available: null };
+        Object.assign(row, { phase: "failed", fundsCommitted: false, failure });
+        end(ctx, walletId, dp, row, d);
+        settleStatus(dp);
+        break;
+      }
+      Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null, fundsCommitted: true });
+      dp.identities = [createdIdentity(String(SHIELDED_DENOMINATION - CREATE_CREDITS))];
+      ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
+      break;
+    }
     case "keysPrepared":
     case "fundingSent":
       Object.assign(row, { phase: "proofWaiting", waiting: runningWait("proofWaiting") });
@@ -517,32 +934,22 @@ export function advance(ctx: Ctx, walletId: string, draft: string, d: Pick<Regis
       Object.assign(row, { phase: "identityRegistered", identity: NEW_IDENTITY, waiting: null });
       // DP5-02 D13: the link is wiped once the claim's identity is recorded.
       if (row.invitation) world.stash = world.stash.filter((s) => s.info.id !== row.invitation!.linkId);
-      dp.identities = [
-        {
-          identity: NEW_IDENTITY,
-          index: 0,
-          names: [],
-          mainName: null,
-          namesUpdating: false,
-          namesCheck: null,
-          isMain: true,
-          balance: String(costs(row.label).lockDuffs * 1000),
-          balanceAsOf: FIXTURE_NOW.getTime(),
-          balanceStale: false,
-          hasDashpayKeys: true,
-          profile: null,
-          unverified: false,
-          creditLevel: "ok",
-        },
-      ];
+      dp.identities = [createdIdentity(String(costs(row.label).lockDuffs * 1000))];
       ctx.emit({ kind: "platform", network, walletId, change: { domain: "identities" } });
       break;
     case "identityRegistered":
       row.phase = "nameRequested";
       break;
     case "nameRequested":
-      if (costs(row.label).contested) Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
-      else {
+      if (costs(row.label).contested) {
+        Object.assign(row, { phase: "contested", contestEndsAt: now + CONTEST_SECS });
+        // The temporary name right after ContestStarted; a refusal is only logged.
+        const temp = row.temporaryLabel;
+        if (temp !== null && !dp.temporaryRefused) {
+          dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [...i.names, temp], mainName: temp } : i));
+          ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
+        }
+      } else {
         row.phase = "nameRegistered";
         dp.identities = dp.identities.map((i) => (i.identity === row.identity ? { ...i, names: [row.label], mainName: row.label } : i));
         ctx.emit({ kind: "platform", network, walletId, change: { domain: "names" } });
@@ -587,11 +994,36 @@ export function failRun(ctx: Ctx, walletId: string, draft: string, code: string,
   return true;
 }
 
-/** The run ends: its row settles, its lease ends. */
-function end(ctx: Ctx, walletId: string, dp: DashPayWorld, row: RegistrationStatus, d: Pick<RegistrationDeps, "setLease">) {
-  if (row.phase !== "failed") row.phase = "done";
-  Object.assign(row, { waiting: null, holdsKey: false, running: false });
+/** The identity a registration created, holding `balance` credits. */
+const createdIdentity = (balance: string): IdentitySummary => ({
+  identity: NEW_IDENTITY,
+  index: 0,
+  names: [],
+  mainName: null,
+  namesUpdating: false,
+  namesCheck: null,
+  isMain: true,
+  balance,
+  balanceAsOf: FIXTURE_NOW.getTime(),
+  balanceStale: false,
+  hasDashpayKeys: true,
+  profile: null,
+  unverified: false,
+  creditLevel: "ok",
+});
+
+/** The run parks (registration_flow.rs `Step::Park`): it ends with its lease, and the row keeps
+ * its phase and wait for the user. */
+function park(ctx: Ctx, walletId: string, dp: DashPayWorld, row: RegistrationStatus, d: Pick<RegistrationDeps, "setLease">) {
+  Object.assign(row, { holdsKey: false, running: false });
   dp.runs = dp.runs.filter((x) => x !== row.draft);
   const lease = runLease(ctx.world, walletId);
   if (lease) d.setLease(ctx, { ...lease, state: { kind: "ended" }, keyExpiresInSecs: null });
+}
+
+/** The run ends: its row settles, its lease ends. */
+function end(ctx: Ctx, walletId: string, dp: DashPayWorld, row: RegistrationStatus, d: Pick<RegistrationDeps, "setLease">) {
+  if (row.phase !== "failed") row.phase = "done";
+  row.waiting = null;
+  park(ctx, walletId, dp, row, d);
 }

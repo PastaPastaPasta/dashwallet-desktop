@@ -66,6 +66,7 @@ dw-psbt = { workspace = true }
 dw-units = { workspace = true }
 dw-uri = { workspace = true }
 dw-vault = { workspace = true }
+getrandom = "=0.2.17"
 hex = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -83,11 +84,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Tauri's own GTK: the windows hidden at exit and the dialog of a launch the
+# instance lock refuses, both on the main thread (shell/quit.rs, shell/native.rs).
+gtk = "0.18"
 # The tray's AppIndicator probe: libappindicator-sys aborts without one.
 libloading = "0.8"
 # The session-bus probe before the single-instance plugin, which panics on a
 # malformed bus address (shell/native.rs).
 zbus = "5"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+# The dialog of a launch the instance lock refuses (issue 399), shown before
+# the event loop: the dialog plugin's own backend, with its features.
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 # U-01: a second launch hands its links to the running app and exits (not on

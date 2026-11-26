@@ -51,12 +51,55 @@ test.describe("Transfer grants", () => {
     await expect(page.getByTestId("platform-fund-outcome-title")).toHaveText("Added to Platform");
   });
 
+  // Max from the Dash wallet: one quote of the whole account, and a grant of everything the lock spends
+  // (the fee out of it), so nothing comes back as change.
+  for (const [route, go, quote, done] of [
+    ["coreToShielded", "shielded-go", "shield_quote", "shielded-outcome-title"],
+    ["coreToPlatform", "platform-fund-go", "platform_fund_quote", "platform-fund-outcome-title"],
+  ] as const)
+    test(`Dash wallet → ${route === "coreToShielded" ? "Shielded" : "Platform"} Max: a platformOp grant of every coin it locks`, async ({ page }) => {
+      await open(page, "funded");
+      await openTransfer(page, route);
+      await page.getByTestId("transfer-max").click();
+      await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+      expect(await callsOf(page, quote)).toBe(1);
+      expect(await grantOf(page, go)).toEqual({ kind: "platformOp", maxDuffs: 3_019_698_287, maxCredits: "0" });
+      await expect(page.getByTestId(done)).toHaveText(route === "coreToShielded" ? "Added to Shielded" : "Added to Platform");
+    });
+
+  for (const [route, go, amount, maxDuffs] of [
+    ["coreToShielded", "shielded-go", "0.001", 101_000],
+    ["coreToPlatform", "platform-fund-go", "0.5", 50_001_000],
+  ] as const)
+    test(`Dash wallet → ${route === "coreToShielded" ? "Shielded" : "Platform"}: an amount edited after Max is an amount, its fee on top`, async ({ page }) => {
+      await open(page, "funded");
+      await openTransfer(page, route);
+      await page.getByTestId("transfer-max").click();
+      await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+      await page.getByTestId("transfer-amount").fill(amount);
+      expect(await grantOf(page, go)).toEqual({ kind: "platformOp", maxDuffs, maxCredits: "0" });
+    });
+
   test("Shielded → Dash wallet: a platformOp grant of the credits and the fee", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "shieldedToCore");
     await page.getByTestId("transfer-amount").fill("0.5");
     expect(await grantOf(page, "shielded-go")).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "50020000000" });
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+  });
+
+  test("Shielded → Platform: a platformOp grant of the credits and the fee, paid to the receive address", async ({ page }) => {
+    await open(page, "funded");
+    await openTransfer(page, "shieldedToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.5");
+    expect(await grantOf(page, "shielded-go")).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "50026082800" });
+    // The fee is the spend's 20000000 plus the flat 6082800 of the Platform address it credits.
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+    expect(await callsOf(page, "unshield_to_platform")).toBe(1);
+    expect(await callsOf(page, "unshield_to_core")).toBe(0);
+    // Platform's balance follows: Home's breakdown shows the 0.5 the move added.
+    await page.getByTestId("shielded-done").click();
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.90");
   });
 
   test("Platform → Dash wallet: a platformOp grant of the whole balance", async ({ page }) => {
@@ -88,7 +131,7 @@ test.describe("Transfer quotes", () => {
     expect(await callsOf(page, "shield_quote")).toBe(1);
   });
 
-  test("Dash wallet → Platform: 0 platform_fund_quote calls while typing, 2 per Max click, 1 on Continue", async ({ page }) => {
+  test("Dash wallet → Platform: 0 platform_fund_quote calls while typing, 1 per Max click, 1 on Continue", async ({ page }) => {
     await open(page, "funded");
     await openTransfer(page, "coreToPlatform");
     const amount = page.getByTestId("transfer-amount");
@@ -97,30 +140,30 @@ test.describe("Transfer quotes", () => {
     // Well past the other routes' debounce: still nothing read.
     await page.waitForTimeout(1_500);
     expect(await callsOf(page, "platform_fund_quote")).toBe(0);
-    // Max: the whole balance, then one re-quote of the most it leaves room for.
+    // Max: one quote of the whole account.
     await page.getByTestId("transfer-max").click();
     await expect(amount).not.toHaveValue("0.55");
     await expect(amount).toHaveValue(/^\d+\.\d+$/);
     await page.waitForTimeout(1_500);
-    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
     await page.getByTestId("transfer-max").click();
     await expect(page.getByTestId("transfer-continue")).toBeEnabled();
     await page.waitForTimeout(1_500);
-    expect(await callsOf(page, "platform_fund_quote")).toBe(4);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
     await page.getByTestId("transfer-continue").click();
     await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
-    expect(await callsOf(page, "platform_fund_quote")).toBe(5);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(3);
   });
 
-  test("Dash wallet → Platform: Max whose re-quote is refused leaves the amount typed", async ({ page }) => {
+  test("Dash wallet → Platform: a refused Max leaves the amount typed", async ({ page }) => {
     await open(page, "transfer-many-coins");
     await openTransfer(page, "coreToPlatform");
     const amount = page.getByTestId("transfer-amount");
     await amount.fill("0.3");
     await page.getByTestId("transfer-max").click();
-    await expect(page.getByTestId("transfer-fee")).toHaveText(/Consolidate your coins first/);
+    await expect(page.getByTestId("transfer-fee")).toHaveText(/^Max needs at most 50 coins; this wallet has 60\. Enter an amount instead\.$/);
     await expect(amount).toHaveValue("0.3");
-    expect(await callsOf(page, "platform_fund_quote")).toBe(2);
+    expect(await callsOf(page, "platform_fund_quote")).toBe(1);
   });
 
   test("discreet mode: no amount shows in clear on any route, Max's fill and the whole balance included", async ({ page }) => {
@@ -176,9 +219,14 @@ test.describe("Transfer quotes", () => {
     await pick("to", "platform");
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "coreToPlatform");
     await expect.poll(focused).toBe("transfer-amount");
-    // Shielded → Platform has no command: no amount, focus back on From.
+    // Shielded → Platform runs: focus on its amount.
     await pick("from", "shielded");
     await pick("to", "platform");
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToPlatform");
+    await expect.poll(focused).toBe("transfer-amount");
+    // Platform → Shielded has no command: no amount, focus back on To.
+    await pick("from", "platform");
+    await pick("to", "shielded");
     await expect(page.getByTestId("transfer-unavailable")).toBeVisible();
     await expect.poll(focused).toBe("transfer-to");
     await page.keyboard.press("Escape");
@@ -189,6 +237,22 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-amount")).toBeDisabled();
     await expect.poll(focused).toBe("transfer-to");
   });
+
+  // MG: Add and Transfer name the cause when the vault's lock or a watch-only wallet holds the account.
+  for (const [scenario, line] of [
+    ["shielded-locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes."],
+    ["shielded-mixing-only", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes."],
+    ["shielded-watch-only", "Shielded isn't available in a watch-only wallet."],
+  ])
+    test(`Add and Transfer out of Shielded name the cause in ${scenario}`, async ({ page }) => {
+      await open(page, scenario);
+      for (const route of ["coreToShielded", "shieldedToCore"] as const) {
+        await openTransfer(page, route);
+        await expect(page.getByTestId("transfer-unavailable")).toHaveText(line);
+        await page.keyboard.press("Escape");
+        await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+      }
+    });
 
   test("Home offers Transfer from its shortcut without duplicate pool cards", async ({ page }) => {
     await open(page, "funded");
@@ -210,7 +274,7 @@ test.describe("Transfer quotes", () => {
     await expect(page.getByTestId("transfer-fee")).toHaveText(/^Fee about /);
     expect(await callsOf(page, "shield_quote")).toBe(1);
     await ready(false);
-    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing. Try again when it finishes.");
     await expect(page.getByTestId("transfer-fee")).toHaveText("");
     await ready(true);
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
@@ -275,5 +339,36 @@ test.describe("Transfer quotes", () => {
     await page.getByTestId("platform-move-show").click();
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "platformToCore");
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
+  });
+
+  test("an unseen Shielded → Platform result holds the card's Finish and Pay's Send until it is seen", async ({ page }) => {
+    await open(page, "transfer-shield-pending");
+    await hold(page, "unshield_to_platform");
+    await openTransfer(page, "shieldedToPlatform");
+    await page.getByTestId("transfer-amount").fill("0.5");
+    await page.getByTestId("transfer-continue").click();
+    await page.getByTestId("shielded-go").click();
+    await authorize(page);
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await release(page);
+    await expect(page.getByTestId("shielded-unseen")).toBeVisible();
+    await expect(page.getByTestId("shielded-finish")).toBeDisabled();
+    // Its reason is the card's own unseen line, not a second copy of it.
+    await expect(page.getByTestId("shielded-finish")).toHaveAttribute("aria-describedby", "shielded-unseen-line");
+    await expect(page.getByTestId("unfinished-card").locator(".dash-button-why")).toHaveCount(0);
+    await page.getByTestId("sidebar-pay").click();
+    await expect(page.getByTestId("shielded-send")).toBeDisabled();
+    await expect(page.getByTestId("pay-shielded")).toContainText("Your last Shielded move has an update. Open it before you send from Shielded again.");
+    await page.getByTestId("sidebar-home").click();
+    await page.getByTestId("shielded-show").click();
+    await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToPlatform");
+    await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Moved");
+    await page.getByTestId("shielded-done").click();
+    // Seen: Finish and Send are offered again, and nothing ran in between.
+    await expect(page.getByTestId("shielded-finish")).toBeEnabled();
+    expect(await callsOf(page, "resume_shield")).toBe(0);
+    await page.getByTestId("sidebar-pay").click();
+    await expect(page.getByTestId("shielded-send")).toBeEnabled();
   });
 });

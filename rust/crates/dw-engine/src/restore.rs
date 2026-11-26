@@ -457,8 +457,16 @@ impl NetworkSession {
     /// lock only when there are some (rare: a replay of a coin no restore
     /// placed). Under the read lock it also applies a fork truncation no
     /// event announced (`SessionHub::detect_truncation`); a drop of the
-    /// header tip starts it as well.
+    /// header tip starts it as well. Then it drops what can never confirm
+    /// and key-wallet's conflict handling left (`NetworkSession::drop_dead`).
     pub(crate) async fn reconcile_duplicate_coins(&self, id: WalletId) {
+        self.drop_duplicate_coins(id).await;
+        if let (Ok(_op), Ok(manager)) = (self.try_enter(), self.manager()) {
+            self.drop_dead(&manager, id, None).await;
+        }
+    }
+
+    async fn drop_duplicate_coins(&self, id: WalletId) {
         let Ok(manager) = self.manager() else {
             self.hub.reconcile_running(id);
             return;
@@ -478,8 +486,7 @@ impl NetworkSession {
             let core = &info.core_wallet;
             self.hub.detect_truncation(id, core);
             if !has_duplicates(core) {
-                self.hub
-                    .publish_core_balance(id, &core.balance(), &core.account_balances());
+                self.hub.publish_core_balance(id, core);
                 return;
             }
         }
@@ -494,8 +501,7 @@ impl NetworkSession {
         }
         // An event computed before this took the lock but applied after it
         // starts another reconcile (the pending mark is cleared above).
-        self.hub
-            .publish_core_balance(id, &core.balance(), &core.account_balances());
+        self.hub.publish_core_balance(id, core);
     }
 
     /// Hooks [`Self::reconcile_duplicate_coins`] to the hub's block events.
@@ -503,12 +509,16 @@ impl NetworkSession {
         let weak = Arc::downgrade(self);
         let rt = self.rt.clone();
         self.hub.attach_reconcile(Box::new(move |id| {
-            let weak = weak.clone();
-            rt.spawn(async move {
-                if let Some(session) = weak.upgrade() {
+            let session = weak.clone();
+            let _started = rt.spawn(async move {
+                if let Some(session) = session.upgrade() {
                     session.reconcile_duplicate_coins(id).await;
                 }
             });
+            #[cfg(test)]
+            if let Some(session) = weak.upgrade() {
+                (session.hub.reconciles.lock().unwrap()).push(_started);
+            }
         }));
     }
 }

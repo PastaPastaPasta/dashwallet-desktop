@@ -23,6 +23,11 @@
 //!   has no wallet, a payment or contact link goes into the stash too and
 //!   comes back as [`LinkRoute::Saved`]; the renderer offers it once a
 //!   wallet exists (`stashed_links`, `open_stashed_link`).
+//! - **App Connect** (DASHPAY F24). A `dashpay://connect` request, or a
+//!   `dash-key:` v2 one typed or scanned, is parsed here and kept in the
+//!   inbox's [`ConnectLinks`] under an id, with where it came from: only a
+//!   link the OS delivered may open its return link, after the user
+//!   answers, and the renderer never passes a URL.
 //! - **Payment links are Core's.** `dash:` and `pay:` go through dash-qt's
 //!   URI handler (`api::send::uri`) for the window's network, with `pay:`
 //!   read as `dash:` and the iOS `user=` key kept as the DashPay username.
@@ -115,6 +120,122 @@ enum Queued {
 #[derive(Default)]
 pub struct Inbox {
     queue: Mutex<VecDeque<Queued>>,
+    pub connect: ConnectLinks,
+}
+
+/// Where an App Connect request came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOrigin {
+    /// Delivered by the OS (a click in a browser or another app).
+    Os,
+    /// Typed into Open URI, pasted or scanned: its return link is never
+    /// opened (DIP "Return Link").
+    Entered,
+}
+
+/// The App Connect requests the renderer can act on, by id, at most
+/// [`MAX_CONNECT_LINKS`]: the oldest whose approval has not started goes
+/// first, so a running approval keeps its link for "Retry sending".
+#[derive(Default)]
+pub struct ConnectLinks(Mutex<VecDeque<(String, ConnectLink)>>);
+
+/// The most App Connect requests kept.
+pub const MAX_CONNECT_LINKS: usize = 8;
+
+/// One App Connect request and its answer so far.
+#[derive(Debug, Clone)]
+pub struct ConnectLink {
+    pub uri: dw_uri::connect::ConnectUri,
+    pub origin: LinkOrigin,
+    /// The status the app gets back, once the request is answered.
+    pub answer: Option<dw_uri::connect::Status>,
+    /// An approval started: Deny no longer answers it.
+    pub started: bool,
+}
+
+impl ConnectLink {
+    /// The host the return link opens, when it may be opened at all.
+    pub fn returns_to(&self) -> Option<String> {
+        match self.origin {
+            LinkOrigin::Os => self.uri.callback.as_ref().map(|c| c.host().to_owned()),
+            LinkOrigin::Entered => None,
+        }
+    }
+
+    /// The return link with the answer, when the request came from the OS,
+    /// has one and is answered.
+    pub fn return_url(&self) -> Option<String> {
+        let callback = self.uri.callback.as_ref()?;
+        let answer = self.answer?;
+        (self.origin == LinkOrigin::Os).then(|| callback.with_status(answer))
+    }
+}
+
+impl ConnectLinks {
+    pub fn put(&self, link: ConnectLink) -> String {
+        let mut id = [0u8; 16];
+        getrandom::getrandom(&mut id).expect("OS random source");
+        let id = hex::encode(id);
+        let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if links.len() >= MAX_CONNECT_LINKS {
+            let oldest = links.iter().position(|(_, l)| !l.started).unwrap_or(0);
+            links.remove(oldest);
+        }
+        links.push_back((id.clone(), link));
+        id
+    }
+
+    fn with<R>(&self, id: &str, f: impl FnOnce(&mut ConnectLink) -> R) -> Option<R> {
+        let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        links.iter_mut().find(|(i, _)| i == id).map(|(_, l)| f(l))
+    }
+
+    pub fn get(&self, id: &str) -> Option<ConnectLink> {
+        self.with(id, |l| l.clone())
+    }
+
+    /// Records the answer of `id`; a request keeps its first answer.
+    pub fn answer(&self, id: &str, status: dw_uri::connect::Status) {
+        self.with(id, |l| {
+            l.answer.get_or_insert(status);
+        });
+    }
+
+    /// Marks an approval of `id` started: the link, unless it is answered
+    /// or started already.
+    pub fn start(&self, id: &str) -> Option<ConnectLink> {
+        self.with(id, |l| {
+            (l.answer.is_none() && !l.started).then(|| {
+                l.started = true;
+                l.clone()
+            })
+        })
+        .flatten()
+    }
+
+    /// An approval ended in a refusal that keeps the request open
+    /// (`ConnectError::keeps_open`): Approve and Deny answer again. Keys may
+    /// already be on the identity.
+    pub fn unstart(&self, id: &str) {
+        self.with(id, |l| l.started = false);
+    }
+
+    /// Answers `id` declined, unless an approval started or it is answered.
+    pub fn decline(&self, id: &str) -> bool {
+        self.with(id, |l| {
+            let open = !l.started && l.answer.is_none();
+            if open {
+                l.answer = Some(dw_uri::connect::Status::Declined);
+            }
+            open
+        })
+        .unwrap_or(false)
+    }
+
+    pub fn forget(&self, id: &str) {
+        let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        links.retain(|(i, _)| i != id);
+    }
 }
 
 impl Inbox {
@@ -178,13 +299,18 @@ impl Inbox {
                 waiting.push(text);
                 continue;
             }
-            routes.push(match intake(session.clone(), network, &text).await {
-                Ok(route) => route,
-                Err(e) => {
-                    tracing::warn!(code = e.code_str(), "a queued link could not be routed");
-                    LinkRoute::rejected(LinkRejected::NotALink)
-                }
-            });
+            routes.push(
+                match self
+                    .intake(session.clone(), network, &text, LinkOrigin::Os)
+                    .await
+                {
+                    Ok(route) => route,
+                    Err(e) => {
+                        tracing::warn!(code = e.code_str(), "a queued link could not be routed");
+                        LinkRoute::rejected(LinkRejected::NotALink)
+                    }
+                },
+            );
         }
         if !waiting.is_empty() {
             let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -238,6 +364,13 @@ pub enum LinkRoute {
     Invitation {
         link_id: String,
     },
+    /// An App Connect sign-in request, kept in the inbox under `link_id`.
+    /// `returns_to` is the host the return link opens, for a request the
+    /// OS delivered with one; never for one typed, pasted or scanned.
+    AppConnect {
+        link_id: String,
+        returns_to: Option<String>,
+    },
     /// A payment or contact link that arrived while the network has no
     /// wallet: kept in the link stash and offered once a wallet exists.
     Saved {
@@ -264,6 +397,7 @@ impl LinkRoute {
             LinkRoute::ScanQr => "scanQr",
             LinkRoute::AddContact { .. } => "addContact",
             LinkRoute::Invitation { .. } => "invitation",
+            LinkRoute::AppConnect { .. } => "appConnect",
             LinkRoute::Saved { .. } => "saved",
             LinkRoute::Unsupported { .. } => "unsupported",
             LinkRoute::Rejected { .. } => "rejected",
@@ -303,6 +437,20 @@ pub enum LinkRejected {
     /// An invitation that could not be kept (no network open, or the stash
     /// failed): open it again.
     NotSaved,
+    /// An App Connect request this wallet cannot read or answer.
+    Connect { reason: ConnectRejected },
+}
+
+/// Why an App Connect link was refused before any sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectRejected {
+    /// It breaks the protocol's rules.
+    Invalid,
+    /// A version or binding this wallet does not support.
+    Unsupported,
+    /// A `dashpay://` verb this version does not know.
+    NeedsNewerWallet,
 }
 
 /// A link in the stash, without its text.
@@ -342,11 +490,13 @@ impl From<StashedLink> for StashedLinkInfo {
     }
 }
 
-/// A link routed before intake: an invitation still needs its stash id.
+/// A link routed before intake: an invitation still needs its stash id,
+/// an App Connect request its inbox id.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Routed {
     Route(LinkRoute),
     Invitation,
+    Connect(Box<dw_uri::connect::ConnectUri>),
 }
 
 /// Takes one link in (DP5-01 D2, D3): routes it for `network`, then keeps
@@ -356,30 +506,33 @@ pub(crate) enum Routed {
 /// waits while the session has no wallet ([`LinkRoute::Saved`]); otherwise,
 /// or when keeping it fails, it routes as before. `session` is the
 /// window's; one of another network counts as none.
-pub async fn intake(
-    session: Option<Arc<NetworkSession>>,
-    network: &str,
-    text: &str,
-) -> Result<LinkRoute, AppError> {
-    let routed = route_text(network, text)?;
-    let session = session.filter(|s| s.network().dir_name() == network);
-    let stash = |s: Arc<NetworkSession>| async move {
-        s.stash_link(BearerSecret::new(text.trim().to_owned()))
-            .await
-    };
-    let route = match (routed, session) {
-        (Routed::Invitation, None) => LinkRoute::rejected(LinkRejected::NotSaved),
-        (Routed::Invitation, Some(s)) => match stash(s).await {
-            Ok(link) => LinkRoute::Invitation { link_id: link.id },
-            Err(e) => {
-                tracing::warn!(code = e.code(), "an invitation link could not be kept");
-                LinkRoute::rejected(LinkRejected::NotSaved)
-            }
-        },
-        (Routed::Route(r @ (LinkRoute::Pay { .. } | LinkRoute::AddContact { .. })), Some(s))
-            if s.wallet_infos().is_ok_and(|w| w.is_empty()) =>
-        {
-            match stash(s).await {
+impl Inbox {
+    pub async fn intake(
+        &self,
+        session: Option<Arc<NetworkSession>>,
+        network: &str,
+        text: &str,
+        origin: LinkOrigin,
+    ) -> Result<LinkRoute, AppError> {
+        let routed = route_text(network, text)?;
+        let session = session.filter(|s| s.network().dir_name() == network);
+        let stash = |s: Arc<NetworkSession>| async move {
+            s.stash_link(BearerSecret::new(text.trim().to_owned()))
+                .await
+        };
+        let route = match (routed, session) {
+            (Routed::Invitation, None) => LinkRoute::rejected(LinkRejected::NotSaved),
+            (Routed::Invitation, Some(s)) => match stash(s).await {
+                Ok(link) => LinkRoute::Invitation { link_id: link.id },
+                Err(e) => {
+                    tracing::warn!(code = e.code(), "an invitation link could not be kept");
+                    LinkRoute::rejected(LinkRejected::NotSaved)
+                }
+            },
+            (
+                Routed::Route(r @ (LinkRoute::Pay { .. } | LinkRoute::AddContact { .. })),
+                Some(s),
+            ) if s.wallet_infos().is_ok_and(|w| w.is_empty()) => match stash(s).await {
                 Ok(link) => LinkRoute::Saved { link: link.into() },
                 Err(e) => {
                     tracing::warn!(
@@ -388,13 +541,26 @@ pub async fn intake(
                     );
                     r
                 }
+            },
+            (Routed::Route(r), _) => r,
+            (Routed::Connect(uri), _) => {
+                let link = ConnectLink {
+                    uri: *uri,
+                    origin,
+                    answer: None,
+                    started: false,
+                };
+                let returns_to = link.returns_to();
+                LinkRoute::AppConnect {
+                    link_id: self.connect.put(link),
+                    returns_to,
+                }
             }
-        }
-        (Routed::Route(r), _) => r,
-    };
-    // The route's kind only: never the link or what it carries (D14).
-    tracing::debug!(route = route.kind_name(), "link taken in");
-    Ok(route)
+        };
+        // The route's kind only: never the link or what it carries (D14).
+        tracing::debug!(route = route.kind_name(), "link taken in");
+        Ok(route)
+    }
 }
 
 /// Routes one link for `network` without intake, for tests: an invitation
@@ -404,6 +570,10 @@ pub(crate) fn route(network: &str, text: &str) -> Result<LinkRoute, AppError> {
     Ok(match route_text(network, text)? {
         Routed::Route(r) => r,
         Routed::Invitation => LinkRoute::rejected(LinkRejected::NotSaved),
+        Routed::Connect(_) => LinkRoute::AppConnect {
+            link_id: String::new(),
+            returns_to: None,
+        },
     })
 }
 
@@ -434,14 +604,39 @@ pub(crate) fn route_text(network: &str, text: &str) -> Result<Routed, AppError> 
         DeepLink::AddressRequest { .. } => LinkRoute::Unsupported {
             what: UnsupportedLink::AddressRequest,
         },
-        DeepLink::DashConnectKey(_) | DeepLink::DashConnectSt(_) => LinkRoute::Unsupported {
-            what: UnsupportedLink::DashConnect,
-        },
+        DeepLink::DashConnectKey(text) | DeepLink::DashConnect(text)
+            if dw_uri::connect::is_connect_link(&text) =>
+        {
+            return Ok(connect_link(&text));
+        }
+        DeepLink::DashConnectKey(_) | DeepLink::DashConnectSt(_) | DeepLink::DashConnect(_) => {
+            LinkRoute::Unsupported {
+                what: UnsupportedLink::DashConnect,
+            }
+        }
+        DeepLink::NeedsNewerWallet => LinkRoute::rejected(LinkRejected::Connect {
+            reason: ConnectRejected::NeedsNewerWallet,
+        }),
         DeepLink::Integration(_) => LinkRoute::Unsupported {
             what: UnsupportedLink::Integration,
         },
         DeepLink::Unknown => LinkRoute::rejected(LinkRejected::NotALink),
     }))
+}
+
+/// An App Connect request, parsed: refused as the codec says, else kept
+/// for intake.
+fn connect_link(text: &str) -> Routed {
+    use dw_uri::connect::Status;
+    match dw_uri::connect::parse(text) {
+        Ok(uri) => Routed::Connect(Box::new(uri)),
+        Err(refusal) => Routed::Route(LinkRoute::rejected(LinkRejected::Connect {
+            reason: match refusal.status {
+                Status::Unsupported => ConnectRejected::Unsupported,
+                _ => ConnectRejected::Invalid,
+            },
+        })),
+    }
 }
 
 /// `dashwallet://pay=…` (or, from Open URI, an https payment string):

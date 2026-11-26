@@ -43,6 +43,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead",
+ "aes 0.8.4",
+ "cipher 0.4.4",
+ "ctr",
+ "ghash",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -152,7 +167,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "app-connect-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1557,6 +1572,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "914a755b7c2d4af2bdcff7ce1739e2db9a1b81a9b07123d8015786ae03c0980d"
 
 [[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher 0.4.4",
+]
+
+[[package]]
 name = "curve25519-dalek"
 version = "4.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1603,7 +1627,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "dash-platform-macros",
  "futures-core",
@@ -1691,7 +1715,7 @@ dependencies = [
 [[package]]
 name = "dash-async"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "futures",
  "thiserror 2.0.18",
@@ -1703,7 +1727,7 @@ dependencies = [
 [[package]]
 name = "dash-context-provider"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "dash-async",
  "dpp",
@@ -1716,7 +1740,7 @@ dependencies = [
 [[package]]
 name = "dash-network"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "cbindgen",
  "grovedb-bincode",
@@ -1727,7 +1751,7 @@ dependencies = [
 [[package]]
 name = "dash-network-seeds"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "dash-network",
 ]
@@ -1772,7 +1796,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-macros"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "heck 0.5.0",
  "quote",
@@ -1782,7 +1806,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-queries"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -1800,7 +1824,7 @@ dependencies = [
 [[package]]
 name = "dash-sdk"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1839,7 +1863,7 @@ dependencies = [
 [[package]]
 name = "dash-spv"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1893,7 +1917,7 @@ dependencies = [
 [[package]]
 name = "dashcore"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1918,7 +1942,7 @@ dependencies = [
 [[package]]
 name = "dashcore-crypto"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "base58ck 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bitcoin-crypto",
@@ -1939,12 +1963,12 @@ dependencies = [
 [[package]]
 name = "dashcore-private"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 
 [[package]]
 name = "dashcore-rpc"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "dashcore-rpc-json",
  "hex-conservative 1.3.0",
@@ -1957,7 +1981,7 @@ dependencies = [
 [[package]]
 name = "dashcore-rpc-json"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "dashcore",
  "grovedb-bincode",
@@ -1972,7 +1996,7 @@ dependencies = [
 [[package]]
 name = "dashcore_hashes"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "bitcoin_hashes 0.14.101",
  "grovedb-bincode",
@@ -1984,7 +2008,7 @@ dependencies = [
 [[package]]
 name = "dashpay-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -1995,7 +2019,7 @@ dependencies = [
 [[package]]
 name = "data-contracts"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "app-connect-contract",
  "dashpay-contract",
@@ -2237,7 +2261,7 @@ dependencies = [
 [[package]]
 name = "document-history-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2278,7 +2302,7 @@ dependencies = [
 [[package]]
 name = "dpns-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2289,7 +2313,7 @@ dependencies = [
 [[package]]
 name = "dpp"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2345,7 +2369,7 @@ dependencies = [
 [[package]]
 name = "dpp-json-convertible-derive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2355,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "drive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "byteorder",
  "derive_more 1.0.0",
@@ -2382,7 +2406,7 @@ dependencies = [
 [[package]]
 name = "drive-proof-verifier"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "dapi-grpc",
  "dash-context-provider",
@@ -2440,6 +2464,8 @@ dependencies = [
  "dw-units",
  "dw-uri",
  "dw-vault",
+ "getrandom 0.2.17",
+ "gtk",
  "hex",
  "image",
  "libloading 0.8.9",
@@ -2447,6 +2473,7 @@ dependencies = [
  "open",
  "qrcode",
  "reqwest 0.13.5",
+ "rfd",
  "semver",
  "serde",
  "serde_json",
@@ -2571,6 +2598,7 @@ dependencies = [
  "dw-vault",
  "futures-util",
  "grovedb-bincode",
+ "grovedb-commitment-tree",
  "hex",
  "image",
  "key-wallet",
@@ -2630,6 +2658,7 @@ dependencies = [
  "dw-testutil",
  "rustix 1.1.6",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2746,6 +2775,7 @@ name = "dw-vault"
 version = "0.3.0"
 dependencies = [
  "aes 0.8.4",
+ "aes-gcm",
  "argon2",
  "async-trait",
  "cbc",
@@ -2761,6 +2791,7 @@ dependencies = [
  "dw-vault",
  "getrandom 0.2.17",
  "hex",
+ "hkdf",
  "key-wallet",
  "platform-encryption",
  "platform-wallet",
@@ -3577,6 +3608,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
+dependencies = [
+ "opaque-debug",
+ "polyval",
+]
+
+[[package]]
 name = "gif"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3621,7 +3662,7 @@ dependencies = [
 [[package]]
 name = "git-state"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 
 [[package]]
 name = "glib"
@@ -3736,7 +3777,7 @@ dependencies = [
 [[package]]
 name = "grovedb"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "grovedb-bincode",
@@ -3779,7 +3820,7 @@ dependencies = [
 [[package]]
 name = "grovedb-bulk-append-tree"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "grovedb-bincode",
@@ -3796,7 +3837,7 @@ dependencies = [
 [[package]]
 name = "grovedb-commitment-tree"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "grovedb-bulk-append-tree",
@@ -3812,7 +3853,7 @@ dependencies = [
 [[package]]
 name = "grovedb-costs"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "integer-encoding",
  "intmap",
@@ -3822,7 +3863,7 @@ dependencies = [
 [[package]]
 name = "grovedb-dense-fixed-sized-merkle-tree"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "grovedb-bincode",
@@ -3835,7 +3876,7 @@ dependencies = [
 [[package]]
 name = "grovedb-element"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "grovedb-bincode",
  "grovedb-bincode-derive",
@@ -3850,7 +3891,7 @@ dependencies = [
 [[package]]
 name = "grovedb-epoch-based-storage-flags"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "grovedb-costs",
  "hex",
@@ -3862,7 +3903,7 @@ dependencies = [
 [[package]]
 name = "grovedb-merk"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "byteorder",
@@ -3884,7 +3925,7 @@ dependencies = [
 [[package]]
 name = "grovedb-merkle-mountain-range"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "blake3",
  "grovedb-bincode",
@@ -3895,7 +3936,7 @@ dependencies = [
 [[package]]
 name = "grovedb-path"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "hex",
 ]
@@ -3903,7 +3944,7 @@ dependencies = [
 [[package]]
 name = "grovedb-query"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "byteorder",
  "ed",
@@ -3917,7 +3958,7 @@ dependencies = [
 [[package]]
 name = "grovedb-version"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "thiserror 2.0.18",
  "versioned-feature-core",
@@ -3926,7 +3967,7 @@ dependencies = [
 [[package]]
 name = "grovedb-visualize"
 version = "6.0.1"
-source = "git+https://github.com/dashpay/grovedb?rev=9791d277207998b7789c85b0745e99d37040a12e#9791d277207998b7789c85b0745e99d37040a12e"
+source = "git+https://github.com/PastaPastaPasta/grovedb?rev=b48a1d5067f33165f5c8880b252da51b79b2fcd1#b48a1d5067f33165f5c8880b252da51b79b2fcd1"
 dependencies = [
  "hex",
  "itertools 0.14.0",
@@ -4111,14 +4152,17 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "hashlink"
-version = "0.11.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -4892,7 +4936,7 @@ dependencies = [
 [[package]]
 name = "key-wallet"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "async-trait",
  "bip39",
@@ -4913,7 +4957,7 @@ dependencies = [
 [[package]]
 name = "key-wallet-manager"
 version = "0.45.0"
-source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=1e6e07957a76d4dbd92f9d4cb85f490ebd15c714#1e6e07957a76d4dbd92f9d4cb85f490ebd15c714"
+source = "git+https://github.com/PastaPastaPasta/rust-dashcore?rev=a0f687ec62f6be3d021e0e898ae8a536e5fc0522#a0f687ec62f6be3d021e0e898ae8a536e5fc0522"
 dependencies = [
  "async-trait",
  "dashcore",
@@ -4948,7 +4992,7 @@ dependencies = [
 [[package]]
 name = "keyword-search-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5070,9 +5114,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.36.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95b4103cffefa72eb8428cb6b47d6627161e51c2739fc5e3b734584157bc642a"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -5165,7 +5209,7 @@ dependencies = [
 [[package]]
 name = "masternode-reward-shares-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5288,7 +5332,7 @@ dependencies = [
 [[package]]
 name = "moderation-charters-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -6208,7 +6252,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-encryption"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "aes 0.8.4",
  "cbc",
@@ -6221,7 +6265,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "grovedb-bincode",
  "platform-version",
@@ -6230,7 +6274,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization-derive"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6241,7 +6285,7 @@ dependencies = [
 [[package]]
 name = "platform-value"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -6261,7 +6305,7 @@ dependencies = [
 [[package]]
 name = "platform-version"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "grovedb-bincode",
  "grovedb-version",
@@ -6272,7 +6316,7 @@ dependencies = [
 [[package]]
 name = "platform-versioning"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6282,7 +6326,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6316,7 +6360,7 @@ dependencies = [
 [[package]]
 name = "platform-wallet-storage"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "apple-native-keyring-store",
  "argon2",
@@ -6410,6 +6454,18 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8159bd90725d2df49889a078b54f4f79e87f1f8a8444194cdca81d38f5393abf"
 dependencies = [
+ "cpufeatures 0.2.17",
+ "opaque-debug",
+ "universal-hash",
+]
+
+[[package]]
+name = "polyval"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
+dependencies = [
+ "cfg-if",
  "cpufeatures 0.2.17",
  "opaque-debug",
  "universal-hash",
@@ -6906,9 +6962,9 @@ dependencies = [
 
 [[package]]
 name = "refinery"
-version = "0.9.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e2a344cdb48871e27addeafbbaffab8828cc12cec2b9041119e9bea0c0f551a"
+checksum = "8e48a123dfddb4e33b888a233e3dd8f428d0dadbe8a2302177fcad504b9fb0e3"
 dependencies = [
  "refinery-core",
  "refinery-macros",
@@ -6916,11 +6972,10 @@ dependencies = [
 
 [[package]]
 name = "refinery-core"
-version = "0.9.2"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24eeafd893124f29183dd6afa9137a27e7bef59250223b8b660005279c60aea4"
+checksum = "07f0a6b2d031aec7903f7ce81c723bbe7d3d8667441012b2a4388af0f3a70ef3"
 dependencies = [
- "async-trait",
  "cfg-if",
  "log",
  "regex",
@@ -6934,9 +6989,9 @@ dependencies = [
 
 [[package]]
 name = "refinery-macros"
-version = "0.9.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a90cea6d11a9a4e8a85a884b6305461004101b28ca65dd35ec028e009a898e16"
+checksum = "623c53cdc704ababffe5361be8cb726f874fcd4e97b945741aa69b15d0406f36"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7131,7 +7186,7 @@ dependencies = [
 [[package]]
 name = "rs-dapi-client"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "backon",
  "chrono",
@@ -7157,7 +7212,7 @@ dependencies = [
 [[package]]
 name = "rs-sdk-trusted-context-provider"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "arc-swap",
  "dash-async",
@@ -7207,9 +7262,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.38.0"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1c93dd1c9683b438c392c492109cb702b8090b2bfc8fed6f6e4eb4523f17af3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.0",
  "fallible-iterator",
@@ -8807,7 +8862,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "token-history-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -9698,7 +9753,7 @@ dependencies = [
 [[package]]
 name = "wallet-utils-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -10552,7 +10607,7 @@ dependencies = [
 [[package]]
 name = "withdrawals-contract"
 version = "5.0.0-beta.2"
-source = "git+https://github.com/PastaPastaPasta/platform?rev=1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09#1046e8999ba93f7a6e7fec0bb45cfb6d4173ad09"
+source = "git+https://github.com/PastaPastaPasta/platform?rev=9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40#9d61fee3ccfd3eaa5e1ae7a14a834590efbdfe40"
 dependencies = [
  "num_enum 0.5.11",
  "platform-value",

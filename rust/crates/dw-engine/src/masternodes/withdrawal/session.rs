@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
 use dashcore::hashes::Hash;
 use dashcore::{Network, OutPoint, Transaction, Txid};
 use dpp::identity::IdentityPublicKey;
@@ -39,30 +40,48 @@ use crate::platform::{BudgetPurpose, FlowKind};
 use crate::platform::{PlatformError, WithdrawAmount};
 use crate::{EngineError, NetworkSession, WalletId};
 
-/// The payout a ProUpRegTx of `pro_tx_hash` sets: `Some(None)` for one it
-/// does not name a single script for (several DIP-0026 shares, or a payload
-/// this version does not decode).
-fn payout_set(tx: &Transaction, pro_tx_hash: &[u8; 32]) -> Option<Option<Vec<u8>>> {
+/// The payout `pro_tx_hash`'s ProRegTx (`true`) or a ProUpRegTx of it
+/// (`false`) sets. `None` for a payload this version does not decode, or
+/// for several DIP-0026 shares of which none is P2SH. Any P2SH share is
+/// named: an owner-key withdrawal would pay the P2PKH of its 20 bytes.
+fn payout_set(
+    txid: &Txid,
+    tx: &Transaction,
+    pro_tx_hash: &[u8; 32],
+) -> Option<(Option<Vec<u8>>, bool)> {
+    let one =
+        |script: &dashcore::ScriptBuf, payouts: Option<&[MasternodePayoutShare]>| match payouts {
+            None => Some(script.to_bytes()),
+            Some([one]) => Some(one.script_payout.to_bytes()),
+            Some(shares) => shares
+                .iter()
+                .find(|share| {
+                    dashcore::Script::from_bytes(share.script_payout.as_bytes()).is_p2sh()
+                })
+                .map(|share| share.script_payout.to_bytes()),
+        };
     match &tx.special_transaction_payload {
         Some(TransactionPayload::ProviderUpdateRegistrarPayloadType(p))
             if p.pro_tx_hash.to_byte_array() == *pro_tx_hash =>
         {
-            Some(match p.payouts.as_deref() {
-                None => Some(p.script_payout.to_bytes()),
-                Some([one]) => Some(one.script_payout.to_bytes()),
-                Some(_) => None,
-            })
+            Some((one(&p.script_payout, p.payouts.as_deref()), false))
+        }
+        Some(TransactionPayload::ProviderRegistrationPayloadType(p))
+            if txid.to_byte_array() == *pro_tx_hash =>
+        {
+            Some((one(&p.script_payout, p.payouts.as_deref()), true))
         }
         Some(TransactionPayload::RawPayloadType(3, bytes))
             if bytes.get(2..34) == Some(&pro_tx_hash[..]) =>
         {
-            Some(None)
+            Some((None, false))
         }
         _ => None,
     }
 }
 
-/// The ProUpRegTxs of `pro_tx_hash` in the loaded wallets' `histories`,
+/// The ProRegTx and ProUpRegTxs of `pro_tx_hash` in the loaded wallets'
+/// `histories`,
 /// once each, but those out of a block that a wallet abandoned or that a
 /// block in any wallet's history conflicts (MG-04's reading). A wallet the
 /// change pays or names a key of records it with nothing of its own to
@@ -74,13 +93,14 @@ fn payout_changes_in(
     chainlock: Option<u32>,
 ) -> Vec<PayoutChange> {
     let all = || histories.iter().flat_map(|h| h.iter());
-    let mut seen: HashMap<Txid, (Option<Vec<u8>>, Vec<&TxEntry>)> = HashMap::new();
+    type Seen<'a> = ((Option<Vec<u8>>, bool), Vec<&'a TxEntry>);
+    let mut seen: HashMap<Txid, Seen> = HashMap::new();
     for (txid, e) in all() {
-        if let Some(script) = payout_set(&e.tx, pro_tx_hash) {
-            seen.entry(*txid).or_insert((script, Vec::new())).1.push(e);
+        if let Some(set) = payout_set(txid, &e.tx, pro_tx_hash) {
+            seen.entry(*txid).or_insert((set, Vec::new())).1.push(e);
         }
     }
-    let change = |(txid, (script, entries)): (Txid, (Option<Vec<u8>>, Vec<&TxEntry>))| {
+    let change = |(txid, ((script, registration), entries)): (Txid, Seen)| {
         let height = (entries.iter())
             .filter_map(|e| e.context.block_info().map(|b| b.height()))
             .max();
@@ -100,7 +120,11 @@ fn payout_changes_in(
                 return None;
             }
         }
-        Some(PayoutChange { script, height })
+        Some(PayoutChange {
+            script,
+            height,
+            registration,
+        })
     };
     seen.into_iter().filter_map(change).collect()
 }
@@ -419,6 +443,22 @@ impl MnWithdrawNet for SessionNet {
 }
 
 impl NetworkSession {
+    /// Tests: the heights of the ProUpRegTxs of `pro_tx_hash` a withdrawal
+    /// reads from the history (`None` out of a block); its ProRegTx is left
+    /// out.
+    #[cfg(test)]
+    pub(crate) fn withdrawal_payout_changes(
+        self: &Arc<Self>,
+        pro_tx_hash: &[u8; 32],
+    ) -> Vec<Option<u32>> {
+        let env = SessionEnv::of(self).unwrap();
+        env.payout_changes(pro_tx_hash)
+            .into_iter()
+            .filter(|c| !c.registration)
+            .map(|c| c.height)
+            .collect()
+    }
+
     /// The Platform the withdrawal calls use;
     /// `masternodes.platform_unavailable` in a session without Platform.
     fn mn_withdraw_net(&self) -> Result<SessionNet, WithdrawalError> {

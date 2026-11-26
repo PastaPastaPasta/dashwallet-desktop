@@ -32,6 +32,7 @@ import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureGrant, FixtureWallet, World } from "./scenarios";
 import { mainUsername } from "./dashpay";
+import { abandonFee } from "./shared";
 import { BASE58, FIXTURE_NOW, makeIds, prng, secs, TIP, txDetails, type HistoryVariant } from "./wallet";
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -89,7 +90,39 @@ export interface SendWorld {
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
   lockEvidence: LockResolutionName | null;
+  /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
+   * the wallet restarts and rescans (the engine's `rescanFirst`). */
+  rescanFirst: string[];
+  /** Payments a later payment spends from, which locked while the detail was open: Abandon is
+   * offered, and refused (the engine's `settledDescendant`). */
+  settledChild: string[];
+  /** Payments a later payment spends from that is already locked or confirmed: the detail doesn't
+   * offer Abandon (the engine's `settledDescendant`), and an Abandon is refused. */
+  settledChildHidden: string[];
+  /** Payments that fund an unfinished Platform transfer, credit top-up or username registration,
+   * or that one depends on, whose asset lock was built while the detail was open: Abandon is
+   * offered, and refused (the engine's `platformFunding`). */
+  platformFunding: string[];
+  /** As `platformFunding`, with the lock already built when the detail opens: the detail doesn't
+   * offer Abandon, and an Abandon is refused. */
+  platformFundingHidden: string[];
+  /** Payments whose Abandon is refused because a saved transaction of an open wallet doesn't read
+   * (the engine's `recordUnreadable`): offered, then refused. Remove Unconfirmed is refused too while
+   * any is listed. */
+  recordUnreadable: string[];
+  /** Payments of this wallet seen by their change before the coins they spent are known: the
+   * engine reports their debit as unknown (`totalDebit: null`). */
+  debitUnknown: string[];
+  /** Abandoned payments a coin of which the engine's rescan is still checking before giving it
+   * back (`checkingSpentCoins`). */
+  checkingSpentCoins: string[];
+  /** The wallet is catching up after a chain fork: Abandon and Remove Unconfirmed are refused with
+   * `rescan_in_progress`. */
+  catchingUp: boolean;
 }
+
+/** The coins of `txid` the engine withholds (`coins.pendingUnproven`). */
+const withheldCoins = (coins: Utxo[], txid: string) => coins.filter((u) => u.outpoint.txid === txid && u.excluded === "pendingUnproven");
 
 export const newSendWorld = (): SendWorld => ({
   drafts: {},
@@ -100,6 +133,15 @@ export const newSendWorld = (): SendWorld => ({
   announced: {},
   contactIndex: {},
   lockEvidence: null,
+  rescanFirst: [],
+  settledChild: [],
+  settledChildHidden: [],
+  platformFunding: [],
+  platformFundingHidden: [],
+  recordUnreadable: [],
+  debitUnknown: [],
+  checkingSpentCoins: [],
+  catchingUp: false,
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -151,6 +193,7 @@ export function buildCoins(variant: HistoryVariant, pendingTxid?: string): Utxo[
     coinjoinDenominated: false,
     coinjoinRounds: null,
     spendable: confirmations > 0,
+    excluded: null,
     ...extra,
   });
   return [
@@ -315,6 +358,18 @@ function pickCoins(world: World, coins: Utxo[], source: CoinSource): Utxo[] {
 
 interface Built extends TxEstimate {
   inputs: Utxo[];
+  /** What each recipient receives, in order (plan.rs: subtract-fee payers split the fee equally,
+   * the first of them paying the remainder). */
+  amounts: number[];
+}
+
+/** Each recipient's amount once the subtract-fee payers took `reduce` from theirs (plan.rs). */
+function paidAmounts(recipients: Draft["recipients"], reduce: number): number[] {
+  const payers = recipients.flatMap((r, i) => (r.subtractFeeFromAmount ? [i] : []));
+  const share = payers.length ? Math.floor(reduce / payers.length) : 0;
+  const amounts = recipients.map((r) => r.amount);
+  payers.forEach((i, n) => (amounts[i] -= share + (n === 0 ? reduce - share * payers.length : 0)));
+  return amounts;
 }
 
 /** The draft's transaction: its checks in dw-engine's order, then the inputs, fee and change. */
@@ -328,7 +383,8 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
     if (r.amount <= 0 || r.amount > MAX_MONEY) throw fail("send.invalid_amount", "invalid amount", { kind: "recipient", index });
     if (r.amount < DUST) throw fail("send.dust_amount", "dust amount", { kind: "recipient", index });
   });
-  if (new Set(d.recipients.map((r) => r.address)).size !== d.recipients.length) throw fail("send.duplicate_address", "duplicate address");
+  const duplicate = d.recipients.findIndex((r, i) => d.recipients.findIndex((o) => o.address === r.address) !== i);
+  if (duplicate >= 0) throw fail("send.duplicate_address", "duplicate address", { kind: "recipient", index: duplicate });
   if (d.change.kind === "address" && classifyAddress(network, d.change.address).kind !== "core")
     throw fail("send.invalid_change_address", "invalid change address");
   checkRate(d.fee);
@@ -356,8 +412,10 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   let change: number | null = sum - pay - (subtract ? 0 : base);
   let rest = 0;
   // Change at or below dust is not made (as plan.rs: change only when the rest is above dust): the
-  // transaction is smaller and the rest goes to the fee.
-  if (change <= DUST) {
+  // transaction is smaller and the rest goes to the fee. A fully mixed spend makes none at all, so
+  // its rest pays the fee first and a subtract-fee recipient pays only what it leaves (plan.rs
+  // `plan_with`, no_change).
+  if (change <= DUST || d.source.kind === "fullyMixedOnly") {
     base = feeWith(inputs.length, false);
     rest = sum - pay - (subtract ? 0 : base);
     if (rest < 0) {
@@ -372,9 +430,14 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   const totalSent = pay - reduce;
   // A fully mixed spend makes no change: the rest is fee (dw-engine `send::finish`).
   if (d.source.kind === "fullyMixedOnly" && change !== null) [fee, change] = [fee + change, null];
-  if (subtract && totalSent < DUST) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: 0 });
+  const amounts = paidAmounts(d.recipients, reduce);
+  const tooSmall = amounts.findIndex((a, i) => d.recipients[i].subtractFeeFromAmount && a < DUST);
+  if (tooSmall >= 0) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: tooSmall });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
-  return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs };
+  const sizeBytes = sizeOf(inputs.length, outputs + (change === null ? 0 : 1));
+  // The fee beyond the rate for the size: a dust rest, and a mixed spend's change (dw-engine `Plan::left_over`).
+  const leftOver = Math.max(0, fee - feeFor(sizeBytes, rate));
+  return { fee, sizeBytes, inputCount: inputs.length, change, totalSent, leftOver, inputs, amounts };
 }
 
 function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {
@@ -403,7 +466,17 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", `refused: ${refusal}`, { kind: "txAction", refusal });
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`); the rescanFirst and
+ * recordUnreadable steps are marked as the fixture's, so only the renderer's catalog text can show
+ * them unmarked. */
+const refusalMessage = (refusal: TxActionRefusalName) =>
+  refusal === "rescanFirst"
+    ? "[fixture engine] Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+    : refusal === "recordUnreadable"
+      ? "[fixture engine] A saved transaction of an open wallet can't be read."
+      : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
+export const refused = (refusal: TxActionRefusalName, walletId: string | null = null) =>
+  fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal, walletId });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -416,7 +489,7 @@ export interface SendDeps {
   /** DP3-01's contact checks of `r` (D2 for a draft, D4 for `prepare`), in the engine's order;
    * throws its refusal. `amount`: a draft's amount checks, which the engine makes after the ids
    * and before the payee (`validate_recipients`). */
-  checkContact(w: World, walletId: string, r: ContactRecipient, stage: "draft" | "prepare", amount?: () => void): void;
+  checkContact(w: World, walletId: string, r: Pair, stage: "draft" | "prepare", amount?: () => void): void;
   /** For a `begin_flow` lease id: charges `outflow` to the lease's Spend budget, or throws the
    * engine's refusal; `false` when `id` is not a lease id (a vault grant). */
   chargeLease(ctx: Ctx, walletId: string, id: string, outflow: number): boolean;
@@ -678,7 +751,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     draft_estimate: ({ draft }, { world }) => {
       const d = draftOf(world, draft);
       if (d.contact) checkContact(world, d.walletId, d.contact, "draft");
-      const { inputs: _, ...estimate } = build(world, wallet(world, d.walletId), d);
+      const { inputs: _, amounts: __, ...estimate } = build(world, wallet(world, d.walletId), d);
       return estimate;
     },
     // dash-qt "Create Unsigned" (QT-077): the draft's plan as a PSBT the PSBT tab can analyze,
@@ -690,7 +763,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const change = d.change.kind === "address" ? d.change.address : receiveAddress(w, 2000 + draft, null).address;
       const psbt = btoa(`psbt\xffdraft-${draft}`);
       const outputs = [
-        ...d.recipients.map((r, i) => ({ address: r.address, amount: i === 0 ? built.totalSent : r.amount, isMine: owns(w, r.address) })),
+        ...d.recipients.map((r, i) => ({ address: r.address, amount: built.amounts[i], isMine: owns(w, r.address) })),
         ...(built.change === null ? [] : [{ address: change, amount: built.change, isMine: d.change.kind === "auto" || owns(w, change) }]),
       ];
       world.tools.psbts[psbt] = {
@@ -721,7 +794,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       const recipient = d.recipients[0];
       const changeAddress = d.change.kind === "address" ? d.change.address : receiveAddress(w, 1000 + h, null).address;
       const outputs = [
-        ...d.recipients.map((r) => ({ address: r.address, amount: r === recipient ? built.totalSent : r.amount, isChange: false, label: r.label, isMine: !d.contact && owns(w, r.address) })),
+        ...d.recipients.map((r, i) => ({ address: r.address, amount: built.amounts[i], isChange: false, label: r.label, isMine: !d.contact && owns(w, r.address) })),
         ...(built.change === null ? [] : [{ address: changeAddress, amount: built.change, isChange: true, label: null, isMine: d.change.kind === "auto" || owns(w, changeAddress) }]),
       ];
       const externalSent = outputs.filter((o) => !o.isMine).reduce((n, o) => n + o.amount, 0);
@@ -802,14 +875,19 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         txid,
         isCoinbase: row.txType === "generated",
         totalCredit: d.outputs.filter((o) => o.isMine).reduce((n, o) => n + (o.amount ?? 0), 0),
-        totalDebit: d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        totalDebit: world.send.debitUnknown.includes(txid) ? null : d.inputs.filter((i) => i.isMine).reduce((n, i) => n + (i.amount ?? 0), 0),
+        inputsUnresolved: d.inputs.some((i) => !i.isMine),
         net: row.amount,
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: abandonRefusal(row) === null,
+        canAbandon:
+          (abandonRefusal(row) === null && !world.send.settledChildHidden.includes(txid) && !world.send.platformFundingHidden.includes(txid)) ||
+          world.send.rescanFirst.includes(txid),
         canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
+        withheldOutputs: withheldCoins(wallet(world, walletId).coins, txid).map((u) => u.outpoint),
+        checkingSpentCoins: world.send.checkingSpentCoins.includes(txid),
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
       return extras;
@@ -817,9 +895,24 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
+      if (ctx.world.send.catchingUp) throw fail("rescan_in_progress", "a rescan is in progress");
+      if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
+      if (ctx.world.send.recordUnreadable.includes(txid)) throw refused("recordUnreadable", walletId);
+      if (ctx.world.send.settledChild.includes(txid) || ctx.world.send.settledChildHidden.includes(txid)) throw refused("settledDescendant");
+      if (ctx.world.send.platformFunding.includes(txid) || ctx.world.send.platformFundingHidden.includes(txid)) throw refused("platformFunding");
       const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
+      // A payment whose coin the engine withholds: its pending coin goes. The coins it spent come
+      // back only once the engine's rescan finds them unspent, which the fixture doesn't run.
+      const withheld = withheldCoins(w.coins, txid);
+      if (withheld.length > 0) {
+        w.coins = w.coins.filter((u) => !withheld.includes(u));
+        const b = w.summary.balances;
+        if (b) w.summary.balances = { ...b, withheld: b.withheld - withheld.reduce((n, u) => n + u.amount, 0) };
+        changed(ctx, w, [txid]);
+        return null;
+      }
       const mine = ctx.world.send.sent[txid];
       if (mine) {
         w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
@@ -829,6 +922,11 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         // An incoming payment the wallet abandons: its outputs go, and so does its pending amount.
         w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
         moveBalance(w, -row.amount, row.status.instantLocked || row.status.confirmations > 0 ? "confirmed" : "unconfirmed");
+      }
+      // The wallet's own registration abandoned: the shared session's reserved coins are spendable again.
+      for (const sh of ctx.world.shared.sessions) if (sh.txid === txid && sh.stage.kind === "sent" && sh.reserved.length > 0) {
+        sh.abandonable = true;
+        sh.abandonCharge = abandonFee(sh.reserved.length);
       }
       changed(ctx, w, [txid]);
       return null;

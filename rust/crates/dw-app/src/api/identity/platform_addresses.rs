@@ -32,6 +32,14 @@ pub struct PlatformAddressBalance {
     /// Unix seconds of this session's last sync pass; `null` before one.
     pub synced_at: Option<u64>,
     pub syncing: bool,
+    /// The network has address funds transitions: below protocol version 11
+    /// a top-up or send from these addresses is refused.
+    pub sends_active: bool,
+    /// `"platform_address_sends"`: this build keeps sends and moves from
+    /// these addresses off on this network (mainnet), whatever its
+    /// protocol version (`platform.feature_off` with that feature), and
+    /// `sendsActive` is `false`. `null` elsewhere.
+    pub sends_off: Option<String>,
 }
 
 impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
@@ -43,6 +51,8 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses,
             synced_at,
             syncing,
+            sends_active,
+            sends_off,
         } = b;
         PlatformAddressBalance {
             credits,
@@ -51,6 +61,8 @@ impl From<engine::PlatformAddressBalance> for PlatformAddressBalance {
             addresses: addresses.into_iter().map(Into::into).collect(),
             synced_at,
             syncing,
+            sends_active,
+            sends_off,
         }
     }
 }
@@ -72,11 +84,30 @@ impl From<engine::PlatformAddressRow> for PlatformAddressRow {
     }
 }
 
+impl From<PlatformAddressRow> for engine::PlatformAddressRow {
+    fn from(r: PlatformAddressRow) -> Self {
+        let PlatformAddressRow { address, credits } = r;
+        engine::PlatformAddressRow { address, credits }
+    }
+}
+
 /// `incoming` and `outgoing`: a balance change a sync pass saw;
 /// `moveToCore`: a "Move to Dash wallet" of this wallet; `send`: a send of
 /// this wallet to a Platform address (`to`); `fromCore`: an "Add from Dash
 /// wallet" of this wallet to its Platform address (`address`), pending
-/// until Platform proves it applied.
+/// until Platform proves it applied; `toIdentity`: a top-up of one of this
+/// wallet's identities (`to`, base58) from its Platform addresses;
+/// `contactPayment`: a payment to a DashPay contact (`contact`) from the
+/// Platform balance, to its Core address (`to`);
+/// `fromShielded`: an unshield of this wallet to its Platform address
+/// (`address`), pending until Platform executed it (`done`) or did not
+/// (`failed`);
+/// `recovered`: the value left on a transfer to Shielded that Platform
+/// refused after a penalty, recovered to this wallet's Platform address
+/// (`address`), pending until Platform proves it applied;
+/// `registrationRefund`: what Platform returned to this wallet's Platform
+/// address (`address`) when it could not create the identity a username
+/// paid from the Shielded balance (the payment less a penalty).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum PlatformActivityKind {
@@ -85,10 +116,16 @@ pub enum PlatformActivityKind {
     MoveToCore,
     Send,
     FromCore,
+    ToIdentity,
+    ContactPayment,
+    FromShielded,
+    Recovered,
+    RegistrationRefund,
 }
 
 mirror_enum!(engine::PlatformActivityKind => PlatformActivityKind {
-    Incoming, Outgoing, MoveToCore, Send, FromCore
+    Incoming, Outgoing, MoveToCore, Send, FromCore, ToIdentity, ContactPayment, FromShielded, Recovered,
+    RegistrationRefund
 });
 
 /// `pending`: a move whose outcome is not known yet (never retried);
@@ -131,6 +168,15 @@ pub struct PlatformActivity {
     pub may_land: bool,
     /// A done send whose debit counts the fee estimate.
     pub estimated: bool,
+    /// A `contactPayment`'s contact; absent for every other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub contact: Option<crate::dto::history::TxCounterparty>,
+    /// `false` on every row of a group whose proof does not say which
+    /// member went through (the newest `done` included); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::PlatformActivity> for PlatformActivity {
@@ -147,6 +193,8 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact,
+            unattributed,
         } = a;
         PlatformActivity {
             id,
@@ -160,6 +208,8 @@ impl From<engine::PlatformActivity> for PlatformActivity {
             at,
             may_land,
             estimated,
+            contact: contact.map(Into::into),
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -178,6 +228,9 @@ pub struct MoveToCoreQuote {
     /// The wallet's own Core receive address: `platformMoveToCore` pays it.
     pub to: String,
     pub grant: GrantRequest,
+    /// The held top-up from Platform this move is the exit of: pass it to
+    /// `platformMoveToCore`.
+    pub exit_of: Option<String>,
 }
 
 impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
@@ -188,6 +241,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant,
+            exit_of,
         } = q;
         MoveToCoreQuote {
             credits,
@@ -195,6 +249,7 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
             expected_duffs,
             to,
             grant: grant.into(),
+            exit_of,
         }
     }
 }
@@ -265,6 +320,11 @@ pub struct MoveToCoreOutcome {
     #[ts(type = "string | null")]
     #[serde(with = "crate::dto::credits::option")]
     pub fee_credits: Option<u64>,
+    /// `false` when its group settled with no evidence of which member
+    /// went through; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
@@ -276,6 +336,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             to,
             state,
             fee_credits,
+            unattributed,
         } = o;
         MoveToCoreOutcome {
             id,
@@ -284,6 +345,7 @@ impl From<engine::MoveToCoreOutcome> for MoveToCoreOutcome {
             to,
             state: state.into(),
             fee_credits,
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -401,6 +463,11 @@ pub struct PlatformSendOutcome {
     pub fee_credits: Option<u64>,
     /// Done: `credits` counts the fee estimate.
     pub estimated: bool,
+    /// `false` when its group settled with no evidence of which member
+    /// went through; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub winner_known: Option<bool>,
 }
 
 impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
@@ -415,6 +482,7 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
             may_land,
             fee_credits,
             estimated,
+            unattributed,
         } = o;
         PlatformSendOutcome {
             id,
@@ -426,6 +494,7 @@ impl From<engine::PlatformSendOutcome> for PlatformSendOutcome {
             may_land,
             fee_credits,
             estimated,
+            winner_known: unattributed.then_some(false),
         }
     }
 }
@@ -568,5 +637,70 @@ impl From<engine::PendingPlatformFund> for PendingPlatformFund {
             consumption_unknown,
             state: state.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(unattributed: bool) -> serde_json::Value {
+        serde_json::to_value(PlatformActivity::from(engine::PlatformActivity {
+            id: "move-1-0".into(),
+            kind: engine::PlatformActivityKind::MoveToCore,
+            state: engine::PlatformActivityState::Replaced,
+            credits: 1,
+            address: None,
+            to: None,
+            expected_duffs: None,
+            fee_credits: None,
+            at: 1,
+            may_land: false,
+            estimated: false,
+            contact: None,
+            unattributed,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_row_whose_group_names_no_winner_crosses_winner_known_false() {
+        assert_eq!(row(true)["winnerKnown"], serde_json::json!(false));
+        assert!(row(false).get("winnerKnown").is_none());
+    }
+
+    #[test]
+    fn an_outcome_whose_group_names_no_winner_crosses_winner_known_false() {
+        let moved = |unattributed| {
+            serde_json::to_value(MoveToCoreOutcome::from(engine::MoveToCoreOutcome {
+                id: "move-1-0".into(),
+                credits: 1,
+                expected_duffs: None,
+                to: None,
+                state: engine::PlatformActivityState::Done,
+                fee_credits: None,
+                unattributed,
+            }))
+            .unwrap()
+        };
+        let sent = |unattributed| {
+            serde_json::to_value(PlatformSendOutcome::from(engine::PlatformSendOutcome {
+                id: "move-1-0".into(),
+                credits: 1,
+                amount_credits: 1,
+                fee_from_amount: false,
+                to: None,
+                state: engine::PlatformActivityState::Done,
+                may_land: false,
+                fee_credits: None,
+                estimated: false,
+                unattributed,
+            }))
+            .unwrap()
+        };
+        assert_eq!(moved(true)["winnerKnown"], serde_json::json!(false));
+        assert_eq!(sent(true)["winnerKnown"], serde_json::json!(false));
+        assert!(moved(false).get("winnerKnown").is_none());
+        assert!(sent(false).get("winnerKnown").is_none());
     }
 }

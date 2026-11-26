@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
-import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
-import { shieldedSyncing, shieldedSyncText, syncingRefusal } from "./syncing";
+import type { ShieldedSyncInfo } from "../api/generated/ShieldedSyncInfo";
+import { SHIELDED_SCAN_POLL_MS, shieldedBindable, shieldedStatusRefetchMs, shieldedSyncInfoRefetchMs } from "../api/queries";
+import { scanShare, shieldedReceiveGate, shieldedSyncing, shieldedSyncText, shieldedWait, shieldedWaitText, syncingRefusal } from "./syncing";
+import { shieldedErrorText } from "./flow";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>
   ({ active: true, ready: true, syncing: false, balance: "0", pending: "0", pendingShields: [], proverReady: true, ...over }) as ShieldedStatus;
@@ -41,5 +43,72 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(shieldedStatusRefetchMs(status({ syncing: false }))).toBe(false);
     expect(shieldedStatusRefetchMs(null)).toBe(false);
     expect(shieldedStatusRefetchMs(undefined)).toBe(false);
+  });
+
+  it("re-reads it while the account is not established and only time holds it, not an unlock", () => {
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "bound" }))).toBe(5_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "binding" }))).toBe(15_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, syncing: true, account: "binding" }))).toBe(15_000);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "locked" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "mixingOnly" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ ready: false, account: "watchOnly" }))).toBe(false);
+    expect(shieldedStatusRefetchMs(status({ active: false, ready: false, account: null }))).toBe(false);
+  });
+
+  it("lets the full read bind any unbound account, as a key saved earlier binds with no unlock", () => {
+    const info = (over: Partial<ShieldedSyncInfo>) => ({ active: true, account: "binding", established: false, syncing: false, scan: null, lastPassFailed: false, ...over }) as ShieldedSyncInfo;
+    for (const account of ["binding", "locked", "mixingOnly", "watchOnly"] as const) expect(shieldedBindable(info({ account }))).toBe(true);
+    expect(shieldedBindable(info({ account: "bound" }))).toBe(false);
+    expect(shieldedBindable(info({ active: false, account: null }))).toBe(false);
+    expect(shieldedBindable(undefined)).toBe(false);
+  });
+
+  it("re-reads the sync while it binds, runs, failed or is unread, and not while an unlock holds it", () => {
+    const info = (over: Partial<ShieldedSyncInfo>) => ({ active: true, account: "bound", established: true, syncing: false, scan: null, lastPassFailed: false, ...over }) as ShieldedSyncInfo;
+    expect(shieldedSyncInfoRefetchMs(info({}), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(info({ syncing: true }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ lastPassFailed: true }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ established: false }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ account: "binding", established: false }), false)).toBe(5_000);
+    expect(shieldedSyncInfoRefetchMs(info({ account: "locked", established: false }), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(info({ active: false, account: null }), false)).toBe(false);
+    expect(shieldedSyncInfoRefetchMs(undefined, true)).toBe(5_000);
+  });
+
+  it("shows the address once the key is bound, a wait while it binds, and why there is none", () => {
+    expect(shieldedReceiveGate(status({ ready: false, account: "bound" }))).toBe("address");
+    expect(shieldedReceiveGate(status({ account: "bound" }))).toBe("address");
+    expect(shieldedReceiveGate(status({ ready: false, account: "binding" }))).toBe("binding");
+    expect(shieldedReceiveGate(status({ ready: false, account: "locked" }))).toBe("unlock");
+    expect(shieldedReceiveGate(status({ ready: false, account: "mixingOnly" }))).toBe("unlock");
+    expect(shieldedReceiveGate(status({ ready: false, account: "watchOnly" }))).toBe("watchOnly");
+  });
+
+  it("gives a pass's share of the pool, never 100%", () => {
+    expect(scanShare({ checked: 25, total: 100 })).toBe(25);
+    expect(scanShare({ checked: 100, total: 100 })).toBe(99.9);
+    expect(scanShare(null)).toBeNull();
+    expect(scanShare({ checked: 0, total: 0 })).toBeNull();
+  });
+
+  // MG: Send, Add and Transfer name the cause when the vault's lock or a watch-only wallet holds the
+  // account; a real catch-up keeps "still syncing".
+  it("names the cause of the wait: the lock, a mixing-only unlock, a watch-only wallet, or the sync", () => {
+    const cases: [ShieldedStatus["account"], string][] = [
+      ["locked", "Shielded starts syncing when you unlock the wallet. Unlock it, then try again once the sync finishes."],
+      ["mixingOnly", "The wallet is unlocked for mixing only, so Shielded can't sync. Unlock it fully, then try again once the sync finishes."],
+      ["watchOnly", "Shielded isn't available in a watch-only wallet."],
+      ["bound", "Shielded is still syncing. Try again when it finishes."],
+      ["binding", "Shielded is still syncing. Try again when it finishes."],
+      [null, "Shielded is still syncing. Try again when it finishes."],
+    ];
+    for (const [account, line] of cases) {
+      const s = status({ ready: false, account });
+      expect(shieldedWaitText(s), String(account)).toBe(line);
+      expect(shieldedErrorText({ code: "shielded.not_synced", message: "", data: null }, String, String, "send", shieldedWait(s)), String(account)).toBe(line);
+    }
+    // Established, or not active: nothing waits.
+    expect(shieldedWait(status({ ready: true, account: "bound" }))).toBeNull();
+    expect(shieldedWait(status({ active: false, ready: false, account: null }))).toBeNull();
   });
 });
