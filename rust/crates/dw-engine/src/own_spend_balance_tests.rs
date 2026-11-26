@@ -4877,10 +4877,12 @@ fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
     assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
 }
 
-/// The same claim dropped by the store's own check at an open: S, whose
-/// parent then has no row, is left to #739 too, not dropped as orphaned.
+/// The same claim at an open after its coin's block: the store's repair
+/// keeps it, its input not push-only (S1), so S, built on it, is left to
+/// #739 too, not dropped as orphaned. One the repair drops is proven
+/// unsigned, and what is built on it goes with it (`dropped_claim_tests`).
 #[test]
-fn a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned() {
+fn a_payment_on_a_claim_the_store_keeps_is_not_taken_as_orphaned() {
     let (_dir, engine, session, id) = engine_wallet();
     let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
     let b = OutPoint::new(b_funding.txid(), 0);
@@ -4894,8 +4896,8 @@ fn a_payment_on_a_claim_the_store_dropped_is_not_taken_as_orphaned() {
     );
     let session = reopen(&engine, session);
     assert!(
-        !live_in_history(&session, id, claim.txid()),
-        "the store dropped the claim"
+        live_in_history(&session, id, claim.txid()),
+        "the store keeps the claim"
     );
     assert_kept_with_b(&engine, &session, id, &s, b, "loaded");
     let session = reopen(&engine, session);
