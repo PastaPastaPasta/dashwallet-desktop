@@ -8,7 +8,8 @@ import type { Tree } from "../core";
  * its `dismiss` is the renderer's own. `restore` and
  * `restored` are the restore flow's (MG's restore copy): the renderer's own screens for `storage_restore`,
  * its confirm and banner, and the foreign screen's keys, which come in the engine's screen. `refused.recover`
- * is the damaged store's way out (Q107 C1) in the engine's screen; `recover` is the renderer's own
+ * is the damaged store's way out (Q107 C1) in the engine's screen, and the Restore screen's once a restore
+ * was refused for a shielded hold (`recover.restoreHeld`); `recover` is the renderer's own
  * confirm for it, `folder` there the refused folder. `notPrivate`
  * is the renderer's own screen for `storage_not_private`: `folder` there is the directory others can
  * change, and `reason` says why. */
@@ -20,6 +21,10 @@ export const storeUpgrade = {
       confirm: "Restart and set up",
       cancel: "Cancel",
     },
+    /** PLACEHOLDER until MG's copy: the Restore screen's line once Restore earlier data was refused for a
+     * shielded hold and the screen offers Set up from recovery phrase. */
+    restoreHeld:
+      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.",
   },
   notPrivate: {
     title: "Dash Wallet can't use this data folder",
@@ -116,16 +121,16 @@ export const storeUpgrade = {
     held: {
       text: "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it.",
       inFlight: "That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data.",
-      next: "Keep your current wallet data as it is and choose Report a problem.",
+      next: "To use your wallets again, choose Set up from recovery phrase: you set up your wallets again in a new data folder, each from its own recovery phrase, and Dash Wallet leaves {folder} as it is. If a payment, a username or identity registration, a credit top-up or a governance proposal was in progress, or you don't have a recovery phrase, choose Report a problem first.",
     },
     notStarted: {
       title: "Dash Wallet couldn't start restoring your wallet data",
       text: "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.",
       held: {
         inFlight:
-          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore, and restarting won't change this. Choose Report a problem. To stop restoring, choose Cancel restore.",
+          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore, and restarting won't change this. To stop restoring, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
         carriedOver:
-          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know whether a Shielded payment from one of your wallets went through, or couldn't read its record of one, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Report a problem. To stop restoring, choose Cancel restore.",
+          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know whether a Shielded payment from one of your wallets went through, or couldn't read its record of one, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Cancel restore. You can then choose Set up from recovery phrase instead. If something was in progress, choose Report a problem first.",
       },
       restart: "Restart",
       cancel: "Cancel restore",
