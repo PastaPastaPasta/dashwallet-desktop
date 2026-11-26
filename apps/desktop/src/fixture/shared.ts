@@ -593,7 +593,7 @@ function planDissolve(shares: SharedShares, actor: number, fee: number): Dissolv
 function dissolveOp(world: World, hash: string, fee: number, debit: number): ProTxOperation {
   const n = world.shared.sent.length + 1;
   const op: ProTxOperation = {
-    id: `op-dis-${fake(String(n), 6)}`,
+    id: fake(`d15${n.toString(16)}`, 32),
     kind: "dissolve",
     proTxHash: hash,
     txid: h(`d${n}`),
@@ -626,7 +626,7 @@ function dissolveOp(world: World, hash: string, fee: number, debit: number): Pro
     },
   };
   world.shared.sent.push(op);
-  world.masternodes.operations.push(copy(op));
+  world.masternodes.operations.unshift(copy(op));
   return copy(op);
 }
 
