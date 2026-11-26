@@ -3891,9 +3891,14 @@ fn a_pass_leaves_hooked_spends_to_their_artifact_and_admit_refuses_unrecorded_on
     let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
     assert!(bound_address(engine, session, wallet).0.is_bound());
     let manager = session.manager().unwrap();
-    let hooked_bytes = b"a hooked transition".to_vec();
-    let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
     let selected_note = note(6, NOTE);
+    let hooked_bytes = signed_spend(
+        5,
+        &ShieldedDispatchKind::Transfer,
+        [0; 32],
+        &[selected_note.nullifier, [0xee; 32]],
+    );
+    let hooked_hash: [u8; 32] = Sha256::digest(&hooked_bytes).into();
     let s = Arc::clone(session);
     let m = Arc::clone(&manager);
     engine.block_on(async move {

@@ -374,7 +374,12 @@ impl Opened {
     ) -> Result<(), String> {
         let hook = EngineDispatch::new(&self.session, c);
         let note = note(position, NOTE);
-        let st_bytes = format!("signed transition {n}").into_bytes();
+        let st_bytes = super::signed_spend(
+            n,
+            &ShieldedDispatchKind::Transfer,
+            [0xa0; 32],
+            &[note.nullifier, [0xee; 32]],
+        );
         let payload = ShieldedDispatchPayload {
             kind: ShieldedDispatchKind::Transfer,
             wallet_id: main_wallet().0,
@@ -781,7 +786,12 @@ fn an_unreadable_holds_table_keeps_the_account_unbound() {
         .unwrap();
     let hook = Arc::new(EngineDispatch::new(&o.session, &c));
     let note = note(2, NOTE);
-    let st_bytes = b"signed transition 9".to_vec();
+    let st_bytes = super::signed_spend(
+        9,
+        &ShieldedDispatchKind::Transfer,
+        [0xa0; 32],
+        &[note.nullifier, [0xee; 32]],
+    );
     let payload = ShieldedDispatchPayload {
         kind: ShieldedDispatchKind::Transfer,
         wallet_id: main_wallet().0,

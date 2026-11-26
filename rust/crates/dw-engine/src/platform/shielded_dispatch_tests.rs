@@ -1487,8 +1487,7 @@ fn a_payout_spend_is_re_sent_only_with_its_dispatch_recorded() {
     let (session, wallet) = (Arc::clone(&h.f.session), h.f.wallet);
     payout_row(&h.f, "sh-d");
     let arm = session.arm_payout(wallet, "sh-d");
-    let mut withdrawal = h.staged(6, &[6]);
-    withdrawal.kind = ShieldedDispatchKind::Withdraw;
+    let withdrawal = h.staged_as(6, &[6], ShieldedDispatchKind::Withdraw);
     assert_eq!(h.dispatch(withdrawal), Ok(()));
     drop(arm);
     assert!(dispatched(&h.f, "sh-d"));
