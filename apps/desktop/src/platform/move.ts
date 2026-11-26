@@ -278,12 +278,15 @@ export const isHeldSend = (a: PlatformActivity): boolean => a.kind === "send" &&
 
 /** What the cancel of `a` would be: of a held move to the Dash wallet or contact payment, and only
  * while no send, top-up or other cancel holds beside it (its document could not tell those apart). Its
- * own cancel that Platform answered and that still holds is offered again: the engine re-sends it as signed. */
-export function cancelOf(a: PlatformActivity, activity: readonly PlatformActivity[] | null | undefined): "move" | "payment" | null {
+ * own cancel that Platform answered and that still holds is offered again: the engine re-sends it as signed.
+ * While `sendsOff` (mainnet, where this version keeps new moves off) only that re-send is offered: a new
+ * cancel is not, and the move or payment waits for Platform. */
+export function cancelOf(a: PlatformActivity, activity: readonly PlatformActivity[] | null | undefined, sendsOff = false): "move" | "payment" | null {
   if (a.state !== "failed" || !a.mayLand || (a.kind !== "moveToCore" && a.kind !== "contactPayment")) return null;
   const blocks = (b: PlatformActivity) => (b.cancels ? b.cancels !== a.id : b.kind !== "moveToCore" && b.kind !== "contactPayment");
   const beside = activity?.some((b) => b.id !== a.id && isHeldOp(b) && (b.state === "pending" || blocks(b)));
-  return beside ? null : a.kind === "moveToCore" ? "move" : "payment";
+  if (beside || (sendsOff && !activity?.some((b) => b.cancels === a.id && isHeldOp(b)))) return null;
+  return a.kind === "moveToCore" ? "move" : "payment";
 }
 
 /** The newest of `heldExitOps`, or `null`. */

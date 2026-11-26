@@ -5,7 +5,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
 import { errorMessage } from "../api/backend";
 import { creditsToDuffs } from "../api/pending";
-import { useBackend, usePlatformActivity, useShieldedHistory, useShieldedStatus } from "../api/queries";
+import { useBackend, usePlatformActivity, usePlatformAddresses, useShieldedHistory, useShieldedStatus } from "../api/queries";
 import { ui } from "../app/ui";
 import { AmountText, DashButton, Icon } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
@@ -15,6 +15,7 @@ import { useDisplay } from "../format/display";
 import { detailDate, isProblem, rowDate, shownAmount } from "../format/tx";
 import { useModel } from "../onboarding/model";
 import { cancelFor, cancelResult, CANCEL_COPY, recipientOf, type CancelKind, type PlatformCancelFlow } from "../platform/cancel";
+import { addressSendsOff } from "../platform/mainnetOff";
 import { cancelOf, isHeldSend, MOVE_COPY, moveErrorText } from "../platform/move";
 import { moveToDashWallet } from "./dashpay/DashPayCard";
 import { GrantSheet } from "./tools/common";
@@ -101,9 +102,10 @@ function HeldActions({ record, walletId, network }: { record: PlatformActivity; 
   const t = useT();
   const backend = useBackend();
   const activity = usePlatformActivity(walletId).data;
+  const sendsOff = addressSendsOff(network, usePlatformAddresses(walletId).data);
   const flow = cancelFor(backend, walletId);
   useModel(flow);
-  const kind = cancelOf(record, activity);
+  const kind = cancelOf(record, activity, sendsOff);
   if (flow.of === record.id && (kind || flow.step !== "confirm")) return <CancelPanel flow={flow} record={record} kind={kind ?? (record.kind === "contactPayment" ? "payment" : "move")} activity={activity} network={network} />;
   if (isHeldSend(record))
     return (

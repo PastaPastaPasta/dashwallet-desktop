@@ -3859,7 +3859,7 @@ pub(crate) async fn cancel_quote(
 ) -> Result<PlatformCancelQuote, CreditsError> {
     let network = session.vault.network();
     let moves = Store::of(session, wallet_id)?.moves().await?;
-    held_exit_open(network, &moves)?;
+    new_cancel_open(network, &moves, of)?;
     let pool = pool(wallet).await?;
     let seen = read(session, net, covered(&pool, &moves), true).await?;
     let held = (moves.iter())
@@ -4156,6 +4156,17 @@ pub(crate) fn address_sends_open(network: Network) -> Result<(), PlatformError> 
 fn held_exit_open(network: Network, moves: &[MoveRecord]) -> Result<(), PlatformError> {
     match address_sends_open(network) {
         Err(_) if moves.iter().any(MoveRecord::holds) => Ok(()),
+        open => open,
+    }
+}
+
+/// [`address_sends_open`] for a cancel of `of`: with the flag off no new
+/// cancel is offered, only a held cancel of `of` again on its own terms;
+/// the held record waits for its document.
+fn new_cancel_open(network: Network, moves: &[MoveRecord], of: &str) -> Result<(), PlatformError> {
+    let resend = (moves.iter()).any(|m| m.cancel_of.as_deref() == Some(of) && m.holds());
+    match address_sends_open(network) {
+        Err(_) if resend => Ok(()),
         open => open,
     }
 }
@@ -4574,6 +4585,7 @@ pub(crate) async fn run(
                     // same.
                     match h.held_cancel(&moves) {
                         Some(c) => c.replan(&balances).ok_or(PlatformError::Unavailable.into()),
+                        None if off => Err(flag()),
                         None => Ok(cancel_plan(h, &limits)?),
                     }
                 }

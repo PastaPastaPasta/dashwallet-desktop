@@ -47,6 +47,15 @@ describe("which way out a held item offers", () => {
     expect(cancelOf({ ...move, state: "done", mayLand: false }, [])).toBeNull();
   });
 
+  it("on mainnet, while new moves are off: no new cancel, only a held cancel's re-send", () => {
+    const move = held("pm-1", "moveToCore");
+    const payout = held("cp-1", "contactPayment");
+    expect([cancelOf(move, [move], true), cancelOf(payout, [payout], true), cancelOf(move, undefined, true)]).toEqual([null, null, null]);
+    expect(cancelOf(move, [move, held("pc-1", "send", { to: OWN, cancels: "pm-1" })], true)).toBe("move");
+    expect(cancelOf(payout, [payout, held("pc-2", "send", { to: OWN, cancels: "cp-1" })], true)).toBe("payment");
+    expect(cancelOf(move, [move, held("pc-1", "send", { to: OWN, cancels: "pm-1", state: "done", mayLand: false })], true)).toBeNull();
+  });
+
   it("names the recipient as its row does: the contact, else the shortened address", () => {
     expect(recipientOf(held("ps-1", "send", { to: PAYEE }))).toBe("tdash1kq7r3m…8p0s2a4d6f8h");
     expect(recipientOf(held("cp-1", "contactPayment", { contact: { identity: "x", username: "alice", displayName: "Alice", avatarUrl: null } }))).toBe("Alice");

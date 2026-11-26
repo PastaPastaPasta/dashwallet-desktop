@@ -428,6 +428,8 @@ function quote(ctx: Ctx, walletId: string, amount: WithdrawAmount): MoveToCoreQu
 function cancelQuote(ctx: Ctx, walletId: string, of: string): PlatformCancelQuote {
   wallet(ctx.world, walletId);
   const p = platformOf(ctx.world, "platform_cancel_quote");
+  // On mainnet only a held cancel of `of` is quoted again; a new one is off.
+  if (!p.activity.some((a) => a.cancels === of && isHeldOp(a))) refuseSendsOff(ctx.world);
   const held = p.activity.find((a) => a.id === of && (a.kind === "moveToCore" || a.kind === "contactPayment") && isHeldOp(a));
   if (!held) throw fail("credits.quote_changed", "that move or payment no longer holds");
   if (held.state === "pending") throw moveHeld(held.id);

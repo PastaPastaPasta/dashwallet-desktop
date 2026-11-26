@@ -1119,11 +1119,12 @@ fn a_new_send_with_no_possible_exit_is_refused() {
     assert_eq!(w.sent_count(), 2);
 }
 
-/// The mainnet flag (#758) stays off for new sends and moves; the exit of
-/// a held send and the cancel of a held move are exits of a record signed
-/// before, so they pass; a cancel with nothing held is off.
+/// The mainnet flag (#758) stays off for new sends, moves and cancels; the
+/// exit of a held send and the re-send of a held cancel finish a record
+/// signed before, so they pass. Elsewhere a held withdrawal's cancel is
+/// offered.
 #[test]
-fn the_exit_and_the_cancel_pass_the_mainnet_flag() {
+fn the_exit_and_a_held_cancel_pass_the_mainnet_flag() {
     let off = |r: Result<(), CreditsError>| match r {
         Err(CreditsError::Platform(PlatformError::FeatureOff { feature })) => {
             assert_eq!(feature, PLATFORM_ADDRESS_SENDS)
@@ -1158,18 +1159,58 @@ fn the_exit_and_the_cancel_pass_the_mainnet_flag() {
         )
         .map(drop));
 
+    // A new cancel is neither offered nor signed: the withdrawal waits for
+    // its document. A held cancel is still sent again on its own terms.
     let w = World::on(DashNetwork::Mainnet);
+    let moved = held_withdrawal(&w);
+    let own = bech32m(&w.address(3), Network::Mainnet);
+    off(w.cancel_quote_of("move-1-0").map(drop));
+    off(w.cancel_as("move-1-0", &own, &w.f.grant(DASH)).map(drop));
+    assert_eq!(w.sent_count(), 0);
+    assert_eq!(w.moves().len(), 1);
+    assert!(w.record("move-1-0").holds());
+    let mut c = moved;
+    c.id = "cancel-of-move-1-0-at-1-0".into();
+    c.kind = MoveKind::Transfer;
+    c.cancel_of = Some("move-1-0".into());
+    c.to = own.clone();
+    c.fee_from_output = true;
+    c.fee_credits = Limits::transfer_at(w.net.version()).fee(1);
+    c.expected_duffs = 0;
+    c.at = 2;
+    w.store(&[c.clone()]);
+    let q = w.cancel_quote_of("move-1-0").unwrap();
+    assert_eq!(
+        (q.to.as_str(), q.fee_credits),
+        (own.as_str(), c.fee_credits)
+    );
+    let out = w
+        .cancel_as("move-1-0", &q.to, &w.f.grant(q.credits))
+        .unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert_eq!(w.sent_count(), 1);
+    assert!(w.moves().iter().all(|m| !m.holds()));
+
+    let w = World::new();
+    assert_ne!(w.network(), Network::Mainnet);
+    held_withdrawal(&w);
+    let out = w.cancel_held("move-1-0").unwrap();
+    assert_eq!(out.state, PlatformActivityState::Done);
+    assert!(w.moves().iter().all(|m| !m.holds()));
+}
+
+/// A withdrawal `move-1-0` of `DASH` from `w.address(0)` that Platform
+/// answered and that may still execute.
+fn held_withdrawal(w: &World) -> MoveRecord {
     let a = w.address(0);
     w.net.fund(a, 3 * DASH);
-    let mut moved = record("move-1-0", 1, &[(&bech32m(&a, Network::Mainnet), 1)]);
+    let mut moved = record("move-1-0", 1, &[(&bech32m(&a, w.network()), 1)]);
     moved.inputs[0].credits = DASH;
     moved.inputs[0].before = 3 * DASH;
     moved.inputs[0].fee_source = true;
     moved.to = w.to.clone();
     moved.state = PlatformActivityState::Failed;
     moved.seen_at = Some(1);
-    w.store(&[moved]);
-    let out = w.cancel_held("move-1-0").unwrap();
-    assert_eq!(out.state, PlatformActivityState::Done);
-    assert!(w.moves().iter().all(|m| !m.holds()));
+    w.store(&[moved.clone()]);
+    moved
 }
