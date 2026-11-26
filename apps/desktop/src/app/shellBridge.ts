@@ -30,6 +30,9 @@ const CONNECT_REJECTED: Readonly<Record<ConnectRejected, string>> = {
   get needsNewerWallet() {
     return t("dashpay.connect.err.newer");
   },
+  get busy() {
+    return t("dashpay.connect.err.busy");
+  },
 };
 
 /** Why a link was not opened, as the window says it; `null` when it opens. */
