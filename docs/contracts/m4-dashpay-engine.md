@@ -5372,20 +5372,20 @@ section. The choice is kept in `<data root>/network.json` (`dw_engine::network_c
     whose anchor is proved pruned from the pool's recorded anchors at height p (they are kept 1,000 blocks), p above
     the highest proved read that found that create's anchor recorded (stored durably per transition; no such read,
     no proof), and none of whose published nullifiers is spent by a proved read at or above p never executed and
-    never can: its artifact is settled `not_executed`, the library's outcome acknowledged so its notes are free, the
-    name cleared and the row failed, retryable. Before either settlement the engine writes its proof durably beside
+    never can: its artifact is settled `not_executed`, the name cleared and the row failed, retryable; its notes stay
+    reserved in upstream's store until the library releases them on its own proof (the engine acknowledges no outcome
+    and frees no note: upstream keeps none to acknowledge). Before either settlement the engine writes its proof durably beside
     the journal (`dp_registration_proved`, per transition; the journal's disposition columns hold only the library's
-    strings, written back by the next read of its outcomes), and that read settles a transition so proved as proved
-    over the library's later `unresolved` listing, a journal still in flight or unresolved after a crash included,
-    and acknowledges it: `not_executed` at once (a failed acknowledgement is repeated), `executed` once the journal
-    reads its notes spent, and so `consumed` (left `unresolved`); a journal status without the proof is not acted on
-    and its outcome stays unacknowledged.
+    strings). The read of the library's outcomes (`settle_outcomes`, which reads upstream's history row) never
+    settles a create `executed`: a row confirmed (its notes read spent) leaves the create `unresolved`, under the
+    library's `unattributable` strings, for this evidence to settle; a row failed with nothing of it held (upstream's
+    own release) settles it `not_executed`; an artifact the engine settled is never read again.
     A bundle of two or more notes signed again over the same notes names the same identity: of its artifacts, one
     not settled `not_executed` answers first. Anything
     else (a dispatch recorded with no artifact, an unresolved artifact before that proof, an absence read below h, a
     failed read) is `waiting: payment_unknown`, and so stays a row whose anchor is never read recorded after the
     failure, or a pool so quiet that it keeps the anchor; a bundle of two or more notes has no padding, so a partly
-    spent read decides nothing. The release of refused first sends (§2.13) leaves a create to this evidence: its
+    spent read decides nothing. The engine's reading of the library's outcomes leaves a create to this evidence: its
     unpadded spend read executed there would read here as Platform's fallback.
     While a named row has no identity, `funds_committed` is true and `discard_registration` is refused. A fallback
     arms, after its proof and under the Platform move lock taken after the shielded wallet lock, a

@@ -4453,6 +4453,21 @@ pub(crate) async fn settle_outcomes(
                 continue;
             }
         };
+        // A Shielded-funded identity create is settled executed only by its
+        // registration's own evidence (`registration_shielded`): its notes
+        // read spent prove nothing of it (an unpadded create read executed
+        // there would read as Platform's fallback), so a confirmed row leaves
+        // it unresolved.
+        let (status, disposition) = if artifact.kind == Some(ArtifactKind::IdentityCreate)
+            && status == ArtifactStatus::Executed
+        {
+            if artifact.status == CREATE_SPENT.0 {
+                continue;
+            }
+            CREATE_SPENT
+        } else {
+            (status, disposition)
+        };
         let settled = (session.leases)
             .settle_shielded_artifact(wallet, st_hash, status, disposition, false)
             .await;
@@ -4469,6 +4484,15 @@ pub(crate) async fn settle_outcomes(
 
 /// A spend's settlement in the journal: its status and disposition strings.
 pub(super) type SpendOutcome = (ArtifactStatus, Option<(&'static str, Option<&'static str>)>);
+
+/// The journal's settlement of a Shielded-funded identity create whose
+/// history row reads confirmed ([`settle_outcomes`]): unresolved, under the
+/// library's `Unattributable` disposition strings, for its registration's
+/// evidence to settle.
+const CREATE_SPENT: SpendOutcome = (
+    ArtifactStatus::Unresolved { unrecorded: false },
+    Some(("unresolved", Some("unattributable"))),
+);
 
 /// The library's outcome of the spend of open `artifact`, as its history
 /// row reports it (upstream keeps no disposition of its own):
