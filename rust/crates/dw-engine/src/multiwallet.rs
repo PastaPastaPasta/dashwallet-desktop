@@ -790,6 +790,8 @@ impl NetworkSession {
                 }
             };
             let was_unloaded = this.hub.admit(id);
+            let in_flight = live.manager.platform_address_sync_arc().is_syncing();
+            this.hub.restore.forget_wallet_checks(id, in_flight);
             let registered = async {
                 let store = Arc::clone(&live.store);
                 let refused = crate::keys::registration_refused(this.data_dir());
@@ -865,6 +867,7 @@ impl NetworkSession {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the watch-only xpub");
             }
             this.list_on_startup(&held, id, true).await;
+            this.load_added_wallet(id).await;
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
                 wallet_id: id,

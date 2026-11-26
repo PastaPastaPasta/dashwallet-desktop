@@ -257,6 +257,11 @@ pub struct RestoreStatus {
     /// without Platform is waited for: Platform and Shielded funds actions
     /// stay refused until a session with Platform has checked them.
     pub platform_only: bool,
+    /// This session runs without Platform (opened with `noPlatform` or by
+    /// `finishWithoutPlatform`): the Platform and Shielded funds actions
+    /// are refused `platform.unavailable`, and `restoreRetry` starts no
+    /// Platform pass.
+    pub platform_off: bool,
 }
 
 /// One thing a restored network waits for.
@@ -287,6 +292,7 @@ impl From<dw_engine::RestoreStatus> for RestoreStatus {
             history_wallets: s.history_wallets.iter().map(ToString::to_string).collect(),
             clear_failed: s.clear_failed,
             platform_only: s.platform_only,
+            platform_off: s.platform_off,
         }
     }
 }

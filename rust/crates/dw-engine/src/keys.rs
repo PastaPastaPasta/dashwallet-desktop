@@ -1291,6 +1291,8 @@ impl NetworkSession {
             }
         };
         if registered {
+            let in_flight = manager.platform_address_sync_arc().is_syncing();
+            self.hub.restore.forget_wallet_checks(wallet_id, in_flight);
             if let Some((from, raised)) = attached {
                 // A stored range start-up left unapplied goes on before the
                 // replay, or the replay stays owed.
@@ -1376,6 +1378,8 @@ impl NetworkSession {
             self.set_wide_scan(wallet_id, previous).await;
         };
         let was_unloaded = self.hub.admit(wallet_id);
+        let in_flight = manager.platform_address_sync_arc().is_syncing();
+        self.hub.restore.forget_wallet_checks(wallet_id, in_flight);
         let registered = if registration_refused(self.data_dir()) {
             Err(EngineError::Internal("test: registration refused".into()))
         } else {
@@ -1477,6 +1481,7 @@ impl NetworkSession {
             self.mark_created_here(wallet_id).await;
         }
         self.list_on_startup(held, wallet_id, true).await;
+        self.load_added_wallet(wallet_id).await;
         self.sink.emit(EngineEvent::WalletCreated {
             network: self.network.clone(),
             wallet_id,

@@ -90,6 +90,8 @@ pub struct RestoreStatus {
     /// Platform-off finish or of a loaded wallet Platform has not checked
     /// since its load.
     pub platform_only: bool,
+    /// This session runs without Platform.
+    pub platform_off: bool,
 }
 
 /// One thing a restored network waits for.
@@ -688,6 +690,22 @@ impl NetworkSession {
         }
     }
 
+    /// A wallet added in the session (imported, restored from its phrase,
+    /// created, watch-only): while the mark holds, its history loads so its
+    /// first complete load builds its holds (H3) and wakes the watcher; a
+    /// failed load leaves them unbuilt and the mark held. With the residue
+    /// alone the watcher looks again.
+    pub(crate) async fn load_added_wallet(&self, wallet_id: WalletId) {
+        let gate = &self.hub.restore;
+        if gate.is_restored() {
+            if let Err(e) = self.load_history_for(vec![wallet_id]).await {
+                tracing::warn!(%wallet_id, error = %e, "restore: the added wallet's history did not load; the mark stays");
+            }
+        } else if gate.platform_pending() {
+            gate.wake.notify_one();
+        }
+    }
+
     /// Whether `wallet`'s Platform funds wait: the mark, the residue, or
     /// the wallet's own Platform row (present when it does not read).
     pub(crate) fn wallet_platform_held(&self, wallet: WalletId) -> bool {
@@ -883,6 +901,7 @@ impl NetworkSession {
     pub async fn restore_status(&self) -> Result<Option<RestoreStatus>, EngineError> {
         let gate = &self.hub.restore;
         let clear_failed = gate.clear_failed.load(Ordering::SeqCst);
+        let platform_off = !self.platform.enabled();
         if gate.is_restored() {
             let (waiting, history_wallets) = self.restore_waiting().await?;
             return Ok(Some(RestoreStatus {
@@ -890,6 +909,7 @@ impl NetworkSession {
                 history_wallets,
                 clear_failed,
                 platform_only: false,
+                platform_off,
             }));
         }
         if !gate.platform_pending() {
@@ -901,6 +921,7 @@ impl NetworkSession {
                 history_wallets: Vec::new(),
                 clear_failed,
                 platform_only: true,
+                platform_off,
             }));
         }
         Ok(Some(RestoreStatus {
@@ -908,6 +929,7 @@ impl NetworkSession {
             history_wallets: Vec::new(),
             clear_failed,
             platform_only: true,
+            platform_off,
         }))
     }
 

@@ -1085,7 +1085,7 @@ fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
     let (_dir, engine, session, id, paid, recorder) = recorded_held_payment();
     let session = finished_without_platform(&engine, session);
     let status = engine.block_on(session.restore_status()).unwrap().unwrap();
-    assert!(status.platform_only, "{status:?}");
+    assert!(status.platform_only && status.platform_off, "{status:?}");
     assert_eq!(status.waiting, [PlatformPass]);
     let dead = Txid::from_byte_array([0x26; 32]);
     (session.live().unwrap().appdb)
@@ -1121,7 +1121,7 @@ fn a_finish_without_platform_holds_platform_funds_until_platform_is_checked() {
     assert_eq!(restore.recheck_runs.load(SeqCst), 0, "the recheck ran");
     let status = engine.block_on(session.restore_status()).unwrap().unwrap();
     assert!(
-        status.platform_only && status.history_wallets.is_empty(),
+        status.platform_only && !status.platform_off && status.history_wallets.is_empty(),
         "{status:?}"
     );
     assert_eq!(status.waiting, [PlatformPass]);
@@ -1654,8 +1654,8 @@ fn import(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
 
 /// Q107: a restored network with no wallet (a recovery's fresh folder)
 /// keeps its mark with Core, Platform and the passes done, and names the
-/// wallet it waits for; once a wallet is loaded (here imported, then
-/// opened again so its load builds the holds) the mark clears.
+/// wallet it waits for; once a wallet is added in the session, its load
+/// builds the holds and the mark clears.
 #[test]
 fn the_mark_stays_while_the_network_has_no_wallet() {
     use crate::RestoreWait::Wallet;
@@ -1671,9 +1671,6 @@ fn the_mark_stays_while_the_network_has_no_wallet() {
         "the mark cleared with no wallet"
     );
     let id = import(&engine, &session);
-    let session = reopen(&engine, session);
-    assert!(session.restored(), "the reopen cleared the mark");
-    all_synced(&session);
     eventually("the mark clears", || !session.restored());
     assert!(!mark_present(&session));
     assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
@@ -1744,6 +1741,109 @@ fn a_recovered_folders_mark_clears_once_a_restored_wallet_has_synced() {
     eventually("the mark clears", || !session.restored());
     assert!(!mark_present(&session));
     assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
+}
+
+/// A recovery's fresh folder (a mark with no pending lines, no wallet):
+/// a wallet restored from its phrase in the session builds its holds at
+/// its load there, and the mark clears with no reopen.
+#[test]
+fn a_wallet_restored_in_session_clears_a_recover_mark() {
+    use crate::RestoreWait::Wallet;
+    let (_dir, engine, session) = engine_without_wallet();
+    std::fs::create_dir_all(mark_dir(&session)).unwrap();
+    std::fs::write(
+        mark_dir(&session).join("RESTORED"),
+        "dw-store-upgrade restored\nformat 1\nrestored 2026-11-25T00:00:00Z from before\n",
+    )
+    .unwrap();
+    let session = reopen(&engine, session);
+    assert!(session.restored());
+    all_synced(&session);
+    eventually("only a wallet is waited for", || {
+        waiting(&engine, &session) == Some(vec![Wallet])
+    });
+    let id = import(&engine, &session);
+    assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
+    eventually("the mark clears", || !session.restored());
+    assert!(!mark_present(&session) && !residue_present(&session));
+}
+
+fn watch_only_xpub() -> key_wallet::bip32::ExtendedPubKey {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[21; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap())
+}
+
+/// A watch-only wallet added in a session with no wallet that a mark
+/// holds builds its holds at its load there; the mark clears with no
+/// reopen.
+#[test]
+fn a_watch_only_wallet_added_in_session_clears_the_mark() {
+    let (_dir, engine, session) = engine_without_wallet();
+    let session = restored_with(&engine, session, "");
+    all_synced(&session);
+    let id = engine
+        .block_on(session.import_watch_only(watch_only_xpub().to_string(), Default::default()))
+        .unwrap();
+    assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
+    eventually("the mark clears", || !session.restored());
+}
+
+/// A Platform pass noted for a watch-only wallet before it is added does
+/// not count for it: once the residue clears, it keeps its Platform row.
+#[test]
+fn a_pass_before_a_watch_only_wallet_is_added_does_not_check_it() {
+    let (_dir, engine, session) = engine_without_wallet();
+    let dir = mark_dir(&session);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PLATFORM_PENDING"), "platform-pending\n").unwrap();
+    let session = reopen(&engine, session);
+    let xpub = watch_only_xpub();
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, session.network.core_network());
+    let restore = &session.hub.restore;
+    *restore.core_synced.lock().unwrap() = Some(true);
+    restore.note_platform_pass();
+    restore.note_shielded_pass();
+    restore.note_wallet_platform_pass([id]);
+    restore.note_wallet_shielded_pass([id]);
+    let added = engine
+        .block_on(session.import_watch_only(xpub.to_string(), Default::default()))
+        .unwrap();
+    assert_eq!(added, id);
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(
+        platform_row(&session, id),
+        "a pass before its import checked it"
+    );
+}
+
+/// A Platform pass noted for a wallet before it is added in the session
+/// does not count for it: once the residue clears, the added wallet keeps
+/// its Platform row until a pass after its registration.
+#[test]
+fn a_pass_before_a_wallet_is_added_does_not_check_it() {
+    let id = {
+        let (_dir, engine, session) = engine_without_wallet();
+        import(&engine, &session)
+    };
+    let (_dir, engine, session) = engine_without_wallet();
+    let dir = mark_dir(&session);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("PLATFORM_PENDING"), "platform-pending\n").unwrap();
+    let session = reopen(&engine, session);
+    let restore = &session.hub.restore;
+    *restore.core_synced.lock().unwrap() = Some(true);
+    restore.note_platform_pass();
+    restore.note_shielded_pass();
+    restore.note_wallet_platform_pass([id]);
+    restore.note_wallet_shielded_pass([id]);
+    assert_eq!(import(&engine, &session), id);
+    eventually("the residue clears", || !residue_present(&session));
+    assert!(
+        platform_row(&session, id),
+        "a pass before its import checked it"
+    );
 }
 
 /// Whether `wallet` has its Platform row in app.sqlite.
@@ -1830,7 +1930,7 @@ fn a_wallet_closed_at_the_platform_check_is_held_until_checked_after_its_load() 
     let send = engine.block_on(session.dashpay(other).platform_send("op".into(), grant));
     assert_eq!(send.err().map(|e| e.code()), Some("platform.restored"));
     let status = engine.block_on(session.restore_status()).unwrap().unwrap();
-    assert!(status.platform_only, "{status:?}");
+    assert!(status.platform_only && !status.platform_off, "{status:?}");
     assert_eq!(status.waiting, [crate::RestoreWait::PlatformPass]);
     std::thread::sleep(std::time::Duration::from_secs(3));
     assert!(

@@ -24,4 +24,11 @@ clearFailed: boolean,
  * without Platform is waited for: Platform and Shielded funds actions
  * stay refused until a session with Platform has checked them.
  */
-platformOnly: boolean, };
+platformOnly: boolean,
+/**
+ * This session runs without Platform (opened with `noPlatform` or by
+ * `finishWithoutPlatform`): the Platform and Shielded funds actions
+ * are refused `platform.unavailable`, and `restoreRetry` starts no
+ * Platform pass.
+ */
+platformOff: boolean, };

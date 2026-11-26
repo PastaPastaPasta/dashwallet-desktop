@@ -3060,6 +3060,20 @@ fn finishing_without_platform_reopens_the_network_with_platform_off() {
     );
 }
 
+/// `restoreStatus.platformOff` is the session's own: false after an open
+/// with Platform, true after a finish without Platform, false again after
+/// the next open.
+#[test]
+fn restore_status_says_when_the_session_runs_without_platform() {
+    let demo = restored_mainnet();
+    assert_eq!(demo.ok("restore_status", json!({}))["platformOff"], false);
+    demo.ok("finish_without_platform", json!({}));
+    assert_eq!(demo.ok("restore_status", json!({}))["platformOff"], true);
+    assert_eq!(demo.ok("close_network", json!({})), true);
+    demo.ok("open_network", json!({}));
+    assert_eq!(demo.ok("restore_status", json!({}))["platformOff"], false);
+}
+
 /// C3: closing to finish without Platform would cut what runs on the
 /// network, so it refuses and changes nothing (here a broadcast that has
 /// not returned).
