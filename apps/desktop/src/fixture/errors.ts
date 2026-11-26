@@ -8,12 +8,73 @@ import type { AppError } from "../api/generated/AppError";
 import type { ErrorData } from "../api/generated/ErrorData";
 import type { StoreLine } from "../api/generated/StoreLine";
 import { storeUpgrade } from "../i18n/catalog/storeUpgrade";
+import { en } from "../i18n/en";
 import { RESTORE_CAUSES, type NotPrivateData, type NotPrivateReason, type RestoreState, type StoreOpenError, type StoreRefusedData, type StoreRestoreData } from "../api/storeOpen";
 
 export type ErrorClass = ErrorData["kind"] | "none";
 
 const W = "a1".repeat(32);
 const TXID = "7e".repeat(32);
+
+/** dw-store-upgrade's copy (copy.rs) by catalog key, read from the catalog so a production bundle holds
+ * no fixture literal (check-bundle); StoreRefusal.test.ts holds it to copy.rs verbatim. The refusal family `screen_for` composes
+ * ("{intro}: {detail} {unchanged} {wayOut}", MG's final cantOpen family), and `copy::restore_foreign`'s
+ * screen, which the catalog has for `storage_restore`'s foreign state. */
+const key = (...parts: string[]) => parts.join(".");
+const refused = (...parts: string[]) => key("storeUpgrade", "refused", ...parts);
+const ISSUES_HINT = key("settings", "about", "links", "issuesHint");
+
+const COPY_KEYS = [
+  ...["title", "intro", "unchanged"].map((name) => refused(name)),
+  ...["contactsTable", "shapeMismatch", "devBuild", "damaged"].map((name) => refused("detail", name)),
+  ...["previous", "support", "damaged", "restore"].map((name) => refused("wayOut", name)),
+  ...["quit", "report", "restore", "recover"].map((name) => refused(name)),
+  ISSUES_HINT,
+  ...["title", "text", "keep", "keepMeaning", "quit"].map((name) => key("storeUpgrade", "restore", "foreign", name)),
+];
+
+const english = (copyKey: string): string => {
+  const text = copyKey.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], en);
+  if (typeof text !== "string") throw new Error(`fixture: no catalog text for ${copyKey}`);
+  return text;
+};
+
+export const STORE_COPY: Readonly<Record<string, string>> = Object.fromEntries(COPY_KEYS.map((copyKey) => [copyKey, english(copyKey)]));
+
+const button = (name: string) => ({ key: refused(name), label: english(refused(name)), destructive: false, defaultFocus: false });
+
+type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged";
+type WayOut = "previous" | "support" | "restore" | "damaged";
+
+/** `screen_for`'s screen for a refusal with `detail`, a file this start changed nothing in, and `wayOut`:
+ * its buttons Set up from recovery phrase (damaged only), Restore earlier data (restore only), Report a
+ * problem (except previous) and Quit; the issues
+ * hint with Report a problem. Its text key is its way out's. */
+const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: WayOut): StoreRefusedData => {
+  const keys = [refused("intro"), refused("detail", detail), refused("unchanged"), refused("wayOut", wayOut)];
+  const lines = keys.map((lineKey) => ({ key: lineKey, text: english(lineKey).replaceAll("{folder}", folder) }));
+  const text = `${english(keys[0])}: ${keys.slice(1).map(english).join(" ")}`;
+  const reports = wayOut !== "previous";
+  return {
+    kind: "storeRefused",
+    cause,
+    folder,
+    screen: {
+      titleKey: refused("title"),
+      title: english(refused("title")),
+      textKey: refused("wayOut", wayOut),
+      text: text.replaceAll("{folder}", folder),
+      lines,
+      buttons: [
+        ...(wayOut === "damaged" ? [button("recover")] : []),
+        ...(wayOut === "restore" ? [button("restore")] : []),
+        ...(reports ? [button("report")] : []),
+        button("quit"),
+      ],
+      hint: reports ? { key: ISSUES_HINT, text: english(ISSUES_HINT) } : null,
+    },
+  };
+};
 
 type Samples = { [K in ErrorData["kind"]]: { code: AppError["code"]; data: Extract<ErrorData, { kind: K }> } };
 
@@ -104,34 +165,7 @@ const SAMPLES: Samples = {
     code: "stuck_funding",
     data: { kind: "stuckFunding", refusal: { kind: "spendUnsettled", txid: TXID }, retryLater: true },
   },
-  storeRefused: {
-    code: "storage_refused",
-    data: {
-      kind: "storeRefused",
-      screen: {
-        titleKey: "storeUpgrade.refused.title",
-        title: "Dash Wallet can't open this wallet data safely",
-        textKey: "storeUpgrade.refused.wayOut.previous",
-        text: "This version of Dash Wallet can't safely open the wallet data in /data/testnet: it holds contact data that this version can't read yet. Dash Wallet didn't change anything in it. Keep /data/testnet as it is: it may hold the only record of recent payments, and support may need it. Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
-        lines: [
-          { key: "storeUpgrade.refused.intro", text: "This version of Dash Wallet can't safely open the wallet data in /data/testnet" },
-          { key: "storeUpgrade.refused.detail.contactsTable", text: "it holds contact data that this version can't read yet." },
-          {
-            key: "storeUpgrade.refused.unchanged",
-            text: "Dash Wallet didn't change anything in it. Keep /data/testnet as it is: it may hold the only record of recent payments, and support may need it.",
-          },
-          {
-            key: "storeUpgrade.refused.wayOut.previous",
-            text: "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
-          },
-        ],
-        buttons: [{ key: "storeUpgrade.refused.quit", label: "Quit", destructive: false, defaultFocus: false }],
-        hint: null,
-      },
-      folder: "/data/testnet",
-      cause: "RetiredPoolWithoutAdopter",
-    },
-  },
+  storeRefused: { code: "storage_refused", data: refusedScreen("/data/testnet", "RetiredPoolWithoutAdopter", "contactsTable", "previous") },
   retry: { code: "storage_retry", data: { kind: "retry", folder: "/data/testnet" } },
   restore: { code: "storage_restore", data: { kind: "restore", state: "notStarted", cause: "permissionDenied", neededBytes: null, folder: "/data/testnet" } },
   storageInUse: { code: "storage_in_use", data: { kind: "storageInUse", retryable: true } },
@@ -154,77 +188,6 @@ export function sampleError(cls: ErrorClass): AppError {
   const { code, data } = SAMPLES[cls];
   return { code, message: `fixture: ${code} (${cls})`, data };
 }
-
-/** dw-store-upgrade's copy (copy.rs), verbatim, by catalog key: the refusal family `screen_for` composes
- * ("{intro}: {detail} {unchanged} {wayOut}", MG's final cantOpen family), and `copy::restore_foreign`'s
- * screen, which the catalog has for `storage_restore`'s foreign state. */
-export const STORE_COPY = {
-  "storeUpgrade.refused.title": "Dash Wallet can't open this wallet data safely",
-  "storeUpgrade.refused.intro": "This version of Dash Wallet can't safely open the wallet data in {folder}",
-  "storeUpgrade.refused.unchanged":
-    "Dash Wallet didn't change anything in it. Keep {folder} as it is: it may hold the only record of recent payments, and support may need it.",
-  "storeUpgrade.refused.detail.contactsTable": "it holds contact data that this version can't read yet.",
-  "storeUpgrade.refused.detail.shapeMismatch": "its layout doesn't match the version it says it is, so another program or a test build may have changed it.",
-  "storeUpgrade.refused.detail.devBuild": "it was written by a development build of Dash Wallet.",
-  "storeUpgrade.refused.detail.damaged": "it can't be read as wallet data, so it may be damaged.",
-  "storeUpgrade.refused.wayOut.previous":
-    "Close this version and keep using, or reinstall, the version of Dash Wallet you used before. If you do, don't send anything until it has finished syncing. An earlier version may offer coins this version is holding back, and a payment that uses them can fail.",
-  "storeUpgrade.refused.wayOut.support": "Choose Report a problem.",
-  "storeUpgrade.refused.wayOut.damaged":
-    "Choose Set up from recovery phrase to set up a wallet again in a new data folder, then add any other wallets, each from its own recovery phrase. Dash Wallet leaves {folder} as it is and doesn't delete anything. Balances, history, Shielded funds, identities, usernames and DashPay contacts are rebuilt from the network. Imported keys, watch-only wallets and masternode keys aren't, so add them again. Other things saved only in this wallet data, such as labels and your address book, aren't brought across, but they stay in {folder}. If a governance proposal, a username or identity registration, a credit top-up or a masternode transaction was in progress, or you don't have a recovery phrase, choose Report a problem first.",
-  "storeUpgrade.refused.wayOut.restore":
-    "Earlier versions of Dash Wallet can't open it either, because it has already been upgraded. To go back to your wallet data from before the upgrade, choose Restore earlier data. Otherwise, choose Report a problem.",
-  "storeUpgrade.refused.quit": "Quit",
-  "storeUpgrade.refused.report": "Report a problem",
-  "storeUpgrade.refused.restore": "Restore earlier data",
-  "storeUpgrade.refused.recover": "Set up from recovery phrase",
-  "settings.about.links.issuesHint": "Reports are public. Never include your recovery phrase, passphrase or private keys, and never send them to anyone who asks.",
-  "storeUpgrade.restore.foreign.title": "These wallet files don't match the restore",
-  "storeUpgrade.restore.foreign.text":
-    "Dash Wallet was restoring your wallet data from before the upgrade, but the wallet files now in {folder} don't match that data, so it stopped without changing them. Another version of Dash Wallet or another program may have replaced them.",
-  "storeUpgrade.restore.foreign.keep": "Keep the current files",
-  "storeUpgrade.restore.foreign.keepMeaning":
-    "This stops the restore and opens the files in {folder} as they are now. Nothing is deleted: the wallet data saved before the upgrade, and the copy taken when the restore started, stay in the upgrade-backups folder.",
-  "storeUpgrade.restore.foreign.quit": "Quit",
-} as const;
-
-type CopyKey = keyof typeof STORE_COPY;
-
-const button = (key: CopyKey, label: string = STORE_COPY[key]) => ({ key, label, destructive: false, defaultFocus: false });
-
-type Detail = "contactsTable" | "shapeMismatch" | "devBuild" | "damaged";
-type WayOut = "previous" | "support" | "restore" | "damaged";
-
-/** `screen_for`'s screen for a refusal with `detail`, a file this start changed nothing in, and `wayOut`:
- * its buttons Set up from recovery phrase (damaged only), Restore earlier data (restore only), Report a
- * problem (except previous) and Quit; the issues
- * hint with Report a problem. Its text key is its way out's. */
-const refusedScreen = (folder: string, cause: string, detail: Detail, wayOut: WayOut): StoreRefusedData => {
-  const line = (key: CopyKey) => STORE_COPY[key];
-  const keys = ["storeUpgrade.refused.intro", `storeUpgrade.refused.detail.${detail}`, "storeUpgrade.refused.unchanged", `storeUpgrade.refused.wayOut.${wayOut}`] as const;
-  const lines = keys.map((key) => ({ key, text: line(key).replaceAll("{folder}", folder) }));
-  const text = `${line(keys[0])}: ${keys.slice(1).map(line).join(" ")}`;
-  const reports = wayOut !== "previous";
-  return {
-    kind: "storeRefused",
-    cause,
-    folder,
-    screen: {
-      titleKey: "storeUpgrade.refused.title",
-      title: line("storeUpgrade.refused.title"),
-      textKey: `storeUpgrade.refused.wayOut.${wayOut}`,
-      text: text.replaceAll("{folder}", folder),
-      lines,
-      buttons: [
-        ...(wayOut === "damaged" ? [button("storeUpgrade.refused.recover")] : []),
-        ...(wayOut === "restore" ? [button("storeUpgrade.refused.restore")] : []),
-        ...(reports ? [button("storeUpgrade.refused.report")] : []),
-        button("storeUpgrade.refused.quit"),
-      ],
-      hint: reports ? { key: "settings.about.links.issuesHint", text: line("settings.about.links.issuesHint") } : null,
-    },
-  };
-};
 
 /** `screen_for`'s screens, each with the variant that gives it: a fork file this build can't read yet, for
  * the version before (Quit only); one whose layout is off (Report a problem); a migrated file with a

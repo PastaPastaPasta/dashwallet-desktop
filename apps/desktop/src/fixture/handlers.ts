@@ -822,7 +822,7 @@ export const HANDLERS: Handlers = {
   // Engine::recover_in_fresh_folder: only after a refused open; the next open is the new folder's.
   recover_in_fresh_folder: (_, { world }) => {
     if (!world.openRefusal) throw fail("invalid_argument", "the last open of the network was not refused", { kind: "reason", reason: "not refused" });
-    (world.restoreCalls ??= []).push("recoverInFreshFolder");
+    (world.restoreCalls ??= []).push("recover");
     startOverInNewFolder(world);
     return null;
   },

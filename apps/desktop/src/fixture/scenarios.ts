@@ -108,7 +108,7 @@ export interface World {
   /** The network's wallet data was restored and RESTORED is set: `restored` on its network info. */
   restored?: boolean;
   /** The restore commands called, in order. */
-  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "recoverInFreshFolder")[];
+  restoreCalls?: ("restoreAvailable" | "requestRestore" | "keepCurrentFiles" | "cancelRestore" | "recover")[];
   launch: LaunchInfo;
   passphrase: string;
   lock: LockStatus;
