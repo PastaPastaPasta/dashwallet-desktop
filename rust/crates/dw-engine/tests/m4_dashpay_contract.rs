@@ -156,6 +156,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_send",
     "DashPay.platform_send_grant",
     "DashPay.platform_send_bind",
+    // #762: the cancel of a held withdrawal or contact payout.
+    "DashPay.platform_cancel_quote",
+    "DashPay.platform_cancel",
     // 0.2 X1b slice 1: "Add from Dash wallet".
     "DashPay.platform_fund_quote",
     "DashPay.platform_fund",
@@ -305,6 +308,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund.rs",
     "platform_fund_tests.rs",
     "platform_moves.rs",
+    "platform_held_exit_tests.rs",
     "platform_mainnet_flag_tests.rs",
     "platform_moves_tests.rs",
     "platform_register.rs",
@@ -1716,6 +1720,8 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.move_to_core(WithdrawAmount::All, s(), None, s())
                 .await
                 .map(drop),
+            dp.platform_cancel_quote(s()).await.map(drop),
+            dp.platform_cancel(s(), s(), s()).await.map(drop),
             dp.platform_shield_quote(WithdrawAmount::All)
                 .await
                 .map(drop),

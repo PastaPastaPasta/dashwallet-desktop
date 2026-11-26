@@ -175,8 +175,9 @@ pub use payments::{
 pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
     PlatformActivityKind, PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
-    PlatformFundOutcome, PlatformFundQuote, PlatformFundState, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
+    PlatformCancelQuote, PlatformFundOutcome, PlatformFundQuote, PlatformFundState,
+    PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+    RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,

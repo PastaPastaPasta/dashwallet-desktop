@@ -148,6 +148,7 @@ import type { PendingTopUp } from "./PendingTopUp";
 import type { PlatformActivity } from "./PlatformActivity";
 import type { PlatformAddressBalance } from "./PlatformAddressBalance";
 import type { PlatformAddressRow } from "./PlatformAddressRow";
+import type { PlatformCancelQuote } from "./PlatformCancelQuote";
 import type { PlatformFundOutcome } from "./PlatformFundOutcome";
 import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
@@ -1997,6 +1998,22 @@ export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to:
 }
 
 /**
+ * What cancelling the held move or contact payment `of` takes: its
+ * inputs at its nonces to one of the wallet's own Platform addresses.
+ */
+export function platformCancelQuote(walletId: string, of: string): Promise<PlatformCancelQuote> {
+  return invoke<PlatformCancelQuote>("platform_cancel_quote", { walletId, of });
+}
+
+/**
+ * Cancels the held move or contact payment `of` to `to` (the quote's,
+ * one of the wallet's own Platform addresses) under `grant`.
+ */
+export function platformCancel(walletId: string, of: string, to: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_cancel", { walletId, of, to, grant });
+}
+
+/**
  * The wallet's Platform receive address: the lowest unused one.
  */
 export function platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress> {
@@ -3695,6 +3712,8 @@ export type CommandArgs = {
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
   platform_shield_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; exitOf: string | null; grant: string };
+  platform_cancel_quote: { walletId: string; of: string };
+  platform_cancel: { walletId: string; of: string; to: string; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
@@ -4086,6 +4105,8 @@ export type CommandResults = {
   platform_move_to_core_quote: MoveToCoreQuote;
   platform_shield_quote: PlatformShieldQuote;
   platform_move_to_core: MoveToCoreOutcome;
+  platform_cancel_quote: PlatformCancelQuote;
+  platform_cancel: PlatformSendOutcome;
   platform_receive_address: PlatformReceiveAddress;
   platform_send_quote: PlatformSendQuote;
   platform_send: PlatformSendOutcome;
@@ -4479,6 +4500,8 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_move_to_core_quote: "identity",
   platform_shield_quote: "identity",
   platform_move_to_core: "identity",
+  platform_cancel_quote: "identity",
+  platform_cancel: "identity",
   platform_receive_address: "identity",
   platform_send_quote: "identity",
   platform_send: "identity",

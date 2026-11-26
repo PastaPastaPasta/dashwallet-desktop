@@ -2890,6 +2890,20 @@ fn platform_address_sends_are_off_on_mainnet_as_their_own_feature() {
         "platform.feature_off",
     );
     assert_eq!(e["data"], off, "{e}");
+    // A cancel pays only the wallet, so it passes the flag beside a held
+    // record only: with nothing held it is off too.
+    let e = demo.err(
+        "platform_cancel_quote",
+        json!({ "walletId": wallet, "of": "no-such-move" }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
+    let e = demo.err(
+        "platform_cancel",
+        json!({ "walletId": wallet, "of": "no-such-move", "to": "checked after the flag", "grant": "g" }),
+        "platform.feature_off",
+    );
+    assert_eq!(e["data"], off, "{e}");
 
     let demo = Demo::new();
     demo.open();

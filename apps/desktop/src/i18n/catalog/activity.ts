@@ -97,6 +97,8 @@ export const activity = {
     feeEstimated: "Fee (estimated)",
     platformBlock: "Platform block",
     copyAddress: "Copy address",
+    /** A Platform payment that may still go through: its way out moves the same funds to the Dash wallet. */
+    moveToCore: "Move to Dash wallet",
     /** A Shielded payment Platform refused when it was sent. */
     refusal: {
       /** Its funds ({amount}) stay held until Dash Wallet proves it can no longer go through. */

@@ -9,6 +9,7 @@ import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
+import { recipientOf } from "../platform/cancel";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveOutcomeCopy, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
@@ -16,6 +17,8 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
   const activity = usePlatformActivity(walletId);
   const q = quote.data;
   const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(plannedWithdrawalCredits(q))) : null;
+  // The move is the way out of a payment that may still go through: only one of the two goes through.
+  const exited = q?.exitOf ? activity.data?.find((a) => a.id === q.exitOf && a.kind === "send") : undefined;
   return (
     <>
       {block === "pending" ? (
@@ -25,6 +28,11 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
         </p>
       ) : (
         <p className="sheet-text">{C.message}</p>
+      )}
+      {exited && (
+        <p className="sheet-text" role="note" data-testid="platform-move-exit-send">
+          {C.exitSend.line(credits(exited.credits), recipientOf(exited))}
+        </p>
       )}
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-move-quote-error">
@@ -108,6 +116,9 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
   const outcome = final && flow.outcome ? { ...flow.outcome, state: row.state, credits: row.credits, expectedDuffs: row.expectedDuffs, feeCredits: row.feeCredits, winnerKnown: row.winnerKnown } : flow.outcome;
   // A failed move that may still execute is shown as not confirmed; one that cannot found its credits used.
   const failed = outcome?.state === "failed" && !row?.mayLand;
+  // The payment the move was the exit of: its recipient, which the outcome names.
+  const exited = flow.exitOf ? activity.data?.find((a) => a.id === flow.exitOf && a.kind === "send") : undefined;
+  const copy = outcome ? moveOutcomeCopy(outcome, failed, credits, amount, exited ? recipientOf(exited) : null) : null;
   return (
     <div data-testid="platform-move-body" data-step={step}>
       {step === "confirm" && <ConfirmStep flow={flow} walletId={walletId} credits={credits} amount={amount} block={block} />}
@@ -120,13 +131,13 @@ export function MoveBody({ flow, walletId, network, block }: { flow: PlatformMov
           <p className="sheet-text">{C.running.text}</p>
         </div>
       )}
-      {step === "done" && outcome && (
+      {step === "done" && copy && (
         <div role="status">
           <p className="topup-title" data-testid="platform-move-outcome-title">
-            {moveOutcomeCopy(outcome, failed, credits, amount).title}
+            {copy.title}
           </p>
           <p className="sheet-text" data-testid="platform-move-outcome-text">
-            {moveOutcomeCopy(outcome, failed, credits, amount).text}
+            {copy.text}
           </p>
           <div className="sheet-actions">
             <DashButton variant="filledBlue" size="large" data-testid="platform-move-done" onClick={() => flow.close()}>

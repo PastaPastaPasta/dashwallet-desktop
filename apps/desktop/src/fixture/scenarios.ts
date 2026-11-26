@@ -1069,6 +1069,15 @@ const SCENARIOS = {
     p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
     return w;
   },
+  /** A payment of 0.04 to the contact Bob from the Platform balance that failed by height and may still land: its cancel is offered. */
+  "platform-payout-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    const contact = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    p.activity = [{ id: "cp-held", kind: "contactPayment", state: "failed", credits: "4000000000", address: null, to: null, expectedDuffs: 3_999_774, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
+    return w;
+  },
   /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */
   "platform-move-held-and-rest": (t) => {
     const w = base(t);

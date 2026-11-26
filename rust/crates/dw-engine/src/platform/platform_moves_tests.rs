@@ -180,6 +180,9 @@ fn record(id: &str, at: u64, inputs: &[(&str, u32)]) -> MoveRecord {
         unattributed: false,
         version: None,
         rule: HOLD_RULE,
+        cancel_of: None,
+        exit_of: None,
+        link_conflict: false,
     }
 }
 
@@ -476,6 +479,8 @@ pub(crate) struct FakeMoves {
     pub(crate) read_release: tokio::sync::Notify,
     /// How far below the address proofs' height a document read's proof is.
     pub(crate) document_lag: AtomicU64,
+    /// How far an exit's document read lags the nonce reads (#762).
+    pub(crate) exit_lag: AtomicU64,
     /// Each signing's count of `pending` contact payout rows on disk.
     pub(crate) payout_rows_at_signing: Mutex<Vec<usize>>,
     /// The withdrawal document reads made so far.
@@ -513,6 +518,7 @@ impl FakeMoves {
             read_entered: tokio::sync::Notify::new(),
             read_release: tokio::sync::Notify::new(),
             document_lag: AtomicU64::new(0),
+            exit_lag: AtomicU64::new(0),
             payout_rows_at_signing: Mutex::default(),
             withdrawal_reads: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
@@ -895,7 +901,11 @@ impl MoveNet for FakeMoves {
         }
         trust::note_lookup(!self.unverified.load(Ordering::SeqCst));
         let present = self.documents.lock().unwrap().contains(&id);
-        Ok((present, self.height.load(Ordering::SeqCst)))
+        let lag = self.exit_lag.load(Ordering::SeqCst);
+        Ok((
+            present,
+            self.height.load(Ordering::SeqCst).saturating_sub(lag),
+        ))
     }
 
     async fn register(
@@ -3262,21 +3272,30 @@ fn a_deposit_that_hides_the_fee_marks_the_debit_estimated() {
     assert_eq!((out.estimated, out.fee_credits), (false, Some(w.net.fee())));
 }
 
-/// A move beside a held send is refused at its quote, before any
-/// passphrase is asked, as the move itself would be; once the send lands
-/// it quotes again.
+/// A move beside a held send is quoted as that send's exit (#762): planned
+/// on its inputs only and naming it; once the send lands the quote names
+/// nothing.
 #[test]
-fn the_move_quote_refuses_beside_a_held_send() {
+fn the_move_quote_beside_a_held_send_is_its_exit() {
     let w = World::new();
     w.net.fund(w.address(0), 5 * DASH);
+    w.net.fund(w.address(1), 3 * DASH);
     let (_, to) = w.theirs(9);
     let held = w.held_send(WithdrawAmount::Credits { credits: DASH }, &to);
-    match w.quote(WithdrawAmount::All) {
-        Err(CreditsError::MovePending { id }) => assert_eq!(id, held.id),
-        other => panic!("{other:?}"),
-    }
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of.as_deref(), Some(held.id.as_str()));
+    let inputs = w.moves()[0].inputs.clone();
+    assert_eq!(inputs.len(), 1);
+    let input = (w.pool.iter())
+        .find(|a| bech32m(a, w.network()) == inputs[0].address)
+        .copied()
+        .unwrap();
+    assert!(q.credits <= w.net.credits(input), "its one input only");
+    let exit = Limits::at(PlatformVersion::latest()).unwrap();
+    assert_eq!(q.fee_credits, exit.fee(1));
     w.lands(0);
-    w.quote(WithdrawAmount::All).unwrap();
+    let q = w.quote(WithdrawAmount::All).unwrap();
+    assert_eq!(q.exit_of, None);
 }
 
 /// A new process quotes afresh, and no operation id from before
@@ -4469,6 +4488,9 @@ mod register;
 
 #[path = "platform_mainnet_flag_tests.rs"]
 mod mainnet_flag;
+
+#[path = "platform_held_exit_tests.rs"]
+mod held_exit;
 
 // ---- C-funding C4b-2: a Shielded-funded registration's refund ----
 
