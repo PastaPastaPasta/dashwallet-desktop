@@ -1936,6 +1936,45 @@ fn first_record(f: &Fixture) -> ConnectRecord {
         .remove(0)
 }
 
+/// Every session key an approval adds, for each kind of binding, passes
+/// the check that lets a renewal or Disconnect disable it.
+#[test]
+fn every_added_session_key_passes_the_disconnect_check() {
+    let f = Fixture::new();
+    let mut r = request();
+    r.auth_bindings.push(AuthBinding {
+        bounds: Bounds::Contract(app().to_buffer()),
+        level: Level::High,
+        budget: Some(1_000_000_000),
+        expires_at_ms: Some(NOW + 90 * DAY_MS),
+    });
+    let choice = ConnectChoice {
+        selection: vec![0, 1, 2],
+        terms: ConnectTerms {
+            funding_limit: 52_000_000_000,
+            ..Fixture::choice().terms
+        },
+        ..Fixture::choice()
+    };
+    let l = devnet(r);
+    let grant = f.quoted_grant(&l, &choice);
+    f.approve(&l, &choice, &grant).unwrap();
+    let record = first_record(&f);
+    let me = f.net.me();
+    let mut kinds = BTreeSet::new();
+    for key_id in &record.session_keys {
+        let key = &me.public_keys()[key_id];
+        assert_eq!(check_disconnect_key(&record, key), Ok(()), "key {key_id}");
+        kinds.insert(match key.contract_bounds().unwrap() {
+            ContractBounds::SingleContract { .. } => "contract",
+            ContractBounds::SingleContractDocumentType { .. } => "documentType",
+            ContractBounds::ContractGroup { .. } => "group",
+        });
+    }
+    assert_eq!(record.session_keys.len(), 3);
+    assert_eq!(kinds.len(), 3, "{kinds:?}");
+}
+
 /// A renewal disables only what Disconnect would: keys its record added,
 /// whatever other ids the local record names, even with their key data.
 #[test]

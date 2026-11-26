@@ -2317,8 +2317,9 @@ fn is_forbidden_dashpay_bounds(bounds: &ContractBounds) -> bool {
     }
 }
 
-/// Verifies that `key` on Platform is an enabled app-added AUTHENTICATION
-/// session key belonging to `record`:
+/// Verifies that `key` on Platform is an app-added AUTHENTICATION session
+/// key belonging to `record` (whether it is still enabled is the caller's
+/// check):
 /// - its key id is in `record.session_keys`;
 /// - `record.session_key_data` holds the expected key digest AND matches
 ///   `key.data()` (older grants without key data are refused, never matched
