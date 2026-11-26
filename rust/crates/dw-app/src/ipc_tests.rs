@@ -2116,7 +2116,11 @@ fn files_go_through_the_dialog_the_user_answers() {
     // A shared-masternode file or a standby dissolution never reaches the renderer: refused
     // before any dialog.
     for purpose in ["sharedMasternodeMessage", "standbyDissolution"] {
-        demo.err("open_file", json!({ "purpose": purpose }), "invalid_argument");
+        demo.err(
+            "open_file",
+            json!({ "purpose": purpose }),
+            "invalid_argument",
+        );
         demo.err(
             "choose_file_path",
             json!({ "purpose": purpose, "save": false }),
