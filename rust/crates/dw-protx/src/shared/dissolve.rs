@@ -170,7 +170,6 @@ pub fn penalty_free_from(mn: &SharedMn) -> u32 {
 #[cfg(test)]
 #[allow(non_snake_case)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{OutPoint, Txid};
 
     use super::super::rules::check_dissolution;

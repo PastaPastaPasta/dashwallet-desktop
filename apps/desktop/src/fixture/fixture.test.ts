@@ -295,7 +295,7 @@ describe("fixture backend", () => {
     await expect(
       cmd.startRegistration(FIXTURE_WALLET_ID, { label: "dashpaydesktopquote2", temporaryLabel: null, funding: fromShielded, initialProfile: null }, "g"),
     ).rejects.toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_registration" } });
-    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 112).
+    // While this build cannot spend from Shielded: platform.unavailable, before the grant (m4 item 114).
     clearMocks();
     backend({ scenario: "shielded-spends-off" });
     await expect(quote("dashpaydesktopquote2", fromShielded)).rejects.toMatchObject({ code: "platform.unavailable" });
@@ -375,6 +375,11 @@ describe("fixture backend", () => {
     expect(() => fixtureOptionsFromUrl("?scenario=nope")).toThrow("unknown fixture scenario");
     expect(() => fixtureOptionsFromUrl("?scenario=error-nope")).toThrow("unknown error class");
     expect(() => fixtureOptionsFromUrl("?fail=balance")).toThrow("expected <command>:<error class>");
+    expect(fixtureOptionsFromUrl("?openRestore=notStarted:fileVanished&restoreAvailable=no&restored=yes")).toMatchObject({ openRestore: "notStarted:fileVanished", restoreAvailable: false, restored: true });
+    expect(fixtureOptionsFromUrl("?openRefused=refusedRestore&restoreAvailable=yes")).toMatchObject({ openRefused: "refusedRestore", restoreAvailable: true, restored: undefined });
+    expect(() => fixtureOptionsFromUrl("?openRestore=refused:diskFull")).toThrow("unknown openRestore=refused:diskFull");
+    expect(fixtureOptionsFromUrl("?notPrivate=otherOwner")).toMatchObject({ notPrivate: "otherOwner" });
+    expect(() => fixtureOptionsFromUrl("?notPrivate=worldWritable")).toThrow("unknown notPrivate=worldWritable");
   });
 
   it("carries the sentinel the production bundle check looks for", () => {

@@ -1,12 +1,12 @@
 //! The engine's parsers of untrusted input, for dw-fuzz (H-02); built only
 //! with the `fuzzing` feature.
 
+use dash_sdk::platform::dashpay::{InviterInfo, encode_invitation_uri};
 use dashcore::hashes::Hash;
-use dashcore::secp256k1::SecretKey;
 use dashcore::{Network, OutPoint, Txid};
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
-use platform_wallet::wallet::identity::crypto::invitation::{InviterInfo, encode_invitation_uri};
+use dpp::secp256k1::SecretKey;
 
 use super::avatar_image::{self, Crop};
 use super::profile::{AvatarSize, CropRect};

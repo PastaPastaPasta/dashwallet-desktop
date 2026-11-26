@@ -29,6 +29,7 @@ import {
   MOVE_COPY,
   planFee,
   planReceives,
+  refusalText,
   resetMoveMixed,
   resultText,
   shieldResultText,
@@ -239,6 +240,19 @@ describe("Move mixed coins to Shielded", () => {
     expect(flow.step).toBe("refused");
     expect(moveErrorText(flow.error)).toBe(MOVE_COPY.unconfirmed(1));
     expect(canRetry(flow.error)).toBe(true);
+  });
+
+  it("says Dash Platform off as at a send only where the move was sent: a refused quote sent nothing", async () => {
+    const off = appError("platform.feature_off", { kind: "feature", feature: "platform" });
+    installFixture({ scenario: "coinjoin-move-mixing" });
+    const backend = new IpcBackend("fixture");
+    vi.spyOn(backend, "shieldMixedQuote").mockRejectedValue(off);
+    flow = new MoveMixedFlow(backend, W);
+    flow.begin("shielded");
+    await until(() => flow.step !== "plan");
+    expect([flow.step, flow.planFailed]).toEqual(["refused", true]);
+    expect(refusalText(flow)).toBe("Dash Platform is off until you next start Dash Wallet, and this needs it.");
+    expect(refusalText({ error: off, planFailed: false })).toBe("Nothing was sent: Dash Platform is off until you next start Dash Wallet, and this needs it.");
   });
 
   it("is refused while the wallet mixes, and quotes once Stop Mixing ends it", async () => {

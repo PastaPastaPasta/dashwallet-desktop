@@ -9,7 +9,6 @@
 //! penalty, to the wallet's own Platform address (F13), whose record is
 //! written only once that is proved.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -515,8 +514,8 @@ pub(crate) async fn fund(
 /// at or above that height, Platform's fallback, its refund's record
 /// written. An unresolved one none of whose nullifiers is spent may be
 /// proved never to execute ([`never_executes`]); one proved executed is
-/// settled so in the journal, whose outcome is then acknowledged once its
-/// notes read spent ([`pool::consume_dispositions`]). Anything else, a read
+/// settled so in the journal; the library keeps its notes until its own
+/// scan reads them spent ([`pool::settle_outcomes`]). Anything else, a read
 /// failure included, is unknown.
 async fn evidence(
     session: &NetworkSession,
@@ -719,8 +718,10 @@ const PROVED: [(ArtifactStatus, &str); 3] = [
 /// durably, then settles its artifact so in the journal (`acked` when its
 /// notes may go at once). The proof is the marker: the journal's
 /// disposition columns hold only the library's strings, empty until the
-/// next read of its outcomes writes them back. `false` when either write
-/// failed.
+/// next read of its outcomes writes them back. A consumed proof is marked
+/// in the journal too, before the settle: the removal of the wallet
+/// deletes the proof before it archives the artifact, and the mark
+/// outlives both. `false` when any write failed.
 pub(crate) async fn settle_proved(
     session: &NetworkSession,
     wallet: WalletId,
@@ -745,6 +746,16 @@ pub(crate) async fn settle_proved(
         tracing::warn!(error = %e, "a Shielded-funded create's proof was not written");
         return false;
     }
+    if value == "consumed" {
+        let consumed = (session.leases).mark_create_consumed(wallet, st_hash).await;
+        if consumed != Ok(true) {
+            tracing::warn!(
+                ?consumed,
+                "a consumed Shielded-funded create was not marked"
+            );
+            return false;
+        }
+    }
     let settled = (session.leases)
         .settle_shielded_artifact(wallet, st_hash, status, None, acked)
         .await;
@@ -753,61 +764,6 @@ pub(crate) async fn settle_proved(
         tracing::warn!(?settled, "a Shielded-funded create's proof was not settled");
     }
     written
-}
-
-/// Of transitions `listed`, those the engine proved ([`settle_proved`]),
-/// by the status proved: the library's later `unresolved` listing of one
-/// does not undo it ([`pool::consume_dispositions`]). The marker counts
-/// while the journal has the artifact in flight or unresolved (a crash
-/// before its settlement) or settled as proved; a journal status alone,
-/// the library's own, proves nothing. A read failure proves none.
-pub(crate) async fn proved_creates(
-    session: &NetworkSession,
-    wallet: WalletId,
-    artifacts: &[ShieldedArtifact],
-    listed: &[[u8; 32]],
-) -> HashMap<[u8; 32], ArtifactStatus> {
-    let settled: Vec<([u8; 32], ArtifactStatus)> = (artifacts.iter())
-        .filter(|a| {
-            matches!(
-                a.status,
-                ArtifactStatus::Registered
-                    | ArtifactStatus::Unresolved { unrecorded: false }
-                    | ArtifactStatus::Executed
-                    | ArtifactStatus::NotExecuted
-            )
-        })
-        .filter_map(|a| Some((a.st_hash?, a.status)))
-        .filter(|(st_hash, _)| listed.contains(st_hash))
-        .collect();
-    if settled.is_empty() {
-        return HashMap::new();
-    }
-    let scope = dw_appdb::local_scope(&wallet.to_string());
-    let read = session
-        .appdb_op(move |db| {
-            let mut proved = HashMap::new();
-            for (st_hash, status) in settled {
-                let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
-                let value = db.setting(&scope, &key)?;
-                let marked = PROVED.iter().find(|(_, v)| Some(*v) == value.as_deref());
-                let in_flight = matches!(
-                    status,
-                    ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
-                );
-                if let Some(&(proved_as, _)) = marked
-                    && (in_flight || proved_as == status)
-                {
-                    proved.insert(st_hash, proved_as);
-                }
-            }
-            Ok(proved)
-        })
-        .await;
-    read.unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "the proved Shielded-funded creates could not be read");
-        HashMap::new()
-    })
 }
 
 /// An unresolved create none of whose published nullifiers is spent and
@@ -854,10 +810,10 @@ async fn never_executes(
     released(session, wallet, lib, st_hash).await
 }
 
-/// Settles `artifact` not executed in the journal, then acknowledges the
-/// library's outcome of it, which frees its notes: unsent once the journal
-/// holds it, else unknown. An acknowledgement that fails is repeated by the
-/// next read of the outcomes ([`pool::consume_dispositions`]).
+/// Settles `artifact` not executed in the journal, then asks the library to
+/// acknowledge its outcome: unsent once the journal holds it, else unknown.
+/// Upstream keeps no outcome to acknowledge ([`ShieldedLib::ack_spend`]):
+/// its notes stay reserved until the library releases them itself.
 async fn released(
     session: &NetworkSession,
     wallet: WalletId,

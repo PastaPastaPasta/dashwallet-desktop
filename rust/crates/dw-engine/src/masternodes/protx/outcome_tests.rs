@@ -28,6 +28,7 @@ fn listed(f: &SendFailure) {
         | F::TxTooLarge
         | F::InvalidChangeAddress
         | F::WatchOnly
+        | F::Restored
         | F::VaultLocked
         | F::GrantInvalid
         | F::GrantExceeded { .. }
@@ -61,6 +62,7 @@ fn failures() -> Vec<SendFailure> {
         F::TxTooLarge,
         F::InvalidChangeAddress,
         F::WatchOnly,
+        F::Restored,
         F::VaultLocked,
         F::GrantInvalid,
         F::GrantExceeded {

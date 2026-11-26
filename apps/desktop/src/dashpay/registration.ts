@@ -22,6 +22,7 @@ import { listed } from "../network/choice";
 import { INSTANT_COPY, type TemporaryOutcome } from "./instantOffer";
 import { PAY_WITH_COPY } from "./payWith";
 import { awaitsContinue, checksAgain, COPY, failureText, heldWithBoth, stepOf, waitLine, withTable, type CardStep } from "./status";
+import { platformHoldText } from "../api/platformHold";
 
 /** The engine's cap (`check_username`'s `maxLength`); the field takes no more. */
 export const MAX_LABEL = 23;
@@ -455,6 +456,8 @@ export function platformRefusalText(e: unknown, amount: (duffs: number) => strin
 /** Why a start, resume or name registration was refused, as the wizard says it; `fromPlatform`: it
  * was paid from the Platform balance, whose refusals say so first. */
 export function startErrorText(e: unknown, amount: (duffs: number) => string, discreet = false, fromPlatform = false): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   const platform = fromPlatform ? platformRefusalText(e, amount) : null;
   if (platform !== null) return platform;
   if (hasCode(e, "registration.funding_insufficient") && e.data?.kind === "duffs") {

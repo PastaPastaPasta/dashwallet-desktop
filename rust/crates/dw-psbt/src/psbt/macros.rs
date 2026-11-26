@@ -148,7 +148,8 @@ macro_rules! impl_psbt_hash_deserialize {
     ($hash_type:ty) => {
         impl $crate::psbt::serialize::Deserialize for $hash_type {
             fn deserialize(bytes: &[u8]) -> Result<Self, $crate::psbt::Error> {
-                <$hash_type>::from_slice(&bytes[..]).map_err(|e| $crate::psbt::Error::from(e))
+                let bytes = bytes.try_into().map_err($crate::psbt::Error::HashParse)?;
+                Ok(<$hash_type>::from_byte_array(bytes))
             }
         }
     };

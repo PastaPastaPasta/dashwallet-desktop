@@ -474,8 +474,8 @@ fn scanned(hit: UserHit, code: ScannedCode) -> ScannedContact {
 pub(crate) mod send_seam {
     use std::sync::Arc;
 
-    use dashcore::secp256k1::SecretKey;
     use dpp::prelude::Identifier;
+    use dpp::secp256k1::SecretKey;
     use platform_wallet::AutoAcceptProofSource;
     use zeroize::Zeroizing;
 

@@ -773,9 +773,10 @@ pub(crate) async fn stage_from_shielded(
 /// Arms the record of the spend `activity`, after its artifact and before
 /// any send of it: from the dispatch hook's accept, and again from its
 /// admission of a re-send, so a spend whose arming a stop cut off is armed
-/// before it leaves (C-routes C1-9). Whether the spend has a record: one
-/// with none was dispatched before records were kept. A record of another
-/// transition than `st_hash` is an error: that send is not the record's.
+/// before it leaves (C-routes C1-9). Whether the spend has a pending record,
+/// armed now or before; `false` when it has none, or its record is settled.
+/// A record of another transition than `st_hash` is an error: that send is
+/// not the record's.
 pub(crate) async fn arm_from_shielded(
     session: &NetworkSession,
     wallet: WalletId,
@@ -792,7 +793,10 @@ pub(crate) async fn arm_from_shielded(
             detail: "the FromShielded record is of another transition".into(),
         });
     }
-    if !record.armed && record.state == PlatformActivityState::Pending {
+    if record.state != PlatformActivityState::Pending {
+        return Ok(false);
+    }
+    if !record.armed {
         #[cfg(test)]
         if tests::arm_write_fails(&store.appdb) {
             return Err(PlatformError::Storage {
@@ -2998,7 +3002,7 @@ pub(crate) async fn pool(
         .ok_or_else(|| PlatformError::Internal {
             detail: "the wallet has no Platform payment account".into(),
         })?;
-    Ok((account.addresses.addresses.values())
+    Ok((account.addresses.addresses().values())
         .filter_map(|a| {
             let p2pkh = PlatformP2PKHAddress::from_address(&a.address).ok()?;
             Some((PlatformAddress::P2pkh(p2pkh.to_bytes()), a.path.clone()))
@@ -4685,11 +4689,13 @@ async fn retire_handed_out(
     }
     with_payment_pool(wallet, |pool, source| {
         if let Some(deepest) = deepest {
-            (pool.generate_up_to(deepest, source)).map_err(|e| PlatformError::Internal {
+            let next = pool.highest_generated().map_or(0, |h| h + 1);
+            let missing = deepest.saturating_add(1).saturating_sub(next);
+            (pool.generate_addresses(missing, source)).map_err(|e| PlatformError::Internal {
                 detail: e.to_string(),
             })?;
         }
-        let given: Vec<u32> = (pool.addresses.iter())
+        let given: Vec<u32> = (pool.addresses().iter())
             .filter(|(_, info)| {
                 PlatformP2PKHAddress::from_address(&info.address)
                     .is_ok_and(|p| fallbacks.contains(&PlatformAddress::P2pkh(p.to_bytes())))
@@ -4697,12 +4703,25 @@ async fn retire_handed_out(
             .map(|(index, _)| *index)
             .collect();
         for index in (0..handed_out.unwrap_or(0)).chain(given) {
-            pool.mark_index_used(index);
+            mark_index_used(pool, index)?;
         }
         Ok(())
     })
     .await?;
     Ok(handed_out)
+}
+
+/// Marks the derived address at `index` used; an index not derived is an
+/// error, never skipped.
+fn mark_index_used(
+    pool: &mut key_wallet::managed_account::address_pool::AddressPool,
+    index: u32,
+) -> Result<(), PlatformError> {
+    let address = (pool.address_at_index(index)).ok_or_else(|| PlatformError::Internal {
+        detail: format!("the Platform payment address {index} is not derived"),
+    })?;
+    pool.mark_used(&address);
+    Ok(())
 }
 
 /// `f` on the payment account's address pool and its public key source,
@@ -4755,21 +4774,19 @@ pub(crate) async fn fallback_address(
     retire_handed_out(session, wallet).await?;
     let (fallback, index) = with_payment_pool(wallet, |pool, source| {
         let mut take = || -> Result<_, PlatformError> {
-            let next = (pool.next_unused_with_info(source, true)).map_err(|e| {
-                PlatformError::Internal {
-                    detail: e.to_string(),
-                }
-            })?;
-            pool.mark_index_used(next.index);
-            Ok(next)
+            let internal = |detail: String| PlatformError::Internal { detail };
+            let next = (pool.next_unused(source)).map_err(|e| internal(e.to_string()))?;
+            let index = (pool.address_index(&next))
+                .ok_or_else(|| internal("the next Platform payment address has no index".into()))?;
+            pool.mark_used(&next);
+            Ok((next, index))
         };
         take()?;
-        let next = take()?;
-        let fallback =
-            PlatformAddress::try_from(next.address).map_err(|e| PlatformError::Internal {
-                detail: e.to_string(),
-            })?;
-        Ok((fallback, next.index))
+        let (next, index) = take()?;
+        let fallback = PlatformAddress::try_from(next).map_err(|e| PlatformError::Internal {
+            detail: e.to_string(),
+        })?;
+        Ok((fallback, index))
     })
     .await?;
     let address = bech32m(&fallback, network);
@@ -4902,6 +4919,7 @@ impl NetworkSession {
         address_grant: String,
         spend_grant: String,
     ) -> Result<PlatformAddressBalance, CreditsError> {
+        self.refuse_platform_funds(wallet_id)?;
         self.dashpay(wallet_id)
             .on_wallet(move |session, manager, wallet| async move {
                 // The input bound (`lock_inputs`), before a grant is redeemed.
@@ -4962,6 +4980,7 @@ impl NetworkSession {
                         Vec::new(),
                         &signer,
                         &lock_signer,
+                        None,
                         None,
                     )
                     .await;

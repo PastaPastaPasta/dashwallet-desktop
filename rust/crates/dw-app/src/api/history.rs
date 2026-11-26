@@ -64,6 +64,9 @@ pub struct TxDetailExtrasInfo {
     pub checking_spent_coins: bool,
     /// UNIX seconds the engine last announced it (send or resend).
     pub last_announced_at: Option<u64>,
+    /// A restore holds it: it was pending in the wallet data from before
+    /// the restore and hasn't confirmed since (`activity.abandon.restoredHint`).
+    pub restore_held: bool,
 }
 
 impl From<TxDetailExtras> for TxDetailExtrasInfo {
@@ -84,6 +87,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             withheld_outputs,
             checking_spent_coins,
             last_announced_at,
+            restore_held,
         } = x;
         TxDetailExtrasInfo {
             txid,
@@ -101,6 +105,7 @@ impl From<TxDetailExtras> for TxDetailExtrasInfo {
             withheld_outputs: withheld_outputs.into_iter().map(Into::into).collect(),
             checking_spent_coins,
             last_announced_at,
+            restore_held,
         }
     }
 }

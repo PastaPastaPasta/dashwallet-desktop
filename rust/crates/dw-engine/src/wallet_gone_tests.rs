@@ -4,7 +4,6 @@
 
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 

@@ -20,6 +20,7 @@ import { messageTable, t } from "../i18n";
 import { creditCount, creditsToDuffs, PROFILE_COPY } from "./profile";
 import { withTable } from "./status";
 import { platformOp } from "./topup";
+import { platformHoldText } from "../api/platformHold";
 
 export type WithdrawApi = Pick<Backend, "creditsWithdraw" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -141,6 +142,8 @@ export const refusalDocument = (e: unknown) =>
 
 /** A withdrawal's refusal, by code (§3's table). `credits` shows a credit figure as Dash. */
 export function withdrawErrorText(e: unknown, credits: (c: string) => string): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "credits.withdrawal_out_of_range":

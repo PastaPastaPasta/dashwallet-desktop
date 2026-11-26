@@ -31,9 +31,9 @@
 //! check's `-too-early`).
 
 use dashcore::bls_sig_utils::BlsScheme;
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::Message;
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use dashcore::ecdsa::EcdsaRecSignature;
+use dashcore::hashes::{hash160, sha256d};
+use dashcore::sign_message::recover_pubkey;
 use dashcore::{Network, OutPoint, ScriptBuf, Txid};
 
 use super::netinfo::{
@@ -114,19 +114,11 @@ pub fn verify_hash_canonical(hash: [u8; 32], key_id: [u8; 20], sig: &[u8]) -> bo
     if sig.len() != 65 || !(27..=34).contains(&sig[0]) || sig[33..] > HALF_ORDER[..] {
         return false;
     }
-    let header = sig[0] - 27;
-    let Ok(recid) = RecoveryId::try_from(i32::from(header & 3)) else {
+    let Ok(sig) = EcdsaRecSignature::try_from(sig) else {
         return false;
     };
-    let Ok(rsig) = RecoverableSignature::from_compact(&sig[1..], recid) else {
+    let Ok(public) = recover_pubkey(&sig, sha256d::Hash::from_byte_array(hash)) else {
         return false;
-    };
-    let Ok(public) = rsig.recover_ecdsa(Message::from_digest(hash)) else {
-        return false;
-    };
-    let public = dashcore::PublicKey {
-        compressed: header & 4 != 0,
-        inner: public,
     };
     public.pubkey_hash().to_byte_array() == key_id
 }
@@ -843,7 +835,7 @@ mod tests {
     use crate::payloads::sign_hash_compact;
     use crate::rules::listed_net_info;
     use crate::rules::{p2pkh_key_id, signed_by};
-    use dashcore::secp256k1::SecretKey;
+    use dashcore::ecdsa::EcdsaSecretKey;
     use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
     use dashcore::{TxIn, TxOut, Witness};
 
@@ -862,7 +854,7 @@ mod tests {
     }
 
     fn owner_id(i: usize) -> [u8; 20] {
-        let sk = SecretKey::from_secret_bytes(secret(i)).unwrap();
+        let sk = EcdsaSecretKey::from_bytes(&secret(i)).unwrap();
         let pk = dashcore::PublicKey::new(sk.public_key());
         pk.pubkey_hash().to_byte_array()
     }
@@ -1941,7 +1933,7 @@ mod tests {
         t.output[1].script_pubkey = p2pkh([0x45; 20]);
         assert_eq!(check(&t, &p, &[]), Err("bad-protx-payee-reuse"));
         // A P2PK collateral's destination is its key's hash.
-        let sk = SecretKey::from_secret_bytes(secret(0)).unwrap();
+        let sk = EcdsaSecretKey::from_bytes(&secret(0)).unwrap();
         let key = dashcore::PublicKey::new(sk.public_key()).to_bytes();
         let mut p2pk = vec![33];
         p2pk.extend_from_slice(&key);

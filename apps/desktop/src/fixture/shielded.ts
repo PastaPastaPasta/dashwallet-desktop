@@ -49,6 +49,9 @@ export type SpendResult = "done" | "unknown" | "refused";
 export interface ShieldedWorld {
   /** The network takes shielded transitions; `false`: every call but the status is `shielded.not_active`. */
   active: boolean;
+  /** The upgrade could not move the old Shielded records, and why: every call, the status's
+   * included, is `shielded.store_closed`. */
+  closed?: "in_use" | "damaged" | "failed" | "no_upgrade_copy";
   /** Keys bound and the notes scanned. */
   ready: boolean;
   /** A sync pass is running on a ready account. */
@@ -140,6 +143,7 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
   const s = ctx.world.pending.shielded;
   if (s === null) throw absent(call);
   wallet(ctx.world, walletId);
+  if (s.closed) raise(SHIELDED_CODES.storeClosed, "the shielded store stays closed this session", { kind: "reason", reason: s.closed });
   if (gated && !s.active) raise(SHIELDED_CODES.notActive, "the fixture network takes no shielded transitions", { kind: "protocol", protocolVersion: 11, activationVersion: 12 });
   return s;
 }

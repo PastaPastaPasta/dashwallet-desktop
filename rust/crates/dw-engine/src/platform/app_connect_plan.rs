@@ -331,7 +331,7 @@ pub(crate) fn session_key(
     budget: u64,
     expires_at_ms: u64,
 ) -> Option<IdentityPublicKey> {
-    use dashcore::hashes::{Hash, hash160};
+    use dashcore::hashes::hash160;
     let binding = request.auth_bindings.get(usize::from(index))?;
     let security_level = match binding.level {
         Level::Critical => SecurityLevel::CRITICAL,

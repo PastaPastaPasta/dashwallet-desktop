@@ -91,12 +91,13 @@
 //! abandons it first, as an Activity Abandon would, for the step's own
 //! locks only and nothing that spends them (Activity refuses it,
 //! `PlatformFunding`; an abandon that would take anything else is refused
-//! `SpendUnsettled`), and signs nothing: its rebroadcast stops, and the
-//! coins it spent wait for the rescan every abandon runs
+//! `SpendUnsettled`), and signs nothing: the stop of its rebroadcast is
+//! asked (the pinned dash-spv has none, and keeps sending it until a
+//! restart), and the coins it spent wait for the rescan every abandon runs
 //! (`crate::rescan_hold`), so it is refused `LockAbandoned`. Once they are
 //! back, Resolve again builds the self-spend from them. A resume of the
-//! lock in between sends it again, which lifts the stop; the wallet keeps
-//! it abandoned, and the next Resolve stops it again. The preview prices
+//! lock in between sends it again; the wallet keeps it abandoned, and the
+//! next Resolve asks the stop again. The preview prices
 //! nothing for such a step: it is refused `SpendUnsettled`.
 //!
 //! The facade call under Tools ▸ Repair is DP1-02's (m4 contract,
@@ -180,6 +181,11 @@ impl NetworkSession {
         let step = step.to_owned();
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Resolve abandons and sends: behind the restore's money gate,
+            // as an Activity Abandon and a send are.
+            if resolve {
+                this.refuse_while_restored()?;
+            }
             // Not while a wallet loads, as an Activity Abandon.
             let _lifecycle = match resolve {
                 true => Some(this.wallet_lifecycle.hold().await),
@@ -454,7 +460,6 @@ fn funding_repair_coins<'a>(
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{Address, OutPoint, TxOut, Txid};
 
     use super::funding_repair_coins;

@@ -44,6 +44,12 @@ export const components = {
     afterFee: "After fee",
     bytes: "Bytes",
     summaryChange: "Change",
+    /** A coin a payment from before a restore sent, while that payment is unconfirmed (Q92 H1): the
+     * Status cell's word, and the sentence it shows as its tooltip and description. */
+    pendingUnproven: {
+      short: "Pending",
+      text: "Dash Wallet can't yet tell whether the payment that sent this coin will confirm, so the coin isn't counted in your spendable balance or offered for spending until it does.",
+    },
   },
   date: {
     /** A date and its time of day, each already formatted for the display locale. */

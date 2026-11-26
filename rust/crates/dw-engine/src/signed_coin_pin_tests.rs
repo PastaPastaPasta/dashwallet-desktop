@@ -12,7 +12,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_coinjoin::client::MixingWallet;
 use dw_vault::{Credential, GrantPurpose};

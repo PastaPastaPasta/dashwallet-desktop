@@ -5,16 +5,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use dash_sdk::platform::dashpay::{InviterInfo, encode_invitation_uri};
 use dashcore::ephemerealdata::instant_lock::InstantLock;
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::SecretKey;
 use dashcore::transaction::special_transaction::TransactionPayload;
 use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dashcore::{Network, OutPoint, PrivateKey, ScriptBuf, Transaction, TxOut, Txid};
 use dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::{AssetLockProof, Identifier};
-use platform_wallet::wallet::identity::crypto::invitation::{InviterInfo, encode_invitation_uri};
+use dpp::secp256k1::SecretKey;
 
 use super::*;
 use crate::platform::payments::Counterparty;
@@ -80,7 +79,11 @@ fn voucher() -> SecretKey {
 }
 
 fn credit_script(key: &SecretKey) -> ScriptBuf {
-    let public = PrivateKey::new(*key, Network::Regtest).public_key();
+    let public = PrivateKey::new(
+        dashcore::ecdsa::EcdsaSecretKey::from_bytes(&key.to_secret_bytes()).unwrap(),
+        Network::Regtest,
+    )
+    .public_key();
     ScriptBuf::new_p2pkh(&public.pubkey_hash())
 }
 

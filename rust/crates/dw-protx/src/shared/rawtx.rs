@@ -10,7 +10,7 @@
 //! decoded separately ([`super::ProRegTxV3`], [`super::ProDisTx`], …).
 
 use dashcore::consensus::encode::{self, Decodable, Encodable};
-use dashcore::hashes::{Hash, sha256d};
+use dashcore::hashes::sha256d;
 use dashcore::{OutPoint, Script, ScriptBuf, TxIn, TxOut, Txid};
 
 /// `CTransaction::SPECIAL_VERSION`: from this version on, a non-zero type

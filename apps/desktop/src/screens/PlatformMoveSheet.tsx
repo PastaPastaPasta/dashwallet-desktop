@@ -10,6 +10,7 @@ import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveOutcomeCopy, plannedWithdrawalCredits, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { platformHoldText } from "../api/platformHold";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -28,7 +29,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
       )}
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-move-quote-error">
-          {moveErrorText(quote.error, credits, activity.data)}
+          {platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -80,7 +81,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
             variant="filledBlue"
             size="large"
             data-testid="platform-move-go"
-            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? moveErrorText(quote.error, credits, activity.data) : flow.running ? C.running.title : C.quoting}
+            why={block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : quote.isError ? (platformHoldText(quote.error, false) ?? moveErrorText(quote.error, credits, activity.data)) : flow.running ? C.running.title : C.quoting}
             disabled={block !== null || !q || quote.isError || quote.isFetching || flow.running}
             onClick={() => block === null && q && void flow.move(q)}
           >

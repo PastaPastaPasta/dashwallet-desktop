@@ -131,6 +131,17 @@ describe("a payment from a balance's flow", () => {
     expect(internal.step).toBe("lost");
   });
 
+  it("an outcome the engine could not confirm may already be out: unknown and held, never 'nothing was paid'", async () => {
+    for (const code of ["platform.broadcast_unknown", "platform.will_be_sent"] as const) {
+      const flow = payFlow(() => Promise.reject(appError(code)));
+      await flow.pay(QUOTE, null);
+      expect([code, flow.step, flow.unresolved !== null]).toEqual([code, "lost", true]);
+    }
+    const refused = payFlow(() => Promise.reject(appError("platform.insufficient_credits")));
+    await refused.pay(QUOTE, null);
+    expect([refused.step, refused.unresolved]).toEqual(["refused", null]);
+  });
+
   it("a lost reply keeps the contact held after the sheet closes, until a later read settles it", async () => {
     const flow = payFlow(() => Promise.reject(appError("internal")));
     await flow.pay(QUOTE, null);

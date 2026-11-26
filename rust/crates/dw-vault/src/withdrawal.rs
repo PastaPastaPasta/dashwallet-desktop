@@ -25,8 +25,8 @@
 //! their double SHA-256 (`dashcore::signer::sign`'s encoding). The signer
 //! signs once (r2 m5).
 
-use dashcore::hashes::{Hash, hash160, sha256, sha256d};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::{hash160, sha256, sha256d};
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::{IdentityPublicKey, KeyType, Purpose};
 use dpp::serialization::Signable;
@@ -226,9 +226,9 @@ impl VaultSigner {
             .map_err(|e| SignerError::Derivation(format!("withdrawal transition: {e}")))?;
         let digest = sha256d::Hash::hash(&data).to_byte_array();
 
-        let sign = |secret: &SecretKey| {
-            let public = PublicKey::from_secret_key(secret);
-            if hash160::Hash::hash(&public.serialize()).to_byte_array() != key_hash {
+        let sign = |secret: &EcdsaSecretKey| {
+            let public = secret.public_key();
+            if hash160::Hash::hash(&public.to_compressed()).to_byte_array() != key_hash {
                 return mismatch("the key is not the identity key");
             }
             Ok(sign_compact(digest, secret))
@@ -259,7 +259,7 @@ impl VaultSigner {
     fn signed_once_at(
         &self,
         path: &DerivationPath,
-        sign: impl FnOnce(&SecretKey) -> Result<[u8; 65], SignerError>,
+        sign: impl FnOnce(&EcdsaSecretKey) -> Result<[u8; 65], SignerError>,
     ) -> Result<[u8; 65], SignerError> {
         let use_ = KeyUse::MasternodeWithdrawal;
         self.check(use_, path)?;

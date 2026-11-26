@@ -19,7 +19,6 @@ use dashcore::blockdata::transaction::Transaction;
 use dashcore::blockdata::transaction::txout::TxOut;
 use dashcore::blockdata::witness::Witness;
 use dashcore::crypto::ecdsa;
-use dashcore::secp256k1;
 use dashcore::sighash::EcdsaSighashType;
 use key_wallet::bip32::KeySource;
 use std::collections::{BTreeMap, btree_map};
@@ -206,7 +205,7 @@ impl Input {
                 }
             }
             PSBT_IN_RIPEMD160 => {
-                psbt_insert_hash_pair(
+                psbt_insert_hash_pair::<ripemd160::HashEngine>(
                     &mut self.ripemd160_preimages,
                     raw_key,
                     raw_value,
@@ -214,7 +213,7 @@ impl Input {
                 )?;
             }
             PSBT_IN_SHA256 => {
-                psbt_insert_hash_pair(
+                psbt_insert_hash_pair::<sha256::HashEngine>(
                     &mut self.sha256_preimages,
                     raw_key,
                     raw_value,
@@ -222,7 +221,7 @@ impl Input {
                 )?;
             }
             PSBT_IN_HASH160 => {
-                psbt_insert_hash_pair(
+                psbt_insert_hash_pair::<hash160::HashEngine>(
                     &mut self.hash160_preimages,
                     raw_key,
                     raw_value,
@@ -230,7 +229,7 @@ impl Input {
                 )?;
             }
             PSBT_IN_HASH256 => {
-                psbt_insert_hash_pair(
+                psbt_insert_hash_pair::<sha256d::HashEngine>(
                     &mut self.hash256_preimages,
                     raw_key,
                     raw_value,
@@ -334,26 +333,27 @@ impl Map for Input {
 
 impl_psbtmap_ser_de_serialize!(Input);
 
-fn psbt_insert_hash_pair<H>(
-    map: &mut BTreeMap<H, Vec<u8>>,
+fn psbt_insert_hash_pair<E>(
+    map: &mut BTreeMap<E::Hash, Vec<u8>>,
     raw_key: raw::Key,
     raw_value: Vec<u8>,
     hash_type: error::PsbtHash,
 ) -> Result<(), Error>
 where
-    H: hashes::Hash + Deserialize,
+    E: hashes::HashEngine + Default,
+    E::Hash: Deserialize,
 {
     if raw_key.key.is_empty() {
         return Err(Error::InvalidKey(raw_key));
     }
-    let key_val: H = Deserialize::deserialize(&raw_key.key)?;
+    let key_val: E::Hash = Deserialize::deserialize(&raw_key.key)?;
     match map.entry(key_val) {
         btree_map::Entry::Vacant(empty_key) => {
             let val: Vec<u8> = Deserialize::deserialize(&raw_value)?;
-            if <H as hashes::Hash>::hash(&val) != key_val {
+            if E::hash(&val) != key_val {
                 return Err(Error::InvalidPreimageHashPair {
                     preimage: val.into_boxed_slice(),
-                    hash: Box::from(key_val.borrow()),
+                    hash: Box::from(key_val.as_ref()),
                     hash_type,
                 });
             }

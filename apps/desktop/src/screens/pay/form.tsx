@@ -12,7 +12,7 @@ import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
 import { useT, t } from "../../i18n";
-import { availableLabel, changePolicy, coinSource, contactDataText, DEFAULT_ADVANCED, feeMode, incompleteText, isContact, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayForm, type PayRecipient, type Sending } from "./model";
+import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, estimateRefusal, feeMode, incompleteText, isContact, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayForm, type PayNotice, type PayRecipient, type Sending } from "./model";
 import type { Recipient } from "../../api/generated/Recipient";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
@@ -31,8 +31,11 @@ export type Phase =
 
 /** One press of Send, from before its first call until its result sheet closes: signing
  * (`preparing`), handed to the broadcast (`sending`), then its result, with a Try again of it
- * running (`retrying`). */
-type Kept = { kind: "preparing" | "sending"; attempt: number; sending: Sending } | { kind: "result"; attempt: number; outcome: Outcome; retrying: boolean };
+ * running (`retrying`), or a notice on the form in place of a result, kept until it is dismissed. */
+type Kept =
+  | { kind: "preparing" | "sending"; attempt: number; sending: Sending }
+  | { kind: "result"; attempt: number; outcome: Outcome; retrying: boolean }
+  | { kind: "notice"; attempt: number; notice: PayNotice };
 
 /** Each form's payment by `payFormKey`: a lock takes the page down at once, and the unlock shows
  * the same payment, not a form that looks unsent. Only the attempt kept under a key may change
@@ -68,11 +71,13 @@ export type PayAttempt = {
   outcome: (o: Outcome) => void;
   /** Refused before anything was signed (the passphrase): the confirm sheet stays. */
   release: () => void;
+  /** Refused before anything was signed, said by a notice on the form: the confirm sheet goes. */
+  notice: (n: PayNotice) => void;
 };
 
 /** `attempt`'s handle on the payment kept under `key`. `live()`: its draft is still the page's
  * own, so an unknown result keeps its retry. */
-export function payAttempt(key: string, attempt: number, live: () => boolean, onSettled: (o: Outcome) => void = () => {}): PayAttempt {
+export function payAttempt(key: string, attempt: number, live: () => boolean, onSettled: (o: Outcome | null) => void = () => {}): PayAttempt {
   const mine = () => kept.get(key)?.attempt === attempt;
   return {
     broadcasting: (sending) => {
@@ -86,7 +91,17 @@ export function payAttempt(key: string, attempt: number, live: () => boolean, on
     release: () => {
       if (mine() && kept.get(key)?.kind === "preparing") keep(key, null);
     },
+    notice: (notice) => {
+      if (!mine() || kept.get(key)?.kind !== "preparing") return;
+      onSettled(null);
+      keep(key, { kind: "notice", attempt, notice });
+    },
   };
+}
+
+/** The notice kept under `key` was read: gone, as a new payment would replace it. */
+export function dismissNotice(key: string) {
+  if (kept.get(key)?.kind === "notice") keep(key, null);
 }
 
 /** Starts a payment under `key`, in place of whatever was kept there. */
@@ -139,14 +154,20 @@ export function usePaySheets(key: string, walletId: string, draft: DraftApi, cle
     };
   }, [key]);
   const live = () => mounted.current;
-  const settled = (o: Outcome) => {
-    if (o.kind !== "failed") clear();
+  // `null`: a notice, which leaves the form as it was.
+  const settled = (o: Outcome | null) => {
+    if (o && o.kind !== "failed") clear();
     if (mounted.current) setConfirm(null);
   };
   const phase: Phase =
-    stored?.kind === "result" ? { kind: "result", outcome: stored.outcome, retrying: stored.retrying } : (confirm ?? (stored ? { kind: "sending", sending: stored.sending } : { kind: "editing" }));
+    stored?.kind === "result"
+      ? { kind: "result", outcome: stored.outcome, retrying: stored.retrying }
+      : (confirm ?? (stored && stored.kind !== "notice" ? { kind: "sending", sending: stored.sending } : { kind: "editing" }));
   return {
     phase,
+    /** What the last payment's refusal says on the form, until `dismissNotice` or another payment. */
+    notice: stored?.kind === "notice" ? stored.notice : null,
+    dismissNotice: () => dismissNotice(key),
     held: phase.kind === "confirm" || phase.kind === "sending" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
     review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setConfirm({ kind: "confirm", confirmed, spec, unsigned }),
     cancel: () => setConfirm(null),
@@ -265,8 +286,8 @@ export function useAvailable(walletId: string, advanced: Advanced, hold: boolean
 }
 
 /** The draft's live estimate of `spec` and what its refusal says: on a field, or under the form
- * (`general`, with what holds the payment back besides). `hold`: estimate nothing (locked, or the
- * form says why not). */
+ * (`general`, with what holds the payment back besides), or as a `notice`. `hold`: estimate
+ * nothing (locked, or the form says why not). */
 export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec | null, advanced: Advanced, hold: boolean, shown: Shown) {
   const b = useBackend();
   const { chain, amountUnit } = shown;
@@ -299,9 +320,10 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
     gcTime: 0,
   });
   let general: string | null = null;
+  let notice: PayNotice | null = null;
   if (mixed) general = mixed;
   // A refusal of a field shows under it and here too: Review's reason is the footer's.
-  else if (estimate.isError) general = refusal?.text ?? (spec && isContact(spec.recipient) ? contactDataText(estimate.error) : null) ?? errorMessage(estimate.error);
+  else if (estimate.isError) ({ general, notice } = estimateRefusal(estimate.error, !!spec && isContact(spec.recipient), refusal?.text ?? null));
   else if (advanced.coins === "selected" && advanced.selected.length === 0) general = t("pay.form.chooseCoins");
   else if (!feeMode(advanced)) general = t("pay.form.enterRate");
   else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = t("pay.form.enterChangeAddress");
@@ -310,7 +332,7 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   const refusedIndex = data?.kind === "recipient" && typeof data.index === "number" ? data.index : 0;
   const fieldError = (f: "address" | "amount", index = 0) => (refusal?.field === f && refusedIndex === index ? refusal.text : null);
   const ready = !!spec && estimate.isSuccess && !estimate.isFetching && !hold;
-  return { estimate, general, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
+  return { estimate, general, notice, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */

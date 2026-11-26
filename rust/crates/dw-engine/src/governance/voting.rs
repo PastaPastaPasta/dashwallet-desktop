@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use base64::Engine as _;
-use dashcore::hashes::{Hash, hash160};
+use dashcore::hashes::hash160;
 use dashcore::{OutPoint, Txid};
 use dw_governance::object::{display_hex, parse_display_hex};
 use dw_governance::store::{GovernanceStore, ObjectKind, VoteRejection};
@@ -532,7 +532,7 @@ mod flow_tests;
 mod tests {
     use super::*;
     use dashcore::Network;
-    use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+    use dpp::secp256k1::{Message, PublicKey, SecretKey};
     use dw_governance::object::GovernanceObject;
     use dw_governance::store::{ListEntry, ResolvedMasternode};
     use dw_governance::vote::{VoteOutcome as Outcome, to_recoverable_compact};
@@ -551,8 +551,8 @@ mod tests {
         let outpoint = OutPoint::new(Txid::from_byte_array([op; 32]), 0);
         let mut v = GovernanceVote::funding(outpoint, parent, outcome, time);
         let d = v.signing_digest(Network::Regtest);
-        let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+        let s = dpp::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk.into(), &d)
             .unwrap()
             .to_vec();
         v

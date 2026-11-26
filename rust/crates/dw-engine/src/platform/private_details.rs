@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dash_sdk::platform::{DocumentQuery, FetchMany};
-use dashcore::hashes::{Hash, sha256};
+use dashcore::hashes::sha256;
 use dpp::document::{Document, DocumentV0Getters};
 use dpp::identity::Identity;
 use dpp::identity::accessors::IdentityGettersV0;

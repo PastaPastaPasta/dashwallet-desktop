@@ -152,7 +152,6 @@ async fn setup() -> (
 
 /// What a self-spend taking `lock`'s first input records of it (§2a.6).
 fn conflict(lock: &TrackedRow) -> dw_appdb::dispatch::SelfSpendConflict {
-    use dashcore::hashes::Hash as _;
     dw_appdb::dispatch::SelfSpendConflict {
         lock: lock.txid.to_byte_array(),
         input: dw_appdb::dispatch::StoredOutPoint {
@@ -279,6 +278,25 @@ fn row_2_a_row_with_a_proof_reads_sent_with_or_without_a_marker() {
             Some(Sent)
         );
     }
+}
+
+#[test]
+fn a_drain_completed_lock_reads_consumed_and_proved() {
+    let drained = platform_wallet::AssetLockStatus::DrainCompleted;
+    let status = TrackedStatus::from(&drained);
+    assert_eq!(status, R::Consumed);
+    assert!(!status.pending());
+    // A proved row reads Sent even beside a self-spend and without attribution.
+    assert_eq!(
+        derive_funding(DURABLE, Some(&[status]), true, true),
+        Some(Sent)
+    );
+    let lock = crate::platform::registration_flow::lock_status(&drained);
+    assert_eq!(
+        lock,
+        crate::platform::registration_flow::LockStatus::Consumed
+    );
+    assert!(!lock.has_proof());
 }
 
 #[test]
@@ -1404,6 +1422,8 @@ fn tracked_lock(
     status: platform_wallet::AssetLockStatus,
 ) -> platform_wallet::TrackedAssetLock {
     platform_wallet::TrackedAssetLock {
+        operation_id: None,
+        shielded_recipient: None,
         out_point,
         transaction: dashcore::Transaction {
             version: 3,
@@ -2730,10 +2750,9 @@ async fn a_lock_is_the_calls_only_when_every_input_carries_its_signature() {
 #[test]
 fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
     use dashcore::blockdata::script::{Builder, PushBytesBuf};
-    use dashcore::hashes::Hash;
-    use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+    use dpp::secp256k1::{Message, SecretKey, ecdsa};
     let sk = SecretKey::from_secret_bytes([5; 32]).unwrap();
-    let pk = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&sk));
+    let pk = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&sk));
     let code = dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash());
     let unsigned = dashcore::Transaction {
         version: 3,
@@ -2764,7 +2783,7 @@ fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
         push.push(hash_type);
         Builder::new()
             .push_slice(PushBytesBuf::try_from(push).unwrap())
-            .push_slice(pk.inner.serialize())
+            .push_slice(pk.inner.to_compressed())
             .into_script()
     };
     let with = |scripts: [dashcore::ScriptBuf; 2]| {
@@ -2777,7 +2796,7 @@ fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
     let (sig0, sig1) = (sign(sighashes[0]), sign(sighashes[1]));
     // Input 1's signature with a high S: (r, n - s).
     let mut compact = sig1.serialize_compact();
-    let order = dashcore::secp256k1::constants::CURVE_ORDER;
+    let order = dpp::secp256k1::constants::CURVE_ORDER;
     let mut borrow = 0i16;
     for i in (32..64).rev() {
         let d = order[i - 32] as i16 - compact[i] as i16 - borrow;
@@ -2802,7 +2821,7 @@ fn a_stored_locks_signatures_are_read_from_its_p2pkh_script_sigs() {
             script(&sig0, 0x01),
             Builder::new()
                 .push_slice([0x30, 0x01, 0x01])
-                .push_slice(pk.inner.serialize())
+                .push_slice(pk.inner.to_compressed())
                 .into_script(),
         ]),
         with([script(&sig0, 0x01), dashcore::ScriptBuf::new()]),
@@ -2887,7 +2906,6 @@ async fn review_r3_schema3_heuristic_repair_must_not_survive_as_negative_evidenc
 /// `an_empty_recorded_self_spend_without_a_signed_lock_never_reads_not_sent`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_without_its_conflict_evidence_never_reads_not_sent() {
-    use dashcore::hashes::Hash as _;
     use dw_appdb::dispatch::{DispatchJournal, JournalOpen, SelfSpendConflict, StoredOutPoint};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dispatch.sqlite");
@@ -3011,7 +3029,6 @@ async fn a_self_spend_records_the_input_it_takes_of_each_signed_lock() {
 /// or none, shows nothing (reviews P2b r3 R3-01, r4 R4-01).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
-    use dashcore::hashes::Hash as _;
     use dw_appdb::dispatch::{SelfSpendConflict, StoredOutPoint};
     let (t, _, j, src) = setup().await;
     let l = begin(&t, W, 10_000, 0, 0).await.unwrap();
@@ -3073,8 +3090,7 @@ async fn a_self_spend_shows_the_conflict_only_over_every_signed_lock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withheld_lock() {
     use dashcore::blockdata::script::{Builder, PushBytesBuf};
-    use dashcore::hashes::Hash as _;
-    use dashcore::secp256k1::{Message, SecretKey, ecdsa};
+    use dpp::secp256k1::{Message, SecretKey, ecdsa};
     use dw_appdb::dispatch::{DispatchJournal, JournalOpen, SelfSpendProvenance};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dispatch.sqlite");
@@ -3082,7 +3098,7 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
     // A spends `withheld`; S spends only `unrelated`.
     let (withheld, unrelated) = (OutPoint::new(txid(78), 0), OutPoint::new(txid(77), 0));
     let sk = SecretKey::from_secret_bytes([23; 32]).unwrap();
-    let pk = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&sk));
+    let pk = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&sk));
     let code = dashcore::ScriptBuf::new_p2pkh(&pk.pubkey_hash());
     let mut s = dashcore::Transaction {
         version: 3,
@@ -3107,7 +3123,7 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
     sig.push(1);
     s.input[0].script_sig = Builder::new()
         .push_slice(PushBytesBuf::try_from(sig).unwrap())
-        .push_slice(pk.inner.serialize())
+        .push_slice(pk.inner.to_compressed())
         .into_script();
     assert!(StoredLock::of(&s).sighashes.is_some());
     assert!(!s.input.iter().any(|i| i.previous_output == withheld));
@@ -3172,7 +3188,6 @@ async fn review_r4_legacy_self_spend_and_complete_chain_scan_do_not_kill_a_withh
 /// restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_legacy_step_resolves_only_by_a_fresh_recorded_self_spend() {
-    use dashcore::hashes::Hash as _;
     use dw_appdb::dispatch::{DispatchJournal, JournalOpen, SelfSpendProvenance, StoredOutPoint};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dispatch.sqlite");

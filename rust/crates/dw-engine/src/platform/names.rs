@@ -968,6 +968,7 @@ impl DashPay {
         label: String,
         grant: String,
     ) -> Result<NameOutcome, NameError> {
+        self.session.refuse_platform_funds(self.wallet_id)?;
         let check = valid_label(&label)?;
         let identity_id = parse_identity(&identity)?;
         let wallet_id = self.wallet_id;

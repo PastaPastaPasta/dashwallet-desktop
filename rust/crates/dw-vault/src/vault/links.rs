@@ -50,8 +50,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use dashcore::hashes::{Hash, HashEngine, Hmac, HmacEngine, sha256};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::hashes::{Hash, HashEngine, HmacEngine, sha256};
+use dpp::secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
@@ -153,11 +153,11 @@ impl LinkState {
     }
 
     fn tag(&self, kind: StashedLinkKind, link: &str) -> [u8; 32] {
-        let mut e = HmacEngine::<sha256::Hash>::new(&self.dedupe_key);
+        let mut e = HmacEngine::<sha256::HashEngine>::new(&self.dedupe_key);
         e.input(kind.tag().as_bytes());
         e.input(&[0]);
         e.input(link.as_bytes());
-        Hmac::<sha256::Hash>::from_engine(e).to_byte_array()
+        e.finalize().to_byte_array()
     }
 
     fn forget(&mut self, id: &str) {
@@ -199,13 +199,13 @@ impl StashKey {
     /// network and a counter, until the output is a valid scalar.
     fn derive(dek: &[u8; 32], vault_id: &[u8], network: &str) -> Result<Self, VaultError> {
         for counter in 0u8..=255 {
-            let mut e = HmacEngine::<sha256::Hash>::new(dek);
+            let mut e = HmacEngine::<sha256::HashEngine>::new(dek);
             let mut msg = b"dw-vault/link-stash/v1".to_vec();
             push_field(&mut msg, vault_id);
             push_field(&mut msg, network.as_bytes());
             msg.push(counter);
             e.input(&msg);
-            let mut bytes = Zeroizing::new(Hmac::<sha256::Hash>::from_engine(e).to_byte_array());
+            let mut bytes = Zeroizing::new(e.finalize().to_byte_array());
             if let Ok(secret) = SecretKey::from_secret_bytes(*bytes) {
                 bytes.zeroize();
                 let public = PublicKey::from_secret_key(&secret);
@@ -320,12 +320,12 @@ fn entry_aad(vault_id: &[u8], network: &str, e: &EntryFile, key_id: &[u8], epk: 
 /// The entry key: HMAC-SHA256 under the ECDH secret of a domain tag, the
 /// ephemeral key and the stash key.
 fn entry_key(shared: &[u8; 32], epk: &[u8], stash: &[u8]) -> Zeroizing<[u8; 32]> {
-    let mut e = HmacEngine::<sha256::Hash>::new(shared);
+    let mut e = HmacEngine::<sha256::HashEngine>::new(shared);
     let mut msg = b"dw-vault/link-key/v1".to_vec();
     push_field(&mut msg, epk);
     push_field(&mut msg, stash);
     e.input(&msg);
-    Zeroizing::new(Hmac::<sha256::Hash>::from_engine(e).to_byte_array())
+    Zeroizing::new(e.finalize().to_byte_array())
 }
 
 /// A fresh random secp256k1 secret key.

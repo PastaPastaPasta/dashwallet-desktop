@@ -34,6 +34,7 @@ function utxo(n: number, amount: number, patch: Partial<Utxo> = {}): Utxo {
     coinjoinRounds: null,
     spendable: true,
     excluded: null,
+    pendingUnproven: false,
     ...patch,
   };
 }

@@ -1,26 +1,25 @@
 //! What a stashed invitation link is worth (DP5-02 §1, §2): the checks
-//! platform-wallet's `invitation_claim_status` (#4997) runs, on the session
-//! rather than a wallet, so a link can be checked before any wallet exists
-//! (F18), and with the outpoint the claim spends.
+//! the SDK's `invitation_claim_status` (#4997, moved by #5471) runs, on the
+//! session rather than a wallet, so a link can be checked before any wallet
+//! exists (F18), and with the outpoint the claim spends.
 //!
-//! At the pin (`rs-platform-wallet/src/wallet/identity/network/invitation.rs`)
-//! that call is `inspect_invitation_funding` → `fetch_funding_tx_with_retry` →
+//! At the pin (`rs-sdk/src/platform/dashpay/invitation.rs`) that call is
+//! `inspect_invitation_funding` → `fetch_funding_tx_with_retry` →
 //! `inspect_funding_tx`, all private; this module is the same sequence over
-//! the library's public pieces (`parse_invitation_uri`,
-//! `wif_network_matches`, `voucher_credit_output`) and the SDK's
-//! `get_transaction`.
+//! the SDK's public pieces (`parse_invitation_uri`, `wif_network_matches`,
+//! `voucher_credit_output`) and its `get_transaction`.
 
 use std::time::Duration;
 
+use dash_sdk::platform::dashpay::{
+    ParsedInvitation, parse_invitation_uri, voucher_credit_output, wif_network_matches,
+};
 use dashcore::consensus::Decodable;
 use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::{Network, OutPoint, Transaction};
 use dpp::prelude::Identifier;
 use dpp::version::PlatformVersion;
 use dw_uri::deeplink::normalize_invitation;
-use platform_wallet::wallet::identity::crypto::invitation::{
-    ParsedInvitation, parse_invitation_uri, voucher_credit_output, wif_network_matches,
-};
 use zeroize::Zeroizing;
 
 use super::errors::PlatformError;

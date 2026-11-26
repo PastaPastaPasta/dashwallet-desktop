@@ -21,6 +21,7 @@ import { failureText, Model } from "../../onboarding/model";
 import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
 import { SHIELDED_SPENDS_COPY } from "../../shielded/spends";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
+import { platformHoldText } from "../../api/platformHold";
 
 export type PaySource = PaymentSourceName;
 
@@ -114,6 +115,8 @@ const heldShort = (e: AppError, hold: ShieldedHold | null): boolean =>
 /** A quote's or a payment's refusal, as the D-C5 Copy table says it. `credits` is what was asked;
  * `hold` what payments that may still go through hold of the Shielded balance. */
 export function fromErrorText(e: unknown, credits: string | null, amount: (credits: string) => string, hold: ShieldedHold | null = null): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "shielded.insufficient_funds":
@@ -149,8 +152,11 @@ export type ContactPayApi = Pick<Backend, "contactPay" | "platformActivity" | "a
 /** `lost`: the call failed after it was sent, without a definitive refusal: it may have paid. */
 export type FromStep = "confirm" | "running" | "done" | "refused" | "lost";
 
-/** A refusal the engine answered before anything was signed (every coded refusal but `internal`). */
-const definitive = (e: unknown) => isAppError(e) && e.code !== "internal";
+/** Codes that say the payment may already be out: the engine could not confirm its outcome. */
+const MAYBE_OUT: ReadonlySet<string> = new Set(["internal", "platform.broadcast_unknown", "platform.will_be_sent"]);
+
+/** A refusal the engine answered before anything was signed (every coded refusal but `MAYBE_OUT`'s). */
+const definitive = (e: unknown) => isAppError(e) && !MAYBE_OUT.has(e.code);
 
 /** One payment from a balance: the grant the quote sizes, then `contactPay` (one call at a time). */
 export class ContactPayFlow extends Model {

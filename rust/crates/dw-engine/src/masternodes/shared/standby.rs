@@ -12,7 +12,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, PubkeyHash, ScriptBuf, Txid};
 use dw_appdb::StandbyRow;
 use dw_protx::shared::dissolve::{Dissolution, penalty_free_from};

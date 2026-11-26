@@ -189,6 +189,7 @@ import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
 import type { RescanStart } from "./RescanStart";
 import type { RescanStatus } from "./RescanStatus";
+import type { RestoreStatus } from "./RestoreStatus";
 import type { RevealedMasternodeKey } from "./RevealedMasternodeKey";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
@@ -336,6 +337,23 @@ export function openProjectLink(link: ProjectLinkName): Promise<null> {
 }
 
 /**
+ * Quits the app through its normal exit path: the engine flushes and
+ * closes, as the menu's Quit does. A refused open's screen offers it.
+ */
+export function quitApp(): Promise<null> {
+  return invoke<null>("quit_app");
+}
+
+/**
+ * Quits through the normal exit path, as `quit_app`, and starts the
+ * app again: the restart `storage_in_use` asks for when the wallet
+ * store is held until the process ends.
+ */
+export function restartApp(): Promise<null> {
+  return invoke<null>("restart_app");
+}
+
+/**
  * Registered but granted by no capability: the U6 probe that the ACL
  * refuses an unlisted command (`api::UNGRANTED`).
  */
@@ -385,6 +403,32 @@ export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
 }
 
 /**
+ * The way out of a restore that waits for Platform (`restoreStatus`):
+ * closes the active network as `switchNetwork` closes it (refused with
+ * `app.network_busy` while a Platform flow holds a lease, a wallet
+ * mixes or a broadcast has not returned, `draining` when the running
+ * operations do not finish within 2 s, then the engine's own
+ * refusals with [`ErrorData::NetworkCloseRefused`]; a refusal changes
+ * nothing) and opens it again with Platform off, for this session
+ * only: the next start, or `openNetwork` after a close, opens it with
+ * Platform. Without Platform the restore's gate opens once Core has
+ * caught up and every wallet's history has loaded. While the gate is
+ * open, or does not wait for Platform (the network already runs
+ * without it, or only Core or a history load is waited for), or only
+ * Platform's check is left (`platformOnly`), or no wallet is open
+ * (`wallet`: nothing restored to check), it does nothing and
+ * returns the active network. A
+ * failed open reopens the network with Platform and is
+ * `app.network_switch_failed` ([`ErrorData::NetworkSwitch`],
+ * `rolledBack` false when that failed too, the window then without a
+ * network). `network_not_open` before `openNetwork`. The renderer
+ * boots again on success.
+ */
+export function finishWithoutPlatform(): Promise<OpenedNetwork> {
+  return invoke<OpenedNetwork>("finish_without_platform");
+}
+
+/**
  * Closes the active network and drops its draft handles; `false` when
  * none was open.
  */
@@ -393,10 +437,28 @@ export function closeNetwork(): Promise<boolean> {
 }
 
 /**
- * The active network, `null` before `openNetwork`.
+ * The active network, `null` before `openNetwork`, with whether its
+ * wallet data was restored (read again at each call).
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
+}
+
+/**
+ * What the active network's restore waits for before funds actions
+ * run again; `null` when they run. A change is a `sync` event.
+ */
+export function restoreStatus(): Promise<RestoreStatus | null> {
+  return invoke<RestoreStatus | null>("restore_status");
+}
+
+/**
+ * Asks Platform for a fresh check and the restore to try opening the
+ * gate at once, a failed attempt's delay cut short. Nothing while the
+ * gate is open.
+ */
+export function restoreRetry(): Promise<null> {
+  return invoke<null>("restore_retry");
 }
 
 /**
@@ -412,6 +474,62 @@ export function getNetworkChoice(): Promise<NetworkChoiceView> {
  */
 export function existingNetworks(): Promise<Array<NetworkData>> {
   return invoke<Array<NetworkData>>("existing_networks");
+}
+
+/**
+ * Whether `network` (`null`: the window's) has a verified
+ * before-upgrade snapshot to restore: "Restore earlier data" shows
+ * only then.
+ */
+export function restoreAvailable(network: string | null): Promise<boolean> {
+  return invoke<boolean>("restore_available", { network });
+}
+
+/**
+ * Restore earlier data: asks for the restore of `network`'s
+ * (`null`: the window's) verified before-upgrade snapshot at the next
+ * start; the renderer then calls `restartApp`. Nothing is restored in
+ * this process. Without a verified snapshot, `storage_restore`
+ * (refused, missingBackup). While a wallet of `network` holds a
+ * shielded spend whose result is not known, or its stores don't read,
+ * `shielded_spend_unresolved` with its `shieldedHold` reason.
+ */
+export function requestRestore(network: string | null): Promise<null> {
+  return invoke<null>("request_restore", { network });
+}
+
+/**
+ * The foreign-lineage screen's Keep the current files: ends
+ * `network`'s (`null`: the window's) part-done restore keeping its
+ * files as they are; the renderer then opens the network again.
+ */
+export function keepCurrentFiles(network: string | null): Promise<null> {
+  return invoke<null>("keep_current_files", { network });
+}
+
+/**
+ * Cancel restore: drops `network`'s (`null`: the window's) restore
+ * request while it hasn't begun replacing files; once it has,
+ * `storage_restore` (incomplete).
+ */
+export function cancelRestore(network: string | null): Promise<null> {
+  return invoke<null>("cancel_restore", { network });
+}
+
+/**
+ * The refused open's way back to the funds (Q107 C1): the window's
+ * network starts over in a new, empty folder beside its own, with the
+ * restore's RESTORED mark, so the wallet set up there from its recovery
+ * phrase stays held until its first full sync. Nothing in the refused
+ * folder changes. The next start opens the new folder; the renderer
+ * restarts the app after this (`restart_app`). `invalid_argument`
+ * unless the network's last open was refused by the store-upgrade
+ * check as damaged, or Restore earlier data was refused for a shielded
+ * hold since an open refused with it or at that open's swap, and while
+ * it is open.
+ */
+export function recoverInFreshFolder(): Promise<null> {
+  return invoke<null>("recover_in_fresh_folder");
 }
 
 export function lockStatus(): Promise<LockStatus> {
@@ -631,7 +749,9 @@ export function destroyVault(credential: CredentialSpec): Promise<LockStatus> {
 /**
  * A fresh BIP39 phrase of 12, 15, 18, 21 or 24 words. Nothing is
  * stored: the UI shows it, checks the user wrote it down (QT-103,
- * IOS-004) and passes it to `importWallet`.
+ * IOS-004) and passes it to `importWallet`. `restore_only` while the
+ * open network's RESTORED mark is set: a new wallet waits for it to
+ * clear.
  */
 export function generateMnemonic(wordCount: number, language: MnemonicLanguageName): Promise<string> {
   return invoke<string>("generate_mnemonic", { wordCount, language });
@@ -700,6 +820,9 @@ export function importWatchOnly(xpub: string, options: WatchOnlyOptions): Promis
 /**
  * Deletes the wallet's vault records, then unloads it and deletes its
  * state and metadata (QT-101, IOS-109). Needs a `wipe` grant for it.
+ * Refused with `shielded_spend_unresolved` (data `shieldedHold`: why)
+ * before anything changes while the wallet holds a shielded payment
+ * whose result is not known.
  */
 export function removeWallet(walletId: string, grantId: string): Promise<null> {
   return invoke<null>("remove_wallet", { walletId, grantId });
@@ -3605,13 +3728,23 @@ export type CommandArgs = {
   set_ui_settings: { settings: UiSettings };
   open_releases_page: {  };
   open_project_link: { link: ProjectLinkName };
+  quit_app: {  };
+  restart_app: {  };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
+  finish_without_platform: {  };
   close_network: {  };
   active_network: {  };
+  restore_status: {  };
+  restore_retry: {  };
   get_network_choice: {  };
   existing_networks: {  };
+  restore_available: { network: string | null };
+  request_restore: { network: string | null };
+  keep_current_files: { network: string | null };
+  cancel_restore: { network: string | null };
+  recover_in_fresh_folder: {  };
   lock_status: {  };
   unlock: { passphrase: string };
   unlock_mixing_only: { passphrase: string };
@@ -4007,13 +4140,23 @@ export type CommandResults = {
   set_ui_settings: UiSettings;
   open_releases_page: null;
   open_project_link: null;
+  quit_app: null;
+  restart_app: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
+  finish_without_platform: OpenedNetwork;
   close_network: boolean;
   active_network: NetworkInfo | null;
+  restore_status: RestoreStatus | null;
+  restore_retry: null;
   get_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
+  restore_available: boolean;
+  request_restore: null;
+  keep_current_files: null;
+  cancel_restore: null;
+  recover_in_fresh_folder: null;
   lock_status: LockStatus;
   unlock: LockStatus;
   unlock_mixing_only: LockStatus;
@@ -4411,13 +4554,23 @@ export const COMMANDS: Record<CommandName, string> = {
   set_ui_settings: "app",
   open_releases_page: "app",
   open_project_link: "app",
+  quit_app: "app",
+  restart_app: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
+  finish_without_platform: "network",
   close_network: "network",
   active_network: "network",
+  restore_status: "network",
+  restore_retry: "network",
   get_network_choice: "network",
   existing_networks: "network",
+  restore_available: "network",
+  request_restore: "network",
+  keep_current_files: "network",
+  cancel_restore: "network",
+  recover_in_fresh_folder: "network",
   lock_status: "vault",
   unlock: "vault",
   unlock_mixing_only: "vault",
@@ -4846,6 +4999,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "storage_in_use",
   "storage",
   "storage_too_new",
+  "storage_refused",
+  "storage_not_private",
+  "storage_restore",
+  "storage_retry",
   "wallet_not_found",
   "invalid_mnemonic",
   "wallet_already_exists",
@@ -4877,6 +5034,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "stuck_funding",
   "shielded_spend_unresolved",
   "last_startup_wallet",
+  "restored",
+  "restore_only",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -4919,6 +5078,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "send.tx_too_large",
   "send.invalid_change_address",
   "send.watch_only",
+  "send.restored",
   "send.vault_locked",
   "send.grant_invalid",
   "send.grant_exceeded",
@@ -4965,6 +5125,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "psbt.broadcast_rejected",
   "psbt.broadcast_unknown",
   "coinjoin.disabled",
+  "coinjoin.restored",
   "coinjoin.watch_only",
   "coinjoin.insufficient_funds",
   "coinjoin.vault_locked",
@@ -4999,6 +5160,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "platform.broadcast_unknown",
   "platform.will_be_sent",
   "platform.cancelled",
+  "platform.restored",
   "platform.needs_grant",
   "platform.lease_revoked",
   "platform.lease_expired",
@@ -5097,6 +5259,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.coins_unconfirmed",
   "shielded.move_running",
   "shielded.coins_changed",
+  "shielded.store_closed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",

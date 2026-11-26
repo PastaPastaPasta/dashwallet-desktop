@@ -7,7 +7,6 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use dashcore::bls_sig_utils::BLSSignature;
-use dashcore::hashes::Hash;
 use dashcore::{ChainLock, OutPoint, Transaction, Txid};
 use dw_vault::{Credential, GrantPurpose, is_bip44_path, is_coinjoin_path};
 use key_wallet::account::{AccountType, StandardAccountType};
@@ -571,6 +570,11 @@ fn sweep_out_keys(f: &Fixture) -> HashSet<Txid> {
 
 /// The txids of the wallet's beaten-chunk rows in `app.sqlite`.
 fn beaten_keys(f: &Fixture) -> HashSet<Txid> {
+    beaten_rows(f).into_keys().collect()
+}
+
+/// The wallet's beaten-chunk rows in `app.sqlite`, by txid.
+fn beaten_rows(f: &Fixture) -> std::collections::HashMap<Txid, String> {
     let scope = dw_appdb::local_scope(&f.wallet.to_string());
     f.engine
         .block_on(
@@ -579,7 +583,7 @@ fn beaten_keys(f: &Fixture) -> HashSet<Txid> {
         )
         .unwrap()
         .into_iter()
-        .map(|(k, _)| k["coinjoin.sweep_beaten.".len()..].parse().unwrap())
+        .map(|(k, v)| (k["coinjoin.sweep_beaten.".len()..].parse().unwrap(), v))
         .collect()
 }
 
@@ -918,12 +922,25 @@ fn swept(f: &Fixture, loser: Txid, winner: Txid, height: Option<u32>) {
 
 /// [`swept`] with the winner's block as key-wallet processed it.
 fn swept_in(f: &Fixture, loser: Txid, winner: Txid, block: Option<(u32, BlockHash)>) {
+    let block = block.map(|(h, hash)| BlockInfo::new(h, hash, 0));
+    sweep_event(f, vec![loser], winner, block, Vec::new());
+}
+
+/// key-wallet's sweep of `txids`, superseded by `winner` in `block` or off
+/// chain, giving back `released`.
+fn sweep_event(
+    f: &Fixture,
+    txids: Vec<Txid>,
+    winner: Txid,
+    block: Option<BlockInfo>,
+    released: Vec<OutPoint>,
+) {
     (f.session.hub).apply_wallet_event(&WalletEvent::TransactionsSwept {
         wallet_id: f.wallet.0,
-        txids: vec![loser],
+        txids,
         superseded_by: winner,
-        winner_block: block.map(|(h, hash)| BlockInfo::new(h, hash, 0)),
-        released_outpoints: Vec::new(),
+        winner_block: block,
+        released_outpoints: released,
         balance: WalletCoreBalance::default(),
         account_balances: std::collections::BTreeMap::new(),
     });
@@ -1027,7 +1044,7 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
     let peer: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
     dash_spv::EventHandler::on_network_event(
         &*f.session.hub,
-        &dash_spv::network::NetworkEvent::PeerConnected { address: peer },
+        &dash_spv::network::NetworkEvent::PeerConnected(peer),
     );
     // Sent under the background resend's claim: the claim ends with that
     // resend, and an explicit resend before then is refused.
@@ -1133,7 +1150,13 @@ fn a_chunk_an_instant_send_locked_transaction_beat_is_dropped() {
     let sent = wire.txs();
     forget_claims(&f, &sent);
     let input = sent[0].input[0].previous_output;
-    swept(&f, sent[0].txid(), conflict(input).txid(), None);
+    let winner = conflict(input).txid();
+    swept(&f, sent[0].txid(), winner, None);
+    assert_eq!(
+        beaten_rows(&f),
+        [(sent[0].txid(), format!("is {winner}"))].into(),
+        "an InstantSend-locked winner"
+    );
     assert_eq!(
         resend(&f, Some(sent[0].txid())).unwrap(),
         resent(sent[0].txid(), SweepResendState::Resolved)
@@ -2346,4 +2369,481 @@ fn mixing_does_not_start_while_chain_data_is_reset() {
     assert!(!f.session.coinjoin.is_mixing(&f.wallet));
     drop(claim);
     assert!(f.session.coinjoin.claim_reset().is_ok());
+}
+
+/// A peer's unsigned claim T on output 0 of a funding the wallet hasn't
+/// seen, paying `outputs` coins of [`COIN`] to fresh CoinJoin-account
+/// addresses, pending in the history. Returns the funding's txid and T.
+fn unsigned_claim(f: &Fixture, outputs: usize) -> (Txid, Transaction) {
+    let funding = Txid::from_byte_array([0xf0; 32]);
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let addresses = (f.engine)
+        .block_on(session.on_runtime({
+            let session = Arc::clone(&session);
+            async move { session.reserve_coinjoin_addresses(id, outputs, false).await }
+        }))
+        .unwrap();
+    let claim = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(funding, 0),
+            ..Default::default()
+        }],
+        output: (addresses.iter())
+            .map(|a| dashcore::TxOut {
+                value: COIN,
+                script_pubkey: a.script_pubkey(),
+            })
+            .collect(),
+        special_transaction_payload: None,
+    };
+    record_history(f, &claim, None);
+    (funding, claim)
+}
+
+/// Credits output `vout` of `claim` to the CoinJoin account, confirmed so
+/// a move takes it (a live pending claim's coin never is), and returns it.
+fn credit_claim_coin(f: &Fixture, claim: &Transaction, vout: u32) -> OutPoint {
+    let session = Arc::clone(&f.session);
+    let id = f.wallet;
+    let outpoint = OutPoint::new(claim.txid(), vout);
+    let txout = claim.output[vout as usize].clone();
+    f.engine
+        .block_on(session.on_runtime({
+            let session = Arc::clone(&session);
+            async move {
+                let address = dashcore::Address::from_script(
+                    &txout.script_pubkey,
+                    dashcore::Network::Regtest,
+                )
+                .unwrap();
+                let mut utxo = key_wallet::Utxo::new(outpoint, txout, address, 1, false);
+                utxo.is_confirmed = true;
+                let wallet = session.wallet(&id).await?;
+                let mut state = wallet.state_mut().await;
+                (state.core_wallet.accounts.coinjoin_accounts)
+                    .get_mut(&0)
+                    .unwrap()
+                    .utxos
+                    .insert(outpoint, utxo);
+                Ok(outpoint)
+            }
+        }))
+        .unwrap()
+}
+
+/// One chunk of every coin a move takes now, of unknown outcome, its spend
+/// claims gone so only its record holds its inputs.
+fn chunk_of(f: &Fixture, coins: &[OutPoint]) -> Transaction {
+    let wire = hook(f, 500, &[Outcome::Unknown]);
+    move_to_wallet(f).unwrap();
+    let sent = wire.txs();
+    assert_eq!(sent.len(), 1, "one chunk");
+    forget_claims(f, &sent);
+    assert_eq!(
+        inputs(&sent),
+        coins.iter().copied().collect(),
+        "the chunk's inputs"
+    );
+    sent[0].clone()
+}
+
+/// key-wallet's drop of a peer's unsigned pending claim once its funding
+/// arrives, mined at `height` or unlocked off chain (`None`)
+/// (rust-dashcore#1523): the claim and `swept`, what is built on it and
+/// what the same event swept, go, superseded by the funding, giving back
+/// `released`. The claim's coins leave the CoinJoin account.
+fn dropped_by_funding(
+    f: &Fixture,
+    funding: Txid,
+    height: Option<u32>,
+    claim: &Transaction,
+    swept: &[&Transaction],
+    released: &[OutPoint],
+) {
+    drop_coins(
+        f,
+        &(0..claim.output.len() as u32)
+            .map(|vout| OutPoint::new(claim.txid(), vout))
+            .collect(),
+    );
+    let mut txids: Vec<Txid> = std::iter::once(claim.txid())
+        .chain(swept.iter().map(|t| t.txid()))
+        .collect();
+    txids.sort_unstable();
+    let mut released = released.to_vec();
+    released.sort_unstable();
+    let block = height.map(|h| BlockInfo::new(h, f.chain.hash(h), 0));
+    sweep_event(f, txids, funding, block, released);
+}
+
+/// The `dropped:` records of the wallet.
+fn dropped_records(f: &Fixture) -> std::collections::BTreeSet<Txid> {
+    let (dropped, read) =
+        crate::tx_actions::load_dropped(&f.session.live().unwrap().appdb, f.wallet);
+    assert!(read, "the dropped records read");
+    dropped.into_keys().collect()
+}
+
+/// The coins a move takes now, moved in chunks the stand-in broadcast sends.
+fn moved(f: &Fixture) -> HashSet<OutPoint> {
+    let wire = hook(f, 500, &[]);
+    match move_to_wallet(f) {
+        Ok(_) => inputs(&wire.txs()),
+        Err(EngineError::CoinJoin(CoinJoinFailure::NothingToMove)) => HashSet::new(),
+        Err(e) => panic!("move: {e:?}"),
+    }
+}
+
+/// A chunk built on a peer's unsigned claim, which key-wallet drops when
+/// the claim's funding arrives unlocked: the claim and the chunk are
+/// recorded as dropped (the claim rule, #739), and no InstantSend lock beat
+/// them, so no beaten row is written.
+#[test]
+fn a_chunk_on_a_claim_its_funding_dropped_gets_no_instant_send_mark() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let claimed = credit_claim_coin(&f, &claim, 0);
+    let coin = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[claimed, coin]);
+
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), coin],
+    );
+    assert_eq!(beaten_rows(&f), Default::default(), "no lock beat them");
+    assert!(
+        dropped_records(&f).is_superset(&[claim.txid(), chunk.txid()].into()),
+        "the claim and the chunk are dropped"
+    );
+    assert!(sweep_out_keys(&f).is_empty(), "the chunk's record goes");
+    assert_eq!(
+        moved(&f),
+        HashSet::from([coin]),
+        "its released coin is free"
+    );
+}
+
+/// The drop gives back what key-wallet released and nothing else: a chunk
+/// whose every input is the claim's or released lets them go, one with an
+/// input the event did not release keeps holding it, and a chunk the drop
+/// doesn't name keeps its inputs.
+#[test]
+fn a_dropped_claims_chunks_free_only_the_released_coins() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 2);
+    let released = f.credit_coinjoin(2, COIN);
+    let freed = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), released]);
+    let not_released = f.credit_coinjoin(4, COIN);
+    let kept = chunk_of(&f, &[credit_claim_coin(&f, &claim, 1), not_released]);
+    let other = f.credit_coinjoin(3, COIN);
+    let unnamed = chunk_of(&f, &[other]);
+    assert!(moved(&f).is_empty(), "every coin is held before the drop");
+
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&freed, &kept],
+        &[OutPoint::new(funding, 0), released],
+    );
+    assert_eq!(
+        sweep_out_keys(&f),
+        HashSet::from([kept.txid(), unnamed.txid()])
+    );
+    assert_eq!(beaten_rows(&f), Default::default());
+    assert_eq!(
+        moved(&f),
+        HashSet::from([released]),
+        "only the released coin is free: the event kept {not_released}, and {other} is unnamed"
+    );
+}
+
+/// A sweep with no winner block whose winner funds nothing swept is an
+/// InstantSend-locked winner's, as before, even when the chunk spends a
+/// claim's coin: the chunk gets an `is` row, and nothing is dropped.
+#[test]
+fn a_sweep_whose_winner_funds_nothing_swept_is_still_an_instant_send_one() {
+    let f = fixture(false);
+    let (_, claim) = unsigned_claim(&f, 1);
+    let coin = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), coin]);
+    let winner = conflict(coin).txid();
+
+    swept(&f, chunk.txid(), winner, None);
+    assert_eq!(
+        beaten_rows(&f),
+        [(chunk.txid(), format!("is {winner}"))].into()
+    );
+    assert!(dropped_records(&f).is_empty(), "no claim was dropped");
+}
+
+/// One event of an InstantSend-locked funding that beat a chunk to a coin
+/// and exposed a claim on its output: the beaten chunk gets an `is` row,
+/// and the chunk on the claim none, its record retired.
+#[test]
+fn a_locked_funding_that_also_drops_a_claim_marks_only_the_chunk_it_beat() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let taken = f.credit_coinjoin(5, COIN);
+    let beaten = chunk_of(&f, &[taken]);
+    let released = f.credit_coinjoin(2, COIN);
+    let on_claim = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), released]);
+    drop_coins(&f, &HashSet::from([taken]));
+
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&on_claim, &beaten],
+        &[OutPoint::new(funding, 0), released],
+    );
+    assert_eq!(
+        beaten_rows(&f),
+        [(beaten.txid(), format!("is {funding}"))].into()
+    );
+    assert!(!sweep_out_keys(&f).contains(&on_claim.txid()));
+    assert_eq!(moved(&f), HashSet::from([released]));
+}
+
+/// The history lacks the claim's bytes, but a coin of the funding the event
+/// released names the drop: nothing gets an `is` row, and the chunk on the
+/// claim, which the claim rule can't judge, keeps its coins.
+#[test]
+fn a_drop_whose_claim_the_history_lacks_gets_no_instant_send_mark() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let released = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), released]);
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.txs.remove(&claim.txid());
+    });
+
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), released],
+    );
+    assert_eq!(beaten_rows(&f), Default::default());
+    assert_eq!(sweep_out_keys(&f), HashSet::from([chunk.txid()]));
+    assert!(moved(&f).is_empty(), "the chunk keeps its coins");
+}
+
+/// A dropped claim whose input script isn't push-only may be judged wrong
+/// (#739): nothing is recorded as dropped, no `is` row is written, and the
+/// chunk on it keeps its coins.
+#[test]
+fn a_drop_of_a_claim_whose_input_script_isnt_push_only_keeps_the_chunk_on_it() {
+    let f = fixture(false);
+    let (funding, mut claim) = unsigned_claim(&f, 1);
+    let signed_txid = claim.txid();
+    claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.txs.remove(&signed_txid);
+    });
+    record_history(&f, &claim, None);
+    let released = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), released]);
+
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), released],
+    );
+    assert_eq!(beaten_rows(&f), Default::default());
+    assert!(dropped_records(&f).is_empty(), "the claim rule keeps it");
+    assert_eq!(sweep_out_keys(&f), HashSet::from([chunk.txid()]));
+    assert!(moved(&f).is_empty(), "the chunk keeps its coins");
+}
+
+/// The funding mined exposes the claim: the chunk on it gets no row naming
+/// the funding's block, and its record is retired as off chain.
+#[test]
+fn a_mined_funding_that_drops_a_claim_gives_its_chunk_no_block_row() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let released = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[credit_claim_coin(&f, &claim, 0), released]);
+
+    dropped_by_funding(
+        &f,
+        funding,
+        Some(900),
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), released],
+    );
+    assert_eq!(beaten_rows(&f), Default::default());
+    assert!(sweep_out_keys(&f).is_empty());
+    assert_eq!(moved(&f), HashSet::from([released]));
+}
+
+/// A transaction spending `inputs`, paying one coin to nobody in particular.
+fn spending(inputs: &[OutPoint]) -> Transaction {
+    Transaction {
+        version: 2,
+        lock_time: 0,
+        input: (inputs.iter())
+            .map(|o| dashcore::TxIn {
+                previous_output: *o,
+                ..Default::default()
+            })
+            .collect(),
+        output: vec![dashcore::TxOut {
+            value: COIN,
+            script_pubkey: Default::default(),
+        }],
+        special_transaction_payload: None,
+    }
+}
+
+/// Whether `app.sqlite` at `path` refuses to delete the settings rows
+/// whose key is `LIKE pattern` (a storage failure inside a write).
+fn refuse_deletes(path: &std::path::Path, pattern: Option<&str>) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+    match pattern {
+        Some(p) => db
+            .execute_batch(&format!(
+                "CREATE TRIGGER refuse_delete BEFORE DELETE ON settings_kv
+                 WHEN old.key LIKE '{p}'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;"
+            ))
+            .unwrap(),
+        None => db.execute_batch("DROP TRIGGER refuse_delete;").unwrap(),
+    }
+}
+
+/// H2 batch invariant on `retire_dropped`: a retired chunk's sweep rows
+/// (local scope) and its restore hold (wallet scope) go in one write. A
+/// write that fails at either scope leaves all of them; a chunk not
+/// retired keeps its own.
+#[test]
+fn a_retired_chunk_takes_its_restore_hold_in_the_same_write() {
+    use crate::coinjoin::{SWEEP_BEATEN_PREFIX, SweepOut, retire_dropped};
+    let dir = dw_testutil::private_tempdir();
+    let path = dir.path().join(dw_appdb::APP_DB_FILE);
+    let db = dw_appdb::AppDb::open(&path).unwrap();
+    let wallet = crate::WalletId([0x5a; 32]);
+    let (local, scope) = (
+        dw_appdb::local_scope(&wallet.to_string()),
+        wallet.to_string(),
+    );
+
+    let claim = spending(&[OutPoint::new(Txid::from_byte_array([0xf0; 32]), 0)]);
+    let released = OutPoint::new(Txid::from_byte_array([0xf1; 32]), 1);
+    let retired = SweepOut {
+        tx: spending(&[OutPoint::new(claim.txid(), 0), released]),
+    };
+    let kept = SweepOut {
+        tx: spending(&[
+            OutPoint::new(claim.txid(), 1),
+            OutPoint::new(Txid::from_byte_array([0xf2; 32]), 0),
+        ]),
+    };
+    let dead: std::collections::BTreeSet<Txid> = [claim.txid(), retired.txid(), kept.txid()].into();
+    for o in [&retired, &kept] {
+        let beaten = format!("{SWEEP_BEATEN_PREFIX}{}", o.txid());
+        let hold = crate::restore_gate::hold_keys([&o.txid()]).remove(0);
+        let value = o.value();
+        db.set_scoped_settings_durable(&[
+            (&local, &o.key(), Some(&value)),
+            (&local, &beaten, Some("is 00")),
+            (&scope, &hold, Some("")),
+        ])
+        .unwrap();
+    }
+    let rows = |o: &SweepOut| {
+        let beaten = format!("{SWEEP_BEATEN_PREFIX}{}", o.txid());
+        let hold = crate::restore_gate::hold_keys([&o.txid()]).remove(0);
+        [
+            db.setting(&local, &o.key()).unwrap().is_some(),
+            db.setting(&local, &beaten).unwrap().is_some(),
+            db.setting(&scope, &hold).unwrap().is_some(),
+        ]
+    };
+
+    for pattern in ["restore_hold:%", "coinjoin.sweep_out.%"] {
+        refuse_deletes(&path, Some(pattern));
+        let failed = retire_dropped(&db, wallet, &dead, &[released]);
+        refuse_deletes(&path, None);
+        assert!(failed.is_err(), "{pattern}: {failed:?}");
+        assert_eq!(
+            rows(&retired),
+            [true; 3],
+            "a write refused at {pattern} leaves them all"
+        );
+    }
+
+    assert_eq!(
+        retire_dropped(&db, wallet, &dead, &[released]).unwrap(),
+        vec![retired.txid()]
+    );
+    assert_eq!(
+        rows(&retired),
+        [false; 3],
+        "the rows and the hold go together"
+    );
+    assert_eq!(rows(&kept), [true; 3], "an input not given back keeps them");
+}
+
+/// The sweep news drops a retired chunk's restore hold from memory once
+/// its write commits, even when the sweep's own marks then fail to write.
+#[test]
+fn a_retired_chunks_restore_hold_leaves_memory_with_its_rows() {
+    let f = fixture(false);
+    let (funding, claim) = unsigned_claim(&f, 1);
+    let claimed = credit_claim_coin(&f, &claim, 0);
+    let coin = f.credit_coinjoin(2, COIN);
+    let chunk = chunk_of(&f, &[claimed, coin]);
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let scope = f.wallet.to_string();
+    let hold = crate::restore_gate::hold_keys([&chunk.txid()]).remove(0);
+    appdb
+        .set_settings_durable(&scope, &[(&hold, Some(""))])
+        .unwrap();
+    let in_memory = || {
+        (f.session.hub.history)
+            .read_wallet(&f.wallet, |h| h.restore_holds.contains_key(&chunk.txid()))
+    };
+    (f.session.hub.history).with_wallet(f.wallet, |h| {
+        h.restore_holds.insert(chunk.txid(), Default::default());
+    });
+    assert!(in_memory());
+
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    dw_appdb::fault::arm(
+        &path,
+        crate::tx_actions::FORGET_SENT_FAULT,
+        dw_appdb::fault::Stage::Before,
+    );
+    dropped_by_funding(
+        &f,
+        funding,
+        None,
+        &claim,
+        &[&chunk],
+        &[OutPoint::new(funding, 0), coin],
+    );
+    dw_appdb::fault::disarm(&path);
+    assert!(sweep_out_keys(&f).is_empty(), "the chunk's record goes");
+    assert!(
+        appdb.setting(&scope, &hold).unwrap().is_none(),
+        "with its hold row"
+    );
+    assert!(!in_memory(), "and its hold in memory");
 }

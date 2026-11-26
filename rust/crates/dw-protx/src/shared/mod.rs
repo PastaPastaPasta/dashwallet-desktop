@@ -44,7 +44,7 @@
 //! (`GetValidatedPayload`, `specialtxman.cpp:1097-1122`).
 
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
-use dashcore::hashes::{Hash, HashEngine, sha256d};
+use dashcore::hashes::{HashEngine, sha256d};
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 
 pub mod dissolve;

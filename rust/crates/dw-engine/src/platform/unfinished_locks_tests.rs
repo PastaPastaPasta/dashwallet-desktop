@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use key_wallet::bip32::DerivationPath;
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
@@ -310,20 +309,14 @@ fn only_already_consumed_of_the_same_outpoint_reads_already_consumed() {
     }
 }
 
-/// The library's refusal to record Platform's "already consumed" (a
-/// restored wallet's persister attests no `WALLET_RESTORE`) is that answer
+/// The library's refusal to record Platform's "already consumed" (at a
+/// persister that does not attest asset-lock reconciliation) is that answer
 /// for the applied outpoint, for both kinds.
 #[test]
 fn the_librarys_unrecorded_consumed_report_reads_already_consumed() {
     use super::shielded_pool::{Applied, applied_from};
     let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
-    let refusal = || {
-        PlatformWalletError::Persistence(
-            "asset-lock reconciliation requires persistence capabilities \
-             [\"wallet_restore\"] (missing mask 0x80)"
-                .into(),
-        )
-    };
+    let refusal = conformance::unrecorded_consumed;
     assert_eq!(
         reply_from(Err(refusal()), at, true).unwrap(),
         ApplyReply::AlreadyConsumed
@@ -366,6 +359,29 @@ fn no_other_error_or_timeout_reads_already_consumed() {
         let shown = format!("{e:?}");
         assert!(reply_from(Err(e), at, false).is_err(), "{shown}");
     }
+}
+
+/// An apply whose wait ends unconfirmed is `Unknown` after the signature,
+/// never "already consumed" nor a refusal; reported without one, it is
+/// still `platform.broadcast_unknown`, not `internal`.
+#[test]
+fn an_unconfirmed_apply_is_unknown() {
+    let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let unconfirmed = || {
+        PlatformWalletError::Sdk(dash_sdk::Error::StateTransitionResultUnconfirmed(Box::new(
+            dash_sdk::Error::TimeoutReached(std::time::Duration::from_secs(1), "wait".into()),
+        )))
+    };
+    assert_eq!(
+        reply_from(Err(unconfirmed()), at, true).unwrap(),
+        ApplyReply::Unknown
+    );
+    assert_eq!(
+        reply_from(Err(unconfirmed()), at, false)
+            .unwrap_err()
+            .code(),
+        "platform.broadcast_unknown"
+    );
 }
 
 /// How the scripted apply ends (`FakeKind::ends`, else [`End::Done`]).

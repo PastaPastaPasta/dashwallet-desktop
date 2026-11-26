@@ -21,6 +21,8 @@ mod banner;
 #[cfg(test)]
 mod banner_tests;
 mod bringup;
+#[cfg(test)]
+mod close_unload_gate_tests;
 mod contact_names;
 pub(crate) mod contact_payout;
 mod contacts;
@@ -51,6 +53,8 @@ pub(crate) mod journal;
 #[cfg(test)]
 mod journal_tests;
 pub mod keys_policy;
+#[cfg(test)]
+mod known_wallets_tests;
 pub mod lease;
 mod lock_inputs;
 pub(crate) mod money_gate;
@@ -90,7 +94,12 @@ mod registration_rows;
 mod registration_shielded;
 #[cfg(test)]
 mod registration_tests;
+#[cfg(test)]
+mod removal_gate_tests;
 mod requests;
+pub(crate) mod restore_hold;
+#[cfg(test)]
+mod restore_hold_tests;
 mod reverify;
 pub(crate) mod runtime;
 #[cfg(test)]
@@ -99,6 +108,8 @@ pub(crate) mod shield_drain;
 mod shielded;
 #[cfg(test)]
 mod shielded_close_tests;
+#[cfg(test)]
+mod shielded_import_tests;
 pub(crate) mod shielded_payout;
 pub(crate) mod shielded_pool;
 pub(crate) mod shielded_release;
@@ -193,8 +204,8 @@ pub use shielded::{
     ShieldQuote, ShieldRepairCost, ShieldState, ShieldedAccount, ShieldedActivity,
     ShieldedActivityKind, ShieldedActivityStatus, ShieldedAddress, ShieldedDirection,
     ShieldedRefusal, ShieldedScanProgress, ShieldedSpendOutcome, ShieldedSpendQuote,
-    ShieldedSpendState, ShieldedStatus, ShieldedSyncInfo, ShieldedSyncWait, StuckShieldFunding,
-    UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
+    ShieldedSpendState, ShieldedStatus, ShieldedStoreClosed, ShieldedSyncInfo, ShieldedSyncWait,
+    StuckShieldFunding, UnrecordedSpend, UnresolvedSpend, UnshieldToPlatformOutcome,
 };
 pub use signers::{
     CountingFundingSigner, VaultContactCrypto, VaultIdentitySigner, VaultPlatformAddressSigner,
