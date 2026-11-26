@@ -728,7 +728,12 @@ fn the_quote_names_the_group_facts_it_read() {
     let changed = f.quote(&l, &Fixture::choice()).unwrap();
     assert_ne!(changed.groups, sheet.groups);
     assert_ne!(changed.plan, quote.plan);
-    assert_eq!(f.sheet(&l).unwrap().groups, changed.groups);
+    let refreshed = f.sheet(&l).unwrap();
+    assert_eq!(refreshed.groups, changed.groups);
+    let ConnectScope::Group(g) = &refreshed.bindings[0].scope else {
+        panic!("expected a group binding, got {:?}", refreshed.bindings[0]);
+    };
+    assert_eq!(g.admins, vec![b58(&id(43)), b58(&id(51))]);
 }
 
 #[test]

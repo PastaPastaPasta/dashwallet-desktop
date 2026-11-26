@@ -204,6 +204,42 @@ describe("the flow over the fixture", () => {
     expect(closed).toHaveBeenCalledOnce();
   });
 
+  it("a quote or a read of the request that answers after Deny leaves the decline and its Return", async () => {
+    for (const late of ["quote", "sheet", "typing"] as const) {
+      const { flow, backend, closed, link } = await open("ok");
+      const real = backend.appConnectQuote;
+      const realSheet = backend.appConnectSheet.bind(backend);
+      let answer: (() => void) | undefined;
+      const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation((...args) => {
+        const read = real(...args);
+        return new Promise((resolve) => (answer = () => void read.then((q) => resolve({ ...q, groups: "c".repeat(64) }))));
+      });
+      const sheet = vi.spyOn(backend, "appConnectSheet");
+      if (late === "quote") void flow.requote();
+      if (late === "sheet") {
+        sheet.mockImplementationOnce((...args) => {
+          const read = realSheet(...args);
+          return new Promise((resolve) => (answer = () => void read.then(resolve)));
+        });
+        void flow.load();
+      }
+      if (late === "typing") flow.setLimit("0.02");
+      await flow.deny();
+      expect([late, flow.phase]).toEqual([late, "denied"]);
+      answer?.();
+      await new Promise((r) => setTimeout(r, 450));
+      await settle();
+      expect([late, flow.phase, flow.quoting, flow.closed]).toEqual([late, "denied", false, false]);
+      expect([late, sheet.mock.calls.length]).toEqual([late, late === "sheet" ? 1 : 0]);
+      expect([late, quote.mock.calls.length]).toEqual([late, late === "quote" ? 1 : 0]);
+      expect(link().answer).toBe("declined");
+      await flow.returnToApp();
+      expect(link()).toMatchObject({ returned: true, dismissed: true });
+      expect(closed).toHaveBeenCalledOnce();
+      clearMocks();
+    }
+  });
+
   it("Deny on a request with no return link closes straight away when no approval was attempted", async () => {
     const { flow, closed, link } = await open("ok", null);
     await flow.deny();
@@ -317,6 +353,33 @@ describe("the flow over the fixture", () => {
     const group = flow.sheet!.bindings.find((b) => b.scope.kind === "group")!.scope;
     expect(group.kind === "group" && group.group.admins).toHaveLength(2);
     expect(flow.quote!.groups).toBe(flow.sheet!.groups);
+    await approve(flow);
+    expect(flow.phase).toBe("done");
+  });
+
+  it("group facts that disagree again after one read fail the quote, and Try again reads the request once more", async () => {
+    const { flow, backend } = await open("ok");
+    const real = backend.appConnectQuote;
+    const quote = vi.spyOn(backend, "appConnectQuote").mockImplementation(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    const sheet = vi.spyOn(backend, "appConnectSheet");
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.quote, flow.quoting, flow.phase, flow.planChanged]).toEqual([1, null, false, "sheet", true]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toBe("Couldn't check this request with Platform. Try again.");
+    flow.retryQuote();
+    await vi.waitFor(() => expect(sheet).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(flow.quoteError).not.toBeNull());
+    await settle();
+    expect([sheet.mock.calls.length, flow.quote]).toEqual([2, null]);
+    quote.mockRestore();
+    flow.retryQuote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.quoteError, flow.quote!.groups]).toEqual([3, null, flow.sheet!.groups]);
+    vi.spyOn(backend, "appConnectQuote").mockImplementationOnce(async (...args) => ({ ...(await real(...args)), groups: "c".repeat(64) }));
+    await flow.requote();
+    await vi.waitFor(() => expect(flow.quote).not.toBeNull());
+    expect([sheet.mock.calls.length, flow.quoteError]).toEqual([4, null]);
     await approve(flow);
     expect(flow.phase).toBe("done");
   });
