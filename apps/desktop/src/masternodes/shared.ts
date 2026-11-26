@@ -45,6 +45,8 @@ export interface SharedSlice {
   maintenance?: boolean;
   /** A complete dissolution together is sent from here (never a key change in S6). */
   maintenanceSend?: boolean;
+  /** A key change starts and is approved here; the engine refuses both on mainnet. */
+  keyChange?: boolean;
 }
 export const S5_SLICE: SharedSlice = { sign: true, send: true };
 /** The slice before sends: what mainnet renders. */
@@ -75,7 +77,7 @@ export function setupSteps(s: SharedSession, slice: SharedSlice): SetupStep[] {
  * one send (a dissolution together) only where sends are on. */
 export const sliceFor = (network: Pick<NetworkInfo, "kind">): SharedSlice => {
   const sends = sharedSendsOn(network);
-  return { ...(sends ? S5_SLICE : NO_SENDS), maintenance: true, maintenanceSend: sends };
+  return { ...(sends ? S5_SLICE : NO_SENDS), maintenance: true, maintenanceSend: sends, keyChange: sends };
 };
 
 /** B7, before Create invitation and Join: its last sentence ("can't sign or send yet") only where
@@ -112,6 +114,7 @@ export type RowKey =
   | "togetherSendOff"
   | "dissolved"
   | "keyApprove"
+  | "keyApproveOff"
   | "keyWaiting"
   | "keySendApproval"
   | "keySendSignatures"
@@ -145,7 +148,7 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
   // This wallet signed a spend back (D50): nothing hands the session's message or transaction on.
   if (s.abandonSpend && s.next === "nothing" && stage !== "confirmed" && stage !== "conflicted" && stage !== "dead") return r("abandoning", null);
   if (s.kind === "dissolve_together" && slice.maintenance) return renderTogether(s, slice);
-  if (s.kind === "key_change" && slice.maintenance) return renderKeyChange(s);
+  if (s.kind === "key_change" && slice.maintenance) return renderKeyChange(s, slice);
   if (!isRegistration(s)) return r("unknown", null, false, false);
   const c = coordinator(s);
   switch (s.next) {
@@ -210,12 +213,13 @@ export const isFunder = (s: SharedSession) => s.keyChange?.funder ?? s.role === 
 
 /** §2.3.1 and §2.6, key-change rows. S6 never sends a key change: the funder's complete change
  * reads "later", with Discard while the engine says it is discardable. */
-function renderKeyChange(s: SharedSession): SessionRender {
+function renderKeyChange(s: SharedSession, slice: SharedSlice): SessionRender {
   const stage = s.stage.kind;
   const funder = isFunder(s);
   switch (s.next) {
     case "approve":
-      return stage === "signing" ? row("keyApprove", "approveMaintenance") : row("unknown", "approveMaintenance", false, false);
+      if (stage !== "signing") return row("unknown", "approveMaintenance", false, false);
+      return slice.keyChange ? row("keyApprove", "approveMaintenance") : row("keyApproveOff", null);
     case "copy":
       if (stage === "signing") return row(funder ? "keyWaiting" : "keySendApproval", null, true);
       if (stage === "combined" && !funder) return row("keySendSignatures", null, true);
@@ -675,10 +679,10 @@ export interface LegendEntry {
   percent: number;
 }
 
-/** The share bar and its legend from EP 5's shares, labelled from the session's rows when present. */
 /** A share's label in the legend, "" when it has none. */
 export const labelOf = (legend: readonly LegendEntry[], index: number) => legend.find((l) => l.index === index)?.label ?? "";
 
+/** The share bar and its legend from EP 5's shares, labelled from the session's rows when present. */
 export function shareLegend(shares: SharedShares, session: SharedSession | null): LegendEntry[] {
   const total = shares.shares.reduce((a, s) => a + s.amount, 0);
   return shares.shares.map((s) => ({

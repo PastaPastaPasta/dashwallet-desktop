@@ -61,7 +61,14 @@ describe("dissolve together under S6", () => {
 });
 
 describe("key change under S6", () => {
-  it("approves, copies, and never sends, on any network", () => {
+  it("on mainnet, where the engine refuses it, offers no approval and asks for nothing", () => {
+    const s = keyChangeSession("participant", "signing");
+    expect(renderSession(s, MAINNET)).toMatchObject({ row: "keyApproveOff", primary: null, known: true });
+    expect(sessionNeedsAction(s, MAINNET)).toBe(false);
+    expect(sessionNeedsAction(s, S6_SLICE)).toBe(true);
+  });
+
+  it("approves and copies where the engine allows it, and never sends on any network", () => {
     expect(renderSession(keyChangeSession("participant", "signing"), S6_SLICE)).toMatchObject({ row: "keyApprove", primary: "approveMaintenance" });
     expect(renderSession(keyChangeSession("coordinator", "signing"), S6_SLICE)).toMatchObject({ row: "keyWaiting", copy: true });
     expect(renderSession(keyChangeSession("participant", "combined"), S6_SLICE)).toMatchObject({ row: "keySendSignatures", copy: true });
@@ -145,9 +152,9 @@ describe("the mainnet ruling", () => {
     expect(sharedSendsOn({ kind: "mainnet" })).toBe(false);
     for (const kind of ["testnet", "regtest", "devnet"] as const) {
       expect(sharedSendsOn({ kind })).toBe(true);
-      expect(sliceFor({ kind })).toMatchObject({ maintenance: true, maintenanceSend: true, sign: true, send: true });
+      expect(sliceFor({ kind })).toMatchObject({ maintenance: true, maintenanceSend: true, keyChange: true, sign: true, send: true });
     }
-    expect(MAINNET).toMatchObject({ maintenance: true, maintenanceSend: false, sign: false, send: false });
+    expect(MAINNET).toMatchObject({ maintenance: true, maintenanceSend: false, keyChange: false, sign: false, send: false });
   });
 
   it("names the export button verbatim in the mainnet Dissolve line", () => {

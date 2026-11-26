@@ -1359,6 +1359,7 @@ export const masternodes = {
       copySignatures: "Copy signatures",
       /** MG-10 §2.3.1 and §2.6, key change. */
       keyApprove: "Approving signs this change of the masternode's keys with your share's owner key.",
+      keyApproveOff: "This version can't change a shared masternode's keys on mainnet yet, so you can't approve this change here.",
       keySendApproval: "Send your approval to the owner who started this change.",
       keySendSignatures: "You hold every signature. Send them to the owner who started this change, who sends it.",
       keySendLater:
@@ -1396,6 +1397,9 @@ export const masternodes = {
       text: "Keeping it leaves the coins covering your {debit} reserved, whole, so you can carry on where you left off. Discarding releases them. If the others are still waiting for you, they have to start over.",
       keep: "Keep and close",
       discard: "Discard and release {debit}",
+      /** A session that reserves none of this wallet's coins. */
+      textNothing: "None of this wallet's coins are reserved for this session. Keeping it lets you carry on where you left off. If you discard it while the others are still waiting for you, they have to start over.",
+      discardNothing: "Discard",
       cancel: "Cancel",
     },
     setup: {

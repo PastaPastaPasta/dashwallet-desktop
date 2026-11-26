@@ -5,7 +5,7 @@ import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // A shared masternode's maintenance (MG-10 §2.5–§2.8, S6) on the fixture: Dissolve alone from its
 // preview to the send, a standby created and saved behind MG's alert, a dissolution together approved
-// and sent, a key change that never offers Send, and mainnet, where every send is absent and MG's line
+// and sent, a key change that never offers Send, and mainnet, where every send and the key change are absent and MG's line
 // takes its place. DW_SHOTS=<dir> also writes each state's PNG.
 
 const SHOTS = process.env.DW_SHOTS;
@@ -14,6 +14,9 @@ const EXPORT_ALERT =
   "Anyone who has this file can dissolve this masternode at any time. Every owner's share still goes back to its refund address, but the masternode stops earning. Keep the file private, and give it only to co-owners you trust.";
 const DISSOLVE_LINE =
   "This version can't send shared-masternode transactions on mainnet yet. To leave now, create a standby dissolution and save it with Save a copy… Then run sendrawtransaction in Dash Core's console with the hex line under FULL PRINCIPAL. Before the early period ends, use the line under IMMEDIATE instead, which pays the early-exit penalty. You can still follow this masternode and approve steps here.";
+const KEY_APPROVE_OFF = "This version can't change a shared masternode's keys on mainnet yet, so you can't approve this change here.";
+const CLOSE_NOTHING =
+  "None of this wallet's coins are reserved for this session. Keeping it lets you carry on where you left off. If you discard it while the others are still waiting for you, they have to start over.";
 const SEND_NOTE = "This version can't send shared-masternode transactions on mainnet yet. You can still follow this masternode, approve steps and save a standby dissolution here.";
 
 const go = async (page: Page, scenario: string, theme: Theme) => {
@@ -193,6 +196,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-mainnet-dissolve-note")).toHaveText(DISSOLVE_LINE);
     await expect(page.getByTestId("sh-detail").getByRole("button", { name: /send/i })).toHaveCount(0);
     await expect(page.getByTestId("sh-standby-save-0-1000")).toBeVisible();
+    await expect(page.getByTestId("sh-dissolve-open")).toBeVisible();
+    await expect(page.getByTestId("sh-keychange-open")).toHaveCount(0);
     await page.getByTestId("sh-mainnet-dissolve-note").scrollIntoViewIfNeeded();
     await shot(page, "sh-mainnet-pane", theme, chromium);
     await page.getByTestId("sh-dissolve-open").click();
@@ -208,6 +213,16 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-send-maintenance")).toHaveCount(0);
     await expect(page.getByTestId("sh-session").getByRole("button", { name: /send/i })).toHaveCount(0);
     await shot(page, "sh-mainnet-session", theme, chromium);
+    await page.getByTestId("sh-close-button").click();
+    await expect(page.getByTestId("sh-close")).toContainText(CLOSE_NOTHING);
+    await expect(page.getByTestId("sh-close-discard")).toHaveText("Discard");
+    await shot(page, "sh-close-nothing", theme, chromium);
+
+    await openSession(page, "sh-keychange-approve-mainnet", theme);
+    await expect(page.getByTestId("sh-row-keyApproveOff")).toHaveText(KEY_APPROVE_OFF);
+    await expect(page.getByTestId("sh-approve-maintenance")).toHaveCount(0);
+    await expect(page.getByTestId("sh-credential-passphrase")).toHaveCount(0);
+    await shot(page, "sh-mainnet-keychange", theme, chromium);
     expect(errors).toEqual([]);
   });
 }

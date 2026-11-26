@@ -1077,7 +1077,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
         rows: maintenanceRows(world, shares),
         proTxHash: hash,
         fee: request.fee,
-        debit: 0,
+        debit: request.fee,
         discardable: true,
         createdAt: NOW,
         updatedAt: NOW,
@@ -1089,6 +1089,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_start_key_change: ({ walletId, request, grant: grantId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
+      requireProtxSending(world);
       const hash = checkHash(request.proTxHash);
       const shares = eligible(world, hash);
       const requested = requestedKeys(request);
@@ -1120,6 +1121,7 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       wallet(world, walletId);
       const s = find(world, id);
       if (s.kind === "registration") throw stageRefusal("registration");
+      if (s.kind === "key_change") requireProtxSending(world);
       if (s.stage.kind === "stale") throw refuse("stale");
       if (s.stage.kind !== "signing" || s.next !== "approve") throw stageRefusal(s.stage.kind);
       if (s.kind === "dissolve_together" && s.actorFee !== null && !acceptActorFee) throw fail("masternodes.shared_actor_fee", "the request takes its fee from this wallet's share", { kind: "sharedActorFee", fee: s.actorFee });
@@ -1344,6 +1346,13 @@ export function sharedScenarios(base: Base) {
     /** A key change Bob funds: this wallet (Alice) approves. */
     "sh-keychange-approve": (t: ThemeName | null) =>
       shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "signing")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** The same on mainnet: the engine refuses a key-change approval there, so the line stands in for Approve. */
+    "sh-keychange-approve-mainnet": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        onMainnet(w);
         s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "signing")];
         withSharedMasternode(w, sharedShares({}), [standbyPair()]);
       }),

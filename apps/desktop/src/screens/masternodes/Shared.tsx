@@ -554,7 +554,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sendMaintenance = () =>
     granted(0, async (grant) => {
       const sent = await b.mnSharedSendMaintenance(wallet.walletId, s.id, grant);
-      return { session: sent.kind === "session" ? sent.session : await b.mnSharedSession(wallet.walletId, s.id) };
+      return { session: sent.kind === "session" ? sent.session : await b.mnSharedSession(wallet.walletId, s.id).catch(() => s) };
     });
   const copyMessage = async () => {
     try {
@@ -609,7 +609,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
     return (
       <Sheet title={t(`${P}.close.title`)} width="small" testId="sh-close" onClose={() => setClosing(false)}>
         <div className="mg-sheet-body mg-step">
-          <p>{t(`${P}.close.text`, { debit: dash(reserved) })}</p>
+          <p>{reserved > 0 ? t(`${P}.close.text`, { debit: dash(reserved) }) : t(`${P}.close.textNothing`)}</p>
           <p className="form-problem" role="alert" data-testid="sh-close-error">
             {error}
           </p>
@@ -638,7 +638,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
                   })()
                 }
               >
-                {t(`${P}.close.discard`, { debit: dash(reserved) })}
+                {reserved > 0 ? t(`${P}.close.discard`, { debit: dash(reserved) }) : t(`${P}.close.discardNothing`)}
               </DashButton>
               <DashButton variant="filledBlue" size="medium" data-testid="sh-close-keep" data-autofocus onClick={onClose}>
                 {t(`${P}.close.keep`)}
@@ -1093,6 +1093,8 @@ function rowCopy(
       return t(`${P}.row.dissolved`);
     case "keyApprove":
       return t(`${P}.row.keyApprove`);
+    case "keyApproveOff":
+      return t(`${P}.row.keyApproveOff`);
     case "keyWaiting":
       return t(`${P}.row.maintenanceWaiting`, { signed: counts.approved, total: counts.total });
     case "keySendApproval":

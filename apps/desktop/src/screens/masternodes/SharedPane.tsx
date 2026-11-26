@@ -127,9 +127,11 @@ export function SharedSection({
             <DashButton variant="tintedBlue" size="small" data-testid="sh-dissolve-open" onClick={() => setSheet({ kind: "dissolve", segment: "alone" })}>
               {t(`${P}.dissolveAction`)}
             </DashButton>
-            <DashButton variant="tintedBlue" size="small" data-testid="sh-keychange-open" onClick={() => setSheet({ kind: "keyChange" })}>
-              {t(`${P}.changeKeysAction`)}
-            </DashButton>
+            {sharedSendsOn(network) && (
+              <DashButton variant="tintedBlue" size="small" data-testid="sh-keychange-open" onClick={() => setSheet({ kind: "keyChange" })}>
+                {t(`${P}.changeKeysAction`)}
+              </DashButton>
+            )}
           </span>
         </>
       )}
