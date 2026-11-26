@@ -2561,10 +2561,10 @@ impl NetworkSession {
             let mut marks: Vec<(String, Option<String>)> = (txs.iter())
                 .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), Some(serialize_hex(tx))))
                 .collect();
-            // Before the marks, under the gate a resend's hand-off holds: no
-            // marked transaction this wallet sent is sent again by
-            // dash-spv's rebroadcast timer. One this abandon then fails is
-            // rebroadcast again only after a resend of it lifts the stop.
+            // Before the marks, under the gate a resend's hand-off holds:
+            // the stop of each marked transaction this wallet sent is asked
+            // (`Self::stop_rebroadcast`). The pinned dash-spv has none, and
+            // keeps sending what this run sent until a restart.
             for t in self.sent_by(wallet, &planned, info).await? {
                 self.stop_rebroadcast(manager, wallet, t).await;
             }
