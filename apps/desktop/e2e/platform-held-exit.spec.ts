@@ -36,8 +36,9 @@ test.describe("A held payment from Platform: Move to Dash wallet", () => {
       await expect(page.getByTestId("platform-move-exit-send")).toHaveText(
         `This payment of 0.01000000 tDASH to tdash1kq7r3m…8p0s2a4d6f8h may still go through. Moving uses the same Platform funds to send to your Dash wallet instead, so only one of the two can go through. If the move goes through, tdash1kq7r3m…8p0s2a4d6f8h isn't paid, and the amount, less fees, goes to your Dash wallet.`,
       );
-      // Only the payment's input: 0.3 of the 0.4.
-      await expect(page.getByTestId("platform-move-quote-credits")).toContainText("0.3");
+      // Only the payment's input, 0.3 of the 0.4, less the move's fee; no line says everything moves.
+      await expect(page.getByTestId("platform-move-quote-credits")).toHaveText("0.29998000 tDASH");
+      await expect(page.getByText("Everything on your Platform addresses moves to your Dash wallet.", { exact: false })).toHaveCount(0);
       expect(await seriousAxeViolations(page)).toEqual([]);
       expect(errors).toEqual([]);
     });
@@ -105,7 +106,9 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
     await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Move cancelled. The amount is in your Platform balance, minus the fee.");
     expect(await calls(page, "platform_cancel")).toBe(1);
     await page.getByTestId("platform-cancel-close").click();
+    // Focus stays in the sheet, so Escape closes it.
     await page.keyboard.press("Escape");
+    await expect(page.getByTestId("source-detail")).toHaveCount(0);
     await expect(page.getByText("Cancel of an earlier move")).toBeVisible();
   });
 
@@ -134,6 +137,7 @@ test.describe("A held move or contact payment from Platform: Cancel", () => {
     await page.getByTestId("source-detail-cancel").click();
     await expect(page.getByTestId("platform-cancel-confirm")).toContainText("Cancel this payment?");
     await expect(page.getByTestId("platform-cancel-body")).toContainText("this payment of 0.04000000 tDASH to Bob Builder will go through");
+    await expect(page.getByTestId("source-detail-to")).toContainText("yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf");
     await page.getByTestId("platform-cancel-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-cancel-outcome")).toContainText("Payment cancelled. Bob Builder wasn't paid, and the amount is in your Platform balance, minus the fee.");

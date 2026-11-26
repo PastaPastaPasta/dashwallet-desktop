@@ -1411,6 +1411,7 @@ impl MoveRecord {
     /// Asked again for `amount` to `to`, a send it is: its exact retry.
     fn retried_by(&self, to: &str, amount: WithdrawAmount) -> bool {
         self.kind == MoveKind::Transfer
+            && self.cancel_of.is_none()
             && self.to == to
             && match amount {
                 WithdrawAmount::All => self.fee_from_output,
@@ -1869,6 +1870,9 @@ pub(crate) fn settle_payouts(
             (Some(true), _) => Some(payout),
             (_, Some(exit)) => Some(exit),
             (Some(false), None) if absent && cancel.is_some() => cancel,
+            // Another write took some of the key's nonces: none of its
+            // members executed, and none can.
+            (Some(false), None) if absent && !moves[payout].reached(seen) => None,
             (Some(false), None) if group.iter().all(|&i| doc(i) == Some(false)) => None,
             _ => continue,
         };
@@ -3256,13 +3260,10 @@ async fn observe(
     let mut rows = 0;
     // A proof older than the baseline's (a node behind) decides nothing.
     if baseline.as_ref().is_none_or(|b| seen.height >= b.height) {
-        // A pending move's inputs, and those of a top-up's group whose
-        // nonces are taken while no evidence names its member yet (C3-9).
-        let top_ups: BTreeSet<_> = (moves.iter())
-            .filter(|m| m.kind.credits_identity())
-            .map(MoveRecord::key)
-            .collect();
-        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen) && top_ups.contains(&m.key());
+        // A pending move's inputs, and those of a group whose nonces are
+        // taken while no evidence names its member yet (C3-9, P8, #762):
+        // the member settled later carries the fall.
+        let deciding = |m: &MoveRecord| m.holds() && m.reached(seen);
         let held: BTreeSet<String> = (moves.iter())
             .filter(|m| m.state == PlatformActivityState::Pending || deciding(m))
             .flat_map(|m| m.inputs.iter().map(|i| i.address.clone()))
@@ -3855,11 +3856,10 @@ pub(crate) async fn cancel_quote(
     let held = (moves.iter())
         .find(|m| m.id == of && m.kind.withdraws() && m.holds() && !m.reached(&seen))
         .ok_or(CreditsError::QuoteChanged)?;
-    // As the cancel will decide: it follows only withdrawals at that key.
-    if held.state == PlatformActivityState::Pending {
-        return Err(CreditsError::MovePending {
-            id: held.id.clone(),
-        });
+    // As the cancel will decide: nothing pending, and it follows only
+    // withdrawals at that key.
+    if let Some(p) = (moves.iter()).find(|m| m.state == PlatformActivityState::Pending) {
+        return Err(CreditsError::MovePending { id: p.id.clone() });
     }
     if let Some(h) = (moves.iter())
         .find(|m| m.holds() && m.id != held.id && !(m.key() == held.key() && m.kind.withdraws()))
@@ -4156,6 +4156,7 @@ async fn retry_open(
     let moves = Store::of(session, wallet_id)?.moves().await?;
     let exact = (moves.iter()).find(|m| m.id == id).is_some_and(|m| {
         m.kind == MoveKind::Transfer
+            && m.cancel_of.is_none()
             && m.holds()
             && to.as_deref().is_some_and(|to| m.retried_by(to, amount))
     });
@@ -4501,6 +4502,20 @@ pub(crate) async fn run(
                 return Err(CreditsError::MovePending {
                     id: pending.id.clone(),
                 });
+            }
+            // A held cancel has no exit of its own, and one cancel of a
+            // record holds at a time, as the quotes refuse them.
+            let cancel = (moves.iter()).find(|m| {
+                m.cancel_of.is_some()
+                    && m.holds()
+                    && match target {
+                        Target::Core(_) => exit_of.is_none() && !m.reached(&seen),
+                        Target::Cancel(_) => m.cancel_of.as_deref() == cancel_of,
+                        _ => false,
+                    }
+            });
+            if let Some(c) = cancel {
+                return Err(CreditsError::MovePending { id: c.id.clone() });
             }
             let held = exited.or_else(|| moves.iter().find(|m| m.holds()));
             // The hold may have settled since the entry's check: with the

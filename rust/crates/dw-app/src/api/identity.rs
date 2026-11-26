@@ -31,8 +31,9 @@ use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
-    PlatformAddressBalance, PlatformAddressRow, PlatformFundOutcome, PlatformFundQuote,
-    PlatformReceiveAddress, PlatformCancelQuote, PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
+    PlatformAddressBalance, PlatformAddressRow, PlatformCancelQuote, PlatformFundOutcome,
+    PlatformFundQuote, PlatformReceiveAddress, PlatformSendOutcome, PlatformSendQuote,
+    PlatformShieldQuote,
 };
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,

@@ -1075,7 +1075,7 @@ const SCENARIOS = {
     const p = w.pending.platform!;
     const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
     const contact = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
-    p.activity = [{ id: "cp-held", kind: "contactPayment", state: "failed", credits: "4000000000", address: null, to: null, expectedDuffs: 3_999_774, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
+    p.activity = [{ id: "cp-held", kind: "contactPayment", state: "failed", credits: "4000000000", address: null, to: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", expectedDuffs: 3_999_774, feeCredits: null, at: at - 600, mayLand: true, estimated: false, contact }, ...p.activity];
     return w;
   },
   /** As `platform-move-failed-may-land`, with 0.1 more on an address the held move does not take: its exit moves the 0.4. */

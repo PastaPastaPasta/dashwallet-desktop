@@ -567,6 +567,21 @@ fn a_held_cancel_is_no_exit_target() {
         matches!(named, Err(CreditsError::QuoteChanged)),
         "{named:?}"
     );
+    // A move that names nothing waits for it, as its quote does.
+    let plain = w.move_to(WithdrawAmount::All, &w.to.clone(), &w.f.grant(5 * DASH));
+    assert!(
+        matches!(&plain, Err(CreditsError::MovePending { id }) if *id == out.id),
+        "{plain:?}"
+    );
+    // The same cancel again, from its quote: one cancel holds at a time.
+    let again = w.cancel_as(&held.id, &q.to, &w.f.grant(q.credits));
+    assert!(
+        matches!(&again, Err(CreditsError::MovePending { id }) if *id == out.id),
+        "{again:?}"
+    );
+    // A cancel is no send to retry.
+    let c = w.record(&out.id);
+    assert!(!c.retried_by(&c.to, WithdrawAmount::All));
     assert_eq!(w.sent_count(), sent, "nothing signed");
     assert!(w.record(&held.id).holds() && w.record(&out.id).holds());
 }
@@ -915,6 +930,72 @@ fn a_payout_and_its_cancel_settle_on_the_nonces_and_the_documents() {
     let mut moves = vec![held_of(MoveKind::ToContact, "p", 1)];
     settle_payouts(&mut moves, &reached, &absent);
     assert_eq!(states(&moves), [LOST]);
+
+    // Two inputs, and another write took one of their nonces: neither
+    // executed nor can, so both fail, the payout's document absent.
+    let two = |id: &str, at| {
+        let mut m = record(id, at, &[("a", 4), ("b", 7)]);
+        m.state = PlatformActivityState::Failed;
+        m.seen_at = Some(5);
+        m
+    };
+    let mut payout = two("p", 1);
+    payout.kind = MoveKind::ToContact;
+    let mut cancel = two("c", 2);
+    cancel.kind = MoveKind::Transfer;
+    cancel.cancel_of = Some("p".into());
+    let partly = seen(20, &[("a", Some(4)), ("b", Some(6))]);
+    let mut moves = vec![payout.clone(), cancel.clone()];
+    settle_payouts(&mut moves, &partly, &Documents::new());
+    assert!(moves.iter().all(MoveRecord::holds), "the document unknown");
+    settle_payouts(&mut moves, &partly, &absent);
+    assert_eq!(states(&moves), [LOST, LOST]);
+}
+
+/// While a pair waits on a document after its nonces were proved taken,
+/// the inputs' fall is no row of its own: the member that settles carries
+/// it, and no `unseen` is left to swallow a later fall.
+#[test]
+fn a_pair_waiting_on_its_document_shows_no_outgoing_row() {
+    let no_outgoing = |w: &World| {
+        w.net.exit_lag.store(0, Ordering::SeqCst);
+        w.net.tick();
+        w.activity();
+        let rows = w.activity();
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.kind == PlatformActivityKind::Outgoing),
+            "{rows:?}"
+        );
+        assert!(
+            (w.moves().iter())
+                .flat_map(|m| &m.inputs)
+                .all(|i| i.unseen == 0)
+        );
+    };
+    for exit_executes in [false, true] {
+        let w = World::new();
+        let (send, exit, _) = held_send_and_exit(&w);
+        w.net.exit_lag.store(5, Ordering::SeqCst);
+        assert!(w.net.execute_sent(if exit_executes { 1 } else { 0 }));
+        w.net.tick();
+        w.activity();
+        assert!(w.record(&send.id).holds() && w.record(&exit.id).holds());
+        no_outgoing(&w);
+        assert!(!w.record(&send.id).holds() && !w.record(&exit.id).holds());
+    }
+    for move_executes in [false, true] {
+        let w = World::new();
+        let (held, out) = held_move_and_cancel(&w);
+        w.net.exit_lag.store(5, Ordering::SeqCst);
+        assert!(w.net.execute_sent(if move_executes { 0 } else { 1 }));
+        w.net.tick();
+        w.activity();
+        assert!(w.record(&held.id).holds() && w.record(&out.id).holds());
+        no_outgoing(&w);
+        assert!(!w.record(&held.id).holds() && !w.record(&out.id).holds());
+    }
 }
 
 /// Q2: a new send whose inputs could not pay their own "Move to Dash

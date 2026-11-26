@@ -235,9 +235,10 @@ export function SourceDetailSheet({ walletId, txid, network }: { walletId: strin
   const status = useShieldedStatus(walletId);
   const found = findSourceRecord(txid, platform.data, shielded.data, heldActivities(status.data));
   const cancel = cancelFor(useBackend(), walletId);
+  useModel(cancel);
   return (
     <>
-    <Sheet title={t("activity.sourceDetail.title")} width="medium" testId="source-detail" onClose={() => ui.set({ detail: null })}>
+    <Sheet title={t("activity.sourceDetail.title")} width="medium" testId="source-detail" focusKey={`${cancel.of ?? ""}:${cancel.step}`} onClose={() => ui.set({ detail: null })}>
       {found ? (
         <Body found={found} network={network} walletId={walletId} />
       ) : read.isError ? (

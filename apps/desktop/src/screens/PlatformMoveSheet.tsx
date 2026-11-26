@@ -26,7 +26,8 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
         <p className="form-problem" role="alert" data-testid="platform-move-blocked">
           {C.waiting.text}
         </p>
-      ) : (
+      ) : exited ? null : (
+        // Beside a held payment the move takes only that payment's funds: its line below says so.
         <p className="sheet-text">{C.message}</p>
       )}
       {exited && (
