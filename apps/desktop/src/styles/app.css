@@ -6788,6 +6788,14 @@ button.bell-row-open:focus-visible {
 }
 
 .sh-legend,
+.sh-node-hash {
+  display: block;
+}
+
+.sh-key-lines {
+  overflow-wrap: anywhere;
+}
+
 .sh-lines {
   display: flex;
   flex-direction: column;

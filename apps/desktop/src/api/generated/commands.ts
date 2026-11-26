@@ -3392,10 +3392,9 @@ export function mnSharedCreateStandby(walletId: string, proTxHash: string, fee: 
 
 /**
  * Shows the save dialog and writes the stored standby of `share` paying
- * `fee` there as Core's file, readable by the user only, under a
- * `masternodeOp` grant of 0. Returns the file's name, `null` when the
- * user cancelled (the grant unused). The file's text never reaches the
- * renderer.
+ * `fee` there as Core's file (0600 on Unix), under a `masternodeOp`
+ * grant of 0. Returns the file's name, `null` when the user cancelled
+ * (the grant unused). The file's text never reaches the renderer.
  */
 export function mnSharedExportStandby(walletId: string, proTxHash: string, share: number, fee: number, grant: string): Promise<string | null> {
   return invoke<string | null>("mn_shared_export_standby", { walletId, proTxHash, share, fee, grant });

@@ -10,8 +10,13 @@ import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 const SHOTS = process.env.DW_SHOTS;
 const SH_ROW = `mn-row-${"ec".repeat(32)}`;
+const MN_NAME = "Masternode 4";
+const BOB_SHARE = "Bob";
 const EXPORT_ALERT =
   "Anyone who has this file can dissolve this masternode at any time. Every owner's share still goes back to its refund address, but the masternode stops earning. Keep the file private, and give it only to co-owners you trust.";
+const PENALTY_ALERT = (who: string, penalty: string) =>
+  `Anyone who has this file can dissolve this masternode at any time, and the masternode stops earning. The file also holds a line that pays the early-exit penalty: anyone who has it can send that line, even after the early period ends, and make ${who} pay ${penalty} to the other owners. Keep the file private, and give it only to co-owners you trust.`;
+const REFUSED = "The network didn't accept it: No connection to the Dash network. The payment was not sent. Send it again from In progress.";
 const DISSOLVE_LINE =
   "This version can't send shared-masternode transactions on mainnet yet. To leave now, create a standby dissolution and save it with Save a copy… Then run sendrawtransaction in Dash Core's console with the hex line under FULL PRINCIPAL. Before the early period ends, use the line under IMMEDIATE instead, which pays the early-exit penalty. You can still follow this masternode and approve steps here.";
 const KEY_APPROVE_OFF = "This version can't change a shared masternode's keys on mainnet yet, so you can't approve this change here.";
@@ -117,7 +122,7 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-standby-prompt")).toHaveCount(0);
     await page.getByTestId("sh-standby-save-0-1000").click();
     await expect(page.getByTestId("sh-standby-export")).toBeVisible();
-    await expect(page.getByTestId("sh-export-alert")).toHaveText(EXPORT_ALERT);
+    await expect(page.getByTestId("sh-export-alert")).toHaveText(PENALTY_ALERT("your share", "20.00000000 tDASH"));
     await expect(page.getByTestId("sh-export-save")).toHaveText("Save a copy…");
     await shot(page, "sh-standby-export", theme, chromium);
     await passphrase(page, "sh-export-credential");
@@ -127,12 +132,59 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`shared maintenance ${theme}: a hand-off the network refused never reads as sent`, async ({ page }, info) => {
+    const errors = trackPageErrors(page);
+    const chromium = info.project.name === "chromium";
+    await openPane(page, "sh-handoff-refused", theme);
+    await page.getByTestId("sh-dissolve-open").click();
+    await passphrase(page, "sh-dissolve-credential");
+    await page.getByTestId("sh-dissolve-accept").locator("input").check();
+    await page.getByTestId("sh-dissolve-now").click();
+    await expect(page.getByTestId("sh-dissolve-refused")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-dissolve-sent")).toHaveCount(0);
+    await shot(page, "sh-dissolve-not-sent", theme, chromium);
+    await page.getByTestId("sh-dissolve-done").click();
+
+    await page.getByTestId("sh-standby-send-0-1000").click();
+    await passphrase(page, "sh-standby-send-credential");
+    await page.getByTestId("sh-standby-send-confirm").click();
+    await expect(page.getByTestId("sh-standby-refused")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-standby-sent")).toHaveCount(0);
+    await shot(page, "sh-standby-not-sent", theme, chromium);
+
+    await openSession(page, "sh-handoff-refused", theme);
+    await passphrase(page, "sh-credential");
+    await page.getByTestId("sh-send-maintenance").click();
+    await expect(page.getByTestId("sh-error")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-row-sent")).toHaveCount(0);
+    await shot(page, "sh-together-not-sent", theme, chromium);
+    expect(errors).toEqual([]);
+  });
+
+  test(`shared maintenance ${theme}: only an early full refund: Create offered; a co-owner's file names their penalty`, async ({ page }, info) => {
+    const errors = trackPageErrors(page);
+    const chromium = info.project.name === "chromium";
+    await openPane(page, "sh-standby-full-early", theme);
+    await page.getByTestId("sh-standby-prompt").scrollIntoViewIfNeeded();
+    await expect(page.getByTestId("sh-standby-prompt")).toBeVisible();
+    await shot(page, "sh-standby-full-early", theme, chromium);
+    await page.getByTestId("sh-standby-save-0-1000").click();
+    await expect(page.getByTestId("sh-export-alert")).toHaveText(EXPORT_ALERT);
+    await page.getByTestId("sh-standby-export").getByRole("button", { name: /close/i }).first().click();
+    await page.getByTestId("sh-standby-save-1-1000").click();
+    await expect(page.getByTestId("sh-export-alert")).toHaveText(PENALTY_ALERT(BOB_SHARE, "20.00000000 tDASH"));
+    await shot(page, "sh-standby-export-other", theme, chromium);
+    expect(errors).toEqual([]);
+  });
+
   test(`shared maintenance ${theme}: a dissolution together approved, then sent`, async ({ page }, info) => {
     const errors = trackPageErrors(page);
     const chromium = info.project.name === "chromium";
     await openSession(page, "sh-together-approve", theme);
     await expect(page.getByTestId("sh-row-togetherApprove")).toBeVisible();
     await expect(page.getByTestId("sh-stages")).toHaveCount(0);
+    await expect(page.getByTestId("sh-masternode-name")).toHaveText(MN_NAME);
+    await expect(page.getByTestId("sh-masternode-hash")).toHaveText("ec".repeat(32));
     await passphrase(page, "sh-credential");
     await shot(page, "sh-together-approve", theme, chromium);
     await page.getByTestId("sh-approve-maintenance").click();
@@ -174,6 +226,8 @@ for (const theme of THEMES) {
 
     await openSession(page, "sh-keychange-approve", theme);
     await expect(page.getByTestId("sh-row-keyApprove")).toBeVisible();
+    await expect(page.getByTestId("sh-masternode-hash")).toHaveText("ec".repeat(32));
+    await expect(page.getByTestId("sh-key-operator")).not.toContainText("…");
     await shot(page, "sh-keychange-approve", theme, chromium);
 
     await openSession(page, "sh-keychange-combined", theme);
@@ -212,6 +266,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-mainnet-note")).toHaveText(SEND_NOTE);
     await expect(page.getByTestId("sh-send-maintenance")).toHaveCount(0);
     await expect(page.getByTestId("sh-session").getByRole("button", { name: /send/i })).toHaveCount(0);
+    await expect(page.getByTestId("sh-copy")).toHaveText("Copy signatures");
+    await expect(page.getByTestId("sh-save")).toBeVisible();
     await shot(page, "sh-mainnet-session", theme, chromium);
     await page.getByTestId("sh-close-button").click();
     await expect(page.getByTestId("sh-close")).toContainText(CLOSE_NOTHING);

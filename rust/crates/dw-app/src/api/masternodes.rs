@@ -679,10 +679,9 @@ commands! {
     }
 
     /// Shows the save dialog and writes the stored standby of `share` paying
-    /// `fee` there as Core's file, readable by the user only, under a
-    /// `masternodeOp` grant of 0. Returns the file's name, `null` when the
-    /// user cancelled (the grant unused). The file's text never reaches the
-    /// renderer.
+    /// `fee` there as Core's file (0600 on Unix), under a `masternodeOp`
+    /// grant of 0. Returns the file's name, `null` when the user cancelled
+    /// (the grant unused). The file's text never reaches the renderer.
     #[facade("Masternodes::export_standby")]
     fn mn_shared_export_standby(
         state,

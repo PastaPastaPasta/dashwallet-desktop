@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationStateName } from "../api/generated/ProTxOperationStateName";
 import { t } from "../i18n";
-import { conflicted, inProgress, lastErrorText, opRow, proTxSends, resendCap, resendConfirmText, actsOn } from "./operations";
+import { conflicted, handoffRefusedText, inProgress, lastErrorText, opRow, proTxSends, resendCap, resendConfirmText, actsOn } from "./operations";
 import { registrarUpdateSends } from "./changeKeys";
 import { registrationSends } from "./registration";
 
@@ -141,5 +141,16 @@ describe("In progress (§1.10)", () => {
     expect(lastErrorText(null)).toBeNull();
     expect(lastErrorText("send.no_peers")).toBe(t("pay.error.noPeers"));
     expect(lastErrorText("send.something_new")).toBe(t(`${I}.unknownError`, { code: "send.something_new" }));
+  });
+});
+
+describe("a shared dissolution's send result", () => {
+  it("warns when the network didn't take it, with the reason when known, and says nothing once sent", () => {
+    const d = (state: ProTxOperationStateName, lastError: string | null = null) => op("d", state, { kind: "dissolve", lastError });
+    expect(handoffRefusedText(d({ kind: "not_sent" }, "send.no_peers"))).toBe(t("masternodes.shared.dissolve.notSent", { reason: t("pay.error.noPeers").replace(/\.$/, "") }));
+    expect(handoffRefusedText(d({ kind: "not_sent" }))).toBe(t("masternodes.shared.dissolve.notSentPlain"));
+    expect(handoffRefusedText(d({ kind: "signed" }))).toBe(t("masternodes.shared.dissolve.notSentPlain"));
+    expect(handoffRefusedText(d({ kind: "sent" }))).toBeNull();
+    expect(handoffRefusedText(d({ kind: "confirmed", height: 9 }))).toBeNull();
   });
 });

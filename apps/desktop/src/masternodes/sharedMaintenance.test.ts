@@ -17,6 +17,8 @@ import {
   sharedSendsOn,
   sliceFor,
   standbyCreateCap,
+  standbyHolderPenalty,
+  standbyMissing,
   standbySend,
   togetherFee,
   togetherReturn,
@@ -36,7 +38,7 @@ describe("dissolve together under S6", () => {
 
   it("on mainnet keeps the approval and drops the send for the note", () => {
     expect(renderSession(togetherSession("participant", "signing"), MAINNET).primary).toBe("approveMaintenance");
-    expect(renderSession(togetherSession("participant", "combined"), MAINNET)).toMatchObject({ row: "togetherSendOff", primary: null, known: true });
+    expect(renderSession(togetherSession("participant", "combined"), MAINNET)).toMatchObject({ row: "togetherSendOff", primary: null, copy: true, known: true });
     expect(sessionNeedsAction(togetherSession("participant", "combined"), MAINNET)).toBe(false);
   });
 
@@ -144,6 +146,25 @@ describe("standby caps (§3.4, D14)", () => {
     expect(standbySend({ ...pair, full: false }, true, true)).toMatchObject({ variant: "immediate", label: "sendIt", stillPenalty: true });
     expect(standbySend({ ...pair, penalty: null }, false, true)).toBeNull();
     expect(standbySend({ ...pair, immediate: false }, false, true)).toBeNull();
+  });
+
+  it("offers Create for an owned share with no variant the engine would take now", () => {
+    const pair = standbyPair();
+    const mine = [{ index: pair.shareIndex }];
+    expect(standbyMissing(mine, [], false)).toBe(true);
+    expect(standbyMissing(mine, [pair], false)).toBe(false);
+    expect(standbyMissing(mine, [{ ...pair, immediate: false }], false)).toBe(true);
+    expect(standbyMissing(mine, [{ ...pair, immediate: false }], true)).toBe(false);
+    expect(standbyMissing(mine, [{ ...pair, shareIndex: pair.shareIndex + 1 }], true)).toBe(true);
+    expect(standbyMissing([], [], false)).toBe(false);
+  });
+
+  it("names the penalty a holder of the saved file can charge, after the early period too", () => {
+    const pair = standbyPair();
+    expect(standbyHolderPenalty(pair)).toBe(20 * COIN);
+    expect(standbyHolderPenalty({ ...pair, immediate: false })).toBe(0);
+    expect(standbyHolderPenalty({ ...pair, penalty: null })).toBe(0);
+    expect(standbyHolderPenalty({ ...pair, penalty: 0 })).toBe(0);
   });
 });
 

@@ -1212,6 +1212,8 @@ export const masternodes = {
     },
     session: {
       title: "Shared masternode · Session {code}",
+      /** A maintenance session's masternode: the wallet's name for it, then the full ProTx hash. */
+      masternode: "Masternode",
       loading: "Reading the session…",
       readFailed: "Couldn't read this session. {reason}",
       retry: "Try again",
@@ -1533,6 +1535,11 @@ export const masternodes = {
         /** MG-approved, verbatim, shown before saving. */
         exportAlert:
           "Anyone who has this file can dissolve this masternode at any time. Every owner's share still goes back to its refund address, but the masternode stops earning. Keep the file private, and give it only to co-owners you trust.",
+        /** In place of exportAlert while the standby holds an immediate line with a known penalty. */
+        exportAlertPenalty:
+          "Anyone who has this file can dissolve this masternode at any time, and the masternode stops earning. The file also holds a line that pays the early-exit penalty: anyone who has it can send that line, even after the early period ends, and make your share pay {penalty} to the other owners. Keep the file private, and give it only to co-owners you trust.",
+        exportAlertPenaltyOther:
+          "Anyone who has this file can dissolve this masternode at any time, and the masternode stops earning. The file also holds a line that pays the early-exit penalty: anyone who has it can send that line, even after the early period ends, and make {share} pay {penalty} to the other owners. Keep the file private, and give it only to co-owners you trust.",
         exportAsk: "Enter your passphrase to save the standby dissolution.",
         exportSaved: "Saved as {name}.",
         sendFull: "Send the full refund",
@@ -1578,6 +1585,9 @@ export const masternodes = {
       button: "Dissolve now",
       ask: "Enter your passphrase to sign and send the dissolution.",
       sent: "Dissolution sent. It applies once it's in a block.",
+      /** A dissolution, alone, together or standby, the network didn't take. */
+      notSent: "The network didn't accept it: {reason}. Send it again from In progress.",
+      notSentPlain: "The network didn't accept it. Send it again from In progress.",
       noSession: "Leave now: create a standby dissolution, then send it now and pay the {penalty} penalty.",
       noSessionFull: "Leave now: create a standby dissolution, then send its full refund.",
       togetherText: "Every owner signs one dissolution, and nobody pays a penalty. You pay the network fee from your share.",

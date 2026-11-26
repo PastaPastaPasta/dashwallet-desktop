@@ -195,7 +195,7 @@ function renderTogether(s: SharedSession, slice: SharedSlice): SessionRender {
       return stage === "signing" || stage === "combined" ? row("togetherSendApproval", null, true) : row("unknown", null, true, false);
     case "send":
       if (stage !== "combined") return row("unknown", null, false, false);
-      return slice.maintenanceSend ? row("togetherSend", "sendMaintenance") : row("togetherSendOff", null);
+      return slice.maintenanceSend ? row("togetherSend", "sendMaintenance") : row("togetherSendOff", null, true);
     case "wait":
       return stage === "sent" ? row("sent", null) : row("unknown", null, false, false);
     case "nothing":
@@ -794,6 +794,14 @@ export function standbySend(s: Standby, fullValidNow: boolean, mine: boolean): S
   if (fullValidNow) return { variant: "immediate", label: "sendIt", cap, penalty: s.penalty, stillPenalty: true };
   return { variant: "immediate", label: "sendImmediate", cap, penalty: s.penalty, stillPenalty: false };
 }
+
+/** An owned share with no stored variant the engine would take now: Create is offered. */
+export const standbyMissing = (mine: readonly { index: number }[], standbys: readonly Standby[], fullValidNow: boolean) =>
+  mine.some((f) => !standbys.some((s) => s.shareIndex === f.index && standbySend(s, fullValidNow, true) !== null));
+
+/** The penalty anyone holding a saved standby can make its share pay: its immediate line stays valid after
+ * the early period. 0 without a known one. */
+export const standbyHolderPenalty = (s: Standby) => (s.immediate && s.penalty !== null && s.penalty > 0 ? s.penalty : 0);
 
 export interface KeyLine {
   field: "operator" | "voting";

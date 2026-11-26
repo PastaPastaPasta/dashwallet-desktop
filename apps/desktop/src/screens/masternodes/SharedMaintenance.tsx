@@ -17,6 +17,7 @@ import { Sheet } from "../../components/sheet";
 import { showToast } from "../../components/toast";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
+import { handoffRefusedText } from "../../masternodes/operations";
 import { mnKeys, useMasternodesRefresh } from "../../masternodes/queries";
 import {
   DISSOLVE_FEE,
@@ -27,7 +28,9 @@ import {
   sharedErrorText,
   sharedSendsOn,
   standbyCreateCap,
+  standbyHolderPenalty,
   standbyLines,
+  standbyMissing,
   standbySend,
   standbySource,
   togetherFee,
@@ -74,7 +77,7 @@ export function Standbys({ c, actions, onSheet }: { c: MaintenanceCtx; actions: 
   const own = new Set(c.legend.filter((l) => l.mine).map((l) => l.index));
   const labelled = c.standbys.some((s) => !own.has(s.shareIndex));
   const sends = sharedSendsOn(c.network);
-  const missing = mineOf(c).some((f) => !c.standbys.some((s) => s.shareIndex === f.index && (s.full || s.immediate)));
+  const missing = standbyMissing(mineOf(c), c.standbys, c.shares.fullValidNow);
   if (c.standbys.length === 0 && !(actions && missing)) return null;
   return (
     <div data-testid="sh-detail-standby">
@@ -246,14 +249,14 @@ function Alone({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
   const mine = mineOf(c);
   const [share, setShare] = useState(mine[0]?.index ?? 0);
   const [accepted, setAccepted] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<{ refused: string | null } | null>(null);
   const pickId = useId();
   const sends = sharedSendsOn(c.network);
   const g = useGranted(c, t(`${P}.dissolve.ask`));
   const preview = useQuery({
     queryKey: [...mnKeys.detail(c.wallet.walletId, c.hash), "previewDissolve", share, DISSOLVE_FEE],
     queryFn: () => b.mnSharedPreviewDissolve(c.wallet.walletId, { proTxHash: c.hash, shareIndex: share, fee: DISSOLVE_FEE }),
-    enabled: c.session !== null && sends && !sent,
+    enabled: c.session !== null && sends && sent === null,
     retry: false,
   });
   if (!c.session) {
@@ -267,8 +270,14 @@ function Alone({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
   if (!sends) return <MainnetDissolveNote />;
   if (sent)
     return (
-      <div data-testid="sh-dissolve-sent">
-        <p>{t(`${P}.dissolve.sent`)}</p>
+      <div data-testid={sent.refused ? "sh-dissolve-not-sent" : "sh-dissolve-sent"}>
+        {sent.refused ? (
+          <Notice tone="warning" testId="sh-dissolve-refused">
+            {sent.refused}
+          </Notice>
+        ) : (
+          <p>{t(`${P}.dissolve.sent`)}</p>
+        )}
         <DoneFooter onClose={onClose} testId="sh-dissolve-done" />
       </div>
     );
@@ -279,7 +288,7 @@ function Alone({ c, onClose }: { c: MaintenanceCtx; onClose: () => void }) {
   const dissolve = async () => {
     if (!p || !ready) return;
     const op = await g.run(dissolveCap(p), (grant) => b.mnSharedDissolve(c.wallet.walletId, { proTxHash: c.hash, shareIndex: share, fee: p.fee }, grant));
-    if (op) setSent(true);
+    if (op) setSent({ refused: handoffRefusedText(op) });
   };
   return (
     <form
@@ -472,8 +481,17 @@ function CreateStandbySheet({ c, onClose }: { c: MaintenanceCtx; onClose: () => 
 function ExportStandbySheet({ c, standby, onClose }: { c: MaintenanceCtx; standby: Standby; onClose: () => void }) {
   const t = useT();
   const b = useBackend();
+  const { dash } = useSharedText(c.network);
   const g = useGranted(c, t(`${D}.exportAsk`));
   const [saved, setSaved] = useState<string | null>(null);
+  const penalty = standbyHolderPenalty(standby);
+  const own = mineOf(c).some((f) => f.index === standby.shareIndex);
+  const alert =
+    penalty === 0
+      ? t(`${D}.exportAlert`)
+      : own
+        ? t(`${D}.exportAlertPenalty`, { penalty: dash(penalty) })
+        : t(`${D}.exportAlertPenaltyOther`, { share: labelOf(c.legend, standby.shareIndex), penalty: dash(penalty) });
   const save = async () => {
     const name = await g.run(0, (grant) => b.mnSharedExportStandby(c.wallet.walletId, c.hash, standby.shareIndex, standby.fee, grant));
     if (name) {
@@ -491,7 +509,7 @@ function ExportStandbySheet({ c, standby, onClose }: { c: MaintenanceCtx; standb
         }}
       >
         <Notice tone="warning" testId="sh-export-alert">
-          {t(`${D}.exportAlert`)}
+          {alert}
         </Notice>
         {saved ? (
           <>
@@ -524,11 +542,11 @@ function SendStandbySheet({ c, standby, send, onClose }: { c: MaintenanceCtx; st
   const b = useBackend();
   const { dash } = useSharedText(c.network);
   const g = useGranted(c, t(`${D}.sendAsk`));
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<{ refused: string | null } | null>(null);
   const mine = c.shares.shares.some((f) => f.index === standby.shareIndex && f.mine);
   const go = async () => {
     const op = await g.run(send.cap, (grant) => b.mnSharedSendStandby(c.wallet.walletId, c.hash, standby.shareIndex, standby.fee, send.variant, grant));
-    if (op) setSent(true);
+    if (op) setSent({ refused: handoffRefusedText(op) });
   };
   const leaves = !mine
     ? t(`${D}.leavesNothing`)
@@ -538,8 +556,14 @@ function SendStandbySheet({ c, standby, send, onClose }: { c: MaintenanceCtx; st
   return (
     <Sheet title={t(`${D}.sendTitle`)} width="small" testId="sh-standby-send-sheet" closable={!g.busy} onClose={onClose}>
       {sent ? (
-        <div className="mg-sheet-body" data-testid="sh-standby-sent">
-          <p>{t(`${D}.sent`)}</p>
+        <div className="mg-sheet-body" data-testid={sent.refused ? "sh-standby-not-sent" : "sh-standby-sent"}>
+          {sent.refused ? (
+            <Notice tone="warning" testId="sh-standby-refused">
+              {sent.refused}
+            </Notice>
+          ) : (
+            <p>{t(`${D}.sent`)}</p>
+          )}
           <DoneFooter onClose={onClose} testId="sh-standby-sent-done" />
         </div>
       ) : (

@@ -36,11 +36,7 @@ commands! {
     /// cannot be read.
     #[facade()]
     fn open_file(state, purpose: FilePurpose) -> Option<OpenedFile> {
-        if purpose == FilePurpose::SharedMasternodeMessage {
-            return Err(AppError::invalid_argument(
-                "a shared-masternode file is read by mn_shared_import_file, never handed to the renderer",
-            ));
-        }
+        refuse_shared_open(purpose)?;
         open(&state, purpose).await
     }
 
@@ -68,8 +64,25 @@ commands! {
     /// they cancelled. A save dialog asks before naming an existing file.
     #[facade()]
     fn choose_file_path(state, purpose: FilePurpose, save: bool, suggested_name: Option<String>) -> Option<String> {
+        if !save {
+            refuse_shared_open(purpose)?;
+        }
         choose(&state, purpose, save, suggested_name).await?.map(utf8).transpose()
     }
+}
+
+/// A shared-masternode message or a standby dissolution is opened by dw-app
+/// itself (`mn_shared_import_file`), never through the renderer.
+fn refuse_shared_open(purpose: FilePurpose) -> Result<(), AppError> {
+    if matches!(
+        purpose,
+        FilePurpose::SharedMasternodeMessage | FilePurpose::StandbyDissolution
+    ) {
+        return Err(AppError::invalid_argument(
+            "a shared-masternode file is read by mn_shared_import_file, never handed to the renderer",
+        ));
+    }
+    Ok(())
 }
 
 /// `open_file`'s dialog and read, for the commands that read a file the
@@ -97,8 +110,7 @@ pub(crate) async fn choose_save(
     choose(state, purpose, true, Some(suggested_name)).await
 }
 
-/// Writes `data` whole to a path the save dialog returned, readable by its
-/// owner only.
+/// Writes `data` whole to a path the save dialog returned (0600 on Unix).
 pub(crate) async fn write_chosen(
     path: PathBuf,
     data: impl AsRef<[u8]> + Send + 'static,

@@ -62,7 +62,7 @@ export interface SharedWorld {
   unreadable: UnreadableSession[];
   /** Sent sessions this wallet abandoned: no Send again (D72). */
   abandoned: string[];
-  /** The `last_error` the next registration hand-off leaves: `null` when it went out. */
+  /** The `last_error` the next registration or dissolution hand-off leaves: `null` when it went out. */
   handoff: string | null;
   /** How the next abandon spend's hand-off ends: `null` when it went out and the wallet recorded it. */
   abandonHandoff: "uncertain" | "refused" | null;
@@ -597,15 +597,15 @@ function dissolveOp(world: World, hash: string, fee: number, debit: number): Pro
     kind: "dissolve",
     proTxHash: hash,
     txid: h(`d${n}`),
-    state: { kind: "sent" },
+    state: world.shared.handoff === null ? { kind: "sent" } : { kind: "not_sent" },
     signRequest: null,
     fee,
     debit,
     overdue: false,
     createdAt: NOW,
     signedAt: NOW,
-    sentAt: NOW,
-    lastError: null,
+    sentAt: world.shared.handoff === null ? NOW : null,
+    lastError: world.shared.handoff,
     terms: {
       masternodeType: "regular",
       version: 3,
@@ -1143,10 +1143,12 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       if (s.kind !== "dissolve_together") throw fail("app.shared_send_unsupported", "this version sends no shared-masternode session of this kind", { kind: "sharedUnsupported", sessionKind: s.kind });
       if (s.stage.kind !== "combined") throw stageRefusal(s.stage.kind);
       capped(world, walletId, grantId, 0);
-      s.stage = { kind: "sent" };
-      s.next = "wait";
-      s.discardable = false;
       const op = dissolveOp(world, s.proTxHash ?? SH_MN, s.fee ?? 0, 0);
+      if (op.state.kind === "sent") {
+        s.stage = { kind: "sent" };
+        s.next = "wait";
+        s.discardable = false;
+      }
       put(world, s);
       changed(ctx);
       return { kind: "operation", operation: op };
@@ -1310,6 +1312,19 @@ export function sharedScenarios(base: Base) {
       shBase(base, t, (s, w) => {
         s.sessions = [confirmedCoordinator()];
         withSharedMasternode(w, sharedShares({}));
+      }),
+    /** Each dissolution's hand-off is refused for want of peers: saved as not sent, never shown as sent. */
+    "sh-handoff-refused": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "combined")];
+        s.handoff = "send.no_peers";
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** Restored: only this wallet's full refund, valid after the early period, plus Bob's pair: Create is offered. */
+    "sh-standby-full-early": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}), [standbyPair(undefined, { immediate: false, source: "imported" }), standbyPair(undefined, { shareIndex: 1, source: "imported" })]);
       }),
     /** Save a copy… cancelled in the save dialog: nothing saved, the grant unused. */
     "sh-standby-export-cancel": (t: ThemeName | null) =>

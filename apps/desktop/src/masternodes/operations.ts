@@ -24,6 +24,13 @@ export function lastErrorText(code: string | null): string | null {
   return sendErrorText(e, "test")?.text ?? t(`${P}.unknownError`, { code });
 }
 
+/** A shared dissolution's send result: the warning when the network didn't take it, `null` once sent. */
+export function handoffRefusedText(o: ProTxOperation): string | null {
+  if (o.state.kind !== "not_sent" && o.state.kind !== "signed") return null;
+  const reason = lastErrorText(o.lastError)?.replace(/\.$/, "");
+  return reason ? t("masternodes.shared.dissolve.notSent", { reason }) : t("masternodes.shared.dissolve.notSentPlain");
+}
+
 /** Which held kinds may be acted on. Unknown network (still loading) stays off. */
 export const proTxSends = (network: { kind: string } | null | undefined): Partial<Record<ProTxOperationKindName, boolean>> => ({
   registration: registrationSends(network),

@@ -22,7 +22,9 @@ import { showToast } from "../../components/toast";
 import { chainOf, useDisplay } from "../../format/display";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
-import { useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
+import { useMasternodes, useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
+import { rowName } from "../../masternodes/model";
+import { handoffRefusedText } from "../../masternodes/operations";
 import {
   abandonNeedsOwnFirst,
   approveMaintenanceCap,
@@ -478,6 +480,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const debit = s?.debit ?? 0;
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
   const sync = useSyncStatus();
+  const nodes = useMasternodes(wallet.walletId, !!s && s.kind !== "registration");
   /** A hand-off needs SPV running with a peer (§2.3.3); signing a contribution doesn't. */
   const disconnected = !!sync.data && (!sync.data.running || sync.data.connectedPeers === 0);
 
@@ -554,6 +557,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sendMaintenance = () =>
     granted(0, async (grant) => {
       const sent = await b.mnSharedSendMaintenance(wallet.walletId, s.id, grant);
+      const refused = sent.kind === "operation" ? handoffRefusedText(sent.operation) : null;
+      if (refused) setError(refused);
       return { session: sent.kind === "session" ? sent.session : await b.mnSharedSession(wallet.walletId, s.id).catch(() => s) };
     });
   const copyMessage = async () => {
@@ -601,6 +606,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
     ...(steps.includes("unlock") ? [{ id: "unlock", title: t(`${P}.session.unlock`), onSelect: () => setUnlocking(true), disabled: !!offSetup }] : []),
   ];
   const keyLines = s.kind === "key_change" ? keyChangeLines(s) : [];
+  const nodeRow = maintenance && s.proTxHash ? nodes.data?.masternodes.find((r) => r.proTxHash === s.proTxHash) : undefined;
   const actorFee = v.row === "togetherApprove" && s.actorFee !== null ? s.actorFee : null;
   const maintenanceCall = v.primary === "approveMaintenance" || v.primary === "sendMaintenance";
   const title = maintenance ? t(`${P}.maintenanceTitle`, { kind: t(`${P}.kind.${s.kind as "key_change" | "dissolve_together"}`), code: s.code }) : t(`${P}.session.title`, { code: s.code });
@@ -726,6 +732,19 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
         <p className="mg-muted mg-small" data-testid="sh-codes">
           {t(`${P}.session.checkCode`, { code: s.messageCode })} · {t(`${P}.session.sessionCode`, { code: s.code })}
         </p>
+        {maintenance && s.proTxHash && (
+          <dl className="mg-facts" data-testid="sh-masternode">
+            <dt>{t(`${P}.session.masternode`)}</dt>
+            <dd>
+              {nodeRow && <span data-testid="sh-masternode-name">{rowName(nodeRow)}</span>}
+              <span className="mono mg-hash sh-node-hash" data-testid="sh-masternode-hash">
+                {s.proTxHash.slice(0, 32)}
+                <wbr />
+                {s.proTxHash.slice(32)}
+              </span>
+            </dd>
+          </dl>
+        )}
         <table className="sh-participants" data-testid="sh-participants">
           <thead>
             <tr>
@@ -749,12 +768,12 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
           </tbody>
         </table>
         {keyLines.length > 0 && (
-          <ul className="sh-lines mg-small" data-testid="sh-key-lines">
+          <ul className="sh-lines sh-key-lines mg-small" data-testid="sh-key-lines">
             {keyLines.map((l) => (
               <li key={l.field} data-testid={`sh-key-${l.field}`}>
                 {t(l.field === "operator" ? `${P}.row.keyOperator` : `${P}.row.keyVoting`, {
-                  from: l.field === "operator" ? shortKey(l.from) : l.from,
-                  to: l.changes ? (l.field === "operator" ? shortKey(l.to) : l.to) : t(`${P}.row.keyUnchanged`),
+                  from: l.from,
+                  to: l.changes ? l.to : t(`${P}.row.keyUnchanged`),
                 })}
               </li>
             ))}
@@ -1035,6 +1054,7 @@ function copyLabel(row: string, t: Tr): string {
     case "keyWaiting":
       return t(`${P}.row.copyRequest`);
     case "keySendSignatures":
+    case "togetherSendOff":
       return t(`${P}.row.copySignatures`);
     default:
       return t(`${P}.row.copyInvitation`);
