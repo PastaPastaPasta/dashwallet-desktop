@@ -562,7 +562,7 @@ function withRestoreHold(w: World, stillRestored: boolean): World {
 /** RESTORED set, waiting as `status` says (`restore_status`). */
 function withRestoreStatus(w: World, status: Partial<RestoreStatus>): World {
   w.restored = true;
-  w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, ...status };
+  w.restoreStatus = { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false, ...status };
   return w;
 }
 

@@ -242,7 +242,7 @@ export function switchedWorld(): World | null {
 /** What the gate waits for (`restore_status`), as the engine counts it: while RESTORED is set with
  * Platform off, Platform's first check is not waited for. */
 function restoreStatusOf(world: World): RestoreStatus {
-  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false };
+  const s = world.restoreStatus ?? { waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false };
   return { ...s, waiting: world.noPlatform && !s.platformOnly ? s.waiting.filter((w) => w !== "platformPass") : s.waiting };
 }
 
@@ -251,7 +251,7 @@ function settleRestored(world: World) {
   const s = restoreStatusOf(world);
   if (s.waiting.length === 0 && s.historyWallets.length === 0 && !s.clearFailed) {
     world.restored = false;
-    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true } : undefined;
+    world.restoreStatus = world.noPlatform ? { waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true, platformOff: false } : undefined;
   }
 }
 

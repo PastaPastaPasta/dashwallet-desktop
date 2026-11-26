@@ -53,7 +53,7 @@ const SOURCE = readFileSync(resolve(import.meta.dirname, "RestoredStatePanel.tsx
 const escaped = (text: string) => text.replace(/&/g, "&amp;").replace(/'/g, "&#x27;").replace(/"/g, "&quot;");
 const noop = () => {};
 
-const status = (s: Partial<RestoreStatus>): RestoreStatus => ({ waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, ...s });
+const status = (s: Partial<RestoreStatus>): RestoreStatus => ({ waiting: [], historyWallets: [], clearFailed: false, platformOnly: false, platformOff: false, ...s });
 const PLATFORM_ONLY = status({ waiting: ["platformPass"], platformOnly: true });
 type ViewActions = Parameters<typeof RestoredStateView>[0]["actions"];
 const idle: ViewActions = { running: false, problem: null, failedLink: null, retry: async () => {}, finishWithoutPlatform: async () => {}, report: async () => {} };
