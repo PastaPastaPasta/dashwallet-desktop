@@ -2434,12 +2434,11 @@ fn a_failed_open_with_the_shielded_store_configured_keeps_its_spends() {
     let data_dir = session.data_dir().to_path_buf();
     let before = pending_rows(&data_dir, wallet);
     assert_eq!(before, stashed_rows());
+    // A quit, since a close in the app is refused while a spend is stored.
     drop(session);
-    assert!(
-        engine
-            .block_on(engine.close_network(DashNetwork::Regtest))
-            .unwrap()
-    );
+    engine.block_on(engine.shutdown()).unwrap();
+    drop(engine);
+    let engine = engine_at(dir.path());
 
     shielded_before_a_failing_journal(&data_dir);
     assert_journal_failed(engine.block_on(engine.open_network(DashNetwork::Regtest, options())));
