@@ -459,6 +459,7 @@ for (const theme of THEMES) {
     test(`visual identities-${view} ${theme}`, async ({ page }) => {
       await openIdentities(page, "dashpay-identities", theme);
       await page.getByTestId("identity-row").first().waitFor();
+      await page.getByTestId("connected-apps-empty").waitFor();
       await go(page);
       await page.mouse.move(0, 0);
       await shoot(page, `identities-${view}`, theme);
@@ -1512,6 +1513,8 @@ const CONNECTED_APPS: Record<string, { scenario: string; reach: (page: Page) => 
       await page.getByTestId("disconnect-confirm").click();
       await authorize(page);
       await page.getByTestId("connected-apps-done").waitFor();
+      await expect(page.getByTestId("connected-app-row")).toHaveCount(1);
+      await expect(page.getByTestId("connected-apps-refresh")).toHaveText("Refresh");
       await page.getByTestId("connected-apps-card").scrollIntoViewIfNeeded();
     },
   },

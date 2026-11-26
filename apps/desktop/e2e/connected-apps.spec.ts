@@ -127,3 +127,14 @@ test("Disconnect refuses unverified older grants with a plain error", async ({ p
   await expect(page.getByTestId("disconnect-confirm")).toBeDisabled();
   expect(errors).toEqual([]);
 });
+
+test("shows the test-networks-only notice on mainnet without listing connected apps", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(`${fixtureUrl("dashpay-connected-apps", "light")}&network=mainnet`);
+  await page.getByTestId("toolbar").waitFor();
+  await toAdvanced(page);
+  const card = page.getByTestId("connected-apps-card");
+  await expect(card.getByTestId("connected-apps-mainnet-off")).toHaveText("This version can sign in to apps on test networks only.");
+  await expect(card.getByTestId("connected-app-row")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
