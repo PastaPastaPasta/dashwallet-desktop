@@ -134,8 +134,10 @@ pub enum LinkOrigin {
 }
 
 /// The App Connect requests the renderer can act on, by id, at most
-/// [`MAX_CONNECT_LINKS`]: the oldest whose approval has not started goes
-/// first, so a running approval keeps its link for "Retry sending".
+/// [`MAX_CONNECT_LINKS`]: the oldest neither shown nor started goes first,
+/// so the sheet on screen keeps its request and a running approval keeps
+/// its link for "Retry sending". When every one is shown or started, a new
+/// request is refused instead.
 #[derive(Default)]
 pub struct ConnectLinks(Mutex<VecDeque<(String, ConnectLink)>>);
 
@@ -151,6 +153,8 @@ pub struct ConnectLink {
     pub answer: Option<dw_uri::connect::Status>,
     /// An approval started: Deny no longer answers it.
     pub started: bool,
+    /// Its sheet is the one the window shows: the last one read.
+    pub shown: bool,
 }
 
 impl ConnectLink {
@@ -172,17 +176,19 @@ impl ConnectLink {
 }
 
 impl ConnectLinks {
-    pub fn put(&self, link: ConnectLink) -> String {
+    /// Keeps `link` under a new id; `None` when the inbox is full of
+    /// requests shown or started, none of which may go.
+    pub fn put(&self, link: ConnectLink) -> Option<String> {
         let mut id = [0u8; 16];
         getrandom::getrandom(&mut id).expect("OS random source");
         let id = hex::encode(id);
         let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if links.len() >= MAX_CONNECT_LINKS {
-            let oldest = links.iter().position(|(_, l)| !l.started).unwrap_or(0);
+            let oldest = links.iter().position(|(_, l)| !l.started && !l.shown)?;
             links.remove(oldest);
         }
         links.push_back((id.clone(), link));
-        id
+        Some(id)
     }
 
     fn with<R>(&self, id: &str, f: impl FnOnce(&mut ConnectLink) -> R) -> Option<R> {
@@ -192,6 +198,26 @@ impl ConnectLinks {
 
     pub fn get(&self, id: &str) -> Option<ConnectLink> {
         self.with(id, |l| l.clone())
+    }
+
+    /// Marks `id` as the request whose sheet is on screen, and no other:
+    /// the window shows one sheet at a time.
+    pub fn show(&self, id: &str) -> Option<ConnectLink> {
+        let mut links = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shown = None;
+        for (i, l) in links.iter_mut() {
+            l.shown = i == id;
+            if l.shown {
+                shown = Some(l.clone());
+            }
+        }
+        shown
+    }
+
+    /// The link of `id` when an approval of it started: only that approval
+    /// parked a response to send again.
+    pub fn started(&self, id: &str) -> Option<ConnectLink> {
+        self.get(id).filter(|l| l.started)
     }
 
     /// Records the answer of `id`; a request keeps its first answer.
@@ -451,6 +477,8 @@ pub enum ConnectRejected {
     Unsupported,
     /// A `dashpay://` verb this version does not know.
     NeedsNewerWallet,
+    /// Every request the inbox keeps is on screen or being approved.
+    Busy,
 }
 
 /// A link in the stash, without its text.
@@ -549,11 +577,17 @@ impl Inbox {
                     origin,
                     answer: None,
                     started: false,
+                    shown: false,
                 };
                 let returns_to = link.returns_to();
-                LinkRoute::AppConnect {
-                    link_id: self.connect.put(link),
-                    returns_to,
+                match self.connect.put(link) {
+                    Some(link_id) => LinkRoute::AppConnect {
+                        link_id,
+                        returns_to,
+                    },
+                    None => LinkRoute::rejected(LinkRejected::Connect {
+                        reason: ConnectRejected::Busy,
+                    }),
                 }
             }
         };
