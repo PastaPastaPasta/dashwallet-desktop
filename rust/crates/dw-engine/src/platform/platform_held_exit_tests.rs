@@ -1174,8 +1174,11 @@ fn the_exit_and_a_held_cancel_pass_the_mainnet_flag() {
     c.kind = MoveKind::Transfer;
     c.cancel_of = Some("move-1-0".into());
     c.to = own.clone();
+    c.credits = DASH;
+    c.inputs[0].fee_source = false;
     c.fee_from_output = true;
-    c.fee_credits = Limits::transfer_at(w.net.version()).fee(1);
+    // Not the fee a new cancel would plan: the quote is the re-send.
+    c.fee_credits = Limits::transfer_at(w.net.version()).fee(1) + 1;
     c.expected_duffs = 0;
     c.at = 2;
     w.store(&[c.clone()]);
