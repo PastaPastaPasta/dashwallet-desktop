@@ -25,6 +25,13 @@ pub(crate) static FAIL_DELETE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
 pub(crate) static FAIL_LISTING_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: the next wallet removal of a session on one of these data
+/// directories stops once its app rows are gone, before the journal's
+/// erase, as a process stopped there would.
+#[cfg(test)]
+pub(crate) static STOP_BEFORE_ERASE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Tests: the next load-on-startup write on its own fails: the one after
 /// a failed removal transaction, or the one that lists a registered wallet.
 #[cfg(test)]
@@ -393,6 +400,10 @@ impl NetworkSession {
                 network: this.network.clone(),
                 wallet_id: id,
             });
+            #[cfg(test)]
+            if crate::keys::take_test_failure(&STOP_BEFORE_ERASE_IN, this.data_dir()) {
+                return Ok(());
+            }
             this.erase_dispatch_rows(id).await;
             Ok(())
         })

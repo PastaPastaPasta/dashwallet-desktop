@@ -15,6 +15,8 @@
 //! The same hold with no mark at all, released by the library's own scan
 //! over a mock SDK, is in `shielded_executed_tests.rs`.
 
+use std::sync::atomic::Ordering::SeqCst;
+
 use platform_wallet::wallet::shielded::ShieldedNote;
 
 use super::*;
@@ -281,6 +283,229 @@ fn a_spent_create_with_no_consumed_proof_holds_the_close_and_the_removal() {
             session.require_wallet(&wallet).is_ok(),
             "{proof:?}: still loaded"
         );
+    }
+}
+
+/// Where a removal of the wallet is cut (#976): after its app rows are
+/// gone, the consumed proof with them, and before the journal archives its
+/// artifacts.
+#[derive(Clone, Copy, Debug)]
+enum Cut {
+    /// The process stops before the erase.
+    Stop,
+    /// The erase fails, which the removal only logs.
+    EraseFails,
+}
+
+/// A spent create proved consumed as `registration_shielded::consumed`
+/// proves it: its proof in app.sqlite and its mark in the journal.
+fn consumed_create(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> [u8; 32] {
+    let st_hash = spent_create(engine, session, wallet);
+    let s = Arc::clone(session);
+    let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+    assert!(
+        engine.block_on(async move {
+            super::super::registration_shielded::settle_proved(
+                &s, wallet, st_hash, unresolved, false,
+            )
+            .await
+        }),
+        "the consumed proof is written"
+    );
+    st_hash
+}
+
+/// Create `st_hash`'s proof in app.sqlite.
+fn proof(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+) -> Option<String> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+    engine
+        .block_on(session.appdb_op(move |db| db.setting(&scope, &key)))
+        .unwrap()
+}
+
+fn set_proof(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+    value: Option<&'static str>,
+) {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+    engine
+        .block_on(session.appdb_op(move |db| db.set_setting_durable(&scope, &key, value)))
+        .unwrap();
+}
+
+/// The user's removal of `wallet`, cut at `cut`: it goes through, its
+/// create's proof is gone and the create is still unresolved in the
+/// journal.
+fn cut_removal(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    st_hash: [u8; 32],
+    cut: Cut,
+) {
+    let data_dir = session.data_dir().to_path_buf();
+    match cut {
+        Cut::Stop => (crate::wallets::STOP_BEFORE_ERASE_IN.lock().unwrap()).push(data_dir.clone()),
+        Cut::EraseFails => (session.leases.fail_next_erase).store(true, SeqCst),
+    }
+    let wipe = (session.vault).authorize(
+        dw_vault::GrantPurpose::Wipe,
+        Some(&wallet.0),
+        dw_vault::Credential::Passphrase(PASS),
+    );
+    engine
+        .block_on(session.remove_wallet(wallet, wipe.unwrap().id))
+        .unwrap();
+    assert!(session.require_wallet(&wallet).is_err(), "{cut:?}: removed");
+    assert!(
+        !(session.leases.fail_next_erase).load(SeqCst)
+            && !(crate::wallets::STOP_BEFORE_ERASE_IN.lock().unwrap()).contains(&data_dir),
+        "{cut:?}: cut there"
+    );
+    assert_eq!(
+        proof(engine, session, wallet, st_hash),
+        None,
+        "{cut:?}: the proof went with the app rows"
+    );
+    assert_eq!(
+        settlement(engine, session, wallet, 1).0,
+        ArtifactStatus::Unresolved { unrecorded: false },
+        "{cut:?}: not archived"
+    );
+}
+
+/// The network closed, then the restore's rollback check on its folder.
+fn rollback_hold(engine: &Engine, session: Arc<NetworkSession>) -> Option<crate::ShieldedHold> {
+    let network_dir = session.data_dir().to_path_buf();
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    super::super::restore_hold::restore_hold(&network_dir)
+}
+
+/// #976 (a), (b): a removal of a wallet whose create was proved consumed,
+/// cut after the wallet's app rows went (its proof with them) and before
+/// the journal archived the create, as a process stopped there or an erase
+/// that failed (only logged) leaves it: the journal's mark still reads the
+/// create consumed, so the restore's rollback is not held. Mutant: ignore
+/// the mark.
+#[test]
+fn a_removal_cut_before_the_archive_leaves_the_rollback_free() {
+    for cut in [Cut::Stop, Cut::EraseFails] {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let st_hash = consumed_create(&engine, &session, wallet);
+        cut_removal(&engine, &session, wallet, st_hash, cut);
+        assert_eq!(rollback_hold(&engine, session), None, "{cut:?}");
+    }
+}
+
+/// #976 item 2: the same wallet imported again after a removal cut before
+/// the journal's archive, its consumed create left there unresolved with
+/// no proof, is not held: in the session, and after a relaunch, whose
+/// removal check reads the journal on disk, Close Wallet and the removal go
+/// ahead. Mutant: ignore the mark.
+#[test]
+fn a_wallet_imported_again_after_a_cut_removal_is_not_held() {
+    for cut in [Cut::Stop, Cut::EraseFails] {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let st_hash = consumed_create(&engine, &session, wallet);
+        cut_removal(&engine, &session, wallet, st_hash, cut);
+        let again = engine.block_on(session.import_wallet(
+            Zeroizing::new(PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(again.unwrap(), wallet, "{cut:?}: the same id");
+        assert_eq!(
+            close_holds(&engine, &session, wallet),
+            (false, false, None),
+            "{cut:?}: in the session"
+        );
+        let session = reopen_with(&engine, session, |_| {});
+        assert!(session.require_wallet(&wallet).is_ok(), "{cut:?}: loaded");
+        assert_eq!(
+            close_holds(&engine, &session, wallet),
+            (false, false, None),
+            "{cut:?}: after a relaunch"
+        );
+        engine.block_on(session.unload_wallet(wallet)).unwrap();
+        engine.block_on(session.load_wallet(wallet)).unwrap();
+        let wipe = (session.vault).authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&wallet.0),
+            dw_vault::Credential::Passphrase(PASS),
+        );
+        engine
+            .block_on(session.remove_wallet(wallet, wipe.unwrap().id))
+            .unwrap();
+        assert_eq!(rollback_hold(&engine, session), None, "{cut:?}");
+    }
+}
+
+/// #976: a consumed create's mark in the journal counts with its proof in
+/// app.sqlite gone: Close Wallet, the network close and the removal go
+/// ahead. Fail closed: a mark that does not read holds them
+/// (`CarriedOver`), whether the proof reads consumed or is gone. Mutants:
+/// ignore the mark; read a mark that does not read as consumed.
+#[test]
+fn a_consumed_mark_counts_and_an_unreadable_one_holds_the_close() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let st_hash = consumed_create(&engine, &session, wallet);
+    set_proof(&engine, &session, wallet, st_hash, None);
+    for _ in 0..2 {
+        pass(&engine, &session);
+        assert_eq!(
+            close_holds(&engine, &session, wallet),
+            (false, false, None),
+            "the mark alone"
+        );
+        assert_eq!(proof(&engine, &session, wallet, st_hash), None);
+    }
+    let journal = session
+        .data_dir()
+        .join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    (rusqlite::Connection::open(journal).unwrap())
+        .execute_batch(
+            "DROP TABLE shielded_create_consumed; CREATE TABLE shielded_create_consumed (x)",
+        )
+        .unwrap();
+    for value in [Some("consumed"), None] {
+        set_proof(&engine, &session, wallet, st_hash, value);
+        let (closing, network, removal) = close_holds(&engine, &session, wallet);
+        assert!(
+            closing && network,
+            "{value:?}: Close Wallet and the network close"
+        );
+        assert_eq!(
+            removal,
+            Some(crate::ShieldedHold::CarriedOver),
+            "{value:?}: the removal"
+        );
+        refused(engine.block_on(session.unload_wallet(wallet)));
+        assert!(session.require_wallet(&wallet).is_ok(), "{value:?}: loaded");
     }
 }
 

@@ -718,8 +718,10 @@ const PROVED: [(ArtifactStatus, &str); 3] = [
 /// durably, then settles its artifact so in the journal (`acked` when its
 /// notes may go at once). The proof is the marker: the journal's
 /// disposition columns hold only the library's strings, empty until the
-/// next read of its outcomes writes them back. `false` when either write
-/// failed.
+/// next read of its outcomes writes them back. A consumed proof is marked
+/// in the journal too, before the settle: the removal of the wallet
+/// deletes the proof before it archives the artifact, and the mark
+/// outlives both. `false` when any write failed.
 pub(crate) async fn settle_proved(
     session: &NetworkSession,
     wallet: WalletId,
@@ -743,6 +745,16 @@ pub(crate) async fn settle_proved(
     if let Err(e) = marked {
         tracing::warn!(error = %e, "a Shielded-funded create's proof was not written");
         return false;
+    }
+    if value == "consumed" {
+        let consumed = (session.leases).mark_create_consumed(wallet, st_hash).await;
+        if consumed != Ok(true) {
+            tracing::warn!(
+                ?consumed,
+                "a consumed Shielded-funded create was not marked"
+            );
+            return false;
+        }
     }
     let settled = (session.leases)
         .settle_shielded_artifact(wallet, st_hash, status, None, acked)

@@ -362,6 +362,10 @@ pub struct LeaseTable {
     /// Tests: holds the next shielded artifact's write before it runs.
     #[cfg(test)]
     pub(crate) hold_artifact_write: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next erase of a removed wallet's journal rows fails
+    /// before it writes.
+    #[cfg(test)]
+    pub(crate) fail_next_erase: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -415,6 +419,8 @@ impl LeaseTable {
             test_hold_rows: Default::default(),
             #[cfg(test)]
             hold_artifact_write: Default::default(),
+            #[cfg(test)]
+            fail_next_erase: Default::default(),
         })
     }
 
