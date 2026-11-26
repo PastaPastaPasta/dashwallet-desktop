@@ -477,6 +477,7 @@ pub(super) async fn nonce_for(
     let nonces = &session.withdrawal_nonces;
     let (state, height) = net.nonce_state(id).await?;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
+    let mut had_spent_disconnect = false;
     for (d_nonce, transition_hash) in
         super::app_connect::pending_disconnects_for_identity(session, wallet_id, id).await?
     {
@@ -488,6 +489,10 @@ pub(super) async fn nonce_for(
         if d_nonce > tip {
             return Err(PlatformError::Unavailable.into());
         }
+        had_spent_disconnect = true;
+    }
+    if had_spent_disconnect {
+        super::app_connect::clear_spent_conflict_nonces(session, wallet_id, id, state).await;
     }
     if let Some((k, signed)) = nonces.unconfirmed(id) {
         if let Some(s) = executed(net, &signed, (id, k), (state, height)).await? {
