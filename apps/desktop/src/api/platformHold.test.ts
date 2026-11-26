@@ -1,24 +1,26 @@
 // C6/C7: every Platform or Shielded funds flow says the restore's hold and Dash Platform being off for
 // the session in MG's words, and keeps its own line for Platform that can't be reached or is off on
-// this network. The engine's C7 refusal is a bare platform.unavailable: only this session's own open
-// (Finish without Dash Platform) tells it from unreachable.
+// this network. The engine's C7 refusal is a bare platform.unavailable: only restore_status's
+// platformOff tells it from unreachable.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claimErrorText } from "../dashpay/claim";
 import { startErrorText } from "../dashpay/registration";
 import { topUpErrorText } from "../dashpay/topup";
 import { fromPlatformErrorText } from "../dashpay/topupSource";
 import { withdrawErrorText } from "../dashpay/withdraw";
-import { bootAgain } from "../network/switch";
 import { fundErrorText } from "../platform/fund";
 import { moveErrorText } from "../platform/move";
 import { sendErrorText } from "../platform/send";
 import { acceptFailedText } from "../screens/pay/contact";
 import { fromErrorText } from "../screens/pay/fromBalance";
 import { shieldedErrorText } from "../shielded/flow";
-import { leaveOpenedWithoutPlatform, platformHoldText } from "./platformHold";
+import type { RestoreStatus } from "./generated/RestoreStatus";
+import { platformHoldText, readPlatformOffFrom } from "./platformHold";
+import { cachedPlatformOff, keys } from "./queries";
 
 const RESTORED =
   "Dash Wallet hasn't finished checking this wallet with Dash Platform since it restored your wallet data from before the upgrade, so Platform and Shielded funds are paused and nothing was sent. The check runs while Dash Platform is on.";
@@ -30,11 +32,17 @@ const featureOff = { code: "platform.feature_off", message: "platform off", data
 const unavailable = { code: "platform.unavailable", message: "Platform is off for this session" };
 const offOnNetwork = { code: "platform.feature_off", message: "off on mainnet", data: { kind: "feature", feature: "platform_registration" } };
 
+const held = (platformOff: boolean): RestoreStatus => ({ waiting: ["platformPass"], historyWallets: [], clearFailed: false, platformOnly: true, platformOff });
+
+let client: QueryClient;
 beforeEach(() => {
-  const stored = new Map<string, string>();
-  vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
+  client = new QueryClient();
+  readPlatformOffFrom(() => cachedPlatformOff(client));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => readPlatformOffFrom(() => false));
+
+/** The session as restore_status says it: without Dash Platform. */
+const withoutPlatform = () => client.setQueryData(keys.restoreStatus, held(true));
 
 const n = String;
 const FLOWS: Record<string, (e: unknown) => string> = {
@@ -61,8 +69,8 @@ describe("the restore's Platform and Shielded hold, as each flow says it", () =>
       }
     });
 
-    it(`${flow}: in a session Finish without Dash Platform opened, platform.unavailable says Dash Platform is off`, () => {
-      leaveOpenedWithoutPlatform(true);
+    it(`${flow}: in a session restore_status says runs without Dash Platform, platform.unavailable says Dash Platform is off`, () => {
+      withoutPlatform();
       expect(text(unavailable)).toBe(OFF);
       expect(text(offOnNetwork)).not.toBe(OFF);
     });
@@ -71,7 +79,7 @@ describe("the restore's Platform and Shielded hold, as each flow says it", () =>
   it("accept and pay: Dash Platform off says C7's line; any other refusal keeps its own, with nothing paid", () => {
     expect(acceptFailedText(featureOff)).toBe(OFF);
     for (const other of [unavailable, restored, offOnNetwork]) expect(acceptFailedText(other), other.code).toMatch(/\S Nothing was paid\.$/);
-    leaveOpenedWithoutPlatform(true);
+    withoutPlatform();
     expect(acceptFailedText(unavailable)).toBe(OFF);
   });
 
@@ -79,19 +87,25 @@ describe("the restore's Platform and Shielded hold, as each flow says it", () =>
     expect(platformHoldText(featureOff)).toBe(OFF);
     expect(platformHoldText(featureOff, false)).toBe(OFF_NOT_SENDING);
     expect(platformHoldText(unavailable, false)).toBeNull();
-    leaveOpenedWithoutPlatform(true);
+    withoutPlatform();
     expect(platformHoldText(unavailable)).toBe(OFF);
     expect(platformHoldText(unavailable, false)).toBe(OFF_NOT_SENDING);
     expect(platformHoldText(restored, false)).toBe(RESTORED);
   });
 
-  it("a boot after Finish without Dash Platform leaves its mark; any other boot clears it", async () => {
-    const reload = vi.fn();
-    await bootAgain(null, reload, true);
+  it("reads Platform off only from a cached restore_status that says platformOff", () => {
+    for (const cached of [undefined, null, held(false)]) {
+      if (cached === undefined) client.removeQueries({ queryKey: keys.restoreStatus });
+      else client.setQueryData(keys.restoreStatus, cached);
+      expect(platformHoldText(unavailable), String(cached?.platformOff ?? cached)).toBeNull();
+    }
+    withoutPlatform();
     expect(platformHoldText(unavailable)).toBe(OFF);
-    await bootAgain(null, reload);
-    expect(platformHoldText(unavailable)).toBeNull();
-    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("the app reads the cached restore_status, which the shell keeps read while the wallet is unlocked", () => {
+    expect(readFileSync(resolve(import.meta.dirname, "../main.tsx"), "utf8")).toContain("readPlatformOffFrom(() => cachedPlatformOff(client));");
+    expect(readFileSync(resolve(import.meta.dirname, "../app/App.tsx"), "utf8")).toContain("useRestoreStatus(!locked);");
   });
 
   // A quote, a Max, the Shielded receive address and the claim's check send nothing.

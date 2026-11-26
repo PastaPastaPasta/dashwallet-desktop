@@ -29,8 +29,9 @@ const saidWaits = (s: RestoreStatus) =>
   });
 
 /** Try again while the engine waits on something or couldn't write the clear; a history that failed
- * to load offers Report a problem only. */
-export const offersRetry = (s: RestoreStatus) => saidWaits(s).length > 0 || s.clearFailed;
+ * to load offers Report a problem only, as does Platform's check in a session without Platform
+ * (nothing runs it until one with Platform). */
+export const offersRetry = (s: RestoreStatus) => (saidWaits(s).length > 0 || s.clearFailed) && !(s.platformOff && s.platformOnly);
 
 /** Only while Platform's first check is what it waits for (with Platform off it never is), a wallet is
  * loaded, and no history failed to load: RESTORED can't clear without it, with or without Platform.
@@ -73,7 +74,7 @@ export class RestoredStateActions extends Model {
   constructor(
     private readonly api: Pick<Backend, "restoreRetry" | "finishWithoutPlatform" | "openProjectLink">,
     private readonly client: QueryClient,
-    private readonly boot: (note: string | null, withoutPlatform?: boolean) => unknown = (note, withoutPlatform) => bootAgain(note, undefined, withoutPlatform),
+    private readonly boot: (note: string | null) => unknown = bootAgain,
   ) {
     super();
   }
@@ -104,7 +105,7 @@ export class RestoredStateActions extends Model {
       this.changed();
       return;
     }
-    await this.boot(null, true);
+    await this.boot(null);
   };
 
   /** Opened as usual: a new session, so every read is read again. RESTORED, what it waits for and the

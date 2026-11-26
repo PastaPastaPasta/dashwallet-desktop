@@ -4,6 +4,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { queryOptions, useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { RestoreStatus } from "./generated/RestoreStatus";
 import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
@@ -197,10 +198,17 @@ export function useDismissUpgradeNotice() {
   return () => client.setQueryData<StoreLine | null>(keys.upgradeNotice, null);
 }
 
-/** What RESTORED still waits for (`restore_status`), once `restored` is known: `null` with nothing held. */
+/** What RESTORED still waits for (`restore_status`): `null` with nothing held. The panel reads it once
+ * `restored` is known; the shell reads it whenever the wallet is unlocked. */
 export function useRestoreStatus(enabled: boolean) {
   const b = useBackend();
   return useQuery({ queryKey: keys.restoreStatus, queryFn: () => b.restoreStatus(), enabled });
+}
+
+/** The cached `restore_status`'s `platformOff`: this session runs without Dash Platform. The shell reads
+ * it while the wallet is unlocked (App.tsx). */
+export function cachedPlatformOff(client: QueryClient): boolean {
+  return client.getQueryData<RestoreStatus | null>(keys.restoreStatus)?.platformOff === true;
 }
 
 /** Whether "Restore earlier data" may show: `false` too when dw-app has no `restore_available`. */

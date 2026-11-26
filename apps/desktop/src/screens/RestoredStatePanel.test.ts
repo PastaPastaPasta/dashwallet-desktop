@@ -209,6 +209,22 @@ describe("the restored state panel", () => {
     expect(lines(view(status({ waiting: [wallet, "coreSync"] })))).toEqual([["restored-waiting-coreSync", COPY.core]]);
   });
 
+  it("without Platform this session, Platform's check left: MG's line, its wait and Report a problem, no Try again; other waits keep it", () => {
+    const off = status({ waiting: ["platformPass"], platformOnly: true, platformOff: true });
+    const html = view(off);
+    expect(lines(html)).toEqual([
+      ["restored-platform-only", escaped(COPY.platformOnly)],
+      ["restored-waiting-platformPass", escaped(COPY.platform)],
+    ]);
+    expect(button(html, "restored-retry")).toBeNull();
+    expect(button(html, "restored-finish-without-platform")).toBeNull();
+    expect(button(html, "restored-report")?.label).toBe(COPY.report);
+    expect(offersRetry(PLATFORM_ONLY)).toBe(true);
+    // A clear that failed is tried again without Platform too: Try again cuts its wait short.
+    expect(offersRetry(status({ clearFailed: true, platformOff: true }))).toBe(true);
+    expect(offersRetry(status({ waiting: ["coreSync"], platformOff: true }))).toBe(true);
+  });
+
   it("shows while RESTORED is set and restore_status says something, or while it holds only Platform and Shielded funds", () => {
     const waiting = status({ waiting: ["coreSync"] });
     expect(panel(true, waiting)).toContain('data-testid="restored-state"');
@@ -541,9 +557,9 @@ describe("the fixture's restore status", () => {
     expect(fixture.calls.at(-1)).toBe("finish_without_platform");
     expect(fixture.calls).not.toContain("close_network");
     expect(fixture.world.noPlatform).toBe(true);
-    expect(boot).toHaveBeenCalledWith(null, true);
+    expect(boot).toHaveBeenCalledWith(null);
     expect(isRestored(await backend.activeNetwork())).toBe(false);
-    expect(await backend.restoreStatus()).toEqual(status({ waiting: ["platformPass"], platformOnly: true }));
+    expect(await backend.restoreStatus()).toEqual(status({ waiting: ["platformPass"], platformOnly: true, platformOff: true }));
     // The page boots again on the same session: the world it carries has RESTORED clear.
     expect(JSON.parse(sessionStorage.getItem("dw-fixture-switch")!).active.restored).toBe(false);
   });
@@ -599,7 +615,7 @@ describe("the fixture's restore status", () => {
     expect(offersFinishWithoutPlatform((await backend.restoreStatus())!)).toBe(true);
     fixture.world.noPlatform = true;
     const off = (await backend.restoreStatus())!;
-    expect(off).toEqual(status({ waiting: ["coreSync"] }));
+    expect(off).toEqual(status({ waiting: ["coreSync"], platformOff: true }));
     expect(button(view(off), "restored-finish-without-platform")).toBeNull();
   });
 

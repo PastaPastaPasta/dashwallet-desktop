@@ -265,7 +265,7 @@ test.describe("what RESTORED waits for", () => {
       await expect(page.getByTestId("restored-banner")).toHaveCount(0);
       await expect(page.getByTestId("restored-platform-only")).toBeVisible();
       await expect(page.getByTestId("restored-waiting-platformPass")).toBeVisible();
-      await expect(page.getByTestId("restored-retry")).toBeEnabled();
+      await expect(page.getByTestId("restored-retry")).toHaveCount(0);
       await expect(page.getByTestId("restored-finish-without-platform")).toHaveCount(0);
       await expect(page.getByTestId("restored-report")).toBeEnabled();
       const after = await world(page);

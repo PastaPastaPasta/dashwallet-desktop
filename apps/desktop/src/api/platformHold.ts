@@ -5,33 +5,20 @@ import type { AppError } from "./generated/commands";
 import { isAppError } from "./backend";
 import { t } from "../i18n";
 
-/** Left across the page boot after Finish without Dash Platform; any other boot clears it, and a new
- * start has no session storage. */
-const OPENED_WITHOUT_PLATFORM = "dw-opened-without-platform";
+/** Whether the cached `restore_status` says this session runs without Dash Platform (`platformOff`). */
+let sessionPlatformOff: () => boolean = () => false;
 
-export function leaveOpenedWithoutPlatform(on: boolean) {
-  try {
-    if (on) sessionStorage.setItem(OPENED_WITHOUT_PLATFORM, "1");
-    else sessionStorage.removeItem(OPENED_WITHOUT_PLATFORM);
-  } catch {
-    // No storage: the next page reads Platform's refusals as unreachable.
-  }
-}
-
-function openedWithoutPlatform(): boolean {
-  try {
-    return sessionStorage.getItem(OPENED_WITHOUT_PLATFORM) === "1";
-  } catch {
-    return false;
-  }
+/** The app's reader of the cached `restore_status`, set once at boot. */
+export function readPlatformOffFrom(read: () => boolean) {
+  sessionPlatformOff = read;
 }
 
 /** C7: Dash Platform is off for this session. The engine says so with `feature_off` for `"platform"`,
- * or with a bare `platform.unavailable` that only this session's own open tells from unreachable
- * (`platformOnly` doesn't: it outlives the session into the next one, which has Platform). */
+ * or with a bare `platform.unavailable` that only `restore_status`'s `platformOff` tells from
+ * unreachable. */
 const platformOff = (e: AppError) =>
   (e.code === "platform.feature_off" && e.data?.kind === "feature" && e.data.feature === "platform") ||
-  (e.code === "platform.unavailable" && openedWithoutPlatform());
+  (e.code === "platform.unavailable" && sessionPlatformOff());
 
 /** C7's line alone, for a refusal Platform's hold of the restore never makes; null for any other. */
 export function platformOffText(e: unknown, sending = true): string | null {
