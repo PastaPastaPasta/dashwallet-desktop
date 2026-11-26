@@ -35,8 +35,10 @@ Version 32 (#954) has a spend beat an operation or a shared session only from a 
 header chain under a ChainLock checked by hash (an InstantSend-locked transaction loses only to a ChainLocked one).
 Depth alone no longer settles anything. A shared session's `settlement` reads `settled` once that block is final and
 buried, and `confirming` from a block that may still become final (above the best ChainLock, or final and not yet
-buried). While it is `confirming`, an out session's `next` reads `nothing` and `send_shared_registration`'s resend
-refuses `shared_stage{stage: "conflicting"}` until that block is final (`conflicted`) or a reorg drops it.
+buried). While it is `confirming`, an out registration session's `next` reads `nothing` and
+`send_shared_registration`'s resend refuses `shared_stage{stage: "conflicting"}` until that block is final
+(`conflicted`) or a reorg drops it; with no ChainLock on the network that lasts until a reorg drops it. Key-change
+sessions keep their `next`.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with

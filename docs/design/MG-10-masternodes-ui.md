@@ -653,6 +653,7 @@ Labels: C coordinator (key change: funder), P participant (key change: approver)
 | registration | C `combined` / `funding_signed`, some participant not signed | `copy` | "Waiting for signed contributions: 1 of 2" | [Copy signing request] · [Save to file…] | `mn_shared_message` |
 | registration | C `combined` / `funding_signed`, every other input signed | `send` | "Everyone signed. Send the registration: {debit} leaves this wallet." (§2.3.2) | credential → [Send registration] | `mn_shared_send(wallet, s, grant)`: `masternodeOp{session.debit}` |
 | registration | * `sent` | `wait` | "Sent · waiting for 1 confirmation"; hand-off error, settlement, `blocked` and the two-step exit per §2.3.3 (the exit is a collapsed secondary line until `overdue`) | none; recovery (`resend`, `abandon`, `resend_abandon` or `abandon_wallet_tx`, when listed) | per action |
+| registration | * `sent` / `funding_signed`, a spend of a reserved coin in a block that isn't final (`confirming`, #954) | `nothing` | "A transaction spending your reserved coins is in a block (2 confirmations). The wallet waits for a ChainLock to make it final."; the two-step exit as at `sent`, and for a participant whose Abandon isn't offered | none: no Send again or Copy (`send_shared_registration` refuses `shared_stage{conflicting}`) | — |
 | registration | * `confirmed` | `create_standby` / `nothing` | moves to the pane (§2.4); `create_standby` prompts there from S6 | — | — |
 | registration | * `dead{inputs_spent}` | `nothing` | "One of your reserved coins was spent elsewhere, so this session can't continue." | recovery (discard) | `mn_shared_discard` |
 | registration | * `conflicted` | `nothing` | by EP 4's settlement (§2.3.3): `confirming` → waiting copy; `settled { by: abandon_tx }` → "Abandoned"; `settled { by: other_spend }` → "This registration was replaced: a transaction spending one of its coins confirmed." | none | — |
@@ -1773,8 +1774,9 @@ action but `discard` where the engine accepts it.
     - `confirming { by, confirmations, chainlocked }`: a conflict in a block that may still become final (above the
       best ChainLock, or final) and isn't yet final and buried; `by` is `abandon_tx` when the conflicting txid is
       **any** id in `attributed`, else `other_spend`; `chainlocked` says whether the tracker has a ChainLock height at
-      all. Meanwhile the session keeps its out stage, its `next` reads `nothing` and `send_shared_registration`'s
-      resend refuses `shared_stage{conflicting}` (#954); nothing is released;
+      all. Meanwhile a registration keeps its out stage, its `next` reads `nothing` and `send_shared_registration`'s
+      resend refuses `shared_stage{conflicting}` (#954); nothing is released. Without ChainLocks on the network no
+      block becomes final, so that holds until a reorg drops the block;
     - `settled { by, released }`: the conflict is final (its block's hash on the header chain under a ChainLock
       checked by hash) and buried (`releasable` true); depth alone no longer settles (#954); `released` is true once
       `release_shared_session_locks_durable` has cleared `reserved`;
@@ -1851,11 +1853,11 @@ broadcaster, `send.rs:58-61`, `send/mod.rs:1712-1716`), not from fixtures.
 | SPV stopped with A `uncertain` | `blocked{spv_stopped}` | `resend_abandon`: suppressed |
 | **terminal with A absent from history** (R4): registration confirms; another spend in a block; key change `dead`; each also after the durable release and a restart | no recovery actions (`discard` for `dead`); `abandon_spend.state` none | `resend_shared_abandon`: refused `shared_stage{confirmed \| conflicted \| dead}`; `abandon`: refused the same |
 | A itself in a block | `confirming{by: abandon_tx}` / `settled`, never `uncertain` | all refused (`conflicted`) |
-| abandon spend in a block that isn't final yet | `confirming{by: abandon_tx, confirmations: n}`, the spend back's line shown | `abandon`, `resend`: refused (`conflicted`) |
+| abandon spend in a block that isn't final yet | `confirming{by: abandon_tx, confirmations: n}`, the spend back's line shown | no action listed; once the block is final, `abandon`, `resend`: refused (`conflicted`) |
 | 6 confirmations without a ChainLock (#954) | still `confirming`: depth alone doesn't settle | as above |
 | ChainLock covering the block, buried | `settled{abandon_tx, released: false}`, then `released: true` after the follower | all refused (settled) |
-| sent registration, another spend in a block that isn't final yet (#954) | `confirming{other_spend}`, `next` `nothing`, no `resend`; reserved coins held | `send_shared_registration`: refused `shared_stage{conflicting}`; after a reorg drops the block, offered again |
 | ChainLock at 1 confirmation | `settled` | as above |
+| sent registration, another spend in a block that isn't final yet (#954) | `confirming{other_spend}`, `next` `nothing`, no `resend`; reserved coins held | `send_shared_registration`: refused `shared_stage{conflicting}`; after a reorg drops the block, offered again |
 | reorg back out of `confirming` | `pending` | as the `pending` rows |
 | another conflicting spend wins | `confirming{other_spend}`, then `settled{other_spend}` | as above |
 | durable release across a restart | `released` true after restart, never back to false | — |

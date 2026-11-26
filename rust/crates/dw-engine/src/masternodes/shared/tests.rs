@@ -3791,7 +3791,7 @@ fn test_an_unreadable_two_coin_abandon_spends_both_and_never_spends_them_twice()
 /// `abandon_shared_session` refuses it before spending (it used to spend,
 /// then fail to read the record back); `abandon_unreadable_shared_session`
 /// spends a reserved coin back to the wallet and returns its listing, and
-/// the follower releases the locks once that spend is six deep. A session
+/// the follower releases the locks once that spend is final and six deep. A session
 /// that reads, and an unreadable one not out, are refused.
 #[test]
 fn test_an_unreadable_out_registration_is_abandoned_and_released_once_buried() {

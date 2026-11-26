@@ -138,7 +138,7 @@ export function renderSession(s: SharedSession, slice: SharedSlice = NO_SENDS): 
     case "create_standby":
     case "nothing":
       if (stage === "confirmed") return r("confirmed", null);
-      if ((stage === "sent" || stage === "funding_signed") && s.confirming) return r("contested", null);
+      if (stage === "sent" || stage === "funding_signed") return r("contested", null);
       if (stage === "dead") return r("dead", null);
       if (stage === "conflicted") return r("conflicted", null);
       return r("unknown", null, false, false);
@@ -316,7 +316,7 @@ export function wayOutShown(s: SharedSession, row: RowKey): "collapsed" | "expan
   if (!isRegistration(s) || settled) return null;
   if (row === "abandoning") return activityTxids(s).length === 0 ? null : s.abandonSpend?.overdue ? "expanded" : "collapsed";
   if (!s.txid) return null;
-  const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
+  const shown = s.stage.kind === "sent" || (!canAbandon(s) && (row === "signedOut" || row === "contested" || (!s.discardable && s.warnings.some((w) => w.kind === "unvalued_inputs"))));
   if (!shown) return null;
   return s.overdue ? "expanded" : "collapsed";
 }

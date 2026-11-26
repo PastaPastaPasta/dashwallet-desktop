@@ -1006,7 +1006,7 @@ function rowCopy(
     case "sent":
       return t(`${P}.row.sent`);
     case "contested":
-      return t(`${P}.row.contested`, { count: s.confirming?.confirmations ?? 1 });
+      return s.confirming ? t(`${P}.row.contested`, { count: s.confirming.confirmations }) : t(`${P}.row.contestedPending`);
     case "confirmed":
       return t(`${P}.row.confirmed`);
     case "dead":
