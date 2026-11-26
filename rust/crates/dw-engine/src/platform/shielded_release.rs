@@ -127,7 +127,11 @@ fn release_net(_: &NetworkSession, manager: &Manager) -> Arc<dyn ReleaseNet> {
 }
 
 /// The app.sqlite key of the highest height `st_hash`'s anchor was proved
-/// recorded at.
+/// recorded at. It is written at dispatch before the spend is sent, and a
+/// refusal after that write leaves it: a stored height alone never proves
+/// the spend was dispatched. A reader takes it as that proof only together
+/// with the spend's artifact in the journal, or the row is cleared on each
+/// refusal before the send.
 fn presence_key(st_hash: [u8; 32]) -> String {
     format!("shielded_anchor_recorded/{}", hex::encode(st_hash))
 }
@@ -159,11 +163,11 @@ pub(crate) async fn presence(
 
 /// Records that the anchor of `wallet`'s spend `st_hash` was proved recorded
 /// at `height`, keeping the highest, durably against power loss once it
-/// returns `Ok` . A stored height at least
-/// `height` is left as it is, with no write. A stored value that is not a
-/// height (digits only) is replaced, as any one proved height orders the
-/// release; until then the wallet's pass reads nothing (#912). An error
-/// when what is stored after is not a height of at least `height`.
+/// returns `Ok`. A stored height at least `height` is left as it is, with
+/// no write. A stored value that is not a height (digits only) is replaced,
+/// as any one proved height orders the release; until then the wallet's
+/// pass reads nothing (#912). An error when what is stored after is not a
+/// height of at least `height`.
 pub(crate) async fn record_presence(
     session: &NetworkSession,
     wallet: WalletId,
