@@ -10,7 +10,7 @@ use super::dashpay::DashPay;
 use super::errors::{ContactError, PlatformError};
 use super::flows::GrantRequest;
 use super::shielded_payout;
-use super::shielded_pool::{on_pool, on_pool_signing};
+use super::shielded_pool::{on_pool_keyset, on_pool_signing_keyset};
 
 /// A per-contact send lock: a Core payment after an ambiguous broadcast
 /// (`dp_payment_lock`), or a `pending` payout from another balance
@@ -195,7 +195,7 @@ impl DashPay {
                 let _op = self.session.try_enter().map_err(PlatformError::from)?;
                 (self.session).payout_quote_gates(id, &identity, &contact, credits, source)?;
             }
-            let quoted = on_pool(&self.session, id, move |_, lib| async move {
+            let quoted = on_pool_keyset(&self.session, id, move |_, lib| async move {
                 Ok(shielded_payout::quote(&lib, credits).await)
             });
             return quoted.await?;
@@ -248,7 +248,7 @@ impl DashPay {
                 .await
                 .map_err(PlatformError::from)?;
             let (pair, call) = gated?;
-            let paid = on_pool_signing(&self.session, id, move |session, lib| async move {
+            let paid = on_pool_signing_keyset(&self.session, id, move |session, lib| async move {
                 Ok(shielded_payout::pay_gated(&session, id, &lib, pair, call).await)
             });
             return paid.await?;

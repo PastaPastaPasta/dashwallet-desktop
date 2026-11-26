@@ -13,6 +13,12 @@ export function shieldedSpendsOff(status: Pick<ShieldedStatus, "active" | "spend
   return !!status && status.active && !status.spendsAvailable;
 }
 
+/** Copy that promises another move into Shielded shows only where the engine said this build can
+ * spend from it: no reading yet, or an inactive pool reporting it off, is not on. */
+export function shieldedSpendsKnownOn(status: Pick<ShieldedStatus, "spendsAvailable"> | null | undefined): boolean {
+  return status?.spendsAvailable === true;
+}
+
 const SPENDS: ReadonlySet<ShieldedKind | undefined> = new Set<ShieldedKind | undefined>(["send", "out", "toPlatform", "add"]);
 
 /** Whether the refusal `code` of a `kind` call is the engine refusing a spend, or a new shield, this build cannot make. */

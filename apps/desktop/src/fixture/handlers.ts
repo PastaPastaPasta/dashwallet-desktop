@@ -674,7 +674,10 @@ function paymentsChanged(ctx: Ctx, walletId: string, identity: string) {
 export function payeeOfPayout(w: World, walletId: string, pair: Pair, credits: string, source: PaymentSourceName): ContactDetailInfo {
   if (source === "core" || !/^[0-9]+$/.test(credits) || BigInt(credits) === 0n) throw fail("invalid_argument", "not a payment from a balance");
   checkContact(w, walletId, pair, "prepare");
-  if (source === "shielded") throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  if (source === "shielded") {
+    if (w.launch.network.kind !== "mainnet" && w.pending.shielded?.spendsAvailable === false) throw fail("platform.unavailable", "this build cannot spend from Shielded");
+    throw fail("platform.feature_off", "shielded_contact_payment", { kind: "feature", feature: "shielded_contact_payment" });
+  }
   return pairContact(w, walletId, pair);
 }
 

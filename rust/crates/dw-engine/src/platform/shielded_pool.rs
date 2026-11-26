@@ -2928,7 +2928,32 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, false, body).await
+    let gates = PoolGates {
+        signing: false,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// [`on_pool`] for a quote of a spend or of a move into the pool:
+/// `platform.unavailable` while the library cannot spend from the key set
+/// ([`session_keyset_spends`]), after the wallet's check and before the
+/// coordinator opens, so the refusal waits for no pass.
+pub(crate) async fn on_pool_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    let gates = PoolGates {
+        signing: false,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
 }
 
 /// [`on_pool`] for a call that signs (a send, an unshield, a shield or its
@@ -2947,13 +2972,44 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, true, body).await
+    let gates = PoolGates {
+        signing: true,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// [`on_pool_signing`] for a spend or a move into the pool, refused as
+/// [`on_pool_keyset`] refuses.
+pub(crate) async fn on_pool_signing_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    let gates = PoolGates {
+        signing: true,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// What [`run_on_pool`] admits a call under: `signing`, the session's
+/// close preflight; `keyset`, the spends-off refusal before the open.
+#[derive(Clone, Copy)]
+struct PoolGates {
+    signing: bool,
+    keyset: bool,
 }
 
 async fn run_on_pool<T, F, Fut>(
     session: &Arc<NetworkSession>,
     wallet_id: WalletId,
-    signing: bool,
+    PoolGates { signing, keyset }: PoolGates,
     body: F,
 ) -> Result<T, ShieldedError>
 where
@@ -2974,6 +3030,9 @@ where
         session
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
+        if keyset {
+            session_keyset_closed(&session)?;
+        }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
     })
@@ -3064,16 +3123,34 @@ pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
     info
 }
 
-/// The one switch for spends from the pool's key set: the library's answer
-/// for [`ShieldedLib::keyset_spends`], [`ShieldedSyncInfo`] and the receive
-/// address (`DashPay::shielded_receive_address`).
+/// [`session_keyset_spends`] for the wallet's Platform handle: the
+/// library's answer for [`ShieldedLib::keyset_spends`],
+/// [`ShieldedSyncInfo`] and the receive address
+/// (`DashPay::shielded_receive_address`).
 pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
+    session_keyset_spends(&pw.session)
+}
+
+/// The one switch for spends from the pool's key set. Every reading goes
+/// through it, including the refusals [`on_pool_keyset`] makes before any
+/// pool opens; a build that turns spends off changes this body only.
+pub(crate) fn session_keyset_spends(session: &NetworkSession) -> bool {
     #[cfg(test)]
-    if (pw.session.keyset_spends_off).load(Ordering::SeqCst) {
+    if (session.keyset_spends_off).load(Ordering::SeqCst) {
         return false;
     }
-    let _ = pw;
+    let _ = session;
     true
+}
+
+/// [`keyset_closed`] from the session alone: `platform.unavailable` while
+/// the library cannot spend from the key set.
+pub(crate) fn session_keyset_closed(session: &NetworkSession) -> Result<(), ShieldedError> {
+    if session_keyset_spends(session) {
+        Ok(())
+    } else {
+        Err(PlatformError::Unavailable.into())
+    }
 }
 
 /// The address of an account whose key is bound, read from the wallet's
