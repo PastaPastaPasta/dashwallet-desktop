@@ -602,6 +602,19 @@ fn a_put_back_claim_frees_no_withheld_change_while_its_record_does_not_read() {
             .unwrap();
         assert_eq!(balances(&session, id), before, "{pin:?}: unread");
         assert!((session.hub.history).read_wallet(&id, |h| h.put_back_unread));
+
+        (session.live().unwrap().appdb)
+            .set_setting(&id.to_string(), "store_restored:not-a-txid", Some(""))
+            .unwrap();
+        let s = Arc::clone(&session);
+        engine
+            .block_on(session.on_runtime(async move { s.load_history_for(vec![id]).await }))
+            .unwrap();
+        assert_eq!(balances(&session, id), before, "{pin:?}: malformed");
+        assert!(
+            (session.hub.history).read_wallet(&id, |h| h.put_back_unread),
+            "{pin:?}: a record naming no transaction reads as unread"
+        );
         drop(session);
     }
 }
