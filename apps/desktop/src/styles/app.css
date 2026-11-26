@@ -7043,6 +7043,13 @@ button.bell-row-open:focus-visible {
   padding: 0;
 }
 
+.connect-quote-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
 .connect-critical,
 .connect-key-note {
   margin: var(--dw-space-xs) 0 0;

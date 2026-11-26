@@ -204,9 +204,16 @@ function SheetStep({ flow, network }: { flow: ConnectFlow; network: string }) {
         </div>
       </dl>
       {flow.quoteError !== null ? (
-        <p className="form-problem" role="alert" data-testid="connect-quote-error">
-          {connectErrorText(flow.quoteError, network)}
-        </p>
+        <div className="connect-quote-problem">
+          <p className="form-problem" role="alert" data-testid="connect-quote-error">
+            {connectErrorText(flow.quoteError, network)}
+          </p>
+          {flow.quote === null && (
+            <DashButton variant="tintedBlue" size="small" type="button" data-testid="connect-quote-retry" disabled={flow.busy} onClick={() => void flow.requote()}>
+              {t("dashpay.connect.retryQuote")}
+            </DashButton>
+          )}
+        </div>
       ) : (
         <p className="sheet-text" role="status" data-testid="connect-fee">
           {flow.quote ? t("dashpay.connect.fee", { amount: creditCount(flow.quote.fee) }) : flow.quoting && <span className="spinner" aria-hidden="true" />}
