@@ -114,7 +114,10 @@ impl Fx {
             self.spend(w, input.previous_output);
         }
         // The wallet saw the coins spent: no claim holds them now.
-        let (_, unspent) = self.run(self.session.op_view(self.wallets[w])).unwrap();
+        let unspent = self
+            .run(self.session.op_view(self.wallets[w]))
+            .unwrap()
+            .unspent;
         self.session
             .spends
             .retain_unspent(&self.wallets[w], &unspent);

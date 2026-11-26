@@ -178,7 +178,11 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<ChainView, MasternodesError> {
-        let (history, unspent) = self.op_view(wallet).await?;
+        let crate::masternodes::protx::ops::OpView {
+            history,
+            unspent,
+            chainlock,
+        } = self.op_view(wallet).await?;
         #[cfg(test)]
         let history = {
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
@@ -210,10 +214,12 @@ impl NetworkSession {
             }
             history
         };
+        let conflicted = crate::history::conflicted(&history, chainlock);
         let pending = self.spends.snapshot(&wallet);
         Ok(ChainView {
             history,
             unspent,
+            conflicted,
             pending,
         })
     }

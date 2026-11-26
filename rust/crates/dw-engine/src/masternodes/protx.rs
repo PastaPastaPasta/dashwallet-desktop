@@ -30,7 +30,7 @@ use self::build::{
     sign_message, summarize, to_sign, unsigned_registration,
 };
 use self::ops::{
-    Delivery, abandon_settled, encode_inputs, kind_name, kind_of, operation_of, state_name,
+    Delivery, OpView, abandon_settled, encode_inputs, kind_name, kind_of, operation_of, state_name,
     state_of,
 };
 use super::protx_records::{
@@ -689,12 +689,18 @@ impl Masternodes {
             }
             let w = wallet.to_string();
             let rows = s.appdb_op(move |db| db.masternode_ops(&w)).await?;
-            let (history, unspent) = s.op_view(wallet).await?;
+            let OpView {
+                history,
+                unspent,
+                chainlock,
+            } = s.op_view(wallet).await?;
+            let conflicted = crate::history::conflicted(&history, chainlock);
             let abandoned = s.abandoned_txids(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
                 .map(|r| {
-                    let state = list_settled(r, state_of(r, &history, &unspent), &view);
+                    let state =
+                        list_settled(r, state_of(r, &history, &unspent, &conflicted), &view);
                     operation_of(
                         r,
                         abandon_settled(r, state, &history, &abandoned),

@@ -469,6 +469,8 @@ fn overlay_own_signatures(session: &mut Session, rec: &Recorded, signed: &[u8]) 
 pub(crate) struct ChainView {
     pub history: HashMap<Txid, TxEntry>,
     pub unspent: HashSet<OutPoint>,
+    /// The history's [`crate::history::conflicted`] set.
+    pub conflicted: HashSet<Txid>,
     /// The coins this wallet's pending spends hold, an abandon's among them.
     pub pending: HashSet<OutPoint>,
 }

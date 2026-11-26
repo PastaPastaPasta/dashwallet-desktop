@@ -598,6 +598,23 @@ pub(crate) fn spent_outpoints(
     txs: &HashMap<Txid, TxEntry>,
     chainlock: Option<u32>,
 ) -> HashSet<OutPoint> {
+    let conflicted = conflicted(txs, chainlock);
+    (txs.iter())
+        .filter(|(t, e)| {
+            e.context.block_info().is_some() || !(e.is_abandoned() || conflicted.contains(*t))
+        })
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
+/// The transactions out of a block that can never confirm, by
+/// [`spent_outpoints`]' rule (Core's `MarkConflicted`): another
+/// transaction in a block spends one of their inputs, or they descend out
+/// of a block from one that does. Abandoned ones count, so a restart reads
+/// the same set from the abandoned copies the load restores. An
+/// InstantSend-locked one is conflicted only by a block `chainlock` covers,
+/// and never through its parent.
+pub(crate) fn conflicted(txs: &HashMap<Txid, TxEntry>, chainlock: Option<u32>) -> HashSet<Txid> {
     let mined = |e: &TxEntry| e.context.block_info().is_some();
     let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
     for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
@@ -629,10 +646,7 @@ pub(crate) fn spent_outpoints(
             todo.extend(children.get(&t).into_iter().flatten());
         }
     }
-    (txs.iter())
-        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
-        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
-        .collect()
+    conflicted
 }
 
 /// The wallet's coins that the payments this app sent

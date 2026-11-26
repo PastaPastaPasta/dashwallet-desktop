@@ -200,7 +200,7 @@ impl NetworkSession {
         let own = self
             .reserved_inputs(wallet, &l.row, &rec.outpoints())
             .await?;
-        let (_, unspent) = self.op_view(wallet).await?;
+        let unspent = self.op_view(wallet).await?.unspent;
         let frozen = self.consent_checks(l, ctx, &unspent, true, None)?;
         let approved = l.approved.as_ref().map(|a| a.consent_hash.as_str());
         if approved != Some(ProRegTxV3::display_hash(&frozen.consent_hash).as_str()) {

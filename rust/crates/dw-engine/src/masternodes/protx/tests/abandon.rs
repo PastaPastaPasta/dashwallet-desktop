@@ -690,3 +690,233 @@ fn mg10_an_abandon_during_a_resend_stops_its_hand_off() {
     }
     assert_eq!(f.lib.sent().len(), handed, "handed off again");
 }
+
+impl Fx {
+    /// A fresh BIP44 receive address of the wallet.
+    fn receive_address(&self) -> dashcore::Address {
+        let session = Arc::clone(&self.session);
+        let (id, inner) = (self.wallet, Arc::clone(&session));
+        self.engine
+            .block_on(session.on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                Ok(wallet.core().next_receive_address_for_account(0).await?)
+            }))
+            .unwrap()
+    }
+
+    /// #740's payment P, signed by the wallet and recorded in the mempool:
+    /// it spends a confirmed coin of the wallet, pays half a coin elsewhere
+    /// and two change outputs back to the wallet, and the update fee coin of
+    /// [`Self::registered`] is gone, so the next operations are paid from
+    /// P's change. Returns P, its input and its change coins.
+    fn pending_payment(&self) -> (Transaction, OutPoint, [OutPoint; 2]) {
+        use std::str::FromStr;
+        let to = |address: dashcore::Address, value| TxOut {
+            value,
+            script_pubkey: address.script_pubkey(),
+        };
+        let prev = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([9; 32]), 0),
+                ..Default::default()
+            }],
+            output: vec![to(self.receive_address(), COIN)],
+            special_transaction_payload: None,
+        };
+        let input = OutPoint::new(prev.txid(), 0);
+        self.hold(input, prev.output[0].clone());
+        self.confirm(prev.clone(), 2);
+        self.spend(OutPoint::new(Txid::from_byte_array([2; 32]), 0));
+        let elsewhere = dashcore::Address::from_str(crate::send::test_support::FOREIGN)
+            .unwrap()
+            .assume_checked();
+        let unsigned = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: input,
+                sequence: u32::MAX,
+                ..Default::default()
+            }],
+            output: vec![
+                to(elsewhere, COIN / 2),
+                to(self.receive_address(), COIN / 5),
+                to(self.receive_address(), COIN / 5 + 1_000),
+            ],
+            special_transaction_payload: None,
+        };
+        let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+        psbt.inputs[0].non_witness_utxo = Some(prev);
+        let mut signed = (self.engine)
+            .block_on(
+                self.session
+                    .sign_psbt(self.wallet, psbt, self.spend_grant(COIN)),
+            )
+            .unwrap();
+        assert!(dw_psbt::finalize(&mut signed));
+        let p = dw_psbt::extract(&signed).unwrap();
+        self.seen_in_mempool(&p);
+        let change = [1, 2].map(|vout| OutPoint::new(p.txid(), vout));
+        for o in change {
+            self.hold(o, p.output[o.vout as usize].clone());
+        }
+        (p, input, change)
+    }
+
+    /// A transaction paying `input` elsewhere: a rival of the payment that
+    /// spent it.
+    fn rival_of(input: OutPoint) -> Transaction {
+        Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: input,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN / 3,
+                script_pubkey: dashcore::ScriptBuf::new(),
+            }],
+            special_transaction_payload: None,
+        }
+    }
+
+    /// #740's operations, both paid from P's change: a payout-changing key
+    /// change of the registered masternode `hash`, and a registration of an
+    /// existing collateral paid from P's change or the key change's, each
+    /// recorded in the mempool. Returns the key change, the registration and
+    /// the collateral.
+    fn operations_on_change(
+        &self,
+        hash: &str,
+        change: [OutPoint; 2],
+    ) -> (ProTxOperation, ProTxOperation, OutPoint) {
+        let (key_change_op, k, _) = self.sent_key_change(hash);
+        assert!(change.contains(&k.input[0].previous_output), "{k:?}");
+        let collateral = self.credit(3, MASTERNODE_COLLATERAL);
+        let req = RegistrationRequest {
+            service: "1.2.3.5".into(),
+            ..request(CollateralChoice::ExistingUtxo {
+                outpoint: format!("{}-0", collateral.txid),
+            })
+        };
+        let registration = self.register(req, self.grant(COIN)).unwrap();
+        assert_eq!(registration.state, ProTxOperationState::Sent);
+        let tx = self.lib.sent().pop().unwrap();
+        let fee = tx.input[0].previous_output;
+        assert!(change.contains(&fee) || fee.txid == k.txid(), "{tx:?}");
+        self.seen_in_mempool(&tx);
+        assert!(self.locked().contains(&collateral), "D9");
+        (key_change_op, registration, collateral)
+    }
+
+    /// The operations funded from a conflicted payment's change are
+    /// `conflicted`, and nothing holds on them: the barrier's operation
+    /// reads `conflicted`, the follower unlocks the collateral and a later
+    /// update of the masternode is signed.
+    fn assert_released(
+        &self,
+        hash: &str,
+        key_change_op: &ProTxOperation,
+        registration: &ProTxOperation,
+        collateral: OutPoint,
+    ) {
+        assert_eq!(self.state(key_change_op), ProTxOperationState::Conflicted);
+        assert_eq!(self.state(registration), ProTxOperationState::Conflicted);
+        assert_eq!(
+            self.op_barrier_state(key_change_op),
+            Some(ProTxOperationState::Conflicted)
+        );
+        self.follow();
+        assert!(!self.locked().contains(&collateral), "D54");
+        self.credit(4, COIN);
+        let next = self.update(key_change(hash, 6), self.grant(COIN)).unwrap();
+        assert_eq!(next.state, ProTxOperationState::Sent);
+    }
+}
+
+/// #740: a key change and a registration paid from P's unconfirmed change.
+/// The user abandons P, and a rival spend of P's input is mined. They can
+/// never confirm (Core's `MarkConflicted` reaches them through P), so they
+/// read `conflicted`: the next update is signed, the payout-change
+/// barrier's operation is `conflicted` and the registration's collateral
+/// unlocks.
+#[test]
+fn mg740_operations_on_an_abandoned_payments_change_are_conflicted_once_a_rival_is_mined() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+    assert_ne!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(66);
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #740 after a restart: the user abandoned P, and the rival is mined after
+/// the app restarts. P's evidence is its abandoned copy, which the load
+/// puts back into the history, so the operations read `conflicted` all the
+/// same and nothing holds on them.
+#[test]
+fn mg740_operations_on_an_abandoned_payments_change_are_conflicted_after_a_restart() {
+    let mut f = fx(Library::Accept);
+    let (reg_tx, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+
+    f.restart(&[(3, MASTERNODE_COLLATERAL)]);
+    let vout = payload(&reg_tx).collateral_outpoint.vout;
+    f.hold(
+        OutPoint::new(reg_tx.txid(), vout),
+        reg_tx.output[vout as usize].clone(),
+    );
+    f.confirm(reg_tx.clone(), 7);
+    *f.seam.list.lock().unwrap() = Some(vec![entry_of(&reg_tx)]);
+    assert!(
+        (f.session.hub.history.get(&f.wallet, &p.txid())).is_some_and(|e| e.is_abandoned()),
+        "the load restores P's abandoned copy"
+    );
+    assert_ne!(f.state(&key_change_op), ProTxOperationState::Conflicted);
+
+    f.confirm(Fx::rival_of(input), 60);
+    f.tip(66);
+    f.assert_released(&hash, &key_change_op, &registration, collateral);
+}
+
+/// #740: P abandoned, with its rival only in the mempool. P may still
+/// confirm, so the operations read `abandoned` as the abandon left them
+/// (D49), never `conflicted`: the next update waits on the key change, the
+/// barrier's operation is `abandoned` and the collateral stays locked.
+#[test]
+fn mg740_an_abandoned_payments_rival_only_in_the_mempool_keeps_every_hold() {
+    let f = fx(Library::Accept);
+    let (_, reg) = f.registered();
+    let hash = reg.pro_tx_hash.clone().unwrap();
+    let (p, input, change) = f.pending_payment();
+    let (key_change_op, registration, collateral) = f.operations_on_change(&hash, change);
+    f.abandon(p.txid());
+
+    f.record(Fx::rival_of(input), TransactionContext::Mempool);
+    f.tip(66);
+    assert_eq!(f.state(&key_change_op), ProTxOperationState::Abandoned);
+    assert_eq!(f.state(&registration), ProTxOperationState::Abandoned);
+    assert_eq!(
+        f.op_barrier_state(&key_change_op),
+        Some(ProTxOperationState::Abandoned)
+    );
+    f.follow();
+    assert!(f.locked().contains(&collateral), "unlocked");
+    f.credit(4, COIN);
+    let e = f.update(key_change(&hash, 6), f.grant(COIN)).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::UpdateAbandonedPending { operation } if *operation == key_change_op.id),
+        "{e:?}"
+    );
+}

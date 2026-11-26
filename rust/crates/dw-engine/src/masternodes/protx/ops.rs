@@ -138,17 +138,26 @@ pub(crate) fn decode_inputs(text: &str) -> Vec<OutPoint> {
         .collect()
 }
 
+/// What [`state_of`] reads of the wallet: [`NetworkSession::op_view`].
+pub(crate) struct OpView {
+    pub history: HashMap<Txid, TxEntry>,
+    pub unspent: HashSet<OutPoint>,
+    pub chainlock: Option<u32>,
+}
+
 pub(crate) fn signed_tx(row: &MasternodeOpRow) -> Option<Transaction> {
     dashcore::consensus::deserialize(row.signed_tx.as_deref()?).ok()
 }
 
-/// A row's state (§5), from the row, the wallet's history and its unspent
-/// coins. Undecodable signed bytes read as `sent` or `signed`, never as a
-/// state that would let the row go.
+/// A row's state (§5), from the row, the wallet's history, its unspent
+/// coins and the history's [`crate::history::conflicted`] set. Undecodable
+/// signed bytes read as `sent` or `signed`, never as a state that would let
+/// the row go.
 pub(crate) fn state_of(
     row: &MasternodeOpRow,
     history: &HashMap<Txid, TxEntry>,
     unspent: &HashSet<OutPoint>,
+    conflicted: &HashSet<Txid>,
 ) -> ProTxOperationState {
     if row.signed_tx.is_none() {
         let inputs = decode_inputs(&row.fee_inputs);
@@ -174,11 +183,26 @@ pub(crate) fn state_of(
             height: block.height(),
         };
     }
-    if tx_conflict_height(&tx, history).is_some() {
+    if tx_conflict_height(&tx, history).is_some() || parent_conflicted(&tx, history, conflicted) {
         ProTxOperationState::Conflicted
     } else {
         unsettled
     }
+}
+
+/// Whether `tx` can never confirm because it, or a transaction it spends
+/// out of a block, is in the history's `conflicted` set (its descendant
+/// rule, which also reads an abandoned parent). An InstantSend-locked `tx`
+/// is never conflicted through its parent.
+fn parent_conflicted(
+    tx: &Transaction,
+    history: &HashMap<Txid, TxEntry>,
+    conflicted: &HashSet<Txid>,
+) -> bool {
+    let txid = tx.txid();
+    conflicted.contains(&txid)
+        || (!history.get(&txid).is_some_and(instant_locked)
+            && (tx.input.iter()).any(|i| conflicted.contains(&i.previous_output.txid)))
 }
 
 /// `state` once Activity's abandon is applied (MG-10 §1.10, D49): a `sent`
@@ -469,11 +493,9 @@ impl NetworkSession {
             .ok_or(MasternodesError::OperationNotFound)
     }
 
-    /// The wallet's history and unspent coins, for [`state_of`].
-    pub(crate) async fn op_view(
-        &self,
-        wallet: WalletId,
-    ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
+    /// The wallet's history, unspent coins and best ChainLock height, for
+    /// [`state_of`].
+    pub(crate) async fn op_view(&self, wallet: WalletId) -> Result<OpView, MasternodesError> {
         let w = self.wallet(&wallet).await?;
         self.op_view_of(wallet, &w).await
     }
@@ -484,17 +506,22 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
         w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
-    ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
-        let unspent = {
+    ) -> Result<OpView, MasternodesError> {
+        let (unspent, applied) = {
             let state = crate::wallet_read::info_of(w).await?;
-            read_coins(&state.core_wallet)
-                .coins
-                .into_iter()
+            let unspent = (read_coins(&state.core_wallet).coins.into_iter())
                 .map(|c| c.utxo.outpoint)
-                .collect()
+                .collect();
+            (unspent, crate::history_ops::applied_chainlock(&state))
         };
+        let chainlock = (applied.max(self.hub.tracker().chainlock_height()))
+            .max(self.hub.best_chainlock().map(|(h, _)| h));
         let history = self.hub.history.read(&wallet, |h| h.clone());
-        Ok((history, unspent))
+        Ok(OpView {
+            history,
+            unspent,
+            chainlock,
+        })
     }
 
     /// The txids the wallet's abandoned marks name, for [`abandon_settled`].
@@ -512,12 +539,17 @@ impl NetworkSession {
         wallet: WalletId,
         row: &MasternodeOpRow,
     ) -> Result<ProTxOperationState, MasternodesError> {
-        let (history, unspent) = self.op_view(wallet).await?;
+        let OpView {
+            history,
+            unspent,
+            chainlock,
+        } = self.op_view(wallet).await?;
+        let conflicted = crate::history::conflicted(&history, chainlock);
         let abandoned = self.abandoned_txids(wallet).await?;
         let view = self
             .dissolution_view(wallet, std::slice::from_ref(row))
             .await;
-        let state = list_settled(row, state_of(row, &history, &unspent), &view);
+        let state = list_settled(row, state_of(row, &history, &unspent, &conflicted), &view);
         Ok(abandon_settled(row, state, &history, &abandoned))
     }
 
@@ -705,14 +737,19 @@ impl NetworkSession {
         if rows.iter().all(|r| r.fee_inputs == "[]") {
             return Ok(());
         }
-        let (history, unspent) = self.op_view(wallet).await?;
+        let OpView {
+            history,
+            unspent,
+            chainlock,
+        } = self.op_view(wallet).await?;
+        let conflicted = crate::history::conflicted(&history, chainlock);
         let abandoned = self.abandoned_txids(wallet).await?;
         let buried = self.buried();
         let settled: Vec<(String, Vec<OutPoint>, bool)> = rows
             .iter()
             .filter(|r| r.fee_inputs != "[]")
             .filter_map(|r| {
-                let state = state_of(r, &history, &unspent);
+                let state = state_of(r, &history, &unspent, &conflicted);
                 let state = abandon_settled(r, state, &history, &abandoned);
                 let settled = match state {
                     ProTxOperationState::Confirmed { .. } | ProTxOperationState::Abandoned => true,
@@ -773,10 +810,15 @@ impl NetworkSession {
         if !rows.iter().any(|r| r.locked_collateral) {
             return Ok(());
         }
-        let (history, unspent) = self.op_view(wallet).await?;
-        let (conflicted, live): (Vec<_>, Vec<_>) = rows
-            .iter()
-            .partition(|r| state_of(r, &history, &unspent) == ProTxOperationState::Conflicted);
+        let OpView {
+            history,
+            unspent,
+            chainlock,
+        } = self.op_view(wallet).await?;
+        let conflicted = crate::history::conflicted(&history, chainlock);
+        let (conflicted, live): (Vec<_>, Vec<_>) = rows.iter().partition(|r| {
+            state_of(r, &history, &unspent, &conflicted) == ProTxOperationState::Conflicted
+        });
         let named: HashSet<OutPoint> = live.iter().filter_map(|r| row_collateral(r)).collect();
         let release: Vec<(String, OutPoint)> = conflicted
             .iter()
@@ -1106,11 +1148,11 @@ mod tests {
         r.fee_inputs = encode_inputs(&[o]);
         let history = HashMap::new();
         assert_eq!(
-            state_of(&r, &history, &HashSet::from([o])),
+            state_of(&r, &history, &HashSet::from([o]), &HashSet::new()),
             ProTxOperationState::NeedsSignature
         );
         assert_eq!(
-            state_of(&r, &history, &HashSet::new()),
+            state_of(&r, &history, &HashSet::new(), &HashSet::new()),
             ProTxOperationState::InputsSpent
         );
     }
@@ -1121,11 +1163,20 @@ mod tests {
         r.signed_tx = Some(vec![0xff]);
         r.txid = Some("x".into());
         let (h, u) = (HashMap::new(), HashSet::new());
-        assert_eq!(state_of(&r, &h, &u), ProTxOperationState::Signed);
+        assert_eq!(
+            state_of(&r, &h, &u, &HashSet::new()),
+            ProTxOperationState::Signed
+        );
         r.last_error = Some("send.no_peers".into());
-        assert_eq!(state_of(&r, &h, &u), ProTxOperationState::NotSent);
+        assert_eq!(
+            state_of(&r, &h, &u, &HashSet::new()),
+            ProTxOperationState::NotSent
+        );
         r.sent_at = Some(1);
-        assert_eq!(state_of(&r, &h, &u), ProTxOperationState::Sent);
+        assert_eq!(
+            state_of(&r, &h, &u, &HashSet::new()),
+            ProTxOperationState::Sent
+        );
     }
 
     #[test]
@@ -1242,12 +1293,12 @@ mod tests {
                 ..row()
             };
             assert_eq!(
-                state_of(&r, &history, &HashSet::new()),
+                state_of(&r, &history, &HashSet::new(), &HashSet::new()),
                 ProTxOperationState::Conflicted
             );
             history.insert(own.txid(), entry(own.clone(), Some(9)));
             assert_eq!(
-                state_of(&r, &history, &HashSet::new()),
+                state_of(&r, &history, &HashSet::new(), &HashSet::new()),
                 ProTxOperationState::Confirmed { height: 9 }
             );
         }

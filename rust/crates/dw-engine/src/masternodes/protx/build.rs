@@ -41,7 +41,7 @@ use super::super::protx_records::{
 use super::super::records::MasternodeType;
 use super::super::{MasternodesError, outpoint_string, parse_pro_tx_hash};
 use super::keys::{Claim, InUse, parse_outpoint};
-use super::ops::state_of;
+use super::ops::{OpView, state_of};
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, CoinSnapshot, own_address_info, read_coins, wallet_owns};
 use crate::send::plan::{
@@ -579,7 +579,12 @@ impl NetworkSession {
                 ))
             })
             .await?;
-        let (history, unspent) = self.op_view(wallet).await?;
+        let OpView {
+            history,
+            unspent,
+            chainlock,
+        } = self.op_view(wallet).await?;
+        let conflicted = crate::history::conflicted(&history, chainlock);
         let mut pending = Vec::new();
         let mut used = InUse::default();
         // A coin another row will spend is no collateral (BL-346).
@@ -605,7 +610,7 @@ impl NetworkSession {
             let Ok(terms) = serde_json::from_str::<ProTxTerms>(&row.terms) else {
                 continue;
             };
-            let state = state_of(row, &history, &unspent);
+            let state = state_of(row, &history, &unspent, &conflicted);
             // A block spends a conflicted row's input: it never confirms,
             // so its keys and collateral are free again, as Core frees a
             // ProRegTx's when it leaves the mempool (D54).
