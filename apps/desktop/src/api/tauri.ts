@@ -272,6 +272,9 @@ export class IpcBackend implements Backend {
   appConnectDeny = cmd.appConnectDeny;
   appConnectReturn = cmd.appConnectReturn;
   appConnectDismiss = cmd.appConnectDismiss;
+  appConnectList = cmd.appConnectList;
+  appConnectDisconnectQuote = cmd.appConnectDisconnectQuote;
+  appConnectDisconnect = cmd.appConnectDisconnect;
   shellSync = cmd.shellSync;
   warnings = () => cmd.warnings();
   consoleCommands = () => cmd.consoleCommands();

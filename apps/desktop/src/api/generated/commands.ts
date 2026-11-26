@@ -35,6 +35,7 @@ import type { ConnectChoice } from "./ConnectChoice";
 import type { ConnectDone } from "./ConnectDone";
 import type { ConnectQuote } from "./ConnectQuote";
 import type { ConnectSheet } from "./ConnectSheet";
+import type { ConnectedApps } from "./ConnectedApps";
 import type { ConsoleCommand } from "./ConsoleCommand";
 import type { ConsoleOutput } from "./ConsoleOutput";
 import type { ContactActivityPage } from "./ContactActivityPage";
@@ -65,6 +66,8 @@ import type { DashPayProfileLimits } from "./DashPayProfileLimits";
 import type { DashPayStartupInfo } from "./DashPayStartupInfo";
 import type { DashPayStatus } from "./DashPayStatus";
 import type { DashPaySyncStatus } from "./DashPaySyncStatus";
+import type { DisconnectDone } from "./DisconnectDone";
+import type { DisconnectQuote } from "./DisconnectQuote";
 import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
 import type { DroppedNoticeRow } from "./DroppedNoticeRow";
@@ -2642,6 +2645,30 @@ export function appConnectDismiss(linkId: string): Promise<null> {
 }
 
 /**
+ * Lists each app this wallet approved for `identity` that still has
+ * enabled session keys on Platform. Refused on mainnet.
+ */
+export function appConnectList(walletId: string, identity: string): Promise<ConnectedApps> {
+  return invoke<ConnectedApps>("app_connect_list", { walletId, identity });
+}
+
+/**
+ * What disconnecting `request` on `identity` costs and the
+ * `appDisconnect` grant to ask for. Refused on mainnet.
+ */
+export function appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote> {
+  return invoke<DisconnectQuote>("app_connect_disconnect_quote", { walletId, identity, request });
+}
+
+/**
+ * Disables the verified AUTHENTICATION session keys of `request` on
+ * `identity` under `grant` (an `appDisconnect` grant). Refused on mainnet.
+ */
+export function appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone> {
+  return invoke<DisconnectDone>("app_connect_disconnect", { walletId, identity, request, grant });
+}
+
+/**
  * Every console command, sorted by name.
  */
 export function consoleCommands(): Promise<Array<ConsoleCommand>> {
@@ -3777,6 +3804,9 @@ export type CommandArgs = {
   app_connect_deny: { linkId: string };
   app_connect_return: { linkId: string };
   app_connect_dismiss: { linkId: string };
+  app_connect_list: { walletId: string; identity: string };
+  app_connect_disconnect_quote: { walletId: string; identity: string; request: string };
+  app_connect_disconnect: { walletId: string; identity: string; request: string; grant: string };
   console_commands: {  };
   console_redact: { line: string };
   console_execute: { walletId: string | null; line: string; grantId: string | null };
@@ -4168,6 +4198,9 @@ export type CommandResults = {
   app_connect_deny: null;
   app_connect_return: null;
   app_connect_dismiss: null;
+  app_connect_list: ConnectedApps;
+  app_connect_disconnect_quote: DisconnectQuote;
+  app_connect_disconnect: DisconnectDone;
   console_commands: Array<ConsoleCommand>;
   console_redact: string;
   console_execute: ConsoleOutput;
@@ -4561,6 +4594,9 @@ export const COMMANDS: Record<CommandName, string> = {
   app_connect_deny: "connect",
   app_connect_return: "connect",
   app_connect_dismiss: "connect",
+  app_connect_list: "connect",
+  app_connect_disconnect_quote: "connect",
+  app_connect_disconnect: "connect",
   console_commands: "console",
   console_redact: "console",
   console_execute: "console",

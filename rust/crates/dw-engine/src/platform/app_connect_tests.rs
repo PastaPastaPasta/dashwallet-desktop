@@ -138,6 +138,8 @@ pub(crate) struct FakeConnect {
     /// The library builds an update from its cached identity. Platform
     /// refuses one built before the last refresh, as its revision is old.
     refreshed: AtomicBool,
+    /// Optional override for the live disconnect fee, for fee-bound tests.
+    disconnect_fee_override: Mutex<Option<u64>>,
 }
 
 impl FakeConnect {
@@ -183,6 +185,7 @@ impl FakeConnect {
             lose_updates: AtomicBool::new(false),
             refuse_update: Mutex::default(),
             refreshed: AtomicBool::new(false),
+            disconnect_fee_override: Mutex::default(),
         }
     }
 
@@ -321,6 +324,54 @@ impl ConnectNet for FakeConnect {
             after(self);
         }
         Ok(())
+    }
+
+    async fn disable_keys(
+        &self,
+        _: &PlatformWallet,
+        id: Identifier,
+        disable: Vec<KeyID>,
+        signer: &VaultIdentitySigner,
+    ) -> Result<(), PlatformError> {
+        let master = (self.me().public_keys().values())
+            .find(|k| k.security_level() == SecurityLevel::MASTER)
+            .cloned()
+            .unwrap();
+        signer
+            .sign(&master, b"disable")
+            .await
+            .map_err(|_| PlatformError::SignerUnavailable)?;
+        self.signed.lock().unwrap().push(master.id());
+        if !self.refreshed.swap(false, Ordering::SeqCst) {
+            return Err(PlatformError::Internal {
+                detail: "Failed to broadcast identity update".into(),
+            });
+        }
+        if let Some(e) = self.refuse_update.lock().unwrap().take() {
+            return Err(e);
+        }
+        if !self.lose_updates.load(Ordering::SeqCst) {
+            let mut all = self.identities.lock().unwrap();
+            let me = all.get_mut(&id).unwrap();
+            for d in &disable {
+                if let Some(k) = me.public_keys_mut().get_mut(d) {
+                    k.set_disabled_at(NOW);
+                }
+            }
+        }
+        self.updates.lock().unwrap().push((Vec::new(), disable));
+        if let Some(after) = self.after_update.lock().unwrap().take() {
+            after(self);
+        }
+        Ok(())
+    }
+
+    async fn disconnect_fee(&self, key_count: usize) -> Result<u64, PlatformError> {
+        self.read("disconnect_fee");
+        if let Some(fee) = *self.disconnect_fee_override.lock().unwrap() {
+            return Ok(fee);
+        }
+        disconnect_fee_at(self.protocol.load(Ordering::SeqCst), key_count)
     }
 
     async fn publish(
@@ -501,6 +552,72 @@ impl Fixture {
         let link = link.clone();
         self.engine
             .block_on(async move { retry_send(&*net, &s, &pw, w, &link).await })
+    }
+
+    fn list_apps(&self, identity: &str) -> Result<ConnectedApps, ConnectError> {
+        let (net, s, w, id) = (
+            Arc::clone(&self.net),
+            Arc::clone(&self.s),
+            self.wallet,
+            identity.to_owned(),
+        );
+        self.engine
+            .block_on(async move { list(&*net, &s, w, &id).await })
+    }
+
+    fn disconnect_quote(
+        &self,
+        identity: &str,
+        request: &str,
+    ) -> Result<DisconnectQuote, ConnectError> {
+        let (net, s, w) = (Arc::clone(&self.net), Arc::clone(&self.s), self.wallet);
+        let (identity, request) = (identity.to_owned(), request.to_owned());
+        self.engine
+            .block_on(async move { disconnect_quote(&*net, &s, w, &identity, &request).await })
+    }
+
+    fn disconnect_grant(&self, request: [u8; 20], max_credits: u64) -> String {
+        let purpose = GrantPurpose::AppDisconnect {
+            max_credits,
+            request,
+        };
+        (self
+            .s
+            .vault
+            .authorize(purpose, Some(&self.wallet.0), Credential::None))
+        .unwrap()
+        .id
+    }
+
+    fn disconnect_grant_unused(&self, grant: &str) -> bool {
+        (self.s.vault)
+            .check_grant(grant, GrantKind::AppDisconnect, Some(&self.wallet.0))
+            .is_ok()
+    }
+
+    fn disconnect(
+        &self,
+        identity: &str,
+        request: &str,
+        grant: &str,
+    ) -> Result<DisconnectDone, ConnectError> {
+        let (net, s, w, pw) = (
+            Arc::clone(&self.net),
+            Arc::clone(&self.s),
+            self.wallet,
+            self.wallet(),
+        );
+        let (identity, request, grant) =
+            (identity.to_owned(), request.to_owned(), grant.to_owned());
+        self.engine.block_on(async move {
+            disconnect(&*net, &s, &pw, w, &identity, &request, grant).await
+        })
+    }
+
+    fn put_record(&self, record: ConnectRecord) {
+        let (s, w) = (Arc::clone(&self.s), self.wallet);
+        self.engine
+            .block_on(async move { put_record(&s, w, record).await.unwrap() });
     }
 }
 
@@ -1526,4 +1643,849 @@ fn starting_again_after_nothing_to_send_adds_a_second_set_and_disables_the_first
             }
         }
     }
+}
+
+fn devnet_with_callback(request: AppConnectRequest, cb: &str) -> ConnectUri {
+    let body = dw_uri::connect::base64url_encode(&request.encode());
+    let uri = format!("dashpay://connect?v=2&n=d&r={body}&cb={cb}");
+    dw_uri::connect::parse(&uri).unwrap()
+}
+
+fn second_app_request() -> AppConnectRequest {
+    let sk = SecretKey::from_secret_bytes([11u8; 32]).unwrap();
+    let eph = PublicKey::from_secret_key(&sk).serialize();
+    let mut r = request();
+    r.app_eph_pub = eph;
+    r.label = "SecondApp".into();
+    r.connection_id = Some([12; 16]);
+    r.auth_bindings = vec![AuthBinding {
+        bounds: Bounds::DocumentType(app().to_buffer(), "post".into()),
+        level: Level::High,
+        budget: Some(10_000_000_000),
+        expires_at_ms: Some(NOW + 30 * DAY_MS),
+    }];
+    r.enc_bindings = Vec::new();
+    r
+}
+
+fn make_session_key_v1(
+    key_id: KeyID,
+    purpose: Purpose,
+    security_level: SecurityLevel,
+    key_type: KeyType,
+    bounds: Option<ContractBounds>,
+    data: Vec<u8>,
+    with_limits: bool,
+) -> IdentityPublicKey {
+    use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dpp::identity::identity_public_key::v1::IdentityPublicKeyV1;
+    let v0 = IdentityPublicKeyV0 {
+        id: key_id,
+        purpose,
+        security_level,
+        contract_bounds: bounds,
+        key_type,
+        read_only: false,
+        data: dpp::platform_value::BinaryData::new(data),
+        disabled_at: None,
+    };
+    if with_limits {
+        IdentityPublicKey::V1(IdentityPublicKeyV1::from_v0_with_limits(
+            v0,
+            Some(10_000_000_000),
+            Some(NOW + 30 * DAY_MS),
+        ))
+    } else {
+        IdentityPublicKey::V0(v0)
+    }
+}
+
+#[test]
+fn list_after_approve_shows_app_details_and_only_enabled_keys() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let empty = f.list_apps(&me_b58).unwrap();
+    assert!(empty.apps.is_empty());
+
+    let l = devnet_with_callback(request(), "https://yappr.example/callback");
+    let choice = Fixture::choice();
+    let grant = f.quoted_grant(&l, &choice);
+    f.approve(&l, &choice, &grant).unwrap();
+
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    let item = &listed.apps[0];
+    assert_eq!(item.request, hex::encode(l.request.request_hash()));
+    assert_eq!(item.app_id, b58(&app()));
+    assert_eq!(item.label, "Yappr");
+    assert_eq!(item.returns_to.as_deref(), Some("yappr.example"));
+    assert_eq!(item.funding_limit, choice.terms.funding_limit);
+    assert_eq!(item.expires_at_ms, choice.terms.expires_at_ms);
+    assert!(item.approved_at_ms > 0);
+    assert_eq!(
+        item.keys.len(),
+        2,
+        "only the 2 session keys, never encryption"
+    );
+    assert_eq!(item.keys[0].level, ConnectLevel::Critical);
+    assert!(matches!(item.keys[0].scope, ConnectScope::Group(_)));
+    assert_eq!(item.keys[1].level, ConnectLevel::High);
+    assert_eq!(item.keys[1].scope, ConnectScope::Profile);
+
+    // Disable one key directly on Platform: only the remaining enabled key is shown.
+    let first_key = item.keys[0].key_id;
+    let second_key = item.keys[1].key_id;
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        all.get_mut(&id(ME))
+            .unwrap()
+            .public_keys_mut()
+            .get_mut(&first_key)
+            .unwrap()
+            .set_disabled_at(NOW);
+    }
+    let after_one = f.list_apps(&me_b58).unwrap();
+    assert_eq!(after_one.apps.len(), 1);
+    assert_eq!(after_one.apps[0].keys.len(), 1);
+    assert_eq!(after_one.apps[0].keys[0].key_id, second_key);
+
+    // Disable the remaining key: the app leaves the list.
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        all.get_mut(&id(ME))
+            .unwrap()
+            .public_keys_mut()
+            .get_mut(&second_key)
+            .unwrap()
+            .set_disabled_at(NOW);
+    }
+    let after_all = f.list_apps(&me_b58).unwrap();
+    assert!(after_all.apps.is_empty());
+}
+
+#[test]
+fn disconnect_yappr_disables_both_bounded_keys_and_leaves_all_other_keys_untouched() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    // Add a non-app DashPay encryption key to make sure Disconnect never touches it.
+    let dashpay_enc_id = 4;
+    let dashpay_dec_id = 5;
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        me.public_keys_mut().insert(
+            dashpay_enc_id,
+            make_session_key_v1(
+                dashpay_enc_id,
+                Purpose::ENCRYPTION,
+                SecurityLevel::MEDIUM,
+                KeyType::ECDSA_SECP256K1,
+                Some(ContractBounds::SingleContract {
+                    id: dashpay_contract::ID,
+                }),
+                vec![0x02; 33],
+                false,
+            ),
+        );
+        me.public_keys_mut().insert(
+            dashpay_dec_id,
+            make_session_key_v1(
+                dashpay_dec_id,
+                Purpose::DECRYPTION,
+                SecurityLevel::MEDIUM,
+                KeyType::ECDSA_SECP256K1,
+                Some(ContractBounds::SingleContract {
+                    id: dashpay_contract::ID,
+                }),
+                vec![0x03; 33],
+                false,
+            ),
+        );
+    }
+
+    // Approve Yappr (both group-bounded CRITICAL key + dashpay/profile HIGH key + encryption key).
+    let l1 = devnet_with_callback(request(), "https://yappr.example/cb");
+    let c1 = Fixture::choice();
+    let g1 = f.quoted_grant(&l1, &c1);
+    f.approve(&l1, &c1, &g1).unwrap();
+
+    // Approve a second app.
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2 = f.quoted_grant(&l2, &c2);
+    f.approve(&l2, &c2, &g2).unwrap();
+
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 2);
+
+    let req1 = hex::encode(l1.request.request_hash());
+    let q = f.disconnect_quote(&me_b58, &req1).unwrap();
+    assert_eq!(q.keys.len(), 2);
+    assert!(q.fee > 0 && q.fee <= DISCONNECT_FEE_BOUND);
+    assert_eq!(q.max_credits, q.fee);
+
+    let grant = f.disconnect_grant(q.request, q.max_credits);
+    let updates_before = f.net.updates.lock().unwrap().len();
+    let done = f.disconnect(&me_b58, &req1, &grant).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before + 1);
+    assert!(
+        f.net.signed().ends_with(&[0]),
+        "MASTER key 0 signed the update"
+    );
+
+    // Yappr left the list; SecondApp stays.
+    let remaining = f.list_apps(&me_b58).unwrap();
+    assert_eq!(remaining.apps.len(), 1);
+    assert_eq!(remaining.apps[0].label, "SecondApp");
+
+    // Only Yappr's 2 session keys are disabled; every non-app key, DashPay key,
+    // Yappr's encryption key, and SecondApp's key stay enabled.
+    let me = f.net.me();
+    for (kid, k) in me.public_keys() {
+        if q.keys.contains(kid) {
+            assert!(k.is_disabled(), "Yappr key {kid} must be disabled");
+        } else {
+            assert!(!k.is_disabled(), "non-target key {kid} must stay enabled");
+        }
+    }
+    // platform-wallet's contact-key selectors pick the lowest-id enabled key of
+    // each purpose regardless of bounds: DashPay keys 4 & 5 must stay lowest.
+    let lowest_enc = me
+        .public_keys()
+        .values()
+        .filter(|k| k.purpose() == Purpose::ENCRYPTION && !k.is_disabled())
+        .map(|k| k.id())
+        .min();
+    let lowest_dec = me
+        .public_keys()
+        .values()
+        .filter(|k| k.purpose() == Purpose::DECRYPTION && !k.is_disabled())
+        .map(|k| k.id())
+        .min();
+    assert_eq!(lowest_enc, Some(dashpay_enc_id));
+    assert_eq!(lowest_dec, Some(dashpay_dec_id));
+}
+
+#[test]
+fn disconnect_retry_after_unknown_result_does_not_double_spend_or_disable_other_keys() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+
+    let l1 = devnet(request());
+    let c1 = Fixture::choice();
+    let g1 = f.quoted_grant(&l1, &c1);
+    f.approve(&l1, &c1, &g1).unwrap();
+
+    let l2 = devnet(second_app_request());
+    let c2 = ConnectChoice {
+        identity: me_b58.clone(),
+        selection: vec![0],
+        terms: ConnectTerms {
+            funding_limit: 5_000_000_000,
+            expires_at_ms: NOW + 30 * DAY_MS,
+        },
+    };
+    let g2 = f.quoted_grant(&l2, &c2);
+    f.approve(&l2, &c2, &g2).unwrap();
+
+    let req1 = hex::encode(l1.request.request_hash());
+    let q = f.disconnect_quote(&me_b58, &req1).unwrap();
+
+    // Case 1: update landed on Platform, but lagging confirmation read hid it (unknown result).
+    let before_disable = f.net.me();
+    *f.net.after_update.lock().unwrap() = Some(Box::new(move |net| {
+        *net.stale.lock().unwrap() = Some(before_disable);
+    }));
+    let updates_before = f.net.updates.lock().unwrap().len();
+    let g_try1 = f.disconnect_grant(q.request, q.max_credits);
+    assert_eq!(
+        f.disconnect(&me_b58, &req1, &g_try1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before + 1);
+
+    // Lag clears: retry refreshes Platform first, sees keys already disabled,
+    // sends NO update, leaves grant unused, spends 0 credits, touches no other keys.
+    *f.net.stale.lock().unwrap() = None;
+    let g_try2 = f.disconnect_grant(q.request, q.max_credits);
+    let retry_done = f.disconnect(&me_b58, &req1, &g_try2).unwrap();
+    assert!(retry_done.keys_disabled.is_empty());
+    assert_eq!(
+        f.net.updates.lock().unwrap().len(),
+        updates_before + 1,
+        "retry must not send a second update or double-spend credits"
+    );
+    assert!(f.disconnect_grant_unused(&g_try2));
+    let remaining = f.list_apps(&me_b58).unwrap();
+    assert_eq!(remaining.apps.len(), 1);
+    assert_eq!(remaining.apps[0].label, "SecondApp");
+
+    // Case 2: update was truly lost on try 1, then succeeds on try 2.
+    let req2 = hex::encode(l2.request.request_hash());
+    let q2 = f.disconnect_quote(&me_b58, &req2).unwrap();
+    f.net.lose_updates.store(true, Ordering::SeqCst);
+    let g2_try1 = f.disconnect_grant(q2.request, q2.max_credits);
+    assert_eq!(
+        f.disconnect(&me_b58, &req2, &g2_try1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::NotConfirmed,
+        })
+    );
+    f.net.lose_updates.store(false, Ordering::SeqCst);
+    let g2_try2 = f.disconnect_grant(q2.request, q2.max_credits);
+    let done2 = f.disconnect(&me_b58, &req2, &g2_try2).unwrap();
+    assert_eq!(done2.keys_disabled, q2.keys);
+    assert!(f.list_apps(&me_b58).unwrap().apps.is_empty());
+}
+
+#[test]
+fn list_quote_and_disconnect_refused_on_mainnet() {
+    let f = Fixture::on(true);
+    let me_b58 = b58(&id(ME));
+    let req = "ab".repeat(20);
+
+    assert_eq!(f.list_apps(&me_b58), Err(ConnectError::MainnetOff));
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req),
+        Err(ConnectError::MainnetOff)
+    );
+    assert_eq!(
+        f.disconnect(&me_b58, &req, "g"),
+        Err(ConnectError::MainnetOff)
+    );
+    assert_eq!(f.net.reads(), 0, "mainnet refuses before any Platform read");
+}
+
+#[test]
+fn disconnect_refuses_wrong_passphrase_and_wrong_grant() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+
+    let req_hash = l.request.request_hash();
+    let req_hex = hex::encode(req_hash);
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+
+    // Encrypt vault through NetworkSession so the lease table tracks the new epoch.
+    let enc_grant =
+        f.s.vault
+            .authorize(GrantPurpose::ChangeCredential, None, Credential::None)
+            .unwrap()
+            .id;
+    f.engine
+        .block_on(f.s.revoking_vault_op(
+            super::super::flows::RevokeCause::PassphraseChange,
+            move |v| v.encrypt(b"secret-pin", &enc_grant),
+        ))
+        .unwrap();
+    f.engine
+        .block_on(f.s.vault_op(|v| v.unlock(b"secret-pin", dw_vault::UnlockScope::Full)))
+        .unwrap();
+    let purpose = GrantPurpose::AppDisconnect {
+        max_credits: q.max_credits,
+        request: req_hash,
+    };
+    assert!(matches!(
+        f.s.vault.authorize(
+            purpose,
+            Some(&f.wallet.0),
+            Credential::Passphrase(b"wrong-pin")
+        ),
+        Err(dw_vault::VaultError::WrongPassphrase { .. })
+    ));
+    assert!(matches!(
+        f.s.vault
+            .authorize(purpose, Some(&f.wallet.0), Credential::None),
+        Err(dw_vault::VaultError::CredentialRequired)
+    ));
+
+    // Wrong grant kind (PlatformOp, AppConnect) or wrong request hash are refused.
+    let platform_op =
+        f.s.vault
+            .authorize(
+                GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: DISCONNECT_FEE_BOUND,
+                },
+                Some(&f.wallet.0),
+                Credential::Passphrase(b"secret-pin"),
+            )
+            .unwrap()
+            .id;
+    let app_connect =
+        f.s.vault
+            .authorize(
+                GrantPurpose::AppConnect {
+                    max_credits: CONNECT_MAX_CREDITS,
+                    request: req_hash,
+                    plan: [1; 32],
+                },
+                Some(&f.wallet.0),
+                Credential::Passphrase(b"secret-pin"),
+            )
+            .unwrap()
+            .id;
+    let other_req =
+        f.s.vault
+            .authorize(
+                GrantPurpose::AppDisconnect {
+                    max_credits: q.max_credits,
+                    request: [0xee; 20],
+                },
+                Some(&f.wallet.0),
+                Credential::Passphrase(b"secret-pin"),
+            )
+            .unwrap()
+            .id;
+
+    let updates_before = f.net.updates.lock().unwrap().len();
+    for bad in [platform_op, app_connect, other_req] {
+        assert_eq!(
+            f.disconnect(&me_b58, &req_hex, &bad),
+            Err(ConnectError::Platform(PlatformError::GrantInvalid))
+        );
+    }
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+
+    // Correct passphrase succeeds.
+    let ok_grant =
+        f.s.vault
+            .authorize(
+                purpose,
+                Some(&f.wallet.0),
+                Credential::Passphrase(b"secret-pin"),
+            )
+            .unwrap()
+            .id;
+    let done = f.disconnect(&me_b58, &req_hex, &ok_grant).unwrap();
+    assert_eq!(done.keys_disabled, q.keys);
+}
+
+#[test]
+fn older_grant_without_key_data_lists_but_refuses_disconnect() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let key_id = 10;
+    let k = make_session_key_v1(
+        key_id,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContractDocumentType {
+            id: app(),
+            document_type_name: "post".into(),
+        }),
+        vec![0xaa; 20],
+        true,
+    );
+    f.net
+        .identities
+        .lock()
+        .unwrap()
+        .get_mut(&id(ME))
+        .unwrap()
+        .public_keys_mut()
+        .insert(key_id, k);
+
+    let req_bytes = [0x42u8; 20];
+    let req_hex = hex::encode(req_bytes);
+    f.put_record(ConnectRecord {
+        request: req_hex.clone(),
+        app_id: b58(&app()),
+        label: "LegacyApp".into(),
+        identity: me_b58.clone(),
+        connection_id: None,
+        session_keys: vec![key_id],
+        encryption_keys: Vec::new(),
+        selection: vec![0],
+        funding_limit: 5_000_000_000,
+        expires_at_ms: NOW + 30 * DAY_MS,
+        state: RecordState::Published,
+        created_ms: NOW - 10_000,
+        returns_to: None,
+        session_key_data: BTreeMap::new(),
+    });
+
+    // Still listed with whatever the older record holds.
+    let listed = f.list_apps(&me_b58).unwrap();
+    assert_eq!(listed.apps.len(), 1);
+    assert_eq!(listed.apps[0].label, "LegacyApp");
+    assert_eq!(listed.apps[0].app_id, b58(&app()));
+    assert_eq!(listed.apps[0].returns_to, None);
+    assert_eq!(listed.apps[0].keys.len(), 1);
+    assert_eq!(listed.apps[0].keys[0].key_id, key_id);
+
+    // Disconnect refuses because key public data cannot be proved.
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    let grant = f.disconnect_grant(req_bytes, DISCONNECT_FEE_BOUND);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &grant),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    assert!(f.net.updates.lock().unwrap().is_empty());
+    assert!(!f.net.me().public_keys()[&key_id].is_disabled());
+}
+
+fn assert_disconnect_refused_for_key(f: &Fixture, key: IdentityPublicKey, recorded_hex: String) {
+    let me_b58 = b58(&id(ME));
+    let key_id = key.id();
+    f.net
+        .identities
+        .lock()
+        .unwrap()
+        .get_mut(&id(ME))
+        .unwrap()
+        .public_keys_mut()
+        .insert(key_id, key);
+    let req_bytes = [0x55u8; 20];
+    let req_hex = hex::encode(req_bytes);
+    f.put_record(ConnectRecord {
+        request: req_hex.clone(),
+        app_id: b58(&app()),
+        label: "BadKeyApp".into(),
+        identity: me_b58.clone(),
+        connection_id: None,
+        session_keys: vec![key_id],
+        encryption_keys: Vec::new(),
+        selection: vec![0],
+        funding_limit: 5_000_000_000,
+        expires_at_ms: NOW + 30 * DAY_MS,
+        state: RecordState::Published,
+        created_ms: NOW - 10_000,
+        returns_to: None,
+        session_key_data: [(key_id, recorded_hex)].into_iter().collect(),
+    });
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    let grant = f.disconnect_grant(req_bytes, DISCONNECT_FEE_BOUND);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &grant),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    assert!(f.net.updates.lock().unwrap().is_empty());
+    assert!(!f.net.me().public_keys()[&key_id].is_disabled());
+}
+
+#[test]
+fn disconnect_refuses_mismatched_key_data() {
+    let f = Fixture::new();
+    let k = make_session_key_v1(
+        10,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        vec![0xaa; 20],
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode([0xbb; 20]));
+}
+
+#[test]
+fn disconnect_refuses_master_key() {
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    // Synthetic MASTER-level key with otherwise session-like fields, so removing
+    // the non-MASTER security-level guard alone fails this test.
+    let synthetic_data = vec![0x66; 20];
+    let synthetic_master = make_session_key_v1(
+        17,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::MASTER,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        synthetic_data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, synthetic_master, hex::encode(&synthetic_data));
+
+    // Also test the identity's real MASTER key 0.
+    let master = f.net.me().public_keys()[&0].clone();
+    let req_bytes = [0x56u8; 20];
+    let req_hex = hex::encode(req_bytes);
+    f.put_record(ConnectRecord {
+        request: req_hex.clone(),
+        app_id: b58(&app()),
+        label: "MasterAttempt".into(),
+        identity: me_b58.clone(),
+        connection_id: None,
+        session_keys: vec![0],
+        encryption_keys: Vec::new(),
+        selection: vec![0],
+        funding_limit: 5_000_000_000,
+        expires_at_ms: NOW + 30 * DAY_MS,
+        state: RecordState::Published,
+        created_ms: NOW - 10_000,
+        returns_to: None,
+        session_key_data: [(0, hex::encode(master.data().as_slice()))]
+            .into_iter()
+            .collect(),
+    });
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    let grant = f.disconnect_grant(req_bytes, DISCONNECT_FEE_BOUND);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &grant),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+    assert!(f.net.updates.lock().unwrap().is_empty());
+    assert!(!f.net.me().public_keys()[&0].is_disabled());
+}
+
+#[test]
+fn disconnect_refuses_unbounded_critical_key() {
+    let f = Fixture::new();
+    let data = vec![0x11; 20];
+    let k = make_session_key_v1(
+        11,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::CRITICAL,
+        KeyType::ECDSA_HASH160,
+        None,
+        data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_non_authentication_key() {
+    let f = Fixture::new();
+    let data = vec![0x22; 20];
+    let k = make_session_key_v1(
+        12,
+        Purpose::ENCRYPTION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_whole_contract_dashpay_key() {
+    let f = Fixture::new();
+    let data = vec![0x33; 20];
+    let k = make_session_key_v1(
+        13,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract {
+            id: dashpay_contract::ID,
+        }),
+        data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_non_profile_dashpay_doctype_key() {
+    let f = Fixture::new();
+    let data = vec![0x34; 20];
+    let k = make_session_key_v1(
+        14,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContractDocumentType {
+            id: dashpay_contract::ID,
+            document_type_name: "contactRequest".into(),
+        }),
+        data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_unlimited_key() {
+    let f = Fixture::new();
+    let data = vec![0x44; 20];
+    let k = make_session_key_v1(
+        15,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        data.clone(),
+        false,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_non_hash160_key() {
+    let f = Fixture::new();
+    let data = vec![0x02; 33];
+    let k = make_session_key_v1(
+        16,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_SECP256K1,
+        Some(ContractBounds::SingleContract { id: app() }),
+        data.clone(),
+        true,
+    );
+    assert_disconnect_refused_for_key(&f, k, hex::encode(&data));
+}
+
+#[test]
+fn disconnect_refuses_key_outside_grant() {
+    let data = vec![0x77; 20];
+    let key = make_session_key_v1(
+        20,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        KeyType::ECDSA_HASH160,
+        Some(ContractBounds::SingleContract { id: app() }),
+        data.clone(),
+        true,
+    );
+    let record = ConnectRecord {
+        request: "aa".repeat(20),
+        app_id: b58(&app()),
+        label: "App".into(),
+        identity: b58(&id(ME)),
+        connection_id: None,
+        session_keys: vec![21],
+        encryption_keys: Vec::new(),
+        selection: vec![0],
+        funding_limit: 5_000_000_000,
+        expires_at_ms: NOW + 30 * DAY_MS,
+        state: RecordState::Published,
+        created_ms: NOW,
+        returns_to: None,
+        session_key_data: [(20, hex::encode(&data))].into_iter().collect(),
+    };
+    assert_eq!(
+        check_disconnect_key(&record, &key),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::UnverifiedKey,
+        })
+    );
+
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let unknown_req = "cc".repeat(20);
+    assert!(matches!(
+        f.disconnect_quote(&me_b58, &unknown_req),
+        Err(ConnectError::Platform(
+            PlatformError::InvalidArgument { .. }
+        ))
+    ));
+}
+
+#[test]
+fn disconnect_fee_bound_covers_known_versions_and_refuses_over_bound_without_clamping() {
+    for v in MIN_PROTOCOL_VERSION..=PlatformVersion::latest().protocol_version {
+        let fee = disconnect_fee_at(v, MAX_ADDED).unwrap();
+        assert!(
+            fee > 0 && fee <= DISCONNECT_FEE_BOUND,
+            "v{v}: {fee} vs {DISCONNECT_FEE_BOUND}"
+        );
+    }
+
+    let f = Fixture::new();
+    let me_b58 = b58(&id(ME));
+    let l = devnet(request());
+    let c = Fixture::choice();
+    let g = f.quoted_grant(&l, &c);
+    f.approve(&l, &c, &g).unwrap();
+    let req_hex = hex::encode(l.request.request_hash());
+
+    // Live fee above bound at quote time: refuse rather than clamp.
+    *f.net.disconnect_fee_override.lock().unwrap() = Some(DISCONNECT_FEE_BOUND + 1);
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::FeeTooHigh,
+        })
+    );
+
+    // Quote normally, then live fee rises above bound before signing: refuse rather than clamp.
+    *f.net.disconnect_fee_override.lock().unwrap() = None;
+    let q = f.disconnect_quote(&me_b58, &req_hex).unwrap();
+    let g1 = f.disconnect_grant(q.request, q.max_credits);
+    let updates_before = f.net.updates.lock().unwrap().len();
+    *f.net.disconnect_fee_override.lock().unwrap() = Some(DISCONNECT_FEE_BOUND + 1);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Failed {
+            failure: ConnectFailure::FeeTooHigh,
+        })
+    );
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+
+    // Live fee rises above grant cap (still within bound) before signing: refuse GrantExceeded.
+    *f.net.disconnect_fee_override.lock().unwrap() = Some(q.fee + 1);
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Platform(PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Credits,
+            needed: q.fee + 1,
+            remaining: q.max_credits,
+        }))
+    );
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
+
+    // Balance below live fee: refuse ConnectError::Credits.
+    *f.net.disconnect_fee_override.lock().unwrap() = None;
+    f.net
+        .identities
+        .lock()
+        .unwrap()
+        .get_mut(&id(ME))
+        .unwrap()
+        .set_balance(q.fee - 1);
+    assert_eq!(
+        f.disconnect_quote(&me_b58, &req_hex),
+        Err(ConnectError::Credits {
+            needed: q.fee,
+            available: q.fee - 1,
+        })
+    );
+    assert_eq!(
+        f.disconnect(&me_b58, &req_hex, &g1),
+        Err(ConnectError::Credits {
+            needed: q.fee,
+            available: q.fee - 1,
+        })
+    );
+    assert_eq!(f.net.updates.lock().unwrap().len(), updates_before);
 }

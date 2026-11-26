@@ -90,6 +90,20 @@ pub(crate) trait ConnectNet: Send + Sync {
         disable: Vec<KeyID>,
         signer: &ConnectUpdateSigner,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// A MASTER-signed IdentityUpdate that disables keys only (Disconnect).
+    fn disable_keys(
+        &self,
+        wallet: &PlatformWallet,
+        id: Identifier,
+        disable: Vec<KeyID>,
+        signer: &VaultIdentitySigner,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
+    /// The live Platform credit fee to disable `key_count` keys at the
+    /// current proved protocol version.
+    fn disconnect_fee(
+        &self,
+        key_count: usize,
+    ) -> impl Future<Output = Result<u64, PlatformError>> + Send;
     /// Creates `owner`'s `loginKeyResponse`.
     fn publish(
         &self,
@@ -261,6 +275,27 @@ impl ConnectNet for SdkConnect {
             .identity()
             .update_identity_with_external_signer(&id, add, disable, signer, None)
             .await?)
+    }
+
+    async fn disable_keys(
+        &self,
+        wallet: &PlatformWallet,
+        id: Identifier,
+        disable: Vec<KeyID>,
+        signer: &VaultIdentitySigner,
+    ) -> Result<(), PlatformError> {
+        Ok(wallet
+            .identity()
+            .update_identity_with_external_signer(&id, Vec::new(), disable, signer, None)
+            .await?)
+    }
+
+    async fn disconnect_fee(&self, key_count: usize) -> Result<u64, PlatformError> {
+        if key_count == 0 {
+            return Ok(0);
+        }
+        let version = self.protocol_version().await?;
+        super::app_connect::disconnect_fee_at(version, key_count)
     }
 
     async fn publish(

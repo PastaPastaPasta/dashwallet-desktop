@@ -19,12 +19,14 @@ use dpp::address_funds::AddressWitness;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::BinaryData;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
 use dpp::system_data_contracts::dashpay_contract;
+use dpp::version::PlatformVersion;
 use dw_uri::connect::{AppConnectRequest, Bounds, ConnectUri, EncPurpose, Level};
 use dw_vault::app_connect::AppKey;
 use dw_vault::{GrantKind, GrantPurpose, SignerError, SignerScope, VaultSigner};
@@ -34,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use super::app_connect_net::{ConnectNet, Response, SdkConnect};
 use super::app_connect_plan::{
     self as plan, Commitment, ConnectRefusal, ContractFacts, EncPlan, GroupFacts, MAX_FUNDING,
-    MIN_PROTOCOL_VERSION,
+    MIN_PROTOCOL_VERSION, PROFILE_TYPE,
 };
 use super::dashpay::DashPay;
 use super::errors::{ConnectError, PlatformError};
@@ -68,6 +70,38 @@ const MAX_RECORDS: usize = 64;
 const RECORDS_SETTING: &str = "appconnect.grants";
 /// Responses kept for "Retry sending" in one session.
 const MAX_PENDING: usize = 8;
+/// Disabling one key updates its existing entry (`disabled_at`): bounded
+/// conservatively at 512 bytes of storage/processing per key.
+const DISCONNECT_KEY_BYTES: u64 = 512;
+/// The highest Platform credit fee Disconnect may spend (0.001 DASH).
+/// A live fee above this bound is refused rather than clamped.
+pub(crate) const DISCONNECT_FEE_BOUND: u64 = 100_000_000;
+
+/// Live Platform credit fee to disable `key_count` keys at `protocol_version`.
+pub(crate) fn disconnect_fee_at(
+    protocol_version: u32,
+    key_count: usize,
+) -> Result<u64, PlatformError> {
+    if key_count == 0 {
+        return Ok(0);
+    }
+    let version = PlatformVersion::get(protocol_version).map_err(|e| PlatformError::Internal {
+        detail: format!("protocol version {protocol_version}: {e}"),
+    })?;
+    let fees = &version.fee_version;
+    let per_byte = fees
+        .storage
+        .storage_disk_usage_credit_per_byte
+        .saturating_add(fees.storage.storage_processing_credit_per_byte);
+    Ok(fees
+        .state_transition_min_fees
+        .identity_update
+        .saturating_add(
+            (key_count as u64)
+                .saturating_mul(DISCONNECT_KEY_BYTES)
+                .saturating_mul(per_byte),
+        ))
+}
 
 /// Whether App Connect runs on `network`: not on mainnet in this build,
 /// until its keys ruling; there every call is `connect.mainnet_off`.
@@ -92,6 +126,14 @@ pub enum ConnectFailure {
     /// A group or encryption key changed after the keys were added: the
     /// response is not sent.
     ScopeChanged,
+    /// A key recorded for this app could not be verified on Platform as an
+    /// app-added session key of this grant (for example an older grant with
+    /// no recorded key digest, or a key whose public data or role does not
+    /// match).
+    UnverifiedKey,
+    /// The live Platform credit fee to disable this app's keys exceeds the
+    /// wallet's fee bound.
+    FeeTooHigh,
 }
 
 /// What the user sets: one funding limit for the connection, one expiry
@@ -228,6 +270,67 @@ pub struct ConnectDone {
     pub identity: String,
     /// The key ids added to the identity.
     pub keys_added: Vec<KeyID>,
+}
+
+/// One still-enabled AUTHENTICATION session key of a connected app, as
+/// Platform proves it now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedAppKey {
+    pub key_id: KeyID,
+    pub level: ConnectLevel,
+    pub scope: ConnectScope,
+    /// Credits, as Platform proves it.
+    pub budget: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+}
+
+/// One app this wallet approved for an identity that still has enabled
+/// session keys on Platform. `label` is the app's own claim: nothing
+/// verifies it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedApp {
+    /// `hash160(appEphPub)`, hex: identifies this approval for Disconnect.
+    pub request: String,
+    pub app_id: String,
+    pub label: String,
+    pub returns_to: Option<String>,
+    pub identity: String,
+    pub keys: Vec<ConnectedAppKey>,
+    /// Credits.
+    pub funding_limit: u64,
+    pub expires_at_ms: u64,
+    pub approved_at_ms: u64,
+}
+
+/// The connected apps of one identity, with the proved Platform block time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedApps {
+    pub identity: String,
+    pub apps: Vec<ConnectedApp>,
+    pub block_time_ms: u64,
+}
+
+/// What disconnecting one connected app costs and the `AppDisconnect` grant
+/// it needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisconnectQuote {
+    pub request: [u8; 20],
+    pub identity: String,
+    /// The verified session key ids that will be disabled.
+    pub keys: Vec<KeyID>,
+    /// The grant's credit bound, equal to `fee` (never clamped).
+    pub max_credits: u64,
+    /// Live Platform credit fee to disable `keys`.
+    pub fee: u64,
+    pub balance: u64,
+}
+
+/// A finished disconnect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisconnectDone {
+    pub identity: String,
+    /// The key ids disabled on Platform (`empty` when already disabled).
+    pub keys_disabled: Vec<KeyID>,
 }
 
 impl From<ConnectRefusal> for ConnectError {
@@ -409,6 +512,14 @@ pub(crate) struct ConnectRecord {
     pub(crate) expires_at_ms: u64,
     pub(crate) state: RecordState,
     pub(crate) created_ms: u64,
+    /// The callback host from the sign-in link, if any.
+    #[serde(default)]
+    pub(crate) returns_to: Option<String>,
+    /// Hex-encoded on-chain `data` (20-byte `ECDSA_HASH160`) of each key in
+    /// `session_keys`, recorded at approval so Disconnect verifies both key id
+    /// and public key data before disabling.
+    #[serde(default)]
+    pub(crate) session_key_data: BTreeMap<KeyID, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,6 +531,8 @@ pub(crate) enum RecordState {
     Confirmed,
     /// The response is out.
     Published,
+    /// Every session key of this grant was disabled on Platform.
+    Disconnected,
 }
 
 /// The responses an approval sealed and could not publish, for "Retry
@@ -957,6 +1070,8 @@ struct KeyPlan {
     proofs: BTreeMap<KeyID, (AppKey, Vec<u8>)>,
     slots: Vec<AppKey>,
     session_ids: Vec<KeyID>,
+    /// Hex-encoded `ECDSA_HASH160` data for every id in `session_ids`.
+    session_data: BTreeMap<KeyID, String>,
     encryption_ids: Vec<KeyID>,
 }
 
@@ -989,6 +1104,7 @@ fn key_plan(
             plan::session_key(request, index, next, &public, budget, p.terms.expires_at_ms)
                 .ok_or(ConnectError::Invalid)?;
         let found = (p.identity.public_keys().values()).find(|k| k.data() == wanted.data());
+        let data_hex = hex::encode(wanted.data().as_slice());
         match found {
             Some(k) => {
                 let same = !k.is_disabled()
@@ -1004,9 +1120,11 @@ fn key_plan(
                     });
                 }
                 out.session_ids.push(k.id());
+                out.session_data.insert(k.id(), data_hex);
             }
             None => {
                 out.session_ids.push(next);
+                out.session_data.insert(next, data_hex);
                 out.add.push(wanted);
                 next += 1;
             }
@@ -1238,6 +1356,8 @@ pub(crate) async fn approve(
         expires_at_ms: p.terms.expires_at_ms,
         state: RecordState::Submitted,
         created_ms: super::balances::now_ms(),
+        returns_to: link.callback.as_ref().map(|c| c.host().to_owned()),
+        session_key_data: plan.session_data.clone(),
     };
     if plan.add.is_empty() && disable.is_empty() {
         update.finish(false);
@@ -1465,6 +1585,510 @@ pub(crate) async fn retry_send(
     }
 }
 
+fn check_enabled(network: &DashNetwork) -> Result<(), ConnectError> {
+    if !enabled_on(network) {
+        return Err(ConnectError::MainnetOff);
+    }
+    Ok(())
+}
+
+fn parse_request_hash(text: &str) -> Result<[u8; 20], ConnectError> {
+    let invalid = || {
+        ConnectError::from(PlatformError::InvalidArgument {
+            detail: "request".into(),
+        })
+    };
+    let bytes = hex::decode(text).map_err(|_| invalid())?;
+    if bytes.len() != 20 || text != hex::encode(&bytes) {
+        return Err(invalid());
+    }
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn wallet_identity_index(
+    session: &NetworkSession,
+    wallet: WalletId,
+    id: Identifier,
+) -> Result<u32, ConnectError> {
+    let target = b58(&id);
+    let summaries = session
+        .identity_summaries(wallet)
+        .map_err(PlatformError::from)?;
+    summaries
+        .into_iter()
+        .find(|s| s.identity == target)
+        .map(|s| s.index)
+        .ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound).into())
+}
+
+fn is_forbidden_dashpay_bounds(bounds: &ContractBounds) -> bool {
+    match bounds {
+        ContractBounds::SingleContract { id } => *id == dashpay_contract::ID,
+        ContractBounds::SingleContractDocumentType {
+            id,
+            document_type_name,
+        } => *id == dashpay_contract::ID && document_type_name != PROFILE_TYPE,
+        ContractBounds::ContractGroup { .. } => false,
+    }
+}
+
+/// Verifies that `key` on Platform is an enabled app-added AUTHENTICATION
+/// session key belonging to `record`:
+/// - its key id is in `record.session_keys`;
+/// - `record.session_key_data` holds the expected key digest AND matches
+///   `key.data()` (older grants without key data are refused, never matched
+///   by purpose/level alone);
+/// - `key.purpose() == Purpose::AUTHENTICATION`;
+/// - `key.security_level()` is `HIGH` or `CRITICAL` (never `MASTER`);
+/// - `key.key_type() == KeyType::ECDSA_HASH160`;
+/// - `key.contract_bounds()` is `Some(...)` (never unbounded, including
+///   unbounded `CRITICAL`);
+/// - `key.has_limits()`;
+/// - not a whole-contract DashPay key (only `dashpay/profile` doc-type is
+///   allowed on the DashPay contract).
+fn check_disconnect_key(
+    record: &ConnectRecord,
+    key: &IdentityPublicKey,
+) -> Result<(), ConnectError> {
+    let unverified = || ConnectError::Failed {
+        failure: ConnectFailure::UnverifiedKey,
+    };
+    if !record.session_keys.contains(&key.id()) {
+        return Err(unverified());
+    }
+    let Some(expected_hex) = record.session_key_data.get(&key.id()) else {
+        return Err(unverified());
+    };
+    let Ok(expected_bytes) = hex::decode(expected_hex) else {
+        return Err(unverified());
+    };
+    if expected_bytes.is_empty() || key.data().as_slice() != expected_bytes.as_slice() {
+        return Err(unverified());
+    }
+    if key.purpose() != Purpose::AUTHENTICATION {
+        return Err(unverified());
+    }
+    if !matches!(
+        key.security_level(),
+        SecurityLevel::HIGH | SecurityLevel::CRITICAL
+    ) {
+        return Err(unverified());
+    }
+    if key.key_type() != KeyType::ECDSA_HASH160 {
+        return Err(unverified());
+    }
+    let Some(bounds) = key.contract_bounds() else {
+        return Err(unverified());
+    };
+    if !key.has_limits() {
+        return Err(unverified());
+    }
+    if is_forbidden_dashpay_bounds(bounds) {
+        return Err(unverified());
+    }
+    Ok(())
+}
+
+/// The verified still-enabled session key ids of `record` on `identity`.
+/// Any still-enabled key id in `record.session_keys` that fails verification
+/// refuses the whole disconnect rather than disabling partially or guessing.
+fn verified_disconnect_keys(
+    record: &ConnectRecord,
+    identity: &Identity,
+) -> Result<Vec<KeyID>, ConnectError> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for &key_id in &record.session_keys {
+        if !seen.insert(key_id) {
+            continue;
+        }
+        let Some(key) = identity.public_keys().get(&key_id) else {
+            continue;
+        };
+        if key.is_disabled() {
+            continue;
+        }
+        check_disconnect_key(record, key)?;
+        out.push(key_id);
+    }
+    if out.len() > MAX_DISABLED {
+        return Err(ConnectError::Unsupported);
+    }
+    Ok(out)
+}
+
+/// Checks the live Platform fee against `DISCONNECT_FEE_BOUND`, refusing
+/// rather than clamping when the live fee exceeds the bound.
+async fn live_disconnect_fee(net: &impl ConnectNet, key_count: usize) -> Result<u64, ConnectError> {
+    if key_count == 0 {
+        return Ok(0);
+    }
+    let fee = net.disconnect_fee(key_count).await?;
+    if fee > DISCONNECT_FEE_BOUND {
+        return Err(ConnectError::Failed {
+            failure: ConnectFailure::FeeTooHigh,
+        });
+    }
+    Ok(fee)
+}
+
+/// Refuses a grant that is not this wallet's `AppDisconnect` grant for
+/// `request`, returning its `max_credits` cap before redemption.
+async fn check_disconnect_grant(
+    session: &NetworkSession,
+    wallet: WalletId,
+    grant: &str,
+    request: [u8; 20],
+) -> Result<u64, ConnectError> {
+    let (vault, g) = (session.vault.clone(), grant.to_owned());
+    let purpose = tokio::task::spawn_blocking(move || {
+        vault.grant_purpose(&g, GrantKind::AppDisconnect, Some(&wallet.0))
+    })
+    .await
+    .map_err(|e| PlatformError::from(EngineError::from(e)))?
+    .map_err(PlatformError::from)?;
+    let GrantPurpose::AppDisconnect {
+        max_credits,
+        request: granted,
+    } = purpose
+    else {
+        return Err(PlatformError::GrantInvalid.into());
+    };
+    if granted != request {
+        return Err(PlatformError::GrantInvalid.into());
+    }
+    Ok(max_credits)
+}
+
+async fn resolve_key_scope(
+    net: &impl ConnectNet,
+    bounds: Option<&ContractBounds>,
+    fallback_app_id: &str,
+    contracts: &mut BTreeMap<Identifier, Option<ContractFacts>>,
+    groups: &mut BTreeMap<Identifier, Option<GroupFacts>>,
+) -> Result<ConnectScope, ConnectError> {
+    match bounds {
+        Some(ContractBounds::SingleContractDocumentType {
+            id,
+            document_type_name,
+        }) if *id == dashpay_contract::ID && document_type_name == PROFILE_TYPE => {
+            Ok(ConnectScope::Profile)
+        }
+        Some(ContractBounds::SingleContractDocumentType {
+            id,
+            document_type_name,
+        }) => Ok(ConnectScope::DocumentType {
+            contract: b58(id),
+            document_type: document_type_name.clone(),
+        }),
+        Some(ContractBounds::SingleContract { id }) => {
+            if let std::collections::btree_map::Entry::Vacant(e) = contracts.entry(*id) {
+                e.insert(net.contract(*id).await?);
+            }
+            let tokens = contracts
+                .get(id)
+                .cloned()
+                .flatten()
+                .is_none_or(|f| f.has_tokens || !f.readonly);
+            Ok(ConnectScope::Contract {
+                contract: b58(id),
+                tokens,
+            })
+        }
+        Some(ContractBounds::ContractGroup { id }) => {
+            if let std::collections::btree_map::Entry::Vacant(e) = groups.entry(*id) {
+                e.insert(net.group(*id).await?);
+            }
+            let facts = groups.get(id).cloned().flatten().unwrap_or_default();
+            Ok(ConnectScope::Group(ConnectGroup {
+                group: b58(id),
+                owner: b58(&facts.owner),
+                admins: facts.admins.iter().map(b58).collect(),
+                contracts: facts.contracts.iter().map(b58).collect(),
+                document_types: facts
+                    .document_types
+                    .iter()
+                    .map(|(c, t)| ConnectDocumentType {
+                        contract: b58(c),
+                        document_type: t.clone(),
+                    })
+                    .collect(),
+                tokens: facts
+                    .tokens
+                    .iter()
+                    .map(|(c, p)| ConnectToken {
+                        contract: b58(c),
+                        position: *p,
+                    })
+                    .collect(),
+            }))
+        }
+        None => Ok(ConnectScope::Contract {
+            contract: fallback_app_id.to_owned(),
+            tokens: true,
+        }),
+    }
+}
+
+pub(crate) async fn list(
+    net: &impl ConnectNet,
+    session: &NetworkSession,
+    wallet: WalletId,
+    identity: &str,
+) -> Result<ConnectedApps, ConnectError> {
+    check_enabled(&session.network)?;
+    let id = parse_identity(identity)?;
+    let _index = wallet_identity_index(session, wallet, id)?;
+    let owner = b58(&id);
+    let mut recs: Vec<ConnectRecord> = records(session, wallet)
+        .await?
+        .into_iter()
+        .filter(|r| r.identity == owner && r.state != RecordState::Disconnected)
+        .collect();
+    recs.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    if recs.is_empty() {
+        return Ok(ConnectedApps {
+            identity: owner,
+            apps: Vec::new(),
+            block_time_ms: 0,
+        });
+    }
+    let (on_chain, block_time_ms) = net.identity(id).await?;
+    let on_chain =
+        on_chain.ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
+    let mut contracts = BTreeMap::new();
+    let mut groups = BTreeMap::new();
+    let mut apps = Vec::new();
+    for r in recs {
+        // An older record with no key digests whose update never confirmed may
+        // name ids another key later took: skip it.
+        if r.state == RecordState::Submitted && r.session_key_data.is_empty() {
+            continue;
+        }
+        let mut keys = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &key_id in &r.session_keys {
+            if !seen.insert(key_id) {
+                continue;
+            }
+            let Some(k) = on_chain.public_keys().get(&key_id) else {
+                continue;
+            };
+            if k.is_disabled() {
+                continue;
+            }
+            if let Some(expected_hex) = r.session_key_data.get(&key_id) {
+                if hex::encode(k.data().as_slice()) != *expected_hex {
+                    continue;
+                }
+            }
+            let level = match k.security_level() {
+                SecurityLevel::CRITICAL => ConnectLevel::Critical,
+                _ => ConnectLevel::High,
+            };
+            let scope = resolve_key_scope(
+                net,
+                k.contract_bounds(),
+                &r.app_id,
+                &mut contracts,
+                &mut groups,
+            )
+            .await?;
+            keys.push(ConnectedAppKey {
+                key_id,
+                level,
+                scope,
+                budget: k.total_budget(),
+                expires_at_ms: k.expires_at(),
+            });
+        }
+        if keys.is_empty() {
+            continue;
+        }
+        let expires_at_ms = keys
+            .iter()
+            .filter_map(|k| k.expires_at_ms)
+            .min()
+            .unwrap_or(r.expires_at_ms);
+        apps.push(ConnectedApp {
+            request: r.request,
+            app_id: r.app_id,
+            label: r.label,
+            returns_to: r.returns_to,
+            identity: r.identity,
+            keys,
+            funding_limit: r.funding_limit,
+            expires_at_ms,
+            approved_at_ms: r.created_ms,
+        });
+    }
+    Ok(ConnectedApps {
+        identity: owner,
+        apps,
+        block_time_ms,
+    })
+}
+
+pub(crate) async fn disconnect_quote(
+    net: &impl ConnectNet,
+    session: &NetworkSession,
+    wallet: WalletId,
+    identity: &str,
+    request: &str,
+) -> Result<DisconnectQuote, ConnectError> {
+    check_enabled(&session.network)?;
+    let id = parse_identity(identity)?;
+    let request_hash = parse_request_hash(request)?;
+    let _index = wallet_identity_index(session, wallet, id)?;
+    let owner = b58(&id);
+    let record = records(session, wallet)
+        .await?
+        .into_iter()
+        .find(|r| r.identity == owner && r.request == request)
+        .ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "unknown app connection".into(),
+        })?;
+    let (on_chain, _) = net.identity(id).await?;
+    let on_chain =
+        on_chain.ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
+    let keys = verified_disconnect_keys(&record, &on_chain)?;
+    let fee = live_disconnect_fee(net, keys.len()).await?;
+    if on_chain.balance() < fee {
+        return Err(ConnectError::Credits {
+            needed: fee,
+            available: on_chain.balance(),
+        });
+    }
+    Ok(DisconnectQuote {
+        request: request_hash,
+        identity: owner,
+        keys,
+        max_credits: fee,
+        fee,
+        balance: on_chain.balance(),
+    })
+}
+
+pub(crate) async fn disconnect(
+    net: &impl ConnectNet,
+    session: &Arc<NetworkSession>,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    identity: &str,
+    request: &str,
+    grant: String,
+) -> Result<DisconnectDone, ConnectError> {
+    check_enabled(&session.network)?;
+    let id = parse_identity(identity)?;
+    let request_hash = parse_request_hash(request)?;
+    let index = wallet_identity_index(session, wallet_id, id)?;
+    let owner = b58(&id);
+    let _refresh = session.after_spend(wallet_id, id);
+    let locks = identity_locks(wallet_id, id);
+    let _write = locks.write.lock().await;
+    let mut record = records(session, wallet_id)
+        .await?
+        .into_iter()
+        .find(|r| r.identity == owner && r.request == request)
+        .ok_or_else(|| PlatformError::InvalidArgument {
+            detail: "unknown app connection".into(),
+        })?;
+    let granted_max_credits =
+        check_disconnect_grant(session, wallet_id, &grant, request_hash).await?;
+    let fresh = net.refresh(wallet, id).await?;
+    let disable = verified_disconnect_keys(&record, &fresh)?;
+    if disable.is_empty() {
+        let _ = session.platform.app_connect.take(wallet_id, request_hash);
+        if record.state != RecordState::Disconnected {
+            record.state = RecordState::Disconnected;
+            if let Err(e) = put_record(session, wallet_id, record).await {
+                tracing::warn!("app connect record after disconnect: {}", e.code());
+            }
+        }
+        return Ok(DisconnectDone {
+            identity: owner,
+            keys_disabled: Vec::new(),
+        });
+    }
+    let fee = live_disconnect_fee(net, disable.len()).await?;
+    if fee > granted_max_credits {
+        return Err(PlatformError::GrantExceeded {
+            purpose: BudgetPurpose::Credits,
+            needed: fee,
+            remaining: granted_max_credits,
+        }
+        .into());
+    }
+    if fresh.balance() < fee {
+        return Err(ConnectError::Credits {
+            needed: fee,
+            available: fresh.balance(),
+        });
+    }
+    let master = master_key(&fresh).ok_or(PlatformError::from(
+        super::errors::IdentityError::KeysMissing {
+            purpose: super::identity::KeyPurpose::Authentication,
+        },
+    ))?;
+    // Pre-sign re-check on every key ID going into the IdentityUpdate.
+    for &key_id in &disable {
+        if key_id == master.id() {
+            return Err(ConnectError::Failed {
+                failure: ConnectFailure::UnverifiedKey,
+            });
+        }
+        let key = fresh
+            .public_keys()
+            .get(&key_id)
+            .ok_or(ConnectError::Failed {
+                failure: ConnectFailure::UnverifiedKey,
+            })?;
+        check_disconnect_key(&record, key)?;
+    }
+    let held: Vec<HeldKey> = key_path(session.vault.network(), index, master.id())
+        .map(|path| vec![(path, master.data().to_vec())])
+        .unwrap_or_default();
+    let lease = session
+        .begin_lease_holding(wallet_id, FlowKind::AppDisconnect, &[grant], held)
+        .await
+        .map_err(PlatformError::from)?;
+    let permit = write_permit(&lease, "app_connect_disconnect", fee)?;
+    let signer = permit
+        .identity_signer(&[index])
+        .map_err(PlatformError::from)?
+        .only_keys([master.id()]);
+    let written = leased(
+        &lease,
+        net.disable_keys(wallet, id, disable.clone(), &signer),
+    )
+    .await;
+    drop(signer);
+    permit.finish(written.is_ok());
+    drop(lease);
+    if let Err(e) = &written {
+        tracing::info!("app connect disconnect: {}", e.code());
+    }
+    if !confirm(net, wallet, id, &[], &disable).await {
+        return Err(match written {
+            Err(e) if refused_unsent(&e) => e.into(),
+            _ => ConnectError::Failed {
+                failure: ConnectFailure::NotConfirmed,
+            },
+        });
+    }
+    let _ = session.platform.app_connect.take(wallet_id, request_hash);
+    record.state = RecordState::Disconnected;
+    if let Err(e) = put_record(session, wallet_id, record).await {
+        tracing::warn!("app connect record after disconnect: {}", e.code());
+    }
+    Ok(DisconnectDone {
+        identity: owner,
+        keys_disabled: disable,
+    })
+}
+
 impl DashPay {
     /// The approval sheet of an App Connect request (DASHPAY F24): the
     /// app, the wallet's identities that may sign in, each binding with a
@@ -1545,6 +2169,72 @@ impl DashPay {
         self.on_wallet(move |session, manager, wallet| async move {
             let net = SdkConnect(manager.sdk_arc());
             retry_send(&net, &session, &wallet, wallet_id, &link).await
+        })
+        .await
+    }
+
+    /// Lists each app this wallet approved for `identity` that still has
+    /// enabled session keys on Platform, combining local approval records
+    /// with Platform's proved identity keys and live contract/group scopes.
+    /// Refused on mainnet (`connect.mainnet_off`).
+    pub async fn app_connect_list(&self, identity: String) -> Result<ConnectedApps, ConnectError> {
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, _| async move {
+            list(
+                &SdkConnect(manager.sdk_arc()),
+                &session,
+                wallet_id,
+                &identity,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// The live Platform credit fee and `AppDisconnect` grant to disconnect
+    /// one approved app (`request` hex) on `identity`. Verifies every key id
+    /// and its public key data against Platform and refuses when a key is
+    /// unverified (`connect.failed{unverified_key}`), the live fee exceeds the
+    /// fee bound (`connect.failed{fee_too_high}`), credits are short
+    /// (`connect.credits`), or on mainnet (`connect.mainnet_off`).
+    pub async fn app_connect_disconnect_quote(
+        &self,
+        identity: String,
+        request: String,
+    ) -> Result<DisconnectQuote, ConnectError> {
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, _| async move {
+            disconnect_quote(
+                &SdkConnect(manager.sdk_arc()),
+                &session,
+                wallet_id,
+                &identity,
+                &request,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Disables one approved app's verified AUTHENTICATION session keys on
+    /// `identity` in a MASTER-signed IdentityUpdate under `grant` (an
+    /// `AppDisconnect` grant bound to `request`). Safe to call twice: refreshes
+    /// Platform first under the identity write lock and succeeds without
+    /// spending credits or sending an update if the app's keys are already
+    /// disabled. Refused on mainnet (`connect.mainnet_off`).
+    pub async fn app_connect_disconnect(
+        &self,
+        identity: String,
+        request: String,
+        grant: String,
+    ) -> Result<DisconnectDone, ConnectError> {
+        let wallet_id = self.wallet_id();
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkConnect(manager.sdk_arc());
+            disconnect(
+                &net, &session, &wallet, wallet_id, &identity, &request, grant,
+            )
+            .await
         })
         .await
     }

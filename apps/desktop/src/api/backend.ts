@@ -64,6 +64,9 @@ import type { ConnectChoice } from "./generated/ConnectChoice";
 import type { ConnectDone } from "./generated/ConnectDone";
 import type { ConnectQuote } from "./generated/ConnectQuote";
 import type { ConnectSheet } from "./generated/ConnectSheet";
+import type { ConnectedApps } from "./generated/ConnectedApps";
+import type { DisconnectDone } from "./generated/DisconnectDone";
+import type { DisconnectQuote } from "./generated/DisconnectQuote";
 import type { ShellEvent } from "./generated/ShellEvent";
 import type { ShellSync } from "./generated/ShellSync";
 import type { DispatchStateName } from "./generated/DispatchStateName";
@@ -569,6 +572,9 @@ export interface Backend {
   appConnectDeny(linkId: string): Promise<null>;
   appConnectReturn(linkId: string): Promise<null>;
   appConnectDismiss(linkId: string): Promise<null>;
+  appConnectList(walletId: string, identity: string): Promise<ConnectedApps>;
+  appConnectDisconnectQuote(walletId: string, identity: string, request: string): Promise<DisconnectQuote>;
+  appConnectDisconnect(walletId: string, identity: string, request: string, grant: string): Promise<DisconnectDone>;
   /** What the native menus and the tray mirror. */
   shellSync(sync: ShellSync): Promise<null>;
   // Tools (U-05); `nodeInfo` above.

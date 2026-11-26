@@ -20,7 +20,15 @@ import type { ConnectBinding } from "../api/generated/ConnectBinding";
 const err = (code: AppError["code"], data: AppError["data"] = null, message = "a message the engine wrote"): AppError => ({ code, message, data });
 
 describe("connect.failed's detail", () => {
-  const NAMES: Record<ConnectFailureName, true> = { keyConflict: true, notConfirmed: true, noResponseKey: true, nothingToSend: true, scopeChanged: true };
+  const NAMES: Record<ConnectFailureName, true> = {
+    keyConflict: true,
+    notConfirmed: true,
+    noResponseKey: true,
+    nothingToSend: true,
+    scopeChanged: true,
+    unverifiedKey: true,
+    feeTooHigh: true,
+  };
   const generic = failureDetail(null);
 
   it("maps every failure name to its own text", () => {
@@ -47,7 +55,16 @@ describe("connect.failed's detail", () => {
       const text = connectErrorText(err("connect.failed", { kind: "connectFailure", failure } as AppError["data"]), "testnet");
       return text.endsWith(added) ? "added" : null;
     };
-    const pinned = { keyConflict: null, notConfirmed: null, noResponseKey: null, nothingToSend: null, scopeChanged: "added", unknown: null } as const;
+    const pinned = {
+      keyConflict: null,
+      notConfirmed: null,
+      noResponseKey: null,
+      nothingToSend: null,
+      scopeChanged: "added",
+      unverifiedKey: null,
+      feeTooHigh: null,
+      unknown: null,
+    } as const;
     expect(FAILURE_KEYS).toEqual(pinned);
     for (const [failure, keys] of Object.entries(pinned)) expect([failure, suffix(failure)]).toEqual([failure, keys]);
     expect(connectErrorText(err("connect.failed", { kind: "connectFailure", failure: "scopeChanged" }), "testnet")).toBe(

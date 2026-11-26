@@ -148,6 +148,72 @@ pub struct ConnectDone {
     pub keys_added: Vec<u32>,
 }
 
+/// One still-enabled AUTHENTICATION session key of a connected app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedAppKey {
+    pub key_id: u32,
+    pub level: ConnectLevel,
+    pub scope: ConnectScope,
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub budget: Option<u64>,
+    #[ts(type = "number | null")]
+    pub expires_at_ms: Option<u64>,
+}
+
+/// One app this wallet approved for an identity that still has enabled
+/// session keys on Platform. `label` is the app's own claim: nothing
+/// verifies it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApp {
+    pub request: String,
+    pub app_id: String,
+    pub label: String,
+    pub returns_to: Option<String>,
+    pub identity: String,
+    pub keys: Vec<ConnectedAppKey>,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub funding_limit: u64,
+    #[ts(type = "number")]
+    pub expires_at_ms: u64,
+    #[ts(type = "number")]
+    pub approved_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApps {
+    pub identity: String,
+    pub apps: Vec<ConnectedApp>,
+    #[ts(type = "number")]
+    pub block_time_ms: u64,
+}
+
+/// What disconnecting one app costs and the `appDisconnect` grant to ask for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectQuote {
+    pub grant: crate::api::vault::GrantPurposeSpec,
+    pub identity: String,
+    pub keys: Vec<u32>,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee: u64,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub balance: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectDone {
+    pub identity: String,
+    pub keys_disabled: Vec<u32>,
+}
+
 impl From<engine::ConnectLevel> for ConnectLevel {
     fn from(l: engine::ConnectLevel) -> Self {
         match l {
@@ -267,6 +333,53 @@ impl From<engine::ConnectDone> for ConnectDone {
         ConnectDone {
             identity: d.identity,
             keys_added: d.keys_added,
+        }
+    }
+}
+
+impl From<engine::ConnectedAppKey> for ConnectedAppKey {
+    fn from(k: engine::ConnectedAppKey) -> Self {
+        Self {
+            key_id: k.key_id,
+            level: k.level.into(),
+            scope: k.scope.into(),
+            budget: k.budget,
+            expires_at_ms: k.expires_at_ms,
+        }
+    }
+}
+
+impl From<engine::ConnectedApp> for ConnectedApp {
+    fn from(a: engine::ConnectedApp) -> Self {
+        Self {
+            request: a.request,
+            app_id: a.app_id,
+            label: a.label,
+            returns_to: a.returns_to,
+            identity: a.identity,
+            keys: a.keys.into_iter().map(Into::into).collect(),
+            funding_limit: a.funding_limit,
+            expires_at_ms: a.expires_at_ms,
+            approved_at_ms: a.approved_at_ms,
+        }
+    }
+}
+
+impl From<engine::ConnectedApps> for ConnectedApps {
+    fn from(c: engine::ConnectedApps) -> Self {
+        Self {
+            identity: c.identity,
+            apps: c.apps.into_iter().map(Into::into).collect(),
+            block_time_ms: c.block_time_ms,
+        }
+    }
+}
+
+impl From<engine::DisconnectDone> for DisconnectDone {
+    fn from(d: engine::DisconnectDone) -> Self {
+        Self {
+            identity: d.identity,
+            keys_disabled: d.keys_disabled,
         }
     }
 }
@@ -406,6 +519,53 @@ commands! {
     fn app_connect_dismiss(state, link_id: String) -> () {
         state.shell.inbox.connect.forget(&link_id);
         Ok(())
+    }
+
+    /// Lists each app this wallet approved for `identity` that still has
+    /// enabled session keys on Platform. Refused on mainnet.
+    #[facade("DashPay::app_connect_list")]
+    fn app_connect_list(state, wallet_id: String, identity: String) -> ConnectedApps {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let apps = dashpay.app_connect_list(identity).await?;
+        Ok(apps.into())
+    }
+
+    /// What disconnecting `request` on `identity` costs and the
+    /// `appDisconnect` grant to ask for. Refused on mainnet.
+    #[facade("DashPay::app_connect_disconnect_quote")]
+    fn app_connect_disconnect_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        request: String,
+    ) -> DisconnectQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let q = dashpay.app_connect_disconnect_quote(identity, request).await?;
+        Ok(DisconnectQuote {
+            grant: crate::api::vault::GrantPurposeSpec::AppDisconnect {
+                max_credits: q.max_credits,
+                request: q.request,
+            },
+            identity: q.identity,
+            keys: q.keys,
+            fee: q.fee,
+            balance: q.balance,
+        })
+    }
+
+    /// Disables the verified AUTHENTICATION session keys of `request` on
+    /// `identity` under `grant` (an `appDisconnect` grant). Refused on mainnet.
+    #[facade("DashPay::app_connect_disconnect")]
+    fn app_connect_disconnect(
+        state,
+        wallet_id: String,
+        identity: String,
+        request: String,
+        grant: String,
+    ) -> DisconnectDone {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let done = dashpay.app_connect_disconnect(identity, request, grant).await?;
+        Ok(done.into())
     }
 }
 

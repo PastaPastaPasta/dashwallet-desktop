@@ -44,6 +44,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
         FlowKind::AppConnect => &[GrantKind::AppConnect],
+        FlowKind::AppDisconnect => &[GrantKind::AppDisconnect],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -131,11 +132,18 @@ pub(crate) fn issue(
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
-    order.sort_by_key(|(_, k)| !matches!(**k, GrantKind::PlatformOp | GrantKind::AppConnect));
+    order.sort_by_key(|(_, k)| {
+        !matches!(
+            **k,
+            GrantKind::PlatformOp | GrantKind::AppConnect | GrantKind::AppDisconnect
+        )
+    });
     let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
-        (GrantKind::PlatformOp | GrantKind::AppConnect, Some(keys)) => vault
-            .redeem_grant_holding_key(g, &wallet.0, keys)?
-            .ok_or(VaultError::NoSecret),
+        (GrantKind::PlatformOp | GrantKind::AppConnect | GrantKind::AppDisconnect, Some(keys)) => {
+            vault
+                .redeem_grant_holding_key(g, &wallet.0, keys)?
+                .ok_or(VaultError::NoSecret)
+        }
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
     };
     let mut tokens = order
@@ -297,6 +305,14 @@ pub(crate) fn issue(
                     Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
                 out.signers.app_connect =
                     Some(scoped(SignerScope::AppConnect { request }).map_err(issuing)?);
+            }
+            GrantPurpose::AppDisconnect { max_credits, .. } if flow == FlowKind::AppDisconnect => {
+                // Disconnecting an App Connect login: the identity keys
+                // (MASTER) alone; no AppConnect signer, no funding signer,
+                // no contact crypto.
+                out.credits = max_credits;
+                out.signers.identity =
+                    Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
             }
             GrantPurpose::Governance => {
                 out.voting = true;

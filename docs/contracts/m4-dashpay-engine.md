@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 103
+Contract-Version: 104
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -77,7 +77,7 @@ type is `pub(crate)`.
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
 | `shielded.rs` | 0.1 E1 (RELEASE-PLAN §1 "Shielded") | `shielded_status`, `shielded_sync_info`, `shielded_sync`, `shielded_receive_address`, `shield_quote`, `shield_from_core`, `resume_shield`, `shield_mixed_quote`, `stuck_shield_fundings`, `shield_mixed_coins`, `shielded_send_quote`, `shielded_send`, `unshield_quote`, `unshield_to_core`, `unshield_to_platform_quote`, `unshield_to_platform`, `shielded_history` |
 | `unfinished.rs` | 0.2 RECOVERY | `unfinished_transfers`, `finish_transfer`, `recover_transfer_quote`, `recover_transfer` |
-| `app_connect.rs` | 1.0 F24 | `app_connect_sheet`, `app_connect_quote`, `app_connect_approve`, `app_connect_retry_send` |
+| `app_connect.rs` | 1.0 F24 | `app_connect_sheet`, `app_connect_quote`, `app_connect_approve`, `app_connect_retry_send`, `app_connect_list`, `app_connect_disconnect_quote`, `app_connect_disconnect` |
 | `errors.rs` | E0-05 (the mapping, §6) and each domain's owner | the error enums of §4 |
 
 ## 1. Conventions (changes to m1-engine.md §1)
@@ -1039,6 +1039,9 @@ is `connect.mainnet_off` until the keys ruling (`enabled_on`); testnet, devnet a
 | `app_connect_quote(link, choice)` | async | `ConnectQuote{request, plan, max_credits, fee, budgets, balance}` for `ConnectChoice{identity, selection, terms}`: the grant's `max_credits` (the update and three sends of the response: a send that may have gone out keeps its reservation), the `fee` (the update and one send), each selected binding's budget (a DashPay profile key 0.002 DASH, the app's keys the rest by their asks) and the plan digest. The sheet's refusals; a selection without the primary binding, terms over 5 DASH or a year, or under an hour (`invalid_argument`); a request this identity answered (`connect.answered`); a balance below the fee (`connect.credits{needed, available}`). | `ConnectError` |
 | `app_connect_approve(link, choice, grant)` | async | As above, then `ConnectDone{identity, keys_added}`. The quote's refusals with the grant unused; a grant that is not this wallet's `AppConnect` for the request (`platform.grant_invalid`), below the bound (`platform.grant_exceeded`) or for another plan (`connect.plan_changed`). A session key this request derived that is on the identity already is sealed again, never disabled. After the update: keys not shown in time (`connect.failed{not_confirmed}`; the request stays open, and approving it again re-reads the identity first, reusing the keys that landed), a group or encryption key changed (`connect.failed{scope_changed}`), no key to sign the response (`connect.failed{no_response_key}`), a response not published (`connect.send_failed`: kept, with its lease and the approved groups, for `app_connect_retry_send`). | `ConnectError` |
 | `app_connect_retry_send(link)` | async | Publishes the response an approval sealed and could not send, under that approval's lease and the identity's write lock, once the approved groups and the sealed encryption keys are still Platform's (else `connect.failed{scope_changed}`); a response Platform holds already finishes it. `connect.failed{nothing_to_send}` when none is kept or its lease cannot sign (a lock ends it), `connect.send_failed` again. | `ConnectError` |
+| `app_connect_list(identity)` | async | `ConnectedApps{identity, apps, block_time_ms}`: each app this wallet approved for `identity` that still has enabled session keys on Platform, combining local `appconnect.grants` records (`returns_to`, `session_key_data`, funding limit, expiry, approval time) with Platform's proved identity keys and live proved contract/group scopes; shows only keys still enabled on Platform, newest approval first. Older grants without `returns_to` or `session_key_data` are still listed using their recorded App ID and enabled key ids. Refused on mainnet (`connect.mainnet_off`) and for an identity not in this wallet (`identity.not_found`). | `ConnectError` |
+| `app_connect_disconnect_quote(identity, request)` | async | `DisconnectQuote{request, identity, keys, max_credits, fee, balance}`: the verified still-enabled AUTHENTICATION session key ids for `request` on `identity`, the live Platform credit fee at the current proved protocol version (`max_credits == fee`, refused with `connect.failed{fee_too_high}` rather than clamped when above the fee bound), and the identity's balance. Refuses mainnet (`connect.mainnet_off`), unknown app connection (`invalid_argument`), any key whose id and public key data do not match the grant record or that fails the app-session-key checks (`connect.failed{unverified_key}`), and insufficient credits (`connect.credits{needed, available}`). | `ConnectError` |
+| `app_connect_disconnect(identity, request, grant)` | async | Disables the app's verified AUTHENTICATION session keys on `identity` in one MASTER-signed IdentityUpdate under `grant` (an `AppDisconnect{max_credits, request}` grant requiring a passphrase, never quick unlock, yielding only `PlatformIdentity`). Refreshes Platform first under the identity's write lock; if every key of the grant is already disabled (such as a retry after an unknown result whose update landed), returns `DisconnectDone{identity, keys_disabled: []}` without spending credits or sending an update. Re-checks every key id and public key data (refusing MASTER, unbounded/non-app CRITICAL, non-AUTHENTICATION, whole-contract DashPay keys, keys outside the grant, and older grants without recorded key data with `connect.failed{unverified_key}`) and re-checks the live fee against both the fee bound (`connect.failed{fee_too_high}`) and `grant.max_credits` (`platform.grant_exceeded`, never clamping). Polls Platform (0, 2 s, 4 s) to confirm; returns `connect.failed{not_confirmed}` if unseen in time. Refused on mainnet (`connect.mainnet_off`). | `ConnectError` |
 
 ## 3. Surface (generated)
 
@@ -1047,7 +1050,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: f0cc5b5390dc91f36a070235e81a9b3bd917fff3e4e66fbc8a32e68c5f51f136 version: 103 -->
+<!-- surface-sha256: 6fa9e9dd46eb5f36dcb95991c18091906d316e3581f8b781600c3b0cb2ff8640 version: 104 -->
 
 ```rust
 // src/platform/app_connect.rs
@@ -1059,6 +1062,8 @@ pub enum ConnectFailure {
     NoResponseKey,
     NothingToSend,
     ScopeChanged,
+    UnverifiedKey,
+    FeeTooHigh,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectTerms {
@@ -1145,6 +1150,46 @@ pub struct ConnectDone {
     pub identity: String,
     pub keys_added: Vec<KeyID>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedAppKey {
+    pub key_id: KeyID,
+    pub level: ConnectLevel,
+    pub scope: ConnectScope,
+    pub budget: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedApp {
+    pub request: String,
+    pub app_id: String,
+    pub label: String,
+    pub returns_to: Option<String>,
+    pub identity: String,
+    pub keys: Vec<ConnectedAppKey>,
+    pub funding_limit: u64,
+    pub expires_at_ms: u64,
+    pub approved_at_ms: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedApps {
+    pub identity: String,
+    pub apps: Vec<ConnectedApp>,
+    pub block_time_ms: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisconnectQuote {
+    pub request: [u8 ; 20],
+    pub identity: String,
+    pub keys: Vec<KeyID>,
+    pub max_credits: u64,
+    pub fee: u64,
+    pub balance: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisconnectDone {
+    pub identity: String,
+    pub keys_disabled: Vec<KeyID>,
+}
 impl From<ConnectRefusal> for ConnectError;
 impl std::fmt::Debug for ConnectUpdateSigner;
 impl Signer<IdentityPublicKey> for ConnectUpdateSigner;
@@ -1153,6 +1198,9 @@ impl DashPay {
     pub async fn app_connect_quote(&self, link: ConnectUri, choice: ConnectChoice) -> Result<ConnectQuote, ConnectError>;
     pub async fn app_connect_approve(&self, link: ConnectUri, choice: ConnectChoice, grant: String) -> Result<ConnectDone, ConnectError>;
     pub async fn app_connect_retry_send(&self, link: ConnectUri) -> Result<ConnectDone, ConnectError>;
+    pub async fn app_connect_list(&self, identity: String) -> Result<ConnectedApps, ConnectError>;
+    pub async fn app_connect_disconnect_quote(&self, identity: String, request: String) -> Result<DisconnectQuote, ConnectError>;
+    pub async fn app_connect_disconnect(&self, identity: String, request: String, grant: String) -> Result<DisconnectDone, ConnectError>;
 }
 // src/platform/contacts.rs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1726,6 +1774,7 @@ pub enum FlowKind {
     MasternodeWithdraw,
     ContactPayFromBalance,
     AppConnect,
+    AppDisconnect,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

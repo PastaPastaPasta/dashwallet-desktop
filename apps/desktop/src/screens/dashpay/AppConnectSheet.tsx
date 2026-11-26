@@ -52,7 +52,7 @@ function AppHeader({ flow }: { flow: ConnectFlow }) {
   );
 }
 
-function GroupDetails({ group }: { group: ConnectGroup }) {
+export function GroupDetails({ group }: { group: ConnectGroup }) {
   const t = useT();
   const rows: [string, string, string[]][] = [
     ["owner", t("dashpay.connect.group.owner"), [group.owner]],

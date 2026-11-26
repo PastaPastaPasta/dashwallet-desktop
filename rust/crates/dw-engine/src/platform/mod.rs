@@ -130,7 +130,7 @@ pub(crate) mod withdrawal;
 pub use app_connect::{
     ConnectBinding, ConnectChoice, ConnectDocumentType, ConnectDone, ConnectFailure, ConnectGroup,
     ConnectIdentity, ConnectLevel, ConnectQuote, ConnectScope, ConnectSheet, ConnectTerms,
-    ConnectToken,
+    ConnectToken, ConnectedApp, ConnectedAppKey, ConnectedApps, DisconnectDone, DisconnectQuote,
 };
 pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;

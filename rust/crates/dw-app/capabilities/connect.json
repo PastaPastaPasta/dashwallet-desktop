@@ -13,6 +13,9 @@
     "allow-app-connect-retry-send",
     "allow-app-connect-deny",
     "allow-app-connect-return",
-    "allow-app-connect-dismiss"
+    "allow-app-connect-dismiss",
+    "allow-app-connect-list",
+    "allow-app-connect-disconnect-quote",
+    "allow-app-connect-disconnect"
   ]
 }
