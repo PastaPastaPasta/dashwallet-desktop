@@ -3,4 +3,4 @@
 /**
  * One readiness check of a Shielded-funded registration.
  */
-export type ShieldedCheckName = "poolActive" | "featureOn" | "denomination" | "balance" | "noUnsettledSpend" | "synced" | "rested";
+export type ShieldedCheckName = "poolActive" | "featureOn" | "denomination" | "balance" | "noUnsettledSpend" | "synced" | "rested" | "poolSize";

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { payFromDashWallet } from "./dashpay";
 import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // PRODUCT #4, the DashPay welcome moment: a registration's success (R9) congratulates the new
@@ -15,6 +16,7 @@ async function toWelcome(page: Page, theme: Theme = "light", whileRunning?: () =
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
   await page.getByTestId("join-create").click();
+  await payFromDashWallet(page);
   await page.getByTestId("registration-name-field").fill(LABEL);
   await expect(page.getByTestId("registration-next")).toBeEnabled();
   await page.getByTestId("registration-next").click();

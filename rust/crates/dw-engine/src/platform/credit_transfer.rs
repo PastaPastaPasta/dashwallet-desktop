@@ -145,6 +145,7 @@ async fn destination(
 /// `DashPay::withdraw_to_platform_quote`.
 pub(crate) async fn quote(
     net: &impl WithdrawNet,
+    session: &NetworkSession,
     wallet: &PlatformWallet,
     network: Network,
     identity: &str,
@@ -157,7 +158,9 @@ pub(crate) async fn quote(
     Ok(WithdrawToPlatformQuote {
         credits,
         fee_credits: rules.fee,
-        to: next_receive_address(wallet, network).await?.address,
+        to: next_receive_address(session, wallet, network)
+            .await?
+            .address,
         grant: GrantRequest {
             max_duffs: 0,
             max_credits: credits + rules.fee,

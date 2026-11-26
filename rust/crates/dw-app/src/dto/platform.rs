@@ -171,10 +171,13 @@ pub enum ShieldedCheckName {
     Synced,
     /// 3 hours since the latest incoming shielded activity.
     Rested,
+    /// The shielded pool holds the notes Platform requires before a
+    /// payment may leave it; an unknown count passes.
+    PoolSize,
 }
 
 mirror_enum!(engine::ShieldedCheck => ShieldedCheckName {
-    PoolActive, FeatureOn, Denomination, Balance, NoUnsettledSpend, Synced, Rested
+    PoolActive, FeatureOn, Denomination, Balance, NoUnsettledSpend, Synced, Rested, PoolSize
 });
 
 /// Whether an identity may send a contact request to another.

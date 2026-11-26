@@ -1575,6 +1575,13 @@ const SCENARIOS = {
   /** Hostile labels and names (U6): they must render as text. */
   xss: (t) => base(t, "xss"),
   "dashpay-no-identity": (t) => base(t),
+  /** The same on mainnet: a username paid from the Shielded balance is off there (flag `shielded_registration`). */
+  "dashpay-no-identity-mainnet": (t) => {
+    const w = base(t);
+    w.launch = { ...w.launch, network: { kind: "mainnet", dirName: "mainnet", unitName: "DASH" } };
+    if (w.pending.networkChoice) w.pending.networkChoice = { ...w.pending.networkChoice, chosen: "mainnet", saved: true };
+    return w;
+  },
   /** A username registration funded and waiting for its InstantSend lock. */
   "dashpay-registering": (t) => {
     const w = base(t);
@@ -1799,6 +1806,24 @@ const SCENARIOS = {
       running: false,
       fundsCommitted: true,
       fromPlatform: true,
+    };
+    w.dashpay.runs = [];
+    return w;
+  },
+  /** Paid from the Shielded balance, its outcome unknown, and the app reopened since: nothing
+   * checks it, so Continue checks it again (F12). */
+  "dashpay-registering-shielded-recheck": (t) => {
+    const w = base(t);
+    w.dashpay = registering();
+    w.dashpay.registrations[0] = {
+      ...w.dashpay.registrations[0],
+      phase: "keysPrepared",
+      waiting: "paymentUnknown",
+      txid: null,
+      holdsKey: false,
+      running: false,
+      fundsCommitted: true,
+      fromShielded: true,
     };
     w.dashpay.runs = [];
     return w;

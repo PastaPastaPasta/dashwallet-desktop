@@ -241,9 +241,10 @@ const FACADE: &[&str] = &[
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
 /// with their tests (0.2 recovery), the input-0 planner with its tests
 /// (1.0 C1a-1), the credit transfer to an own Platform address with its
-/// tests (1.0 C6a-1), the parsers dw-fuzz drives (H-02, `fuzzing`
-/// feature), the kill -9 rows' test folders (H-03), and App Connect's
-/// network seam, rules and tests (1.0 F24).
+/// tests (1.0 C6a-1), the Shielded-funded identity create (1.0 C4b-2),
+/// the parsers dw-fuzz drives (H-02, `fuzzing` feature), the kill -9
+/// rows' test folders (H-03), and App Connect's network seam, rules and
+/// tests (1.0 F24).
 const NOT_FACADE: &[&str] = &[
     "app_connect_net.rs",
     "app_connect_plan.rs",
@@ -325,6 +326,7 @@ const NOT_FACADE: &[&str] = &[
     "registration_platform.rs",
     "registration_platform_tests.rs",
     "registration_rows.rs",
+    "registration_shielded.rs",
     "registration_tests",
     "registration_tests.rs",
     "runtime.rs",
@@ -1092,6 +1094,7 @@ fn error_codes_match_the_contract() {
             },
             RegistrationError::QuoteChanged,
             RegistrationError::Refunded,
+            RegistrationError::PaymentConsumed,
         ],
         RegistrationError::code,
     );
