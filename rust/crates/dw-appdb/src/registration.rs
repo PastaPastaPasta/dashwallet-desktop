@@ -305,6 +305,37 @@ impl AppDb {
             .map(|owner| owner as u64))
     }
 
+    /// Replaces the row's `funding` with `funding` if it still reads
+    /// `expected`, the row is `keys_prepared`, not failed, and still held by
+    /// `owner`, and writes the `local:` key `marker` (`value`) beside it, in one
+    /// transaction synced to disk before it returns: a Shielded-funded row
+    /// names the identity its create makes before the create's dispatch
+    /// artifact is written (C-funding F11), and the marker says the name was
+    /// written on this install. Whether it was written.
+    pub fn set_registration_funding_durable(
+        &self,
+        (wallet_id, id, owner): (&str, i64, u64),
+        (expected, funding): (&str, &str),
+        (marker, value): (&str, &str),
+        now: u64,
+    ) -> Result<bool> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let n = tx.execute(
+                "UPDATE dp_registration SET funding = ?5, updated_at = ?6
+                 WHERE wallet_id = ?1 AND id = ?2 AND owner = ?3 AND funding = ?4
+                     AND phase = 'keys_prepared' AND error IS NULL",
+                params![wallet_id, id, owner as i64, expected, funding, now as i64],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            Self::put_setting(&tx, &crate::local_scope(wallet_id), marker, Some(value))?;
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
     /// Applies `change` if the row is still in `phase` with the failure
     /// state `failed` (compare and set), and still held by `owner`: one
     /// transition, one writer. Evidence (a lock's outpoint the library
@@ -497,6 +528,38 @@ mod tests {
             db.registration_for_lock(W, outpoint(0).as_str()).unwrap(),
             Some(a)
         );
+    }
+
+    /// C-funding F11: the created identity is named durably, with its
+    /// marker, only while the row reads as expected; otherwise nothing.
+    #[test]
+    fn a_shielded_rows_identity_is_named_only_on_the_row_as_read() {
+        let db = AppDb::open_in_memory().unwrap();
+        let id = db.insert_registration(W, &draft("alice"), 1).unwrap();
+        let old = r#"{"v":1,"kind":"core_balance","lock_duffs":1}"#;
+        let new = r#"{"v":1,"kind":"core_balance","lock_duffs":2}"#;
+        let named = |owner, expected| {
+            db.set_registration_funding_durable((W, id, owner), (expected, new), ("m", "7"), 2)
+                .unwrap()
+        };
+        assert!(!named(0, old), "a draft names nothing");
+        let to_keys = RegistrationChange {
+            phase: Some("keys_prepared".into()),
+            ..Default::default()
+        };
+        db.update_registration(W, id, 0, "draft", false, &to_keys, 2)
+            .unwrap();
+        assert!(!named(1, old), "another owner");
+        assert!(!named(0, new), "funding moved");
+        assert_eq!(db.setting(&crate::local_scope(W), "m").unwrap(), None);
+        assert!(named(0, old));
+        let row = db.registration_row(W, id).unwrap().unwrap();
+        assert_eq!(row.funding, new);
+        assert_eq!(
+            db.setting(&crate::local_scope(W), "m").unwrap().as_deref(),
+            Some("7")
+        );
+        assert!(!named(0, old), "written once");
     }
 
     #[test]

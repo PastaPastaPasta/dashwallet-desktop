@@ -91,6 +91,7 @@ pub(crate) mod registration_flow;
 pub(crate) mod registration_ledger;
 mod registration_platform;
 mod registration_rows;
+mod registration_shielded;
 #[cfg(test)]
 mod registration_tests;
 #[cfg(test)]

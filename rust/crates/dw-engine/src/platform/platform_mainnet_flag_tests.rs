@@ -84,9 +84,9 @@ impl World {
     }
 
     fn try_receive_address(&self) -> Result<PlatformReceiveAddress, CreditsError> {
-        self.call(
-            |net, s, w, _| async move { Ok(receive_address(&*net, &w, s.vault.network()).await?) },
-        )
+        self.call(|net, s, w, _| async move {
+            Ok(receive_address(&*net, &s, &w, s.vault.network()).await?)
+        })
     }
 
     fn shield_quote_all(&self) -> Result<PlatformShieldQuote, CreditsError> {

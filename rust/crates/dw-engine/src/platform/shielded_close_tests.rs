@@ -303,6 +303,16 @@ pub(super) fn history_row<S: ShieldedStore>(
 /// Stores [`spends`] for `wallet` and puts their dispatched artifacts in the
 /// journal before pass admission.
 fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
+    store_spends_as(engine, session, wallet, ArtifactKind::Transfer);
+}
+
+/// [`store_spends`] with each artifact of `kind`.
+fn store_spends_as(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    kind: ArtifactKind,
+) {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move {
         stash_spends(&s, wallet).await;
@@ -314,9 +324,13 @@ fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId
                         activity: r.activity_id,
                         origin: ArtifactOrigin::Dispatched,
                         st_hash: Some(Sha256::digest(&r.st_bytes).into()),
-                        kind: Some(ArtifactKind::Transfer),
+                        kind: Some(kind),
                         anchor: Some(r.anchor),
-                        identity_id: None,
+                        identity_id: matches!(
+                            kind,
+                            ArtifactKind::IdentityTopUp | ArtifactKind::IdentityCreate
+                        )
+                        .then_some([0x42; 32]),
                         selected: r.nullifiers.clone(),
                         published: r.nullifiers.clone(),
                     },

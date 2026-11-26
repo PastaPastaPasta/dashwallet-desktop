@@ -48,4 +48,8 @@ invitation: RegistrationInvitation | null,
  * A row funded from the Platform addresses: like a claim's, its resume
  * takes the grant `registrationResumeGrant` sizes.
  */
-fromPlatform: boolean, createdAt: number, updatedAt: number, };
+fromPlatform: boolean,
+/**
+ * A row funded from the Shielded balance.
+ */
+fromShielded: boolean, createdAt: number, updatedAt: number, };

@@ -292,6 +292,20 @@ pub(crate) trait ShieldedLib: Send + Sync {
         to: &PlatformAddress,
         credits: u64,
     ) -> impl Future<Output = Result<(), SpendError>> + Send;
+    /// Shielded → a new identity (C-funding F11): the library's keyset
+    /// create through the dispatch hook, never its seed path, with the
+    /// registration keys of `create.index` signed by `permit`'s identity
+    /// signer. The id the library returns is not evidence (it may build one
+    /// from an unexpected proof): the flow step proves it (F12).
+    fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &ShieldedCreate,
+    ) -> impl Future<Output = Result<(), SpendError>> + Send;
+    /// Platform's shielded note count, proved and at most a few minutes
+    /// old; `None` when it cannot be read in time (C-funding F16: an
+    /// unknown count does not hold a registration back).
+    fn pool_notes(&self) -> impl Future<Output = Option<u64>> + Send;
     /// The wallet's Platform payment account, as an unshield to it reads it.
     fn platform_pool(&self) -> impl Future<Output = Result<PlatformPool, PlatformError>> + Send;
 
@@ -344,6 +358,14 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// The account's spends whose notes the library holds with no record to
     /// re-send and no proof of either outcome, each by its activity id.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
+    /// Acknowledges the library's outcome of the account's transition
+    /// `st_hash`, which lifts its hold on the notes; `false` when there was
+    /// none. Only once the journal holds the spend's settlement. Upstream
+    /// keeps no such outcome: the library's answer is always `false`.
+    fn ack_spend(
+        &self,
+        st_hash: [u8; 32],
+    ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
     /// [`Self::held_spends`] with their activity and held notes, for the
     /// status only.
     fn holds(&self) -> impl Future<Output = Result<Vec<Hold>, PlatformError>> + Send;
@@ -480,6 +502,17 @@ pub(crate) enum Applied {
     /// The apply failed after the lock's credit key signed its transition:
     /// it may have reached Platform and executed.
     Unknown,
+}
+
+/// What a Shielded-funded registration's create spends and makes
+/// (C-funding F11, F13): `denomination` of the version's set, the
+/// registration keys of the identity slot `index`, and `fallback`, the
+/// wallet's own Platform address Platform pays back if it cannot create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShieldedCreate {
+    pub(crate) index: u32,
+    pub(crate) denomination: u64,
+    pub(crate) fallback: PlatformAddress,
 }
 
 /// How a library spend failed.
@@ -755,6 +788,14 @@ pub(crate) async fn registration_facts(
     lib: &impl ShieldedLib,
     facts: &mut ShieldedFacts,
 ) -> Result<(), PlatformError> {
+    // A registration's quote and start (and its funding step) refuse first
+    // while the library cannot spend from the key set, as every other spend
+    // from Shielded does (`keyset_closed`): before any read, and so before
+    // the start takes a fallback.
+    if !lib.keyset_spends() {
+        return Err(PlatformError::Unavailable);
+    }
+    facts.pool_notes = lib.pool_notes().await;
     facts.unsettled = !session.leases.journal_ready()
         || !(session.leases.unrecorded_spends(wallet).await)
             .map_err(|detail| PlatformError::Storage { detail })?
@@ -1729,8 +1770,9 @@ pub(crate) fn keyset_closed(lib: &impl ShieldedLib) -> Result<(), ShieldedError>
 /// Refuses a spend while the library cannot spend from the key set
 /// ([`ShieldedLib::keyset_spends`]), or while the coordinator has no dispatch
 /// hook, when the library would send what the engine never accepted. `send`
-/// and `unshield` ask before anything else, so the refusal quotes nothing,
-/// issues no address and keeps the grant.
+/// and `unshield` ask before anything else, and a registration's funding step
+/// before its lease, so the refusal quotes nothing, issues no address and
+/// keeps the grant.
 pub(super) async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     if !lib.keyset_spends() || !lib.hooked().await {
         return Err(PlatformError::Unavailable.into());
@@ -3056,6 +3098,10 @@ impl ShieldedDispatch for EngineDispatch {
             ShieldedDispatchKind::Unshield => Some(unshield_record(&session, &payload)?),
             _ => None,
         };
+        // A Shielded-funded registration's row names the identity its
+        // create makes before the artifact exists (C-funding F11).
+        let created = (super::registration_shielded::accept_create(&session, &payload).await)
+            .map_err(refused)?;
         let artifact = NewShieldedArtifact {
             activity: payload.activity_id,
             origin: ArtifactOrigin::Dispatched,
@@ -3063,7 +3109,8 @@ impl ShieldedDispatch for EngineDispatch {
             kind: Some(kind),
             anchor: Some(payload.anchor),
             identity_id: match payload.kind {
-                ShieldedDispatchKind::IdentityTopUp { identity_id } => Some(identity_id),
+                ShieldedDispatchKind::IdentityTopUp { identity_id }
+                | ShieldedDispatchKind::IdentityCreate { identity_id } => Some(identity_id),
                 _ => None,
             },
             selected: selected.into_iter().collect(),
@@ -3104,6 +3151,14 @@ impl ShieldedDispatch for EngineDispatch {
             (session.confirm_payout_dispatch(wallet, named, payload.st_hash))
                 .await
                 .map_err(refused)?;
+            (super::registration_shielded::confirm_create(
+                &session,
+                wallet,
+                created,
+                payload.st_hash,
+            ))
+            .await
+            .map_err(refused)?;
             // Armed here, after the artifact and before the send: the one moment
             // the transition can leave (C-routes C1-9). Not armed, the send is
             // refused; a re-send is admitted only once armed (`admit`).
@@ -3194,6 +3249,14 @@ impl ShieldedDispatch for EngineDispatch {
             return Err(refused("a drained fork disposition names the spend"));
         }
         (session.payout_dispatch_recorded(wallet, st_hash).await).map_err(refused)?;
+        // A registration's create is recorded dispatched before it leaves,
+        // also when a stop cut off its record in `dispatch`.
+        if let (Some(ArtifactKind::IdentityCreate), Some(identity)) =
+            (artifact.kind, artifact.identity_id)
+        {
+            (super::registration_shielded::record_dispatch(&session, wallet, identity).await)
+                .map_err(|e| refused(format!("the create's dispatch was not recorded: {e}")))?;
+        }
         // An unshield's record, written before its artifact, is armed before
         // it leaves, also when a stop cut off its arming in `dispatch`.
         if artifact.kind == Some(ArtifactKind::Unshield) {
@@ -3225,7 +3288,32 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, false, body).await
+    let gates = PoolGates {
+        signing: false,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// [`on_pool`] for a quote of a spend or of a move into the pool:
+/// `platform.unavailable` while the library cannot spend from the key set
+/// ([`session_keyset_spends`]), after the wallet's check and before the
+/// coordinator opens, so the refusal waits for no pass.
+pub(crate) async fn on_pool_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    let gates = PoolGates {
+        signing: false,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
 }
 
 /// [`on_pool`] for a call that signs (a send, an unshield, a shield or its
@@ -3244,13 +3332,44 @@ where
     F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
 {
-    run_on_pool(session, wallet_id, true, body).await
+    let gates = PoolGates {
+        signing: true,
+        keyset: false,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// [`on_pool_signing`] for a spend or a move into the pool, refused as
+/// [`on_pool_keyset`] refuses.
+pub(crate) async fn on_pool_signing_keyset<T, F, Fut>(
+    session: &Arc<NetworkSession>,
+    wallet_id: WalletId,
+    body: F,
+) -> Result<T, ShieldedError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<NetworkSession>, PwShielded) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, ShieldedError>> + Send + 'static,
+{
+    let gates = PoolGates {
+        signing: true,
+        keyset: true,
+    };
+    run_on_pool(session, wallet_id, gates, body).await
+}
+
+/// What [`run_on_pool`] admits a call under: `signing`, the session's
+/// close preflight; `keyset`, the spends-off refusal before the open.
+#[derive(Clone, Copy)]
+struct PoolGates {
+    signing: bool,
+    keyset: bool,
 }
 
 async fn run_on_pool<T, F, Fut>(
     session: &Arc<NetworkSession>,
     wallet_id: WalletId,
-    signing: bool,
+    PoolGates { signing, keyset }: PoolGates,
     body: F,
 ) -> Result<T, ShieldedError>
 where
@@ -3272,6 +3391,9 @@ where
             .require_wallet(&wallet_id)
             .map_err(PlatformError::from)?;
         drain_verdict(&session).map_err(|reason| ShieldedError::StoreClosed { reason })?;
+        if keyset {
+            session_keyset_closed(&session)?;
+        }
         let lib = PwShielded::open(&session, wallet_id).await?;
         body(Arc::clone(&session), lib).await
     })
@@ -3280,7 +3402,7 @@ where
 }
 
 /// Tests: makes [`keyset_spends`] answer `on` in `session`, whatever this
-/// build answers ([`RELEASE_KEYSET_SPENDS`]).
+/// build answers ([`session_keyset_spends`]).
 #[cfg(test)]
 pub(crate) fn force_keyset_spends(session: &NetworkSession, on: bool) {
     *(session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner) = Some(on);
@@ -3384,31 +3506,44 @@ pub(crate) async fn sync_info(pw: &PwLib) -> ShieldedSyncInfo {
     info
 }
 
-/// Whether this build spends from the pool's key set: off until a funds
-/// review of the key set path at the shipped head, and off on mainnet until
-/// a mainnet funds ruling. Turning spends on is this one line.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) const RELEASE_KEYSET_SPENDS: bool = false;
-
-/// The one switch for spends from the pool's key set: the library's answer
-/// for [`ShieldedLib::keyset_spends`], [`ShieldedSyncInfo`] and the receive
-/// address (`DashPay::shielded_receive_address`). [`RELEASE_KEYSET_SPENDS`]
-/// in every build; a test's session answers on unless it turns them off
-/// ([`force_keyset_spends`], `keyset_spends_off`).
+/// [`session_keyset_spends`] for the wallet's Platform handle: the
+/// library's answer for [`ShieldedLib::keyset_spends`],
+/// [`ShieldedSyncInfo`] and the receive address
+/// (`DashPay::shielded_receive_address`).
 pub(crate) fn keyset_spends(pw: &PwLib) -> bool {
+    session_keyset_spends(&pw.session)
+}
+
+/// The one switch for spends from the pool's key set. Every reading goes
+/// through it, including the refusals [`on_pool_keyset`] makes before any
+/// pool opens. Off in every build until a funds review of the key set path
+/// at the shipped head, and off on mainnet until a mainnet funds ruling:
+/// turning spends on is the `false` below. A test's session answers on
+/// unless it turns them off ([`force_keyset_spends`], `keyset_spends_off`).
+pub(crate) fn session_keyset_spends(session: &NetworkSession) -> bool {
     #[cfg(test)]
     {
-        if (pw.session.keyset_spends_off).load(Ordering::SeqCst) {
+        if (session.keyset_spends_off).load(Ordering::SeqCst) {
             return false;
         }
         let forced =
-            *(pw.session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner);
+            *(session.platform.keyset_spends.lock()).unwrap_or_else(PoisonError::into_inner);
         forced.unwrap_or(true)
     }
     #[cfg(not(test))]
     {
-        let _ = pw;
-        RELEASE_KEYSET_SPENDS
+        let _ = session;
+        false
+    }
+}
+
+/// [`keyset_closed`] from the session alone: `platform.unavailable` while
+/// the library cannot spend from the key set.
+pub(crate) fn session_keyset_closed(session: &NetworkSession) -> Result<(), ShieldedError> {
+    if session_keyset_spends(session) {
+        Ok(())
+    } else {
+        Err(PlatformError::Unavailable.into())
     }
 }
 
@@ -3667,14 +3802,76 @@ impl ShieldedLib for PwShielded {
             .map_err(|e| SpendError::Library(Box::new(e)))
     }
 
+    /// The one call of the library's pool-funded identity create in the
+    /// engine (keep it the only one: the upstream port changes this body).
+    async fn identity_create(
+        &self,
+        permit: &CallPermit,
+        create: &ShieldedCreate,
+    ) -> Result<(), SpendError> {
+        use dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
+        let signer = permit.identity_signer(&[create.index])?;
+        let public = (signer
+            .derive_public_keys(create.index, &super::keys_policy::registration_specs()))
+        .await
+        .map_err(|e| match e {
+            // As `shielded_keys` reads a locked vault: the row parks for
+            // authority, not failed.
+            crate::EngineError::Signer(dw_vault::SignerError::Locked) => {
+                permit.signatures().note_locked();
+                SpendError::Lease(LeaseError::Locked)
+            }
+            _ => SpendError::Lease(LeaseError::Vault("registration keys")),
+        })?;
+        let public_keys = (public.into_values())
+            .map(|key| {
+                let in_creation = IdentityPublicKeyInCreation::from(&key);
+                (key, in_creation)
+            })
+            .collect();
+        // Released last: a failure above ends the call with nothing released,
+        // so its outcome is Cancelled, not MaybeSent.
+        let keys = permit.shielded_keys()?;
+        let prover = CachedOrchardProver::new();
+        (self.pw.wallet)
+            .shielded_identity_create_from_pool_with_keyset(
+                &self.coordinator,
+                &keys,
+                SHIELDED_ACCOUNT,
+                create.index,
+                public_keys,
+                create.denomination,
+                create.fallback,
+                &signer,
+                &prover,
+            )
+            .await
+            .map(drop)
+            .map_err(|e| SpendError::Library(Box::new(e)))
+    }
+
+    async fn pool_notes(&self) -> Option<u64> {
+        let cache = &self.pw.session.platform.pool_notes;
+        let now = crate::events::unix_now();
+        if let Some((notes, at)) = *super::runtime::guard(cache)
+            && now.saturating_sub(at) < POOL_NOTES_FRESH_SECS
+        {
+            return Some(notes);
+        }
+        let sdk = self.manager.sdk_arc();
+        // Its own task: verification can block its thread past any timer.
+        let read = tokio::spawn(async move { notes_count(&sdk).await });
+        let (notes, at) = tokio::time::timeout(NOTES_COUNT_TIMEOUT, read)
+            .await
+            .ok()?
+            .ok()??;
+        *super::runtime::guard(cache) = Some((notes, at));
+        Some(notes)
+    }
+
     async fn platform_pool(&self) -> Result<PlatformPool, PlatformError> {
         let wallet = &self.pw.wallet;
-        let receive = super::platform_moves::next_receive_address(wallet, self.network()).await?;
-        let receive = super::platform_moves::parse(&receive.address).ok_or_else(|| {
-            PlatformError::Internal {
-                detail: "the receive address does not parse".into(),
-            }
-        })?;
+        let (receive, _) = super::platform_moves::next_receive(&self.pw.session, wallet).await?;
         let addresses = super::platform_moves::pool(wallet)
             .await?
             .into_keys()
@@ -3770,6 +3967,13 @@ impl ShieldedLib for PwShielded {
     async fn held_spends(&self) -> Result<HashSet<[u8; 32]>, PlatformError> {
         let store = self.coordinator.store().read().await;
         held_without_record(&*store, self.subwallet()).map_err(store_error)
+    }
+
+    /// Upstream keeps no outcome to acknowledge: the library lifts its own
+    /// reservation of a spend's notes (refused before delivery, or its anchor
+    /// proven pruned), so the engine frees nothing here.
+    async fn ack_spend(&self, _: [u8; 32]) -> Result<bool, PlatformError> {
+        Ok(false)
     }
 
     async fn holds(&self) -> Result<Vec<Hold>, PlatformError> {
@@ -5010,7 +5214,7 @@ const BIND_PASS_WAIT: Duration = Duration::from_secs(5);
 /// library's call has returned and its outcome is read; `platform.unavailable`
 /// (retry) when a pass in flight
 /// does not end within [`SPEND_PASS_WAIT`].
-async fn hold_passes(
+pub(super) async fn hold_passes(
     session: &NetworkSession,
 ) -> Result<tokio::sync::RwLockWriteGuard<'_, ()>, ShieldedError> {
     let spends = session.platform.shielded_spends.write();
@@ -5076,6 +5280,9 @@ pub(crate) async fn periodic_pass(
     let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
         return false;
     };
+    if let Some(count) = count {
+        *super::runtime::guard(&session.platform.pool_notes) = Some(count);
+    }
     if !runs(&session) || session.enter().await.is_err() {
         return false;
     }
@@ -5291,6 +5498,9 @@ async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
 
 /// How long one transport attempt of the note count's read waits.
 const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How old a proved note count the registration's pool check takes.
+const POOL_NOTES_FRESH_SECS: u64 = 300;
 
 /// How long a periodic pass waits for the note count, its two attempts and
 /// the proof's verification included, before it runs as if the read failed

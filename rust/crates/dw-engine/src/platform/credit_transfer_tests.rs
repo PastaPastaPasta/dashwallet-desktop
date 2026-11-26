@@ -42,9 +42,9 @@ impl World {
         amount: WithdrawAmount,
     ) -> Result<WithdrawToPlatformQuote, CreditsError> {
         let me = me();
-        self.call(
-            move |net, s, w| async move { quote(&*net, &w, s.vault.network(), &me, amount).await },
-        )
+        self.call(move |net, s, w| async move {
+            quote(&*net, &s, &w, s.vault.network(), &me, amount).await
+        })
     }
 
     fn transfer_to(
@@ -164,7 +164,7 @@ fn the_quote_is_the_plan_its_address_and_grant() {
     );
     let receive = w
         .call(|_, s, wallet| async move {
-            Ok(next_receive_address(&wallet, s.vault.network())
+            Ok(next_receive_address(&s, &wallet, s.vault.network())
                 .await?
                 .address)
         })
@@ -535,7 +535,7 @@ fn a_transfer_to_the_platform_addresses_is_off_on_mainnet() {
     let w = World::on(crate::DashNetwork::Mainnet, 3 * DASH);
     let to = w
         .call(|_, s, wallet| async move {
-            Ok(next_receive_address(&wallet, s.vault.network())
+            Ok(next_receive_address(&s, &wallet, s.vault.network())
                 .await?
                 .address)
         })
