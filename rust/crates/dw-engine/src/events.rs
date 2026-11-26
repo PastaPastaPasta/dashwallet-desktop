@@ -737,6 +737,11 @@ pub(crate) struct SessionHub {
     /// Tests: new transactions don't start the check for unsigned claims.
     #[cfg(test)]
     pub(crate) skip_unsigned_check: std::sync::atomic::AtomicBool,
+    /// Tests: no payment's outputs are withheld
+    /// ([`crate::withhold::pending_unproven`]), as in a build before the
+    /// withhold, for a test that sets up the store such a build left.
+    #[cfg(test)]
+    pub(crate) skip_withhold: std::sync::atomic::AtomicBool,
     /// Tests: a sweep doesn't start the drop of what is built on it, as at
     /// an exit right after the sweep.
     #[cfg(test)]
@@ -1070,6 +1075,8 @@ impl SessionHub {
             dead_hooks_done: Default::default(),
             #[cfg(test)]
             skip_unsigned_check: Default::default(),
+            #[cfg(test)]
+            skip_withhold: Default::default(),
             #[cfg(test)]
             skip_dead_hook: Default::default(),
             #[cfg(test)]

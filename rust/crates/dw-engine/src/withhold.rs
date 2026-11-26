@@ -174,7 +174,15 @@ impl SessionHub {
     /// lock) and the history hold them now. Every surface that counts or
     /// offers coins reads this map and nothing else.
     pub(crate) fn excluded_coins(&self, wallet: WalletId, core: &ManagedWalletInfo) -> Exclusions {
-        let withheld = (self.history).read_wallet(&wallet, |h| pending_unproven(core, h));
+        #[cfg(test)]
+        let skip = (self.skip_withhold).load(std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let skip = false;
+        let withheld = if skip {
+            BTreeSet::new()
+        } else {
+            (self.history).read_wallet(&wallet, |h| pending_unproven(core, h))
+        };
         let mut out: Exclusions = (withheld.into_iter())
             .map(|o| (o, ExclusionReason::PendingUnproven))
             .collect();
