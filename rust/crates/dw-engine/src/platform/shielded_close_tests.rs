@@ -1110,7 +1110,8 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
 /// [`a_marked_spend_needs_a_confirmation_after_a_relaunch`] while key set
 /// spends are off: the status names the marker and Close Wallet is refused;
 /// a send and an unshield are `platform.unavailable`, confirmed or not; a
-/// shield is not gated.
+/// shield is not gated by the marker. The receive address is read with
+/// spends on, since with them off it is refused too.
 #[test]
 fn a_marked_spend_after_a_relaunch_holds_the_close_and_every_spend_is_unavailable() {
     marked_spend_after_a_relaunch(false, |_| ("platform.unavailable", "platform.unavailable"));
@@ -1162,10 +1163,12 @@ fn marked_spend_after_a_relaunch(on: bool, want: impl Fn(bool) -> (&'static str,
         "{unloaded:?}"
     );
 
+    pool::force_keyset_spends(&session, true);
     let to = engine
         .block_on(dp.shielded_receive_address())
         .unwrap()
         .address;
+    pool::force_keyset_spends(&session, on);
     let code = |r: Result<super::shielded::ShieldedSpendOutcome, super::ShieldedError>| {
         r.unwrap_err().code()
     };
