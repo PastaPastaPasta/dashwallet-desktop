@@ -357,5 +357,8 @@ describe("the flow over the fixture", () => {
     const { flow } = await open("credits");
     expect([flow.phase, flow.quote]).toEqual(["sheet", null]);
     expect(connectErrorText(flow.quoteError, "testnet")).toMatch(/^Your identity needs [\d,]+ more in credits/);
+    await flow.requote();
+    expect([flow.phase, flow.quote, flow.quoting]).toEqual(["sheet", null, false]);
+    expect(connectErrorText(flow.quoteError, "testnet")).toMatch(/^Your identity needs [\d,]+ more in credits/);
   });
 });

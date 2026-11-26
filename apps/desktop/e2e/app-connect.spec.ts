@@ -185,6 +185,16 @@ test("a reopened sheet whose quote failed offers Try again, which quotes the sam
   await expect(page.getByTestId("connect-done")).toBeVisible();
 });
 
+test("a credit shortfall offers Try again, which checks the balance again", async ({ page }) => {
+  await openConnect(page, "credits");
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await page.getByTestId("connect-quote-retry").click();
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+});
+
 test("a Deny after keys not confirmed doesn't say nothing was added", async ({ page }) => {
   await openConnect(page, "notConfirmed");
   await quoted(page);
