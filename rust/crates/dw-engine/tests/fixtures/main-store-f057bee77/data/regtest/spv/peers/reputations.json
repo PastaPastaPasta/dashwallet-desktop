@@ -1,0 +1,14 @@
+{
+  "127.0.0.1:44159": {
+    "score": 10,
+    "ban_count": 0,
+    "positive_actions": 0,
+    "negative_actions": 1,
+    "connection_attempts": 2,
+    "successful_connections": 1,
+    "last_seen": {
+      "secs_since_epoch": 1795707237,
+      "nanos_since_epoch": 324986398
+    }
+  }
+}
