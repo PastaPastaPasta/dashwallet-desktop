@@ -318,7 +318,8 @@ fn resolve_after_the_rescan_sends_the_locks_coins_back() {
 }
 
 /// A resume of the lock between the phases: the catch-up resends it,
-/// which lifts its stop (here SPV's restart, which drops every stop), and
+/// which lifts its stop (here SPV's restart: the pinned dash-spv keeps no
+/// stop, [`spv_forgot_its_stops`]), and
 /// the wallet sees it again unconfirmed. It stays abandoned and A is
 /// counted once; the next Resolve stops its rebroadcast again rather than
 /// wedging, and after the rescan sends A back.
