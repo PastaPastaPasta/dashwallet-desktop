@@ -6759,6 +6759,82 @@ button.bell-row-open:focus-visible {
   align-items: end;
 }
 
+/* A shared masternode's pane section: the share bar (this wallet's shares in the accent), its legend and lines. */
+.sh-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-l);
+}
+
+.sh-detail p {
+  margin: 0;
+}
+
+.sh-sharebar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin: var(--dw-space-xs) 0;
+}
+
+.sh-sharebar > span {
+  flex-basis: 0;
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-sharebar > span.is-mine {
+  background: var(--dw-role-accent);
+}
+
+.sh-node-hash {
+  display: block;
+}
+
+.sh-key-lines {
+  overflow-wrap: anywhere;
+}
+
+.sh-legend,
+.sh-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  margin: 0 0 var(--dw-space-xs);
+  padding: 0;
+  list-style: none;
+}
+
+.sh-legend {
+  flex-flow: row wrap;
+  gap: var(--dw-space-xxs) var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.sh-legend li::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--dw-space-xxs);
+  border-radius: 2px;
+  background: var(--dw-role-progress-track);
+}
+
+.sh-legend li.is-mine {
+  color: var(--dw-role-text-primary);
+}
+
+.sh-legend li.is-mine::before {
+  background: var(--dw-role-accent);
+}
+
+.sh-standby-share {
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
 .page-masternodes .mg-notice {
   margin-bottom: var(--dw-space-l);
 }
@@ -7043,7 +7119,15 @@ button.bell-row-open:focus-visible {
   padding: 0;
 }
 
-.connect-critical {
+.connect-quote-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-s);
+}
+
+.connect-critical,
+.connect-key-note {
   margin: var(--dw-space-xs) 0 0;
   margin-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
 }
