@@ -1011,9 +1011,13 @@ pub(crate) fn activity(e: ShieldedActivityEntry, network: Network) -> ShieldedAc
         | Kind::PrivateDocumentCreate
         | Kind::PrivateContactRequest => ShieldedActivityKind::Spend,
     };
-    // A token spend's amount counts tokens; the credits it moved are its fee.
+    // A token spend's amount counts tokens, and a private document's is its
+    // fee: either way the credits it moved are its fee alone.
     let credits = match e.kind {
-        Kind::TokenShieldedTransfer | Kind::TokenUnshield { .. } => 0,
+        Kind::TokenShieldedTransfer
+        | Kind::TokenUnshield { .. }
+        | Kind::PrivateDocumentCreate
+        | Kind::PrivateContactRequest => 0,
         _ => e.amount,
     };
     let counterparty = (e.counterparty.as_deref()).and_then(|bytes| match e.kind {
