@@ -142,7 +142,10 @@ fn the_engine_takes_a_key_set_only_for_one_library_call() {
         vec!["src/platform/lease/call.rs".to_owned()],
         "only the permit's release names the key set type: no field, cache or channel holds one"
     );
-    assert_eq!(calls, 3, "transfer, withdraw and unshield each take one");
+    assert_eq!(
+        calls, 4,
+        "transfer, withdraw, unshield and the identity create each take one"
+    );
     let call = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/platform/lease/call.rs"),
     )
