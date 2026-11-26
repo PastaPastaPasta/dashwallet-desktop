@@ -103,6 +103,52 @@ fn reported_outcomes_settle_the_journal() {
     engine.block_on(session.unload_wallet(wallet)).unwrap();
 }
 
+/// A Shielded-funded identity create is never settled `executed` by its
+/// history row: its notes read spent may be another install's spend of the
+/// same notes, which proves nothing of it, so a confirmed row leaves it
+/// unresolved for its registration's evidence, again at the next pass. A
+/// failed row with nothing of it held is upstream's own release:
+/// `not_executed`. Mutant: settle a create's confirmed row executed.
+#[test]
+fn a_confirmed_create_is_left_to_its_registration() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    store_spends_as(&engine, &session, wallet, ArtifactKind::IdentityCreate);
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let [spent, failed]: [PendingRedrive; 2] = spends().try_into().unwrap();
+        for n in &spent.nullifiers {
+            store.clear_pending(subwallet(wallet), n).unwrap();
+        }
+        store
+            .clear_redrive(subwallet(wallet), &spent.activity_id)
+            .unwrap();
+        history_row(
+            &mut *store,
+            subwallet(wallet),
+            &spent,
+            ShieldedActivityStatus::Confirmed,
+        );
+        refuse_undelivered(&mut *store, subwallet(wallet), &failed);
+    });
+    let unresolved = (
+        ArtifactStatus::Unresolved { unrecorded: false },
+        Some(("unresolved".into(), Some("unattributable".into()))),
+        false,
+    );
+    for _ in 0..2 {
+        pass(&engine, &session);
+        assert_eq!(settlement(&engine, &session, wallet, 1), unresolved);
+        assert_eq!(
+            settlement(&engine, &session, wallet, 2),
+            (ArtifactStatus::NotExecuted, None, false)
+        );
+    }
+}
+
 /// An outcome the library reports and the journal has not read holds the
 /// wallet: the library keeps it in memory only, so a removal would lose it.
 /// With spend 1's row confirmed and spend 2's failed (record and
