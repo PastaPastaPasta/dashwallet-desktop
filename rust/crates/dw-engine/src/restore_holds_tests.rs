@@ -1771,19 +1771,28 @@ fn watch_only_xpub() -> key_wallet::bip32::ExtendedPubKey {
     ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap())
 }
 
-/// A watch-only wallet added in a session with no wallet that a mark
-/// holds builds its holds at its load there; the mark clears with no
-/// reopen.
+/// While the mark holds, a wallet is added only from its phrase: a
+/// watch-only add is refused with `RestoreOnly`, the mark stays, and
+/// nothing of the wallet is written (no restore hold, no Platform row).
 #[test]
-fn a_watch_only_wallet_added_in_session_clears_the_mark() {
+fn a_watch_only_wallet_is_refused_while_the_mark_holds() {
     let (_dir, engine, session) = engine_without_wallet();
     let session = restored_with(&engine, session, "");
     all_synced(&session);
-    let id = engine
-        .block_on(session.import_watch_only(watch_only_xpub().to_string(), Default::default()))
+    let xpub = watch_only_xpub();
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, session.network.core_network());
+    let added = engine.block_on(session.import_watch_only(xpub.to_string(), Default::default()));
+    assert!(matches!(added, Err(EngineError::RestoreOnly)), "{added:?}");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(
+        session.restored() && mark_present(&session),
+        "the mark cleared"
+    );
+    let holds = (session.live().unwrap().appdb)
+        .settings_with_prefix_lossy(&id.to_string(), crate::restore_gate::RESTORE_HOLD_PREFIX)
         .unwrap();
-    assert!((session.hub.history).read_wallet(&id, |h| h.restore_holds_built));
-    eventually("the mark clears", || !session.restored());
+    assert!(holds.is_empty(), "{holds:?}");
+    assert!(!platform_row(&session, id));
 }
 
 /// A Platform pass noted for a watch-only wallet before it is added does
@@ -1865,9 +1874,20 @@ fn residue_with_a_closed_wallet() -> (
 ) {
     let (dir, engine, session, id, _paid, _p) = held_payment();
     let other = engine
-        .block_on(session.create_wallet(12))
-        .unwrap()
-        .wallet_id;
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(super::BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
     let session = finished_without_platform(&engine, session);
     engine
         .block_on(session.set_load_on_startup(other, false))
