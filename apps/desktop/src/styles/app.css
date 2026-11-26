@@ -7043,7 +7043,8 @@ button.bell-row-open:focus-visible {
   padding: 0;
 }
 
-.connect-critical {
+.connect-critical,
+.connect-key-note {
   margin: var(--dw-space-xs) 0 0;
   margin-inline-start: calc(var(--dw-space-l) + var(--dw-space-s));
 }

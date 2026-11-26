@@ -11,7 +11,7 @@ import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { CopyIconButton } from "../../components/copy";
 import { Sheet } from "../../components/sheet";
-import { bindingText, ConnectFlow, connectErrorText, criticalText, expiryDays, highTokensText, limitText, quotedLimit } from "../../dashpay/connect";
+import { bindingText, ConnectFlow, connectErrorText, criticalText, expiryDays, limitText, quotedLimit, tokenCostText } from "../../dashpay/connect";
 import { creditCount } from "../../dashpay/profile";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
@@ -84,7 +84,7 @@ function GroupDetails({ group }: { group: ConnectGroup }) {
 function BindingRow({ flow, binding }: { flow: ConnectFlow; binding: ConnectBinding }) {
   const { scope } = binding;
   const critical = criticalText(binding);
-  const highTokens = highTokensText(binding);
+  const tokenCost = tokenCostText(binding);
   const contract = scope.kind === "contract" || scope.kind === "documentType" ? scope.contract : null;
   return (
     <li className="connect-binding" data-testid="connect-binding" data-index={binding.index} data-primary={binding.primary || undefined}>
@@ -109,9 +109,9 @@ function BindingRow({ flow, binding }: { flow: ConnectFlow; binding: ConnectBind
           {critical}
         </p>
       )}
-      {highTokens !== null && (
-        <p className="sheet-warning connect-critical" role="note" data-testid="connect-high-tokens">
-          {highTokens}
+      {tokenCost !== null && (
+        <p className="sheet-warning connect-key-note" role="note" data-testid="connect-token-cost">
+          {tokenCost}
         </p>
       )}
     </li>
