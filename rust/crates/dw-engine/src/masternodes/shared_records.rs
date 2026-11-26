@@ -376,8 +376,8 @@ pub enum Settlement {
     /// block.
     Pending { txid: String },
     /// A spend of a reserved coin is in a block that may still become
-    /// final and isn't yet final and buried. Nothing hands the session off
-    /// again meanwhile (`shared_stage{conflicting}`).
+    /// final and isn't yet final and buried. Nothing hands a registration
+    /// off again meanwhile (`shared_stage{conflicting}`).
     Confirming {
         by: SettledBy,
         confirmations: u32,

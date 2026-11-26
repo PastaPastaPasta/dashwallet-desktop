@@ -1323,8 +1323,8 @@ export const masternodes = {
         one: "A transaction spending your reserved coins is in a block (1 confirmation). The wallet waits for a ChainLock to make it final.",
         other: "A transaction spending your reserved coins is in a block ({count} confirmations). The wallet waits for a ChainLock to make it final.",
       },
-      /** `contested` before the read has the block's confirmations. */
-      contestedPending: "A transaction spending your reserved coins is in a block. The wallet waits for a ChainLock to make it final.",
+      /** `contested` before the read has the block: the same `next` also follows an abandon, so nothing more is known. */
+      contestedPending: "Waiting for the network to settle this session's coins.",
       resendText: "Send the same transaction again. It uses the same coins and costs at most {charge}.",
       handoffRefused: "The wallet couldn't hand the registration to the network: {sentence}.",
       handoffUnknown: "The wallet couldn't confirm the registration reached the network: {sentence}. It may still confirm.",

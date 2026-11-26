@@ -416,7 +416,7 @@ describe("Abandon", () => {
     const refusal = { code: "masternodes.shared_stage", message: "m", data: { kind: "sharedStage", stage: "conflicting" } };
     expect(sharedErrorText(refusal, { network: "testnet", dash: String })).toBe("A transaction spending this registration's coins is in a block, so it can't be sent again unless that block is undone.");
     expect(renderSession({ ...contested, confirming: null }, S5_SLICE).row, "before the read has the block").toBe("contested");
-    expect(t("masternodes.shared.row.contestedPending")).toBe("A transaction spending your reserved coins is in a block. The wallet waits for a ChainLock to make it final.");
+    expect(t("masternodes.shared.row.contestedPending")).toBe("Waiting for the network to settle this session's coins.");
     const participant = participantSession("funding_signed", { txid: "7e".repeat(32), discardable: false, next: "nothing", abandonable: false, abandonCharge: null, confirming: confirming("other_spend", 1) });
     expect(renderSession(participant, S5_SLICE)).toEqual({ row: "contested", primary: null, copy: false, known: true });
     expect(wayOutShown(participant, "contested"), "Activity's abandon stays offered").toBe("collapsed");

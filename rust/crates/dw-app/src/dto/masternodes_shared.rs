@@ -270,7 +270,7 @@ pub enum SettledByName {
 mirror_enum!(engine::SettledBy => SettledByName { AbandonTx, OtherSpend });
 
 /// A spend of a session's reserved coins in a block that may still become
-/// final and isn't yet final and buried. The session isn't sent again
+/// final and isn't yet final and buried. A registration isn't sent again
 /// meanwhile (`next` is `nothing`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

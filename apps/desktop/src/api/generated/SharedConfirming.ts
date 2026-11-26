@@ -3,7 +3,7 @@ import type { SettledByName } from "./SettledByName";
 
 /**
  * A spend of a session's reserved coins in a block that may still become
- * final and isn't yet final and buried. The session isn't sent again
+ * final and isn't yet final and buried. A registration isn't sent again
  * meanwhile (`next` is `nothing`).
  */
 export type SharedConfirming = { by: SettledByName, confirmations: number, };
