@@ -4215,12 +4215,8 @@ fn a_child_relayed_between_the_sweep_and_the_reconcile_goes() {
     assert_child_dropped(&engine, &session, id, (&c, c_change, d), "restarted");
 }
 
-/// #170 case 4 with no relay: P and C stored, a winner of A that pays the
-/// wallet mined after a restart, after the funding. P and C go, and D,
-/// which only C spent, counts once its funding block is scanned again.
-/// Returns the session then, what the wallet holds, D, and the blocks of
-/// the funding and the winner.
-fn a_beaten_payments_child_after_the_funding_scan() -> (
+/// What [`a_beaten_payments_child_after_the_funding_scan`] returns.
+type BeatenChildAfterScan = (
     tempfile::TempDir,
     Engine,
     Arc<NetworkSession>,
@@ -4228,7 +4224,14 @@ fn a_beaten_payments_child_after_the_funding_scan() -> (
     BTreeSet<OutPoint>,
     OutPoint,
     Vec<(u32, Vec<Transaction>)>,
-) {
+);
+
+/// #170 case 4 with no relay: P and C stored, a winner of A that pays the
+/// wallet mined after a restart, after the funding. P and C go, and D,
+/// which only C spent, counts once its funding block is scanned again.
+/// Returns the session then, what the wallet holds, D, and the blocks of
+/// the funding and the winner.
+fn a_beaten_payments_child_after_the_funding_scan() -> BeatenChildAfterScan {
     let (dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
     let p = send(
