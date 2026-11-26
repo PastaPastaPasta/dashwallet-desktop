@@ -19,4 +19,8 @@ earlierApproval: ConnectChoice | null,
 /**
  * UNIX milliseconds: Platform's block time the sheet was read at.
  */
-blockTimeMs: number, };
+blockTimeMs: number,
+/**
+ * The digest of the group facts the bindings show, hex.
+ */
+groups: string, };
