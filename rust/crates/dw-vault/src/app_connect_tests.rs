@@ -15,8 +15,9 @@ use zeroize::Zeroizing;
 
 use super::*;
 use crate::{
-    Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, SeedDerivation, SignerError,
-    SignerScope, SystemClock, Vault, VaultConfig, VaultError, VaultSigner, WalletSecret,
+    Credential, GrantKind, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, SeedDerivation,
+    SignerError, SignerScope, SystemClock, Vault, VaultConfig, VaultError, VaultSigner,
+    WalletSecret,
 };
 
 const W: [u8; 32] = [1; 32];
@@ -352,6 +353,56 @@ fn a_session_key_never_signs() {
     ));
 }
 
+/// Its own request's keys too are reached only through the methods that
+/// check the request, never through a raw path.
+#[test]
+fn an_app_connect_signer_reaches_no_key_through_a_raw_path() {
+    use crate::signer::KeyUse;
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir);
+    let app = app_eph_pub(9);
+    let signer = connect_signer(&v, &app);
+    let session = key_path(
+        signer.network(),
+        OWNER,
+        &app,
+        &AppKey::Session { binding_index: 0 },
+    );
+    let encryption = key_path(
+        signer.network(),
+        OWNER,
+        &app,
+        &AppKey::Encryption {
+            contract: APP,
+            purpose: ApplicationKeyPurpose::Encryption,
+            rotation: Some(0),
+        },
+    );
+    for path in [&session, &encryption] {
+        for key_use in [KeyUse::Sign, KeyUse::PublicKey, KeyUse::Message] {
+            assert!(signer.check(key_use, path).is_err(), "{key_use:?} {path}");
+        }
+        assert!(
+            signer.check(KeyUse::AppConnectPublicKey, path).is_ok(),
+            "{path}"
+        );
+    }
+    assert!(signer.check(KeyUse::AppConnectSign, &encryption).is_ok());
+    assert!(signer.check(KeyUse::AppConnectSign, &session).is_err());
+    let public = signer
+        .app_public_key(
+            OWNER,
+            &app,
+            &AppKey::Encryption {
+                contract: APP,
+                purpose: ApplicationKeyPurpose::Encryption,
+                rotation: Some(0),
+            },
+        )
+        .unwrap();
+    assert!(signer.sign_identity(&encryption, &public, b"data").is_err());
+}
+
 #[test]
 fn an_app_connect_signer_reaches_no_identity_or_wallet_key() {
     let dir = tempfile::tempdir().unwrap();
@@ -370,6 +421,35 @@ fn an_app_connect_signer_reaches_no_identity_or_wallet_key() {
             .check(crate::signer::KeyUse::Export, &identity_key)
             .is_err()
     );
+}
+
+/// The key-checked redemption takes an App Connect grant only as one, and
+/// leaves it unused otherwise.
+#[test]
+fn a_key_checked_redemption_takes_only_the_kind_it_expects() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(&dir);
+    let grant = v
+        .authorize(
+            connect_purpose([3; 20]),
+            Some(&W),
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    for other in [GrantKind::PlatformOp, GrantKind::AppDisconnect] {
+        assert_eq!(
+            v.redeem_grant_holding_key(&grant.id, other, &W, &[])
+                .unwrap_err(),
+            VaultError::GrantPurposeMismatch,
+            "{other:?}"
+        );
+    }
+    assert!(matches!(
+        v.redeem_grant_holding_key(&grant.id, GrantKind::AppConnect, &W, &[]),
+        Ok(None)
+    ));
+    v.check_grant(&grant.id, GrantKind::AppConnect, Some(&W))
+        .unwrap();
 }
 
 #[test]

@@ -1606,7 +1606,9 @@ fn key_plan(
 /// The previous grant's session keys for the same identity, app and
 /// connection id that are still enabled: disabled in the same update. Only
 /// a confirmed record's ids are known to hold its keys; a submitted one's
-/// may since belong to another key.
+/// may since belong to another key. The records are local, so each id must
+/// also name a key a login of this request could have added
+/// ([`supersedable`]).
 fn superseded(
     records: &[ConnectRecord],
     identity: &Identity,
@@ -1630,12 +1632,37 @@ fn superseded(
             identity
                 .public_keys()
                 .get(id)
-                .is_some_and(|k| !k.is_disabled())
+                .is_some_and(|k| supersedable(k, request))
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
         .take(MAX_DISABLED)
         .collect()
+}
+
+/// Whether `key` is what a login of `request` adds as a session key, and so
+/// may be disabled as one: enabled, a contract-bounded AUTHENTICATION key
+/// with limits, bound to one of the request's contracts (or document types)
+/// or groups.
+fn supersedable(key: &IdentityPublicKey, request: &AppConnectRequest) -> bool {
+    if key.is_disabled() || key.purpose() != Purpose::AUTHENTICATION || !key.has_limits() {
+        return false;
+    }
+    let Some(bounds) = key.contract_bounds() else {
+        return false;
+    };
+    request
+        .auth_bindings
+        .iter()
+        .any(|b| match (&b.bounds, bounds) {
+            (
+                Bounds::Contract(c) | Bounds::DocumentType(c, _),
+                ContractBounds::SingleContract { id }
+                | ContractBounds::SingleContractDocumentType { id, .. },
+            ) => plan::id(c) == *id,
+            (Bounds::Group(g), ContractBounds::ContractGroup { id }) => plan::id(g) == *id,
+            _ => false,
+        })
 }
 
 async fn records(

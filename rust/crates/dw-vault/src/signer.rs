@@ -163,13 +163,17 @@ pub enum SignerScope {
     /// while the full key needs no prompt
     /// ([`crate::Vault::shielded_viewing_key`]).
     ShieldedView,
-    /// One App Connect login, from an `AppConnect` grant: public keys of the
-    /// DIP-13 application keys (session keys `m/9'/coin'/5'/6'/…`, shared
-    /// encryption keys `m/9'/coin'/5'/7'/…`), the proof-of-possession
-    /// signature of a new encryption key, and their seal to the app
-    /// ([`VaultSigner::app_connect_seal`]). Only session keys of the
-    /// request whose ephemeral key hashes to `request` are in reach; no
-    /// identity key, address or raw key leaves it.
+    /// One App Connect login, from an `AppConnect` grant, and only through
+    /// the methods that build each key's path ([`VaultSigner::app_key_path`]),
+    /// which refuse any request but the one whose ephemeral key hashes to
+    /// `request`: the public keys of that request's DIP-13 session keys
+    /// (`m/9'/coin'/5'/6'/…`) and of the shared encryption keys
+    /// (`m/9'/coin'/5'/7'/…`) of the identity and contract the caller names,
+    /// each encryption key's proof-of-possession signature, and their seal to
+    /// the app ([`VaultSigner::app_connect_seal`]). A session key never
+    /// signs. No signature or public key through a raw path (the `Signer`
+    /// trait, [`VaultSigner::sign_identity`]), and no identity key, address
+    /// or other raw key.
     AppConnect { request: [u8; 20] },
 }
 
@@ -207,6 +211,12 @@ pub(crate) enum KeyUse {
     /// The key is sealed to an App Connect app
     /// ([`VaultSigner::app_connect_seal`]).
     AppConnectSeal,
+    /// The public key of a request's App Connect key
+    /// ([`VaultSigner::app_public_key`]).
+    AppConnectPublicKey,
+    /// The proof-of-possession signature of a request's App Connect
+    /// encryption key ([`VaultSigner::sign_app_key`]).
+    AppConnectSign,
 }
 
 impl SignerScope {
@@ -238,9 +248,11 @@ impl SignerScope {
             // No export of an asset-lock credit key or its account
             // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
-                KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal | KeyUse::AppConnectSeal => {
-                    false
-                }
+                KeyUse::OwnerPayload
+                | KeyUse::MasternodeWithdrawal
+                | KeyUse::AppConnectSeal
+                | KeyUse::AppConnectPublicKey
+                | KeyUse::AppConnectSign => false,
                 KeyUse::Sign | KeyUse::Message => {
                     !paths::is_owner_key(path, network) && !paths::is_voting_key(path, network)
                 }
@@ -263,7 +275,9 @@ impl SignerScope {
                 | KeyUse::Vote
                 | KeyUse::OwnerPayload
                 | KeyUse::MasternodeWithdrawal
-                | KeyUse::AppConnectSeal => false,
+                | KeyUse::AppConnectSeal
+                | KeyUse::AppConnectPublicKey
+                | KeyUse::AppConnectSign => false,
                 KeyUse::PublicKey | KeyUse::ExtendedPublicKey => {
                     paths::is_dashpay_receiving_account(path, network)
                         || paths::is_auto_accept_key(path, network)
@@ -316,14 +330,15 @@ impl SignerScope {
             }
             // ZIP-32 starts from the seed ([`VaultSigner::with_seed`]).
             SignerScope::ShieldedSpend | SignerScope::ShieldedView => false,
-            // The request binding of a session key is checked where its
-            // path is built ([`VaultSigner::app_key_path`]).
+            // The request binding of a key is checked where its path is
+            // built ([`VaultSigner::app_key_path`]); only the App Connect
+            // uses, which build their paths there, are allowed.
             SignerScope::AppConnect { .. } => {
                 let session = paths::app_session_key(path, network).is_some();
                 let encryption = paths::app_encryption_key(path, network).is_some();
                 match key_use {
-                    KeyUse::PublicKey | KeyUse::AppConnectSeal => session || encryption,
-                    KeyUse::Sign => encryption,
+                    KeyUse::AppConnectPublicKey | KeyUse::AppConnectSeal => session || encryption,
+                    KeyUse::AppConnectSign => encryption,
                     _ => false,
                 }
             }
@@ -746,7 +761,7 @@ mod tests {
     }
 
     const T: Network = Network::Testnet;
-    const ALL_USES: [KeyUse; 10] = [
+    const ALL_USES: [KeyUse; 13] = [
         KeyUse::Sign,
         KeyUse::Message,
         KeyUse::PublicKey,
@@ -757,6 +772,9 @@ mod tests {
         KeyUse::Vote,
         KeyUse::OwnerPayload,
         KeyUse::MasternodeWithdrawal,
+        KeyUse::AppConnectSeal,
+        KeyUse::AppConnectPublicKey,
+        KeyUse::AppConnectSign,
     ];
     /// A withdrawal scope of each key kind (MG-13 P3).
     const WITHDRAW_OWNER: SignerScope = SignerScope::MasternodeWithdrawal {

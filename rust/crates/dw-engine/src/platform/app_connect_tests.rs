@@ -1920,6 +1920,81 @@ fn a_renewal_keeps_a_key_that_took_an_unlanded_id() {
     assert!(!f.net.me().public_keys()[&taken].is_disabled());
 }
 
+/// A renewal disables only keys a login of the request could have added,
+/// whatever other ids the local record names.
+#[test]
+fn a_renewal_disables_only_the_requests_session_keys() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let grant = f.quoted_grant(&l, &Fixture::choice());
+    f.approve(&l, &Fixture::choice(), &grant).unwrap();
+    let auth = |key_id, bounds, with_limits| {
+        make_session_key_v1(
+            key_id,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            KeyType::ECDSA_HASH160,
+            bounds,
+            vec![key_id as u8; 20],
+            with_limits,
+        )
+    };
+    let foreign = [
+        auth(
+            20,
+            Some(ContractBounds::SingleContract {
+                id: dashpay_contract::ID,
+            }),
+            false,
+        ),
+        auth(
+            21,
+            Some(ContractBounds::SingleContract { id: id(77) }),
+            true,
+        ),
+        auth(22, Some(ContractBounds::ContractGroup { id: id(78) }), true),
+        auth(23, None, true),
+        make_session_key_v1(
+            24,
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM,
+            KeyType::ECDSA_SECP256K1,
+            Some(ContractBounds::SingleContract {
+                id: dashpay_contract::ID,
+            }),
+            vec![0x02; 33],
+            true,
+        ),
+    ];
+    {
+        let mut all = f.net.identities.lock().unwrap();
+        let me = all.get_mut(&id(ME)).unwrap();
+        for k in foreign {
+            me.public_keys_mut().insert(k.id(), k);
+        }
+    }
+    let mut record = f
+        .engine
+        .block_on(records(&f.s, f.wallet))
+        .unwrap()
+        .remove(0);
+    assert_eq!(record.session_keys, vec![6, 7]);
+    record.session_keys = vec![0, 6, 7, 8, 20, 21, 22, 23, 24];
+    f.put_record(record);
+    let mut second = request();
+    second.app_eph_pub =
+        PublicKey::from_secret_key(&SecretKey::from_secret_bytes([8u8; 32]).unwrap()).serialize();
+    let l2 = devnet(second);
+    let grant = f.quoted_grant(&l2, &Fixture::choice());
+    f.approve(&l2, &Fixture::choice(), &grant).unwrap();
+    let updates = f.net.updates.lock().unwrap().clone();
+    assert_eq!(updates[1].1, vec![6, 7]);
+    let me = f.net.me();
+    for key_id in [0, 8, 20, 21, 22, 23, 24] {
+        assert!(!me.public_keys()[&key_id].is_disabled(), "key {key_id}");
+    }
+}
+
 /// An update Platform refused says so, instead of claiming the keys may
 /// still land; the request stays open and approving again succeeds.
 #[test]

@@ -1385,7 +1385,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         let waited = done_rx.recv_timeout(Duration::from_secs(2)).is_err();
         tx.send((removal, waited)).unwrap();
     });
-    let token = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    let token = v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys);
     test_hook::set_checked(|| {});
     let (removal, waited) = rx.recv().unwrap();
     assert!(waited, "the removal finished inside the redemption");
@@ -1398,7 +1398,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         .unwrap();
     let v2 = v.clone();
     test_hook::set_checked(move || lock(&v2));
-    let locked = v.redeem_grant_holding_key(&grant.id, &W, &keys);
+    let locked = v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys);
     test_hook::set_checked(|| {});
     assert_eq!(locked.unwrap_err(), VaultError::GrantInvalid);
     v.unlock(PASS, UnlockScope::Full).unwrap();
@@ -1412,7 +1412,7 @@ fn a_removal_waits_for_a_key_checked_redemption() {
         .authorize(PLATFORM_OP, Some(&W), Credential::None)
         .unwrap();
     assert!(matches!(
-        v.redeem_grant_holding_key(&grant.id, &W, &keys),
+        v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &W, &keys),
         Ok(None)
     ));
     v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&W))

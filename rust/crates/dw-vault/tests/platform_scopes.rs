@@ -809,7 +809,7 @@ async fn a_grant_redeems_only_while_the_vault_holds_a_candidate_key() {
         .authorize(PLATFORM_OP, Some(&wallet(1)), Credential::None)
         .unwrap();
     let redeem = |keys: &[(DerivationPath, Vec<u8>)]| {
-        v.redeem_grant_holding_key(&grant.id, &wallet(1), keys)
+        v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &wallet(1), keys)
     };
     let unused = || {
         v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))
@@ -818,10 +818,34 @@ async fn a_grant_redeems_only_while_the_vault_holds_a_candidate_key() {
     assert!(matches!(redeem(std::slice::from_ref(&unheld)), Ok(None)));
     assert!(matches!(redeem(&[]), Ok(None)));
     assert!(unused());
+    // Redeemed as another kind of grant: refused, and kept.
+    for other in [
+        GrantKind::AppConnect,
+        GrantKind::AppDisconnect,
+        GrantKind::Governance,
+    ] {
+        assert_eq!(
+            v.redeem_grant_holding_key(
+                &grant.id,
+                other,
+                &wallet(1),
+                &[(key.clone(), held.clone())]
+            )
+            .unwrap_err(),
+            VaultError::GrantPurposeMismatch,
+            "{other:?}"
+        );
+    }
+    assert!(unused());
     // Another wallet's grant is refused, and kept.
     assert_eq!(
-        v.redeem_grant_holding_key(&grant.id, &wallet(2), &[(key.clone(), held.clone())])
-            .unwrap_err(),
+        v.redeem_grant_holding_key(
+            &grant.id,
+            GrantKind::PlatformOp,
+            &wallet(2),
+            &[(key.clone(), held.clone())],
+        )
+        .unwrap_err(),
         VaultError::GrantPurposeMismatch
     );
     assert!(unused());
@@ -842,7 +866,7 @@ async fn a_grant_redeems_only_while_the_vault_holds_a_candidate_key() {
         .unwrap();
     assert!(v.delete_wallet_secret(&wallet(1)).unwrap());
     assert!(matches!(
-        v.redeem_grant_holding_key(&grant.id, &wallet(1), &[(key, held)]),
+        v.redeem_grant_holding_key(&grant.id, GrantKind::PlatformOp, &wallet(1), &[(key, held)]),
         Ok(None)
     ));
     v.check_grant(&grant.id, GrantKind::PlatformOp, Some(&wallet(1)))

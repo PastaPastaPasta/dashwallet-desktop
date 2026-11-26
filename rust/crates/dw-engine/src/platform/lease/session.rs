@@ -143,7 +143,7 @@ pub(crate) fn issue(
     let redeem = |g: &String, kind: GrantKind| match (kind, keys) {
         (GrantKind::PlatformOp | GrantKind::AppConnect | GrantKind::AppDisconnect, Some(keys)) => {
             vault
-                .redeem_grant_holding_key(g, &wallet.0, keys)?
+                .redeem_grant_holding_key(g, kind, &wallet.0, keys)?
                 .ok_or(VaultError::NoSecret)
         }
         _ => vault.redeem_grant(g, kind, Some(&wallet.0)),
