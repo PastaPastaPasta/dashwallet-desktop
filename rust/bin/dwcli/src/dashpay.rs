@@ -2914,7 +2914,7 @@ mod tests {
         // address is the random wallet's (see the run below).
         (
             "shielded status",
-            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"account":"bound","scan":null,"last_pass_failed":false}}"#,
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"held_spends":[],"held":0,"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false,"spends_available":true,"account":"bound","scan":null,"last_pass_failed":false}}"#,
         ),
         ("shielded sync", NO_PLATFORM),
         (
@@ -3844,6 +3844,15 @@ mod tests {
             if let Some(ready) = result.and_then(|r| r.get_mut("prover_ready")) {
                 assert!(ready.is_boolean(), "{line}");
                 *ready = json!(false);
+            }
+            // A build that cannot spend from Shielded reads false; the row is
+            // the same either way.
+            if let Some(spends) = line
+                .get_mut("result")
+                .and_then(|r| r.get_mut("spends_available"))
+            {
+                assert!(spends.is_boolean(), "{args:?}");
+                *spends = json!(true);
             }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {

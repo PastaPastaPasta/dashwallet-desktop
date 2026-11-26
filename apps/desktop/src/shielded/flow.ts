@@ -18,6 +18,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { moveErrorText } from "../platform/move";
 import { SHIELDED_SYNC_COPY, syncingRefusal, type ShieldedWait } from "./syncing";
+import { spendsOffRefusal, spendsOffText } from "./spends";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { Preparing } from "../transfer/preparing";
 
@@ -326,10 +327,11 @@ export const isCode = (e: unknown, code: string): boolean => errorLike(e)?.code 
 
 /** A shielded refusal, by code. `credits` shows a credit figure as Dash, `duffs` a duff figure. `max`:
  * the refusal of a Core Max. */
-export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false): string {
+export function shieldedErrorText(e: unknown, credits: (c: string) => string, duffs: (d: number) => string, kind?: ShieldedKind, wait: boolean | ShieldedWait | null = false, max = false, spendsOff = false): string {
   const err = errorLike(e);
   if (!err) return failureText(e);
   const d = err.data;
+  if (spendsOffRefusal(err.code, kind, spendsOff)) return spendsOffText(kind);
   if (syncingRefusal(err.code, wait !== false && wait !== null)) return SHIELDED_SYNC_COPY.wait(typeof wait === "string" ? wait : "syncing");
   const maxText = coreMaxRefusal(err, max, duffs);
   if (maxText) return maxText;

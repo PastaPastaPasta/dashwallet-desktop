@@ -4,11 +4,12 @@
 // funding (D12, DP1-10 D16), and finishing stranded asset locks (DP1-09 D10). Unrecorded asset
 // locks wait on DP1-02's facade call.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useBackend, useUnfinishedTransfers } from "../../api/queries";
+import { keys, useBackend, useShieldedSyncInfo, useUnfinishedTransfers } from "../../api/queries";
+import { shieldedSpendsOff } from "../../shielded/spends";
 import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -28,7 +29,12 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
   const shown = useDisplay(network);
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
   const client = useQueryClient();
-  const [model] = useState(() => new RepairModel(b, grants, wallet.walletId));
+  const spendsOff = shieldedSpendsOff(useShieldedSyncInfo(wallet.walletId).data);
+  const spendsOffNow = useRef(spendsOff);
+  useEffect(() => {
+    spendsOffNow.current = spendsOff;
+  }, [spendsOff]);
+  const [model] = useState(() => new RepairModel(b, grants, wallet.walletId, () => spendsOffNow.current));
   const unfinished = useUnfinishedTransfers(wallet.walletId);
   useModel(model);
   const [from, setFrom] = useState("");
@@ -166,7 +172,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
       )}
       {model.stuckShields.length > 0 && (
         <ToolCard title={t("tools.repair.stuckShieldsTitle")} testId="repair-stuck-shields">
-          <p className="placeholder-note">{t("tools.repair.stuckShieldsHint")}</p>
+          <p className="placeholder-note">{RepairText.stuckShieldsHint(spendsOff)}</p>
           <ul className="tool-list">
             {model.stuckShields.map((f) => (
               <li key={f.step} data-testid={`repair-stuck-${f.step}`}>
@@ -174,9 +180,9 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                   {t("tools.repair.shieldLine", {
                     what: RepairText.shield(f.repair?.mixed ?? false),
                     detail: f.repair
-                      ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
+                      ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs), spendsOff)
                       : f.blocked
-                        ? shieldBlockedText(f.blocked)
+                        ? shieldBlockedText(f.blocked, spendsOff)
                         : "",
                   })}
                 </span>

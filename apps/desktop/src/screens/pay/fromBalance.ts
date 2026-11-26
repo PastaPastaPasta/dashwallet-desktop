@@ -19,6 +19,7 @@ import type { PoolReading } from "../../format/homeBalance";
 import { t } from "../../i18n";
 import { failureText, Model } from "../../onboarding/model";
 import { isHeldOp, moveErrorText, onMoveSettledNotify } from "../../platform/move";
+import { SHIELDED_SPENDS_COPY } from "../../shielded/spends";
 import { GrantModel, PAYMENT_PROMPT } from "../../tools/grant";
 
 export type PaySource = PaymentSourceName;
@@ -46,6 +47,8 @@ export interface FromInputs {
   /** What payments that may still go through hold of the Shielded balance. */
   shieldedHold?: ShieldedHold | null;
   live?: ReadonlySet<PaySource>;
+  /** This build cannot spend from Shielded (shielded/spends.ts). */
+  shieldedSpendsOff?: boolean;
 }
 
 export interface FromRow {
@@ -78,7 +81,8 @@ export function fromRows(i: FromInputs): FromRow[] {
   const pool = (source: "shielded" | "platform", reading: PoolReading): FromRow => {
     const duffs = typeof reading === "number" ? reading : reading === "absent" ? 0 : undefined;
     const empty = source === "shielded" && i.shieldedHold ? t("pay.contact.from.shieldedHeld") : t("pay.contact.from.empty");
-    const reason = !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? empty : null;
+    const reason =
+      source === "shielded" && i.shieldedSpendsOff ? SHIELDED_SPENDS_COPY.source : !live.has(source) ? t("pay.contact.from.notOffered") : i.acceptsToo ? t("pay.contact.from.acceptsToo") : duffs === 0 ? empty : null;
     return { source, label: LABEL[source], balance: shown(duffs), reason };
   };
   return [{ source: "core", label: LABEL.core, balance: shown(i.coreDuffs), reason: null }, pool("shielded", i.shielded), pool("platform", i.platform)];
