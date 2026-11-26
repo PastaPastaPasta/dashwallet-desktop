@@ -145,7 +145,7 @@ fn spends() -> Vec<PendingRedrive> {
         .collect()
 }
 
-/// The serialized transition of spend `n`: 1 a shielded transfer, 2 an
+/// The serialized transition of spend `n`: odd a shielded transfer, even an
 /// unshield to a Core script, one action per nullifier.
 fn transition(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
     use dpp::identity::core_script::CoreScript;
@@ -166,7 +166,7 @@ fn transition(n: u8, anchor: [u8; 32], nullifiers: &[[u8; 32]]) -> Vec<u8> {
             spend_auth_sig: [0x60 + n; 64],
         })
         .collect();
-    let st = match n {
+    let st = match n % 2 {
         1 => StateTransition::ShieldedTransfer(ShieldedTransferTransition::V0(
             ShieldedTransferTransitionV0 {
                 actions,
