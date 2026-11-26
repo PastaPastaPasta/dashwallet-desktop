@@ -7,7 +7,7 @@ import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { appError } from "../onboarding/testWorld";
 import { fromRows } from "../screens/pay/fromBalance";
 import { shieldedErrorText } from "./flow";
-import { SHIELDED_SPENDS_COPY, shieldedSpendsOff, spendsOffRefusal } from "./spends";
+import { SHIELDED_SPENDS_COPY, shieldedSpendsKnownOn, shieldedSpendsOff, spendsOffRefusal } from "./spends";
 
 const STATUS: ShieldedStatus = { active: true, protocolVersion: 13, activationVersion: 12, ready: true, balance: "125000000000", pending: "0", pendingShields: [], unresolvedSpends: [], heldSpends: [], held: "0", unrecordedSpends: [], syncedIndex: 4096, lastSyncAt: 1, syncing: false, proverReady: true, spendsAvailable: true, account: "bound", scan: null, lastPassFailed: false };
 const credits = (c: string) => `${c} credits`;
@@ -21,6 +21,15 @@ describe("Shielded spends off", () => {
     expect(shieldedSpendsOff({ ...STATUS, active: false, spendsAvailable: false })).toBe(false);
     expect(shieldedSpendsOff(null)).toBe(false);
     expect(shieldedSpendsOff(undefined)).toBe(false);
+  });
+
+  it("promises another move into Shielded only where the engine said spends are on", () => {
+    expect(shieldedSpendsKnownOn(STATUS)).toBe(true);
+    expect(shieldedSpendsKnownOn({ ...STATUS, spendsAvailable: false })).toBe(false);
+    const inactive: ShieldedStatus = { ...STATUS, active: false, spendsAvailable: false };
+    expect(shieldedSpendsKnownOn(inactive)).toBe(false);
+    expect(shieldedSpendsKnownOn(null)).toBe(false);
+    expect(shieldedSpendsKnownOn(undefined)).toBe(false);
   });
 
   it("reads the engine's refusal of a spend or a new shield as its reason line, and not a resume's", () => {

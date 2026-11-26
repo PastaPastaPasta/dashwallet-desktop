@@ -4464,6 +4464,11 @@ fn credited_with_late_events(
 ) -> Vec<platform_wallet::key_wallet_manager::WalletEvent> {
     use platform_wallet::changeset::PlatformWalletPersistence;
     use platform_wallet::key_wallet_manager::WalletInterface;
+    // Earlier block events spawn async reconciles that publish key-wallet's
+    // current balance to the hub; wait for them before crediting `tx` so a
+    // delayed reconcile cannot publish `tx`'s balance ahead of its events.
+    super::own_spend_balance_tests::reconciles_done(engine, session);
+    session.hub.settle_rereads();
     let manager = session.manager().unwrap();
     let tx = tx.clone();
     let events = engine.block_on(async move {

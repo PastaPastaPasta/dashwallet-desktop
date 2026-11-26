@@ -247,6 +247,18 @@ pub(crate) struct PlatformRuntime {
     /// (`shielded_pool::UnshieldIntent`).
     pub(crate) unshield_intents:
         std::sync::Mutex<std::collections::HashMap<WalletId, super::shielded_pool::UnshieldIntent>>,
+    /// Each wallet's Shielded-funded registration create about to sign
+    /// (`registration_shielded::CreateIntent`).
+    pub(crate) registration_intents: std::sync::Mutex<
+        std::collections::HashMap<WalletId, super::registration_shielded::CreateIntent>,
+    >,
+    /// A test's faults of a Shielded-funded create's hook steps.
+    #[cfg(test)]
+    pub(crate) registration_faults:
+        std::sync::Mutex<super::registration_shielded::RegistrationFaults>,
+    /// Platform's last proved shielded note count and when it was proved
+    /// (unix seconds), for the registration's pool check (C-funding F16).
+    pub(crate) pool_notes: std::sync::Mutex<Option<(u64, u64)>>,
     /// The shield locks of unknown consumption marked this session, kept
     /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
     pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
@@ -607,6 +619,10 @@ impl PlatformRuntime {
             shielded_calls: std::sync::Mutex::default(),
             fund_holds: Arc::default(),
             unshield_intents: std::sync::Mutex::default(),
+            registration_intents: std::sync::Mutex::default(),
+            #[cfg(test)]
+            registration_faults: std::sync::Mutex::default(),
+            pool_notes: std::sync::Mutex::default(),
             shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
