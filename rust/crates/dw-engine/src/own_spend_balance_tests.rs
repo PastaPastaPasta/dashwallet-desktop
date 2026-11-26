@@ -4829,6 +4829,7 @@ fn payment_on_a_doubtful_claim(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     id: WalletId,
+    edit: impl FnOnce(&mut Transaction),
 ) -> (Transaction, Transaction, Transaction, Transaction) {
     let b_to = fresh_address(engine, session, id);
     let b_funding = funding(3, &[b_to], super::PAID);
@@ -4841,6 +4842,7 @@ fn payment_on_a_doubtful_claim(
     );
     let (_, claim_funding, mut claim) = super::funding_and_spend(engine, session, id);
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    edit(&mut claim);
     mempool(engine, session, id, &claim);
     let b = OutPoint::new(b_funding.txid(), 0);
     let s = send(
@@ -4877,7 +4879,8 @@ fn assert_kept_with_b(
 #[test]
 fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |_| ());
     let b = OutPoint::new(b_funding.txid(), 0);
     let session = reopen(&engine, session);
     echo(&engine, &session, id, &claim);
@@ -4901,7 +4904,8 @@ fn a_swept_doubtful_claims_payment_is_left_to_the_claim_rule() {
 #[test]
 fn a_payment_on_a_claim_the_store_keeps_is_not_taken_as_orphaned() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, claim_funding, claim, s) = payment_on_a_doubtful_claim(&engine, &session, id);
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |_| ());
     let b = OutPoint::new(b_funding.txid(), 0);
     let session = reopen(&engine, session);
     mined(
@@ -4915,6 +4919,36 @@ fn a_payment_on_a_claim_the_store_keeps_is_not_taken_as_orphaned() {
     assert!(
         live_in_history(&session, id, claim.txid()),
         "the store keeps the claim"
+    );
+    assert_kept_with_b(&engine, &session, id, &s, b, "loaded");
+    let session = reopen(&engine, session);
+    assert_kept_with_b(&engine, &session, id, &s, b, "restarted");
+}
+
+/// The claim spending its coin twice: the store's repair drops it at an
+/// open, as structural and doubtful (S4), so its row is gone. S, whose
+/// parent then has no row, is left to #739, not dropped as orphaned, and
+/// b stays held, through a restart too.
+#[test]
+fn a_payment_on_a_claim_the_store_dropped_as_doubtful_is_not_taken_as_orphaned() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (b_funding, claim_funding, claim, s) =
+        payment_on_a_doubtful_claim(&engine, &session, id, |claim| {
+            claim.input.push(claim.input[0].clone());
+        });
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let session = reopen(&engine, session);
+    mined(
+        &engine,
+        &session,
+        id,
+        super::BIRTH - 20,
+        vec![claim_funding],
+    );
+    let session = reopen(&engine, session);
+    assert!(
+        !live_in_history(&session, id, claim.txid()),
+        "the store dropped the claim"
     );
     assert_kept_with_b(&engine, &session, id, &s, b, "loaded");
     let session = reopen(&engine, session);
