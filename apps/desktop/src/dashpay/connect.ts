@@ -178,6 +178,12 @@ export function criticalText(b: ConnectBinding): string | null {
   return tokens ? t("dashpay.connect.critical") : t("dashpay.connect.criticalNoTokens");
 }
 
+/** A document type can charge a token cost, which a HIGH key's document writes pay too; the DashPay
+ * profile charges none. */
+export function highTokensText(b: ConnectBinding): string | null {
+  return b.level === "high" && b.scope.kind !== "profile" ? t("dashpay.connect.highTokens") : null;
+}
+
 export type ConnectPhase = "loading" | "sheet" | "approving" | "sendFailed" | "sending" | "done" | "denied" | "refused" | "mainnetOff";
 
 export class ConnectFlow extends Model {
