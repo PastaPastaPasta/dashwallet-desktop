@@ -411,3 +411,13 @@ impl Commitment<'_> {
         Some(h.finalize().into())
     }
 }
+
+/// The digest of the group facts one read found, so the sheet that shows
+/// them can tell a quote that read others.
+pub(crate) fn groups_digest(groups: &BTreeMap<Identifier, Option<GroupFacts>>) -> Option<[u8; 32]> {
+    let bytes = serde_json::to_vec(groups).ok()?;
+    let mut h = Sha256::new();
+    h.update(b"dashwallet-desktop app-connect groups v1\0");
+    h.update(&bytes);
+    Some(h.finalize().into())
+}
