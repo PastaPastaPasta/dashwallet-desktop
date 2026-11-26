@@ -880,6 +880,8 @@ export const dashpay = {
     deniedAfterApprove: "You declined this sign-in request. Keys from your earlier approval may already be on your identity, and the app may already have them.",
     return: "Return to {host}",
     retrySend: "Retry sending",
+    /** Under a quote that failed: quotes the same choice again. */
+    retryQuote: "Try again",
     sendFailed: "The keys were added to your identity, but the app may not have received them yet. Retry sending, or return to the app and start again.",
     planChanged: "Something this request covers changed on Dash Platform since you opened it. Check it again before you approve.",
     err: {

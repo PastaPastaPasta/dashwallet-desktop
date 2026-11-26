@@ -1435,6 +1435,7 @@ const CONNECT: Record<string, { outcome: ConnectOutcome; returnsTo?: string | nu
   refused: { outcome: "stale", reach: (page) => page.getByTestId("connect-refusal").waitFor() },
   failed: { outcome: "failed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-refusal").waitFor()) },
   "not-confirmed": { outcome: "notConfirmed", reach: async (page) => (await approveConnect(page), page.getByTestId("connect-quote-error").scrollIntoViewIfNeeded()) },
+  "quote-retry": { outcome: "quoteOffline", reach: (page) => page.getByTestId("connect-quote-retry").scrollIntoViewIfNeeded() },
   "denied-typed": {
     outcome: "notConfirmed",
     returnsTo: null,
