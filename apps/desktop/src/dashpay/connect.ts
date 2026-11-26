@@ -172,10 +172,18 @@ export const quotedLimit = (quote: ConnectQuote) => creditsDash(quote.budgets.re
 
 /** Only a CRITICAL key can sign a token transition, and only one bound to a whole contract or a
  * group can reach tokens; a group always counts, since its owner can add contracts with tokens. */
+const signsTokens = (b: ConnectBinding) => b.level === "critical" && (b.scope.kind === "group" || (b.scope.kind === "contract" && b.scope.tokens));
+
 export function criticalText(b: ConnectBinding): string | null {
   if (b.level !== "critical") return null;
-  const tokens = b.scope.kind === "group" || (b.scope.kind === "contract" && b.scope.tokens);
-  return tokens ? t("dashpay.connect.critical") : t("dashpay.connect.criticalNoTokens");
+  return signsTokens(b) ? t("dashpay.connect.critical") : t("dashpay.connect.criticalNoTokens");
+}
+
+/** A document type can charge a token cost, even in another contract's token, which any key's
+ * document writes pay; the DashPay profile charges none, and the critical warning already names
+ * tokens where the key can sign token transitions. */
+export function tokenCostText(b: ConnectBinding): string | null {
+  return b.scope.kind !== "profile" && !signsTokens(b) ? t("dashpay.connect.tokenCost") : null;
 }
 
 export type ConnectPhase = "loading" | "sheet" | "approving" | "sendFailed" | "sending" | "done" | "denied" | "refused" | "mainnetOff";
