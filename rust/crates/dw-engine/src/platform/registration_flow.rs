@@ -3898,6 +3898,9 @@ impl RegistrationLib for PwLib {
         {
             return Ok(facts);
         }
+        if !super::shielded_pool::session_keyset_spends(&self.session) {
+            return Err(PlatformError::Unavailable);
+        }
         let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
         super::shielded_pool::registration_facts(&self.session, self.wallet_id, &pool, &mut facts)
             .await?;
@@ -3978,6 +3981,11 @@ impl RegistrationLib for PwLib {
         ask: ShieldedAsk,
         lease: Option<&Lease>,
     ) -> Result<ShieldedOutcome, PlatformError> {
+        let mainnet = self.session.vault.network() == dpp::dashcore::Network::Mainnet;
+        let spends = super::shielded_pool::session_keyset_spends(&self.session);
+        if ask.identity.is_none() && !mainnet && lease.is_some() && !spends {
+            return Err(PlatformError::Unavailable);
+        }
         let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
         let net = super::registration_shielded::SdkEvidence(Arc::clone(&self.sdk));
         let version = self.platform_version().await;

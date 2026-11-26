@@ -3848,6 +3848,141 @@ fn the_sync_read_and_a_bound_address_answer_while_a_pass_holds_the_store() {
     });
 }
 
+/// While the library cannot spend from the key set, every quote and every
+/// way into the pool refuses before the coordinator opens: a pass holding
+/// the note store delays none of them. With spends on, the same quote waits
+/// for the store.
+#[test]
+fn the_spends_off_refusals_wait_for_no_pass() {
+    let f = super::topup_tests::fixture(true);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    assert!(bound_address(engine, session, wallet).0.is_bound());
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        s.keyset_spends_off.store(true, Ordering::SeqCst);
+        let wait = Duration::from_secs(10);
+        macro_rules! refused {
+            ($call:expr) => {
+                (tokio::time::timeout(wait, $call).await)
+                    .expect("the refusal waits for no store")
+                    .unwrap_err()
+                    .code()
+            };
+        }
+        let one = FundAmount::Duffs { duffs: 100_000 };
+        let codes = [
+            refused!(dp.shielded_send_quote(String::new(), 1)),
+            refused!(dp.unshield_quote(1, None)),
+            refused!(dp.unshield_to_platform_quote(1, None)),
+            refused!(dp.shield_quote(one)),
+            refused!(dp.shield_quote(FundAmount::All)),
+            refused!(dp.shield_mixed_quote()),
+            refused!(dp.platform_shield_quote(super::WithdrawAmount::All)),
+            refused!(dp.shielded_send(String::new(), 1, None, String::new(), true)),
+            refused!(dp.unshield_to_core(1, None, String::new(), true)),
+            refused!(dp.unshield_to_platform(1, None, String::new(), true)),
+            refused!(dp.shield_from_core(one, String::new())),
+            refused!(dp.shield_mixed_coins(String::new())),
+        ];
+        assert_eq!(codes, ["platform.unavailable"; 12]);
+
+        s.keyset_spends_off.store(false, Ordering::SeqCst);
+        let quote = dp.shielded_send_quote(String::new(), 1);
+        let held = tokio::time::timeout(Duration::from_millis(300), quote);
+        assert!(
+            held.await.is_err(),
+            "with spends on, the quote opens the pool"
+        );
+    });
+}
+
+/// A Shielded-funded registration's quote, start and unsent create refuse
+/// before the pool opens while spends are off; settling a create that
+/// already named its identity still opens it.
+#[test]
+fn a_shielded_registration_refuses_before_the_pool_while_spends_are_off() {
+    use super::registration::{RegistrationFunding, RegistrationRequest};
+    use super::registration_flow::{PwLib, RegistrationLib};
+    use super::registration_shielded::ShieldedAsk;
+    let f = super::topup_tests::fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let manager = session.manager().unwrap();
+    let dp = session.dashpay(wallet);
+    let grant = || {
+        let purpose = dw_vault::GrantPurpose::PlatformOp {
+            max_duffs: 100_000_000,
+            max_credits: 100_000_000_000_000,
+        };
+        let credential = dw_vault::Credential::None;
+        (session
+            .vault()
+            .authorize(purpose, Some(&wallet.0), credential))
+        .unwrap()
+        .id
+    };
+    let (start_grant, lease_grant) = (grant(), grant());
+    let s = Arc::clone(session);
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &manager, None).await.unwrap();
+        let _pass = coordinator.store().write().await;
+        let (_, lib) = PwLib::open(&s, wallet).await.unwrap();
+        let lease = (s
+            .begin_lease(wallet, FlowKind::Registration, &[lease_grant])
+            .await)
+            .unwrap();
+        let req = || RegistrationRequest {
+            label: "spendsoff2".into(),
+            temporary_label: None,
+            funding: RegistrationFunding::Shielded { denomination: 0 },
+            initial_profile: None,
+        };
+        let ask = |identity: Option<String>| ShieldedAsk {
+            draft: 1,
+            owner: 0,
+            index: 0,
+            denomination: 0,
+            fallback: String::new(),
+            identity,
+        };
+        s.keyset_spends_off.store(true, Ordering::SeqCst);
+        let wait = Duration::from_secs(10);
+        macro_rules! refused {
+            ($call:expr) => {
+                (tokio::time::timeout(wait, $call).await)
+                    .expect("the refusal waits for no store")
+                    .unwrap_err()
+                    .code()
+            };
+        }
+        let codes = [
+            refused!(dp.registration_quote(req())),
+            refused!(dp.start_registration(req(), start_grant)),
+            refused!(lib.shielded_fund(ask(None), Some(&lease))),
+        ];
+        assert_eq!(codes, ["platform.unavailable"; 3]);
+
+        let named = dpp::prelude::Identifier::new([7; 32])
+            .to_string(dpp::platform_value::string_encoding::Encoding::Base58);
+        let settle = lib.shielded_fund(ask(Some(named)), Some(&lease));
+        let settle = tokio::time::timeout(Duration::from_millis(300), settle);
+        assert!(
+            settle.await.is_err(),
+            "settling a named create opens the pool"
+        );
+
+        s.keyset_spends_off.store(false, Ordering::SeqCst);
+        let quote = tokio::time::timeout(Duration::from_millis(300), dp.registration_quote(req()));
+        assert!(
+            quote.await.is_err(),
+            "with spends on, the quote opens the pool"
+        );
+    });
+}
+
 /// An engine with a regtest session and no vault.
 fn vaultless(no_platform: bool) -> (tempfile::TempDir, crate::Engine, Arc<NetworkSession>) {
     struct Quiet;
@@ -5242,27 +5377,46 @@ fn no_way_in_opens_while_the_library_cannot_spend_from_the_key_set() {
 }
 
 /// A payment to an address given out before the library lost key-set
-/// spends still lands: the pass finds it and the status shows it in the
-/// balance, while no new address is issued.
+/// spends still lands: the engine's sync runs its pass, which finds it, and
+/// the status shows it in the balance, while no new address is issued.
 #[test]
 fn a_payment_to_an_earlier_address_shows_while_the_library_cannot_spend_from_the_key_set() {
-    let fx = Fixture::new(0);
+    let fx = Fixture::with_platform();
     let lib = Arc::new(FakeShielded::default());
     let early = run(&fx, &lib, |_, lib| async move {
         pool::receive_address(&*lib).await.unwrap()
     });
     assert_eq!(early.address, payee_text());
 
+    let (cancel, _cancelled) = tokio::sync::watch::channel(false);
+    let (signals, _signalled) = tokio::sync::mpsc::unbounded_channel();
+    *super::runtime::guard(&fx.s.platform.supervisor) = Some(super::runtime::Supervisor {
+        cancel,
+        signals,
+        task: None,
+        running: true,
+    });
     lib.no_keyset_spends.store(true, Ordering::SeqCst);
     *lib.scan_ledger.lock().unwrap() = Some(Ledger {
         spendable: NOTE,
         synced_index: None,
     });
-    let (status, again) = run(&fx, &lib, |_, lib| async move {
-        lib.sync_now().await;
-        let status = pool::status(&*lib).await.unwrap();
+    let (status, again) = run(&fx, &lib, |s, lib| async move {
+        let status = pool::sync(&s, &*lib).await.unwrap();
         (status, code(pool::receive_address(&*lib).await))
     });
+    let synced = lib
+        .scan_ledger
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|l| l.synced_index);
+    assert_eq!(synced, Some(Some(1)), "the sync ran its pass");
+    assert_eq!(
+        status.synced_index,
+        Some(1),
+        "the returned status includes the pass"
+    );
     assert_eq!(status.balance, NOTE);
     assert!(!status.spends_available);
     assert_eq!(again, "platform.unavailable");
