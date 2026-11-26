@@ -6787,7 +6787,6 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-accent);
 }
 
-.sh-legend,
 .sh-node-hash {
   display: block;
 }
@@ -6796,6 +6795,7 @@ button.bell-row-open:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.sh-legend,
 .sh-lines {
   display: flex;
   flex-direction: column;

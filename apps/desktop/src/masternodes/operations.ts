@@ -3,6 +3,7 @@
 import type { AppError } from "../api/generated/commands";
 import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { ProTxOperationKindName } from "../api/generated/ProTxOperationKindName";
+import type { SharedSession } from "../api/generated/SharedSession";
 import { sendErrorText } from "../screens/pay/model";
 import { t } from "../i18n";
 import { registrarUpdateSends } from "./changeKeys";
@@ -27,9 +28,12 @@ export function lastErrorText(code: string | null): string | null {
 /** A shared dissolution's send result: the warning when the network didn't take it, `null` once sent. */
 export function handoffRefusedText(o: ProTxOperation): string | null {
   if (o.state.kind !== "not_sent" && o.state.kind !== "signed") return null;
-  const reason = lastErrorText(o.lastError)?.replace(/\.$/, "");
-  return reason ? t("masternodes.shared.dissolve.notSent", { reason }) : t("masternodes.shared.dissolve.notSentPlain");
+  return t(o.lastError === "send.no_peers" ? "masternodes.shared.dissolve.notSentOffline" : "masternodes.shared.dissolve.notSent");
 }
+
+/** A dissolution together's operation once handed off, matched by its txid; `null` before or without one. */
+export const togetherOperation = (s: Pick<SharedSession, "kind" | "stage" | "txid">, ops: readonly ProTxOperation[] | undefined) =>
+  (s.kind === "dissolve_together" && s.stage.kind === "sent" && s.txid !== null ? ops?.find((o) => o.kind === "dissolve" && o.txid === s.txid) : undefined) ?? null;
 
 /** Which held kinds may be acted on. Unknown network (still loading) stays off. */
 export const proTxSends = (network: { kind: string } | null | undefined): Partial<Record<ProTxOperationKindName, boolean>> => ({

@@ -22,9 +22,9 @@ import { showToast } from "../../components/toast";
 import { chainOf, useDisplay } from "../../format/display";
 import { shortDate } from "../../governance/model";
 import { useT } from "../../i18n";
-import { useMasternodes, useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
+import { useMasternodeOperations, useMasternodes, useMasternodesRefresh, useSharedCapability, useSharedSession, useSharedSessions, useSharedUnreadable } from "../../masternodes/queries";
 import { rowName } from "../../masternodes/model";
-import { handoffRefusedText } from "../../masternodes/operations";
+import { handoffRefusedText, togetherOperation } from "../../masternodes/operations";
 import {
   abandonNeedsOwnFirst,
   approveMaintenanceCap,
@@ -481,6 +481,7 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const credential = useCredential(wallet.walletId, t(`${P}.session.ask`), 0);
   const sync = useSyncStatus();
   const nodes = useMasternodes(wallet.walletId, !!s && s.kind !== "registration");
+  const ops = useMasternodeOperations(wallet.walletId, s?.kind === "dissolve_together");
   /** A hand-off needs SPV running with a peer (§2.3.3); signing a contribution doesn't. */
   const disconnected = !!sync.data && (!sync.data.running || sync.data.connectedPeers === 0);
 
@@ -557,8 +558,6 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sendMaintenance = () =>
     granted(0, async (grant) => {
       const sent = await b.mnSharedSendMaintenance(wallet.walletId, s.id, grant);
-      const refused = sent.kind === "operation" ? handoffRefusedText(sent.operation) : null;
-      if (refused) setError(refused);
       return { session: sent.kind === "session" ? sent.session : await b.mnSharedSession(wallet.walletId, s.id).catch(() => s) };
     });
   const copyMessage = async () => {
@@ -600,6 +599,8 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
   const sessionWarnings = s.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x);
   const importWarnings = imported ? imported.warnings.map((w) => warningText(w, s)).filter((x): x is string => !!x) : [];
   const counts = { joined: s.rows.filter((r) => r.contributed).length, approved: s.rows.filter((r) => r.approved).length, signed: s.rows.filter((r) => r.fundingSigned).length, total: s.rows.length };
+  const togetherOp = togetherOperation(s, ops.data);
+  const refused = togetherOp ? handoffRefusedText(togetherOp) : null;
   const rowText = v.row === "abandoning" ? (spendBackLine(s, refusedSentence) ?? "") : rowCopy(v.row, s, { coordinator: coordinatorLabel, dash, funding, counts, t });
   const moreItems = [
     ...(steps.includes("fee") ? [{ id: "fee", title: t(`${P}.session.changeFee`), onSelect: () => setFeeOpen(true), disabled: !!offSetup }] : []),
@@ -818,9 +819,15 @@ export function SharedSessionSheet({ wallet, network, open, onClose }: { wallet:
             {t(`${P}.row.changedSinceApproved`, { changes: diff.map((d) => `${d.before} → ${d.after}`).join(", ") })}
           </Notice>
         )}
-        <p className="sh-row-copy" aria-live="polite" data-testid={`sh-row-${v.row}`}>
-          {rowText}
-        </p>
+        {refused ? (
+          <Notice tone="warning" testId="sh-together-refused">
+            {refused}
+          </Notice>
+        ) : (
+          <p className="sh-row-copy" aria-live="polite" data-testid={`sh-row-${v.row}`}>
+            {rowText}
+          </p>
+        )}
         {v.row === "togetherSendOff" && (
           <Notice tone="info" testId="sh-mainnet-note">
             {t(`${P}.mainnetSendNote`)}

@@ -16,7 +16,7 @@ const EXPORT_ALERT =
   "Anyone who has this file can dissolve this masternode at any time. Every owner's share still goes back to its refund address, but the masternode stops earning. Keep the file private, and give it only to co-owners you trust.";
 const PENALTY_ALERT = (who: string, penalty: string) =>
   `Anyone who has this file can dissolve this masternode at any time, and the masternode stops earning. The file also holds a line that pays the early-exit penalty: anyone who has it can send that line, even after the early period ends, and make ${who} pay ${penalty} to the other owners. Keep the file private, and give it only to co-owners you trust.`;
-const REFUSED = "The network didn't accept it: No connection to the Dash network. The payment was not sent. Send it again from In progress.";
+const REFUSED = "Dash Wallet isn't connected to the Dash network, so this wasn't sent. Send it again from In progress.";
 const DISSOLVE_LINE =
   "This version can't send shared-masternode transactions on mainnet yet. To leave now, create a standby dissolution and save it with Save a copy… Then run sendrawtransaction in Dash Core's console with the hex line under FULL PRINCIPAL. Before the early period ends, use the line under IMMEDIATE instead, which pays the early-exit penalty. You can still follow this masternode and approve steps here.";
 const KEY_APPROVE_OFF = "This version can't change a shared masternode's keys on mainnet yet, so you can't approve this change here.";
@@ -143,8 +143,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("sh-dissolve-refused")).toHaveText(REFUSED);
     await expect(page.getByTestId("sh-dissolve-sent")).toHaveCount(0);
     await shot(page, "sh-dissolve-not-sent", theme, chromium);
-    await page.getByTestId("sh-dissolve-done").click();
 
+    await openPane(page, "sh-handoff-refused", theme);
     await page.getByTestId("sh-standby-send-0-1000").click();
     await passphrase(page, "sh-standby-send-credential");
     await page.getByTestId("sh-standby-send-confirm").click();
@@ -155,8 +155,9 @@ for (const theme of THEMES) {
     await openSession(page, "sh-handoff-refused", theme);
     await passphrase(page, "sh-credential");
     await page.getByTestId("sh-send-maintenance").click();
-    await expect(page.getByTestId("sh-error")).toHaveText(REFUSED);
+    await expect(page.getByTestId("sh-together-refused")).toHaveText(REFUSED);
     await expect(page.getByTestId("sh-row-sent")).toHaveCount(0);
+    await expect(page.getByTestId("sh-send-maintenance")).toHaveCount(0);
     await shot(page, "sh-together-not-sent", theme, chromium);
     expect(errors).toEqual([]);
   });

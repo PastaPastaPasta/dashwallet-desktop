@@ -626,6 +626,7 @@ function dissolveOp(world: World, hash: string, fee: number, debit: number): Pro
     },
   };
   world.shared.sent.push(op);
+  world.masternodes.operations.push(copy(op));
   return copy(op);
 }
 
@@ -1144,11 +1145,10 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       if (s.stage.kind !== "combined") throw stageRefusal(s.stage.kind);
       capped(world, walletId, grantId, 0);
       const op = dissolveOp(world, s.proTxHash ?? SH_MN, s.fee ?? 0, 0);
-      if (op.state.kind === "sent") {
-        s.stage = { kind: "sent" };
-        s.next = "wait";
-        s.discardable = false;
-      }
+      s.stage = { kind: "sent" };
+      s.next = "wait";
+      s.discardable = false;
+      s.txid = op.txid;
       put(world, s);
       changed(ctx);
       return { kind: "operation", operation: op };
