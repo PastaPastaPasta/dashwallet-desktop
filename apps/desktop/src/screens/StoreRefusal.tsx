@@ -96,11 +96,11 @@ export function restoreButtonKey(state: RestoreState, k: string): string {
 
 type ActionsApi = Pick<Backend, "quitApp" | "restartApp" | "keepCurrentFiles" | "cancelRestore" | "requestRestore" | "recoverInFreshFolder" | "openProjectLink">;
 
-/** Why a restore was refused while a shielded spend holds, in MG's words: what clears it when the spend
- * may still go through, nothing more for any other reason. */
+/** Why a restore was refused while a shielded spend holds, in MG's words: the in-flight line only for a
+ * spend that may still go through, then the way forward. */
 export function restoreHeldText(tr: Translate, reason: string | null): string {
   const clears = reason === "inFlight" ? [tr("storeUpgrade.restore.held.inFlight")] : [];
-  return [tr("storeUpgrade.restore.held.text"), ...clears, tr("storeUpgrade.restore.held.quit")].join(" ");
+  return [tr("storeUpgrade.restore.held.text"), ...clears, tr("storeUpgrade.restore.held.next")].join(" ");
 }
 
 /** What a failed action shows: a refused restore request in MG's words, an `Error`'s message, else the
@@ -348,9 +348,10 @@ export function StoreRestoreView({ restore, problem, failedLink = null, busy = f
   const reports = keys.includes("report");
   const hint = foreign ? say("storeUpgrade.restore.foreign.keepMeaning", { folder }) : reports ? tr(ISSUES_HINT) : null;
   const held = state === "notStarted" && Object.hasOwn(RESTORE_HOLD_CAUSES, restore.cause) ? RESTORE_HOLD_CAUSES[restore.cause as keyof typeof RESTORE_HOLD_CAUSES] : null;
-  const text = held ? restoreHeldText(tr, held) : say(`storeUpgrade.restore.${state}.text`, { folder });
+  const copy = state === "incomplete" && restore.cause === "holdsUnchecked" ? "storeUpgrade.restore.holdsUnchecked" : `storeUpgrade.restore.${state}`;
+  const text = held ? say(`storeUpgrade.restore.notStarted.held.${held}`, { folder }) : say(`${copy}.text`, { folder });
   return (
-    <Panel id={id} testId="store-restore" title={say(`storeUpgrade.restore.${state}.title`)} text={text} problem={problem} failedLink={failedLink}>
+    <Panel id={id} testId="store-restore" title={say(`${copy}.title`)} text={text} problem={problem} failedLink={failedLink}>
       <Buttons id={id} testId="store-restore" buttons={buttons} hint={hint} busy={busy} onAction={onAction} />
       {foreign && reports && (
         <p className="field-hint" data-testid="store-restore-issues-hint">

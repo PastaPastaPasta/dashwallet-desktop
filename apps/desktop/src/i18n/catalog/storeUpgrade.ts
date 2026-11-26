@@ -114,13 +114,19 @@ export const storeUpgrade = {
       ok: "OK",
     },
     held: {
-      text: "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored.",
-      inFlight: "This usually clears on its own once the payment is confirmed.",
-      quit: "You can still quit Dash Wallet.",
+      text: "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it.",
+      inFlight: "That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data.",
+      next: "Keep your current wallet data as it is and choose Report a problem.",
     },
     notStarted: {
       title: "Dash Wallet couldn't start restoring your wallet data",
       text: "Dash Wallet couldn't start putting back the wallet data it saved before the upgrade, so nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet to try again. To keep your current wallet data instead, choose Cancel restore. If it still can't start, choose Report a problem.",
+      held: {
+        inFlight:
+          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore, and restarting won't change this. Choose Report a problem. To stop restoring, choose Cancel restore.",
+        carriedOver:
+          "Dash Wallet didn't start putting back the wallet data it saved before the upgrade, because it doesn't know whether a Shielded payment from one of your wallets went through, or couldn't read its record of one, and restoring would lose track of it. Nothing was changed: your wallet data is as it was before you chose to restore. Check that Dash Wallet can read and write {folder} and that no other program is using it, then restart Dash Wallet. If you see this again, choose Report a problem. To stop restoring, choose Cancel restore.",
+      },
       restart: "Restart",
       cancel: "Cancel restore",
       report: "Report a problem",
@@ -132,6 +138,10 @@ export const storeUpgrade = {
       restart: "Restart",
       report: "Report a problem",
       quit: "Quit",
+    },
+    holdsUnchecked: {
+      title: "Dash Wallet couldn't finish this restore",
+      text: "A test build of Dash Wallet started restoring your wallet data from before the upgrade, and this version can't tell whether finishing it would lose track of a Shielded payment, so it hasn't opened the wallet data in {folder}. Don't delete anything in the upgrade-backups folder inside {folder}. Choose Report a problem.",
     },
     foreign: {
       title: "These wallet files don't match the restore",

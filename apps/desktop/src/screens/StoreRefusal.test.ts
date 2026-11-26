@@ -520,10 +520,14 @@ const RESTORE_STATES = Object.keys(RESTORE_CAUSES) as RestoreState[];
 const RESTORE_FIXTURES = RESTORE_FAILURE_NAMES.map((name) => [name, restoreFailure(name, FOLDER)] as const);
 const R = en.storeUpgrade.restore;
 const isHoldCause = (cause: string) => Object.hasOwn(RESTORE_HOLD_CAUSES, cause);
-/** MG's R-1 refusal: the base, the inFlight sentence when the spend may still go through, then Quit. */
+const ownCopy = (cause: string) => isHoldCause(cause) || cause === "holdsUnchecked";
+/** The swap's notStarted text for a shielded hold, by its reason. */
+const heldNotStarted = (cause: string) => R.notStarted.held[RESTORE_HOLD_CAUSES[cause as keyof typeof RESTORE_HOLD_CAUSES]].replaceAll("{folder}", FOLDER);
+const strings = (node: unknown): string[] => (typeof node === "string" ? [node] : Object.values(node as object).flatMap(strings));
+/** MG's R-1 refusal of the request: the base, the inFlight sentence when the spend may still go through, then the way forward. */
 const HELD = {
-  inFlight: `${R.held.text} ${R.held.inFlight} ${R.held.quit}`,
-  carriedOver: `${R.held.text} ${R.held.quit}`,
+  inFlight: `${R.held.text} ${R.held.inFlight} ${R.held.next}`,
+  carriedOver: `${R.held.text} ${R.held.next}`,
 };
 
 describe("the restore screens", () => {
@@ -531,11 +535,11 @@ describe("the restore screens", () => {
     describe(`in ${theme}`, () => {
       it.each(RESTORE_FIXTURES)("shows %s by its state, from the catalog", (_, restore) => {
         ui.set({ theme });
-        const copy = R[restore.state];
+        const copy = restore.cause === "holdsUnchecked" ? R.holdsUnchecked : R[restore.state];
         const html = renderRestore(restore);
         expect(html).toContain('role="alertdialog"');
         expect(html).toContain(`>${escaped(copy.title)}</h1>`);
-        const text = restore.state === "notStarted" && isHoldCause(restore.cause) ? HELD[RESTORE_HOLD_CAUSES[restore.cause as keyof typeof RESTORE_HOLD_CAUSES]] : copy.text.replaceAll("{folder}", FOLDER);
+        const text = restore.state === "notStarted" && isHoldCause(restore.cause) ? heldNotStarted(restore.cause) : copy.text.replaceAll("{folder}", FOLDER);
         expect(html).toContain(`data-testid="store-restore-text">${escaped(text)}</p>`);
         expect(html).not.toContain("{folder}");
         const keys = RESTORE_BUTTONS[restore.state];
@@ -557,29 +561,40 @@ describe("the restore screens", () => {
       });
     });
 
-  it("renders the same markup in light and dark, and the same for every cause of a state but a shielded hold", () => {
+  it("renders the same markup in light and dark, and the same for every cause of a state but a shielded hold or an unchecked restore", () => {
     for (const [, restore] of RESTORE_FIXTURES) sameInBothThemes(() => renderRestore(restore));
     for (const state of RESTORE_STATES) {
-      const [first, ...rest] = RESTORE_CAUSES[state].filter((cause) => !isHoldCause(cause)).map((cause) => renderRestore({ ...restoreFailure(`${state}:${RESTORE_CAUSES[state][0]}`, FOLDER), cause }));
+      const [first, ...rest] = RESTORE_CAUSES[state].filter((cause) => !ownCopy(cause)).map((cause) => renderRestore({ ...restoreFailure(`${state}:${RESTORE_CAUSES[state][0]}`, FOLDER), cause }));
       for (const html of rest) expect(html).toBe(first);
     }
   });
 
-  it("says why a shielded hold stopped the restore, with the inFlight sentence only for inFlight, and keeps the notStarted buttons", () => {
+  it("says why a shielded hold stopped the restore, by its reason, and keeps the notStarted buttons", () => {
     expect(Object.keys(RESTORE_HOLD_CAUSES).every((c) => (RESTORE_CAUSES.notStarted as readonly string[]).includes(c))).toBe(true);
     const plain = renderRestore(restoreFailure("notStarted:other", FOLDER));
-    for (const [cause, reason] of Object.entries(RESTORE_HOLD_CAUSES)) {
+    for (const cause of Object.keys(RESTORE_HOLD_CAUSES)) {
       const html = renderRestore(restoreFailure(`notStarted:${cause}`, FOLDER));
-      expect(html, cause).toContain(`data-testid="store-restore-text">${escaped(HELD[reason])}</p>`);
+      expect(html, cause).toContain(`data-testid="store-restore-text">${escaped(heldNotStarted(cause))}</p>`);
       expect(html, cause).not.toContain(escaped(R.notStarted.text.replaceAll("{folder}", FOLDER)));
       expect(html.replace(/data-testid="store-restore-text">[^<]*</, ""), cause).toBe(plain.replace(/data-testid="store-restore-text">[^<]*</, ""));
     }
+    expect(heldNotStarted("shieldedSpendInFlight")).toContain("restarting won't change this");
+    expect(heldNotStarted("shieldedSpendCarriedOver")).toContain(`Check that Dash Wallet can read and write ${FOLDER}`);
     expect(HELD.inFlight).toBe(
-      "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored. This usually clears on its own once the payment is confirmed. You can still quit Dash Wallet.",
+      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. That payment was still in progress, and Dash Wallet can check it only once it can open your current wallet data. Keep your current wallet data as it is and choose Report a problem.",
     );
     expect(HELD.carriedOver).toBe(
-      "Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, so restoring earlier data now would lose track of it. Nothing was restored. You can still quit Dash Wallet.",
+      "Nothing was restored. Dash Wallet doesn't know yet whether a Shielded payment from one of your wallets went through, and restoring earlier data would lose track of it. Keep your current wallet data as it is and choose Report a problem.",
     );
+  });
+
+  it("gives a restore an earlier build began without the hold check its own title and text, with the incomplete buttons", () => {
+    const html = renderRestore(restoreFailure("incomplete:holdsUnchecked", FOLDER));
+    const plain = renderRestore(restoreFailure("incomplete:diskFull", FOLDER));
+    expect(html).toContain(`>${escaped(R.holdsUnchecked.title)}</h1>`);
+    expect(html).toContain(`data-testid="store-restore-text">${escaped(R.holdsUnchecked.text.replaceAll("{folder}", FOLDER))}</p>`);
+    const chrome = (h: string) => h.replace(/<h1[^>]*>[^<]*<\/h1>/, "").replace(/data-testid="store-restore-text">[^<]*</, "");
+    expect(chrome(html)).toBe(chrome(plain));
   });
 
   it("covers every state and each cause the engine names", () => {
@@ -624,7 +639,7 @@ describe("the restore screens", () => {
   it("labels Report a problem as Settings does, and never offers to clean up", () => {
     expect(R.notStarted.report).toBe(en.settings.about.links.issues);
     expect(R.incomplete.report).toBe(en.settings.about.links.issues);
-    for (const text of Object.values(en.storeUpgrade.restore).flatMap((v) => (typeof v === "string" ? [v] : Object.values(v)))) expect(text).not.toMatch(/held on the network/);
+    for (const text of strings(en.storeUpgrade.restore)) expect(text).not.toMatch(/held on the network/);
   });
 
   it("follows the language", () => {
