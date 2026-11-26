@@ -38,7 +38,18 @@ export type ConnectApi = Pick<
   | "unlockMixingOnly"
 >;
 
-const FAILURE_NAMES = ["keyConflict", "notConfirmed", "noResponseKey", "nothingToSend", "scopeChanged", "unverifiedKey", "feeTooHigh"] as const satisfies readonly ConnectFailureName[];
+const FAILURE_NAMES = [
+  "keyConflict",
+  "notConfirmed",
+  "noResponseKey",
+  "nothingToSend",
+  "scopeChanged",
+  "unverifiedKey",
+  "feeTooHigh",
+  "disconnectConflict",
+  "pendingFeeTooHigh",
+  "pendingWrite",
+] as const satisfies readonly ConnectFailureName[];
 
 /** `connect.failed`'s detail, by where the approval stopped; `unknown` for anything else. */
 const FAILURE: Readonly<Record<ConnectFailureName | "unknown", string>> = messageTable("dashpay.connect.failure", [...FAILURE_NAMES, "unknown"]);
@@ -55,6 +66,9 @@ export const FAILURE_KEYS: Readonly<Record<ConnectFailureName | "unknown", "adde
   scopeChanged: "added",
   unverifiedKey: null,
   feeTooHigh: null,
+  disconnectConflict: null,
+  pendingFeeTooHigh: null,
+  pendingWrite: null,
   unknown: null,
 };
 

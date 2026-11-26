@@ -17,7 +17,20 @@ import type { FixtureGrant, World } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
 /** Scripted outcome for `app_connect_disconnect_quote` / `app_connect_disconnect` in the fixture. */
-export type DisconnectFixtureOutcome = "ok" | "notConfirmed" | "unverifiedKey" | "feeTooHigh" | "credits" | "error";
+export type DisconnectFixtureOutcome =
+  | "ok"
+  | "responseInFlight"
+  | "notConfirmed"
+  | "unverifiedKey"
+  | "feeTooHigh"
+  | "pendingFeeTooHigh"
+  | "pendingWrite"
+  | "grantExceeded"
+  | "disconnectConflict"
+  | "priorChargeKnown"
+  | "priorChargePossible"
+  | "credits"
+  | "error";
 
 const DISCONNECT_FEE = "22000000";
 
@@ -332,6 +345,8 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
         keys: app.keys.map((k) => k.keyId),
         fee: String(fee),
         balance: String(balance),
+        priorAttemptConflict: outcome === "priorChargeKnown" || outcome === "priorChargePossible",
+        priorAttemptDebit: outcome === "priorChargeKnown" ? "500000" : null,
       };
     },
     app_connect_disconnect: ({ walletId, identity, request, grant: id }, { world }) => {
@@ -348,12 +363,17 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       const outcome = world.disconnectOutcome ?? "ok";
       if (outcome === "unverifiedKey") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "unverifiedKey" });
       if (outcome === "feeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "feeTooHigh" });
+      if (outcome === "pendingFeeTooHigh") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingFeeTooHigh" });
+      if (outcome === "pendingWrite") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "pendingWrite" });
+      if (outcome === "grantExceeded")
+        throw fail("platform.grant_exceeded", "platform.grant_exceeded", { kind: "budget", purpose: "credits", needed: "25000000", remaining: DISCONNECT_FEE });
+      if (outcome === "disconnectConflict") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "disconnectConflict" });
       if (outcome === "credits") throw fail("connect.credits", "connect.credits", { kind: "credits", needed: DISCONNECT_FEE, available: "10000000" });
       useGrant(world, id);
       if (outcome === "notConfirmed") throw fail("connect.failed", "connect.failed", { kind: "connectFailure", failure: "notConfirmed" });
       if (outcome === "error") throw fail("platform.unavailable", "platform.unavailable");
       const [removed] = apps.splice(idx, 1);
-      return { identity, keysDisabled: removed.keys.map((k) => k.keyId) };
+      return { identity, keysDisabled: removed.keys.map((k) => k.keyId), responseMayHaveLanded: outcome === "responseInFlight" };
     },
   };
 }

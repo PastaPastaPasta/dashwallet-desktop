@@ -173,3 +173,62 @@ test("Disconnect sheet shows only the keys included in the live quote", async ({
   await expect(sheet.getByTestId("disconnect-keys")).not.toContainText("Key 7");
   expect(errors).toEqual([]);
 });
+
+test("Disconnect warns when an earlier sign-in response was still in flight", async ({ page }) => {
+  const errors = await openConnectedApps(page, "dashpay-connected-apps");
+  await page.getByTestId("connected-app-row").nth(0).getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-fee")).toContainText("in credits.");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "responseInFlight";
+  });
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+
+  await expect(page.getByTestId("disconnect-sheet")).toHaveCount(0);
+  const done = page.getByTestId("connected-apps-done");
+  await expect(done).toHaveAttribute("role", "alert");
+  await expect(done).toContainText("Disconnected “Yappr”. Its session keys are disabled, but a sign-in response was still in flight, so a key may already have reached the app.");
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test("Disconnect auto-requotes after grant_exceeded and shows both error and updated fee", async ({ page }) => {
+  const errors = await openConnectedApps(page, "dashpay-connected-apps");
+  await page.getByTestId("connected-app-row").nth(0).getByTestId("connected-app-disconnect").click();
+  await expect(page.getByTestId("disconnect-fee")).toContainText("in credits.");
+
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "grantExceeded";
+  });
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+
+  await expect(page.getByTestId("disconnect-error")).toContainText("fee changed while disconnecting");
+  await expect(page.getByTestId("disconnect-fee")).toContainText("in credits.");
+  await expect(page.getByTestId("disconnect-confirm")).toBeEnabled();
+
+  // User reviews the refreshed fee and confirms again.
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "ok";
+  });
+  await page.getByTestId("disconnect-confirm").click();
+  await authorize(page);
+  await expect(page.getByTestId("connected-apps-done")).toHaveText("Disconnected “Yappr”.");
+  expect(errors).toEqual([]);
+});
+
+test("Re-quoted Disconnect discloses any known or possible earlier conflict charge", async ({ page }) => {
+  const errors = await openConnectedApps(page, "dashpay-connected-apps");
+  await page.evaluate(() => {
+    window.__dwFixture!.world.disconnectOutcome = "priorChargeKnown";
+  });
+  await page.getByTestId("connected-app-row").nth(0).getByTestId("connected-app-disconnect").click();
+  const prior = page.getByTestId("disconnect-prior-charge");
+  await expect(prior).toHaveAttribute("role", "alert");
+  await expect(prior).toContainText("up to 500,000 in credits were debited");
+  await expect(page.getByTestId("disconnect-fee")).toContainText("in credits.");
+  await fontsReady(page);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});

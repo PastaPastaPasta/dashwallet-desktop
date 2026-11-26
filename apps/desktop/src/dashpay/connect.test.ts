@@ -28,6 +28,9 @@ describe("connect.failed's detail", () => {
     scopeChanged: true,
     unverifiedKey: true,
     feeTooHigh: true,
+    disconnectConflict: true,
+    pendingFeeTooHigh: true,
+    pendingWrite: true,
   };
   const generic = failureDetail(null);
 
@@ -63,6 +66,9 @@ describe("connect.failed's detail", () => {
       scopeChanged: "added",
       unverifiedKey: null,
       feeTooHigh: null,
+      disconnectConflict: null,
+      pendingFeeTooHigh: null,
+      pendingWrite: null,
       unknown: null,
     } as const;
     expect(FAILURE_KEYS).toEqual(pinned);

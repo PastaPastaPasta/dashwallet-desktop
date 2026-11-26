@@ -68,6 +68,17 @@ pub(crate) struct ContractFacts {
     pub(crate) serialized_bytes: usize,
 }
 
+/// A contract group's metadata only (`ContractGroupInfo`), fetched without
+/// enumerating its members (used to price group-bound key revocation).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GroupInfoFacts {
+    pub(crate) owner: Identifier,
+    pub(crate) admins: Vec<Identifier>,
+    /// Exact serialized byte length of `ContractGroupInfo` (owner, admins,
+    /// name and description) as stored by Drive.
+    pub(crate) serialized_bytes: usize,
+}
+
 /// A contract group as the proved reads found it: owner, admins and every
 /// member.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]

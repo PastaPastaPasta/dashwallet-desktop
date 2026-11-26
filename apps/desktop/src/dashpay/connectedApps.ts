@@ -64,7 +64,6 @@ export function connectedKeyCritical(key: ConnectedAppKey): string | null {
 /** Errors the engine provably raised before any IdentityUpdate was sent. */
 const UNSENT_CODES = new Set([
   "platform.grant_invalid",
-  "platform.grant_exceeded",
   "platform.signer_unavailable",
   "platform.seed_mismatch",
   "platform.needs_grant",
@@ -86,6 +85,7 @@ function connectFailureName(data: unknown): ConnectFailureName | null {
 export function disconnectErrorText(e: unknown): string {
   if (!isAppError(e)) return t("dashpay.connect.connected.err.generic");
   if (e.code === "connect.mainnet_off") return t("dashpay.connect.err.mainnetOff");
+  if (e.code === "platform.grant_exceeded") return t("dashpay.connect.connected.err.grantExceeded");
   if (e.code === "connect.credits" && e.data?.kind === "credits") {
     const short = BigInt(e.data.needed) - BigInt(e.data.available);
     return t("dashpay.connect.connected.lowCredits", { amount: creditCount(short > 0n ? short : 0n) });
@@ -95,6 +95,9 @@ export function disconnectErrorText(e: unknown): string {
     if (failure === "notConfirmed") return t("dashpay.connect.connected.err.notConfirmed");
     if (failure === "unverifiedKey") return t("dashpay.connect.connected.err.unverifiedKey");
     if (failure === "feeTooHigh") return t("dashpay.connect.connected.err.feeTooHigh");
+    if (failure === "disconnectConflict") return t("dashpay.connect.connected.err.disconnectConflict");
+    if (failure === "pendingFeeTooHigh") return t("dashpay.connect.connected.err.pendingFeeTooHigh");
+    if (failure === "pendingWrite") return t("dashpay.connect.connected.err.pendingWrite");
   }
   if (UNSENT_CODES.has(e.code)) return t("dashpay.connect.connected.err.genericUnsent");
   return t("dashpay.connect.connected.err.generic");
@@ -109,6 +112,7 @@ export class ConnectedAppsModel extends Model {
   target: ConnectedApp | null = null;
   quote: DisconnectQuote | null = null;
   quoting = false;
+  requoted = false;
   quoteError: unknown = null;
   disconnecting = false;
   disconnectError: unknown = null;
@@ -134,6 +138,7 @@ export class ConnectedAppsModel extends Model {
     this.target = app;
     this.quote = null;
     this.quoting = true;
+    this.requoted = false;
     this.quoteError = null;
     this.disconnectError = null;
     this.disconnectedLabel = null;
@@ -160,6 +165,7 @@ export class ConnectedAppsModel extends Model {
     this.target = null;
     this.quote = null;
     this.quoting = false;
+    this.requoted = false;
     this.quoteError = null;
     this.disconnectError = null;
     this.changed();
@@ -171,6 +177,7 @@ export class ConnectedAppsModel extends Model {
     const q = this.quote;
     if (!app || !q || this.quoting || this.disconnecting) return;
     this.disconnectError = null;
+    this.requoted = false;
     this.changed();
     const epoch = this.grants.epoch;
     let grant;
@@ -201,6 +208,38 @@ export class ConnectedAppsModel extends Model {
       this.grants.revoke(grant);
       this.disconnecting = false;
       this.disconnectError = e;
+      const failure = isAppError(e) && e.code === "connect.failed" ? connectFailureName(e.data) : null;
+      const shouldRefresh = failure === "notConfirmed" || failure === "pendingFeeTooHigh" || failure === "disconnectConflict";
+      const shouldRequote =
+        (isAppError(e) && e.code === "platform.grant_exceeded") ||
+        failure === "feeTooHigh" ||
+        failure === "disconnectConflict";
+      if (shouldRefresh) this.onDisconnected();
+      if (shouldRequote) {
+        await this.#requote(app);
+      } else {
+        this.changed();
+      }
+    }
+  }
+
+  async #requote(app: ConnectedApp): Promise<void> {
+    const seq = ++this.#quoteSeq;
+    this.quote = null;
+    this.quoting = true;
+    this.quoteError = null;
+    this.changed();
+    try {
+      const q = await this.api.appConnectDisconnectQuote(this.walletId, app.identity, app.request);
+      if (seq !== this.#quoteSeq || this.target?.request !== app.request) return;
+      this.quote = q;
+      this.quoting = false;
+      this.requoted = true;
+      this.changed();
+    } catch (qe) {
+      if (seq !== this.#quoteSeq || this.target?.request !== app.request) return;
+      this.quoting = false;
+      this.quoteError = qe;
       this.changed();
     }
   }

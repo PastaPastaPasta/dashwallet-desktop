@@ -118,6 +118,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(model.disconnectError).toBeNull();
     expect(model.disconnectedLabel).toBe("Yappr");
     expect(model.lastDone?.keysDisabled).toEqual([6, 7]);
+    expect(model.lastDone?.responseMayHaveLanded).toBe(false);
     expect(refreshed()).toBe(1);
     expect(fixture.world.grants.filter((g) => g.grant.purpose.kind === "appDisconnect").map((g) => g.used)).toEqual([true]);
 
@@ -125,8 +126,40 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(after.apps.map((a) => a.label)).toEqual(["Dash Forum"]);
   });
 
-  it("shows plain errors and keeps the row when quote or disconnect fails", async () => {
+  it("records responseMayHaveLanded when an in-flight sign-in response may still reach the app", async () => {
     const { fixture, backend, model } = setup("dashpay-connected-apps");
+    const { apps } = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
+    const yappr = apps[0];
+
+    await model.openDisconnect(yappr);
+    fixture.world.disconnectOutcome = "responseInFlight";
+    const done = model.confirmDisconnect();
+    await vi.waitFor(() => expect(model.grants.pending).not.toBeNull());
+    await model.grants.submit(FIXTURE_PASSPHRASE);
+    await done;
+
+    expect(model.disconnectedLabel).toBe("Yappr");
+    expect(model.lastDone?.responseMayHaveLanded).toBe(true);
+  });
+
+  it("carries prior-conflict charge disclosure on re-quoted Disconnect", async () => {
+    const { fixture, backend, model } = setup("dashpay-connected-apps");
+    const { apps } = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
+    const yappr = apps[0];
+
+    fixture.world.disconnectOutcome = "priorChargeKnown";
+    await model.openDisconnect(yappr);
+    expect(model.quote?.priorAttemptConflict).toBe(true);
+    expect(model.quote?.priorAttemptDebit).toBe("500000");
+
+    fixture.world.disconnectOutcome = "priorChargePossible";
+    await model.openDisconnect(yappr);
+    expect(model.quote?.priorAttemptConflict).toBe(true);
+    expect(model.quote?.priorAttemptDebit).toBeNull();
+  });
+
+  it("shows plain errors, refreshes on notConfirmed/pendingFeeTooHigh, and auto-requotes on grant_exceeded, feeTooHigh and disconnectConflict", async () => {
+    const { fixture, backend, model, refreshed } = setup("dashpay-connected-apps");
     const { apps } = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
     const yappr = apps[0];
 
@@ -148,7 +181,7 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
     expect(model.quote).toBeNull();
     expect(disconnectErrorText(model.quoteError)).toContain("more in credits to disable these keys");
 
-    // Not confirmed at disconnect time: shows plain error and keeps the row in the list.
+    // Not confirmed at disconnect time: shows plain error, refreshes list, and keeps the row in the list.
     fixture.world.disconnectOutcome = "ok";
     await model.openDisconnect(yappr);
     expect(model.quote).not.toBeNull();
@@ -160,16 +193,80 @@ describe("Disconnect confirm with fee, passphrase, success and errors", () => {
 
     expect(model.disconnectError).not.toBeNull();
     expect(disconnectErrorText(model.disconnectError)).toContain("Dash Wallet checks first, so you don't pay twice.");
+    expect(refreshed()).toBe(1);
     const stillThere = await backend.appConnectList(FIXTURE_WALLET_ID, IDENTITY.alice);
     expect(stillThere.apps.map((a) => a.label)).toEqual(["Yappr", "Dash Forum"]);
+
+    // Grant exceeded at disconnect time: auto-requotes for the user to review the new fee and never claims nothing was changed.
+    const quoteSpy = vi.spyOn(backend, "appConnectDisconnectQuote");
+    fixture.world.disconnectOutcome = "grantExceeded";
+    const grantRun = model.confirmDisconnect();
+    await vi.waitFor(() => expect(model.grants.pending).not.toBeNull());
+    await model.grants.submit(FIXTURE_PASSPHRASE);
+    await grantRun;
+
+    expect(quoteSpy).toHaveBeenCalledTimes(1);
+    expect(model.quote).not.toBeNull();
+    expect(model.quoteError).toBeNull();
+    expect(disconnectErrorText(model.disconnectError)).toContain("fee changed while disconnecting");
+    expect(disconnectErrorText(model.disconnectError).toLowerCase()).not.toContain("nothing was changed");
+
+    // Disconnect conflict at disconnect time: refreshes list and auto-requotes so user starts a fresh re-quoted Disconnect.
+    fixture.world.disconnectOutcome = "disconnectConflict";
+    const conflictRun = model.confirmDisconnect();
+    await vi.waitFor(() => expect(model.grants.pending).not.toBeNull());
+    await model.grants.submit(FIXTURE_PASSPHRASE);
+    await conflictRun;
+
+    expect(quoteSpy).toHaveBeenCalledTimes(2);
+    expect(model.quote).not.toBeNull();
+    expect(refreshed()).toBe(2);
+    expect(disconnectErrorText(model.disconnectError)).toContain("identity changed on Dash Platform");
+    expect(disconnectErrorText(model.disconnectError).toLowerCase()).not.toContain("nothing was changed");
+
+    // Fee too high at disconnect time: auto-requotes (which fails with feeTooHigh -> clears stale quote so confirm stays disabled).
+    fixture.world.disconnectOutcome = "feeTooHigh";
+    const feeRun = model.confirmDisconnect();
+    await vi.waitFor(() => expect(model.grants.pending).not.toBeNull());
+    await model.grants.submit(FIXTURE_PASSPHRASE);
+    await feeRun;
+
+    expect(quoteSpy).toHaveBeenCalledTimes(3);
+    expect(model.quote).toBeNull();
+    expect(model.quoteError).not.toBeNull();
+
+    // Pending fee too high at disconnect time: refreshes list and does not say nothing was changed.
+    fixture.world.disconnectOutcome = "ok";
+    await model.openDisconnect(yappr);
+    fixture.world.disconnectOutcome = "pendingFeeTooHigh";
+    const pendingFeeRun = model.confirmDisconnect();
+    await vi.waitFor(() => expect(model.grants.pending).not.toBeNull());
+    await model.grants.submit(FIXTURE_PASSPHRASE);
+    await pendingFeeRun;
+
+    expect(refreshed()).toBe(3);
+    expect(disconnectErrorText(model.disconnectError)).toContain("earlier attempt may still be in flight");
+    expect(disconnectErrorText(model.disconnectError).toLowerCase()).not.toContain("nothing was changed");
   });
 
-  it("maps generic and provably-unsent disconnect errors accurately", () => {
+  it("maps generic, fee-change, and provably-unsent disconnect errors accurately", () => {
     expect(disconnectErrorText({ code: "platform.unavailable", message: "", data: null })).toBe(
       "Dash Wallet couldn't disconnect this app. Try again.",
     );
     expect(disconnectErrorText({ code: "platform.grant_exceeded", message: "", data: null })).toBe(
+      "The Dash Platform fee changed while disconnecting, so review the updated fee and try again.",
+    );
+    expect(disconnectErrorText({ code: "platform.grant_invalid", message: "", data: null })).toBe(
       "Dash Wallet couldn't disconnect this app. Try again. Nothing was changed.",
+    );
+    expect(disconnectErrorText({ code: "connect.failed", message: "", data: { kind: "connectFailure", failure: "disconnectConflict" } })).toContain(
+      "identity changed on Dash Platform",
+    );
+    expect(disconnectErrorText({ code: "connect.failed", message: "", data: { kind: "connectFailure", failure: "pendingFeeTooHigh" } })).toContain(
+      "earlier attempt may still be in flight",
+    );
+    expect(disconnectErrorText({ code: "connect.failed", message: "", data: { kind: "connectFailure", failure: "pendingWrite" } })).toContain(
+      "hasn't settled on Dash Platform yet",
     );
     expect(disconnectErrorText({ code: "connect.mainnet_off", message: "", data: null })).toBe(
       "This version can sign in to apps on test networks only.",

@@ -205,6 +205,14 @@ pub struct DisconnectQuote {
     #[ts(type = "string")]
     #[serde(with = "crate::dto::credits")]
     pub balance: u64,
+    /// True when an earlier Disconnect attempt for this app was retired after
+    /// a revision or nonce conflict and may already have been charged a fee.
+    pub prior_attempt_conflict: bool,
+    /// Observed identity balance debit (in credits) from that retired attempt,
+    /// or `null` when no balance drop was proved.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub prior_attempt_debit: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -212,6 +220,10 @@ pub struct DisconnectQuote {
 pub struct DisconnectDone {
     pub identity: String,
     pub keys_disabled: Vec<u32>,
+    /// True when an earlier sign-in response document for this approval was
+    /// still in flight or confirmed on Platform, so a decryption key may
+    /// already have reached the app despite the session keys being disabled.
+    pub response_may_have_landed: bool,
 }
 
 impl From<engine::ConnectLevel> for ConnectLevel {
@@ -380,6 +392,7 @@ impl From<engine::DisconnectDone> for DisconnectDone {
         Self {
             identity: d.identity,
             keys_disabled: d.keys_disabled,
+            response_may_have_landed: d.response_may_have_landed,
         }
     }
 }
@@ -551,6 +564,8 @@ commands! {
             keys: q.keys,
             fee: q.fee,
             balance: q.balance,
+            prior_attempt_conflict: q.prior_attempt_conflict,
+            prior_attempt_debit: q.prior_attempt_debit,
         })
     }
 

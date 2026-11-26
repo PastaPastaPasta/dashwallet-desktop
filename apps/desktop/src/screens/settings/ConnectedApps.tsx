@@ -140,7 +140,7 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
   const t = useT();
   const app = model.target;
   if (!app) return null;
-  const error = model.disconnectError ?? model.quoteError;
+  const error = model.quoteError ?? model.disconnectError;
   // Once the live quote resolves, render only the key IDs the quote will
   // actually disable (falling back to cached metadata for descriptions).
   const shownKeys =
@@ -204,18 +204,30 @@ function DisconnectSheet({ model, username }: { model: ConnectedAppsModel; usern
             <span className="spinner" aria-hidden="true" />
             <span>{t("dashpay.connect.connected.busy")}</span>
           </div>
-        ) : error !== null ? (
-          <p className="form-problem" role="alert" data-testid="disconnect-error">
-            {disconnectErrorText(error)}
-          </p>
         ) : (
-          <p className="sheet-text" role="status" data-testid="disconnect-fee">
-            {model.quote !== null ? (
-              t("dashpay.connect.connected.fee", { amount: creditCount(model.quote.fee) })
-            ) : (
-              model.quoting && <span className="spinner" aria-hidden="true" />
+          <>
+            {error !== null && (
+              <p className="form-problem" role="alert" data-testid="disconnect-error">
+                {disconnectErrorText(error)}
+              </p>
             )}
-          </p>
+            {model.quote?.priorAttemptConflict && (
+              <p className="form-problem" role="alert" data-testid="disconnect-prior-charge">
+                {model.quote.priorAttemptDebit !== null
+                  ? t("dashpay.connect.connected.priorChargeKnown", { amount: creditCount(model.quote.priorAttemptDebit) })
+                  : t("dashpay.connect.connected.priorChargePossible")}
+              </p>
+            )}
+            {(error === null || model.requoted || model.quoting) && (
+              <p className="sheet-text" role="status" data-testid="disconnect-fee">
+                {model.quote !== null ? (
+                  t("dashpay.connect.connected.fee", { amount: creditCount(model.quote.fee) })
+                ) : (
+                  model.quoting && <span className="spinner" aria-hidden="true" />
+                )}
+              </p>
+            )}
+          </>
         )}
         <div className="sheet-actions">
           <DashButton
@@ -291,8 +303,17 @@ export function ConnectedAppsCard({
             </DashButton>
           </div>
           {model.disconnectedLabel !== null && (
-            <p className="form-ok" role="status" data-testid="connected-apps-done">
-              {t("dashpay.connect.connected.disconnected", { label: model.disconnectedLabel })}
+            <p
+              className={model.lastDone?.responseMayHaveLanded ? "form-problem" : "form-ok"}
+              role={model.lastDone?.responseMayHaveLanded ? "alert" : "status"}
+              data-testid="connected-apps-done"
+            >
+              {t(
+                model.lastDone?.responseMayHaveLanded
+                  ? "dashpay.connect.connected.disconnectedResponsePending"
+                  : "dashpay.connect.connected.disconnected",
+                { label: model.disconnectedLabel },
+              )}
             </p>
           )}
           {query.isPending ? (

@@ -4,4 +4,14 @@ import type { GrantPurposeSpec } from "./GrantPurposeSpec";
 /**
  * What disconnecting one app costs and the `appDisconnect` grant to ask for.
  */
-export type DisconnectQuote = { grant: GrantPurposeSpec, identity: string, keys: Array<number>, fee: string, balance: string, };
+export type DisconnectQuote = { grant: GrantPurposeSpec, identity: string, keys: Array<number>, fee: string, balance: string,
+/**
+ * True when an earlier Disconnect attempt for this app was retired after
+ * a revision or nonce conflict and may already have been charged a fee.
+ */
+priorAttemptConflict: boolean,
+/**
+ * Observed identity balance debit (in credits) from that retired attempt,
+ * or `null` when no balance drop was proved.
+ */
+priorAttemptDebit: string | null, };

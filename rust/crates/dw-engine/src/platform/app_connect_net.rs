@@ -35,7 +35,9 @@ use dpp::system_data_contracts::app_connect_contract;
 use platform_wallet::PlatformWallet;
 
 use super::app_connect::{ConnectUpdateSigner, DisconnectKeyFeeSpec};
-use super::app_connect_plan::{ContractFacts, GroupFacts, MAX_GROUP_MEMBERS, RESPONSE_TYPE};
+use super::app_connect_plan::{
+    ContractFacts, GroupFacts, GroupInfoFacts, MAX_GROUP_MEMBERS, RESPONSE_TYPE,
+};
 use super::errors::PlatformError;
 use super::signers::VaultIdentitySigner;
 
@@ -59,15 +61,22 @@ impl std::fmt::Debug for Response {
 pub(crate) trait ConnectNet: Send + Sync {
     /// The current epoch's protocol version, proved.
     fn protocol_version(&self) -> impl Future<Output = Result<u32, PlatformError>> + Send;
-    /// The identity with its disabled keys, and the proved block time (ms).
+    /// The identity with its disabled keys, the proved block time (ms), and
+    /// the proved block height.
     fn identity(
         &self,
         id: Identifier,
-    ) -> impl Future<Output = Result<(Option<Identity>, u64), PlatformError>> + Send;
+    ) -> impl Future<Output = Result<(Option<Identity>, u64, u64), PlatformError>> + Send;
     fn contract(
         &self,
         id: Identifier,
     ) -> impl Future<Output = Result<Option<ContractFacts>, PlatformError>> + Send;
+    /// The group's owner, admins and serialized `ContractGroupInfo` metadata
+    /// alone (no member enumeration — used to price group-bound revocation).
+    fn group_info(
+        &self,
+        id: Identifier,
+    ) -> impl Future<Output = Result<Option<GroupInfoFacts>, PlatformError>> + Send;
     /// The group's owner, admins and members up to `MAX_GROUP_MEMBERS + 1`
     /// (approval refuses any larger group).
     fn group(
@@ -94,11 +103,12 @@ pub(crate) trait ConnectNet: Send + Sync {
         request_hash: [u8; 20],
         owner: Identifier,
     ) -> impl Future<Output = Result<bool, PlatformError>> + Send;
+    /// Refreshes the identity and returns it with its proved block height.
     fn refresh(
         &self,
         wallet: &PlatformWallet,
         id: Identifier,
-    ) -> impl Future<Output = Result<Identity, PlatformError>> + Send;
+    ) -> impl Future<Output = Result<(Identity, u64), PlatformError>> + Send;
     /// The MASTER-signed IdentityUpdate.
     fn update_identity(
         &self,
@@ -109,11 +119,12 @@ pub(crate) trait ConnectNet: Send + Sync {
         signer: &ConnectUpdateSigner,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The identity's proved nonce state (low 40 bits: tip; upper 24 bits:
-    /// past-window bitset), `0` if none stored yet.
+    /// past-window bitset; `0` if none stored yet) and the proved block height
+    /// at which it was read.
     fn identity_nonce(
         &self,
         id: Identifier,
-    ) -> impl Future<Output = Result<u64, PlatformError>> + Send;
+    ) -> impl Future<Output = Result<(u64, u64), PlatformError>> + Send;
     /// Signs a MASTER-authorized disable-only `IdentityUpdateTransition` at
     /// `identity.revision() + 1` and `nonce`, returning its serialized bytes
     /// so it can be persisted before broadcast and re-broadcast idempotently.
@@ -222,9 +233,12 @@ impl ConnectNet for SdkConnect {
         Ok(epoch.protocol_version())
     }
 
-    async fn identity(&self, id: Identifier) -> Result<(Option<Identity>, u64), PlatformError> {
+    async fn identity(
+        &self,
+        id: Identifier,
+    ) -> Result<(Option<Identity>, u64, u64), PlatformError> {
         let (identity, metadata) = Identity::fetch_with_metadata(&self.0, id, None).await?;
-        Ok((identity, metadata.time_ms))
+        Ok((identity, metadata.time_ms, metadata.height))
     }
 
     async fn contract(&self, id: Identifier) -> Result<Option<ContractFacts>, PlatformError> {
@@ -235,7 +249,9 @@ impl ConnectNet for SdkConnect {
         let serialized_bytes = contract
             .serialize_to_bytes_with_platform_version(self.0.version())
             .map(|b| b.len())
-            .unwrap_or(65_536);
+            .map_err(|e| PlatformError::Internal {
+                detail: format!("serialize contract for fee bound: {e}"),
+            })?;
         Ok(Some(ContractFacts {
             owner: contract.owner_id(),
             document_types: contract.document_types().keys().cloned().collect(),
@@ -247,6 +263,27 @@ impl ConnectNet for SdkConnect {
                 .map(|r| r as u8),
             has_tokens: !contract.tokens().is_empty(),
             readonly: config.readonly(),
+            serialized_bytes,
+        }))
+    }
+
+    async fn group_info(&self, id: Identifier) -> Result<Option<GroupInfoFacts>, PlatformError> {
+        let Some(info) = ContractGroupInfo::fetch(&self.0, id).await? else {
+            return Ok(None);
+        };
+        let serialized_bytes =
+            info.serialize_to_bytes()
+                .map(|b| b.len())
+                .map_err(|e| PlatformError::Internal {
+                    detail: format!("serialize contract group info for fee bound: {e}"),
+                })?;
+        let owner = info.owner();
+        Ok(Some(GroupInfoFacts {
+            owner: *owner.owner_id(),
+            admins: owner
+                .admin_ids()
+                .map(|a| a.iter().copied().collect())
+                .unwrap_or_default(),
             serialized_bytes,
         }))
     }
@@ -311,8 +348,12 @@ impl ConnectNet for SdkConnect {
         &self,
         wallet: &PlatformWallet,
         id: Identifier,
-    ) -> Result<Identity, PlatformError> {
-        Ok(wallet.identity().refresh_identity(&id).await?)
+    ) -> Result<(Identity, u64), PlatformError> {
+        let _ = wallet.identity().refresh_identity(&id).await;
+        let (identity, metadata) = Identity::fetch_with_metadata(&self.0, id, None).await?;
+        let identity =
+            identity.ok_or_else(|| PlatformError::from(super::errors::IdentityError::NotFound))?;
+        Ok((identity, metadata.height))
     }
 
     async fn update_identity(
@@ -329,9 +370,13 @@ impl ConnectNet for SdkConnect {
             .await?)
     }
 
-    async fn identity_nonce(&self, id: Identifier) -> Result<u64, PlatformError> {
-        let (state, _) = IdentityNonceFetcher::fetch_with_metadata(&self.0, id, None).await?;
-        Ok(state.map_or(0, |IdentityNonceFetcher(n)| n))
+    async fn identity_nonce(&self, id: Identifier) -> Result<(u64, u64), PlatformError> {
+        let (state, metadata) =
+            IdentityNonceFetcher::fetch_with_metadata(&self.0, id, None).await?;
+        Ok((
+            state.map_or(0, |IdentityNonceFetcher(n)| n),
+            metadata.height,
+        ))
     }
 
     async fn sign_disable_keys(
@@ -379,8 +424,11 @@ impl ConnectNet for SdkConnect {
         let result = transition
             .broadcast_and_wait::<StateTransitionProofResult>(&self.0, None)
             .await;
+        // Sync the SDK's cached identity nonce from Platform without bumping
+        // (`bump_first = false`) so each disconnect broadcast does not reserve
+        // and discard an extra unused nonce gap.
         self.0.refresh_identity_nonce(&id).await;
-        let _ = self.0.get_identity_nonce(id, true, None).await;
+        let _ = self.0.get_identity_nonce(id, false, None).await;
         if result.is_ok() {
             let _ = wallet.identity().refresh_identity(&id).await;
         }
