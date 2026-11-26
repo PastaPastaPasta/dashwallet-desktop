@@ -1269,7 +1269,7 @@ export function sharedScenarios(base: Base) {
         withSharedMasternode(w, sharedShares({}), [standbyPair(undefined, { penalty: null, source: "imported" })]);
       }),
     /** Restored elsewhere: EP 5 answers from history, no session, no standby (§2.4.2). */
-    "sh-detail-no-session": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null }))),
+    "sh-detail-sessionless": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null }))),
     /** History doesn't hold the registration: EP 5 refuses `shared_registration_unknown`. */
     "sh-detail-unknown": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, null)),
     /** The list trails the registration's block. */

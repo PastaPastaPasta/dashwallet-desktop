@@ -11,7 +11,7 @@ import { installFixture } from "./index";
 import { FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
 import { SH_COORD, SH_MN, SH_REGISTERED } from "./shared";
 
-const DETAIL: ScenarioName[] = ["sh-detail", "sh-detail-no-session", "sh-detail-too-early", "sh-detail-list-unavailable", "sh-detail-upgrade-unknown", "sh-detail-standby-valid"];
+const DETAIL: ScenarioName[] = ["sh-detail", "sh-detail-sessionless", "sh-detail-too-early", "sh-detail-list-unavailable", "sh-detail-upgrade-unknown", "sh-detail-standby-valid"];
 
 beforeEach(() => vi.stubGlobal("window", globalThis));
 afterEach(() => {
@@ -71,8 +71,8 @@ describe("fixture shared masternode", () => {
     expect((await cmd.mnMasternode(W, SH_MN)).registration?.registeredHeight).toBe(SH_REGISTERED);
   });
 
-  it("sh-detail-no-session: EP 5 answers from history with no session and no standby", async () => {
-    installFixture({ scenario: "sh-detail-no-session" });
+  it("sh-detail-sessionless: EP 5 answers from history with no session and no standby", async () => {
+    installFixture({ scenario: "sh-detail-sessionless" });
     expect((await cmd.mnSharedShares(W, SH_MN)).session).toBeNull();
     expect(registrationSession(await cmd.mnSharedSessions(W), SH_MN)).toBeNull();
     expect(await cmd.mnSharedStandby(W, SH_MN)).toEqual([]);
