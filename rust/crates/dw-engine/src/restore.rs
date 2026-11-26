@@ -48,11 +48,11 @@ use crate::session::{Manager, NetworkSession, WALLET_DB_FILE};
 /// How far past a pool's reach (the furthest index it holds, or would
 /// generate keeping its gap) the search derives looking for a stored address
 /// no pool holds; each address found opens another window. It is key-wallet's
-/// largest gap limit (`gap_limit::MAX_GAP_LIMIT`, 1000, also the engine's
+/// largest gap limit (`address_pool::MAX_GAP_LIMIT`, 1000, also the engine's
 /// `MAX_LOOKAHEAD`): a scan never derives more than a gap limit past the last
 /// used address, so every coin it found lies within one window of a used
 /// address, or of the start.
-pub(crate) const SEARCH_WINDOW: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
+pub(crate) const SEARCH_WINDOW: u32 = key_wallet::managed_account::address_pool::MAX_GAP_LIMIT;
 
 /// The search's budget per pool and restore: it derives at most this many
 /// indexes past the pool's end. Coins past it stay where they were loaded,
@@ -173,14 +173,14 @@ fn mark_derived(
                 checked.push(None);
             }
             let from = checked[k].map_or(0, |c| c + 1);
-            let hits: Vec<u32> = (pool.addresses.range(from..))
-                .filter(|(_, a)| wanted.remove(&a.script_pubkey))
+            let hits: Vec<u32> = (pool.addresses().range(from..))
+                .filter(|(_, a)| wanted.remove(&a.address.script_pubkey()))
                 .map(|(i, _)| *i)
                 .collect();
             for index in hits {
-                marked |= pool.mark_index_used(index);
+                marked |= (pool.address_at_index(index)).is_some_and(|a| pool.mark_used(&a));
             }
-            checked[k] = pool.highest_generated.or(checked[k]);
+            checked[k] = pool.highest_generated().or(checked[k]);
             k += 1;
         }
     }
@@ -197,7 +197,11 @@ fn derived_outside_funds(info: &ManagedWalletInfo, script: &ScriptBuf) -> bool {
             ManagedAccountRef::Keys(k) => (k.managed_account_type(), true),
         })
         .filter(|(t, keys)| *keys || t.is_contact_owned())
-        .any(|(t, _)| (t.address_pools().iter()).any(|p| p.contains_script_pubkey(script)))
+        .any(|(t, _)| {
+            (t.address_pools().iter()).any(|p| {
+                Address::from_script(script, p.network()).is_ok_and(|a| p.contains_address(&a))
+            })
+        })
 }
 
 /// Looks for the `wanted` scripts in each address pool of each funds
@@ -226,12 +230,11 @@ fn search(
         let Some(a) = info.accounts.funds_account_mut(&account) else {
             continue;
         };
-        let mut extended = false;
         for pool in a.managed_account_type_mut().address_pools_mut() {
             if wanted.is_empty() {
                 break;
             }
-            let branch = match pool.pool_type {
+            let branch = match pool.pool_type() {
                 AddressPoolType::External => xpub.derive_pub(&[ChildNumber::Normal { index: 0 }]),
                 AddressPoolType::Internal => xpub.derive_pub(&[ChildNumber::Normal { index: 1 }]),
                 AddressPoolType::Absent => Ok(xpub),
@@ -240,15 +243,15 @@ fn search(
             let Ok(branch) = branch else {
                 continue;
             };
-            let gap = pool.gap_limit;
+            let gap = pool.gap_limit();
             let window = SEARCH_WINDOW.max(gap);
-            let start = pool.highest_generated.map_or(0, |h| h + 1);
-            let spent = searched.entry((account, pool.pool_type)).or_insert(0);
+            let start = pool.highest_generated().map_or(0, |h| h + 1);
+            let spent = searched.entry((account, pool.pool_type())).or_insert(0);
             let ceiling = start.saturating_add(SEARCH_BUDGET.saturating_sub(*spent));
             // Where a later load's search would start: past what keeping
             // the gap generates (highest used + gap).
-            let mut reach = (pool.highest_generated)
-                .max(pool.highest_used.map(|u| u.saturating_add(gap)))
+            let mut reach = (pool.highest_generated())
+                .max(pool.highest_used().map(|u| u.saturating_add(gap)))
                 .unwrap_or(gap.saturating_sub(1));
             let horizon = |reach: u32| reach.saturating_add(1).saturating_add(window).min(ceiling);
             let mut end = horizon(reach);
@@ -260,7 +263,7 @@ fn search(
                     break;
                 };
                 let address =
-                    Address::p2pkh(&dashcore::PublicKey::new(child.public_key), pool.network);
+                    Address::p2pkh(&dashcore::PublicKey::new(child.public_key), pool.network());
                 if wanted.remove(&address.script_pubkey()) {
                     hits.push(index);
                     reach = reach.max(index.saturating_add(gap));
@@ -273,18 +276,18 @@ fn search(
             let Some(&furthest) = hits.last() else {
                 continue;
             };
-            if let Err(e) = pool.generate_up_to(furthest, &key_source) {
+            let next = pool.highest_generated().map_or(0, |h| h + 1);
+            let count = furthest.saturating_add(1).saturating_sub(next);
+            if let Err(e) = pool.generate_addresses(count, &key_source) {
                 tracing::warn!(?account, error = %e, "could not extend a pool to a stored coin");
                 continue;
             }
             for index in &hits {
-                pool.mark_index_used(*index);
+                if let Some(a) = pool.address_at_index(*index) {
+                    pool.mark_used(&a);
+                }
             }
             found += hits.len();
-            extended = true;
-        }
-        if extended {
-            a.bump_monitor_revision();
         }
     }
     found
@@ -525,7 +528,6 @@ impl NetworkSession {
 
 #[cfg(test)]
 mod tests {
-    use dashcore::hashes::Hash;
     use dashcore::{BlockHash, Network, Transaction, TxIn, TxOut, Txid};
     use key_wallet::transaction_checking::{
         BlockInfo, TransactionContext, WalletTransactionChecker,
@@ -566,9 +568,9 @@ mod tests {
             .managed_account_type()
             .address_pools()[0]
             .clone();
-        let have = pool.highest_generated.unwrap_or(0);
+        let have = pool.highest_generated().unwrap_or(0);
         if index > have {
-            pool.generate_addresses(index - have, &ks, true).unwrap();
+            pool.generate_addresses(index - have, &ks).unwrap();
         }
         pool.address_at_index(index).expect("derived")
     }
@@ -627,7 +629,7 @@ mod tests {
             unreachable!("a seed wallet's BIP44 account has an xpub")
         };
         (info.accounts.funds_account_mut(&bip44()).unwrap())
-            .next_receive_address(Some(&xpub), true)
+            .next_receive_address(Some(&xpub))
             .unwrap()
     }
 
@@ -663,10 +665,10 @@ mod tests {
             .managed_account_type()
             .address_pools()[0];
         assert!(
-            pool.gap_limit < SEARCH_WINDOW,
+            pool.gap_limit() < SEARCH_WINDOW,
             "the window, not the gap, decides"
         );
-        let have = pool.highest_generated.unwrap();
+        let have = pool.highest_generated().unwrap();
 
         let mut info = loaded.clone();
         let last = coinjoin_address(&wallet, &info, have + SEARCH_WINDOW);
@@ -769,7 +771,7 @@ mod tests {
             .unwrap()
             .managed_account_type()
             .address_pools()[0];
-        let (have, gap) = (pool.highest_generated.unwrap(), pool.gap_limit);
+        let (have, gap) = (pool.highest_generated().unwrap(), pool.gap_limit());
         let indexes: Vec<u32> = (0..)
             .map(|k| have + SEARCH_WINDOW + k * (gap + SEARCH_WINDOW))
             .take_while(|i| *i <= have + SEARCH_BUDGET + gap + SEARCH_WINDOW)
@@ -838,8 +840,8 @@ mod tests {
         let ks = wallet.key_source_for_account(cj());
         let account = info.accounts.funds_account_mut(&cj()).unwrap();
         let pool = &mut account.managed_account_type_mut().address_pools_mut()[0];
-        let have = pool.highest_generated.unwrap();
-        pool.generate_addresses(170 - have, &ks, true).unwrap();
+        let have = pool.highest_generated().unwrap();
+        pool.generate_addresses(170 - have, &ks).unwrap();
         replay(&mut wallet, &mut info, &tx).await;
         assert_eq!(info.balance.total(), 2 * VALUE, "the double count");
         assert_eq!(holders(&info, &outpoint), [bip44(), cj()]);

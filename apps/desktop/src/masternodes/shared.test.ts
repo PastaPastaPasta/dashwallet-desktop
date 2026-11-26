@@ -83,10 +83,10 @@ const coordinator = (stage: SharedSession["stage"], next: SharedNextName, patch:
 
 describe("the session's render per network", () => {
   it("signs and sends on testnet, regtest and devnet, and not on mainnet", () => {
-    expect(sliceFor(NETWORKS.mainnet)).toEqual(NO_SENDS);
+    expect(sliceFor(NETWORKS.mainnet)).toEqual({ ...NO_SENDS, maintenance: true, maintenanceSend: false, keyChange: false });
     expect(sharedSendsOn(NETWORKS.mainnet)).toBe(false);
     for (const n of [NETWORKS.testnet, NETWORKS.regtest, NETWORKS.devnet]) {
-      expect(sliceFor(n), n.kind).toEqual(S5_SLICE);
+      expect(sliceFor(n), n.kind).toEqual({ ...S5_SLICE, maintenance: true, maintenanceSend: true, keyChange: true });
       expect(sharedSendsOn(n), n.kind).toBe(true);
     }
     expect(S5_SLICE).toEqual({ sign: true, send: true });

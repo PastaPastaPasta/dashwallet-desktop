@@ -8,7 +8,6 @@
 use dashcore::address::Payload;
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::provider_update_registrar::ProviderUpdateRegistrarPayload;
-use dashcore::hashes::Hash;
 use dashcore::{Address, Network, PubkeyHash, ScriptBuf, Transaction, TxOut, Txid};
 use dw_appdb::MasternodeOpRow;
 use dw_protx::payloads;

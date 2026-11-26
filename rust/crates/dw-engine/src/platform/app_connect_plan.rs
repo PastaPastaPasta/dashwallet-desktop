@@ -331,7 +331,7 @@ pub(crate) fn session_key(
     budget: u64,
     expires_at_ms: u64,
 ) -> Option<IdentityPublicKey> {
-    use dashcore::hashes::{Hash, hash160};
+    use dashcore::hashes::hash160;
     let binding = request.auth_bindings.get(usize::from(index))?;
     let security_level = match binding.level {
         Level::Critical => SecurityLevel::CRITICAL,
@@ -410,4 +410,14 @@ impl Commitment<'_> {
         h.update(&bytes);
         Some(h.finalize().into())
     }
+}
+
+/// The digest of the group facts one read found, so the sheet that shows
+/// them can tell a quote that read others.
+pub(crate) fn groups_digest(groups: &BTreeMap<Identifier, Option<GroupFacts>>) -> Option<[u8; 32]> {
+    let bytes = serde_json::to_vec(groups).ok()?;
+    let mut h = Sha256::new();
+    h.update(b"dashwallet-desktop app-connect groups v1\0");
+    h.update(&bytes);
+    Some(h.finalize().into())
 }

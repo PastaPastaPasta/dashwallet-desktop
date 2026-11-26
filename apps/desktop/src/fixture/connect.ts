@@ -27,6 +27,11 @@ export const CONNECT_LINKS = {
   failed: "a99c0000000000000000000000000006",
   credits: "a99c0000000000000000000000000007",
   notConfirmed: "a99c0000000000000000000000000008",
+  /** Reopened after an approval that went unconfirmed, while Platform can't be reached: its first
+   * quote fails, the next one succeeds. */
+  quoteOffline: "a99c0000000000000000000000000009",
+  /** Its group gains an admin between the sheet's read and the first quote's. */
+  groupChanged: "a99c000000000000000000000000000a",
 } as const;
 
 export type ConnectOutcome = keyof typeof CONNECT_LINKS;
@@ -40,7 +45,7 @@ export interface FixtureConnect {
   /** The keys an approval added, once it did. */
   keysAdded: number[] | null;
   /** The request was read again since Platform changed it (`planChanged`), or its first approval
-   * went unconfirmed (`notConfirmed`). */
+   * went unconfirmed (`notConfirmed`); its group gained an admin (`groupChanged`). */
   reread: boolean;
   /** The choice of an approval that went unconfirmed, which a sheet read again offers. */
   earlier: ConnectChoice | null;
@@ -48,6 +53,8 @@ export interface FixtureConnect {
   returned: boolean;
   /** `app_connect_dismiss` forgot it (kept here for the tests to read). */
   dismissed: boolean;
+  /** Quotes refused so far (`quoteOffline`). */
+  quotesFailed: number;
 }
 
 /** The host a fixture request delivered by the OS returns to. */
@@ -58,6 +65,7 @@ const POSTS = base58("7YpprPostsCntrctAq3vK8tQ");
 const LIKES = base58("8YpprLikesCntrctBm9xWb6n");
 const OWNER = base58("5YpprwnerMk2Lq9XzDhcP4fT");
 const ADMIN = base58("6YpprAdmnRt3vZxWb6nH9cF4");
+const NEW_ADMIN = base58("4YpprNewAdmnQ2wXcT7kL8pR");
 const GROUP = base58("9YpprGrpEq1mZxWb6nH9cF4j");
 const APP_ID = "a7c3e5f1".repeat(8);
 const REQUEST = "5e2d".repeat(10);
@@ -79,7 +87,7 @@ const connectOf = (w: World) => (w.connect ??= {});
 export function takeConnect(w: World, route: LinkRoute): LinkRoute {
   if (route.kind !== "appConnect") return route;
   const outcome = (Object.keys(CONNECT_LINKS) as ConnectOutcome[]).find((k) => CONNECT_LINKS[k] === route.linkId) ?? "ok";
-  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, earlier: null, returned: false, dismissed: false };
+  connectOf(w)[route.linkId] = { outcome, returnsTo: route.returnsTo, answer: null, started: false, keysAdded: null, reread: false, earlier: null, returned: false, dismissed: false, quotesFailed: 0 };
   return route;
 }
 
@@ -100,9 +108,17 @@ function refuse(l: FixtureConnect, error: AppError): AppError {
   return error;
 }
 
+/** The group facts as Platform has them now: `groupChanged`'s group gained an admin. */
+const groupGrew = (l: FixtureConnect) => l.outcome === "groupChanged" && l.reread;
+
 function bindingsOf(l: FixtureConnect): ConnectBinding[] {
-  return l.outcome === "planChanged" && l.reread ? BINDINGS.slice(0, 2) : BINDINGS;
+  if (l.outcome === "planChanged" && l.reread) return BINDINGS.slice(0, 2);
+  if (!groupGrew(l)) return BINDINGS;
+  return BINDINGS.map((b): ConnectBinding => (b.scope.kind === "group" ? { ...b, scope: { kind: "group", group: { ...b.scope.group, admins: [ADMIN, NEW_ADMIN] } } } : b));
 }
+
+/** The digest of the group facts a read found, as 32 bytes of hex. */
+const groupsOf = (l: FixtureConnect) => (groupGrew(l) ? "6a" : "5f").repeat(32);
 
 /** The plan a quote binds its grant to: what the choice adds, as 32 bytes of hex. */
 function planOf(choice: ConnectChoice): string {
@@ -132,6 +148,8 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       .map((i) => ({ identity: i.identity, username: i.mainName!, balance: i.balance }));
     if (identities.length === 0) throw refuse(l, fail("connect.no_identity", "connect.no_identity"));
     const now = FIXTURE_NOW.getTime();
+    if (l.outcome === "quoteOffline")
+      l.earlier ??= { identity: identities[0]!.identity, selection: [0, 1, 2], terms: { fundingLimit: FUNDING_LIMIT, expiresAtMs: now + 30 * DAY_MS } };
     return {
       request: REQUEST,
       appId: APP_ID,
@@ -145,6 +163,7 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
       maxFundingLimit: MAX_FUNDING_LIMIT,
       earlierApproval: l.earlier,
       blockTimeMs: now,
+      groups: groupsOf(l),
     };
   };
 
@@ -163,14 +182,18 @@ export function connectHandlers({ wallet, dashpay, grant, useGrant }: ConnectDep
     app_connect_sheet: ({ walletId, linkId }, { world }) => sheetOf(world, walletId, linkId),
     app_connect_quote: ({ walletId, linkId, choice }, { world }) => {
       const { who } = checkChoice(world, walletId, linkId, choice);
+      const l = link(world, linkId);
+      if (l.outcome === "quoteOffline" && l.quotesFailed++ === 0) throw fail("platform.unavailable", "platform unavailable");
+      if (l.outcome === "groupChanged") l.reread = true;
       const fee = feeOf(choice);
-      const balance = link(world, linkId).outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
+      const balance = l.outcome === "credits" ? fee / 2n : BigInt(who.balance ?? "0");
       if (balance < fee) throw fail("connect.credits", "connect.credits", { kind: "credits", needed: String(fee), available: String(balance) });
       return {
         grant: { kind: "appConnect", maxCredits: String(fee), request: REQUEST, plan: planOf(choice) },
         fee: String(fee),
         budgets: [choice.terms.fundingLimit],
         balance: String(balance),
+        groups: groupsOf(l),
       };
     },
     app_connect_approve: ({ walletId, linkId, choice, grant: id }, { world }) => {

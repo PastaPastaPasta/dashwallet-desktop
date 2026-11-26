@@ -17,6 +17,7 @@ import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { isAddressSendsOff, MAINNET_OFF_COPY } from "./mainnetOff";
+import { platformHoldText } from "../api/platformHold";
 
 export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
@@ -201,6 +202,8 @@ export const stillHeld = (activity: readonly PlatformActivity[] | null | undefin
 /** A move's refusal, by code. `credits` shows a credit figure as Dash. `exitOf`: the held top-up the move
  * was the exit of; while it still holds, a pre-check refusal says it may still land. */
 export function moveErrorText(e: unknown, credits: (c: string) => string, activity?: readonly PlatformActivity[] | null, exitOf?: string | null): string {
+  const held = platformHoldText(e);
+  if (held) return held;
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "platform.insufficient_credits":

@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 
 use dashcore::blockdata::script::{Builder, Instruction, PushBytes};
-use dashcore::secp256k1::{Message, SecretKey, ecdsa};
 use dashcore::{Address, PublicKey, ScriptBuf};
+use dpp::secp256k1::{Message, SecretKey, ecdsa};
 use dw_protx::shared::SpecialTx;
 use key_wallet::transaction_checking::TransactionContext;
 

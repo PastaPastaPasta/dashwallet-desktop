@@ -491,7 +491,13 @@ test("Mainnet: off (flag platform_registration): the privacy step offers no Plat
   await page.getByTestId("toolbar").waitFor();
   await toJoin(page);
   await page.getByTestId("join-create").click();
-  await expect(page.getByTestId("registration-pay-with")).toHaveAttribute("data-kind", /^(sources|tip)$/);
+  const step = page.getByTestId("registration-pay-with");
+  await expect(step).toHaveAttribute("data-kind", "sources");
+  await expect(step.getByRole("heading", { level: 2 })).toHaveText("Pay for your username");
+  await expect(page.getByTestId("privacy-body")).toHaveCount(0);
+  await expect(page.getByTestId("pay-with-core-note")).toHaveText("Funds will be traceable to your username");
+  await expect(page.getByTestId("pay-with-shielded")).toHaveCount(0);
+  await expect(page.getByTestId("privacy-shield-first")).toHaveCount(0);
   await expect(page.getByTestId("privacy-advanced")).toHaveCount(0);
   await expect(page.getByTestId("pay-with-platform")).toHaveCount(0);
   expect(errors).toEqual([]);

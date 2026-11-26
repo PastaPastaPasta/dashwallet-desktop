@@ -26,6 +26,7 @@ import { preparingText } from "../transfer/preparing";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
+import { platformHoldText } from "../api/platformHold";
 
 const MEMO_BYTES = 36;
 
@@ -69,7 +70,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const syncing = shieldedSyncing(status);
   const spendsOff = shieldedSpendsOff(status);
   const waitText = shieldedWaitText(status);
-  const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", shieldedWait(status), false, spendsOff) : null;
+  const maxRefusal = line.state.kind === "refused" ? (platformHoldText(line.state.error, false) ?? shieldedErrorText(line.state.error, credits, fmt, "send", shieldedWait(status), false, spendsOff)) : null;
   const maxWhy = spendsOff ? spendsOffText(kind) : syncing ? waitText : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = spendsOff
     ? spendsOffText(kind)
@@ -231,7 +232,7 @@ function ConfirmStep({ flow, walletId, status, fmt }: { flow: ShieldedFlow; wall
     <>
       {quote.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-quote-error">
-          {shieldedErrorText(quote.error, credits, duffs, kind, shieldedWait(status), coreMax, spendsOff)}
+          {platformHoldText(quote.error, false) ?? shieldedErrorText(quote.error, credits, duffs, kind, shieldedWait(status), coreMax, spendsOff)}
         </p>
       ) : !q ? (
         <p className="sheet-text" role="status">
@@ -480,7 +481,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     if (address.isError)
       return (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
-          {shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
+          {platformHoldText(address.error, false) ?? shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       );
     if (address.data) return <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />;

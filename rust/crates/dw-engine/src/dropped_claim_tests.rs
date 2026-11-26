@@ -81,16 +81,57 @@ fn assert_payment_kept(
     );
 }
 
-/// After a restart the scan finds the claimed coin, and the next start's
-/// store drops the claim as unsigned (#73): the payment from its change is
-/// dropped with it, and stays dropped.
+/// The store as a build before key-wallet refused unsigned spends left it
+/// once the scan found the claimed coin: the coin is mined and held by a
+/// peer's unsigned claim T on it ([`seed_claim`]), and with the engine's
+/// check off the wallet pays someone (S) from T's change and `extra`.
+/// Returns the session on that store, T and S.
+///
+/// [`seed_claim`]: super::store_repair_tests::seed_claim
+fn payment_on_a_stored_claims_change(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    extra: Option<OutPoint>,
+) -> (Arc<NetworkSession>, Transaction, Transaction) {
+    let (session, _, claim) =
+        super::store_repair_tests::claim_on_a_held_coin(engine, session, id, &[]);
+    skip_unsigned_check(&session);
+    let coins: Vec<OutPoint> = std::iter::once(OutPoint::new(claim.txid(), 1))
+        .chain(extra)
+        .collect();
+    let amount = match extra {
+        Some(_) => CHANGE + PAID / 2,
+        None => CHANGE / 2,
+    };
+    let payment = send(
+        engine,
+        &session,
+        id,
+        CoinSource::Outpoints(coins.clone()),
+        amount,
+        false,
+    );
+    assert_eq!(payment.input.len(), coins.len(), "S spends {coins:?}");
+    mempool(engine, &session, id, &payment);
+    let ids: Vec<String> = (rows(engine, &session, id).into_iter())
+        .map(|r| r.0)
+        .collect();
+    assert!(
+        ids.contains(&payment.txid().to_string()),
+        "the payment is listed"
+    );
+    (session, claim, payment)
+}
+
+/// The scan found the claimed coin and the session left the claim to the
+/// store (a build before key-wallet dropped it at once), and the next
+/// start's store drops the claim as unsigned (#73): the payment from its
+/// change is dropped with it, and stays dropped.
 #[test]
 fn a_payment_on_a_claim_the_store_dropped_goes_with_it() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (funding, _claim, payment) = payment_on_a_claims_change(&engine, &session, id);
-    let session = reopen(&engine, session);
-    skip_unsigned_check(&session);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    let (session, _claim, payment) = payment_on_a_stored_claims_change(&engine, session, id, None);
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
         "not dropped in the session"
@@ -249,12 +290,12 @@ fn a_claim_the_rule_cant_decide_is_kept_after_a_restart() {
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
     let coin = OutPoint::new(funding.txid(), 0);
     assert_eq!(
-        key_wallet::transaction_checking::verify_input_authorization(
+        crate::input_authorization::verify_input_authorization(
             &claim,
             0,
             &funding.output[coin.vout as usize],
         ),
-        Err(key_wallet::transaction_checking::SpendAuthorizationError::UnsupportedScriptSig)
+        Err(crate::input_authorization::SpendAuthorizationError::UnsupportedScriptSig)
     );
     mempool(&engine, &session, id, &claim);
     let payment = send(
@@ -290,14 +331,16 @@ fn a_claim_the_rule_cant_decide_is_kept_after_a_restart() {
 
 /// A claim whose input script isn't push-only and has no key of the
 /// coin's owner as a push: the rule says unsigned (`Ok(false)`), but a
-/// script that runs can build its key and signature, so it is kept.
+/// script that runs can build its key and signature, so it is kept with
+/// the payment from its change, when the scan finds the coin and at the
+/// next start too.
 #[test]
 fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
     let (_dir, engine, session, id) = engine_wallet();
     let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
     claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
     assert_eq!(
-        key_wallet::transaction_checking::verify_input_authorization(&claim, 0, &funding.output[0]),
+        crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
         Ok(false)
     );
     mempool(&engine, &session, id, &claim);
@@ -330,17 +373,87 @@ fn a_claim_with_an_input_script_that_isnt_push_only_is_kept_after_a_restart() {
         !dropped(&engine, &session, id, payment.txid()),
         "the payment is kept"
     );
-    // The store's open now drops the claim on its own verdict: what is built
-    // on it stays all the same.
     let session = reopen(&engine, session);
     assert!(
-        dropped(&engine, &session, id, claim.txid()),
-        "the store dropped the claim"
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept at the next start"
     );
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
-        "the payment is kept after the store drops the claim"
+        "the payment is kept at the next start"
     );
+}
+
+/// A claim whose input script isn't push-only, kept after a restart, keeps
+/// its coin A spent and offers Abandon. Abandoning it frees A, which is
+/// offered once its block is scanned again, and the payment from the
+/// claim's change goes with it, after a restart too.
+#[test]
+fn abandoning_a_kept_claim_whose_input_script_isnt_push_only_frees_its_coin() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, mut claim) = funding_and_spend(&engine, &session, id);
+    claim.input[0].script_sig = dashcore::ScriptBuf::from_bytes(vec![0x61, 0x01, 0x01]);
+    assert_eq!(
+        crate::input_authorization::verify_input_authorization(&claim, 0, &funding.output[0]),
+        Ok(false)
+    );
+    mempool(&engine, &session, id, &claim);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![OutPoint::new(claim.txid(), 1)]),
+        CHANGE / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+
+    let session = reopen(&engine, session);
+    let a = OutPoint::new(funding.txid(), 0);
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A isn't offered while the claim is kept"
+    );
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, claim.txid()))
+        .unwrap();
+    assert!(extras.can_abandon, "Abandon is offered: {extras:?}");
+
+    super::own_spend_disk_tests::start_spv(&engine, &session);
+    engine
+        .block_on(session.abandon_transaction(id, claim.txid()))
+        .unwrap();
+    assert!(
+        dropped(&engine, &session, id, claim.txid()),
+        "the claim is abandoned"
+    );
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    mined(
+        &engine,
+        &session,
+        id,
+        BIRTH + 1,
+        vec![super::own_spend_disk_tests::foreign()],
+    );
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert_payment_dropped(&engine, &session, id, &payment);
+
+    let session = reopen(&engine, session);
+    assert!(
+        dropped(&engine, &session, id, claim.txid()),
+        "the claim stays abandoned after a restart"
+    );
+    assert!(
+        spendable(&engine, &session, id, a),
+        "A is offered after a restart"
+    );
+    assert_payment_dropped(&engine, &session, id, &payment);
 }
 
 /// [`payment_on_a_claims_change`], then the payment settles (`settle`),
@@ -628,10 +741,11 @@ fn a_stop_between_the_drops_marks_and_its_sweep_ends_with_the_payment_gone() {
 }
 
 /// T8: a claim whose input script isn't push-only, relayed again after a
-/// restart so key-wallet holds it, and swept by key-wallet when the scan
-/// finds the coin. Its verdict may be wrong: S is kept and b stays held.
+/// restart so key-wallet holds it. Its unsigned verdict may be wrong, so
+/// when the scan finds the coin key-wallet doesn't sweep it: the claim and
+/// S are kept and b stays held, after a restart too.
 #[test]
-fn a_swept_claim_whose_input_script_isnt_push_only_keeps_what_is_built_on_it() {
+fn a_relayed_claim_whose_input_script_isnt_push_only_is_not_swept() {
     let (_dir, engine, session, id) = engine_wallet();
     let (b_funding, funding, claim, payment) =
         payment_on_a_claims_change_and_a_coin(&engine, &session, id, |claim| {
@@ -645,17 +759,25 @@ fn a_swept_claim_whose_input_script_isnt_push_only_keeps_what_is_built_on_it() {
     );
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     assert!(
-        session.hub.history.get(&id, &claim.txid()).is_none(),
-        "key-wallet swept the claim"
+        session.hub.history.get(&id, &claim.txid()).is_some(),
+        "key-wallet kept the claim"
     );
     assert!(
         !dropped_records(&session, id).contains(&claim.txid()),
-        "the sweep recorded nothing as dropped"
+        "nothing is recorded as dropped"
+    );
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept"
     );
     assert!(!dropped(&engine, &session, id, payment.txid()), "S is kept");
     let b = OutPoint::new(b_funding.txid(), 0);
     assert!(!spendable(&engine, &session, id, b), "b stays held");
     let session = reopen(&engine, session);
+    assert!(
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept after a restart"
+    );
     assert!(
         !dropped(&engine, &session, id, payment.txid()),
         "S is kept after a restart"
@@ -672,17 +794,19 @@ fn skip_unsigned_check(session: &Arc<NetworkSession>) {
     (session.hub.skip_unsigned_check).store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// The store's open drops the claim, and the load drops S with it: b, which
-/// S also spent, is released through the load's abandon and counts once
-/// when scanned again.
+/// The store an older build left (as in [`payment_on_a_stored_claims_change`]),
+/// S also spending the wallet's coin b: the store's open drops the claim,
+/// and the load drops S with it: b, which S also spent, is released through
+/// the load's abandon and counts once when scanned again.
 #[test]
 fn a_coin_a_payment_on_a_claim_the_store_dropped_spent_is_offered_again() {
     let (_dir, engine, session, id) = engine_wallet();
-    let (b_funding, funding, claim, payment) =
-        payment_on_a_claims_change_and_a_coin(&engine, &session, id, |_| {});
-    let session = reopen(&engine, session);
-    skip_unsigned_check(&session);
-    mined(&engine, &session, id, BIRTH - 20, vec![funding]);
+    let b_to = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let b_funding = super::own_spend_disk_tests::funding(3, &[b_to], PAID);
+    mined(&engine, &session, id, BIRTH - 40, vec![b_funding.clone()]);
+    let b = OutPoint::new(b_funding.txid(), 0);
+    let (session, claim, payment) =
+        payment_on_a_stored_claims_change(&engine, session, id, Some(b));
     assert!(
         !dropped(&engine, &session, id, claim.txid()),
         "not dropped in the session"
@@ -909,9 +1033,9 @@ fn a_dropped_claim_mined_since_loses_its_record_at_the_next_start() {
 /// The claim pays two change outputs. S1 from one pays a second loaded
 /// wallet B, whose spend of it is InstantSend-locked; S2 from the other is
 /// pending. Only B's records show anything of the claim's tree settled:
-/// neither the engine's own drop nor the load after the store's drops S2.
+/// the claim found unsigned is kept with S2, and at the next start too.
 #[test]
-fn a_settled_spend_in_another_wallet_keeps_a_payment_on_a_dropped_claim() {
+fn a_settled_spend_in_another_wallet_keeps_an_unsigned_claim_and_the_payment_on_it() {
     use super::own_spend_disk_tests::{second_wallet, send_to, wait_stored};
     let (_dir, engine, session, id) = engine_wallet();
     let other = second_wallet(&engine, &session);
@@ -987,12 +1111,12 @@ fn a_settled_spend_in_another_wallet_keeps_a_payment_on_a_dropped_claim() {
 
     let session = reopen(&engine, session);
     assert!(
-        dropped(&engine, &session, id, claim.txid()),
-        "the store dropped the claim"
+        !dropped(&engine, &session, id, claim.txid()),
+        "the claim is kept at the next start"
     );
     assert!(
         !dropped(&engine, &session, id, s2.txid()),
-        "S2 is kept after the store's drop"
+        "S2 is kept at the next start"
     );
 }
 

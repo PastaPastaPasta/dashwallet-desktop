@@ -103,6 +103,7 @@ pub(crate) fn error_code(e: &EngineError) -> String {
         F::TxTooLarge => "tx_too_large",
         F::InvalidChangeAddress => "invalid_change_address",
         F::WatchOnly => "watch_only",
+        F::Restored => "restored",
         F::VaultLocked => "vault_locked",
         F::GrantInvalid => "grant_invalid",
         F::GrantExceeded { .. } => "grant_exceeded",
@@ -1368,7 +1369,6 @@ mod tests {
 
     #[test]
     fn ep_conflict_of_preserves_height_state_and_exceptions() {
-        use dashcore::hashes::Hash;
         use dashcore::{ScriptBuf, TxIn, TxOut};
         use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
         let input = OutPoint::new(Txid::from_byte_array([7; 32]), 0);

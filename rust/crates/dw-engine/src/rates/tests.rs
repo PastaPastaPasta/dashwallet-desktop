@@ -1143,7 +1143,6 @@ fn a_price_dated_ahead_of_a_corrected_clock_counts_as_absent() {
 /// rates-engine §6: a Mainnet session stamps a transaction with the fresh
 /// price only, and only one whose time (first sight or block) is at most 3 h ago.
 pub(crate) mod stamps {
-    use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, Transaction, TxIn, Txid};
     use key_wallet::account::{AccountType, StandardAccountType};
     use key_wallet::managed_account::transaction_record::{

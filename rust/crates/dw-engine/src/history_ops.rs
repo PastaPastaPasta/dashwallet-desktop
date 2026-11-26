@@ -7,7 +7,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::ephemerealdata::instant_lock::InstantLock;
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, LabelKind};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
@@ -79,9 +78,9 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
                 .collect(),
         };
         for (pool, chain) in pools {
-            for info in pool.addresses.values() {
+            for info in pool.addresses().values() {
                 map.insert(
-                    info.script_pubkey.clone(),
+                    info.address.script_pubkey(),
                     Owned::new(info.address.clone(), chain, coinjoin),
                 );
             }
@@ -158,11 +157,15 @@ pub(crate) struct Persisted {
     /// no evidence that its transaction settled.
     pub(crate) unconfirmed: HashSet<Txid>,
     /// Spends the store's open dropped as not signed by their coins'
-    /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
+    /// owner: never restored from a mark. This build's repair records them
+    /// in the app database ([`crate::store_repair::store_dropped`]); a store
+    /// upgraded from the fork keeps the fork's own in
+    /// `core_dropped_unsigned_spends`.
     pub(crate) dropped: HashSet<Txid>,
-    /// Of `dropped`, those whose stored record has an input script that
-    /// isn't push-only, or doesn't read: the store's verdict on them may be
-    /// wrong, so nothing built on them is dropped with them (#739).
+    /// Of `dropped`, those whose verdict may be wrong, so nothing built on
+    /// them is dropped with them (#739): a record that doesn't read, the
+    /// repair's structural drops, and the fork's drops whose record has an
+    /// input script that isn't push-only.
     pub(crate) dropped_doubtful: HashSet<Txid>,
     /// Transactions with a verified InstantSend lock stored and no record,
     /// by the transactions their lock names inputs of: what links a locked
@@ -174,6 +177,23 @@ pub(crate) struct Persisted {
 }
 
 impl Persisted {
+    /// Adds the claims the open's repair dropped from `wallet`'s store
+    /// ([`crate::store_repair::store_dropped`]); false when they don't read.
+    pub(crate) fn add_store_dropped(&mut self, appdb: &AppDb, wallet: WalletId) -> bool {
+        let held = |t: &Txid| self.records.contains(t) || self.recordless.contains(t);
+        match crate::store_repair::store_dropped(appdb, wallet, held) {
+            Ok((dropped, doubtful)) => {
+                self.dropped.extend(dropped);
+                self.dropped_doubtful.extend(doubtful);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(%wallet, error = %e, "could not read the claims the store's repair dropped");
+                false
+            }
+        }
+    }
+
     /// Whether a load restores `txid`'s claims from its sent mark: not a
     /// spend the store's open dropped, nor an abandoned payment whose saved
     /// copy doesn't read back (`unread`) unless the store still holds it.
@@ -339,28 +359,28 @@ const LOCKS_WITHOUT_RECORD: &str = "SELECT l.wallet_id, l.txid, \
      (SELECT 1 FROM core_transactions t WHERE t.wallet_id = l.wallet_id \
      AND t.txid = l.txid AND t.record_blob IS NOT NULL)";
 
-fn lock_size_limit() -> i64 {
+pub(crate) fn lock_size_limit() -> i64 {
     i64::try_from(platform_wallet_storage::SIZE_LIMIT_BYTES).unwrap_or(i64::MAX)
 }
 
-/// A stored record's blob, decoded as the store encodes it.
-fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
+/// A stored blob, decoded as the store encodes it, every byte used.
+pub(crate) fn decode_stored<T: serde::de::DeserializeOwned>(blob: &[u8]) -> Option<T> {
     let config =
         bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
     match bincode::serde::decode_from_slice(blob, config) {
-        Ok((record, used)) if used == blob.len() => Some(record),
+        Ok((value, used)) if used == blob.len() => Some(value),
         _ => None,
     }
 }
 
+/// A stored record's blob, decoded as the store encodes it.
+pub(crate) fn decode_record(blob: &[u8]) -> Option<TransactionRecord> {
+    decode_stored(blob)
+}
+
 /// A stored lock row's blob, decoded as the store encodes it.
-fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
-    let config =
-        bincode::config::standard().with_limit::<{ platform_wallet_storage::SIZE_LIMIT_BYTES }>();
-    match bincode::serde::decode_from_slice(blob, config) {
-        Ok((lock, used)) if used == blob.len() => Some(lock),
-        _ => None,
-    }
+pub(crate) fn decode_lock(blob: &[u8]) -> Option<dashcore::InstantLock> {
+    decode_stored(blob)
 }
 
 /// Of `txids`, those with an output of theirs stored for `wallet`, and
@@ -540,6 +560,11 @@ struct LoadedHistory {
     /// [`Persisted::dropped`] (never-valid claims) and what this app
     /// dropped ([`crate::tx_actions::load_dropped`]).
     dropped: crate::tx_actions::Dead,
+    /// [`crate::store_repair::store_restored`]; `None` when it didn't read.
+    put_back: Option<HashSet<Txid>>,
+    /// The restore holds (`restore_gate`), and whether a build waits for
+    /// this load; `None` when they didn't read.
+    restore_holds: Option<(std::collections::BTreeMap<Txid, BTreeSet<OutPoint>>, bool)>,
 }
 
 impl NetworkSession {
@@ -568,6 +593,11 @@ impl NetworkSession {
         #[cfg(not(test))]
         let fail_dropped = false;
         #[cfg(test)]
+        let fail_restored =
+            (self.hub.fail_restored_read).swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail_restored = false;
+        #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
         #[cfg(test)]
         let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
@@ -594,7 +624,8 @@ impl NetworkSession {
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
-                    let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
+                    let mut persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
+                    let store_read = persisted.add_store_dropped(&appdb, wallet);
                     let (records, read) = read_records(wallet, &persisted.records, |t| {
                         let read = persister.get_core_tx_record(wallet.0, t);
                         #[cfg(test)]
@@ -644,6 +675,19 @@ impl NetworkSession {
                                 (HashSet::new(), false)
                             }
                         };
+                    let put_back = match fail_restored {
+                        true => Err(dw_appdb::AppDbError::Corrupt("test".into())),
+                        false => crate::store_repair::store_restored(&appdb, wallet),
+                    };
+                    let put_back = put_back
+                        .inspect_err(|e| tracing::warn!(%wallet, error = %e, "could not read the claims the store's repair put back: no other spender proves a coin"))
+                        .ok();
+                    let restore_holds = crate::restore_gate::read_holds(&appdb, wallet)
+                        .and_then(|h| Ok((h, crate::restore_gate::build_pending(&appdb, wallet)?)))
+                        .inspect_err(|e| {
+                            tracing::warn!(%wallet, error = %e, "could not read the restore holds")
+                        })
+                        .ok();
                     let stored: HashSet<Txid> = match clean {
                         true => (persisted.records.into_iter())
                             .chain(persisted.recordless)
@@ -665,6 +709,7 @@ impl NetworkSession {
                         complete: clean
                             && holds_read
                             && dropped_read
+                            && store_read
                             && !persisted.locks_unread
                             && claims_read
                             && marks_read
@@ -689,6 +734,8 @@ impl NetworkSession {
                             }
                             dead
                         },
+                        put_back,
+                        restore_holds,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -707,6 +754,7 @@ impl NetworkSession {
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
         let mut sends = Vec::new();
+        let mut buildable = Vec::new();
         for LoadedHistory {
             wallet,
             records,
@@ -722,6 +770,8 @@ impl NetworkSession {
             lock_parents,
             orphan_exempt,
             dropped,
+            put_back,
+            restore_holds,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -756,6 +806,8 @@ impl NetworkSession {
                 h.set_loaded_coins(loaded_coins);
                 h.load_incomplete = !complete;
                 h.loaded = true;
+                h.put_back_unread = put_back.is_none();
+                h.put_back = put_back.unwrap_or_default();
                 h.lock_parents = lock_parents;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
@@ -768,6 +820,10 @@ impl NetworkSession {
                 }
                 for (t, cause) in &dropped {
                     (h.drops).insert(*t, crate::history::DropInfo::new(*cause));
+                }
+                h.restore_holds_unread = restore_holds.as_ref().is_none_or(|(_, pending)| *pending);
+                if let Some((holds, _)) = &restore_holds {
+                    h.restore_holds = holds.clone();
                 }
                 if complete {
                     h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
@@ -794,6 +850,9 @@ impl NetworkSession {
                 (stored, orphan_exempt),
                 dropped,
             ));
+            if let (true, Some((_, pending))) = (complete, &restore_holds) {
+                buildable.push((wallet, *pending));
+            }
         }
         drop(wm);
         for (wallet, sent, complete, claims, settled, (stored, orphan_exempt), dropped) in sends {
@@ -816,6 +875,19 @@ impl NetworkSession {
             // balance read before it loaded counts them.
             self.reread_balances(wallet).await;
         }
+        let restored = self.hub.restore.is_restored();
+        for wallet in ids {
+            let build =
+                (buildable.iter()).any(|(w, pending)| *w == wallet && (restored || *pending));
+            if build {
+                let (hub, appdb) = (Arc::clone(&self.hub), Arc::clone(&live.appdb));
+                tokio::task::spawn_blocking(move || hub.build_restore_holds(&appdb, wallet, true))
+                    .await?;
+            } else {
+                self.hub.refresh_restore_held(wallet);
+            }
+        }
+        self.hub.restore.wake.notify_one();
         Ok(())
     }
 
@@ -1160,7 +1232,7 @@ impl NetworkSession {
         let network = self.network.core_network();
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
-            let persisted = match persisted_txids(&db_path) {
+            let mut persisted = match persisted_txids(&db_path) {
                 Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
                 Err(e) => {
                     tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
@@ -1184,10 +1256,11 @@ impl NetworkSession {
             history.mark_abandoned(&abandoned.copies);
             let (mut sent, sent_read) = crate::tx_actions::read_sent(&appdb, wallet);
             let (dropped_here, dropped_read) = crate::tx_actions::load_dropped(&appdb, wallet);
+            let store_read = persisted.add_store_dropped(&appdb, wallet);
             sent.retain(|t, _| {
                 persisted.keeps_mark(t, &abandoned.unread) && !dropped_here.contains_key(t)
             });
-            if !(read && marks_read && dropped_read && sent_read != crate::tx_actions::SentRead::Failed) {
+            if !(read && marks_read && dropped_read && store_read && sent_read != crate::tx_actions::SentRead::Failed) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
             }

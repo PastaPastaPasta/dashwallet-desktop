@@ -10,7 +10,6 @@
 #![allow(non_snake_case)]
 
 use dashcore::consensus::{deserialize, serialize};
-use dashcore::hashes::Hash;
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::sml::masternode_list_entry::net_info::{self, Bip155Network};
 use dashcore::transaction::special_transaction::TransactionPayload;

@@ -373,8 +373,6 @@ impl EventPump {
 mod tests {
     use std::sync::Arc;
 
-    use dashcore::hashes::Hash;
-
     use super::*;
 
     #[derive(Default)]

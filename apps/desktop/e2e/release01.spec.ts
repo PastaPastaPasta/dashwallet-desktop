@@ -570,16 +570,17 @@ test.describe("network choice", () => {
     expect(await world(page, (w) => w.pending.networkChoice?.chosen)).toBe("testnet");
   });
 
-  test("a switch whose way back fails too leaves the splash's Retry", async ({ page }) => {
+  test("a switch whose way back fails too leaves StorageInUse's Restart", async ({ page }) => {
     await open(page, "funded");
     await toSettings(page);
     await setKnobs(page, { fail: { rolledBack: false } });
     await page.getByTestId("settings-network-choice-mainnet").click();
     await page.getByTestId("network-switch-confirm").click();
     await expect(page.locator(".toast")).toContainText("Mainnet did not open, and neither did Testnet again.");
-    await expect(page.getByTestId("splash").getByRole("alert")).toContainText("Dash Wallet could not open the wallet");
+    await expect(page.getByTestId("storage-in-use")).toContainText("Dash Wallet is still closing your wallet data");
+    await expect(page.getByTestId("storage-in-use-retry")).toHaveCount(0);
     await shot(page, "light-network-switch-none-open");
-    await page.getByTestId("splash").getByRole("button", { name: "Try again" }).click();
+    await page.getByTestId("storage-in-use-restart").click();
     await expect(page.getByTestId("lock-screen")).toBeVisible();
     expect(await activeNetwork(page)).toBe("testnet");
   });

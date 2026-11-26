@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::{ProgressPercentage, SyncProgress, SyncState};
+use dash_spv::{ProgressPercentage, SyncProgress, SyncState};
 
 /// SPV made no progress for this long while not caught up (IOS-023).
 pub const STALL_AFTER: Duration = Duration::from_secs(45);
@@ -294,14 +294,14 @@ impl SyncTracker {
                 }
                 before != self.peers.keys().copied().collect::<Vec<_>>()
             }
-            NetworkEvent::PeerConnected { address } => {
+            NetworkEvent::PeerConnected(address) => {
                 let fresh = !self.peers.contains_key(address);
                 self.peers.entry(*address).or_insert(PeerEntry {
                     connected_since: unix_now(),
                 });
                 fresh
             }
-            NetworkEvent::PeerDisconnected { address } => self.peers.remove(address).is_some(),
+            NetworkEvent::PeerDisconnected(address) => self.peers.remove(address).is_some(),
         }
     }
 
@@ -640,7 +640,7 @@ impl crate::NetworkSession {
 
 #[cfg(test)]
 mod tests {
-    use dash_spv::sync::{BlockHeadersProgress, FilterHeadersProgress, MasternodesProgress};
+    use dash_spv::{BlockHeadersProgress, FilterHeadersProgress, MasternodesProgress};
 
     use super::*;
 
@@ -751,9 +751,8 @@ mod tests {
         p.update_headers(headers(SyncState::Synced, 10, 10));
         t.on_progress(&p);
         t.on_network_event(&NetworkEvent::PeersUpdated {
-            connected_count: 1,
             addresses: vec!["127.0.0.1:19899".parse().unwrap()],
-            best_height: Some(10),
+            best_height: 10,
         });
         assert_eq!(t.snapshot().connected_peers, 1);
         assert_eq!(t.peers().len(), 1);
@@ -788,13 +787,12 @@ mod tests {
         let mut t = running();
         let a: SocketAddr = "10.0.0.1:9999".parse().unwrap();
         let b: SocketAddr = "10.0.0.2:9999".parse().unwrap();
-        assert!(t.on_network_event(&NetworkEvent::PeerConnected { address: a }));
+        assert!(t.on_network_event(&NetworkEvent::PeerConnected(a)));
         assert!(t.on_network_event(&NetworkEvent::PeersUpdated {
-            connected_count: 2,
             addresses: vec![a, b],
-            best_height: None,
+            best_height: 0,
         }));
-        assert!(t.on_network_event(&NetworkEvent::PeerDisconnected { address: a }));
+        assert!(t.on_network_event(&NetworkEvent::PeerDisconnected(a)));
         let peers = t.peers();
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].address, b.to_string());

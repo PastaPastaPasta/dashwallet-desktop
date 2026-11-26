@@ -23,6 +23,8 @@ import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } f
 import { payNote } from "../../contacts/pane";
 import { messageTable, t } from "../../i18n";
 import { en } from "../../i18n/en";
+import type { PayNotice } from "./model";
+import { platformOffText } from "../../api/platformHold";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
 
@@ -197,7 +199,8 @@ export function foundLine(name: string, relation: UserRelation, eligibility: { d
 
 // ---------------------------------------------------------------- the banner (D6)
 
-/** Why the payee cannot be paid now, and what to do; `note` does not hold the payment back. */
+/** Why the payee cannot be paid now, and what to do; `note` does not hold the payment back. A
+ * `PayNotice` comes from a refused payment, never from `payBanner`. */
 export type Banner =
   | { kind: "loading" }
   | { kind: "readFailed"; text: string }
@@ -207,7 +210,8 @@ export type Banner =
   | { kind: "paymentLock"; text: string; txid: string; source: PaymentSourceName }
   | { kind: "broken"; text: string }
   | { kind: "mixingOnly"; text: string }
-  | { kind: "note"; text: string };
+  | { kind: "note"; text: string }
+  | PayNotice;
 
 export interface BannerInput {
   /** The payee's detail: `undefined` while unread, `null` when the engine has no such contact. */
@@ -353,5 +357,5 @@ export async function acceptUnderLease(
 /** The result's words for an accept that went through (D12, E0-04 C8). */
 export const acceptedText = (name: string) => t("pay.contact.accepted", { name });
 
-/** An accept's refusal: DP2-09's wording; nothing was paid. */
-export const acceptFailedText = (e: unknown) => `${actionError(e)} ${t("pay.contact.nothingPaid")}`;
+/** An accept's refusal: DP2-09's wording, or Dash Platform off this session (C7); nothing was paid. */
+export const acceptFailedText = (e: unknown) => platformOffText(e) ?? `${actionError(e)} ${t("pay.contact.nothingPaid")}`;

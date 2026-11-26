@@ -6,7 +6,7 @@
 
 use super::*;
 use async_trait::async_trait;
-use dashcore::secp256k1::PublicKey;
+use dashcore::ecdsa::EcdsaSignature;
 use key_wallet::SignerMethod;
 use key_wallet::bip32::ExtendedPrivKey;
 
@@ -35,17 +35,14 @@ impl Signer for SeedSigner {
         &self,
         path: &DerivationPath,
         sighash: [u8; 32],
-    ) -> Result<(secp256k1::ecdsa::Signature, PublicKey), String> {
+    ) -> Result<(EcdsaSignature, EcdsaPublicKey), String> {
         let k = self.0.derive_priv(path).map_err(|e| e.to_string())?;
-        Ok((
-            secp256k1::ecdsa::sign_low_r(Message::from_digest(sighash), &k.private_key),
-            PublicKey::from_secret_key(&k.private_key),
-        ))
+        Ok((k.private_key.sign(&sighash), k.private_key.public_key()))
     }
 
-    async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, String> {
+    async fn public_key(&self, path: &DerivationPath) -> Result<EcdsaPublicKey, String> {
         let k = self.0.derive_priv(path).map_err(|e| e.to_string())?;
-        Ok(PublicKey::from_secret_key(&k.private_key))
+        Ok(k.private_key.public_key())
     }
 }
 
@@ -199,7 +196,7 @@ fn create_unsigned_round_trips_dashd_inputs() {
                 .bip32_derivation
                 .iter()
                 .next()
-                .map(|(pk, (fp, path))| (*pk, *fp, path.clone())),
+                .map(|(pk, (fp, path))| ((*pk).into(), *fp, path.clone())),
         })
         .collect();
     let outputs = dashd
@@ -209,7 +206,7 @@ fn create_unsigned_round_trips_dashd_inputs() {
             o.bip32_derivation
                 .iter()
                 .next()
-                .map(|(pk, (fp, path))| (*pk, *fp, path.clone()))
+                .map(|(pk, (fp, path))| ((*pk).into(), *fp, path.clone()))
         })
         .collect();
     let ours = create_unsigned(dashd.unsigned_tx.clone(), inputs, outputs).unwrap();

@@ -6,7 +6,7 @@
 //! shows them. `testdata/address_cases.json` holds dashd's verdicts.
 
 use dashcore::Network;
-use dashcore::hashes::{Hash, sha256d};
+use dashcore::hashes::sha256d;
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -238,14 +238,21 @@ pub enum PlatformDestination {
 /// bech32m decode of `s` into (hrp, 8-bit payload) with Core's
 /// `ConvertBits<5, 8, false>` rules. `Err` carries Core's message.
 fn bech32m_payload(s: &str) -> Result<(String, Vec<u8>), &'static str> {
-    use dashcore::bech32::{self, FromBase32};
-    let (hrp, data, variant) = bech32::decode(s).map_err(|_| "Invalid bech32m encoding")?;
-    if variant != bech32::Variant::Bech32m {
-        return Err("DIP-18 Platform addresses require bech32m checksum");
+    use bech32::primitives::decode::UncheckedHrpstring;
+    use bech32::{Bech32, Bech32m};
+    let unchecked = UncheckedHrpstring::new(s).map_err(|_| "Invalid bech32m encoding")?;
+    if !unchecked.has_valid_checksum::<Bech32m>() {
+        return Err(if unchecked.has_valid_checksum::<Bech32>() {
+            "DIP-18 Platform addresses require bech32m checksum"
+        } else {
+            "Invalid bech32m encoding"
+        });
     }
-    let payload =
-        Vec::<u8>::from_base32(&data).map_err(|_| "Invalid Platform address payload encoding")?;
-    Ok((hrp, payload))
+    let checked = unchecked.remove_checksum::<Bech32m>();
+    checked
+        .validate_segwit_padding()
+        .map_err(|_| "Invalid Platform address payload encoding")?;
+    Ok((checked.hrp().to_lowercase(), checked.byte_iter().collect()))
 }
 
 /// `DecodePlatformDestination(str, params, error_str)`.

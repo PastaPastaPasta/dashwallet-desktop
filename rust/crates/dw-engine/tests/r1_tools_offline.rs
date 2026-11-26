@@ -691,7 +691,7 @@ fn test_qt_091_abandon_needs_a_running_spv_client() {
     let s = open(&engine);
     engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
     let id = import(&engine, &s, ABANDON_12);
-    let txid = <dashcore::Txid as dashcore::hashes::Hash>::from_byte_array([1; 32]);
+    let txid = dashcore::Txid::from_byte_array([1; 32]);
     let r = engine.block_on(s.abandon_transaction(id, txid));
     assert!(matches!(r, Err(EngineError::SpvNotRunning)), "{r:?}");
     let other = WalletId([9; 32]);

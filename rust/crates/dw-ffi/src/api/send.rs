@@ -255,6 +255,7 @@ impl From<dw_engine::EngineError> for SendError {
                 F::BroadcastRejected { reason } => Self::BroadcastRejected { reason },
                 F::BroadcastUnknown { reason } => Self::BroadcastUnknown { reason },
                 F::HeldUntilRestart => Self::HeldUntilRestart,
+                F::Restored => Self::Internal { detail },
             },
             E::SpvNotRunning => Self::NoPeers,
             E::InvalidConfig(_) | E::InvalidArgument(_) | E::InvalidAddress(_) => {
@@ -262,9 +263,15 @@ impl From<dw_engine::EngineError> for SendError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
-            E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {
-                Self::Storage { detail }
-            }
+            E::StorageInUse { .. }
+            | E::Storage(_)
+            | E::StorageTooNew(_)
+            | E::StoreRefused(_)
+            | E::DataFolderNotPrivate { .. }
+            | E::StoreRestore(_)
+            | E::StoreRetry(_)
+            | E::RetryableIo(_)
+            | E::Io(_) => Self::Storage { detail },
             E::NotImplemented(_) => Self::NotImplemented { call: detail },
             _ => Self::Internal { detail },
         }

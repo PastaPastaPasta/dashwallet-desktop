@@ -1,5 +1,4 @@
 use dashcore::Txid;
-use dashcore::hashes::Hash;
 use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::{dissolve::penalty_free_from, standby};
 

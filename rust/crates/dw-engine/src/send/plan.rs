@@ -355,7 +355,6 @@ mod tests {
     use std::str::FromStr;
 
     use dashcore::address::Payload;
-    use dashcore::hashes::Hash;
     use dashcore::{Address, Network, OutPoint, PubkeyHash, ScriptHash, TxOut, Txid};
     use key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
 

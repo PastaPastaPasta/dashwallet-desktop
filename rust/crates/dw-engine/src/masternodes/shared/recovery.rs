@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use dashcore::blockdata::script::Instruction;
-use dashcore::secp256k1::{Message, ecdsa};
 use dashcore::{OutPoint, PublicKey, ScriptBuf, Txid};
+use dpp::secp256k1::{Message, ecdsa};
 use dw_appdb::SharedSessionRow;
 use dw_protx::shared::SpecialTx;
 use dw_protx::shared::session::Session;
@@ -962,7 +962,7 @@ fn signer_of(tx: &SpecialTx, index: usize) -> Option<PublicKey> {
     signature.normalize_s();
     let key = PublicKey::from_slice(key.as_bytes()).ok()?;
     let hash = tx.signature_hash_all(index, &ScriptBuf::new_p2pkh(&key.pubkey_hash()))?;
-    ecdsa::verify(&signature, Message::from_digest(hash), &key.inner).ok()?;
+    ecdsa::verify(&signature, Message::from_digest(hash), &key.inner.into()).ok()?;
     Some(key)
 }
 

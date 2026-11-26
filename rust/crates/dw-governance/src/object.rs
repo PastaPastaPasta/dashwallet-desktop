@@ -7,7 +7,7 @@
 
 use dashcore::OutPoint;
 use dashcore::consensus::encode::{self, Decodable, Encodable, VarInt};
-use dashcore::hashes::{Hash, sha256d};
+use dashcore::hashes::sha256d;
 
 /// Largest `vchData` Core accepts (`MAX_DATA_SIZE`, `governance/object.h`).
 pub const MAX_DATA_SIZE: usize = 512;

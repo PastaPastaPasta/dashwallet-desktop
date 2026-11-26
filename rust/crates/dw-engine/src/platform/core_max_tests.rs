@@ -7,7 +7,6 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dpp::balances::credits::CREDITS_PER_DUFF;
 use key_wallet::bip32::DerivationPath;

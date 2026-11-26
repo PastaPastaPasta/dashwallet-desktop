@@ -4,4 +4,9 @@ import type { GrantPurposeSpec } from "./GrantPurposeSpec";
 /**
  * What an approval costs and the `appConnect` grant to ask for.
  */
-export type ConnectQuote = { grant: GrantPurposeSpec, fee: string, budgets: Array<string>, balance: string, };
+export type ConnectQuote = { grant: GrantPurposeSpec, fee: string, budgets: Array<string>, balance: string,
+/**
+ * The digest of the group facts the quote read, hex: the sheet reads
+ * the request again when it shows others.
+ */
+groups: string, };

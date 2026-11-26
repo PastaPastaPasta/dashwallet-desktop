@@ -1,14 +1,21 @@
 // dw-fixture-module: never in a production build (vite.config.ts, noFixtureModules).
-// The fixture's shared masternodes (MG-10 §5.1, MG-10b S5, over mn-engine §2.4): the capability, the
-// main wallet's sessions and the calls that move them, refusing in the engine's order. Messages are
+// The fixture's shared masternodes (MG-10 §5.1, MG-10b S5 and S6, over mn-engine §2.4): the capability,
+// the main wallet's sessions and the calls that move them, refusing in the engine's order, and a
+// confirmed shared masternode's shares and standbys (`sh-detail*`). Messages are
 // fixed fake JSON blobs (no keys, documentation IPs, `y…` addresses); an import looks its text up in
 // `SH_TEXT`, so a spec pastes what another party "sent". A change `emit`s `masternodes`.
 
 import type { AppError } from "../api/generated/commands";
+import type { DissolvePreview } from "../api/generated/DissolvePreview";
+import type { KeyChangeRequest } from "../api/generated/KeyChangeRequest";
+import type { ProTxOperation } from "../api/generated/ProTxOperation";
 import type { SharedCapability } from "../api/generated/SharedCapability";
 import type { SharedImport } from "../api/generated/SharedImport";
 import type { SharedMessage } from "../api/generated/SharedMessage";
 import type { SharedSession } from "../api/generated/SharedSession";
+import type { SharedShares } from "../api/generated/SharedShares";
+import type { Standby } from "../api/generated/Standby";
+import type { ShareFact } from "../api/generated/ShareFact";
 import type { ShareRow } from "../api/generated/ShareRow";
 import type { ShareTermsView } from "../api/generated/ShareTermsView";
 import type { StandbyDescription } from "../api/generated/StandbyDescription";
@@ -17,6 +24,7 @@ import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { Ctx, Handlers } from "./handlers";
 import type { FixtureWallet, World } from "./scenarios";
+import { roles, row } from "./masternodes";
 import { onMainnet } from "./rates";
 import { FIXTURE_NOW, secs } from "./wallet";
 
@@ -54,10 +62,20 @@ export interface SharedWorld {
   unreadable: UnreadableSession[];
   /** Sent sessions this wallet abandoned: no Send again (D72). */
   abandoned: string[];
-  /** The `last_error` the next registration hand-off leaves: `null` when it went out. */
+  /** The `last_error` the next registration or dissolution hand-off leaves: `null` when it went out. */
   handoff: string | null;
   /** How the next abandon spend's hand-off ends: `null` when it went out and the wallet recorded it. */
   abandonHandoff: "uncertain" | "refused" | null;
+  /** EP 5's answer by ProTx hash; absent: `shared_registration_unknown`. */
+  shares: Record<string, SharedShares>;
+  /** Stored standbys by ProTx hash. */
+  standby: Record<string, Standby[]>;
+  /** The save dialog `mn_shared_export_standby` shows is cancelled. */
+  exportCancel: boolean;
+  /** The standby files the main wallet saved: names only (the text never leaves dw-app). */
+  exported: string[];
+  /** Dissolutions this wallet sent (alone, standby or together), as `dissolve` operations. */
+  sent: ProTxOperation[];
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -273,7 +291,95 @@ const REFUSALS: Partial<Record<string, [string, number | null]>> = {
 };
 
 export function newSharedWorld(): SharedWorld {
-  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null, abandonHandoff: null };
+  return { capability: { v24: "active", evonodeShares: "inactive", canSend: true }, sessions: [], nextFile: null, saved: [], standbys: [], unreadable: [], abandoned: [], handoff: null, abandonHandoff: null, shares: {}, standby: {}, exportCancel: false, exported: [], sent: [] };
+}
+
+// ---------------------------------------------------------------- a confirmed shared masternode (S6)
+
+/** The shared masternode Alice (this wallet) coordinated: Alice 400 · Bob 300 · Carol 300, registered 600
+ * blocks below the tip with a 105,120-block early period and a 20 Dash penalty. */
+export const SH_MN = h("ec");
+const SH_TIP = 1_214_880;
+export const SH_REGISTERED = SH_TIP - 600;
+const SH_PERIOD = 105_120;
+const SH_REWARD = addr("pAl");
+const SH_REWARD_CHANGED = addr("pNw");
+const SH_REWARD_ATTEMPT = addr("pQa");
+
+const fact = (index: number, label: string, dash: number, mine = false, reward: Partial<ShareFact["reward"]> = {}): ShareFact => ({
+  index,
+  amount: dash * COIN,
+  refundAddress: addr(`r${label.slice(0, 2)}`),
+  mine,
+  reward: { atRegistration: mine ? SH_REWARD : addr(`r${label.slice(0, 2)}`), latestConfirmedLocal: null, latestAttempt: null, ...reward },
+});
+
+/** EP 5's answer for `SH_MN`: in the early period, eligible, with Alice's registration session. */
+export function sharedShares(patch: Partial<SharedShares> = {}, aliceReward: Partial<ShareFact["reward"]> = {}): SharedShares {
+  const registeredHeight = patch.registeredHeight ?? SH_REGISTERED;
+  return {
+    registeredHeight,
+    spendHeight: SH_TIP + 1,
+    earlyPeriodBlocks: SH_PERIOD,
+    earlyPenalty: 20 * COIN,
+    fullValidFrom: registeredHeight + SH_PERIOD,
+    eligibility: "ok",
+    fullValidNow: false,
+    session: SH_COORD,
+    shares: [fact(0, "Alice", 400, true, aliceReward), fact(1, "Bob", 300), fact(2, "Carol", 300)],
+    ...patch,
+  };
+}
+
+/** The zero-penalty and immediate standbys of Alice's share, saved the day after the registration. */
+export function standbyPair(fullValidFrom = SH_REGISTERED + SH_PERIOD, patch: Partial<Standby> = {}): Standby {
+  return { proTxHash: SH_MN, shareIndex: 0, fee: 1_000, penalty: 20 * COIN, fullValidFrom, full: true, immediate: true, source: "created", createdAt: NOW - DAY, ...patch };
+}
+
+/** Alice's registration session, confirmed at `SH_REGISTERED`. */
+export function confirmedCoordinator(): SharedSession {
+  return coordinatorSession(["Bob", "Carol"], {
+    stage: { kind: "confirmed", height: SH_REGISTERED },
+    next: "nothing",
+    revision: 6,
+    consentHash: h("cd"),
+    proTxHash: SH_MN,
+    txid: SH_MN,
+    reserved: [],
+    discardable: false,
+    rows: [shareRow(0, "Alice", 400, { mine: true, approved: true, fundingSigned: true, rewardAddress: SH_REWARD }), ...[1, 2].map((i) => shareRow(i, ["Bob", "Carol"][i - 1], 300, { approved: true, fundingSigned: true }))],
+    createdAt: NOW - 4 * DAY,
+    updatedAt: NOW - DAY,
+  });
+}
+
+/** Puts `SH_MN` first in the main wallet's masternodes (so the pane opens on it), as the engine lists a
+ * version-3 registration: shared, its shares counted, payouts refused. */
+function withSharedMasternode(w: World, shares: SharedShares | null, standbys: Standby[] = []) {
+  const m = w.masternodes;
+  m.rows.unshift(
+    row(SH_MN, null, {
+      typeIndex: 4,
+      service: SH_SERVICE,
+      sharedUnsupported: true,
+      shares: { held: 1, of: 3 },
+      roles: roles({ owner: true }),
+      collateral: { kind: "unresolved" },
+    }),
+  );
+  m.listed.push({ proTxHash: SH_MN, facts: { kind: "regular", valid: true, service: SH_SERVICE, operatorPublicKey: OPERATOR, votingAddress: VOTING, platformNodeId: null, platformHttpPort: null } });
+  if (shares) {
+    m.registrations.push(SH_MN);
+    m.registeredHeights[SH_MN] = shares.registeredHeight;
+    m.operatorRewards[SH_MN] = terms().operatorReward;
+    w.shared.shares[SH_MN] = shares;
+  }
+  w.shared.standby[SH_MN] = standbys;
+}
+
+function checkHash(hash: string): string {
+  if (!/^[0-9a-fA-F]{64}$/.test(hash)) throw fail("invalid_argument", "not a 64-character hex ProTx hash");
+  return hash.toLowerCase();
 }
 
 function find(world: World, id: string): SharedSession {
@@ -427,6 +533,173 @@ function importText(world: World, text: string): SharedImport {
   }
 }
 
+// ---------------------------------------------------------------- maintenance (S6)
+
+const MAX_DISSOLVE_FEE = 1_000_000;
+const DUST = 546;
+
+/** EP 5's eligibility as the maintenance calls refuse by it (`v24_context`'s order). */
+function eligible(world: World, hash: string): SharedShares {
+  const shares = world.shared.shares[hash];
+  if (!shares) throw fail("masternodes.shared_registration_unknown", "this wallet's history doesn't hold the shared registration");
+  switch (shares.eligibility) {
+    case "upgrade_unknown":
+      throw fail("masternodes.unsupported", "v24 is not active", { kind: "unsupported", feature: "v24", field: null });
+    case "list_unavailable":
+      throw fail("masternodes.list_unavailable", "no synced masternode list");
+    case "too_early":
+      throw fail("masternodes.shared_too_early", "the list doesn't include the registration yet");
+    case "delisted":
+      throw fail("masternodes.not_found", "the masternode left the list");
+    default:
+      return shares;
+  }
+}
+
+function checkFee(fee: number) {
+  if (!Number.isInteger(fee) || fee < 1 || fee > MAX_DISSOLVE_FEE) throw fail("invalid_argument", "fee: 1 to 1,000,000 duffs");
+}
+
+function ownShare(shares: SharedShares, index: number) {
+  const f = shares.shares.find((x) => x.index === index);
+  if (!f) throw fail("invalid_argument", "no such share");
+  if (!f.mine) throw fail("masternodes.share_not_mine", "this share isn't held by this wallet");
+  return f;
+}
+
+/** Core's `BuildDissolution` as the fixture prices it: the actor pays the penalty, split by share, and the fee. */
+function planDissolve(shares: SharedShares, actor: number, fee: number): DissolvePreview {
+  const early = !shares.fullValidNow;
+  const penalty = early ? shares.earlyPenalty : 0;
+  const others = shares.shares.filter((f) => f.index !== actor);
+  const otherTotal = others.reduce((a, f) => a + f.amount, 0);
+  const returns = shares.shares.map((f) => ({
+    shareIndex: f.index,
+    amount: f.index === actor ? Math.max(0, f.amount - penalty - fee) : f.amount + (otherTotal > 0 ? Math.floor((penalty * f.amount) / otherTotal) : 0),
+    refundAddress: f.refundAddress,
+    mine: f.mine,
+  }));
+  const actorBack = returns.find((r) => r.shareIndex === actor)?.amount ?? 0;
+  return {
+    early,
+    penalty,
+    fee,
+    validFromHeight: shares.fullValidFrom,
+    returns,
+    warnings: actorBack < DUST ? [{ kind: "actor_output_dust" }] : [],
+    totalDebit: penalty + fee,
+  };
+}
+
+function dissolveOp(world: World, hash: string, fee: number, debit: number): ProTxOperation {
+  const n = world.shared.sent.length + 1;
+  const op: ProTxOperation = {
+    id: fake(`d15${n.toString(16)}`, 32),
+    kind: "dissolve",
+    proTxHash: hash,
+    txid: h(`d${n}`),
+    state: world.shared.handoff === null ? { kind: "sent" } : { kind: "not_sent" },
+    signRequest: null,
+    fee,
+    debit,
+    overdue: false,
+    createdAt: NOW,
+    signedAt: NOW,
+    sentAt: world.shared.handoff === null ? NOW : null,
+    lastError: world.shared.handoff,
+    terms: {
+      masternodeType: "regular",
+      version: 3,
+      service: SH_SERVICE,
+      ownerAddress: addr("oAl"),
+      ownerIndex: 0,
+      votingAddress: VOTING,
+      votingIndex: null,
+      operatorPublicKey: OPERATOR,
+      operatorIndex: null,
+      operatorReward: 500,
+      payoutAddress: SH_REWARD,
+      collateral: null,
+      collateralOutpoint: null,
+      collateralAddress: null,
+      platform: null,
+      platformNodeIndex: null,
+    },
+  };
+  world.shared.sent.push(op);
+  world.masternodes.operations.unshift(copy(op));
+  return copy(op);
+}
+
+/** The labels of `SH_MN`'s shares: the registration session's, else "Share n". */
+function maintenanceRows(world: World, shares: SharedShares): ShareRow[] {
+  const reg = world.shared.sessions.find((x) => x.kind === "registration" && x.proTxHash === SH_MN);
+  return shares.shares.map((f) => {
+    const label = reg?.rows.find((r) => r.index === f.index)?.label ?? `Share ${f.index + 1}`;
+    return shareRow(f.index, label, f.amount / COIN, { mine: f.mine, approved: f.mine, refundAddress: f.refundAddress });
+  });
+}
+
+const KC_OPERATOR = fake("a7c03e91b", 96);
+const KC_VOTING = addr("vN");
+/** The keys on the list that a key change starts from. */
+const baseKeys = () => ({ operatorPublicKey: OPERATOR, votingAddress: VOTING });
+
+/** The stored standby of `share` paying `fee`. */
+const findStandby = (world: World, hash: string, share: number, fee: number) => (world.shared.standby[hash] ?? []).find((x) => x.shareIndex === share && x.fee === fee);
+
+function requestedKeys(request: KeyChangeRequest) {
+  const operator = request.operator.kind === "keep" ? OPERATOR : request.operator.kind === "given" ? request.operator.publicKey : KC_OPERATOR;
+  const voting = request.voting.kind === "keep" ? VOTING : request.voting.kind === "address" ? request.voting.address : KC_VOTING;
+  return { operatorPublicKey: operator, votingAddress: voting };
+}
+
+/** A dissolve-together session of `SH_MN` (§2.7): `role` prepared it or was asked to sign; this wallet
+ * holds Alice's share, as in the registration. */
+export function togetherSession(role: SharedSession["role"], stage: "signing" | "combined", patch: Partial<SharedSession> = {}): SharedSession {
+  const signed = stage === "combined";
+  return session(h("ed2"), role, {
+    kind: "dissolve_together",
+    stage: { kind: stage },
+    next: signed ? "send" : role === "coordinator" ? "copy" : "approve",
+    rows: [shareRow(0, "Alice", 400, { mine: true, approved: signed || role === "coordinator" }), shareRow(1, "Bob", 300, { approved: true }), shareRow(2, "Carol", 300, { approved: true })],
+    proTxHash: SH_MN,
+    fee: 1_000,
+    debit: 0,
+    consentHash: null,
+    reserved: [],
+    discardable: true,
+    revision: 2,
+    ...patch,
+  });
+}
+
+/** A key change of `SH_MN` (§2.6): this wallet holds Alice's share and funds it as coordinator;
+ * as participant, Bob funds it. */
+export function keyChangeSession(role: SharedSession["role"], stage: "signing" | "combined" | "stale", patch: Partial<SharedSession> = {}): SharedSession {
+  const funder = role === "coordinator";
+  const signed = stage !== "signing" || funder;
+  const current = baseKeys();
+  const next: SharedSession["next"] = stage === "stale" ? (funder ? "abandon" : "nothing") : stage === "combined" ? (funder ? "send" : "copy") : funder ? "copy" : "approve";
+  return session(h("ec1"), role, {
+    kind: "key_change",
+    stage: { kind: stage },
+    next,
+    rows: [shareRow(0, "Alice", 400, { mine: true, approved: signed }), shareRow(1, "Bob", 300, { approved: true }), shareRow(2, "Carol", 300, { approved: stage !== "signing" })],
+    proTxHash: SH_MN,
+    fee: funder ? 1_000 : null,
+    debit: null,
+    consentHash: null,
+    baseKeys: current,
+    keyChange: { requested: { operatorPublicKey: OPERATOR, votingAddress: KC_VOTING }, current, funder },
+    warnings: funder ? [{ kind: "usable_by_funder" }] : [],
+    reserved: funder ? [`${h("f0")}-0`] : [],
+    discardable: true,
+    revision: 2,
+    ...patch,
+  });
+}
+
 export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World, walletId: string) => FixtureWallet; grant: (w: World, id: string, walletId: string, kinds: "masternodeOp"[]) => { grant: { purpose: { kind: string; maxDuffs?: number } } } | null; useGrant: (w: World, id: string) => void }): Handlers {
   const capped = (world: World, walletId: string, grantId: string, cap: number) => {
     const g = grant(world, grantId, walletId, ["masternodeOp"]);
@@ -450,6 +723,17 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
     mn_shared_session: ({ walletId, session: id }, { world }) => {
       wallet(world, walletId);
       return copy(find(world, id));
+    },
+    mn_shared_shares: ({ walletId, proTxHash }, { world }) => {
+      wallet(world, walletId);
+      const hash = checkHash(proTxHash);
+      const shares = world.shared.shares[hash];
+      if (!shares) throw fail("masternodes.shared_registration_unknown", "this wallet's history doesn't hold the shared registration");
+      return copy(shares);
+    },
+    mn_shared_standby: ({ walletId, proTxHash }, { world }) => {
+      wallet(world, walletId);
+      return copy(world.shared.standby[checkHash(proTxHash)] ?? []);
     },
     mn_shared_start: ({ walletId, request }, ctx) => {
       const { world } = ctx;
@@ -712,6 +996,164 @@ export function sharedHandlers({ wallet, grant, useGrant }: { wallet: (w: World,
       changed(ctx);
       return out;
     },
+    mn_shared_preview_dissolve: ({ walletId, request }, { world }) => {
+      wallet(world, walletId);
+      const hash = checkHash(request.proTxHash);
+      checkFee(request.fee);
+      const shares = eligible(world, hash);
+      if (!world.shared.sessions.some((x) => x.kind === "registration" && x.proTxHash === hash && x.stage.kind === "confirmed")) throw fail("masternodes.shared_session_not_found", "no confirmed session of this masternode");
+      ownShare(shares, request.shareIndex);
+      return planDissolve(shares, request.shareIndex, request.fee);
+    },
+    mn_shared_dissolve: ({ walletId, request, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSends(world);
+      const hash = checkHash(request.proTxHash);
+      checkFee(request.fee);
+      const shares = eligible(world, hash);
+      ownShare(shares, request.shareIndex);
+      const plan = planDissolve(shares, request.shareIndex, request.fee);
+      if (plan.warnings.length > 0) throw fail("masternodes.protx_refused", "the actor's output is dust", { kind: "reason", reason: "dust" });
+      capped(world, walletId, grantId, plan.totalDebit);
+      const op = dissolveOp(world, hash, request.fee, plan.totalDebit);
+      changed(ctx);
+      return op;
+    },
+    mn_shared_create_standby: ({ walletId, proTxHash, fee, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const hash = checkHash(proTxHash);
+      checkFee(fee);
+      const shares = eligible(world, hash);
+      const mine = shares.shares.filter((f) => f.mine);
+      capped(world, walletId, grantId, mine.length * (shares.earlyPenalty + fee));
+      const kept = (world.shared.standby[hash] ?? []).filter((x) => !(x.fee === fee && mine.some((f) => f.index === x.shareIndex)));
+      const made = mine.map((f): Standby => ({ proTxHash: hash, shareIndex: f.index, fee, penalty: shares.earlyPenalty, fullValidFrom: shares.fullValidFrom, full: true, immediate: shares.earlyPenalty > 0, source: "created", createdAt: NOW }));
+      world.shared.standby[hash] = [...made, ...kept].sort((a, b) => a.shareIndex - b.shareIndex || a.fee - b.fee);
+      changed(ctx);
+      return copy(world.shared.standby[hash]);
+    },
+    mn_shared_export_standby: ({ walletId, proTxHash, share, fee, grant: grantId }, { world }) => {
+      wallet(world, walletId);
+      const hash = checkHash(proTxHash);
+      const name = `standby-dissolution-${hash.slice(0, 8)}-share${share + 1}.txt`;
+      if (world.shared.exportCancel) return null;
+      const stored = findStandby(world, hash, share, fee);
+      if (!stored) throw fail("masternodes.not_found", "no standby of this share and fee");
+      capped(world, walletId, grantId, 0);
+      world.shared.exported.push(name);
+      return name;
+    },
+    mn_shared_send_standby: ({ walletId, proTxHash, share, fee, variant, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSends(world);
+      const hash = checkHash(proTxHash);
+      const shares = eligible(world, hash);
+      const stored = findStandby(world, hash, share, fee);
+      if (!stored || !(variant === "full" ? stored.full : stored.immediate)) throw fail("masternodes.not_found", "no standby of this share, fee and variant");
+      if (variant === "full" && !shares.fullValidNow) throw fail("masternodes.shared_too_early", "the full refund isn't valid yet");
+      if (variant === "immediate" && stored.full && shares.fullValidNow) throw stageRefusal("full_valid");
+      const mine = shares.shares.some((f) => f.index === share && f.mine);
+      const debit = mine ? fee + (variant === "immediate" ? (stored.penalty ?? 0) : 0) : 0;
+      capped(world, walletId, grantId, debit);
+      const op = dissolveOp(world, hash, fee, debit);
+      changed(ctx);
+      return op;
+    },
+    mn_shared_start_dissolve_together: ({ walletId, request, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const hash = checkHash(request.proTxHash);
+      checkFee(request.fee);
+      const shares = eligible(world, hash);
+      ownShare(shares, request.shareIndex);
+      const least = Math.max(1_000, 300 + 110 * shares.shares.length);
+      if (request.fee < least) throw fail("masternodes.shared_funding_mismatch", "the fee doesn't relay", { kind: "sharedFunding", reason: "fee_low", needed: least });
+      capped(world, walletId, grantId, request.fee);
+      const s = session(h("ed3"), "coordinator", {
+        kind: "dissolve_together",
+        stage: { kind: "signing" },
+        next: "copy",
+        rows: maintenanceRows(world, shares),
+        proTxHash: hash,
+        fee: request.fee,
+        debit: request.fee,
+        discardable: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      const out = outcome(put(world, s));
+      changed(ctx);
+      return out;
+    },
+    mn_shared_start_key_change: ({ walletId, request, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireProtxSending(world);
+      const hash = checkHash(request.proTxHash);
+      const shares = eligible(world, hash);
+      const requested = requestedKeys(request);
+      const current = baseKeys();
+      if (requested.operatorPublicKey === current.operatorPublicKey && requested.votingAddress === current.votingAddress) throw fail("invalid_argument", "the request changes no key");
+      capped(world, walletId, grantId, 0);
+      const s = session(h("ec4"), "coordinator", {
+        kind: "key_change",
+        stage: { kind: "signing" },
+        next: "copy",
+        rows: maintenanceRows(world, shares),
+        proTxHash: hash,
+        fee: 1_000,
+        debit: null,
+        baseKeys: current,
+        keyChange: { requested, current, funder: true },
+        warnings: [...(requested.operatorPublicKey !== current.operatorPublicKey ? [{ kind: "operator_reset" as const }] : []), { kind: "usable_by_funder" as const }],
+        reserved: [`${h("f0")}-0`],
+        discardable: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+      });
+      const out = outcome(put(world, s));
+      changed(ctx);
+      return out;
+    },
+    mn_shared_approve_maintenance: ({ walletId, session: id, grant: grantId, acceptActorFee }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      const s = find(world, id);
+      if (s.kind === "registration") throw stageRefusal("registration");
+      if (s.kind === "key_change") requireProtxSending(world);
+      if (s.stage.kind === "stale") throw refuse("stale");
+      if (s.stage.kind !== "signing" || s.next !== "approve") throw stageRefusal(s.stage.kind);
+      if (s.kind === "dissolve_together" && s.actorFee !== null && !acceptActorFee) throw fail("masternodes.shared_actor_fee", "the request takes its fee from this wallet's share", { kind: "sharedActorFee", fee: s.actorFee });
+      capped(world, walletId, grantId, s.kind === "dissolve_together" && acceptActorFee ? (s.actorFee ?? 0) : 0);
+      for (const r of s.rows) if (r.mine) r.approved = true;
+      const all = s.rows.every((r) => r.approved);
+      if (all) s.stage = { kind: "combined" };
+      s.next = all && (s.kind === "dissolve_together" || s.keyChange?.funder) ? "send" : "copy";
+      bump(s);
+      const out = outcome(put(world, s));
+      changed(ctx);
+      return out;
+    },
+    mn_shared_send_maintenance: ({ walletId, session: id, grant: grantId }, ctx) => {
+      const { world } = ctx;
+      wallet(world, walletId);
+      requireSends(world);
+      const s = find(world, id);
+      if (s.kind !== "dissolve_together") throw fail("app.shared_send_unsupported", "this version sends no shared-masternode session of this kind", { kind: "sharedUnsupported", sessionKind: s.kind });
+      if (s.stage.kind !== "combined") throw stageRefusal(s.stage.kind);
+      capped(world, walletId, grantId, 0);
+      const op = dissolveOp(world, s.proTxHash ?? SH_MN, s.fee ?? 0, 0);
+      s.stage = { kind: "sent" };
+      s.next = "wait";
+      s.discardable = false;
+      s.txid = op.txid;
+      put(world, s);
+      changed(ctx);
+      return { kind: "operation", operation: op };
+    },
     mn_shared_import_file: ({ walletId }, ctx) => {
       const { world } = ctx;
       wallet(world, walletId);
@@ -817,6 +1259,142 @@ export function sharedScenarios(base: Base) {
     /** Close before out (Keep / Discard) and out (no question). */
     "sh-close-before": (t: ThemeName | null) => shBase(base, t, withSessions(coordinatorSession(["Bob"]))),
     "sh-close-out": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed"))),
+    /** A confirmed shared masternode in My masternodes, with Alice's registration session: a payout change
+     * confirmed and a newer one sent, the standby pair saved, in the early period (§2.4.1). */
+    "sh-detail": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(
+          w,
+          sharedShares({}, { latestConfirmedLocal: { operation: h("a7"), address: SH_REWARD_CHANGED, confirmedHeight: SH_TIP - 280 }, latestAttempt: { operation: h("a8"), address: SH_REWARD_ATTEMPT, state: "sent", sentAt: NOW - 2 * 3_600 } }),
+          [standbyPair()],
+        );
+      }),
+    /** No operator's share in the registration: the operator line is absent. */
+    "sh-detail-no-operator-share": (t: ThemeName | null) =>
+      shBase(base, t, (_, w) => {
+        withSharedMasternode(w, sharedShares({ session: null }));
+        w.masternodes.operatorRewards[SH_MN] = 0;
+      }),
+    /** An imported immediate standby whose penalty the engine doesn't know: listed, never offered to send. */
+    "sh-detail-penalty-unknown": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}), [standbyPair(undefined, { penalty: null, source: "imported" })]);
+      }),
+    /** Restored elsewhere: EP 5 answers from history, no session, no standby (§2.4.2). */
+    "sh-detail-sessionless": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null }))),
+    /** History doesn't hold the registration: EP 5 refuses `shared_registration_unknown`. */
+    "sh-detail-unknown": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, null)),
+    /** The list trails the registration's block. */
+    "sh-detail-too-early": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({ eligibility: "too_early" }), [standbyPair()]);
+      }),
+    /** No synced list yet (likely early in a restore). */
+    "sh-detail-list-unavailable": (t: ThemeName | null) => shBase(base, t, (_, w) => withSharedMasternode(w, sharedShares({ session: null, eligibility: "list_unavailable" }))),
+    /** v24 not yet seen by this session (likely early in a restore). */
+    "sh-detail-upgrade-unknown": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.capability = { ...s.capability, v24: "unknown" };
+        withSharedMasternode(w, sharedShares({ session: null, eligibility: "upgrade_unknown" }));
+      }),
+    /** Registered long ago: the early period is over, so the full refund is valid now; Bob's full standby imported. */
+    "sh-detail-standby-valid": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        const registeredHeight = SH_TIP - 180_000;
+        const fullValidFrom = registeredHeight + SH_PERIOD;
+        s.sessions = [{ ...confirmedCoordinator(), stage: { kind: "confirmed", height: registeredHeight } }];
+        withSharedMasternode(w, sharedShares({ registeredHeight, fullValidNow: true }), [
+          standbyPair(fullValidFrom, { createdAt: NOW - 120 * DAY }),
+          standbyPair(fullValidFrom, { shareIndex: 1, immediate: false, source: "imported", createdAt: NOW - 30 * DAY }),
+        ]);
+      }),
+    /** S6 on mainnet (MG's ruling): the pane, its standbys and the dissolve sheet without a send, with
+     * the mainnet line where the sends would be. */
+    "sh-detail-mainnet": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        onMainnet(w);
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** No standby saved yet: the pane prompts to create one (§2.8). */
+    "sh-standby-none": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}));
+      }),
+    /** Each dissolution's hand-off is refused for want of peers: saved as not sent, never shown as sent. */
+    "sh-handoff-refused": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "combined")];
+        s.handoff = "send.no_peers";
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** Restored: only this wallet's full refund, valid after the early period, plus Bob's pair: Create is offered. */
+    "sh-standby-full-early": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        withSharedMasternode(w, sharedShares({}), [standbyPair(undefined, { immediate: false, source: "imported" }), standbyPair(undefined, { shareIndex: 1, source: "imported" })]);
+      }),
+    /** Save a copy… cancelled in the save dialog: nothing saved, the grant unused. */
+    "sh-standby-export-cancel": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator()];
+        s.exportCancel = true;
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** Dissolve together: Bob and Carol signed; this wallet (Alice) approves last, then sends. */
+    "sh-together-approve": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "signing")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** This wallet's share is the actor of a request another wallet prepared: the fee comes out of it. */
+    "sh-together-actor-fee": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "signing", { actorFee: 1_000 })];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** Every signature in: anyone holding them sends. */
+    "sh-together-combined": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "combined")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** The same on mainnet: no send, the mainnet note in its place. */
+    "sh-together-combined-mainnet": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        onMainnet(w);
+        s.sessions = [confirmedCoordinator(), togetherSession("participant", "combined")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** A key change Bob funds: this wallet (Alice) approves. */
+    "sh-keychange-approve": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "signing")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** The same on mainnet: the engine refuses a key-change approval there, so the line stands in for Approve. */
+    "sh-keychange-approve-mainnet": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        onMainnet(w);
+        s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "signing")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** This wallet funds a key change everyone signed: sending it comes later, Discard releases its fee coins. */
+    "sh-keychange-combined": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), keyChangeSession("coordinator", "combined")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
+    /** The list's keys moved off the request's base. */
+    "sh-keychange-stale": (t: ThemeName | null) =>
+      shBase(base, t, (s, w) => {
+        s.sessions = [confirmedCoordinator(), keyChangeSession("participant", "stale")];
+        withSharedMasternode(w, sharedShares({}), [standbyPair()]);
+      }),
     /** Out, with no coin left for this wallet to spend: no Abandon and no line naming it. */
     "sh-signed-out-abandoned": (t: ThemeName | null) => shBase(base, t, withSessions(participantSession("funding_signed", { abandonable: false }))),
     /** Sessions this wallet can't read: one it may discard, one that may be out (Abandon), and one

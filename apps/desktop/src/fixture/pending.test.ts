@@ -1,9 +1,11 @@
 // The fixture's answers for the commands dw-app does not have yet (pending.ts), through
 // IpcBackend as the screens call them: the adapter's "absent" and "present" paths.
 
-import { clearMocks } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { absentAsUnavailable } from "../api/pending";
 import { IpcBackend } from "../api/tauri";
+import { OpenFailureActions } from "../screens/StoreRefusal";
 import { installFixture, type FixtureHandle } from "./index";
 import { landSend, PLATFORM_PAYEE } from "./pending";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W } from "./scenarios";
@@ -13,6 +15,7 @@ let backend: IpcBackend;
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
   const stored = new Map<string, string>();
+  vi.stubGlobal("location", { reload: vi.fn() });
   vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
   fixture = installFixture({ scenario: "funded" });
   backend = new IpcBackend("fixture");
@@ -47,8 +50,54 @@ describe("fixture pending commands", () => {
     fixture.world.networkSwitch = { fail: { rolledBack: false } };
     await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "app.network_switch_failed", data: { rolledBack: false } });
     expect(fixture.world.launch.network.kind).toBe("testnet");
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use", data: { kind: "storageInUse", retryable: false } });
     await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use" });
+    expect(await backend.restartApp()).toBeNull();
+    expect(location.reload).toHaveBeenCalledOnce();
     expect((await backend.openNetwork()).network.kind).toBe("testnet");
+  });
+
+  it("keeps the foreign files with keep_current_files, and the open after it opens them, restored", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRestore: "foreign:otherLineage" });
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_restore", data: { state: "foreign", cause: "otherLineage" } });
+    const actions = new OpenFailureActions(backend);
+    let reopened: Promise<unknown> | null = null;
+    await actions.keep(() => (reopened = backend.openNetwork()));
+    expect(actions.problem).toBeNull();
+    expect(await reopened).toMatchObject({ network: { kind: "testnet", restored: true } });
+    expect(fixture.world.restoreCalls).toEqual(["keepCurrentFiles"]);
+  });
+
+  it("asks for the restore and restarts; the next start opens the earlier data, restored", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "funded", openRefused: "refusedRestore", restoreAvailable: true });
+    expect(await backend.restoreAvailable()).toBe(true);
+    await new OpenFailureActions(backend).restore();
+    expect(fixture.world.restoreCalls).toEqual(["restoreAvailable", "requestRestore"]);
+    expect(fixture.world.appExits).toEqual(["restart"]);
+    expect(location.reload).toHaveBeenCalledOnce();
+    clearMocks();
+    installFixture({ scenario: "funded" });
+    expect(await backend.openNetwork()).toMatchObject({ network: { restored: true } });
+    expect(await backend.activeNetwork()).toMatchObject({ restored: true });
+  });
+
+  it("reads restore_available as absent, and the restore commands as unavailable, in a dw-app without them", async () => {
+    clearMocks();
+    mockIPC((cmd) => {
+      throw `Command ${cmd} not found`;
+    });
+    expect(await backend.restoreAvailable()).toBeNull();
+    for (const call of [backend.requestRestore, backend.keepCurrentFiles, backend.cancelRestore]) await expect(call()).rejects.toThrow(/^This is not available in this build\.$/);
+  });
+
+  it("quits and restarts through quit_app and restart_app, whose success is null", async () => {
+    expect(await backend.quitApp()).toBeNull();
+    expect(await backend.restartApp()).toBeNull();
+    expect(fixture.world.appExits).toEqual(["quit", "restart"]);
+    await expect(absentAsUnavailable(Promise.reject("Command quit_app not found"))).rejects.toThrow(/^This is not available in this build\.$/);
+    await expect(absentAsUnavailable(Promise.reject(new Error("disk full")))).rejects.toThrow("disk full");
   });
 
   it("only saves the choice in a window pinned to a network", async () => {

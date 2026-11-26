@@ -3,7 +3,7 @@
 // whether the signed transaction keeps that promise, and how a broadcast ended. A payment to a
 // DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
-import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
+import { errorMessage, hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import { CREDITS_PER_DUFF } from "../../api/pending";
 import { RESCAN_TEXT } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
@@ -84,6 +84,7 @@ export function outpointOf(key: string): OutPoint {
 /** Why a coin cannot be chosen, or `null` when it can (Pay's coin control and Tools ▸ Coin
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
+  if (u.pendingUnproven) return t("components.coins.pendingUnproven.short");
   if (u.spendable) return null;
   if (u.excluded === "pendingUnproven") return t("coins.pendingUnproven");
   if (u.reserved) return t("pay.notSelectable.reserved");
@@ -346,6 +347,27 @@ export function contactDataText(e: unknown): string | null {
   if (hasCode(e, "platform.context_unavailable")) return t("pay.error.contactUnchecked");
   if (hasCode(e, "platform.trust_mismatch")) return t("pay.error.contactMismatch");
   return null;
+}
+
+/** A notice the Pay form shows in place of an error, with Try again. */
+export type PayNotice = { kind: "updating"; text: string };
+
+/** A contact payment refused with `platform.context_unavailable`: after a launch, until the first
+ * DashPay pass re-checks the contact (H-09). Not an error: a notice whose Try again runs the check
+ * again. `accepted`: what an accept that went through says first. `null` for any other refusal,
+ * and for a payment to an address, which keep their own words. */
+export function contactsUpdatingNotice(e: unknown, contact: boolean, accepted: string | null = null): PayNotice | null {
+  if (!contact || !hasCode(e, "platform.context_unavailable")) return null;
+  const text = t("pay.notice.contactsUpdating");
+  return { kind: "updating", text: accepted ? `${accepted} ${text}` : text };
+}
+
+/** A refused estimate: the reason under the form, or the notice that replaces it. `refusal`: the
+ * send refusal's own text, if it has one. */
+export function estimateRefusal(e: unknown, contact: boolean, refusal: string | null): { general: string | null; notice: PayNotice | null } {
+  const notice = contactsUpdatingNotice(e, contact);
+  if (notice) return { general: null, notice };
+  return { general: refusal ?? (contact ? contactDataText(e) : null) ?? errorMessage(e), notice: null };
 }
 
 // ---------------------------------------------------------------- the payment policy (E0-13 D11)

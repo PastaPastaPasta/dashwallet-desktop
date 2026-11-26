@@ -63,7 +63,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 
-use dashcore::hashes::{Hash, HashEngine, sha256};
+use dashcore::hashes::{HashEngine, sha256};
 use dashcore::{Network, OutPoint};
 
 use crate::object::{GovernanceObject, display_hex};
@@ -2617,8 +2617,8 @@ impl GovernanceStore {
 mod tests {
     use super::*;
     use crate::vote::to_recoverable_compact;
-    use dashcore::hashes::{Hash, hash160};
-    use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+    use dashcore::hashes::hash160;
+    use secp256k1::{Message, PublicKey, SecretKey};
 
     const NOW: i64 = 1_000_000;
 
@@ -2639,8 +2639,8 @@ mod tests {
         let sk = SecretKey::from_secret_bytes([key; 32]).unwrap();
         let pk = PublicKey::from_secret_key(&sk);
         let d = v.signing_digest(Network::Regtest);
-        let s = dashcore::secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
-        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk, &d)
+        let s = secp256k1::ecdsa::sign(Message::from_digest(d), &sk);
+        v.signature = to_recoverable_compact(&s.serialize_compact(), &pk.into(), &d)
             .unwrap()
             .to_vec();
     }

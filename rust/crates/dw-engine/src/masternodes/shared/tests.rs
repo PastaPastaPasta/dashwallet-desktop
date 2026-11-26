@@ -11,9 +11,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use dashcore::hashes::Hash;
-use dashcore::secp256k1::{Message as SecpMessage, PublicKey, ecdsa::Signature};
 use dashcore::{OutPoint, Transaction, TxOut, Txid};
+use dpp::secp256k1::{Message as SecpMessage, PublicKey, ecdsa::Signature};
 use dw_appdb::GLOBAL_SCOPE;
 use dw_protx::shared::envelope::{encode_base64, fingerprint};
 use dw_protx::shared::json::Json;
@@ -989,10 +988,10 @@ fn test_QT_126_a_dash_qt_participant_signing_with_its_owner_key() {
     .unwrap();
     let party = &vectors["cases"][0]["parties"][1];
     let wif = party["owner_wif"].as_str().unwrap();
-    let secret = dashcore::PrivateKey::from_wif(wif)
+    let secret = *dashcore::PrivateKey::from_wif(wif)
         .unwrap()
         .inner
-        .to_secret_bytes();
+        .to_bytes();
     let f = fx(1, true);
     f.credit(0, 1, 701 * COIN);
     let inv = start(&f, 0, request(&[("A", 700), ("Q", 300)], FEE)).unwrap();
@@ -1131,7 +1130,8 @@ fn test_QT_126_a_version_3_entry_in_the_synced_list_is_v24_before_the_note() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: extended,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     use crate::masternodes::Activation::{Active, Unknown};
     *f.seam.list.lock().unwrap() = Some(vec![entry(false)]);
@@ -1634,7 +1634,8 @@ fn test_QT_127_update_share_preview_and_d30() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -2383,7 +2384,8 @@ fn test_QT_126_a_registration_mined_under_another_txid_is_confirmed() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     *f.seam.list_height.lock().unwrap() = 110;
@@ -3051,8 +3053,8 @@ fn test_QT_126_a_reserved_coin_is_no_mg04_collateral() {
     assert_eq!(reserved, vec![format!("{}:{}", x.txid, x.vout)]);
     assert!(f.locked(0).contains(&x));
     f.credit(0, 2, COIN);
-    let secret = dashcore::secp256k1::SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
-    let key = dashcore::PublicKey::new(dashcore::secp256k1::PublicKey::from_secret_key(&secret));
+    let secret = dpp::secp256k1::SecretKey::from_secret_bytes([0x5e; 32]).unwrap();
+    let key = dashcore::PublicKey::new(dpp::secp256k1::PublicKey::from_secret_key(&secret));
     let outpoint = format!("{}-{}", x.txid, x.vout);
     for collateral in [
         crate::masternodes::CollateralChoice::ExistingUtxo {
@@ -3197,7 +3199,8 @@ fn test_QT_127_update_share_refuses_a_key_that_isnt_the_shares() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);
@@ -3236,7 +3239,8 @@ fn test_QT_127_update_share_sends_an_operation() {
         is_valid: true,
         is_evonode: false,
         has_extended_net_info: true,
-        net_info: None,
+        service_addresses: vec!["1.2.3.4:19999".parse().unwrap()],
+        operator_key_is_legacy: false,
     };
     *f.seam.list.lock().unwrap() = Some(vec![entry]);
     f.credit(0, 9, COIN);

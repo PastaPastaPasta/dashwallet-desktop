@@ -34,6 +34,11 @@ test("the sheet shows the App ID, the app's unverified name and where it returns
   await expect(rows.nth(0).getByTestId("connect-critical")).toHaveCount(0);
   await expect(rows.nth(1).getByTestId("connect-critical")).toHaveText("This key has critical access: within what it covers, it can do anything your identity can.");
   await expect(rows.nth(2).getByTestId("connect-critical")).toContainText("The funding limit doesn't cap tokens.");
+  await expect(rows.nth(0).getByTestId("connect-token-cost")).toHaveText(
+    "Saving documents with this key can also spend tokens your identity holds, if the contract charges tokens for them. The funding limit doesn't apply to tokens.",
+  );
+  await expect(rows.nth(1).getByTestId("connect-token-cost")).toHaveCount(0);
+  await expect(rows.nth(2).getByTestId("connect-token-cost")).toHaveCount(0);
   await expect(page.getByTestId("connect-encryption")).toContainText("An encryption key for the app");
   await expect(page.getByTestId("connect-limit")).toHaveValue("0.05");
   await expect(page.getByTestId("connect-expiry")).toHaveText("In 30 days");
@@ -155,6 +160,16 @@ test("a request that changed on Platform is read again and the user is told", as
   await expect(page.getByTestId("connect-done")).toBeVisible();
 });
 
+test("a group that changed between the sheet's read and the quote's is read again before Approve", async ({ page }) => {
+  await openConnect(page, "groupChanged");
+  await quoted(page);
+  await expect(page.getByTestId("connect-plan-changed")).toBeVisible();
+  await expect(page.getByTestId("connect-binding").nth(2).getByTestId("connect-group-admins").locator("dd")).toHaveCount(2);
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
 test("keys not confirmed in time leave the sheet open, and approving again finishes", async ({ page }) => {
   await openConnect(page, "notConfirmed");
   await quoted(page);
@@ -168,6 +183,31 @@ test("keys not confirmed in time leave the sheet open, and approving again finis
   await page.getByTestId("connect-approve").click();
   await authorize(page);
   await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
+test("a reopened sheet whose quote failed offers Try again, which quotes the same choice and turns Approve on", async ({ page }) => {
+  await openConnect(page, "quoteOffline");
+  await expect(page.getByTestId("connect-quote-error")).toHaveText("Couldn't check this request with Platform. Try again.");
+  await expect(page.getByTestId("connect-limit")).toBeDisabled();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await page.getByTestId("connect-quote-retry").click();
+  await quoted(page);
+  await expect(page.getByTestId("connect-quote-error")).toHaveCount(0);
+  await expect(page.getByTestId("connect-quote-retry")).toHaveCount(0);
+  await expect(page.getByTestId("connect-approve")).toBeEnabled();
+  await page.getByTestId("connect-approve").click();
+  await authorize(page);
+  await expect(page.getByTestId("connect-done")).toBeVisible();
+});
+
+test("a credit shortfall offers Try again, which checks the balance again", async ({ page }) => {
+  await openConnect(page, "credits");
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
+  await page.getByTestId("connect-quote-retry").click();
+  await expect(page.getByTestId("connect-quote-error")).toContainText("more in credits");
+  await expect(page.getByTestId("connect-quote-retry")).toBeVisible();
+  await expect(page.getByTestId("connect-approve")).toBeDisabled();
 });
 
 test("a Deny after keys not confirmed doesn't say nothing was added", async ({ page }) => {
@@ -206,5 +246,12 @@ test("a request that arrives while locked opens once the wallet is unlocked", as
   await expect(page.getByTestId("connect-sheet")).toHaveCount(0);
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");
+  await expect(page.getByTestId("connect-claim")).toBeVisible();
+});
+
+test("a request refused because every kept request is open or being approved says so, and the open sheet stays", async ({ page }) => {
+  await openConnect(page, "ok");
+  await page.evaluate(() => window.__dwFixture!.deliverLinks([{ kind: "rejected", reason: { kind: "connect", reason: "busy" } }]));
+  await expect(page.getByText("Dash Wallet already has too many sign-in requests in progress. Finish or close one, then start signing in again from the app.")).toBeVisible();
   await expect(page.getByTestId("connect-claim")).toBeVisible();
 });

@@ -368,6 +368,16 @@ export const transfer = {
       qr: "QR code of {address}",
       copyAddress: "Copy Shielded address",
     },
+    /** Home's notice while the Shielded store stays closed (`shielded.store_closed`), by the engine's
+     * reason (MG). Report a problem is `settings.about.links.issues`, with its hint. */
+    closed: {
+      title: "Shielded couldn't open",
+      inUse: "Another program, possibly another copy of Dash Wallet, is using your Shielded data, so Dash Wallet didn't open Shielded. The rest of your wallet works as usual. Close any other copy of Dash Wallet, then restart.",
+      failed: "Dash Wallet couldn't move your Shielded data to this version, so it didn't open Shielded. The rest of your wallet works as usual. Restart to try again. If Shielded still doesn't open, choose Report a problem, and keep your wallet data as it is: support may need it.",
+      damaged: "Dash Wallet couldn't read your Shielded data from before the upgrade, so it didn't open Shielded and changed nothing in that data. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      noUpgradeCopy: "Dash Wallet has no backup of your Shielded data from before the upgrade, so it won't move that data and didn't open Shielded. The rest of your wallet works as usual. Choose Report a problem, and keep your wallet data as it is: support may need it.",
+      restart: "Restart",
+    },
     error: {
       poolTooSmall: "Shielded withdrawals open once the network's shielded pool has enough activity. Try again later.",
       invalidAddress: "Enter a Shielded address of this network.",

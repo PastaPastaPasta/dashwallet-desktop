@@ -18,7 +18,6 @@ mod update;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::{Holder, MasternodeOpRow};
 use dw_protx::params::collateral_amount;

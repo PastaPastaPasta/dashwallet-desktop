@@ -6,7 +6,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -16,6 +15,7 @@ use dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dpp::identity::signer::Signer;
 use dpp::identity::{Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel};
 use dpp::prelude::Identifier;
+use dpp::secp256k1::{PublicKey, SecretKey};
 use dpp::system_data_contracts::dashpay_contract;
 use dw_uri::connect::{
     AppConnectRequest, AuthBinding, Bounds, Carrier, ConnectUri, EncBinding, EncPurpose, Level,
@@ -706,6 +706,34 @@ fn a_changed_group_refuses_the_approval_with_the_grant_unused() {
     );
     assert!(f.unused(&grant));
     assert!(f.net.signed().is_empty());
+}
+
+/// The quote names the group facts it read: those the sheet showed when
+/// nothing changed between the two reads, others when the group did.
+#[test]
+fn the_quote_names_the_group_facts_it_read() {
+    let f = Fixture::new();
+    let l = devnet(request());
+    let sheet = f.sheet(&l).unwrap();
+    let quote = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_eq!(quote.groups, sheet.groups);
+    f.net
+        .groups
+        .lock()
+        .unwrap()
+        .get_mut(&group())
+        .unwrap()
+        .admins
+        .push(id(51));
+    let changed = f.quote(&l, &Fixture::choice()).unwrap();
+    assert_ne!(changed.groups, sheet.groups);
+    assert_ne!(changed.plan, quote.plan);
+    let refreshed = f.sheet(&l).unwrap();
+    assert_eq!(refreshed.groups, changed.groups);
+    let ConnectScope::Group(g) = &refreshed.bindings[0].scope else {
+        panic!("expected a group binding, got {:?}", refreshed.bindings[0]);
+    };
+    assert_eq!(g.admins, vec![b58(&id(43)), b58(&id(51))]);
 }
 
 #[test]

@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use dashcore::hashes::Hash as _;
 use dashcore::{OutPoint, Txid};
 use dw_appdb::{SharedSessionRow, SharedSessionUpdate};
 use dw_protx::shared::rules as shared_rules;

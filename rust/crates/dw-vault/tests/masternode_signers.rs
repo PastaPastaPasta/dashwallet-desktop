@@ -12,10 +12,11 @@ use dashcore::blockdata::transaction::special_transaction::provider_update_regis
 use dashcore::blockdata::transaction::special_transaction::{
     SpecialTransactionBasePayloadEncodable, TransactionPayload,
 };
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
-use dashcore::secp256k1::{Message, PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dashcore::{OutPoint, Txid};
+use dpp::secp256k1::Message;
+use dpp::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use dw_vault::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, FundingOutcome, FundingVote, GrantKind,
     GrantPurpose, GrantToken, OwnerKey, SignerError, SignerScope, UnlockScope, Vault, VaultError,
@@ -50,8 +51,8 @@ fn token(v: &Vault, purpose: GrantPurpose, credential: Credential<'_>) -> GrantT
         .unwrap()
 }
 
-fn hash160_of(secret: &SecretKey) -> [u8; 20] {
-    hash160::Hash::hash(&PublicKey::from_secret_key(secret).serialize()).to_byte_array()
+fn hash160_of(secret: &EcdsaSecretKey) -> [u8; 20] {
+    hash160::Hash::hash(&secret.public_key().to_compressed()).to_byte_array()
 }
 
 /// The id of wallet 1's keychain voting key `index`, derived here.
@@ -309,7 +310,7 @@ fn an_attached_vote_recovers_the_attached_key() {
     let id = s.key_id(&key).unwrap();
     assert_eq!(
         id,
-        hash160_of(&SecretKey::from_secret_bytes(ATTACHED).unwrap())
+        hash160_of(&EcdsaSecretKey::from_bytes(&ATTACHED).unwrap())
     );
     assert_eq!(v.masternode_key_id(&PRO_TX, "voting").unwrap(), Some(id));
     let vote = vote(1_800_000_000);
@@ -488,7 +489,7 @@ fn an_attached_owner_key_signs_its_masternodes_payloads_only() {
     let sig = s.sign_update_registrar(&key, &p).unwrap();
     assert_eq!(
         owner_of(&sig, &p),
-        hash160_of(&SecretKey::from_secret_bytes(ATTACHED).unwrap())
+        hash160_of(&EcdsaSecretKey::from_bytes(&ATTACHED).unwrap())
     );
     // Another masternode's payload: refused before the key is read.
     assert!(matches!(
@@ -620,7 +621,7 @@ fn attached_owner_signatures_equal_dashds() {
         };
         let owner = dashcore::PrivateKey::from_wif(c["owner_wif"].as_str().unwrap()).unwrap();
         let hash = p.pro_tx_hash.to_byte_array();
-        v.store_masternode_key(&hash, "owner", &owner.inner.to_secret_bytes())
+        v.store_masternode_key(&hash, "owner", &*owner.inner.to_bytes())
             .unwrap();
         let sig = s
             .sign_update_registrar(&OwnerKey::Attached { pro_tx_hash: hash }, &p)

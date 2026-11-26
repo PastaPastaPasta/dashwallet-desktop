@@ -10,18 +10,19 @@
 
 use std::str::FromStr;
 
-use dash_spv::network::Peer;
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType;
 use dashcore::blockdata::transaction::special_transaction::provider_registration::MasternodePayoutShare;
 use dashcore::consensus::{deserialize, serialize};
-use dashcore::hashes::{Hash, sha256d};
-use dashcore::network::message::NetworkMessage;
+use dashcore::hashes::sha256d;
+use dashcore::network::message::{NetworkMessage, RawNetworkMessageCodec};
 use dashcore::sml::masternode_list_entry::MasternodeNetInfo;
 use dashcore::sml::masternode_list_entry::net_info::{Bip155Network, NetInfoEntry, NetInfoPurpose};
 use dashcore::{Address, Block, BlockHash, Network, PubkeyHash, ScriptBuf, Transaction, Txid};
+use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
+use tokio_util::codec::FramedRead;
 
 /// A type Core v24 doesn't define (its last is 12).
 const UNKNOWN_TYPE: u16 = 13;
@@ -493,10 +494,10 @@ fn block_message(network: Network, block: &[u8]) -> Vec<u8> {
     frame
 }
 
-/// The SPV path: dash-spv's `Peer`, which every sync manager reads the network through,
-/// receives every block message from a peer, the two crafted ones too. At the old pin
-/// the decode of 7 of the 9 Core blocks failed and the peer loop resynced past the frame,
-/// so the block never arrived.
+/// The SPV path: the v1 frame codec dash-spv's peer reads the network through receives
+/// every block message from a peer, the two crafted ones too. At the old pin the decode
+/// of 7 of the 9 Core blocks failed and the peer loop resynced past the frame, so the
+/// block never arrived.
 #[tokio::test]
 async fn dash_spv_receives_core_v24_block_messages() {
     let network = Network::Regtest;
@@ -524,22 +525,21 @@ async fn dash_spv_receives_core_v24_block_messages() {
         let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut [0u8; 1]).await;
     });
 
-    let mut peer = Peer::connect(address, 10, network).await.unwrap();
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut peer = FramedRead::new(stream, RawNetworkMessageCodec);
     let mut received = Vec::new();
     while received.len() < expected.len() {
-        let message =
-            tokio::time::timeout(std::time::Duration::from_secs(30), peer.receive_message())
-                .await
-                .expect("dash-spv received no message")
-                .unwrap();
-        if let Some(message) = message {
-            match message.inner() {
-                NetworkMessage::Block(block) => received.push(block.block_hash()),
-                other => panic!("not a block: {other:?}"),
-            }
+        let message = tokio::time::timeout(std::time::Duration::from_secs(30), peer.next())
+            .await
+            .expect("dash-spv received no message")
+            .expect("the peer closed the connection")
+            .unwrap();
+        match message.payload {
+            NetworkMessage::Block(block) => received.push(block.block_hash()),
+            other => panic!("not a block: {other:?}"),
         }
     }
     assert_eq!(received, expected);
-    peer.disconnect().await.unwrap();
+    drop(peer);
     server.await.unwrap();
 }

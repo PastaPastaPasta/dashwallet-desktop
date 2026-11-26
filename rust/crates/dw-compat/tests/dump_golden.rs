@@ -2,8 +2,8 @@
 //! `dumpwallet`, with testdata/dumpwallet/manifest.json recording (from
 //! other RPCs) what each file must contain.
 
-use dashcore::hashes::{Hash, hash160};
-use dashcore::secp256k1::{PublicKey, SecretKey};
+use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::hashes::hash160;
 use dw_compat::bip39core;
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole, ScriptEntry};
 use dw_uri::Network;
@@ -26,11 +26,13 @@ fn read(file: &str) -> String {
 }
 
 fn p2pkh_of(secret: &keyio::Secret) -> [u8; 20] {
-    let pk = PublicKey::from_secret_key(&SecretKey::from_secret_bytes(*secret.key).unwrap());
+    let pk = EcdsaSecretKey::from_bytes(&secret.key)
+        .unwrap()
+        .public_key();
     let ser = if secret.compressed {
-        pk.serialize().to_vec()
+        pk.to_compressed().to_vec()
     } else {
-        pk.serialize_uncompressed().to_vec()
+        pk.to_uncompressed().to_vec()
     };
     hash160::Hash::hash(&ser).to_byte_array()
 }

@@ -2552,7 +2552,7 @@ fn skipped_at_restart(
 /// SPV caught up, as dash-spv reports it, so a funding of wallet `id` is
 /// held by nothing but its bring-up.
 pub(super) fn caught_up(s: &NetworkSession, id: WalletId) {
-    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    use dash_spv::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let mut headers = BlockHeadersProgress::default();
     headers.update_target_height(100);
     headers.update_tip_height(100);
@@ -3935,8 +3935,6 @@ fn the_tap_writing_during_a_removal_neither_blocks_nor_deadlocks() {
 /// waits for, held past a removal.
 #[test]
 fn a_first_seen_write_held_past_a_removal_leaves_nothing() {
-    use dashcore::hashes::Hash;
-
     let (_dir, engine, s, id, wipe) = removable();
     let pause = Arc::new(JobPause::default());
     *guard(&s.hub.pause_seen) = Some(Arc::clone(&pause));
