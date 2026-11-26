@@ -13,7 +13,7 @@ import { newShieldedWorld, type ShieldedWorld } from "../fixture/shielded";
 import { FIXTURE_NOW, secs } from "../fixture/wallet";
 import { dashpayKeys, platformSourceOf } from "./queries";
 import { READINESS_FAILED } from "./status";
-import { LIVE_SOURCES, PAY_WITH_COPY, PRESELECT_SHIELDED, PRIVACY_COPY, payWithRows, platformReason, privacyStep, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
+import { LIVE_SOURCES, PAY_WITH_COPY, PRESELECT_SHIELDED, PRIVACY_COPY, payWithRows, platformReason, privacyHeading, privacyStep, shieldedReason, type PayWithInputs, type PaySource } from "./payWith";
 
 const amount = (duffs: number) => `${duffs / 1e8} Dash`;
 const clock = (secs: number) => `T${secs}`;
@@ -272,5 +272,22 @@ describe("Make your username private (F19, mobile parity)", () => {
     for (const check of ["poolActive", "featureOn", "denomination"] as const) expect(sources({ readiness: readiness(check) }).rows.map((r) => r.source)).toEqual(["core"]);
     expect(sources({ live: new Set<PaySource>(["core"]) }).rows.map((r) => r.source)).toEqual(["core"]);
     expect(step({ readiness: null }).kind).toBe("loading");
+  });
+
+  it("drops the privacy pitch only when Shielded is not offered at all", () => {
+    const plain = { title: "Pay for your username", body: null };
+    const privacy = { title: PRIVACY_COPY.title, body: PRIVACY_COPY.body };
+    expect(PRIVACY_COPY.titleNoShielded).toBe("Pay for your username");
+    for (const check of ["poolActive", "featureOn", "denomination"] as const) expect(privacyHeading(step({ readiness: readiness(check) }))).toEqual(plain);
+    expect(privacyHeading(step({ readiness: READINESS_FAILED }))).toEqual(plain);
+    expect(privacyHeading(step({ live: new Set<PaySource>(["core"]) }))).toEqual(plain);
+    expect(privacyHeading(step())).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: null }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("balance"), shieldedDuffs: 0 }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("balance"), shieldedDuffs: 1_000_000 }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("rested", 1_700_000_000) }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("poolSize") }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("noUnsettledSpend") }))).toEqual(privacy);
+    expect(privacyHeading(step({ readiness: readiness("synced") }))).toEqual(privacy);
   });
 });

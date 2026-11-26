@@ -173,12 +173,12 @@ test.describe("Shielded spends off", () => {
 
   test("Pay a contact's Shielded row says this version can't pay from it", async ({ page }) => {
     const errors = trackPageErrors(page);
-    for (const [scenario, reason] of [["dashpay-registered-spends-off", "Not available in this version"], ["dashpay-registered", "Not available on this network yet."]] as const) {
+    for (const scenario of ["dashpay-registered-spends-off", "dashpay-registered"] as const) {
       await page.goto(fixtureUrl(scenario, "light"));
       await page.getByTestId("toolbar").waitFor();
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
       await page.getByTestId("pay-frequent-chip").first().click();
-      await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText(reason);
+      await expect(page.getByTestId("pay-from-shielded-reason")).toHaveText("Not available in this version");
       await expect(page.getByTestId("pay-from").getByRole("radio", { name: /Shielded balance/ })).toBeDisabled();
     }
     expect(errors).toEqual([]);
@@ -203,6 +203,21 @@ test.describe("Shielded spends off", () => {
     await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
     expect(await callsOf(page, "resume_shield")).toBe(1);
     expect(await spendCalls(page)).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("Join DashPay pay-with step uses Pay for your username and omits the Shielded recommendation", async ({ page }) => {
+    const errors = await open(page, "shielded-spends-off", "light");
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+    await page.getByTestId("join-create").click();
+    const step = page.getByTestId("registration-pay-with");
+    await expect(step).toHaveAttribute("data-kind", "sources");
+    await expect(step.getByRole("heading", { level: 2 })).toHaveText("Pay for your username");
+    await expect(page.getByTestId("privacy-body")).toHaveCount(0);
+    await expect(page.getByTestId("pay-with-core-note")).toHaveText("Funds will be traceable to your username");
+    await expect(page.getByTestId("pay-with-shielded")).toHaveCount(0);
+    await expect(page.getByTestId("privacy-shield-first")).toHaveCount(0);
+    expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
   });
 
