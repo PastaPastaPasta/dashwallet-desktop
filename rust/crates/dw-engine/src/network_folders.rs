@@ -181,6 +181,7 @@ fn write_restored_mark(dir: &Path, left: &str) -> Result<(), EngineError> {
 }
 
 fn create_owner_only_dir(path: &Path) -> io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
