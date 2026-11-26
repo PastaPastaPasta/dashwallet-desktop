@@ -3848,8 +3848,10 @@ fn the_sync_read_and_a_bound_address_answer_while_a_pass_holds_the_store() {
 
 /// While the library cannot spend from the key set, every quote and every
 /// way into the pool refuses before the coordinator opens: a pass holding
-/// the note store delays none of them. With spends on, the same quote waits
-/// for the store.
+/// the note store delays none of them. With spends on, the same quote gets
+/// past that refusal to the address check, which comes before any note is
+/// read (the line's coordinator opens without reading the store, so the
+/// open itself does not wait).
 #[test]
 fn the_spends_off_refusals_wait_for_no_pass() {
     let f = super::topup_tests::fixture(true);
@@ -3890,9 +3892,9 @@ fn the_spends_off_refusals_wait_for_no_pass() {
 
         s.keyset_spends_off.store(false, Ordering::SeqCst);
         let quote = dp.shielded_send_quote(String::new(), 1);
-        let held = tokio::time::timeout(Duration::from_millis(300), quote);
-        assert!(
-            held.await.is_err(),
+        assert_eq!(
+            refused!(quote),
+            "shielded.invalid_address",
             "with spends on, the quote opens the pool"
         );
     });
@@ -3900,12 +3902,15 @@ fn the_spends_off_refusals_wait_for_no_pass() {
 
 /// A Shielded-funded registration's quote, start and unsent create refuse
 /// before the pool opens while spends are off; settling a create that
-/// already named its identity still opens it.
+/// already named its identity still runs, on evidence alone (with no
+/// artifact and no identity read it stays unknown, and signs nothing).
+/// With spends on, the quote reads the account's notes, so it waits for
+/// the pass.
 #[test]
 fn a_shielded_registration_refuses_before_the_pool_while_spends_are_off() {
     use super::registration::{RegistrationFunding, RegistrationRequest};
     use super::registration_flow::{PwLib, RegistrationLib};
-    use super::registration_shielded::ShieldedAsk;
+    use super::registration_shielded::{ShieldedAsk, ShieldedOutcome};
     let f = super::topup_tests::fixture(false);
     let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
     let manager = session.manager().unwrap();
@@ -3966,10 +3971,11 @@ fn a_shielded_registration_refuses_before_the_pool_while_spends_are_off() {
         let named = dpp::prelude::Identifier::new([7; 32])
             .to_string(dpp::platform_value::string_encoding::Encoding::Base58);
         let settle = lib.shielded_fund(ask(Some(named)), Some(&lease));
-        let settle = tokio::time::timeout(Duration::from_millis(300), settle);
+        let settle = (tokio::time::timeout(wait, settle).await)
+            .expect("settling a named create reads no note");
         assert!(
-            settle.await.is_err(),
-            "settling a named create opens the pool"
+            matches!(settle, Ok(ShieldedOutcome::Unknown)),
+            "settling a named create opens the pool: {settle:?}"
         );
 
         s.keyset_spends_off.store(false, Ordering::SeqCst);
