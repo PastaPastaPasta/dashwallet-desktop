@@ -796,6 +796,13 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon's write of its abandoned marks fails.
     #[cfg(test)]
     pub(crate) fail_abandon_mark: std::sync::atomic::AtomicBool,
+    /// Tests: key-wallet refuses the next abandon's root (abandons
+    /// nothing), as it does a root it holds as settled.
+    #[cfg(test)]
+    pub(crate) refuse_next_abandon: std::sync::atomic::AtomicBool,
+    /// Tests: abandons key-wallet refused after their marks were written.
+    #[cfg(test)]
+    pub(crate) refused_abandon_undos: std::sync::atomic::AtomicUsize,
     /// Tests: the next abandon's store of its sweep fails.
     #[cfg(test)]
     pub(crate) fail_abandon_sweep: std::sync::atomic::AtomicBool,
@@ -1117,6 +1124,10 @@ impl SessionHub {
             pause_release: Mutex::new(None),
             #[cfg(test)]
             fail_abandon_mark: Default::default(),
+            #[cfg(test)]
+            refuse_next_abandon: Default::default(),
+            #[cfg(test)]
+            refused_abandon_undos: Default::default(),
             #[cfg(test)]
             fail_abandon_sweep: Default::default(),
             #[cfg(test)]

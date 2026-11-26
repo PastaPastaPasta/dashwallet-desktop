@@ -2623,8 +2623,18 @@ impl NetworkSession {
                 crate::rescan_hold::take_over(&mut h.rescan_holds, &holds)
             });
             self.hub.forget_restore_holds(wallet, &planned);
-            let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
+            #[cfg(test)]
+            let refuse =
+                (self.hub.refuse_next_abandon).swap(false, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(not(test))]
+            let refuse = false;
+            let abandoned = match refuse {
+                true => BTreeSet::new(),
+                false => abandon_with(&mut info.core_wallet, root, &descendants),
+            };
             if abandoned.is_empty() {
+                #[cfg(test)]
+                (self.hub.refused_abandon_undos).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.hub.history.with_wallet(wallet, |h| {
                     crate::rescan_hold::put_back(&mut h.rescan_holds, &holds, &previous)
                 });
