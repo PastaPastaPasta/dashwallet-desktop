@@ -15,6 +15,11 @@
 //!   among them), and, in a journal from before artifacts, a stored
 //!   redrive (what the 10 → 11 step imports `unclassified`).
 //!
+//! An unresolved create whose registration's proof in `app.sqlite` reads
+//! consumed (its notes spent with no identity, nothing owed) does not hold
+//! either, as for [`shielded_pool::holds_unresolved`]; with no such proof,
+//! or one that does not read, it holds.
+//!
 //! A drained fork hold (`shielded_drained_hold`) does not hold here, as for
 //! the removal: the fork's rows it came from stay in the before set, and the
 //! open after a restore drains them again. For a restore, neither does a
@@ -32,9 +37,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
+use dw_appdb::APP_DB_FILE;
 use dw_appdb::dispatch::{DISPATCH_DB_FILE, DISPATCH_SCHEMA, ForkHold};
 use dw_store_upgrade::SnapshotState;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use super::shielded_pool::{self, SHIELDED_DB_FILE};
 use crate::{ShieldedHold, WalletId};
@@ -86,7 +92,7 @@ fn read_restore_hold(network_dir: &Path) -> Result<Option<ShieldedHold>, String>
         }
     }
     if let Some(db) = open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
-        let journal = journal_holds_in(&db, None)?;
+        let journal = journal_holds_in(&db, network_dir, None)?;
         if journal.unsettled {
             return Ok(Some(ShieldedHold::CarriedOver));
         }
@@ -171,7 +177,7 @@ fn snapshot_fork_notes(network_dir: &Path) -> Result<BTreeSet<HeldNotes>, String
 /// read only; nothing with no journal.
 pub(crate) fn journal_holds(network_dir: &Path, wallet: WalletId) -> Result<JournalHolds, String> {
     match open_read_only(&network_dir.join(DISPATCH_DB_FILE))? {
-        Some(db) => journal_holds_in(&db, Some(wallet)),
+        Some(db) => journal_holds_in(&db, network_dir, Some(wallet)),
         None => Ok(JournalHolds::default()),
     }
 }
@@ -215,8 +221,13 @@ fn has_table(db: &Connection, name: &str) -> Result<bool, String> {
 /// every wallet's. A file with no table at all (an open that stopped once
 /// it created the journal) holds nothing, as the journal's open reads it
 /// as new; one with tables but no schema, or newer than this build, does
-/// not read.
-fn journal_holds_in(db: &Connection, wallet: Option<WalletId>) -> Result<JournalHolds, String> {
+/// not read. An unresolved create is open unless its proof in
+/// `network_dir`'s `app.sqlite` reads consumed ([`creates_consumed`]).
+fn journal_holds_in(
+    db: &Connection,
+    network_dir: &Path,
+    wallet: Option<WalletId>,
+) -> Result<JournalHolds, String> {
     let tables: bool = db
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table')",
@@ -257,7 +268,7 @@ fn journal_holds_in(db: &Connection, wallet: Option<WalletId>) -> Result<Journal
     }
     let mut stmt = db
         .prepare(
-            "SELECT status, status_reason, st_hash IS NOT NULL FROM shielded_artifact \
+            "SELECT status, status_reason, st_hash, kind, wallet FROM shielded_artifact \
              WHERE ?1 IS NULL OR wallet = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -266,19 +277,63 @@ fn journal_holds_in(db: &Connection, wallet: Option<WalletId>) -> Result<Journal
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
-                r.get::<_, bool>(2)?,
+                r.get::<_, Option<Vec<u8>>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?;
+    let mut spent_creates = Vec::new();
     for row in rows {
         match row.map_err(|e| e.to_string())? {
-            (status, _, _)
+            (status, _, _, _, _)
                 if matches!(status.as_str(), "archived" | "executed" | "not_executed") => {}
-            (status, None, true) if matches!(status.as_str(), "registered" | "unresolved") => {
+            (status, None, Some(st_hash), kind, wallet)
+                if status == "unresolved" && kind.as_deref() == Some("identity_create") =>
+            {
+                spent_creates.push((wallet, st_hash));
+            }
+            (status, None, Some(_), ..)
+                if matches!(status.as_str(), "registered" | "unresolved") =>
+            {
                 holds.open = true;
             }
             _ => holds.unsettled = true,
         }
     }
+    if !holds.open && !spent_creates.is_empty() && !creates_consumed(network_dir, &spent_creates)? {
+        holds.open = true;
+    }
     Ok(holds)
+}
+
+/// Whether the registration proof (`dp_registration_proved`) of every
+/// create in `creates`, by wallet and transition hash, reads consumed in
+/// `network_dir`'s `app.sqlite`. No file, no settings table or no proof is
+/// `false`; a file, table or row that does not read is an error.
+fn creates_consumed(network_dir: &Path, creates: &[(Vec<u8>, Vec<u8>)]) -> Result<bool, String> {
+    let Some(db) = open_read_only(&network_dir.join(APP_DB_FILE))? else {
+        return Ok(false);
+    };
+    if !has_table(&db, "settings_kv")? {
+        return Ok(false);
+    }
+    for (wallet, st_hash) in creates {
+        let wallet = <[u8; 32]>::try_from(wallet.as_slice())
+            .map_err(|_| "an artifact's wallet is malformed".to_string())?;
+        let scope = dw_appdb::local_scope(&WalletId(wallet).to_string());
+        let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+        let proof: Option<String> = db
+            .query_row(
+                "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [&scope, &key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if proof.as_deref() != Some("consumed") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

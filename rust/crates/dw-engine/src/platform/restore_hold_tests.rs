@@ -171,6 +171,87 @@ fn a_journal_artifact_or_marker_refuses_the_request() {
     );
 }
 
+/// `app.sqlite` with the registration proof of the [`artifact`]'s
+/// transition reading `proof` (none with `None`), left with no `-wal`.
+fn app(dir: &Path, proof: Option<&str>) {
+    let path = dir.join(dw_appdb::APP_DB_FILE);
+    let db = dw_appdb::AppDb::open(&path).unwrap();
+    let scope = dw_appdb::local_scope(&hex::encode(wallet_bytes()));
+    let key = dw_appdb::dp_registration_proved(&hex::encode([0x51; 32]));
+    db.set_setting_durable(&scope, &key, proof).unwrap();
+    drop(db);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .pragma_update(None, "journal_mode", "DELETE")
+        .unwrap();
+}
+
+/// [`WALLET`]'s bytes.
+fn wallet_bytes() -> [u8; 32] {
+    hex::decode(WALLET.trim_start_matches("X'").trim_end_matches('\''))
+        .unwrap()
+        .try_into()
+        .unwrap()
+}
+
+/// An unresolved Shielded create on disk holds the request unless its
+/// registration's proof in `app.sqlite` reads consumed (its notes spent with
+/// no identity, nothing owed), as for Close Wallet. No `app.sqlite`, no
+/// proof, another proof, or an `app.sqlite` that does not read holds; an
+/// open transfer beside a consumed create holds. Mutant: read every
+/// unresolved create as consumed.
+#[test]
+fn a_consumed_create_on_disk_lets_the_request_through() {
+    let create = artifact("unresolved", "NULL").replace("'transfer'", "'identity_create'");
+    let transfer = artifact("registered", "NULL").replace(
+        KEY,
+        "X'5252525252525252525252525252525252525252525252525252525252525252'",
+    );
+    passes(
+        case(|d| {
+            journal(d, &create);
+            app(d, Some("consumed"));
+        })
+        .path(),
+        "a consumed create",
+    );
+    refused_with(
+        case(|d| journal(d, &create)).path(),
+        ShieldedHold::InFlight,
+        "a spent create, no app.sqlite",
+    );
+    for (proof, what) in [(None, "no proof"), (Some("executed"), "an executed proof")] {
+        refused_with(
+            case(|d| {
+                journal(d, &create);
+                app(d, proof);
+            })
+            .path(),
+            ShieldedHold::InFlight,
+            what,
+        );
+    }
+    refused_with(
+        case(|d| {
+            journal(d, &create);
+            std::fs::write(d.join(dw_appdb::APP_DB_FILE), b"not a database").unwrap();
+        })
+        .path(),
+        ShieldedHold::CarriedOver,
+        "an app.sqlite that does not read",
+    );
+    refused_with(
+        case(|d| {
+            journal(d, &create);
+            journal(d, &transfer);
+            app(d, Some("consumed"));
+        })
+        .path(),
+        ShieldedHold::InFlight,
+        "a consumed create beside an open transfer",
+    );
+}
+
 /// A journal from before artifacts: its stored redrives import as
 /// unclassified artifacts, which hold.
 #[test]

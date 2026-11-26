@@ -287,7 +287,7 @@ impl NetworkSession {
             // is not known is not removed, as the removal would delete the
             // spend's record and its notes' hold; refused before anything of
             // it changes, and checked again below.
-            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, id);
+            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, &live.appdb, id);
             if let Some(hold) = held.await {
                 return Err(EngineError::ShieldedSpendHeld(hold));
             }
@@ -319,7 +319,7 @@ impl NetworkSession {
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
             // Again before the seed goes, now that its leases drained: a hold
             // that came up meanwhile keeps the seed. The leases come back.
-            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, id);
+            let held = crate::platform::shielded_pool::removal_hold(&this, &live.manager, &live.appdb, id);
             if let Some(hold) = held.await {
                 this.spawn_ensure_background();
                 return Err(EngineError::ShieldedSpendHeld(hold));
@@ -331,7 +331,7 @@ impl NetworkSession {
             // Its gate once more, fail closed (`ShieldedSpendUnresolved`,
             // the seed gone: removing it again finishes the removal).
             (this.platform)
-                .remove_from_manager(&this.leases, &live.manager, id)
+                .remove_from_manager(&this.leases, &live.manager, &live.appdb, id)
                 .await?;
             this.hub.forget_wallet(&id);
             this.coin_fences.forget(&id);

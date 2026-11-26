@@ -149,6 +149,141 @@ fn a_confirmed_create_is_left_to_its_registration() {
     }
 }
 
+/// A Shielded-funded create whose notes read spent, spends on: spend 1's
+/// row confirmed with its record and reservations gone, read by a pass into
+/// the journal unresolved for its registration's evidence; spend 2 refused
+/// before delivery, read not executed. Spend 1's transition hash.
+fn spent_create(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> [u8; 32] {
+    pool::force_keyset_spends(session, true);
+    store_spends_as(engine, session, wallet, ArtifactKind::IdentityCreate);
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let [spent, failed]: [PendingRedrive; 2] = spends().try_into().unwrap();
+        for n in &spent.nullifiers {
+            store.clear_pending(subwallet(wallet), n).unwrap();
+        }
+        store
+            .clear_redrive(subwallet(wallet), &spent.activity_id)
+            .unwrap();
+        history_row(
+            &mut *store,
+            subwallet(wallet),
+            &spent,
+            ShieldedActivityStatus::Confirmed,
+        );
+        refuse_undelivered(&mut *store, subwallet(wallet), &failed);
+    });
+    pass(engine, session);
+    assert_eq!(
+        settlement(engine, session, wallet, 1).0,
+        ArtifactStatus::Unresolved { unrecorded: false }
+    );
+    assert_eq!(
+        settlement(engine, session, wallet, 2).0,
+        ArtifactStatus::NotExecuted
+    );
+    let artifact = engine.block_on(session.leases.shielded_artifact(wallet, [1; 32]));
+    artifact.unwrap().unwrap().st_hash.unwrap()
+}
+
+/// What holds `wallet`: Close Wallet's check (`holds_unresolved`), the
+/// network close's (`holds_shielded_spends`) and the removal's
+/// (`removal_hold`).
+fn close_holds(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+) -> (bool, bool, Option<crate::ShieldedHold>) {
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let appdb = s.live().unwrap().appdb;
+        (
+            pool::holds_unresolved(&s.leases, &m, &appdb, wallet).await,
+            s.holds_shielded_spends().await,
+            pool::removal_hold(&s, &m, &appdb, wallet).await,
+        )
+    })
+}
+
+/// A spent create whose registration's proof reads consumed (its notes
+/// spent with no identity, as `registration_shielded::consumed` writes it)
+/// stays unresolved by design, its row still confirmed, but owes nothing:
+/// it holds nothing. Close Wallet's, the network close's and the removal's
+/// checks pass, at every pass, and Close Wallet and the network close go
+/// ahead. Mutant: drop the exclusion, so the confirmed row holds for good.
+#[test]
+fn a_consumed_create_lets_the_close_and_the_removal_go() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let st_hash = spent_create(&engine, &session, wallet);
+    let s = Arc::clone(&session);
+    let unresolved = ArtifactStatus::Unresolved { unrecorded: false };
+    assert!(
+        engine.block_on(async move {
+            super::super::registration_shielded::settle_proved(
+                &s, wallet, st_hash, unresolved, false,
+            )
+            .await
+        }),
+        "the consumed proof is written"
+    );
+    for _ in 0..2 {
+        pass(&engine, &session);
+        assert_eq!(settlement(&engine, &session, wallet, 1).0, unresolved);
+        assert_eq!(
+            close_holds(&engine, &session, wallet),
+            (false, false, None),
+            "Close Wallet, the network close and the removal"
+        );
+    }
+    engine.block_on(session.unload_wallet(wallet)).unwrap();
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+}
+
+/// Fail closed: the same spent create before its proof is written may be a
+/// padded one whose refund is still owed, so it holds. Close Wallet, the
+/// network close and the restore's rollback are refused
+/// (`shielded_spend_unresolved`), and the removal is held; so with a proof
+/// that reads anything but consumed. Mutant: read every spent create,
+/// whatever its proof.
+#[test]
+fn a_spent_create_with_no_consumed_proof_holds_the_close_and_the_removal() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let st_hash = spent_create(&engine, &session, wallet);
+    for proof in [None, Some("executed")] {
+        if let Some(proof) = proof {
+            let scope = dw_appdb::local_scope(&wallet.to_string());
+            let key = dw_appdb::dp_registration_proved(&hex::encode(st_hash));
+            engine
+                .block_on(
+                    session.appdb_op(move |db| db.set_setting_durable(&scope, &key, Some(proof))),
+                )
+                .unwrap();
+        }
+        pass(&engine, &session);
+        let (closing, network, removal) = close_holds(&engine, &session, wallet);
+        assert!(
+            closing && network,
+            "{proof:?}: Close Wallet and the network close hold"
+        );
+        assert!(removal.is_some(), "{proof:?}: the removal holds");
+        refused(engine.block_on(session.unload_wallet(wallet)));
+        refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
+        refused(engine.block_on(session.remove_registered(wallet)));
+        assert!(
+            session.require_wallet(&wallet).is_ok(),
+            "{proof:?}: still loaded"
+        );
+    }
+}
+
 /// An outcome the library reports and the journal has not read holds the
 /// wallet: the library keeps it in memory only, so a removal would lose it.
 /// With spend 1's row confirmed and spend 2's failed (record and
@@ -197,10 +332,11 @@ fn an_unread_outcome_holds_the_close_until_a_pass_reads_it() {
     refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
     assert!(session.live().is_ok(), "the session stays open");
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(
-        engine
-            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
-    );
+    refused(engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &m, &s.live().unwrap().appdb, wallet))
+        .await
+    }));
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
     for n in [1, 2] {
         assert_eq!(
@@ -360,10 +496,11 @@ fn an_unread_journal_holds_the_close() {
     assert!(!session.leases.journal_ready());
     refused(engine.block_on(session.unload_wallet(wallet)));
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(
-        engine
-            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
-    );
+    refused(engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &m, &s.live().unwrap().appdb, wallet))
+        .await
+    }));
     assert!(session.require_wallet(&wallet).is_ok(), "still loaded");
 
     session.leases.load_journal(journal, Vec::new(), Vec::new());
@@ -495,10 +632,11 @@ fn a_fork_held_spend_holds_the_close_after_the_upgrade() {
     refused(engine.block_on(engine.close_network(DashNetwork::Regtest)));
     assert!(session.live().is_ok(), "the session stays open");
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    refused(
-        engine
-            .block_on(async move { (s.platform.remove_from_manager(&s.leases, &m, wallet)).await }),
-    );
+    refused(engine.block_on(async move {
+        (s.platform
+            .remove_from_manager(&s.leases, &m, &s.live().unwrap().appdb, wallet))
+        .await
+    }));
 
     spent_seen(&session, wallet, &unresolved);
     assert_eq!(markers(&engine, &session, wallet), [[2; 32]]);
@@ -1436,7 +1574,7 @@ fn free_notes(
             assert!(store.pending_redrives(id).unwrap().is_empty());
         }
         s.ensure_background().await;
-        pool::reported_outcome(&s.leases, &coordinator, wallet).await
+        pool::reported_outcome(&s.leases, &coordinator, &s.live().unwrap().appdb, wallet).await
     })
 }
 
@@ -1446,7 +1584,7 @@ fn reported(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) ->
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move {
         let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
-        pool::reported_outcome(&s.leases, &coordinator, wallet).await
+        pool::reported_outcome(&s.leases, &coordinator, &s.live().unwrap().appdb, wallet).await
     })
 }
 

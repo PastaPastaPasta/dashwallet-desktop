@@ -131,7 +131,8 @@ fn removed(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
 
 fn hold(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Option<ShieldedHold> {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
-    engine.block_on(async move { pool::removal_hold(&s, &m, wallet).await })
+    engine
+        .block_on(async move { pool::removal_hold(&s, &m, &s.live().unwrap().appdb, wallet).await })
 }
 
 /// One stored redrive refuses the removal (in flight); the raw row is on

@@ -464,7 +464,9 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     let manager = session.manager().unwrap();
     let s = Arc::clone(&session);
     let removed = engine.block_on(async move {
-        (s.platform.remove_from_manager(&s.leases, &manager, wallet)).await
+        (s.platform
+            .remove_from_manager(&s.leases, &manager, &s.live().unwrap().appdb, wallet))
+        .await
     });
     assert!(matches!(removed, Err(EngineError::ShieldedSpendUnresolved)));
     assert_eq!(kept(&engine, &session, wallet), expected());
@@ -1012,7 +1014,9 @@ fn a_marked_spend_refuses_the_close_until_a_scan_finds_all_its_notes_spent() {
     let manager = session.manager().unwrap();
     let s = Arc::clone(&session);
     let removed = engine.block_on(async move {
-        (s.platform.remove_from_manager(&s.leases, &manager, wallet)).await
+        (s.platform
+            .remove_from_manager(&s.leases, &manager, &s.live().unwrap().appdb, wallet))
+        .await
     });
     assert!(
         matches!(removed, Err(EngineError::ShieldedSpendUnresolved)),
